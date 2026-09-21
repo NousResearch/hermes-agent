@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $gatewayState } from '@/store/session'
 import { knownOwnerForSession, requestForOwnedSession } from '@/store/session-states'
 import { $subagentsBySession, reconcileSubagentSnapshot, type SubagentPayload } from '@/store/subagents'
@@ -12,8 +13,10 @@ export const rejectUnownedSubagentRequest = async <T>(): Promise<T> => {
 /** Hydrate even an empty composer; live events remain authoritative over reads. */
 export function useSubagentSnapshot(sessionId: string | null) {
   const gatewayState = useStore($gatewayState)
+  const paneVisible = usePaneVisible()
   useEffect(() => {
-    if (!sessionId) {
+    if (!sessionId || !paneVisible) {
+      // Keep-alive tiles stay mounted; only poll while this pane is the visible tab (reveal re-runs the effect).
       return
     }
 
@@ -57,7 +60,12 @@ export function useSubagentSnapshot(sessionId: string | null) {
     }
 
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 5000)
+
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refresh()
+      }
+    }, 5000)
 
     const retry = () => {
       failures = 0
@@ -71,5 +79,5 @@ export function useSubagentSnapshot(sessionId: string | null) {
       window.clearInterval(timer)
       window.removeEventListener('focus', retry)
     }
-  }, [sessionId, gatewayState])
+  }, [sessionId, gatewayState, paneVisible])
 }

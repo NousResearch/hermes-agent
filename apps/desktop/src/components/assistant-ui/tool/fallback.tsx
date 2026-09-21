@@ -19,6 +19,7 @@ import {
 
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
+import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -31,7 +32,6 @@ import {
   SCAFFOLD_META_CLASS,
   ScaffoldRow
 } from '@/components/chat/scaffold-row'
-import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
@@ -52,7 +52,13 @@ import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
-import { $anyToolDisclosureOpen, $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
+import {
+  $anyToolDisclosureOpen,
+  $hideCodeDiffs,
+  $toolDisclosureOpen,
+  $toolViewMode,
+  setToolDisclosureOpen
+} from '@/store/tool-view'
 
 import { isApprovalActivity, isCurrentTurnMessage } from './approval-activity'
 import {
@@ -348,17 +354,19 @@ function ToolEntry({ part }: ToolEntryProps) {
   const embedded = useContext(ToolEmbedContext)
   const runDisclosureId = useContext(ToolRunDisclosureContext)
   const toolViewMode = useStore($toolViewMode)
+  const hideCodeDiffs = useStore($hideCodeDiffs)
 
   // `ToolFallback` rebuilds the `part` wrapper each render, defeating the memos
   // below and re-running buildToolView (full JSON.stringify of result) on every
   // stream delta — the freeze on big `/learn` runs. Re-derive a stable part from
   // the referentially-stable args/result so the memos hold across deltas.
-  const { args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName } = part
+  const { args, completedAt, interrupted, isError, result, toolResultMetadata, timestamp, toolCallId, toolName } = part
 
   const stablePart = useMemo<ToolPart>(
     () => ({
       args,
       completedAt,
+      interrupted,
       isError,
       result,
       toolResultMetadata,
@@ -367,7 +375,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       toolName,
       type: 'tool-call'
     }),
-    [args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName]
+    [args, completedAt, interrupted, isError, result, toolResultMetadata, timestamp, toolCallId, toolName]
   )
 
   const disclosureId = toolEntryDisclosureId(messageId, stablePart)
@@ -378,8 +386,8 @@ function ToolEntry({ part }: ToolEntryProps) {
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(toolResultRecord(stablePart))
   const isFileEdit = isFileEditTool(toolName)
-  const defaultOpen = Boolean(inlineDiff)
-  const open = useDisclosureOpen(disclosureId, defaultOpen)
+  const defaultOpen = Boolean(inlineDiff) && !hideCodeDiffs
+  const disclosureOpen = useDisclosureOpen(disclosureId, defaultOpen)
   const canDismiss = !isPending && !embedded
   // Only animate entries that mount while their message is actively
   // streaming — historical sessions mount with `messageRunning === false`,
@@ -397,6 +405,13 @@ function ToolEntry({ part }: ToolEntryProps) {
     return buildToolView(p, inlineDiff)
   }, [inlineDiff, isPending, result, stablePart])
 
+  // Keep counts and saved disclosure intent, but never mount code while hidden.
+  // Failed edits still expose their explanation.
+  const summaryOnly = hideCodeDiffs && isFileEdit && view.status !== 'error'
+  const open = disclosureOpen && !summaryOnly
+  const showInlineDiff = Boolean(view.inlineDiff) && !hideCodeDiffs
+  const showPayload = toolViewMode === 'technical' && !(hideCodeDiffs && isFileEdit)
+
   // Surface a previewable artifact (HTML file / localhost URL) as a compact link
   // in the composer status stack rather than a bulky inline card. Uses the same
   // detected target the old inline card did. Idempotent + dedup'd, so re-renders
@@ -404,10 +419,16 @@ function ToolEntry({ part }: ToolEntryProps) {
   const previewTarget = view.previewTarget
   // The session whose transcript this row is IN, which is not necessarily the
   // primary one: a tool row inside a session tile must feed that tile's composer.
-  const { $cwd: $sessionCwd, $runtimeId: $sessionRuntimeId } = useSessionView()
+
+  const {
+    $cwd: $sessionCwd,
+    $runtimeId: $sessionRuntimeId,
+    $storedId: $sessionStoredId,
+    $messages: $sessionMessages
+  } = useSessionView()
 
   useEffect(() => {
-    if (isPending || !previewTarget || !isPreviewableTarget(previewTarget)) {
+    if (view.status !== 'success' || !previewTarget || !isPreviewableTarget(previewTarget)) {
       return
     }
 
@@ -416,10 +437,12 @@ function ToolEntry({ part }: ToolEntryProps) {
     // or cwd change.
     const sessionId = $sessionRuntimeId.get()
 
-    if (sessionId) {
-      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '')
+    // A route switch can paint the previous assistant row while these atoms
+    // already describe the next chat. Only that chat's own messages may feed it.
+    if (sessionId && $sessionMessages.get().some(message => message.id === messageId)) {
+      recordPreviewArtifact(sessionId, previewTarget, $sessionCwd.get() || '', $sessionStoredId.get() ?? sessionId)
     }
-  }, [$sessionCwd, $sessionRuntimeId, isPending, previewTarget])
+  }, [$sessionCwd, $sessionRuntimeId, $sessionStoredId, $sessionMessages, messageId, previewTarget, view.status])
 
   const detailSections = useMemo(() => {
     if (!view.detail) {
@@ -449,7 +472,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   const detailMatchesTitle = useMemo(() => looksRedundant(view.title, view.detail), [view.title, view.detail])
 
   const showDetail =
-    !view.inlineDiff &&
+    (!view.inlineDiff || (hideCodeDiffs && view.status === 'error')) &&
     (Boolean(view.stdout || view.stderr) ||
       (view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
       (view.status === 'notice' && Boolean(view.detail)) ||
@@ -462,17 +485,19 @@ function ToolEntry({ part }: ToolEntryProps) {
   const hasSearchHits = Boolean(view.searchHits?.length)
   const searchResultsLabel = part.toolName === 'web_search' ? 'Search results' : view.detailLabel
 
-  const hasExpandableContent = Boolean(
-    view.imageUrl ||
-    view.inlineDiff ||
-    showDetail ||
-    hasSearchHits ||
-    view.stdout ||
-    view.stderr ||
-    view.terminalCommand ||
-    view.terminalExitCode !== undefined ||
-    toolViewMode === 'technical'
-  )
+  const hasExpandableContent =
+    !summaryOnly &&
+    Boolean(
+      view.imageUrl ||
+      showInlineDiff ||
+      showDetail ||
+      hasSearchHits ||
+      view.stdout ||
+      view.stderr ||
+      view.terminalCommand ||
+      view.terminalExitCode !== undefined ||
+      showPayload
+    )
 
   // copyAction reads the uncapped view.detail; clampForDisplay below only bounds
   // what's painted, so the row's Copy button still yields the full output.
@@ -626,7 +651,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           )}
           {view.imageUrl && (
             <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <ZoomableImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
+              <MarkdownImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
             </div>
           )}
           {hasSearchHits && view.searchHits && (
@@ -641,11 +666,11 @@ function ToolEntry({ part }: ToolEntryProps) {
               <SearchResultsList hits={view.searchHits} />
             </div>
           )}
-          {view.inlineDiff && (
+          {showInlineDiff && (
             <FileDiffPanel className="-mt-1.5" diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />
           )}
           {showDetail &&
-            toolViewMode !== 'technical' &&
+            !showPayload &&
             (view.status === 'error' ? (
               detailSections.summary || detailSections.body ? (
                 <div className="max-w-full text-xs leading-relaxed text-destructive">
@@ -715,7 +740,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                 )}
               </div>
             ))}
-          {toolViewMode === 'technical' && <ToolPayloadDisclosure args={part.args} result={part.result} />}
+          {showPayload && <ToolPayloadDisclosure args={part.args} result={part.result} />}
         </div>
       )}
     </div>
@@ -952,10 +977,12 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   startIndex
 }) => {
   const messageRunning = useAuiState(selectMessageRunning)
+
   const { completedAt, count, entryIds, key, live, startedAt, summary, approvalActivity } = useToolRun(
     startIndex,
     endIndex
   )
+
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   const currentTurn = useAuiState(state => isCurrentTurnMessage(state.thread.messages, state.message.id))
@@ -1059,13 +1086,14 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
  * group-shape changes.
  */
 type TimelineToolCallProps = ToolCallMessagePartProps &
-  Pick<ToolPart, 'completedAt' | 'timestamp' | 'toolResultMetadata'>
+  Pick<ToolPart, 'completedAt' | 'interrupted' | 'timestamp' | 'toolResultMetadata'>
 
 export const ToolFallback = ({
   toolCallId,
   toolName,
   args,
   completedAt,
+  interrupted,
   isError,
   result,
   toolResultMetadata,
@@ -1074,6 +1102,7 @@ export const ToolFallback = ({
   const part: ToolPart = {
     args,
     completedAt,
+    interrupted,
     isError,
     result,
     toolResultMetadata,

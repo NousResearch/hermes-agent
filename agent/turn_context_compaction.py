@@ -404,6 +404,7 @@ def _run_preflight_passes(
             _orig_len, len(out.messages), _orig_tokens, _preflight_tokens
         ):
             _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
+            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             out.blocked = True
             break  # Cannot compress further: neither rows nor tokens moved
         out.conversation_history = conversation_history_after_compression(
@@ -421,6 +422,8 @@ def _run_preflight_passes(
                 "~%s -> ~%s request tokens; skipping additional passes",
                 f"{_orig_tokens:,}", f"{_preflight_tokens:,}",
             )
+            # Sub-5% progress on a request still above the window: no further pass will get under it.
+            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             break
 
 

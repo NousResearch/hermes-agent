@@ -492,6 +492,70 @@ def _make_runner(adapter):
     return runner
 
 
+def test_tool_progress_mode_reads_profile_scope_not_process_environ(monkeypatch, tmp_path):
+    """HERMES_TOOL_PROGRESS_MODE must resolve through the active profile's secret scope, not
+    process-wide ``os.environ``. Under gateway multiplexing ``os.environ`` carries whichever
+    profile's ``.env`` loaded last, so a raw ``os.getenv`` here would leak that profile's setting
+    into every other profile's turns (#116898)."""
+    from agent import secret_scope
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    # Simulates a leaked env var from whichever profile's process env loaded last.
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    # This profile's OWN scoped value, which must win over the leaked process env.
+    token = secret_scope.set_secret_scope({"HERMES_TOOL_PROGRESS_MODE": "all"})
+    try:
+        adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+        runner = _make_runner(adapter)
+        source = SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm", thread_id=None)
+        disp = runner._run_agent_display_settings(source)
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+    assert disp.progress_mode == "all"
+
+
+def test_tool_progress_mode_follows_profile_through_the_real_scoping_seam(monkeypatch, tmp_path):
+    """An A -> B -> A profile cycle driven through ``_profile_scope_for_source`` itself (the seam
+    ``_run_agent``/``_run_agent_inner`` actually enter for every turn), not a manually pre-installed
+    secret scope: binds the fix to profile ownership, so a future scoping regression that hands
+    profile B's turn profile A's scope cannot stay hidden behind an isolated ``get_secret`` test
+    (#116898)."""
+    from agent import secret_scope
+
+    root = tmp_path / "hermes"
+    beta = root / "profiles" / "beta"
+    beta.mkdir(parents=True)
+    # Leaked value from whichever profile's process env loaded last under multiplexing.
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+    (root / ".env").write_text("HERMES_TOOL_PROGRESS_MODE=log\n")
+    (beta / ".env").write_text("HERMES_TOOL_PROGRESS_MODE=verbose\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+
+    prev_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    try:
+        adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+        runner = _make_runner(adapter)
+        runner.config.multiplex_profiles = True
+        source_a = SessionSource(
+            platform=Platform.SLACK, chat_id="D1", chat_type="dm", thread_id=None, profile="default")
+        source_b = SessionSource(
+            platform=Platform.SLACK, chat_id="D2", chat_type="dm", thread_id=None, profile="beta")
+
+        with runner._profile_scope_for_source(source_a):
+            assert runner._run_agent_display_settings(source_a).progress_mode == "log"
+        with runner._profile_scope_for_source(source_b):
+            assert runner._run_agent_display_settings(source_b).progress_mode == "verbose"
+        with runner._profile_scope_for_source(source_a):
+            assert runner._run_agent_display_settings(source_a).progress_mode == "log"
+    finally:
+        secret_scope.set_multiplex_active(prev_multiplex)
+
+
 @pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""
@@ -858,6 +922,25 @@ class CommentaryAgent:
             self.stream_delta_callback("done")
         return {
             "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FinalAsInterimAgent:
+    """Model bridge that reports its completed final through the interim callback."""
+
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        final = "A completed answer from the model bridge."
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback(final, already_streamed=False)
+        return {
+            "final_response": final,
+            "response_previewed": True,
             "messages": [],
             "api_calls": 1,
         }
@@ -1388,6 +1471,25 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
+async def test_non_editable_interim_final_is_recorded_for_final_send_dedup(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FinalAsInterimAgent,
+        session_id="sess-non-editable-interim-final",
+        config_data={
+            "display": {"interim_assistant_messages": True},
+            "streaming": {"enabled": False},
+        },
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result["already_sent"] is True
+    assert [call["content"] for call in adapter.sent] == [result["final_response"]]
+    assert adapter.edits == []
 
 
 class TransformedStreamAgent:

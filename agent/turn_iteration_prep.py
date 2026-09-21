@@ -62,7 +62,8 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     if kanban_worker:
         notice += (
             " While tools are still available, call kanban_complete only if all task "
-            "requirements are verified; otherwise persist a kanban_comment handoff and "
+            "requirements are verified, or kanban_request_review if it is ready for "
+            "review; otherwise persist a kanban_comment handoff and "
             "continue. A diff or commit alone is not completion evidence."
         )
     # Only the current tool-result tail is mutable; an older turn may already be cached.
@@ -157,6 +158,9 @@ def prepare_iteration(
         messages, logger=request_logger, session_id=agent.session_id, cursor=_sanitize_cursor
     )
     if repaired_tool_calls > 0:
+        # In-place arg repair may have popped _DB_PERSISTED_MARKER off stamped live dicts;
+        # force a full flush scan so the repaired rows are rewritten.
+        agent._db_flush_scan_prefix = None
         request_logger.info(
             "Sanitized %s corrupted tool_call arguments before request (session=%s)",
             repaired_tool_calls,

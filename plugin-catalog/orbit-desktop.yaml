@@ -1,0 +1,16 @@
+name: orbit-desktop
+repo: https://github.com/mojomast/orbitdesktop
+sha: bee7a973d7f6eeb81204b59435c10d5477634a67
+subdir: hermes-plugin
+description: "Bundled Orbit browser desktop with explicit local setup, scoped control, previews and checkpoints. Disclosure — talks only to the local Orbit server you configure (loopback, Bearer capability from runtime_dir); mutations off by default. Ships Orbit's source tarball for the optional orbit.py setup CLI (runs npm ci / node); that bundled server hardcodes the author's Tailscale host for VNC/Xpra launchers and can optionally call api.typesafe.ai with a user-supplied key."
+maintainer: mojomast
+tier: community
+category: desktop
+version: "0.2.0"
+docs_url: https://github.com/mojomast/orbitdesktop/blob/bee7a973d7f6eeb81204b59435c10d5477634a67/hermes-plugin/README.md
+platforms: [linux]
+capabilities:
+  provides_tools: [orbit_workspace]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

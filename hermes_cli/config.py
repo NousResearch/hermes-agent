@@ -1,6 +1,14 @@
 """Configuration management for Hermes Agent: config.yaml / .env loading, saving,
 validation, migration, and the ``hermes config`` command."""
 
+# Stale-module bridge — must run before ANY import below can bind a root-level symbol.
+# A pre-handoff updater purges only package prefixes after the pull, so a root module
+# (``utils``) stays cached from the OLD tree; the first fresh consumer of its new symbols
+# dies with ImportError before any later heal point is reached. See hermes_cli.stale_modules.
+from hermes_cli.stale_modules import drop_stale_root_modules
+
+drop_stale_root_modules()
+
 import copy
 import difflib
 import json
@@ -16,6 +24,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -28,6 +37,12 @@ from hermes_cli.colors import Colors, color
 from hermes_cli import managed_scope
 from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from hermes_cli.secret_prompt import masked_secret_prompt
+# Managed-mode, container and HERMES_UID/GID policy live in hermes_constants (import-safe);
+# re-exported here so existing callers/patch targets keep working.
+from hermes_constants import (  # noqa: F401
+    _IGNORED_MANAGED_VALUES, _LEGACY_MANAGED_SYSTEM, _MANAGED_FALSE_VALUES, _MANAGED_TRUE_VALUES,
+    _chown_to_hermes_uid, _container_or_chmod_skipped, _resolve_hermes_uid_gid,
+    apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
 from utils import atomic_replace, atomic_yaml_write, fast_safe_load, file_signature
@@ -139,17 +154,37 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # (HERMES_LANGFUSE_PUBLIC_KEY, HERMES_SPOTIFY_CLIENT_ID, ...). The denylist is name-by-name so
 # it cannot break provider setup wizards. Enforced on *write* only: pre-existing/out-of-band
 # ``.env`` values keep working; the dashboard's writable surface just cannot escalate.
+
+# Whole families whose every member steers execution or config injection, matched by prefix
+# because enumeration cannot cover unbounded names (GIT_CONFIG_KEY_17 / GIT_CONFIG_VALUE_17).
+_ENV_VAR_NAME_DENY_PREFIXES: tuple[str, ...] = (
+    "LD_", "DYLD_",
+    # PARAMETERS/COUNT/KEY_*/VALUE_* inject config pairs; GLOBAL/SYSTEM/NOSYSTEM redirect the
+    # config sources _subprocess_compat already nulls for the same reason.
+    "GIT_CONFIG_",
+)
+
 _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
-    # Loader / linker
+    # Loader / linker (the LD_/DYLD_ prefixes cover the family; kept name-by-name for clarity)
     "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
     "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
     "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FALLBACK_FRAMEWORK_PATH",
-    # Python / Node
+    # Python / Node — init-time injection beyond the loader paths
     "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
-    "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "NODE_OPTIONS", "NODE_PATH",
-    # General / git
-    "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER",
+    "PYTHONEXECUTABLE", "PYTHONNOUSERSITE", "PYTHONBREAKPOINT", "PYTHONCASEOK",
+    "NODE_OPTIONS", "NODE_PATH",
+    # Other interpreter / toolchain injection (same class as PYTHONPATH / NODE_OPTIONS)
+    "PERL5OPT", "PERL5LIB", "PERLLIB", "RUBYOPT", "RUBYLIB", "CLASSPATH",
+    "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+    "GOFLAGS", "RUSTFLAGS",
+    # General / git — executed helpers, repo/config redirection, and template hooks
+    "PATH", "SHELL", "BROWSER", "EDITOR", "VISUAL", "PAGER", "MANPAGER",
     "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_SHELL",
+    "GIT_SSH", "GIT_ASKPASS", "SSH_ASKPASS", "SUDO_ASKPASS",
+    "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_EXTERNAL_DIFF",
+    "GIT_PROXY_COMMAND", "GIT_TEMPLATE_DIR", "GIT_DIR",
+    # Shell init files / interactive hooks — sourced before or during execution
+    "BASH_ENV", "ENV", "ZDOTDIR", "PROMPT_COMMAND", "VIMINIT", "EXINIT",
     # Hermes runtime location
     "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
     "HERMES_CONFIG_PATH", "HERMES_ENV_PATH",
@@ -175,7 +210,8 @@ def validate_env_var_name_for_write(key: str) -> None:
     """Validate an env name before a generic persistence write (exposed for batch callers)."""
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
-    if _env_var_policy_name(key) in _ENV_VAR_NAME_DENYLIST:
+    policy_name = _env_var_policy_name(key)
+    if policy_name in _ENV_VAR_NAME_DENYLIST or policy_name.startswith(_ENV_VAR_NAME_DENY_PREFIXES):
         raise ValueError(
             f"Environment variable {key!r} is on the writer denylist. "
             "Names that influence subprocess execution (LD_PRELOAD, PYTHONPATH, PATH, EDITOR, ...) "
@@ -256,37 +292,10 @@ _EXTRA_ENV_KEYS = frozenset({
 
 # ---- Managed mode (NixOS declarative config) ----
 
-_MANAGED_TRUE_VALUES = ("true", "1", "yes")
 _NIX_MANAGED_SYSTEMS = {"nixos", "home-manager"}
-# Only the NixOS module ever wrote a bare "true" or an empty marker.
-_LEGACY_MANAGED_SYSTEM = "nixos"
 # Nix store root; identifies `nix run` / `nix profile install` installs (which don't set
 # HERMES_MANAGED). Module-level so tests can patch it without touching /nix/store.
 _NIX_STORE = Path("/nix/store")
-# Homebrew is no longer a supported distribution: these markers fall through to git/unknown
-# detection instead of blocking config writes.
-_IGNORED_MANAGED_VALUES = frozenset({"brew", "homebrew"})
-# Explicit opt-out (``HERMES_MANAGED=false``): without this a bool-shaped value became a package
-# manager literally named "false" and is_managed() blocked `hermes update` (#12864).
-_MANAGED_FALSE_VALUES = frozenset({"false", "0", "no", "off"})
-
-
-def get_managed_system() -> Optional[str]:
-    """Return the package manager owning this install, if any.
-    Signals: HERMES_MANAGED env var (systemd service) or a ``.managed`` marker file in
-    HERMES_HOME (NixOS activation script — interactive shells don't see the service env)."""
-    marker = os.getenv("HERMES_MANAGED", "").strip().lower() or None
-    managed_marker = get_hermes_home() / ".managed"
-    if marker is None and managed_marker.exists():
-        try:
-            marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
-        except OSError:
-            marker = ""
-    if marker is None or marker in _IGNORED_MANAGED_VALUES or marker in _MANAGED_FALSE_VALUES:
-        return None
-    if marker == "" or marker in _MANAGED_TRUE_VALUES:
-        return _LEGACY_MANAGED_SYSTEM
-    return marker
 
 
 def is_managed() -> bool:
@@ -537,42 +546,6 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 
-def _resolve_hermes_uid_gid() -> tuple[Optional[int], Optional[int]]:
-    """Read HERMES_UID / HERMES_GID (set by Docker deployments); (None, None) if unset/invalid/Windows.
-    The entrypoint chowns HERMES_HOME once, but subdirs created at runtime (``profiles/<name>/``)
-    need the same chown or they land root:root and block later uid-mapped workers.
-
-    Docker containers running Hermes commonly set these to map the in-container user to a host user so
-    volume-mounted state files end up with the right ownership. See #34107.
-    """
-    if sys.platform == "win32":
-        return None, None
-
-    def _env_int(name: str) -> Optional[int]:
-        try:
-            return int(os.environ.get(name, "").strip() or None)
-        except (TypeError, ValueError):
-            return None
-
-    return _env_int("HERMES_UID"), _env_int("HERMES_GID")
-
-
-def _chown_to_hermes_uid(path) -> None:
-    """Chown ``path`` to ``HERMES_UID:HERMES_GID`` when set; EPERM/ENOENT are non-fatal (the
-    entrypoint's startup chown -R fixes ownership on the next restart).
-
-    Used by :func:`_secure_dir` to keep ownership consistent across all directories created by
-    :func:`ensure_hermes_home` on Docker deployments. See #34107.
-    """
-    uid, gid = _resolve_hermes_uid_gid()
-    if uid is None and gid is None:
-        return
-    try:
-        os.chown(path, uid if uid is not None else -1, gid if gid is not None else -1)
-    except (OSError, AttributeError, NotImplementedError):
-        pass
-
-
 def _secure_dir(path):
     """chmod a directory owner-only (0700) and apply HERMES_UID/GID ownership. No-op when managed;
     in a container only an explicit HERMES_HOME_MODE is applied. HERMES_HOME_MODE (e.g. 0701)
@@ -582,46 +555,17 @@ def _secure_dir(path):
     Also applies ``HERMES_UID``/``HERMES_GID``-based ownership when those env vars are set (#34107 — Docker
     deployments need this so profile subdirs created at runtime by kanban workers don't land as root:root
     and block subsequent uid-mapped workers).
+
+    Delegates to the canonical import-safe primitive ``hermes_constants.apply_secure_dir_policy``
+    so callers outside this package (``get_scratch_dir``) share one implementation (#117347).
     """
-    if is_managed():
-        return
-    explicit_mode = os.environ.get("HERMES_HOME_MODE", "").strip()
-    # Same skip as _secure_file: a bind-mounted data dir is often shared with sibling containers
-    # running as other UIDs (web UI, permissions fixers); forcing 0700 on it locks them out on every
-    # start (#10757). An explicit HERMES_HOME_MODE is the operator's choice and is still applied.
-    if _is_container() and not explicit_mode:
-        _chown_to_hermes_uid(path)
-        return
-    try:
-        mode = int(explicit_mode or "700", 8)
-    except ValueError:
-        mode = 0o700
-    try:
-        os.chmod(path, mode)
-    except (OSError, NotImplementedError):
-        pass
-    _chown_to_hermes_uid(path)
-
-
-def _is_container() -> bool:
-    """Detect Docker/Podman/LXC (or HERMES_CONTAINER / HERMES_SKIP_CHMOD opt-out).
-    Volume-mounted config is not forced to 0o600 in containers: gateway and dashboard may run
-    as different UIDs, or the mount itself needs broader permissions."""
-    if (os.environ.get("HERMES_CONTAINER") or os.environ.get("HERMES_SKIP_CHMOD")
-            or os.path.exists("/.dockerenv")):
-        return True
-    try:
-        with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
-            cgroup_content = f.read()
-        return any(marker in cgroup_content for marker in ("docker", "lxc", "kubepods"))
-    except (OSError, IOError):
-        return False
+    return apply_secure_dir_policy(path)
 
 
 def _secure_file(path):
     """chmod a file 0600. Skipped when managed (activation sets 0640 group-readable) or in a
     container (mounts often need broader permissions)."""
-    if is_managed() or _is_container():
+    if is_managed() or _container_or_chmod_skipped():
         return
     try:
         if os.path.exists(str(path)):
@@ -641,7 +585,26 @@ def _ensure_default_soul_md(home: Path) -> None:
             return
         if not is_legacy_template_soul(existing):
             return
-    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    try:
+        soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+    except OSError:
+        if not soul_path.is_symlink():
+            raise
+        # A symlink the seed cannot write through — cyclic (``SOUL.md -> SOUL.md``, ELOOP) or
+        # dangling into a missing directory (ENOENT) — can never hold an identity file, and the
+        # OSError became HomeInitializationError on EVERY boot (launchd exit-75 relaunch storm,
+        # #114592). Seed the default IN PLACE OF the link, never through it; mkstemp + replace
+        # keeps concurrent gateway boots off one shared path. A working link is never reached
+        # here: the write above succeeds through it.
+        fd, tmp_name = tempfile.mkstemp(prefix=".SOUL.md.", suffix=".seed", dir=str(home))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(DEFAULT_SOUL_MD)
+            os.replace(tmp_name, soul_path)
+        except OSError:
+            with suppress(OSError):
+                os.unlink(tmp_name)
+            raise
     _secure_file(soul_path)
 
 
@@ -680,8 +643,9 @@ from hermes_cli.config_providers import (  # noqa: E402,F401  (re-exported; call
     _pick_provider_base_url, _route_model_cfg, _warn_once_per_provider,
     apply_custom_provider_extra_headers_to_client_kwargs,
     apply_custom_provider_tls_to_client_kwargs, coerce_provider_id, find_provider_entry,
-    get_compatible_custom_providers, get_custom_provider_context_length,
+    get_compatible_custom_providers, get_custom_provider_api_mode, get_custom_provider_context_length,
     get_custom_provider_extra_headers, get_custom_provider_model_capability,
+    get_custom_provider_session_affinity_header,
     get_custom_provider_tls_settings, is_provider_enabled, normalize_extra_headers,
     providers_dict_to_custom_providers, stringify_provider_map)
 # Back-compat re-exports — :mod:`hermes_cli.personality` owns personality/overlay semantics.
@@ -1189,13 +1153,14 @@ def _validate_entry_list(
             _require_fields(issues, entry, f"{label}[{i}]", fields)
 
 
+_CP_LIST_HINT = "Change to:\n  custom_providers:\n    - name: my-provider\n      base_url: https://...\n      api_key: ..."
+
+
 def _validate_custom_providers(cp: Any, issues: List[ConfigIssue]) -> None:
-    """custom_providers must be a list of dicts, not a dict."""
+    """custom_providers must be a list of dicts — a dict or a scalar is silently dropped by the runtime."""
     if isinstance(cp, dict):
         _issue(issues, "error",
-               "custom_providers is a dict — it must be a YAML list (items prefixed with '-')",
-               "Change to:\n  custom_providers:\n    - name: my-provider\n      base_url: https://...\n"
-               "      api_key: ...")
+               "custom_providers is a dict — it must be a YAML list (items prefixed with '-')", _CP_LIST_HINT)
         suspicious = set(cp.keys()) & _CUSTOM_PROVIDER_LIKE_FIELDS
         if suspicious:
             _issue(issues, "warning",
@@ -1205,6 +1170,12 @@ def _validate_custom_providers(cp: Any, issues: List[ConfigIssue]) -> None:
         _validate_entry_list(cp, "custom_providers", issues, _CP_REQUIRED_FIELDS, non_dict=(
             "warning", "custom_providers[{i}] is not a dict (got {type})",
             "Each entry should have at minimum: name, base_url"))
+    else:
+        # get_compatible_custom_providers() returns [] for any non-list: the legacy entries vanish
+        # ("0 endpoints") with nothing naming the cause.
+        _issue(issues, "error",
+               f"custom_providers is a {type(cp).__name__} — it must be a YAML list (items prefixed with '-'); "
+               "legacy custom_providers entries are ignored until it is", _CP_LIST_HINT)
 
 
 def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:
@@ -1817,10 +1788,12 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     explicit ``default``, so existing configs are unaffected).
     """
     model_in = config.get("model")
-    needs_model_work = isinstance(model_in, dict) and (
-        model_in.get("api_base")
-        or model_in.get("model") or model_in.get("name")
-        or any(isinstance(model_in.get(k), dict) for k in ("default", "model", "name")))
+    model_provider = model_in.get("provider") if isinstance(model_in, dict) else None
+    needs_model_work = (model_provider is not None and not isinstance(model_provider, str)) or (
+        isinstance(model_in, dict) and (
+            model_in.get("api_base")
+            or model_in.get("model") or model_in.get("name")
+            or any(isinstance(model_in.get(k), dict) for k in ("default", "model", "name"))))
     has_root = any(config.get(k) for k in ("provider", "base_url", "context_length", "api_base"))
     if not has_root and not needs_model_work:
         return config
@@ -1848,6 +1821,15 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
         if root_val and not model.get(key):
             model[key] = root_val
         config.pop(key, None)
+
+    # Provider identity is a string (#117345): an unquoted YAML scalar (``provider: 2``)
+    # loads as int, and downstream readers call ``(provider or "").strip()`` — a gateway
+    # turn dies before the agent runs. Normalize at the load/save chokepoint so every
+    # reader (and the next save, which rewrites config.yaml) heals the persisted value.
+    # Guard on presence: coerce_provider_id(None) is "" — injecting an empty key into
+    # provider-less configs would add churn to config.yaml on the next save.
+    if model.get("provider") is not None:
+        model["provider"] = coerce_provider_id(model.get("provider"))
 
     for alias_val in (config.get("api_base"), model.get("api_base")):
         if alias_val and not model.get("base_url"):
@@ -3044,172 +3026,6 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-# ---- Cron model-drift helpers: which unpinned jobs stay on their creation snapshot ----
-
-_CRON_DRIFT_AXIS_BY_KEY = {
-    "model": "model", "model.default": "model", "model.model": "model", "model.name": "model",
-    "model.provider": "provider", "provider": "provider"}
-
-
-def _cron_model_drift_axis_for_config_key(key: str) -> Optional[str]:
-    """Return the cron inference axis affected by a config key, if any."""
-    return _CRON_DRIFT_AXIS_BY_KEY.get(str(key or "").strip().lower())
-
-
-def _cron_section(config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Return the ``cron`` mapping of *config* (loading the merged config when None), else None."""
-    if config is None:
-        try:
-            config = load_config()
-        except Exception:
-            return None
-    cron_config = config.get("cron") if isinstance(config, dict) else None
-    return cron_config if isinstance(cron_config, dict) else None
-
-
-_CRON_MODEL_IMPACT_JOB_LIMIT = 50
-_CRON_MODEL_IMPACT_ID_LIMIT = 256
-_CRON_MODEL_IMPACT_NAME_LIMIT = 120
-
-
-def _model_assignment_text(value: Any) -> str:
-    """Return a trimmed scalar model/provider value, or empty for malformed data."""
-    return value.strip() if isinstance(value, str) else ""
-
-
-def resolve_cron_model_drift_defaults(
-    config: Any, *, environ: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
-    """Resolve the global ``(provider, model)`` cron compares against snapshots.
-    Mirrors the scheduler's precedence: a truthy configured model wins over ``HERMES_MODEL``; the
-    environment is only a fallback. Per-job and cron fleet defaults are handled by the caller
-    because they cover an axis rather than changing the global assignment."""
-    env = os.environ if environ is None else environ
-    provider = ""
-    model_config = config.get("model") if isinstance(config, dict) else None
-    if isinstance(model_config, dict):
-        provider = _model_assignment_text(model_config.get("provider"))
-        model_config = model_config.get("default") or model_config.get("model") or model_config.get("name")
-    configured_model = _model_assignment_text(model_config)
-    return provider, configured_model or _model_assignment_text(env.get("HERMES_MODEL", ""))
-
-
-def cron_model_drift_axes(
-    job: Any, *, current_provider: Any = "", current_model: Any = "", config: Any = None
-) -> List[str]:
-    """Return the unpinned axes on which *job* will keep running on its creation snapshot rather
-    than the new global assignment (the scheduler treats the snapshot as the effective pin)."""
-    if not isinstance(job, dict):
-        return []
-
-    current = {
-        "provider": _model_assignment_text(current_provider).lower(),
-        "model": _model_assignment_text(current_model).lower()}
-    # A cron.model / cron.model_provider fleet default covers its axis: that axis never reads the
-    # snapshot at fire time, so reporting it would be false.
-    fleet = _cron_section(config) or {}
-    drifted: List[str] = []
-    for axis, fleet_key in (("provider", "model_provider"), ("model", "model")):
-        if _model_assignment_text(fleet.get(fleet_key)) or _model_assignment_text(job.get(axis)):
-            continue
-        snapshot = _model_assignment_text(job.get(f"{axis}_snapshot")).lower()
-        if snapshot and current[axis] and snapshot != current[axis]:
-            drifted.append(axis)
-    return drifted
-
-
-def _is_control_char(char: str) -> bool:
-    return unicodedata.category(char).startswith("C")
-
-
-def _valid_cron_impact_job_id(value: Any) -> str:
-    job_id = value.strip() if isinstance(value, str) else ""
-    if len(job_id) > _CRON_MODEL_IMPACT_ID_LIMIT or any(map(_is_control_char, job_id)):
-        return ""
-    return job_id
-
-
-def _cron_impact_job_name(value: Any, job_id: str) -> str:
-    if isinstance(value, str):
-        printable = "".join(char for char in value if not _is_control_char(char))
-        name = " ".join(printable.split())[:_CRON_MODEL_IMPACT_NAME_LIMIT].rstrip()
-        if name:
-            return name
-    return f"Job {job_id}"[:_CRON_MODEL_IMPACT_NAME_LIMIT].rstrip()
-
-
-def _cron_model_impact_result(available: bool) -> Dict[str, Any]:
-    return {"available": available, "affected_count": 0, "truncated": False, "jobs": []}
-
-
-def build_cron_model_impact(
-    *, current_provider: Any = "", current_model: Any = "", config: Any = None, jobs: Any = None
-) -> Dict[str, Any]:
-    """Build a bounded, profile-local summary of unpinned jobs that stay on their creation snapshot
-    after a global model/provider change. Job-store inspection is best effort: the model assignment
-    has already succeeded when Desktop requests this, so an unreadable store is reported as
-    unavailable rather than failing."""
-    if jobs is None:
-        try:
-            from cron.jobs import load_jobs
-
-            jobs = load_jobs()
-        except Exception:
-            return _cron_model_impact_result(False)
-    if not isinstance(jobs, list):
-        return _cron_model_impact_result(False)
-
-    result = _cron_model_impact_result(True)
-
-    from cron.jobs import is_job_runnable
-
-    seen_ids: Set[str] = set()
-    for job in jobs:
-        if not isinstance(job, dict) or not is_job_runnable(job) or job.get("no_agent"):
-            continue
-        job_id = _valid_cron_impact_job_id(job.get("id"))
-        if not job_id or job_id in seen_ids:
-            continue
-        seen_ids.add(job_id)
-        axes = cron_model_drift_axes(
-            job, current_provider=current_provider, current_model=current_model, config=config)
-        if not axes:
-            continue
-        result["affected_count"] += 1
-        if len(result["jobs"]) < _CRON_MODEL_IMPACT_JOB_LIMIT:
-            result["jobs"].append({
-                "id": job_id,
-                "name": _cron_impact_job_name(job.get("name"), job_id),
-                "drifted_axes": axes})
-
-    result["truncated"] = result["affected_count"] > len(result["jobs"])
-    return result
-
-
-def warn_unpinned_cron_jobs_after_model_config_change(
-    key: str, value: Any, config: Optional[Dict[str, Any]] = None) -> None:
-    """Tell the operator which unpinned cron jobs a global model/provider change does NOT move."""
-    axis = _cron_model_drift_axis_for_config_key(key)
-    if axis is None:
-        return
-
-    new_value = _model_assignment_text(value)
-    if not new_value:
-        return
-    impact = build_cron_model_impact(
-        current_provider=new_value if axis == "provider" else "",
-        current_model=new_value if axis == "model" else "", config=config, jobs=None)
-    affected = impact["affected_count"]
-    if affected <= 0:
-        return
-
-    noun, verb = ("job", "keeps") if affected == 1 else ("jobs", "keep")
-    print(
-        f"ℹ️  {affected} unpinned cron {noun} {verb} running on the {axis} it was created under "
-        f"(its {axis}_snapshot), not the new global {axis}. To move it, pin it with "
-        "`hermes cron edit <job_id> --provider <provider> --model <model>` or set a fleet default "
-        "with `hermes config set cron.model <model>`.")
-
-
 def _default_value_for_key(dotted_key: str):
     """Return the leaf value declared for *dotted_key* in ``DEFAULT_CONFIG`` (None for dicts/misses)."""
     node = cfg_get(DEFAULT_CONFIG, *_split_key_path(dotted_key))
@@ -3250,8 +3066,13 @@ _OPEN_SUBKEY_TOP_LEVEL_KEYS = _OPEN_DICT_TOP_LEVEL_KEYS | _DYNAMIC_TOP_LEVEL_KEY
 
 
 def _known_top_level_keys() -> set[str]:
-    """Return the union of known top-level config keys for validation."""
-    return set(DEFAULT_CONFIG) | _OPEN_SUBKEY_TOP_LEVEL_KEYS
+    """Return the union of known top-level config keys for validation.
+
+    ``_EXTRA_KNOWN_ROOT_KEYS`` are roots the runtime reads but DEFAULT_CONFIG deliberately
+    omits (``platform_toolsets``, ``smart_model_routing``, ...); without them every path under
+    such a root was flagged "not a recognized config key" with a difflib near-miss suggestion.
+    """
+    return set(DEFAULT_CONFIG) | _EXTRA_KNOWN_ROOT_KEYS | _OPEN_SUBKEY_TOP_LEVEL_KEYS
 
 
 def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) -> Optional[str]:
@@ -3305,8 +3126,15 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
             # Checked BEFORE the fuzzy sibling: a structural match is proof, a fuzzy match is a
             # guess, and ``agent.gateway.strict`` must be refused as ``gateway.strict`` rather
             # than written with a misleading ``agent.gateway_timeout`` did-you-mean.
+            # Only DEFAULT_CONFIG / open-subkey roots qualify as the stripped prefix:
+            # ``_EXTRA_KNOWN_ROOT_KEYS`` also holds the top-level FORMS of nested gateway
+            # settings (``filter_silence_narration``, ``reset_triggers``, ...), and
+            # ``gateway.filter_silence_narration`` is a runtime-read path, not a wrong prefix.
             rest = ".".join(segments[len(consumed):])
-            if _split_key_path(rest)[0] in _known_top_level_keys() and _validate_config_key(rest)[0]:
+            if (
+                _split_key_path(rest)[0] in set(DEFAULT_CONFIG) | _OPEN_SUBKEY_TOP_LEVEL_KEYS
+                and _validate_config_key(rest)[0]
+            ):
                 return False, rest
             sibling = _suggest_closest_key(seg, set(node.keys()))
             if sibling is not None:
@@ -3405,18 +3233,70 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
         return value
     try:
         parsed = yaml.safe_load(value)
-    except yaml.YAMLError:
-        print(
-            f"Warning: value for '{key}' looks like a list/mapping but is "
-            f"not valid YAML/JSON; storing as string. Most isinstance-gated "
-            f"readers will ignore a string here.", file=sys.stderr)
-        return value
+    except yaml.YAMLError as exc:
+        # Storing the text as a string here used to be a warning; every isinstance-gated reader
+        # then ignored the value while `config get` echoed it back (#114471). Refuse instead.
+        detail = str(getattr(exc, "problem", None) or exc).splitlines()[0]
+        _exit_invalid(
+            f"✗ Value for '{key}' looks like a list/mapping but is not valid YAML/JSON "
+            f"({detail}) — nothing was written.\n"
+            "  Fix the literal, or quote it (e.g. \"'[text'\") to store a plain string.")
     if isinstance(parsed, (list, dict)):
         return parsed
-    print(
-        f"Warning: value for '{key}' looks like a list/mapping but "
-        f"parsed as {type(parsed).__name__}; storing as string.", file=sys.stderr)
+    # A quoted literal ("'[text'") parses to a scalar: that is the deliberate way to store one.
     return value
+
+
+# Container roots absent from DEFAULT_CONFIG whose shape is nonetheless fixed by their readers,
+# so the guardrail holds before anything is on disk (#114471: `model.aliases notamap`).
+_KNOWN_CONTAINER_TYPES = {
+    "custom_providers": "list",
+    "providers": "mapping",
+    "model.aliases": "mapping",
+    "model_aliases": "mapping",
+}
+# List slots whose readers go through ``parse_config_string_list``: a bare name is one entry.
+_SCALAR_AS_ONE_ITEM_LIST_KEYS = frozenset({"agent.disabled_toolsets", "skills.disabled"})
+
+
+def _expected_container_type(key: str, user_config: Dict[str, Any]) -> Optional[str]:
+    """``"list"`` / ``"mapping"`` when the schema (``DEFAULT_CONFIG``, the known-container table,
+    or the value already on disk) fixes *key* to a container; ``None`` for scalars and open paths.
+    A single-segment key that is a mapping *section* in the schema skips the lookup: replacing a
+    whole section is ``_guard_section_overwrite``'s call (``--force``, the bare ``model`` shorthand)."""
+    parts = _split_key_path(key)
+    schema_node = cfg_get(DEFAULT_CONFIG, *parts)
+    if len(parts) == 1 and isinstance(schema_node, dict):
+        schema_node = None
+    existing = _get_nested(user_config, key)
+    for node in (schema_node, _KNOWN_CONTAINER_TYPES.get(key), existing):
+        if isinstance(node, dict) or node == "mapping":
+            return "mapping"
+        if isinstance(node, list) or node == "list":
+            return "list"
+    return None
+
+
+def _refuse_container_type_mismatch(key: str, value: Any, user_config: Dict[str, Any], force: bool) -> Any:
+    """Hard guardrail: never store a value of the wrong shape where the schema wants a list or a
+    mapping — every reader would ignore it while ``config get`` echoed it back. ``--force`` keeps
+    its documented meaning (replace a whole mapping section); a non-list in a list slot is never
+    readable, so it has no override. Returns the value to store: a bare name for a
+    ``parse_config_string_list``-read slot becomes a one-item list."""
+    expected = _expected_container_type(key, user_config)
+    if expected is None:
+        return value
+    if expected == "list" and isinstance(value, str) and key in _SCALAR_AS_ONE_ITEM_LIST_KEYS:
+        return [value]
+    ok = isinstance(value, list) if expected == "list" else isinstance(value, dict)
+    if ok or (expected == "mapping" and force):
+        return value
+    got = type(value).__name__ if not isinstance(value, str) else "string"
+    literal = "[item, ...]" if expected == "list" else "{key: value}"
+    _exit_invalid(
+        f"✗ Cannot set '{key}': it must be a {expected}, got a {got} — nothing was written.\n"
+        f"  Pass a YAML/JSON literal, e.g.:\n    hermes config set {key} '{literal}'\n"
+        "  or edit config.yaml directly.")
 
 
 def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
@@ -3429,18 +3309,39 @@ def _redirect_platform_display_key(key: str) -> tuple[str, Optional[str]]:
     Before #71047 a write such as ``hermes config set platforms.telegram.streaming false`` landed on a key
     the gateway never reads: ``config get`` echoed the new value back while the runtime kept the old
     ``display.platforms`` one — a silent no-op that looks like a duplicated key to the user.
+
+    ``gateway.platforms.<name>.<field>`` is canonicalized to the top-level ``platforms.<name>.<field>``
+    first (#115212): ``merge_platform_sections`` reads both blocks but the top-level one wins on
+    shared keys, so a nested write beside an existing top-level value printed ``✓ Set`` while the
+    gateway kept the old value.
     """
     segs = _split_key_path(key)
+    note = None
+    if len(segs) >= 3 and segs[0] == "gateway" and segs[1] == "platforms":
+        segs = segs[1:]
+        key = ".".join(segs)
+        note = f"  (note: the top-level platforms.{segs[1]} block outranks gateway.platforms — saved as {key})"
     if len(segs) != 3 or segs[0] != "platforms":
-        return key, None
+        return key, note
     try:
         from gateway.display_config import OVERRIDEABLE_KEYS as _display_keys
     except Exception:
-        return key, None
+        return key, note
     if segs[2] not in _display_keys:
-        return key, None
+        return key, note
     canonical = f"display.platforms.{segs[1]}.{segs[2]}"
     return canonical, f"  (note: per-platform display setting — saved as {canonical})"
+
+
+def _legacy_gateway_platforms_key(requested_key: str) -> Optional[str]:
+    """The ``gateway.platforms.<name>.<field>`` spelling the user typed, when that is what they typed.
+    ``merge_platform_sections`` still honours a value that lives only there, so ``get`` must fall
+    back to it and ``unset``/``set`` must clear it, or the CLI reports "not set" / writes a value
+    while the gateway keeps reading the nested one."""
+    segs = _split_key_path(requested_key)
+    if len(segs) >= 3 and segs[0] == "gateway" and segs[1] == "platforms":
+        return ".".join(segs)
+    return None
 
 
 def _exit_if_key_managed(key: str, action: str) -> None:
@@ -3581,6 +3482,7 @@ def set_config_value(key: str, value: str, force: bool = False):
 
     # Canonicalize per-platform display keys BEFORE validation/coercion so both see the path the
     # runtime reads.
+    legacy_key = _legacy_gateway_platforms_key(key)
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
         print(_redirect_note)
@@ -3601,10 +3503,34 @@ def set_config_value(key: str, value: str, force: bool = False):
     if key.strip().lower().startswith("model.") and isinstance(_model_val, str) and _model_val:
         user_config["model"] = {"default": _model_val}
     key = _guard_section_overwrite(key, value, user_config, force)
+    value = _refuse_container_type_mismatch(key, value, user_config, force)
+    _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
     try:
         _set_nested(user_config, key, value)
     except ValueError as e:
         _exit_invalid(f"✗ {e}")
+    if legacy_key and _unset_nested(user_config, legacy_key):
+        print(f"  (removed the shadowed {legacy_key} duplicate)")
+    # A provider switch re-points ``model:`` at a new route; ``base_url``/``api_mode`` are route
+    # state of the OLD provider, and the runtime honours them for whatever provider the block now
+    # names — the new provider's key would be posted to the old endpoint (#113719, #40862). Sync
+    # them the way a persisted ``/model`` switch does: the previous route goes unless it is the
+    # new provider's own endpoint.
+    _route_notice = ""
+    _old_provider = str(_old_provider or "").strip() or "the previous provider"
+    if key == "model.provider" and _old_provider.lower() != str(value).strip().lower():
+        from hermes_cli.route_identity import drop_stale_model_route
+        _popped, _unverified = drop_stale_model_route(user_config.get("model"), value, user_config)
+        if _popped:
+            _route_notice = (
+                "  Cleared " + ", ".join(f"model.{k} ({v})" for k, v in _popped.items())
+                + f" — that route belonged to {_old_provider}, not {value}. {value}'s endpoint resolves "
+                "automatically; set model.base_url again if you meant a custom endpoint.")
+        elif _unverified:
+            _route_notice = color(
+                f"⚠ model.base_url ({user_config['model'].get('base_url')}) was set under {_old_provider} and "
+                f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
+                "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
@@ -3629,7 +3555,8 @@ def set_config_value(key: str, value: str, force: bool = False):
         from agent.redact import mask_secret
         _display_value = mask_secret(value)
     print(f"✓ Set {key} = {_display_value} in {config_path}")
-    warn_unpinned_cron_jobs_after_model_config_change(key, value, user_config)
+    if _route_notice:
+        print(_route_notice)
 
     # Post-write unknown-key notice (#34067): value IS saved, but tell the user the runtime may never read
     # it and suggest the likely-intended path.
@@ -3652,8 +3579,12 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     else:
         # Mirror set_config_value: read the canonical display.platforms path.
         # See #71047.
+        legacy_key = _legacy_gateway_platforms_key(key)
         key, _ = _redirect_platform_display_key(key)
-        value = _get_nested(load_config(), key)
+        config = load_config()
+        value = _get_nested(config, key)
+        if value is _MISSING and legacy_key:
+            value = _get_nested(config, legacy_key)
 
     if value is _MISSING:
         _exit_invalid(f"Config key not set: {key}")
@@ -3715,11 +3646,14 @@ def unset_config_value(key: str):
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
 
+    legacy_key = _legacy_gateway_platforms_key(key)
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
         # Mirror set_config_value's display.platforms canonicalization (#71047).
         print(_redirect_note.replace("saved as", "resolved as"))
     removed = _unset_nested(user_config, key)
+    if legacy_key:
+        removed = _unset_nested(user_config, legacy_key) or removed
 
     env_var = terminal_config_env_var_for_key(key)
     if env_var and key != "terminal.cwd":

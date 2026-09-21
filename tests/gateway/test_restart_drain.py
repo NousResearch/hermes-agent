@@ -1,6 +1,7 @@
 import asyncio
 import shutil
 import subprocess
+import time
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -513,3 +514,79 @@ def test_wedged_agent_count_ignores_sentinels_and_bad_summaries(monkeypatch):
         }
     )
     assert runner._wedged_agent_count() == 1
+
+
+@pytest.mark.asyncio
+async def test_request_restart_skips_wait_for_cron_run_past_inflight_allowance(monkeypatch, tmp_path):
+    """A cron run older than the scheduler's stale-inflight allowance is wedged: the restart proceeds.
+
+    #115469 Defect B: a no-agent job whose delivery hung pinned ``hermes update`` in "draining" for the
+    full ``restart_after_turn_timeout`` because ``_wedged_agent_count`` only ever looked at chat agents,
+    so the cron unit was structurally un-skippable ("0 wedged and excluded").
+    """
+    import cron.scheduler as sched
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [])
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+    runner._restart_after_turn_timeout = 300.0  # would hang the test without the wedge bypass
+    assert sched.try_register_running_job("hung-delivery-job")
+    try:
+        with sched._running_lock:
+            sched._running_since[sched._inflight_key("hung-delivery-job")] = time.time() - 702 * 60
+        assert runner._wedged_agent_count() == 1 and runner._awaitable_work_count() == 0
+        cron_units = [u for u in runner._describe_active_work() if u["kind"] == "cron"]
+        assert cron_units[0]["job_id"] == "hung-delivery-job" and cron_units[0]["wedged"] is True
+
+        assert runner.request_restart(detached=False, via_service=True) is True
+        await asyncio.wait_for(runner._restart_task, timeout=5.0)
+        runner.stop.assert_awaited_once()
+    finally:
+        sched.release_running_job("hung-delivery-job")
+
+
+def test_wedged_cron_allowance_honours_young_runs_and_job_interval(monkeypatch, tmp_path):
+    """Control: a run inside ``max(2 * interval, cron.inflight_max_minutes)`` is live work, not wedged."""
+    import cron.scheduler as sched
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: [{"id": "six-hourly-job", "schedule": {"kind": "interval", "minutes": 360}}])
+    runner, _adapter = make_restart_runner()
+    assert sched.try_register_running_job("six-hourly-job")
+    try:
+        assert runner._wedged_agent_count() == 0 and runner._awaitable_work_count() == 1
+        with sched._running_lock:
+            sched._running_since[sched._inflight_key("six-hourly-job")] = time.time() - 11 * 3600  # past the 30m floor, inside 2 * 6h
+        assert runner._wedged_agent_count() == 0
+        with sched._running_lock:
+            sched._running_since[sched._inflight_key("six-hourly-job")] = time.time() - 13 * 3600
+        assert runner._wedged_agent_count() == 1 and runner._awaitable_work_count() == 0
+    finally:
+        sched.release_running_job("six-hourly-job")
+
+
+def test_wedged_cron_check_parses_jobs_once_per_run(monkeypatch, tmp_path):
+    """The restart drain polls the wedged count every 0.1 s on the event loop; the job interval
+    must be resolved once per in-flight run, not by a full jobs.json parse per job per tick."""
+    import cron.scheduler as sched
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    loads = []
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: loads.append(1) or [
+        {"id": jid, "schedule": {"kind": "interval", "minutes": 360}} for jid in ("job-a", "job-b", "job-c")])
+    for jid in ("job-a", "job-b", "job-c"):
+        assert sched.try_register_running_job(jid)
+    try:
+        for _ in range(50):
+            assert sched.get_wedged_job_ids() == frozenset()
+        assert len(loads) == 1
+        with sched._running_lock:
+            sched._running_since[sched._inflight_key("job-b")] = time.time() - 13 * 3600
+        assert sched.get_wedged_job_ids() == frozenset({"job-b"})
+        assert len(loads) == 1
+    finally:
+        for jid in ("job-a", "job-b", "job-c"):
+            sched.release_running_job(jid)
+    assert not sched._running_allowance_s

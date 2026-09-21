@@ -2,7 +2,7 @@
 Fable 5.1 via Nous and prints per-call cache hit ratios from agent.log. ~10 calls, well under $1.
 Arm A = current code. Arm B = HERMES_KEEP_ALL_THINKING=1 monkeypatch of _manage_thinking_signatures
 that passes thinking blocks back unchanged for the Nous/Anthropic route."""
-import os, sys, re, time, subprocess, json
+import os, sys, re, tempfile, time, subprocess, json
 # LIVE: real provider calls (cents). Usage: python cache_prefix_live.py <repo_root> <A|B>
 os.environ.setdefault("HERMES_HOME", os.path.expanduser("~/.hermes"))
 sys.path.insert(0, sys.argv[1])
@@ -31,9 +31,10 @@ ag = AIAgent(model="anthropic/claude-fable-5.1", provider="nous", base_url=rt.ge
              api_mode=rt.get("api_mode"), session_id=sid, quiet_mode=True,
              enabled_toolsets=["file", "terminal"], platform="cli", max_iterations=12,
              skip_context_files=True, skip_memory=True, reasoning_config={"enabled": True, "effort": "medium"})
-task = ("In /tmp/f0ab_work (create it), do these steps ONE tool call at a time, no parallel calls: "
+work = os.path.join(tempfile.gettempdir(), "f0ab_work")
+task = (f"In {work} (create it), do these steps ONE tool call at a time, no parallel calls: "
         "1) write a.txt with 'alpha', 2) write b.txt with 'beta', 3) read a.txt, 4) read b.txt, "
-        "5) run `ls -la /tmp/f0ab_work`, 6) run `wc -c /tmp/f0ab_work/*`, 7) run `cat /tmp/f0ab_work/a.txt`, "
+        f"5) run `ls -la {work}`, 6) run `wc -c {work}/*`, 7) run `cat {work}/a.txt`, "
         "then reply with one line: DONE.")
 t0 = time.time()
 r = ag.run_conversation(task)

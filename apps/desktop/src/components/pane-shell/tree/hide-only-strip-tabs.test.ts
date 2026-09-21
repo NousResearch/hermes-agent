@@ -52,6 +52,20 @@ afterEach(() => {
 })
 
 describe('hide-only strip tabs', () => {
+  it('labels the zone menu rows from the pane string localizer, not the register-time title', () => {
+    registerPane('sessions', { placement: 'left', hideOnly: true, tabTitleText: () => 'Сеансы' })
+    registerPane('hermes-bots:pane', { placement: 'left', hideOnly: true })
+    registerPane('workspace', { placement: 'main', uncloseable: true })
+    $layoutTree.set(
+      split('row', [
+        group(['sessions', 'hermes-bots:pane'], { active: 'sessions', id: 'g-side' }),
+        group(['workspace'], { active: 'workspace', id: 'g-main' })
+      ])
+    )
+
+    expect(hideOnlyZoneTabs('g-side').map(tab => tab.title)).toEqual(['Сеансы', 'hermes-bots:pane'])
+  })
+
   it('hides and shows a chrome tab, keeping the pane in the tree', () => {
     sessionsBotsTree()
 

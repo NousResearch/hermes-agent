@@ -1,5 +1,7 @@
+import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from acp.schema import TextContentBlock
@@ -133,6 +135,85 @@ async def test_acp_steer_slash_command_injects_into_running_agent():
     assert response.stop_reason == "end_turn"
     assert fake.steers == ["prefer the simpler fix"]
     assert fake.runs == []
+
+
+@pytest.mark.asyncio
+async def test_acp_reset_rejected_while_turn_running():
+    """prompt() dispatches slash commands before the is_running claim; /reset
+    must be refused there rather than clearing state.history mid-turn."""
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.is_running = True
+    state.history = [{"role": "user", "content": "earlier"}]
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/reset")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert state.history == [{"role": "user", "content": "earlier"}]
+    assert fake.runs == []
+    assert state.queued_prompts == []
+
+
+@pytest.mark.asyncio
+async def test_acp_compress_rejected_while_turn_running():
+    """Mid-turn /compress would compress a torn history and rebind
+    state.history while the live turn still appends to the old list."""
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.is_running = True
+    state.history = [{"role": "user", "content": "earlier"}]
+    sentinel_db = object()
+    fake._session_db = sentinel_db
+    fake._cached_system_prompt = "sys"
+    fake._compress_context = lambda *a, **k: ([{"role": "user", "content": "summary"}], "new-sys")
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/compress")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert state.history == [{"role": "user", "content": "earlier"}]
+    assert fake._session_db is sentinel_db
+    assert fake.runs == []
+
+
+@pytest.mark.asyncio
+async def test_acp_prompt_during_mutating_command_queues_then_runs():
+    """The command_op flag closes the check-then-act window: a prompt arriving while
+    /reset is mid-flight must queue behind it, then run on the cleared history."""
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    loop = asyncio.get_running_loop()
+    state.history = [{"role": "user", "content": "earlier"}]
+
+    # Inject inside _cmd_reset: at that point _handle_slash_command already holds
+    # command_op, so the concurrent prompt must queue rather than claim the turn.
+    orig_reset = acp_agent._cmd_reset
+
+    def patched_reset(args, st):
+        fut = asyncio.run_coroutine_threadsafe(
+            acp_agent.prompt(
+                session_id=st.session_id,
+                prompt=[TextContentBlock(type="text", text="follow-up")],
+            ), loop)
+        fut.result(timeout=10)
+        return orig_reset(args, st)
+
+    with patch.object(acp_agent, "_cmd_reset", patched_reset):
+        response = await acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[TextContentBlock(type="text", text="/reset")],
+        )
+
+    assert response.stop_reason == "end_turn"
+    # The follow-up queued behind the op, then ran on the cleared history.
+    assert fake.runs == ["follow-up"]
+    assert state.history == [
+        {"role": "user", "content": "follow-up"},
+        {"role": "assistant", "content": "ran: follow-up"},
+    ]
+    assert state.command_op is False
 
 
 

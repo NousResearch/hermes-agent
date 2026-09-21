@@ -10,7 +10,7 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
@@ -18,7 +18,8 @@ const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
 const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   notifyError: vi.fn(),
-  request: vi.fn(async (_method: string, _params: Record<string, unknown>) => ({}))
+  request: vi.fn(async (_method: string, _params: Record<string, unknown>) => ({})),
+  requestProfile: vi.fn(async (_route: unknown, _method: string, _params: Record<string, unknown>) => ({}))
 }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -26,7 +27,13 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
   return {
     ...original,
-    host: { ...original.host, notify: mocks.notify, notifyError: mocks.notifyError, request: mocks.request }
+    host: {
+      ...original.host,
+      notify: mocks.notify,
+      notifyError: mocks.notifyError,
+      request: mocks.request,
+      requestProfile: mocks.requestProfile
+    }
   }
 })
 
@@ -40,7 +47,7 @@ interface PickMessage {
 
 /** Mount the section with the hub browser open and hand back its frame. */
 function openHubBrowser() {
-  const { container } = render(<HubSkillsSection forProfile={null} />)
+  const { container } = render(<HubSkillsSection />)
 
   fireEvent.click(screen.getByRole('button', { name: /browse the full hub/ }))
 
@@ -65,6 +72,10 @@ function installCalls() {
   return mocks.request.mock.calls.filter(([, params]) => params.action === 'install')
 }
 
+function routedInstallCalls() {
+  return mocks.requestProfile.mock.calls.filter(([, , params]) => params.action === 'install')
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
@@ -85,6 +96,51 @@ describe('hub pick messages', () => {
     )
 
     expect(installCalls()).toEqual([['skills.manage', { action: 'install', query: 'nous/web-research' }]])
+  })
+
+  it('routes an existing source-scoped bot install through its owner connection', async () => {
+    const { container } = render(
+      <HubSkillsSection
+        bot={{
+          name: 'worker',
+          remoteSource: true,
+          route: {
+            connectionId: 'remote-a',
+            mode: 'remote',
+            profile: 'worker',
+            targetProfile: 'backend-worker'
+          },
+          sourceScoped: true
+        }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /browse the full hub/ }))
+    const frame = container.querySelector('iframe') as HTMLIFrameElement
+
+    postPick(
+      { identifier: 'nous/web-research', name: 'Web Research', type: 'hermes-skill-pick' },
+      { source: frame.contentWindow }
+    )
+
+    await waitFor(() => expect(routedInstallCalls()).toHaveLength(1))
+    expect(routedInstallCalls()).toEqual([
+      [
+        expect.objectContaining({
+          connectionId: 'remote-a',
+          mode: 'remote',
+          profile: 'worker',
+          targetProfile: 'backend-worker'
+        }),
+        'skills.manage',
+        {
+          action: 'install',
+          profile: 'backend-worker',
+          query: 'nous/web-research'
+        }
+      ]
+    ])
+    expect(installCalls()).toEqual([])
   })
 
   it('regression: ignores a same-origin window that is NOT the picker frame', () => {

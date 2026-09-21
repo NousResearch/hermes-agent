@@ -229,7 +229,18 @@ describe('the bot row context menu speaks the active language', () => {
 
 describe('a group row', () => {
   const members = [{ name: 'alpha' }, { name: 'beta' }, { name: 'gamma' }] as GroupMember[]
-  const row = <GroupRow active={false} group="crew" members={members} needsYou={false} onDisband={noop} onNewSection={noop} onOpen={noop} />
+
+  const row = (
+    <GroupRow
+      active={false}
+      group="crew"
+      members={members}
+      needsYou={false}
+      onDisband={noop}
+      onNewSection={noop}
+      onOpen={noop}
+    />
+  )
 
   beforeEach(() => {
     locale.current = 'en'
@@ -252,7 +263,9 @@ describe('a group row', () => {
   it('names the reader in the active language when their line is the latest, without touching the log marker', () => {
     // 'You' is the persisted author sentinel on the log entry; only its rendering localizes.
     act(() =>
-      $groupChats.set({ crew: { log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'ship it' }], running: false, watermarks: {} } })
+      $groupChats.set({
+        crew: { log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'ship it' }], running: false, watermarks: {} }
+      })
     )
     locale.current = 'zh'
 
@@ -263,5 +276,33 @@ describe('a group row', () => {
     expect($groupChats.get().crew.log[0].from.name).toBe('You')
 
     act(() => $groupChats.set({}))
+  })
+})
+
+describe('age label reflects the last worker run, not only the last conversation (#105874)', () => {
+  const nowSec = () => Date.now() / 1000
+
+  it('shows the worker-run age for a delegate-only bot whose worker is past the liveness window', () => {
+    // A specialist driven only via delegate_task: its newest human conversation is 11 days old,
+    // but it ran a `tool`/`kanban` worker 2h ago (well past the 150s liveness window). The label
+    // must read "2h", not "11d" — the busiest bot in the system used to read as the most idle.
+    renderRow({
+      name: 'auswerter',
+      last_session: { last_active: nowSec() - 11 * 86400 },
+      worker_session: { last_active: nowSec() - 2 * 3600 }
+    } as RosterRow)
+
+    expect(screen.getByText('2h')).toBeTruthy()
+    expect(screen.queryByText('11d')).toBeNull()
+  })
+
+  it('falls back to conversation age when there is no worker session', () => {
+    // worker_session can be absent (None past the 20-row window); the max degrades to the chat age.
+    renderRow({
+      name: 'chatty',
+      last_session: { last_active: nowSec() - 3 * 86400 }
+    } as RosterRow)
+
+    expect(screen.getByText('3d')).toBeTruthy()
   })
 })

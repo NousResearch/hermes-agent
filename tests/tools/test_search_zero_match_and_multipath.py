@@ -263,3 +263,110 @@ class TestZeroMatchProbeEngineParity:
             pytest.skip("rg not installed")
         r = ops.search("TOKEN_ALPHA\\nother", path=str(proj / "proj"), target="content")
         assert "line-oriented" not in (r.warning or "")
+
+
+class TestSymlinkedRootOnTheFilesLane:
+    """A symlinked root must be searched on the files lane, on every engine (#116270).
+
+    ``find <link> -type f`` tests the link itself, so a symlinked root listed nothing at
+    all - ``total_count: 0``, ``error=None``, no warning, indistinguishable from an empty
+    directory - while ``rg --files`` followed the same argument. ``find -H`` follows the
+    operand (and only the operand), so both engines answer the same thing, and the
+    follow happens inside the command, on the host that owns the link.
+    """
+
+    @pytest.fixture
+    def linked(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "real.md").write_text("TOKEN\n")
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        (tmp_path / "linkdir").symlink_to(target)
+        (tmp_path / "link.md").symlink_to(target / "real.md")
+        (tmp_path / "emptylink").symlink_to(empty)
+        return tmp_path
+
+    @staticmethod
+    def _pin_engine(monkeypatch, ops, keep):
+        """Force ``keep`` as the engine so a host that also has rg exercises find."""
+        real = ops._has_command
+
+        def only(cmd, _real=real, _keep=keep):
+            if cmd in ("rg", "grep"):
+                return _real(cmd) if cmd == _keep else False
+            return _real(cmd)
+
+        monkeypatch.setattr(ops, "_has_command", only)
+
+    @pytest.mark.parametrize("engine", ["find", "rg"])
+    @pytest.mark.parametrize("lane", ["linkdir", "link.md"])
+    def test_symlinked_root_lists_the_target_files(self, linked, monkeypatch, engine, lane):
+        from tools.file_tools import _get_file_ops
+
+        ops = _get_file_ops(task_id=f"t-symlink-files-{engine}-{lane.replace('.', '-')}")
+        if not ops._has_command(engine):
+            pytest.skip(f"{engine} not installed")
+        self._pin_engine(monkeypatch, ops, engine)
+        r = ops.search("*.md", path=str(linked / lane), target="files")
+        assert r.error is None, r.error
+        assert r.total_count >= 1 and any(f.endswith(".md") for f in r.files), (
+            f"a symlinked root ({lane}) listed nothing and said nothing on the {engine} "
+            f"lane: total_count={r.total_count} files={r.files!r}")
+
+    def test_plain_and_empty_roots_keep_their_answer(self, linked, monkeypatch):
+        """Following the operand must not invent matches or move an ordinary root."""
+        from tools.file_tools import _get_file_ops
+
+        ops = _get_file_ops(task_id="t-symlink-files-guards")
+        self._pin_engine(monkeypatch, ops, "find")
+        plain = ops.search("*.md", path=str(linked / "target"), target="files")
+        assert plain.error is None, plain.error
+        assert plain.total_count >= 1 and any(f.endswith("real.md") for f in plain.files)
+        for root in (str(linked / "empty"), str(linked / "emptylink")):
+            nothing = ops.search("*.md", path=root, target="files")
+            assert nothing.error is None and nothing.total_count == 0, (
+                f"an empty root ({root}) answered {nothing.total_count} file(s): {nothing.files!r}")
+
+    def test_symlinked_content_root_under_a_dot_dir_matches_on_the_grep_lane(self, tmp_path, monkeypatch):
+        """The pruned grep lane (root under a dot-dir) must search through a symlinked
+        root instead of answering a silent zero (#116270).
+
+        ``find <link> -type f`` returned no files on every platform, so the pipeline was
+        byte-identical to "no match"; ``find -H`` follows the operand.
+        """
+        from tools.file_tools import _get_file_ops
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        hidden = tmp_path / ".dot"
+        (hidden / "real").mkdir(parents=True)
+        (hidden / "real" / "f.md").write_text("NEEDLE\n")
+        (hidden / "link.md").symlink_to(hidden / "real" / "f.md")
+        (hidden / "dirlink").symlink_to(hidden / "real")
+
+        ops = _get_file_ops(task_id="t-symlink-content-grep")
+        if not ops._has_command("grep"):
+            pytest.skip("grep not installed")
+        self._pin_engine(monkeypatch, ops, "grep")
+        for root in ("link.md", "dirlink"):
+            r = ops.search("NEEDLE", path=str(hidden / root), target="content")
+            assert r.error is None, r.error
+            assert r.total_count == 1, (
+                f"symlinked root {root} answered total_count={r.total_count} on the grep lane")
+        miss = ops.search("ABSENT_TOKEN", path=str(hidden / "dirlink"), target="content")
+        assert miss.error is None and miss.total_count == 0
+
+    def test_a_symlinked_root_pointing_at_home_is_still_refused(self, tmp_path, monkeypatch):
+        """The no-rg breadth guard must classify the link's target (#116270)."""
+        import tools.file_operations as file_operations
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        home = tmp_path / "home"
+        home.mkdir()
+        (tmp_path / "link-to-home").symlink_to(home)
+        monkeypatch.setattr(file_operations, "_HOME", str(home))
+        ops = ShellFileOperations(LocalEnvironment(str(tmp_path)))
+
+        assert ops._is_broad_local_search_root(str(tmp_path / "link-to-home")) is True

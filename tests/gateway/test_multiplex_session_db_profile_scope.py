@@ -158,7 +158,7 @@ def test_primary_handler_rejected_route_falls_back_and_marks_sentinel(multiplex_
     runner.config = GatewayConfig(multiplex_profiles=True)
     route_calls = []
 
-    def rejecting_route(source):
+    def rejecting_route(source, adapter_profile=None):
         route_calls.append(source.chat_id)
         raise ProfileRouteRejected("unserved profile")
 

@@ -454,6 +454,10 @@ def _resolve_model_and_runtime() -> Tuple[str, dict]:
             model = get_default_model_for_provider(runtime_kwargs["provider"])
     except Exception:
         pass
+    # Same chokepoint as every other surface: without it ``agent.reasoning_effort`` never reaches the
+    # comment agent and the transport applies its default effort (a 400 on non-reasoning models).
+    from hermes_constants import resolve_reasoning_config
+    runtime_kwargs["reasoning_config"] = resolve_reasoning_config(_load_gateway_config(), model)
     return model, runtime_kwargs
 
 
@@ -496,7 +500,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         history = _load_session_history(session_key) if session_key else []
         if history:
             logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages from session %s", len(history), session_key)
-        agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool")},
+        agent = AIAgent(model=model, **{k: runtime_kwargs.get(k) for k in ("base_url", "api_key", "provider", "api_mode", "credential_pool", "reasoning_config")},
                         quiet_mode=True, skip_context_files=True, skip_memory=True, max_iterations=15, enabled_toolsets=["feishu_doc", "feishu_drive"])
         logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)", len(prompt), len(history))
         result = agent.run_conversation(prompt, conversation_history=history or None)

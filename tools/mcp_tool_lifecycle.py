@@ -127,7 +127,8 @@ def _reregister_orphaned_adopters() -> None:
             reset_hermes_home_override(home_token)
 
 
-def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None):
+def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None,
+                         timeout: float = 15.0):
     """Close MCP server connections (in parallel) and stop the background loop. Each server
     Task is signalled to exit its own ``async with`` so the anyio cancel-scope cleanup runs in
     the Task that opened it. ``scope`` restricts teardown to one multiplexed profile's servers
@@ -136,7 +137,10 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     (dropped-from-config pruning); other servers' bookkeeping is untouched. Only the bare call
     (no ``scope``, no ``names``) is the process-wide wildcard: the launch profile's registry
     scope IS ``None``, so ``scope=None, names={...}`` prunes that unscoped owner's servers and
-    must leave a served profile's same-named ``(B, name)`` connection alone."""
+    must leave a served profile's same-named ``(B, name)`` connection alone. ``timeout`` bounds
+    the wait for the close to land on the MCP loop — a caller running one pass per served
+    profile under a total budget divides it, or N profiles × 15s starve the wildcard pass that
+    actually stops the loop."""
     from tools.mcp_tool_scope import _key_name
     wildcard = scope is None and names is None
     with _core._lock:
@@ -193,7 +197,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
             future = safe_schedule_threadsafe(_shutdown(), loop, logger=logger, log_message="MCP shutdown: failed to schedule")
             if future is not None:
                 try:
-                    future.result(timeout=15)
+                    future.result(timeout=timeout)
                 except BaseException as exc:
                     logger.debug("Error during MCP shutdown: %s", exc)
 

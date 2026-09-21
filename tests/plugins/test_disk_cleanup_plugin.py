@@ -15,6 +15,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 import importlib
 import json
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -185,6 +186,96 @@ class TestProfileUserTreesNeverCleaned:
 
         assert keep.exists(), "empty dir inside workspace/ must survive the sweep"
         assert not sweepable.exists(), "unprotected empty dirs are still swept"
+
+
+class TestProtectedDirsNeverRmtreed:
+    """A tracked DIRECTORY under a protected top level (``cache/`` holds terminal snapshots)
+    must never be rmtree'd by the tracked-item path, only by-file aging; ``kanban/`` is never
+    tracked at all (its attachments/workspaces have their own lifecycle)."""
+
+    def test_stale_cache_dir_entry_is_skipped_but_its_old_files_still_age_out(self, _isolate_env):
+        dg = _load_lib()
+        cache = _isolate_env / "cache"
+        (cache / "terminal").mkdir(parents=True)
+        old_file = cache / "scratch.txt"
+        old_file.write_text("x")
+        assert dg.guess_category(cache) is None, "the cache dir itself is never tracked"
+        assert dg.guess_category(old_file) == "temp", "files under cache/ still age out as temp"
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        dg.save_tracked([
+            {"path": str(cache), "category": "temp", "timestamp": old_ts, "size": 0},
+            {"path": str(old_file), "category": "temp", "timestamp": old_ts, "size": 1},
+        ])
+
+        summary = dg.quick()
+
+        assert (cache / "terminal").is_dir(), "protected top-level dir must survive a stale tracked entry"
+        assert not old_file.exists(), "old temp FILE under cache/ is still pruned (control)"
+        assert summary["deleted"] == 1
+        assert dg.load_tracked() == [], "the stale dir entry is dropped, not retried every session"
+        assert "SKIPPED" in (_isolate_env / "disk-cleanup" / "cleanup.log").read_text()
+
+    def test_kanban_test_files_are_never_tracked_or_deleted(self, _isolate_env):
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        att = _isolate_env / "kanban" / "attachments" / "t1" / "test_evidence.sh"
+        att.parent.mkdir(parents=True)
+        att.write_text("x")
+        assert dg.guess_category(att) is None
+        # A stale pre-fix entry must be dropped by re-validation instead of deleted.
+        dg.save_tracked([{"path": str(att), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(att), "content": "x"},
+                              result="OK", task_id="t1", session_id="s_kb")
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(scratch), "content": "x"},
+                              result="OK", task_id="t1", session_id="s_kb")
+
+        pi._on_session_end(session_id="s_kb", completed=True, interrupted=False)
+
+        assert att.exists(), "kanban attachments are task-managed, never auto-deleted"
+        assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
+        assert dg.load_tracked() == []
+
+
+class TestGitWorktreeFilesNeverCleaned:
+    """Regression tests for #115295 — git-owned test_* files (committed regression tests
+    inside worktrees/checkouts) are never tracked or auto-deleted; scratch files outside
+    git trees still are."""
+
+    def test_quick_drops_stale_tracked_worktree_entry_instead_of_deleting(self, _isolate_env):
+        """A test_* file inside a linked git worktree ($HERMES_HOME/worktrees/, .git is a
+        pointer FILE) is not classified as disposable, and a stale pre-fix tracked entry
+        (category "test") is dropped by quick()'s re-validation, not deleted."""
+        dg = _load_lib()
+        wt = _isolate_env / "worktrees" / "repro-wt"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /elsewhere/main/.git/worktrees/repro-wt\n")
+        f = wt / "test_durable.py"
+        f.write_text("x")
+        assert dg.guess_category(f) is None
+        dg.save_tracked([{"path": str(f), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert f.exists(), "git-owned test files must never be auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "stale entry is dropped from tracking, not kept"
+
+    def test_scratch_outside_git_trees_still_cleaned(self, _isolate_env):
+        """Control: root-level test_* scratch is still auto-deleted — even when HERMES_HOME
+        itself lives inside a git checkout (dotfiles repo); only .git entries strictly below
+        HERMES_HOME mark a file as git-owned."""
+        dg = _load_lib()
+        (_isolate_env.parent / ".git").mkdir()
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        dg.save_tracked([{"path": str(scratch), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert not scratch.exists()
+        assert result["deleted"] == 1
 
 
 class TestStaleCronEntryMigration:

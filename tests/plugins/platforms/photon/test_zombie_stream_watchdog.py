@@ -25,11 +25,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Dict
 
 import pytest
+
 
 from gateway.config import PlatformConfig
 from plugins.platforms.photon.adapter import PhotonAdapter
@@ -48,7 +50,8 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
 
 def _run_staleness_harness(script: str) -> Dict[str, Any]:
     harness = (
-        "import { classifyProbeRejection, shouldProbe, isZombieSuspect } "
+        "import { classifyProbeRejection, shouldProbe, isZombieSuspect, "
+        "createProbeMessageId } "
         f"from {json.dumps(_MODULE.as_uri())};\n"
         + script
     )
@@ -61,6 +64,20 @@ def _run_staleness_harness(script: str) -> Dict[str, Any]:
     )
     assert run.returncode == 0, run.stderr
     return json.loads(run.stdout)
+
+
+def test_probe_message_id_is_guid_shaped_and_unique() -> None:
+    out = _run_staleness_harness(
+        """
+        const first = createProbeMessageId();
+        const second = createProbeMessageId();
+        process.stdout.write(JSON.stringify({ first, second }));
+        """
+    )
+    guid_re = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    assert re.fullmatch(guid_re, out["first"])
+    assert re.fullmatch(guid_re, out["second"])
+    assert out["first"] != out["second"]
 
 
 def test_probe_rejection_classification_is_strict() -> None:
@@ -229,3 +246,18 @@ async def test_inconclusive_probes_never_accumulate_toward_respawn(
             adapter._probe_failures += 1
 
     assert adapter._probe_failures == 0
+
+
+def test_probe_upstream_reads_a_guid_shaped_id() -> None:
+    """The wire probe in ``probeUpstream`` must use the GUID helper: a non-GUID synthetic id is
+    rejected locally by the SDK ("Expected message resource GUID") before any round-trip, so
+    the classifier can never observe the not-found rejection that proves liveness (#117390).
+
+    This is a source-reading gate on purpose: ``index.mjs`` is the sidecar entry point — it
+    binds an HTTP server at import time and needs the Spectrum SDK on the module path — so it
+    cannot be imported from a test. The GUID helper itself is executed by the Node harness
+    above; this test only pins that ``probeUpstream`` is wired to it."""
+    source = (_MODULE.parent / "index.mjs").read_text(encoding="utf-8")
+    probe_fn = source.split("async function probeUpstream()", 1)[1].split("\nasync function", 1)[0]
+    assert "createProbeMessageId()" in probe_fn
+    assert "hermes-liveness-probe-" not in source

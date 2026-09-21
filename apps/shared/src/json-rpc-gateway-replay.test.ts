@@ -289,6 +289,51 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 
+  it('restarts replay after its socket is invalidated before rejected cleanup runs', async () => {
+    const client = makeClient()
+    const seen: number[] = []
+    client.on('message.delta', e => seen.push((e as unknown as { seq: number }).seq))
+
+    const first = client.connect('ws://x')
+    sockets[0].open()
+    await first
+    sockets[0].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 1 } })
+
+    client.invalidate('first drop')
+    const second = client.connect('ws://x')
+    sockets[1].open()
+    await second
+    await vi.waitFor(() => expect(sockets[1].lastRequest().method).toBe('session.events.since'))
+
+    // The old request rejects asynchronously after detach. Open the
+    // replacement before its cleanup runs; it must own a fresh replay.
+    client.invalidate('second drop')
+    const third = client.connect('ws://x')
+    sockets[2].open()
+    await third
+    await vi.waitFor(() => expect(sockets[2].lastRequest().method).toBe('session.events.since'))
+
+    const request = sockets[2].lastRequest()
+    expect(request.params).toEqual({ session_id: 's1', last_seen: 1 })
+
+    // A live frame racing the new replay is parked by the NEW hold; the stale
+    // replay's cleanup must neither flush it nor advance the watermark past
+    // the gap it never recovered.
+    sockets[2].serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 3 } })
+    await Promise.resolve()
+    expect(seen).toEqual([1])
+    expect(client.getSeqWatermarks()).toEqual({ s1: 1 })
+
+    sockets[2].serverFrame({
+      jsonrpc: '2.0', id: request.id,
+      result: { events: [{ type: 'message.delta', session_id: 's1', seq: 2 }], latest_seq: 2, truncated: false, count: 1 }
+    })
+
+    await vi.waitFor(() => expect(seen).toEqual([1, 2, 3]))
+    expect(client.getSeqWatermarks()).toEqual({ s1: 3 })
+    client.close()
+  })
+
   it('clears stale watermarks when the backend epoch changes (restart poisoning)', async () => {
     const client = makeClient()
 

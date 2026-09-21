@@ -17,7 +17,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import time
 from collections import deque
 from contextlib import nullcontext, suppress
@@ -34,6 +33,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.response_filters import is_autonomous_silence_response
@@ -231,13 +231,8 @@ class WebhookAdapter(BasePlatformAdapter):
         app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        # SO_REUSEADDR: on macOS (BSD) two wildcard/specific sockets can silently split traffic while
-        # both report success → disable. On Linux it only permits rebinding past TIME_WAIT (a quick
-        # restart would otherwise fail to bind for ~60s) → keep the default.
-        site = web.TCPSite(self._runner, self._host, self._port,
-                           reuse_address=False if sys.platform == "darwin" else None)
         try:
-            await site.start()
+            await start_tcp_site(self._runner, self._host, self._port, log_tag="webhook")
         except OSError as exc:
             await self._runner.cleanup()
             self._runner = None
@@ -333,11 +328,13 @@ class WebhookAdapter(BasePlatformAdapter):
     def toolsets_for_source(self, source) -> Optional[List[str]]:
         """Per-route ``toolsets`` override (config.yaml or a manual key in webhook_subscriptions.json —
         deliberately NOT settable via `hermes webhook subscribe`, so an agent-created subscription
-        cannot self-grant tools)."""
-        parts = str(getattr(source, "chat_id", "") or "").split(":", 2)
-        if len(parts) < 2 or parts[0] != "webhook":
+        cannot self-grant tools). Keyed on ``user_id`` (exactly ``webhook:{route}`` as authenticated), not
+        ``chat_id``, whose caller-supplied delivery id and ``:``-bearing route names make any split ambiguous
+        (GHSA-2fmg-cjqm-hhrj)."""
+        user_id = str(getattr(source, "user_id", "") or "")
+        if not user_id.startswith("webhook:"):
             return None
-        route_config = self._routes.get(parts[1])
+        route_config = self._routes.get(user_id[len("webhook:"):])
         toolsets = route_config.get("toolsets") if isinstance(route_config, dict) else None
         if not isinstance(toolsets, list):
             return None

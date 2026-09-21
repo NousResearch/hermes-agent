@@ -119,7 +119,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
         from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from tools.mcp_dashboard_oauth import dashboard_oauth_flow
-        from tools.mcp_oauth import HermesTokenStorage, force_interactive_oauth
+        from tools.mcp_oauth import HermesTokenStorage, force_interactive_oauth, login_connect_timeout
         from tools.mcp_oauth_manager import get_manager
 
         home_token = set_hermes_home_override(flow.hermes_home)
@@ -134,9 +134,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                 try:
                     previous_entry = manager.remove(flow.server_name, hermes_home=flow.hermes_home)
                     tools = _probe_single_server(
-                        flow.server_name,
-                        cfg,
-                        connect_timeout=max(float(cfg.get("connect_timeout", 0) or 0), 315),
+                        flow.server_name, cfg, connect_timeout=login_connect_timeout(cfg)
                     )
                     if not _oauth_tokens_present(flow.server_name):
                         raise RuntimeError(
@@ -158,7 +156,9 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             reset_secret_scope(secret_token)
             reset_hermes_home_override(home_token)
     except Exception as exc:
-        msg = str(exc)
+        from tools.mcp_dashboard_oauth import exception_message
+
+        msg = exception_message(exc)
         # Providers gating RFC 7591 registration to pre-approved clients 403 the
         # register call before any auth URL exists; say so, not "403 Forbidden".
         try:

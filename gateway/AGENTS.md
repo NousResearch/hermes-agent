@@ -133,6 +133,51 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 
 ## Profile scope (adapters, turns, and everything between turns)
 
+- **One identity per inbound event, canonicalized FIRST.** `gateway/session_identity.py::resolve_identity`
+  answers "which bot received it / who may admit it / where does it run" ONCE per event and pins a
+  frozen `RoutingIdentity` on the source (wire-invisible, like `_transport_adapter_ref`). Every
+  ingress path calls the canonicalize seam before it derives a key: the adapter side
+  (`platforms/base.py::_canonicalize` — `handle_message`, `_enqueue_text_event`, Telegram photo /
+  album routing, `_handle_message_while_active`, every `_source_session_key`) and the runner side
+  (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
+  handlers, the adapter auth-check callback, `run_inbound.py::_hm_admit_event`). No key derivation
+  before it; an unresolved identity under multiplexing (route to an unserved profile) is dropped
+  with one WARNING at the first seam it reaches, never keyed into `agent:main`. `_transport_owner`,
+  `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and
+  `_resolve_profile_for_key` read the identity when present and fall back to their old chain only
+  for sources nothing resolved (restored rows, hand-built sources). Never derive a second answer
+  next to the identity; extend the object. `transport_profile` ≠ `runtime_profile` is normal
+  (shared bot → routed satellite). A source copy goes through `session_identity.replace_source`
+  so the identity travels with it (`_apply_topic_recovery` does).
+- **Intake vs delivery adapter.** `authz_mixin.py::_intake_adapter_for(source)` is the bot that
+  RECEIVED the event (live transport ref → relay socket → identity's `transport_profile`); it gates
+  intake policy (ignored channels, relay fronting, re-dispatch of a still-live event) and fails
+  closed to `None` for a source with no live provenance. `_delivery_adapter_for(source)` is the bot
+  that ANSWERS — the receiving bot whenever known, else the unique owner of `(platform,
+  runtime_profile)` via `_adapters_for_profile`. Never read `self.adapters[platform]` for a source;
+  never add a third resolver. The matrix (`tests/gateway/test_multiplex_transport_matrix.py`):
+
+  | Topology | runtime | intake | delivery |
+  |---|---|---|---|
+  | per-credential bot, no route | owner | owner adapter | owner adapter |
+  | shared credential → satellite (`profile_routes`) | routed | receiving adapter | receiving adapter (`_is_shared_bot_satellite` after restart) |
+  | shared bot → profile that owns its own bot | routed | receiving adapter | receiving adapter (conversation continuity; #70625's "routed bot" reading was not adopted) |
+  | secondary-owned bot → `default` (`bot_profile`) | default (`agent:main`) | receiving adapter | receiving adapter |
+  | restored / hand-built, no live provenance | stored `source.profile` | **`None`** | unique owner of `(platform, runtime)`; a disconnected secondary → `None`, never the default bot |
+- **Identity survives the process.** `SessionEntry.transport_profile` (routing index +
+  `sessions.transport_profile`, nullable, reconciled by `SCHEMA_SQL`) persists the receiving bot
+  next to the key namespace; the namespace says where a lane RUNS, the column says which bot may
+  DELIVER to it. Anything reviving a session from durable state (auto-resume, heartbeat restore,
+  plugin injection, background-process events) reads `entry.origin` through
+  `authz_mixin.py::_restored_source`, which re-pins a `RoutingIdentity(transport=None)` via
+  `session_identity.restore_identity`; `_delivery_adapter_for` then delivers through that bot's
+  adapter or nothing (never the default bot by heuristic). Rows without the column (pre-PR-5)
+  keep the `_is_shared_bot_satellite` fallback. Deferred callbacks capture the identity/home at
+  command time (`/model` picker); `_run_in_executor_with_context` carries the scope over thread
+  hops. Relay: `_with_scope` echoes the routed `profile` on every outbound frame and `follow_up`
+  derives it from the key namespace so the connector stamps it on the next `passthrough_forward`.
+  Ambient `get_active_profile_name()` reads in `gateway/` are boot-only and marked
+  `# launch profile, pre-identity`; a path with an identity reads `identity.runtime_profile`.
 - **Token locks.** An adapter that connects with a unique credential (bot token, API key) calls
   `acquire_scoped_lock()` from `gateway.status` in `connect()`/`start()` and `release_scoped_lock()`
   in `disconnect()`/`stop()`, so two profiles cannot share one credential. Canonical:

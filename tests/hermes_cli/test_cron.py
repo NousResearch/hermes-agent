@@ -1,12 +1,14 @@
 """Tests for hermes_cli.cron command handling."""
 
 import argparse
+import time
 from argparse import Namespace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
-from cron.jobs import create_job, get_job, list_jobs, load_jobs, save_jobs
+from cron.jobs import create_job, get_job, list_jobs, load_jobs, pause_job, save_jobs
 from hermes_cli import cron as cron_cli
 from hermes_cli.cron import cron_command
 from hermes_cli.subcommands.cron import build_cron_parser
@@ -258,6 +260,18 @@ class TestCronDoctor:
 class TestCronListStatusRendering:
     """`cron list` must never paint an undelivered run as a success (#83993)."""
 
+    def test_default_list_includes_paused_jobs(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        job = create_job(prompt="Paused digest", schedule="every 1h")
+        pause_job(job["id"])
+
+        cron_command(Namespace(cron_command="list", all=False))
+
+        out = capsys.readouterr().out
+        assert job["id"] in out
+        assert "[paused]" in out
+        assert "No scheduled jobs" not in out
+
     def test_delivery_failed_is_not_green_ok(self, tmp_cron_dir, capsys, monkeypatch):
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
         # capsys is not a tty, so force colors on to check the paint itself.
@@ -310,7 +324,7 @@ class TestGatewayNotRunningWarning:
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         cron_command(Namespace(cron_command="list", all=True))
         out = capsys.readouterr().out
-        assert "Gateway is not running" in out
+        assert "Scheduler is not ready" in out
 
 
 class TestExternalCronProviderStatus:
@@ -338,7 +352,7 @@ class TestExternalCronProviderStatus:
         assert "managed scheduler" in out
         assert "not firing" not in out.lower()
         assert "STALLED" not in out
-        assert "Gateway is not running" not in out
+        assert "No gateway is running on this host" not in out
         # Still surfaces the active-job summary.
         assert "active job(s)" in out
 
@@ -369,7 +383,7 @@ class TestExternalCronProviderStatus:
         )
         out = capsys.readouterr().out
         assert "Created job" in out
-        assert "Gateway is not running" not in out
+        assert "Scheduler is not ready" not in out
 
 
 def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
@@ -393,7 +407,7 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     cron_cli.cron_list()
 
     out = capsys.readouterr().out
-    assert "Gateway is not running" in out
+    assert "Scheduler is not ready" in out
     assert "Nightly docs" in out
 
 
@@ -588,3 +602,113 @@ class TestSlashCronListLastStatus:
 
         out = self._run_list(tmp_cron_dir, capsys)
         assert "(ok)" in out
+
+
+class TestStatusSurfacesDeadScheduler:
+    """#114309 — with the ticker dead and a job's next_run_at stranded in the past, `cron
+    status` / `cron list` must not present the stale timestamp as an upcoming "Next run":
+    flag it as overdue and say when the scheduler last ticked."""
+
+    def _dead_gateway(self, monkeypatch, lock_dir):
+        # No gateway owns the HOST role either: point the rendezvous dir at an empty scratch dir
+        # so an unrelated host record can never make this profile look served. (Superseded by the
+        # tests/conftest.py hook in #118097 once that lands.)
+        lock_dir.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None
+        )
+        monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda: False)
+
+    def _park_next_run(self, job_id, when):
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(job_id)]["next_run_at"] = when.isoformat()
+        save_jobs(jobs)
+
+    def test_overdue_next_run_and_stale_heartbeat_are_loud(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        job = create_job(prompt="Hourly", schedule="every 60m")
+        self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
+        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(hours=7))
+        (tmp_cron_dir / "cron" / "ticker_heartbeat").write_text(str(time.time() - 25 * 3600))
+
+        cron_command(Namespace(cron_command="status"))
+        status_out = capsys.readouterr().out
+        cron_command(Namespace(cron_command="list", all=False, json=False))
+        list_out = capsys.readouterr().out
+
+        assert "No gateway is running on this host" in status_out
+        assert "Scheduler last ticked" in status_out
+        assert "OVERDUE" in status_out and "7h ago" in status_out
+        # The stale timestamp must no longer read as an upcoming run on either surface.
+        assert "Next run:" not in status_out
+        assert "Overdue:" in list_out and "Next run:" not in list_out
+
+    def test_overdue_within_doctor_grace_stays_plain(self, tmp_cron_dir, capsys, monkeypatch):
+        # status shares `cron doctor`'s 15-minute grace (_OVERDUE_GRACE_SECONDS): a job only
+        # a few minutes behind the ticker's own cadence is not an outage yet, and status must
+        # not flash OVERDUE while doctor calls the same job healthy.
+        job = create_job(prompt="Hourly", schedule="every 60m")
+        self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
+        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(minutes=5))
+
+        cron_command(Namespace(cron_command="status"))
+        status_out = capsys.readouterr().out
+        cron_command(Namespace(cron_command="list", all=False, json=False))
+        list_out = capsys.readouterr().out
+
+        assert "Next run:" in status_out and "OVERDUE" not in status_out
+        assert "Scheduler last ticked" not in status_out  # no heartbeat file → nothing to date
+        assert "Next run:" in list_out and "Overdue:" not in list_out
+
+    def test_slash_cron_and_list_flag_overdue_but_not_paused(self, tmp_cron_dir, capsys):
+        # The in-chat `/cron` overview and `/cron list` (classic CLI + Ink TUI forward to the
+        # same handler) read the same rows; a 7h-past stamp must not read as an upcoming run,
+        # while a paused job keeps its plain label — pausing is why it did not fire.
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        stale = create_job(prompt="Hourly", schedule="every 60m")
+        paused = create_job(prompt="Parked", schedule="every 60m")
+        when = datetime.now(timezone.utc) - timedelta(hours=7)
+        self._park_next_run(stale["id"], when)
+        self._park_next_run(paused["id"], when)
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(paused["id"])]["enabled"] = False
+        save_jobs(jobs)
+
+        _Host()._handle_cron_command("/cron")
+        overview_out = capsys.readouterr().out
+        _Host()._handle_cron_command("/cron list --all")
+        list_out = capsys.readouterr().out
+
+        for out in (overview_out, list_out):
+            assert out.count("Overdue:") == 1 and "7h ago" in out
+        assert "Next" not in overview_out  # the overview lists enabled jobs only
+        assert list_out.count("Next run:") == 1  # only the paused job's stamp stays plain
+        assert list_out.index("Overdue:") < list_out.index("Next run:")
+
+
+class TestSlashCronRunSkipped:
+    """``/cron run`` on a job whose claim is refused (paused here; a live claim held by another
+    run is the same shape) must print the refusal, never ``Triggered … next scheduler tick``."""
+
+    def test_refused_run_prints_reason_not_triggered(self, tmp_cron_dir, capsys):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        job = create_job(prompt="Nightly brief", schedule="every 1h", deliver="local")
+        jobs = load_jobs()
+        jobs[0]["enabled"] = False
+        save_jobs(jobs)
+
+        _Host()._handle_cron_command(f"/cron run {job['id']}")
+        out = capsys.readouterr().out
+        assert "Job is paused/disabled; resume it before running." in out
+        assert "Triggered" not in out and "next scheduler tick" not in out

@@ -277,6 +277,7 @@ def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):
         "verified": [],
         "relaunch_attempted": ["coder", "default"],
         "failed": [],
+        "covered": {},
     }
     assert [call[0] for call in calls] == [
         [sys.executable, "-m", "hermes_cli.main", "-p", "coder", "gateway", "restart"],
@@ -314,6 +315,7 @@ def test_recovery_child_verifies_systemd_profiles_via_is_active(monkeypatch):
         "verified": ["default"],
         "relaunch_attempted": ["coder"],
         "failed": [],
+        "covered": {},
     }
     # The launchd profile must never be probed with systemctl.
     systemctl_units = [argv[-1] for argv in calls if argv[0].endswith("systemctl")]
@@ -334,6 +336,7 @@ def test_recovery_child_treats_missing_systemctl_as_unverified(monkeypatch):
         "verified": [],
         "relaunch_attempted": ["default"],
         "failed": [],
+        "covered": {},
     }
 
 
@@ -349,6 +352,7 @@ def test_recovery_child_reports_failed_profile_without_losing_successes():
         "verified": [],
         "relaunch_attempted": ["default"],
         "failed": ["coder"],
+        "covered": {},
     }
 
 
@@ -394,6 +398,7 @@ def test_recovery_module_empty_payload_is_a_real_clean_process():
         "failed": [],
         "relaunch_attempted": [],
         "verified": [],
+        "covered": {},
         "serve_units": {"verified": [], "failed": []},
     }
 
@@ -475,6 +480,7 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
         "failed": [],
         "relaunch_attempted": ["coder"],
         "verified": ["default"],
+        "covered": {},
         "serve_units": {"verified": [], "failed": []},
     }
     restarts = [json.loads(line) for line in ledger.read_text().splitlines()]

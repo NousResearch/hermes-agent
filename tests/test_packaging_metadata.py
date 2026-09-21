@@ -434,3 +434,51 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
     )
+
+
+def _extra_closure(extras: dict, name: str) -> set:
+    """Names of every extra reachable from ``hermes-agent[name]`` self-references."""
+    seen, todo = set(), [name]
+    while todo:
+        cur = todo.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        for spec in extras.get(cur, ()):
+            if _distribution_name(spec) == "hermes-agent":
+                todo.extend(spec.split("[", 1)[1].split("]", 1)[0].split(","))
+    return seen
+
+
+def test_termux_install_paths_never_request_uvloop():
+    """uvloop's bundled libuv does not configure on Android/Termux (#116016).
+
+    Core must not request ``uvicorn[standard]`` (that extra pulls uvloop on
+    every non-Windows CPython), and neither Termux profile may reach the
+    opt-in ``uvloop`` extra through any chain of ``hermes-agent[...]``
+    self-references. The lazy dashboard install mirrors the same rule.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    extras = project["optional-dependencies"]
+    for group in (project["dependencies"], extras["web"], LAZY_DEPS["tool.dashboard"]):
+        for spec in group:
+            assert _distribution_name(spec) != "uvloop", spec
+            assert not (_distribution_name(spec) == "uvicorn" and "[" in spec), (
+                f"{spec!r} requests a uvicorn extra; uvicorn[standard] drags uvloop onto Termux"
+            )
+    for profile in ("termux", "termux-all"):
+        assert "uvloop" not in _extra_closure(extras, profile), profile
+
+
+def test_all_extra_keeps_uvloop_opt_in_off_android():
+    """``[all]`` still ships the libuv loop, but only where it can build."""
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    extras = project["optional-dependencies"]
+    assert "uvloop" in _extra_closure(extras, "all")
+    (spec,) = extras["uvloop"]
+    marker = spec.split(";", 1)[1]
+    assert _distribution_name(spec) == "uvloop"
+    for platform in ("win32", "cygwin", "android"):
+        assert f"sys_platform != '{platform}'" in marker, marker

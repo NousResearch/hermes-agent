@@ -42,6 +42,17 @@ def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool
 # *imported*, catching cross-module breakage (a name pulled from a sibling no longer exists).
 _UPDATE_CRITICAL_MODULES = "hermes_cli.main", "run_agent", "model_tools", "toolsets"
 
+# Env keys stripped from the import-health probe child: they steer the interpreter at a
+# different tree, so an inherited PYTHONPATH pointing at an older checkout satisfies the
+# probe's imports from the stale copy and blesses a candidate missing the module entirely
+# (#115032). Same tuple as the staged-binary probe in macos_tcc_anchor.
+_PROBE_ENV_DENYLIST = (
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "__PYVENV_LAUNCHER__",
+)
+
 
 def _critical_module_import_failures(
     root, *, report_runtime_errors: bool = False) -> dict[str, tuple[str, str]]:
@@ -89,8 +100,14 @@ def _critical_module_import_failures(
             venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
             if venv_python.exists():
                 interpreter = str(venv_python)
+        # The candidate stays importable through the probe's cwd and its editable install;
+        # the scrub only removes paths the guard never meant to vouch for.
+        probe_env = dict(os.environ)
+        for denied_key in _PROBE_ENV_DENYLIST:
+            probe_env.pop(denied_key, None)
         result = bounded_probe_run(
             [interpreter, "-c", probe], timeout=120, cwd=str(root), raise_on_spawn_failure=True,
+            env=probe_env,
         )
     except (OSError, subprocess.SubprocessError):
         # Keep this guard advisory: a probe we could not even spawn (unreadable venv
@@ -421,6 +438,17 @@ def _reapply_plugin_python_dependencies() -> None:
               f"then `hermes plugins enable {name}`.")
     if report.failed:
         print(f"  ⚠ Plugin Python dependencies not re-applied: {report.failed}")
+    _migrate_removed_memory_providers()
+
+
+def _migrate_removed_memory_providers() -> None:
+    """A configured memory provider that no longer ships in core is installed from the catalog, for
+    every profile home sharing this venv (its config section, data and tool names are unchanged)."""
+    try:
+        from hermes_cli.memory_provider_migration import migrate_all_homes
+        migrate_all_homes()
+    except Exception as exc:  # the update must finish even if the migration step blows up
+        print(f"  ⚠ Memory provider migration skipped: {exc}")
 
 
 def _is_android_python() -> bool:
@@ -517,30 +545,51 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     if (web_dir / "package.json").is_file() and not _web_build_toolchain_ready(
         *_web_toolchain_roots(web_dir)):
         return True
-    try:
-        cache_file = _npm_lock_cache_file(hermes_root)
-        if not cache_file.exists():
-            return True
-        return cache_file.read_text(encoding="utf-8").strip() != current
-    except OSError:
-        return True
+    return not _npm_stamp_matches(hermes_root, current)
 
 
-def _npm_lock_cache_file(hermes_root: Path) -> Path:
-    """Per-checkout cache path: keyed by PROJECT_ROOT so parallel worktrees don't collide."""
+def _npm_lock_cache_file(hermes_root: Path, scope: str = "") -> Path:
+    """Per-checkout cache path: keyed by PROJECT_ROOT so parallel worktrees don't collide.
+    *scope* separates install closures that share the digest (workspace-scoped vs. full desktop)."""
     from hermes_cli.update_cmd import _m
     cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
-    return hermes_root / f".npm_lock_hash_{cache_key}"
+    return hermes_root / f".npm_lock_hash_{cache_key}{scope}"
 
 
-def _record_npm_lockfile_hash(hermes_root: Path) -> None:
+def _npm_stamp_matches(hermes_root: Path, current: str, scope: str = "") -> bool:
+    """True when the recorded digest for *scope* equals *current*; a missing/unreadable stamp never matches."""
+    try:
+        return _npm_lock_cache_file(hermes_root, scope).read_text(encoding="utf-8").strip() == current
+    except OSError:
+        return False
+
+
+def _clear_npm_lockfile_hash(hermes_root: Path, scope: str = "") -> None:
+    """Drop the stamp before an install attempt: it is written on success only, so a stale one must not
+    outlive a failed reinstall (or the next update would skip the repair)."""
+    with suppress(OSError):
+        _npm_lock_cache_file(hermes_root, scope).unlink()
+
+
+def _record_npm_lockfile_hash(hermes_root: Path, scope: str = "") -> None:
     digest = _npm_manifests_digest()
     if digest is None:
         return
     try:
-        _npm_lock_cache_file(hermes_root).write_text(digest, encoding="utf-8")
+        _npm_lock_cache_file(hermes_root, scope).write_text(digest, encoding="utf-8")
     except OSError:
         logger.debug("Could not write npm lockfile hash cache")
+
+
+# Stamp scope of the full-graph desktop install (pass 1's workspace-scoped stamp has none).
+DESKTOP_NPM_SCOPE = "_desktop"
+
+
+def _desktop_deps_changed(hermes_root: Path) -> bool:
+    """True when the manifests changed since the full-graph desktop ``npm ci`` last succeeded (#43837).
+    The caller also re-installs when Electron is missing: pass 1 prunes it whenever it runs."""
+    current = _npm_manifests_digest()
+    return current is None or not _npm_stamp_matches(hermes_root, current, DESKTOP_NPM_SCOPE)
 
 
 def _repair_node_deps_on_current_checkout(
@@ -652,6 +701,7 @@ def _update_node_dependencies() -> list[str]:
     # capturing makes a long download look hung.
     # The chatty npm-deprecation noise during `hermes update` comes from the *desktop* build, not this step;
     # that one is captured to update.log. See #18840.
+    _clear_npm_lockfile_hash(shared_hermes_root)
     result = _m()._run_npm_install_deterministic(
         npm, _m().PROJECT_ROOT, extra_args=tuple(install_args), capture_output=False, env=nixos_env)
     if result.returncode == 0:
@@ -710,6 +760,37 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     if missing:
         return False, "; ".join(missing[:4])
     return True, ""
+
+
+def _venv_dependency_set_stale() -> tuple[bool, str]:
+    """Whether the venv's ``hermes-agent`` distribution was installed from an OLDER checkout than
+    the one on disk. The sync after a pull can be skipped (Windows hand-off child refused because
+    the Desktop backend held the venv, or died mid-install); the next run then finds git current,
+    passes the import probe — the old release imports fine — and prints "Already up to date!" over
+    stale pins (#97208). Probed in the venv's own interpreter; ``(stale, detail)``, unknown = not stale."""
+    from hermes_cli.update_cmd import _m, _read_project_version
+    expected = _read_project_version()
+    venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    venv_python = venv_python_path(venv_dir, windows=_m()._is_windows())
+    if not expected or not venv_python.exists():
+        return False, ""
+    try:
+        result = subprocess.run(
+            [str(venv_python), "-c", "import importlib.metadata as m; print(m.version('hermes-agent'))"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+            cwd=_m().PROJECT_ROOT)
+    except Exception as exc:
+        logger.debug("installed-version probe failed to run: %s", exc)
+        return False, ""
+    installed = (result.stdout or "").strip()
+    if result.returncode != 0 or not installed:
+        return False, ""  # not installed as a distribution: nothing to compare against
+    try:
+        from packaging.version import Version
+        stale = Version(installed) != Version(expected)
+    except Exception:
+        stale = installed != expected
+    return stale, f"installed hermes-agent {installed}, checkout is {expected}" if stale else ""
 
 
 # Native extensions that pin venv files once imported: if the updater holds one, Windows blocks
@@ -818,14 +899,13 @@ def _abort_dependency_sync_if_self_locked(gateway_resume=None) -> None:
     locked = _m()._detect_self_loaded_native_modules()
     if locked:
         _m()._defer_update_for_self_lock(locked)
-        exit_code = 2
-    elif _m()._reexec_dependency_sync_off_windows_shim():
-        exit_code = 0
-    else:
-        return
-    if gateway_resume is not None:
-        _m()._resume_windows_gateways_after_update(gateway_resume)
-    sys.exit(exit_code)
+        if gateway_resume is not None:
+            _m()._resume_windows_gateways_after_update(gateway_resume)
+        sys.exit(2)
+    if _m()._reexec_dependency_sync_off_windows_shim(gateway_resume):
+        # The child adopted the pause token; resuming here would keep this shim alive
+        # (and hermes.exe locked) exactly while the child needs it gone (#101600).
+        sys.exit(0)
 
 
 def _defer_update_for_self_lock(loaded: list[str]) -> None:
@@ -873,9 +953,14 @@ def _rebuild_desktop_after_update(
     See #88251.
     """
     from hermes_cli.update_cmd import _m
-    # The release tree is git-ignored and can vanish mid-update; pre-update presence suffices.
-    # Never make people who never used Desktop pay for an Electron build.
-    has_desktop_app = had_desktop_app_before_update or _desktop_app_present(desktop_dir)
+    # The release tree is git-ignored and can vanish mid-update; pre-update presence suffices. So does the
+    # build stamp under HERMES_HOME: it outlives a swap that lost the artifacts in an earlier run, and
+    # without it the install "forgets" Desktop was installed and never rebuilds (#90495). Never make
+    # people who never used Desktop pay for an Electron build.
+    has_desktop_app = (
+        had_desktop_app_before_update
+        or _desktop_app_present(desktop_dir)
+        or _m()._desktop_stamp_path().is_file())
     if not (
         (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app):
         return True

@@ -217,6 +217,48 @@ describe('ClarifyTool choice selection', () => {
     })
   })
 
+  it('keeps picked multi-select choices when typing a custom answer alongside them', async () => {
+    const { respond } = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+    const other = screen.getByPlaceholderText(/Other/)
+
+    fireEvent.click(staging)
+    fireEvent.click(production)
+    fireEvent.focus(other)
+    fireEvent.change(other, { target: { value: 'something else' } })
+
+    // Typing in "Other" must not silently drop the picks already made.
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: JSON.stringify(['staging', 'production', 'something else']) })
+    })
+  })
+
+  it('keeps a typed multi-select custom answer when picking a choice after typing it', async () => {
+    const { respond } = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const other = screen.getByPlaceholderText(/Other/)
+
+    fireEvent.focus(other)
+    fireEvent.change(other, { target: { value: 'something else' } })
+    fireEvent.click(staging)
+
+    // Picking a choice must not silently discard the text already typed.
+    expect((other as HTMLInputElement).value).toBe('something else')
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: JSON.stringify(['staging', 'something else']) })
+    })
+  })
+
   it('keeps single-select replacement and plain-string submission', async () => {
     const { respond } = renderLiveClarify()
     const staging = screen.getByRole('button', { name: /staging/ })
@@ -710,8 +752,16 @@ describe('ClarifyTool batch card', () => {
 
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
     // Locks ride the live qids, never the preview's synthetic ones.
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
-    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', {
+      answer: 'packet',
+      question_id: 'q1',
+      request_id: 'request-batch'
+    })
   })
 
   it('stages locally and keeps the single confirm disabled until all answered', async () => {
@@ -770,6 +820,52 @@ describe('ClarifyTool batch card', () => {
     // The re-pick won: blue, not red.
     expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
       answer: 'blue',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('keeps a picked multi-select batch choice when typing a custom answer alongside it', async () => {
+    const { request } = renderLiveBatch(undefined, true)
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.change(screen.getByPlaceholderText(/Other/), { target: { value: 'green' } })
+
+    // Typing in "Other" must not silently drop the pick already made.
+    expect(screen.getByRole('button', { name: /red/ }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+      answer: JSON.stringify(['red', 'green']),
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('keeps a typed multi-select batch custom answer when picking a choice after typing it', async () => {
+    const { request } = renderLiveBatch(undefined, true)
+    const other = screen.getByPlaceholderText(/Other/)
+
+    fireEvent.change(other, { target: { value: 'green' } })
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+
+    // Picking a choice must not silently discard the text already typed.
+    expect((other as HTMLInputElement).value).toBe('green')
+    expect(screen.getByRole('button', { name: /red/ }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+      answer: JSON.stringify(['red', 'green']),
       question_id: 'q0',
       request_id: 'request-batch'
     })

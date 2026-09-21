@@ -25,6 +25,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "profiles with its supervisor and running code version, and how "
             "each will be restarted. Read-only; safe on a live fleet.")
     update_parser.add_argument(
+        "--list-venv-holders", action="store_true", default=False,
+        help="Print the processes the Windows venv-holder guard would refuse on as a JSON list "
+            "[{pid, exe, argv, kind}] and exit: 0 when the venv is free, 3 when holders are present. "
+            "Read-only; kind is gateway / backend (Desktop serve) / hermes:<subcommand> / python, so a "
+            "scheduled update can stop exactly those PIDs instead of looping. Always [] off Windows.")
+    update_parser.add_argument(
         "--no-backup", action="store_true", default=False,
         help="Skip ALL pre-update backups for this run (both the quick state snapshot and the full zip; overrides updates.pre_update_backup)",
     )

@@ -697,12 +697,15 @@ export function hideOnlyZoneTabs(groupId: string): { hidden: boolean; id: string
 
   return group.panes.flatMap(id => {
     const pane = panes.find(p => p.id === id)
+    const chrome = pane?.data as { hideOnly?: boolean; tabTitleText?: () => string } | undefined
 
-    if (!(pane?.data as { hideOnly?: boolean } | undefined)?.hideOnly) {
+    if (!chrome?.hideOnly) {
       return []
     }
 
-    return [{ hidden: hidden.has(id), id, title: String(pane?.title ?? id) }]
+    // Menu-open time, so a locale-following label (`tabTitleText`) resolves
+    // against the LOADED locale rather than the register-time `title`.
+    return [{ hidden: hidden.has(id), id, title: chrome.tabTitleText?.() ?? String(pane?.title ?? id) }]
   })
 }
 

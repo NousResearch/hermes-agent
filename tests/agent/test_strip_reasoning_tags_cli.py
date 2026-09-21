@@ -30,10 +30,28 @@ class TestToolCallStripping:
         assert "<tool_call>" not in result
         assert "result" in result
 
+    def test_namespace_prefixed_tool_call_block_stripped(self):
+        # muse-spark (opencode-go, Responses wire) serializes a native call onto the text
+        # channel as <atem:function_calls>…</atem:function_calls>; without a namespace-aware
+        # pattern the literal XML leaks into the delivered final (the "not covered yet"
+        # shape tracked in #103483).
+        text = (
+            "Checking the queue.\n"
+            "<atem:function_calls>\n"
+            '<atem:invoke name="default.terminal">\n'
+            '<atem:parameter name="command">echo hi</atem:parameter>\n'
+            "</atem:invoke>\n"
+            "</atem:function_calls>"
+        )
+        for out in (_strip_reasoning_tags(text), strip_think_blocks(None, text)):
+            assert "atem:" not in out
+            assert "function_calls" not in out
+            assert "Checking the queue." in out.strip()
 
-
-
-
+    def test_cut_namespace_prefixed_tool_call_stripped_to_visible_prefix(self):
+        text = 'Waiting.\n<atem:function_calls>\n<atem:invoke name="default.terminal">'
+        for out in (_strip_reasoning_tags(text), strip_think_blocks(None, text)):
+            assert out.strip() == "Waiting."
 
 
     def test_empty_string(self):

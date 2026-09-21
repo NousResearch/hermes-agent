@@ -522,9 +522,8 @@ class TestEventBridge:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
-    """Create a fully wired MCP server for E2E testing."""
-    mcp = pytest.importorskip("mcp", reason="MCP SDK not installed")
+def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch, require_mcp_2_sdk):
+    """Create a fully wired MCP server for E2E testing (pinned SDK: 1.x lacks mcp.server.MCPServer)."""
     import mcp_serve
     monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
@@ -987,14 +986,14 @@ class TestToolRegistration:
 # ---------------------------------------------------------------------------
 
 class TestServerCreation:
+    @pytest.mark.usefixtures("require_mcp_2_sdk")
     def test_create_server(self, populated_sessions_dir, monkeypatch):
-        pytest.importorskip("mcp", reason="MCP SDK not installed")
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
         assert mcp_serve.create_mcp_server() is not None
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")
     def test_create_with_bridge(self, populated_sessions_dir, monkeypatch):
-        pytest.importorskip("mcp", reason="MCP SDK not installed")
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
         bridge = mcp_serve.EventBridge()

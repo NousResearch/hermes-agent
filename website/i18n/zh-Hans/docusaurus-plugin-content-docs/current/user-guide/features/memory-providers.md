@@ -558,7 +558,7 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 
 ## Profile 隔离
 
-每个提供者的数据按 [profile](/user-guide/profiles) 隔离：
+每个提供者的数据按 [profile](../profiles.md) 隔离：
 
 - **本地存储提供者**（Holographic、ByteRover）使用 `$HERMES_HOME/` 路径，各 profile 路径不同
 - **配置文件提供者**（Honcho、Mem0、Hindsight、Supermemory）将配置存储在 `$HERMES_HOME/` 中，每个 profile 拥有独立凭证
@@ -567,4 +567,4 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 
 ## 构建记忆提供者
 
-参见[开发者指南：Memory Provider 插件](/developer-guide/memory-provider-plugin)了解如何创建自己的提供者。
+参见[开发者指南：Memory Provider 插件](../../developer-guide/memory-provider-plugin.md)了解如何创建自己的提供者。

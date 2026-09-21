@@ -10,7 +10,7 @@ describe('hidesFixedTitlebarClusters', () => {
 
   it('keeps clusters on chat and first-party workspace pages', () => {
     expect(hidesFixedTitlebarClusters('chat')).toBe(false)
-    expect(hidesFixedTitlebarClusters('skills')).toBe(false)
+    expect(hidesFixedTitlebarClusters('capabilities')).toBe(false)
     expect(hidesFixedTitlebarClusters('messaging')).toBe(false)
     expect(hidesFixedTitlebarClusters('artifacts')).toBe(false)
   })

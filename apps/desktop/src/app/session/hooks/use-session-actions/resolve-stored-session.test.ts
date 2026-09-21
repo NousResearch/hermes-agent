@@ -4,7 +4,7 @@ import type * as HermesModule from '@/hermes'
 import { getSession } from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
-import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
+import { $cronSessions, $messagingSessions, $sessions, $unlistedSessionOwnerRows } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { cachedSessionRow, resolveSessionProfile, resolveStoredSession } from './utils'
@@ -28,6 +28,7 @@ describe('resolveStoredSession profile ownership', () => {
     $projectTree.set([])
     $profiles.set(profiles('default', 'meta'))
     $activeGatewayProfile.set('meta')
+    $unlistedSessionOwnerRows.set([])
     mockGetSession.mockReset()
   })
 
@@ -38,6 +39,7 @@ describe('resolveStoredSession profile ownership', () => {
     $projectTree.set([])
     $profiles.set([])
     $activeGatewayProfile.set('default')
+    $unlistedSessionOwnerRows.set([])
   })
 
   it('returns a cached row that carries an owning profile', async () => {
@@ -60,6 +62,19 @@ describe('resolveStoredSession profile ownership', () => {
     expect(resolved?.profile).toBe('default')
     expect(mockGetSession).not.toHaveBeenCalled()
     expect($sessions.get()).toEqual([])
+  })
+
+  it('routes a moved resolve into its current slice instead of duplicating it', async () => {
+    // Cross-room /resume rewrote the row to source='matrix' (#113827): the
+    // stale regular-sessions copy must go and the row must land in messaging.
+    $sessions.set([session({ id: 's1' })])
+    mockGetSession.mockResolvedValueOnce(session({ id: 's1', profile: 'meta', source: 'matrix' }))
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.source).toBe('matrix')
+    expect($sessions.get()).toEqual([])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['s1'])
   })
 
   it('treats a profile-less cache hit as unresolved when multiple profiles exist', async () => {
@@ -113,6 +128,20 @@ describe('resolveStoredSession profile ownership', () => {
     expect(mockGetSession).toHaveBeenCalledWith('s1', 'meta')
     // the upserted cache row is owned too, so the next hit short-circuits
     expect($sessions.get().find(s => s.id === 's1')?.profile).toBe('meta')
+  })
+
+  it('parks a hidden by-id hit off-list — canonical Bot Chats never get a sidebar row (#113273)', async () => {
+    // Opening a bot's chat resolves it by id; the backend row carries
+    // hidden=true. Listed, it would paint a Sessions row the refresh
+    // keep-list then holds open indefinitely.
+    mockGetSession.mockResolvedValueOnce(session({ hidden: true, id: 's1' }))
+
+    const resolved = await resolveStoredSession('s1')
+
+    expect(resolved?.hidden).toBe(true)
+    expect($sessions.get()).toEqual([])
+    // owner resolution still finds the row on the off-list stub atom
+    expect($unlistedSessionOwnerRows.get().find(s => s.id === 's1')?.hidden).toBe(true)
   })
 
   it('probed desktop profile overrides a remote backend answering as its own "default"', async () => {

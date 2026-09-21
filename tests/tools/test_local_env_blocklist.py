@@ -11,6 +11,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -120,6 +121,46 @@ class TestProviderEnvBlocklist:
         assert "AWS_BEARER_TOKEN_BEDROCK" not in result_env, (
             "AWS_BEARER_TOKEN_BEDROCK leaked into subprocess env (see #32314)"
         )
+
+    def test_case_variant_blocked_vars_are_stripped(self):
+        """A blocklisted credential stored under variant casing must not reach
+        subprocess env: on Windows the environment block is case-insensitive,
+        so a lowercase-stored ``openai_api_key`` IS the real credential."""
+        leaked_vars = {
+            "openai_api_key": "sk-fake-key",
+            "Anthropic_Api_Key": "ant-fake-key",
+            "aws_bearer_token_bedrock": "bedrock-bearer-secret",
+        }
+        result_env = _run_with_env(extra_os_env=leaked_vars)
+
+        for var in leaked_vars:
+            assert var not in result_env, (
+                f"{var} (case variant of a blocklisted credential) leaked"
+            )
+
+    def test_strip_launch_profile_env_folds_case(self, monkeypatch, tmp_path):
+        """The routed-profile residue strip must match names the way the
+        platform resolves them: on Windows a lowercase-stored
+        ``openai_api_key`` IS the launch profile's credential and must not
+        ride into a sibling profile's child env."""
+        from tools.environments.local import strip_launch_profile_env
+
+        launch = tmp_path / "launch"
+        launch.mkdir()
+        (launch / ".env").write_text(
+            "OPENAI_API_KEY=sk-launch\nTERMINAL_ENV={}\n", encoding="utf-8")
+        target = tmp_path / "target"
+        target.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+
+        env = {"openai_api_key": "sk-launch", "terminal_env": "{}",
+               "PATH": "/usr/bin:/bin", "MY_OWN_KEY": "keep"}
+        strip_launch_profile_env(env, target)
+
+        assert "openai_api_key" not in env
+        assert "terminal_env" not in env
+        assert env["PATH"] == "/usr/bin:/bin"
+        assert env["MY_OWN_KEY"] == "keep"
 
     def test_vertex_credentials_path_is_stripped(self):
         """The Vertex AI service-account JSON path must not leak into
@@ -371,6 +412,36 @@ class TestTerminalFirstPartyPlatformEnv:
         for var in buzz_vars:
             assert var not in run_env, f"{var} leaked into non-Buzz foreground env"
             assert var not in sanitized, f"{var} leaked into non-Buzz background env"
+
+    def test_case_variant_buzz_var_carveout(self, monkeypatch):
+        """The first-party prefix check folds case symmetrically with the
+        blocklist: on Windows a lowercase-stored ``buzz_private_key`` IS
+        BUZZ_PRIVATE_KEY, so under Buzz context it must still reach terminal
+        children, and without context it stays stripped."""
+        from gateway.session_context import _SESSION_PLATFORM
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        monkeypatch.delenv("BUZZ_MANAGED_AGENT", raising=False)
+        monkeypatch.setenv("buzz_private_key", "nsec1faketestkey")
+        buzz_vars = {"buzz_private_key": "nsec1faketestkey"}
+
+        token = _SESSION_PLATFORM.set("buzz")
+        try:
+            run_env = _make_run_env({})
+            sanitized = _sanitize_subprocess_env({**buzz_vars, "HOME": "/home/user"})
+        finally:
+            _SESSION_PLATFORM.reset(token)
+        assert run_env.get("buzz_private_key") == "nsec1faketestkey"
+        assert sanitized.get("buzz_private_key") == "nsec1faketestkey"
+
+        token = _SESSION_PLATFORM.set("telegram")
+        try:
+            run_env = _make_run_env({})
+            sanitized = _sanitize_subprocess_env({**buzz_vars, "HOME": "/home/user"})
+        finally:
+            _SESSION_PLATFORM.reset(token)
+        assert "buzz_private_key" not in run_env
+        assert "buzz_private_key" not in sanitized
 
     def test_session_platform_buzz_enables_carveout(self, monkeypatch):
         """A live gateway session whose platform is ``buzz`` gets the
@@ -976,8 +1047,13 @@ class TestPythonpathSelectiveStrip:
             captured["env"] = kwargs.get("env", {})
             captured["staging"] = os.path.dirname(cmd[1])
             proc = MagicMock()
+            # The kernel's reader threads drain with read1(); a bare MagicMock never returns
+            # EOF there, so the stderr thread spins forever appending mocks (a 1 GB/min leak
+            # that outlived the test and OOM-killed the worker five times).
             proc.stdout.read.return_value = b""
+            proc.stdout.read1.return_value = b""
             proc.stderr.read.return_value = b""
+            proc.stderr.read1.return_value = b""
             proc.wait.return_value = 0
             proc.returncode = 0
             proc.poll.return_value = 0
@@ -1027,6 +1103,15 @@ class TestPythonpathSelectiveStrip:
         else:
             assert norm_root not in norm_parts, \
                 "repo root must stay absent for an external-env child"
+        # The fake streams must hit EOF: the kernel's reader threads consume
+        # ``read1()``, and an unconfigured MagicMock there is a truthy value
+        # forever — the stderr reader spins after the test returns, growing
+        # the pytest process by hundreds of MB per second (#115912).
+        for thread in threading.enumerate():
+            if "_reader" in thread.name:
+                thread.join(timeout=2)
+                assert not thread.is_alive(), \
+                    f"{thread.name} is still spinning on the fake kernel stream"
 
 
     def test_repo_root_direct_child_preserved(self):

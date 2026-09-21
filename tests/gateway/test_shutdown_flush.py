@@ -327,3 +327,18 @@ def test_flushed_overflow_is_replayed_by_recover_pending_to_db(tmp_path, monkeyp
 def test_flush_overflow_noop_on_empty():
     assert flush_overflow_to_file({}) == 0
     assert flush_overflow_to_file({"k": []}) == 0
+
+
+def test_drain_transcript_spool_skips_parseable_non_dict_payload(tmp_path, monkeypatch):
+    """A scalar/list JSON spool file must not abort the drain; the healthy payload still replays."""
+    from gateway.shutdown_flush import drain_transcript_spool, spool_dropped_transcript_message
+
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    (flush_dir / "pending-00-scalar.json").write_text("42", encoding="utf-8")
+    (flush_dir / "pending-01-list.json").write_text("[1, 2]", encoding="utf-8")
+    spool_dropped_transcript_message("sess-1", {"role": "user", "content": "hi"})
+
+    replayed = []
+    assert drain_transcript_spool("sess-1", replayed.append) == (1, 0)
+    assert replayed == [{"role": "user", "content": "hi"}]

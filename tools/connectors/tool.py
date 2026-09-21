@@ -17,6 +17,7 @@ def manage_connections(
     args: Dict[str, Any],
     *,
     client_factory: Optional[Callable[[], Any]] = None,
+    mcp_backend: Optional[Any] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
     connection_callback: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
@@ -32,7 +33,7 @@ def manage_connections(
 
     if action in MCP_ACTIONS:
         return run_mcp_operation(
-            mcp_targets, action,
+            mcp_targets, action, backend=mcp_backend,
             connection_callback=connection_callback, session_id=session_id, tool_call_id=tool_call_id,
         )
 
@@ -63,10 +64,10 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "'enable' re-enables a disabled configured server, 'authorize' runs its OAuth. "
         "They show the user an approval card and block until it settles. Never hand-edit "
         "mcp_servers config — always use this tool. Never re-ask after a skip or timeout: continue "
-        "without the app or ask in chat. A newly installed or authorized server's tools arrive on "
-        "your next turn. Off the desktop app the MCP targets come back 'unavailable' with the "
-        "terminal commands to give the user. This tool can NOT disconnect, delete, or revoke an "
-        "account — that is deliberately user-only. When asked, say so and direct the user to the "
+        "without the app or ask in chat. A connected server's tools are named in the result and are "
+        "callable at once through tool_describe/tool_call. Where no card exists an MCP target runs at once and the result says what "
+        "happened, with a link for the user to open when one is needed. This tool can NOT "
+        "disconnect, delete, or revoke an account — that is deliberately user-only. When asked, say so and direct the user to the "
         "Nous Portal (their org's Connectors page) or the desktop app."
     ),
     "parameters": {

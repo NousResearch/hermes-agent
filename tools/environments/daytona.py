@@ -110,8 +110,10 @@ class DaytonaEnvironment(BaseEnvironment):
         """Download remote .hermes/ as a tar archive."""
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         # PID-suffixed remote temp path avoids collisions if sync_back runs concurrently.
-        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"
-        self._sandbox.process.exec(f"tar cf {shlex.quote(remote_tar)} -C / {shlex.quote(rel_base)}")
+        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"  # no-tmp: ok — remote sandbox path
+        # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
+        self._sandbox.process.exec(
+            f"tar cf {shlex.quote(remote_tar)} --exclude='*.sock' -C / {shlex.quote(rel_base)}")
         self._sandbox.fs.download_file(remote_tar, str(dest))
         with contextlib.suppress(Exception):  # best-effort cleanup
             self._sandbox.process.exec(f"rm -f {shlex.quote(remote_tar)}")

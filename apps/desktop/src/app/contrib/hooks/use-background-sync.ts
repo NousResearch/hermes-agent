@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -61,9 +62,9 @@ export function resolveActiveTranscriptSession(
   storedSessionId: string,
   runtimeSessionId: string
 ): ActiveTranscriptSession | undefined {
-  const verifiedOwner = $sessionTiles.get().find(
-    tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId
-  )?.ownerRoute
+  const verifiedOwner = $sessionTiles
+    .get()
+    .find(tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId)?.ownerRoute
 
   if (verifiedOwner) {
     return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }
@@ -215,8 +216,12 @@ export async function reconcileTileTranscripts({
         runtimeSessionId,
         state => ({
           ...state,
+          // An un-acked optimistic `user-*` row exists only here, so a
+          // background refresh that lands mid-send would drop it and the
+          // message would have to be retyped. Same composition order as
+          // reconcileAuthoritativeChatMessages (use-session-actions/index.ts).
           messages: preserveLocalAssistantErrors(
-            graftRefreshedTailOntoBackfill(messages, state.messages),
+            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
             state.messages
           )
         }),
@@ -294,7 +299,10 @@ export async function reconcileActiveTranscript({
         // The refresh re-reads only the newest tail page; graft it onto any
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
-        messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
+        messages: preserveLocalAssistantErrors(
+          preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+          state.messages
+        )
       }),
       storedSessionId
     )

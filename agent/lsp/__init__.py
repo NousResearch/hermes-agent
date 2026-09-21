@@ -63,6 +63,20 @@ def get_service() -> Optional[LSPService]:
     return _active(_service)
 
 
+def release_workspace(path: str) -> int:
+    """Shut down the LSP clients serving ``path`` (a worktree about to be removed) in every started
+    service, without shutting down unrelated workspaces.  Never creates a service.  Returns the count."""
+    with _service_lock:
+        services = [svc for svc in (_service, *_services_by_home.values()) if svc is not None]
+    released = 0
+    for svc in services:
+        try:
+            released += svc.release_workspace(path)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("LSP workspace release failed for %s: %s", path, e)
+    return released
+
+
 def shutdown_service() -> None:
     """Tear down every LSP service that was started.  Idempotent."""
     global _service
@@ -86,4 +100,4 @@ def _atexit_shutdown() -> None:
         logger.debug("atexit LSP shutdown failed: %s", e)
 
 
-__all__ = ["get_service", "shutdown_service", "LSPService"]
+__all__ = ["get_service", "release_workspace", "shutdown_service", "LSPService"]

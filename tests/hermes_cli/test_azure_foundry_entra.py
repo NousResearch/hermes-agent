@@ -143,6 +143,30 @@ class TestResolveAzureFoundryRuntimeEntra:
         assert runtime["auth_mode"] == "api_key"
         assert runtime["source"] == "explicit"
 
+    def test_forwarded_entra_callable_preserves_identity_and_metadata(self, fake_azure_identity):
+        """A live provider re-resolution must not stringify its token source or
+        relabel Entra authentication as a static-key override."""
+        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+
+        token_provider = lambda: "forwarded-jwt"
+        runtime = _resolve_azure_foundry_runtime(
+            requested_provider="azure-foundry",
+            model_cfg={
+                "provider": "azure-foundry",
+                "base_url": "https://r.services.ai.azure.com/openai/v1",
+                "api_mode": "chat_completions",
+                "auth_mode": "entra_id",
+                "entra": {"scope": "https://ai.azure.com/.default"},
+                "default": "gpt-4o",
+            },
+            explicit_api_key=token_provider,
+        )
+
+        assert runtime["api_key"] is token_provider
+        assert runtime["auth_mode"] == "entra_id"
+        assert runtime["source"] == "entra_id"
+        assert runtime["entra"] == {"scope": "https://ai.azure.com/.default"}
+
 
 # ---------------------------------------------------------------------------
 # _resolve_azure_foundry_runtime: legacy api_key branch (regression)

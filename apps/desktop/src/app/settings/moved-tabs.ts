@@ -1,4 +1,4 @@
-import { SKILLS_ROUTE } from '../routes'
+import { CAPABILITIES_ROUTE } from '../routes'
 
 // Settings tabs that now live in Capabilities → the row-selector param each
 // carries (`?server=` for MCP, `?plugin=` for Plugins). Old bookmarks and
@@ -19,5 +19,5 @@ export function movedSettingsTabRedirect(search: string): null | string {
   const row = params.get(rowParam)
   const suffix = row ? `&${rowParam}=${encodeURIComponent(row)}` : ''
 
-  return `${SKILLS_ROUTE}?tab=${tab}${suffix}`
+  return `${CAPABILITIES_ROUTE}?tab=${tab}${suffix}`
 }

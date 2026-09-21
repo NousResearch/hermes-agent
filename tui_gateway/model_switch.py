@@ -51,7 +51,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
+def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> "_TurnScopes":
     """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
     return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
@@ -59,14 +59,21 @@ def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
     source is fixed at entry and an in-flight launch body survives a concurrent first-secondary
     activation instead of hitting ``UnscopedSecretError`` mid-request. Its terminal policy is bound
     only once multiplexing is active: single-profile terminal execution keeps the standalone
-    ``os.environ`` bridge."""
+    ``os.environ`` bridge.
+
+    ``hydrate_secrets=False`` skips resolving the profile's EXTERNAL secret sources (``op run``,
+    ``bws``, ``sh -c`` — a subprocess with a 30s CLI budget holding a process-global lock). Pass it
+    from any body that persists state rather than calls a provider: the exit-flush worker has a 5s
+    TOTAL budget, and one slow source there costs the transcript the flush exists to save.
+    """
     from agent.secret_scope import is_multiplex_active
     scopes = _TurnScopes()
     if profile_home:
         home = Path(profile_home)
         # External sources first: the requested profile may never have been served in this process.
-        from hermes_cli.env_loader import hydrate_profile_secret_sources
-        hydrate_profile_secret_sources(home)
+        if hydrate_secrets:
+            from hermes_cli.env_loader import hydrate_profile_secret_sources
+            hydrate_profile_secret_sources(home)
         secrets = build_profile_secret_scope(home)
         overlay = None
         scopes.home = set_hermes_home_override(str(home))
@@ -111,10 +118,10 @@ def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
 
 
 @contextlib.contextmanager
-def _session_profile_runtime_scope(session: dict):
+def _session_profile_runtime_scope(session: dict, *, hydrate_secrets: bool = True):
     """Bind model resolution to the session's profile config and secrets (launch profile included
     once the process multiplexes; see ``_profile_runtime_scope_tokens``)."""
-    scopes = _profile_runtime_scope_tokens(session.get("profile_home"))
+    scopes = _profile_runtime_scope_tokens(session.get("profile_home"), hydrate_secrets=hydrate_secrets)
     try:
         yield
     finally:
@@ -283,8 +290,26 @@ def _apply_model_switch(
         confirm = _expensive_model_confirm(result, current_base_url, current_api_key, agent)
         if confirm is not None:
             return confirm
-    if agent:
-        _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+    records_composer_override = (
+        pin_session_override and isinstance(session, dict) and not one_turn
+        and not persist_global and session.get("follow_profile_config"))
+    had_composer_profile = "composer_override_profile" in session
+    previous_composer_profile = session.get("composer_override_profile")
+    if records_composer_override:
+        profile_model, profile_provider = _config_model_target()
+        session["composer_override_profile"] = {
+            "model": profile_model, "provider": profile_provider}
+    try:
+        if agent:
+            # Provenance must exist before this transaction persists the switched runtime.
+            _commit_agent_switch(sid, session, agent, result, current_model, restore_snapshot)
+    except Exception:
+        if records_composer_override:
+            if had_composer_profile:
+                session["composer_override_profile"] = previous_composer_profile
+            else:
+                session.pop("composer_override_profile", None)
+        raise
     # PER-SESSION override so a rebuild of THIS session (/new, resume) re-derives the model.
     # Deliberately NOT written to process-global env (HERMES_MODEL & co.): the desktop hosts
     # every same-profile session in one process, so os.environ would leak the switch to all.
@@ -368,19 +393,35 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     """Adopt a config.yaml model change at turn start (like gateways do per message). Sessions
     pinned with /model keep their choice; a failed switch keeps the current model."""
     agent = session.get("agent")
-    if agent is None or session.get("model_override"):
+    if agent is None:
         return
     target = _config_model_target()
     if not target[0]:
         return
     seen = session.get("config_model_seen")
+    if target == seen:
+        return
+    superseded_pin = None
+    if session.get("model_override"):
+        composer_profile = session.get("composer_override_profile")
+        pinned_profile = (
+            str(composer_profile.get("model") or "").strip(),
+            str(composer_profile.get("provider") or "").strip(),
+        ) if isinstance(composer_profile, dict) else None
+        if pinned_profile is None or pinned_profile == target:
+            return
+        # A later profile edit supersedes the canonical chat's explicit pick. Clearing both fields lets
+        # the normal config-sync path switch now and prevents the old composer pick resurfacing on rebuild.
+        superseded_pin = session.pop("model_override"), composer_profile
+        session["composer_override_profile"] = None
     # Record first so a broken config gets one attempt per edit, not per turn.
     session["config_model_seen"] = target
     model, provider = target
     # Already on the configured model (resumed before first sync, or a config revert after
     # a failed switch): adopt without switching.
-    if target == seen or (
-            model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", ""))):
+    if model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", "")):
+        if superseded_pin is not None:
+            _persist_live_session_runtime(session)
         return
     raw = f"{model} --provider {provider}" if provider else model
     try:

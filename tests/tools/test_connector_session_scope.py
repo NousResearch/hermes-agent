@@ -41,7 +41,7 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
             remote.append("execute")
             return [{"data": "sent", "error": None} for _ in planned]
 
-        def list_connectors(self):
+        def list_connectors(self, **_):
             remote.append("status")
             return []
 

@@ -27,7 +27,7 @@ import {
 import { $unreadSessionCount } from '@/store/session-dot-state'
 import { $titlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
-import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView, isWorkspacePageRoute } from '../routes'
+import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
 import {
   TITLEBAR_CHROME_CHANGED_EVENT,
@@ -150,7 +150,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // actively projecting chrome into the band right now.
   const titleBarLeft = useContributions('titleBar.left')
   const titleBarRight = useContributions('titleBar.right')
-  const workspacePage = isWorkspacePageRoute(location.pathname)
   const pageOwnsTitlebar = titleBarLeft.length + titleBarRight.length > 0
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
@@ -309,7 +308,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
         <Slot area="titleBar.left" />
-        {!workspacePage && <Slot area="titleBar.center" />}
+        <Slot area="titleBar.center" />
       </div>
 
       {visiblePaneTools.length > 0 && (

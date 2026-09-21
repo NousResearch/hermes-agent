@@ -141,7 +141,12 @@ def check_<platform>_requirements() -> bool:
 
 ### Key patterns to follow
 
-- Use `self.build_source(...)` to construct `SessionSource` objects
+- Use `self.build_source(...)` to construct `SessionSource` objects (never `SessionSource(...)`
+  directly — the transport provenance and profile route are stamped there)
+- Derive every adapter-side session key (batching, per-chat queues, busy detection) through
+  `self._event_session_key(event)` / `self._source_session_key(source)`, never the free
+  `build_session_key()` — the seam keys in the owning profile's namespace under a multiplexed
+  gateway; the advisory lint (`scripts/check_profile_scope_patterns.py`, pattern P32) flags both
 - Call `self.handle_message(event)` to dispatch inbound messages to the gateway
 - Use `MessageEvent`, `MessageType` from `gateway.platforms.event` and `SendResult` from base
 - Use `cache_image_from_bytes`, `cache_audio_from_bytes`, `cache_document_from_bytes` for attachments

@@ -52,6 +52,13 @@ describe('desktop i18n runtime translator', () => {
     )
   })
 
+  it('translates Russian model and Bot Mode labels', () => {
+    setRuntimeI18nLocale('ru')
+
+    expect(translateNow('settings.model.moaTitle')).toBe('Смесь агентов')
+    expect(translateNow('common.bots')).toBe('Боты')
+  })
+
   it('keeps translated settings field copy addressable from schema keys', () => {
     const field = ['display', 'show_reasoning'].join('.')
 

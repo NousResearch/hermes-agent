@@ -304,8 +304,8 @@ scripts/run_tests.sh tests/agent/test_iron_proxy.py tests/hermes_cli/test_iron_p
 HERMES_RUN_E2E=1 scripts/run_tests.sh tests/agent/test_iron_proxy_e2e.py
 
 # Live PTY smoke against `hermes egress`
-HERMES_HOME=/tmp/hermes-egress-test python3 -m hermes_cli.main egress --help
-HERMES_HOME=/tmp/hermes-egress-test python3 -m hermes_cli.main egress setup --help
+HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-egress-test python3 -m hermes_cli.main egress --help
+HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-egress-test python3 -m hermes_cli.main egress setup --help
 ```
 
 The CLI uses argparse, so `--help` is a good first probe for "did my new flag register correctly".

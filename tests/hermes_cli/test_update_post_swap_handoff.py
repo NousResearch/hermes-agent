@@ -10,7 +10,7 @@ receipt and owns the tail.
 import json
 import os
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -22,6 +22,31 @@ from hermes_cli.update_lock import HANDOFF_PID_ENV
 def _opts():
     return SimpleNamespace(
         pre_update_version="0.21.3", active_lazy_features=["voice"], active_tool_dependencies={"x": 1})
+
+
+@pytest.mark.real_post_swap_handoff
+def test_parent_uses_handoff_module_loaded_before_checkout_changes(monkeypatch):
+    """The pre-swap updater must not import a newly pulled module into its stale module graph."""
+    called = {}
+
+    def pre_pull_handoff(payload, *, argv_tail):
+        called["argv_tail"] = argv_tail
+        return 0
+
+    pulled_handoff = ModuleType("hermes_cli.update_handoff")
+    pulled_handoff.continue_update_in_fresh_interpreter = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("post-pull handoff module was imported into the pre-pull interpreter"))
+    monkeypatch.setattr(update_handoff, "continue_update_in_fresh_interpreter", pre_pull_handoff)
+    monkeypatch.setitem(sys.modules, "hermes_cli.update_handoff", pulled_handoff)
+
+    with pytest.raises(SystemExit) as exit_info:
+        update_cmd._hand_off_post_swap(
+            SimpleNamespace(yes=True, no_gateway_restart=False, branch=None, gateway=False),
+            swap="git", branch="main", opts=_opts(), gateway_mode=False,
+            had_desktop_app_before_update=False)
+
+    assert exit_info.value.code == 0
+    assert called["argv_tail"] == ["--yes"]
 
 
 @pytest.mark.real_post_swap_handoff

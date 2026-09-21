@@ -105,3 +105,17 @@ def test_housekeeping_restarts_a_dead_ticker(monkeypatch):
         stop.set()
         gateway_run._start_gateway_housekeeping(_OneTick(), interval=0, cron_thread=ticker)
         assert len(starts) == 2, "a stopped ticker must not be respawned"
+
+
+def test_supervisor_leaves_a_returning_external_provider_alone():
+    """An external provider's start() (Chronos) arms remote one-shots and RETURNS by design; the
+    supervisor must not read that as a dead ticker and re-run start() every housekeeping tick
+    (each rerun re-reconciles against NAS and logs a spurious "died without a stop request")."""
+    from cron.scheduler_thread import SupervisedTickerThread
+
+    starts = []
+    stop = threading.Event()
+    ticker = SupervisedTickerThread(lambda stop_event: starts.append(1), args=(stop,), stop_event=stop)
+    ticker.start()
+    _wait_until(lambda: not ticker.is_alive())
+    assert ticker.restart_if_dead() is False and starts == [1] and ticker.restarts == 0

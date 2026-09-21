@@ -202,6 +202,7 @@ describe('reconcileUnifiedDesktopHalves', () => {
     const appRoot = path.join(home, 'desktop-plugins')
     const packageDir = path.join(home, 'plugins', 'media')
     write(path.join(packageDir, 'desktop', 'plugin.js'), 'package half')
+
     // Simulate a copy that dies partway: the destination already holds a marker-less
     // partial tree when the failure surfaces. A direct copy into the final target would
     // leave that half-tree behind; the staged copy must never let it reach `<appRoot>/media`.

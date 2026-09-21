@@ -389,6 +389,37 @@ async function listRemoteHermesProfiles(ssh) {
   return parseRemoteProfileListing(listing)
 }
 
+async function readRemoteInstallId(ssh) {
+  // The stable backend identity the roster collapses on (`hermes_cli/install_identity.py`:
+  // `<install root>/install_id`, opaque hex). Read from the INSTALL root, so an ssh connection
+  // pinned to `<root>/profiles/<name>` reports the same id as one pointed at the root — they are
+  // one backend. Read-only: a missing file is left missing (minting identity is the install's job,
+  // never a visiting client's) and simply means "no id", exactly as an older backend reports.
+  const root = remoteInstallRoot(assertSafeRemoteHome(await probeRemoteHermesHome(ssh)))
+  const file = expandRemotePath(`${root}/install_id`)
+  let out = ''
+
+  try {
+    out = await ssh.exec(`if [ -f ${file} ]; then cat ${file}; fi`)
+  } catch (cause) {
+    const error: any = new Error('Could not read the remote Hermes install id.')
+    error.kind = 'transient-transport-error'
+    error.cause = cause
+    throw error
+  }
+
+  const id =
+    String(out || '')
+      .trim()
+      .split('\n')
+      .pop()
+      ?.trim()
+      .toLowerCase() ?? ''
+
+  // Same shape check the minting side guarantees; anything else is not an identity.
+  return /^[0-9a-f]{32}$/.test(id) ? id : undefined
+}
+
 function assertSafeRemoteHome(home) {
   const value = String(home || '').trim()
 
@@ -625,51 +656,51 @@ async function pidIsOurDashboard(
   }
 
   const script =
-      'import os,shlex,subprocess,sys\n' +
-      `pid=${Number(pid)}\n` +
-      `expected=os.path.expanduser(${shq(hermesPath)})\n` +
-      // The installer-facing launcher is intentionally preserved for invocation
-      // (#74411), but it may `exec python <install-dir>/hermes`, leaving neither
-      // launcher nor HERMES_HOME-derived entrypoint in argv. The ownership-scoped
-      // token path + random nonce + exact profile below are the alternative proof.
-      `hermes_home=os.path.expanduser(${shq(hermesHome)}) if ${shq(hermesHome)} else ""\n` +
-      'expected_entries={expected}\n' +
-      'if hermes_home:\n' +
-      ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","venv","bin","hermes"))\n' +
-      `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
-      `expected_profile=${shq(profile)}\n` +
-      `nonce=${shq(spawnNonce)}\n` +
-      'try:\n' +
-      ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
-      ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
-      'except OSError:\n' +
-      ' try:\n' +
-      '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
-      ' except subprocess.CalledProcessError:\n' +
-      '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
-      '  print("FOREIGN");sys.exit(0)\n' +
-      ' args=shlex.split(line)\n' +
-      'ok=False\n' +
-      'try:\n' +
-      ' serve=args.index("serve")\n' +
-      ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
-      ' token=args.index("--ssh-session-token-file",serve+1) if expected_token else -1\n' +
-      ' isolated=args.index("--isolated",serve+1)\n' +
-      ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
-      ' serve_count=args.count("serve")\n' +
-      ' owner_count=args.count("--ssh-owner-nonce")\n' +
-      ' token_count=args.count("--ssh-session-token-file")\n' +
-      ' isolated_count=args.count("--isolated")\n' +
-      ' profile_count=args.count("--profile")\n' +
-      ' direct=args[0] in expected_entries\n' +
-      ' python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")\n' +
-      ' token_ok=not expected_token or args[token+1]==expected_token\n' +
-      ' isolated_ok=isolated_count==1 and isolated>serve\n' +
-      ' profile_ok=(profile_count==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else profile_count==0\n' +
-      ' spawn_proof=bool(expected_token) and owner_count==1 and token_count==1 and token_ok and profile_ok\n' +
-      ' ok=(direct or python_entry or spawn_proof) and serve_count==1 and isolated_ok and owner_count==1 and args[owner+1]==nonce and token_ok and profile_ok\n' +
-      'except (ValueError,IndexError):pass\n' +
-      'print("OWNED" if ok else "FOREIGN")'
+    'import os,shlex,subprocess,sys\n' +
+    `pid=${Number(pid)}\n` +
+    `expected=os.path.expanduser(${shq(hermesPath)})\n` +
+    // The installer-facing launcher is intentionally preserved for invocation
+    // (#74411), but it may `exec python <install-dir>/hermes`, leaving neither
+    // launcher nor HERMES_HOME-derived entrypoint in argv. The ownership-scoped
+    // token path + random nonce + exact profile below are the alternative proof.
+    `hermes_home=os.path.expanduser(${shq(hermesHome)}) if ${shq(hermesHome)} else ""\n` +
+    'expected_entries={expected}\n' +
+    'if hermes_home:\n' +
+    ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","venv","bin","hermes"))\n' +
+    `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
+    `expected_profile=${shq(profile)}\n` +
+    `nonce=${shq(spawnNonce)}\n` +
+    'try:\n' +
+    ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
+    ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
+    'except OSError:\n' +
+    ' try:\n' +
+    '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
+    ' except subprocess.CalledProcessError:\n' +
+    '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
+    '  print("FOREIGN");sys.exit(0)\n' +
+    ' args=shlex.split(line)\n' +
+    'ok=False\n' +
+    'try:\n' +
+    ' serve=args.index("serve")\n' +
+    ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
+    ' token=args.index("--ssh-session-token-file",serve+1) if expected_token else -1\n' +
+    ' isolated=args.index("--isolated",serve+1)\n' +
+    ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
+    ' serve_count=args.count("serve")\n' +
+    ' owner_count=args.count("--ssh-owner-nonce")\n' +
+    ' token_count=args.count("--ssh-session-token-file")\n' +
+    ' isolated_count=args.count("--isolated")\n' +
+    ' profile_count=args.count("--profile")\n' +
+    ' direct=args[0] in expected_entries\n' +
+    ' python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")\n' +
+    ' token_ok=not expected_token or args[token+1]==expected_token\n' +
+    ' isolated_ok=isolated_count==1 and isolated>serve\n' +
+    ' profile_ok=(profile_count==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else profile_count==0\n' +
+    ' spawn_proof=bool(expected_token) and owner_count==1 and token_count==1 and token_ok and profile_ok\n' +
+    ' ok=(direct or python_entry or spawn_proof) and serve_count==1 and isolated_ok and owner_count==1 and args[owner+1]==nonce and token_ok and profile_ok\n' +
+    'except (ValueError,IndexError):pass\n' +
+    'print("OWNED" if ok else "FOREIGN")'
 
   const verdict = await execProbeVerdict(
     ssh,
@@ -1125,7 +1156,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const reservationNonce = validateSpawnNonce(opts.reservationNonce || crypto.randomBytes(8).toString('hex'))
 
   return withRemoteUpdateMutex(
-    `umask 077 && mkdir -p "$(dirname ${reservation})"; ` +
+    `(umask 077 && mkdir -p "$(dirname ${reservation})"); ` +
       // reservation/lockPath/ownerPath are expandRemotePath() output — already
       // shell-quoted fragments ("$HOME"'/…'). Embed raw so the assignment
       // expands $HOME; shq() here would store the quote characters literally
@@ -1740,6 +1771,7 @@ export {
   probeRemotePlatform,
   PROTOCOL_VERSION,
   readLockfile,
+  readRemoteInstallId,
   READY_RE,
   REMOTE_LOCK_DIR,
   remotePidAlive,

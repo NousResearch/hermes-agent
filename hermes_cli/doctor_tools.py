@@ -12,6 +12,7 @@ from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import agent_browser_runnable, is_termux as _is_termux
+from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
 def _safe_which(cmd: str) -> str | None:
@@ -146,23 +147,29 @@ _BUILTIN_TERMINAL_BACKENDS = {"local", "docker", "singularity", "modal", "manage
 
 
 def _check_docker_backend(terminal_env: str, running_in_container: bool, issues: list[str]) -> None:
+    docker_exe = find_docker()
     if terminal_env == "docker":
-        if not _safe_which("docker"):
-            _fail_and_issue("Docker not installed", "(needed for the 'docker' terminal backend)",
-                            "Install Docker, or run `hermes setup terminal` to switch backend.", issues)
+        if not docker_exe:
+            _fail_and_issue("Docker or Podman not installed", "(needed for the 'docker' terminal backend)",
+                            "Install Docker or Podman, or run `hermes setup terminal` to switch backend.", issues)
         else:
-            # `docker version` hits /version, which socket proxies (tecnativa) allow by default; `docker info`
+            runtime = docker_runtime_name(docker_exe)
+            hint = docker_runtime_start_hint(docker_exe)
+            unreachable = (
+                f"{runtime} daemon not running" if runtime == "Docker" else f"{runtime} not reachable")
+            # `<cli> version` hits /version, which socket proxies (tecnativa) allow by default; `docker info`
             # needs /info and is commonly blocked, giving a false "daemon not running". The backend itself
-            # probes with `docker version` too (environments/docker.py).
-            _require(_run_ok(["docker", "version"], timeout=10), ("docker", "(daemon running)"),
-                     ("Docker daemon not running", "(needed for the 'docker' terminal backend)"),
-                     "Start Docker, or run `hermes setup terminal` to switch backend.", issues)
-    elif _safe_which("docker"):
-        check_ok("docker", "(optional)")
+            # probes with `<cli> version` too (environments/docker.py).
+            _require(_run_ok([docker_exe, "version"], timeout=10),
+                     (runtime, "(daemon running)" if runtime == "Docker" else "(reachable)"),
+                     (unreachable, "(needed for the 'docker' terminal backend)"),
+                     f"{hint[0].upper()}{hint[1:]}, or run `hermes setup terminal` to switch backend.", issues)
+    elif docker_exe:
+        check_ok(docker_runtime_name(docker_exe), "(optional)")
     elif _is_termux():
         check_info("Docker backend is not available inside Termux (expected on Android)")
     elif not running_in_container:  # in-container case already explained by the caller
-        check_warn("docker not found", "(optional)")
+        check_warn("Docker/Podman not found", "(optional)")
 
 
 def _check_ssh_backend(issues: list[str]) -> None:
@@ -251,7 +258,7 @@ def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
         running_in_container = _is_container()
     except Exception:
         running_in_container = False
-    # In our container docker-in-docker isn't set up, so local is intended: skip the noisy "docker not found"
+    # In our container docker-in-docker isn't set up, so local is intended: skip the noisy "Docker/Podman not found"
     # warning. An explicit TERMINAL_ENV=docker (mounted docker.sock) still gets checked.
     if running_in_container and terminal_env != "docker":
         check_info("Running inside a container — using local terminal backend (docker-in-docker is not configured by default)")
@@ -373,9 +380,13 @@ def _plural(n: int) -> str:
 def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues: list[str]) -> None:
     """Run one `npm audit --json` and report; any failure is silently skipped.
 
-    Workspace-scoped (`--workspace <name>`) advisories are build-time tooling (esbuild/vite), not runtime
-    code. `npm audit fix --workspace` crashes on current npm (arborist "edgesOut") and the root-level fix can
-    crash on the same tree ("isDescendantOf"), so no manual fix command is offered — they clear via a lockfile bump.
+    Every row here audits a tree whose versions come from a COMMITTED lockfile
+    (`npm ci` in `_run_npm_install_deterministic` reifies exactly that state on
+    every `hermes update`), so a local `npm audit fix` never persists — the next
+    update's deterministic install restores the pinned (vulnerable) versions and
+    the finding reappears. The durable remedy in every case is a lockfile bump
+    on main (update `package-lock.json` and ship it); the doctor therefore never
+    prescribes a local mutating fix command. See #116774.
     """
     import json
     try:
@@ -390,12 +401,15 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
         if total == 0:
             check_ok(f"{label} deps", "(no known vulnerabilities)")
         elif critical > 0 or high > 0:
-            flag = " --workspaces=false" if audit_extra == ["--workspaces=false"] else ""
-            remedy = "build-tool advisory; clears via lockfile bump" if workspace_scoped else f"run: cd {npm_dir} && npm audit fix{flag}"
+            detail = "build-time tooling" if workspace_scoped else "runtime dependency tree"
+            remedy = ("fix is an upstream lockfile bump — a local manual fix does not persist"
+                      " (the next `hermes update` reinstalls from the committed lockfile)")
             check_warn(f"{label} deps", f"({critical} critical, {high} high, {moderate} moderate — {remedy})")
             if workspace_scoped:
                 check_info("  ^ build-time tooling (not runtime); if manual npm remediation "
                            "errors with an arborist crash it's a known npm bug — clears via a lockfile bump")
+            else:
+                check_info(f"  ^ {detail}; report/pin the fix in package-lock.json — see #116774")
             issues.append(f"{label} has {total} npm {_plural(total)}")
         else:
             check_ok(f"{label} deps", f"({moderate} moderate {_plural(moderate)})")

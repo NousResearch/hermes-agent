@@ -109,6 +109,9 @@ gateway:
     switch_failed:         "أُنشئ الفرع لكن تعذّر التبديل إليه."
     branched_one:          "⑂ تم التفريع إلى **{title}** (نُسخت {count} رسالة)\nالأصل: `{parent}`\nالفرع: `{new}`\nاستخدم `/resume` للعودة إلى الأصل."
     branched_many:         "⑂ تم التفريع إلى **{title}** (نُسخت {count} رسالة)\nالأصل: `{parent}`\nالفرع: `{new}`\nاستخدم `/resume` للعودة إلى الأصل."
+    branched_thread_one:   "⑂ تم التفريع إلى **{title}** في سلسلة جديدة (تم نسخ {count} رسالة)\nالسلسلة: {thread}\nالأصل: `{parent}` — تبقى هذه المحادثة عليه\nالفرع: `{new}`\nاستخدم `/branch --here` للتفريع في هذه المحادثة."
+    branched_thread_many:  "⑂ تم التفريع إلى **{title}** في سلسلة جديدة (تم نسخ {count} رسائل)\nالسلسلة: {thread}\nالأصل: `{parent}` — تبقى هذه المحادثة عليه\nالفرع: `{new}`\nاستخدم `/branch --here` للتفريع في هذه المحادثة."
+    thread_fallback:       "تعذر إنشاء سلسلة هنا، لذا حل الفرع محل جلسة هذه المحادثة."
 
   commands:
     usage:                 "الاستخدام: `/commands [page]`"

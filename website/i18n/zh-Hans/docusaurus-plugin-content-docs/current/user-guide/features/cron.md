@@ -18,7 +18,7 @@ Cron 任务可以：
 - 将结果回传到来源会话、本地文件或已配置的平台目标
 - 在全新的 agent 会话中运行，使用正常的静态工具列表
 - 以**无 agent 模式**运行——按计划执行脚本，其 stdout 原样投递，零 LLM 参与（参见下方[无 agent 模式](#no-agent-mode-script-only-jobs)章节）
-- 由**外部事件触发**——设置了 `cron_job` 的 webhook 路由会在事情发生的那一刻（PR 收到反馈、服务发出告警）立即触发任务，而不是等待下一次定时 tick。参见[事件触发的 Cron 任务](/user-guide/messaging/webhooks#event-triggered-cron-jobs)。
+- 由**外部事件触发**——设置了 `cron_job` 的 webhook 路由会在事情发生的那一刻（PR 收到反馈、服务发出告警）立即触发任务，而不是等待下一次定时 tick。参见[事件触发的 Cron 任务](../messaging/webhooks.md#event-triggered-cron-jobs)。
 
 所有这些功能均可通过 `cronjob` 工具由 Hermes 自身使用，因此你可以用自然语言创建、暂停、编辑和删除任务——无需 CLI。
 
@@ -463,7 +463,7 @@ cronjob(action="create", schedule="every 5m",
 
 当消息内容完全由脚本决定时（看门狗、阈值告警、心跳），它会自动选择 `no_agent=True`。同一工具也让 agent 可以暂停、恢复、编辑和删除任务——整个生命周期都通过聊天驱动，无需任何人接触 CLI。
 
-参见[纯脚本 Cron 任务指南](/guides/cron-script-only)获取实际示例。
+参见[纯脚本 Cron 任务指南](../../guides/cron-script-only.md)获取实际示例。
 
 ## 通过 `context_from` 串联任务
 
@@ -525,7 +525,7 @@ cronjob(
 Cron 任务继承你配置的回退 provider 和凭证池轮换。如果主 API key 被限速或 provider 返回错误，cron agent 可以：
 
 - **回退到备用 provider**，前提是你在 `config.yaml` 中配置了 `fallback_providers`（或旧版 `fallback_model`）
-- **轮换到下一个凭证**，即同一 provider 的[凭证池](/user-guide/configuration#credential-pool-strategies)中的下一个
+- **轮换到下一个凭证**，即同一 provider 的[凭证池](../configuration.md#credential-pool-strategies)中的下一个
 
 这意味着高频运行或在高峰时段运行的 cron 任务更具弹性——单个被限速的 key 不会导致整次运行失败。
 

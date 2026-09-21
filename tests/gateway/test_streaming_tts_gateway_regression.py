@@ -133,7 +133,7 @@ def test_run_agent_voice_turn_no_name_error(monkeypatch, tmp_path):
     # finalisation path still runs with streaming_tts_consumer_holder[0]=None.
     monkeypatch.setattr(
         gateway_run.GatewayRunner,
-        "_adapter_for_source",
+        "_delivery_adapter_for",
         lambda self, source: None,
     )
 

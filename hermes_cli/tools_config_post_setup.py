@@ -339,6 +339,67 @@ def _post_setup_xai_grok() -> None:
         _print_info("    xAI will remain inactive until credentials are configured.")
 
 
+def _codex_credentials_present() -> bool:
+    """Cheap offline check for Codex/ChatGPT OAuth credentials (auth store + pool only)."""
+    try:
+        from hermes_cli.auth import get_codex_auth_status
+        return bool(get_codex_auth_status().get("logged_in"))
+    except Exception:
+        return False
+
+
+def _post_setup_openai_codex() -> None:
+    """Shared Codex/ChatGPT OAuth bootstrap for any picker row that talks to Codex without an API key
+    (image gen today). The rows declare empty env_vars so the sign-in UX lives here. Saves tokens only —
+    never rewrites ``model.provider``: the user picked an image backend, not a chat model (#102144)."""
+    if _codex_credentials_present():
+        _print_success("    Image generation will use your existing Codex/ChatGPT OAuth credentials")
+        return
+
+    relogin = "hermes auth add openai-codex"
+    _print_info("    OpenAI (Codex auth) needs credentials.")
+    try:
+        from hermes_cli.auth import _codex_device_code_login, _save_codex_tokens
+        from hermes_cli.setup import is_noninteractive, prompt_choice
+    except Exception as exc:
+        _print_warning(f"    Could not load setup helpers: {exc}")
+        _info_lines(f"Run later: {relogin}")
+        return
+
+    if is_noninteractive():
+        # Dashboard/Desktop spawn this hook with stdin=DEVNULL: nobody can finish a device-code
+        # login here, and the panel already shows the needs_auth pill.
+        _info_lines(f"No terminal to sign in from. Run: {relogin}")
+        return
+    idx = prompt_choice(
+        "    How do you want to sign in?", default=0,
+        choices=["Sign in with ChatGPT/Codex OAuth — browser login",
+                 f"Skip — configure later via `{relogin}`"])
+    if idx != 0:
+        _print_info("    Codex image generation will remain inactive until you sign in.")
+        return
+    try:
+        creds = _codex_device_code_login()
+        _save_codex_tokens(creds["tokens"], creds.get("last_refresh"), set_active=False)
+    except (Exception, KeyboardInterrupt) as exc:
+        _print_warning(f"    Codex sign-in did not complete: {exc}. Run later: {relogin}")
+        return
+    _print_success("    Logged in — image generation will use these Codex OAuth credentials")
+
+
+def _xai_credentials_ready() -> bool:
+    from hermes_cli.tools_config import _xai_credentials_present  # facade binding: tests patch it there
+    return _xai_credentials_present()
+
+
+# Credential-bootstrap post_setup keys -> "credentials present" predicate. These rows have no install
+# side-effect; ``provider_readiness_status`` reports them ready/needs_auth from the auth store.
+_POST_SETUP_AUTH_READY: dict = {
+    "xai_grok": _xai_credentials_ready,
+    "openai_codex": _codex_credentials_present,
+}
+
+
 # post_setup key -> hook. Unknown keys are a silent no-op (callers validate against valid_post_setup_keys()).
 _POST_SETUP_HOOKS: dict = {
     "lightpanda": _post_setup_lightpanda,
@@ -350,6 +411,7 @@ _POST_SETUP_HOOKS: dict = {
     "spotify": _post_setup_spotify,
     "langfuse": _post_setup_langfuse,
     "xai_grok": _post_setup_xai_grok,
+    "openai_codex": _post_setup_openai_codex,
     **{key: (lambda spec=spec: _post_setup_pip(spec)) for key, spec in _PIP_POST_SETUP_HOOKS.items()},
 }
 
@@ -483,8 +545,8 @@ def _cloud_agent_browser_installed() -> bool:
 
 # post_setup_key -> predicate(): True when the install side-effect is satisfied. Used by
 # ``provider_readiness_status`` to mark a keyless post_setup row "ready" vs "needs_setup"; mirrors the
-# installed-checks the hooks perform. ``xai_grok`` is absent — a credential bootstrap handled as an
-# auth check. Late-bound lambdas so tests can monkeypatch the underlying predicates.
+# installed-checks the hooks perform. Credential bootstraps (``xai_grok``, ``openai_codex``) are absent —
+# they live in ``_POST_SETUP_AUTH_READY`` as auth checks. Late-bound lambdas so tests can monkeypatch the underlying predicates.
 _POST_SETUP_READY: dict = {
     **{key: (lambda m=module: _module_installed(m)) for key, (module, _args) in _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.items()},
     "agent_browser": lambda: _agent_browser_installed(),

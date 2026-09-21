@@ -15,16 +15,19 @@ def test_connections_result_carries_status_reason_under_either_spelling():
         assert row.status_reason == "vendor: bad scope"
 
 
-def test_list_item_accepts_the_seven_states_and_absence():
-    for value in ("active", "initiated", "failed", "expired", "revoked", "inactive", "initializing"):
-        item = wire.ConnectorListItem.model_validate({"connector": "gmail", "connected": False, "connectionStatus": value})
+ITEM = {"connector": "gmail", "connected": False}
+
+
+def test_list_item_accepts_the_six_contract_states_and_absence():
+    for value in ("pending", "active", "failed", "expired", "revoked", "inactive"):
+        item = wire.ConnectorListItem.model_validate({**ITEM, "connectionStatus": value})
         assert item.connection_status == value
-    assert wire.ConnectorListItem.model_validate({"connector": "gmail", "connected": True}).connection_status is None
+    assert wire.ConnectorListItem.model_validate({**ITEM, "connected": True}).connection_status is None
 
 
 def test_list_item_rejects_an_unknown_status_loudly():
     with pytest.raises(ValidationError):
-        wire.ConnectorListItem.model_validate({"connector": "gmail", "connected": False, "connectionStatus": "weird"})
+        wire.ConnectorListItem.model_validate({**ITEM, "connectionStatus": "weird"})
 
 
 def _connection_required_entry():

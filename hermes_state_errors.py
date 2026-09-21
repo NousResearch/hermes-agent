@@ -173,12 +173,20 @@ _STATE_DB_REPLACED_MSG = (
     "writes to this file. Divert transcripts to sessions/<id>.jsonl (and the "
     "gateway pending_messages spool) and restore or reopen after operator intervention."
 )
+STORAGE_RECOVERY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/session-storage-recovery"
+
+# Two layers (#110054): the first sentence is for the person reading a chat bubble or a banner (what
+# happened, nothing is lost, the one thing to do); the rest is the operator detail. The phrase
+# "deleted state.db-wal or state.db-shm" is the classifier's RPC-wrapped fingerprint — keep it.
 _DELETED_WAL_GENERATION_MSG = (
-    "FATAL: a live process holds a deleted state.db-wal or state.db-shm "
-    "inode while the path names a different (or missing) generation. "
-    "Refusing to open or write so a second WAL cannot be minted. "
-    "Stop the gateway, dashboard, and cron writers that hold the deleted "
-    "sidecar, then reopen. Do not delete the WAL yourself. "
+    "FATAL: session storage stopped writing because another Hermes process still holds a deleted "
+    "state.db-wal or state.db-shm inode (an old copy of the write-ahead log). Nothing is lost: quit "
+    "every Hermes process on this profile (Desktop app, gateway, dashboard, cron), run `hermes doctor` "
+    "(it names the processes still holding the log), then start Hermes again. Do not delete the WAL "
+    "yourself and do not run `hermes doctor --fix` while they are running. "
+    f"Guide: {STORAGE_RECOVERY_DOCS_URL} "
+    "Detail: the path names a different (or missing) generation than the one this process holds "
+    "open; opening or writing through it would mint a second WAL (split-brain). "
     "database.journal_mode: delete is operator containment, not a new default."
 )
 

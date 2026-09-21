@@ -579,19 +579,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
             return _ok()
         text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
-        media_urls, media_types, msg_type = await self._collect_attachments(record)
-        if not text and media_urls:
-            text = "(attachment)"
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
-        if not sender or not (chat_guid or chat_identifier) or not text:
-            return web.json_response({"error": "missing message fields"}, status=400)
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        # Mention gate BEFORE the attachment downloads: an unmentioned group message must not
+        # pull every attachment through the REST API only to be dropped.
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
                 return _ok()
             text = self._clean_mention_text(text)
+        media_urls, media_types, msg_type = await self._collect_attachments(record)
+        if not text and media_urls:
+            text = "(attachment)"
+        if not sender or not (chat_guid or chat_identifier) or not text:
+            return web.json_response({"error": "missing message fields"}, status=400)
         source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
                                    chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
                                    chat_id_alt=chat_identifier)

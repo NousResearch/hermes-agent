@@ -182,6 +182,27 @@ class TestPartitionNousModelsByTier:
         assert unav == []
 
 
+    def test_subscription_billed_model_is_selectable_on_free_tier(self):
+        """A row the gateway bills to a subscription costs no credits, whatever price it lists."""
+        models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]
+        pricing = {"anthropic/claude-opus-4.6": self._PAID, "openai/gpt-5.4": {**self._PAID, "billing_mode": "subscription"}}
+        sel, unav = partition_nous_models_by_tier(models, pricing, free_tier=True)
+        assert (sel, unav) == (["openai/gpt-5.4"], ["anthropic/claude-opus-4.6"])
+
+    def test_free_tier_default_prefers_a_free_model_over_a_subscription_billed_one(self, monkeypatch):
+        import hermes_cli.models as m
+        from hermes_cli import models_pricing as mp
+        pricing = {"openai/gpt-5.4": {**self._PAID, "billing_mode": "subscription"}, "free/model": self._FREE}
+        monkeypatch.setattr(m, "get_curated_nous_model_ids", lambda: list(pricing))
+        monkeypatch.setattr(m, "check_nous_free_tier", lambda **kw: True)
+        monkeypatch.setattr(m, "union_with_portal_free_recommendations", lambda ids, pr, url="", **kw: (ids, pr))
+        monkeypatch.setattr(m, "get_preferred_silent_default_model", lambda provider="": "not/listed")
+        monkeypatch.setattr(mp, "get_pricing_for_provider", lambda slug, **kw: pricing)
+        monkeypatch.setattr(mp, "nous_policy_allowed_ids", lambda **kw: None)
+        assert m.recommended_nous_default_model()["model"] == "free/model"
+        del pricing["free/model"]
+        assert m.recommended_nous_default_model()["model"] == "openai/gpt-5.4"
+
     def test_all_paid_models(self):
         """When all models are paid, free-tier users have none selectable."""
         models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]
@@ -1572,3 +1593,50 @@ class TestOpenRouterCatalogDiskCache:
         path.write_text("{not json")
         assert fetch_openrouter_models() == [("a/one", "free")]
         assert len(calls) == 2
+
+
+class TestAzureFoundryPickerCatalog:
+    """``/model azure-foundry`` lists the resource's live ``/models`` ids (#27989).
+
+    Deployments are per-resource and the plugin profile ships ``base_url=""``, so the generic
+    profile fetch never fires; the picker used to fall through to the static ``[]``.
+    """
+
+    def test_provider_model_ids_probes_the_configured_resource(self, monkeypatch):
+        seen = {}
+
+        def fake_runtime(*, requested_provider, model_cfg, **_):
+            return {"base_url": "https://r.openai.azure.com/openai/v1/", "api_key": "k"}
+
+        def fake_probe(base_url, credential, **_):
+            seen.update(base_url=base_url, credential=credential)
+            return True, ["gpt-5.4", "kimi-k2.6"]
+
+        monkeypatch.setattr("hermes_cli.runtime_provider._resolve_azure_foundry_runtime", fake_runtime)
+        monkeypatch.setattr("hermes_cli.azure_detect._probe_openai_models", fake_probe)
+        assert _models_mod.provider_model_ids("azure-foundry", force_refresh=True) == ["gpt-5.4", "kimi-k2.6"]
+        assert seen == {"base_url": "https://r.openai.azure.com/openai/v1", "credential": "k"}
+
+    def test_probe_miss_or_resolver_error_keeps_the_empty_static_catalog(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.azure_detect._probe_openai_models", lambda *a, **k: (False, []))
+        monkeypatch.setattr("hermes_cli.runtime_provider._resolve_azure_foundry_runtime",
+                            lambda **_: {"base_url": "https://r.services.ai.azure.com/anthropic", "api_key": "k"})
+        assert _models_mod.provider_model_ids("azure-foundry", force_refresh=True) == []
+
+        def raising(**_):
+            raise RuntimeError("Azure Foundry requires a base URL")
+
+        monkeypatch.setattr("hermes_cli.runtime_provider._resolve_azure_foundry_runtime", raising)
+        assert _models_mod.provider_model_ids("azure-foundry", force_refresh=True) == []
+
+    def test_disk_cache_fingerprint_tracks_the_configured_resource(self, monkeypatch):
+        """The wizard writes only ``model.base_url``; switching resource with the same key must not
+        serve the previous resource's catalog for the TTL window (same rule as openai's effective_base)."""
+        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+        monkeypatch.delenv("AZURE_FOUNDRY_BASE_URL", raising=False)
+        monkeypatch.setattr(_models_mod, "_get_model_config_dict",
+                            lambda: {"provider": "azure-foundry", "base_url": "https://a.openai.azure.com/openai/v1"})
+        fp_a = _models_mod._credential_fingerprint("azure-foundry")
+        monkeypatch.setattr(_models_mod, "_get_model_config_dict",
+                            lambda: {"provider": "azure-foundry", "base_url": "https://b.openai.azure.com/openai/v1"})
+        assert _models_mod._credential_fingerprint("azure-foundry") != fp_a

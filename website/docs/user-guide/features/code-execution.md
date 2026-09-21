@@ -240,7 +240,7 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
-See the [Security guide](/user-guide/security#environment-variable-passthrough) for full details.
+See the [Security guide](../security.md#environment-variable-passthrough) for full details.
 
 ### `HERMES_*` variables in the child
 
@@ -310,7 +310,7 @@ Hermes always writes the script and the auto-generated `hermes_tools.py` RPC stu
 | Running a build or test suite | ❌ | ✅ |
 | Looping over search results | ✅ | ❌ |
 | Interactive/background processes | ❌ | ✅ |
-| Needs API keys in environment | ⚠️ Only via [passthrough](/user-guide/security#environment-variable-passthrough) | ✅ (most pass through) |
+| Needs API keys in environment | ⚠️ Only via [passthrough](../security.md#environment-variable-passthrough) | ✅ (most pass through) |
 
 **Rule of thumb:** Use `execute_code` when you need to call Hermes tools programmatically with logic between calls. Use `terminal` for running shell commands, builds, and processes.
 

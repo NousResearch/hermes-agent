@@ -182,8 +182,7 @@ export function useOnboardingHandoff({
               const seed = await buildFirstTaskSeedMessages(
                 setupHandoff.task,
                 $onboardingAnswers.get(),
-                setupHandoff.plan,
-                owner
+                setupHandoff.plan
               )
 
               const runtimeId = await runCreatePinnedTo(BUILD_PROFILE, () =>

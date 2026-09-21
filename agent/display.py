@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -915,6 +915,11 @@ def _detect_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
     data = result if isinstance(result, dict) else safe_json_loads(result)
+    # A harness REFUSAL of a redundant call (repeated identical read/search) is not a
+    # failed call. This is the ``failed`` the executor hands the loop guardrail, so
+    # counting it would escalate refusals into ``repeated_exact_failure_block``.
+    if is_guardrail_refusal(data):
+        return False, ""
 
     # A denied/timed-out approval carries one human sentence; show it instead of the model-facing
     # "BLOCKED: ... Do NOT retry" text (which stays in the JSON for the model).

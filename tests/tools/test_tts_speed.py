@@ -114,6 +114,14 @@ class TestOpenaiTtsLangCode:
         assert kwargs["extra_body"] == {"lang_code": "es"}
         assert kwargs["speed"] == 2.0
 
+    def test_consent_attestation_merges_into_extra_body(self, tmp_path, monkeypatch):
+        """tts.openai.consent_attestation rides in the JSON body next to lang_code (#99775):
+        OpenAI-compatible servers 400 ``consent_required`` on cloned voices without it."""
+        create = self._run({"openai": {"language": "es", "consent_attestation": "I have consent"}},
+                           tmp_path, monkeypatch)
+        assert create.call_args[1]["extra_body"] == {
+            "lang_code": "es", "consent_attestation": "I have consent"}
+
 
 # ---------------------------------------------------------------------------
 # MiniMax TTS (t2a_v2 endpoint: nested voice_setting/audio_setting,

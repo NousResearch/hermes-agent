@@ -92,6 +92,9 @@ test('a member whose backend fails the turn is reported at once, not read as bus
 
     await expect(activity).toContainText('Programmer hit an error', { timeout: 5_000 })
   }).toPass({ timeout: 120_000 })
+  // #117366: the row names the cause, not just the fact — the raw error's
+  // first line rides along so a stopped backend and a provider refusal differ.
+  await expect(activity).toContainText(/Programmer hit an error — \S+/)
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0, { timeout: 30_000 })
 
   const room = await page.evaluate(name => {

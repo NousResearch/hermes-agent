@@ -27,7 +27,7 @@ _UV_BINARY_NAME = "uv.exe" if sys.platform == "win32" else "uv"
 def _make_executable(path: Path) -> None:
     """Create a minimal fake uv binary at *path*."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\necho uv 0.1.2\n")
+    path.write_text("#!/bin/sh\necho uv 0.1.2\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
@@ -176,7 +176,7 @@ class TestResolveUv:
     def test_non_executable_file_returns_none(self, tmp_path):
         uv = tmp_path / "bin" / "uv"
         uv.parent.mkdir(parents=True)
-        uv.write_text("not a binary")
+        uv.write_text("not a binary", encoding="utf-8")
         # Ensure no execute bit
         uv.chmod(0o644)
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
@@ -221,6 +221,21 @@ class TestEnsureUv:
             path = ensure_uv()
             assert path == str(uv)
             mock_install.assert_called_once()
+
+    def test_dead_managed_launcher_is_reinstalled(self, tmp_path):
+        """A managed uv that exists, is executable, and exits non-zero (a relocated shim a pre-fix
+        installer copied in) must be replaced, not handed out."""
+        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        uv.parent.mkdir(parents=True)
+        uv.write_text("#!/bin/sh\necho 'launcher target missing' >&2\nexit 1\n", encoding="utf-8")
+        uv.chmod(uv.stat().st_mode | stat.S_IEXEC)
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
+             patch("hermes_cli.managed_uv._uv_version", return_value="uv 0.1.2"), \
+             patch("hermes_cli.managed_uv._install_uv", side_effect=_make_executable) as mock_install:
+            from hermes_cli.managed_uv import ensure_uv
+            assert ensure_uv() == str(uv)
+            mock_install.assert_called_once_with(uv)
 
     def test_install_reports_runtime_repair_to_observer(self, tmp_path):
         from hermes_cli.managed_uv import (
@@ -339,9 +354,11 @@ class TestEnsureUvWindowsSafe:
         proved the branch existed, not that the field crash was fixed on the
         host that reported it."""
         import subprocess
-        # On Windows the managed binary is uv.exe.
+        # On Windows the managed binary is uv.exe (a shell-script stand-in cannot run there, so the
+        # launcher probe is answered for it).
         _make_executable(tmp_path / "bin" / "uv.exe")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv._uv_runs", return_value=True), \
              patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")):
             from hermes_cli.managed_uv import _UvResult, ensure_uv
             uv_bin = ensure_uv()
@@ -902,11 +919,11 @@ class TestPatchRetryOnVulnerableCandidate:
             # which request produced it so the probe below can look it up.
             python = state["generation"] / "cpython" / "bin" / "python3"
             python.parent.mkdir(parents=True, exist_ok=True)
-            python.write_text(state["requested"] or "")
+            python.write_text(state["requested"] or "", encoding="utf-8")
             return SimpleNamespace(returncode=0, stdout=str(python), stderr="")
 
         def fake_probe(python, **kwargs):
-            requested = Path(python).read_text()
+            requested = Path(python).read_text(encoding="utf-8")
             # Bare minor request ("3.11") always resolves to the FIRST
             # (worst-case / already-known-vulnerable) version in the list.
             if requested in vulnerable_versions or requested == "3.11":
@@ -1056,11 +1073,11 @@ class TestMinorLineFallForward:
             # the request that produced it so the probe can look it up.
             python = state["generation"] / "cpython" / "bin" / "python3"
             python.parent.mkdir(parents=True, exist_ok=True)
-            python.write_text(state["requested"] or "")
+            python.write_text(state["requested"] or "", encoding="utf-8")
             return SimpleNamespace(returncode=0, stdout=str(python), stderr="")
 
         def fake_probe(python, **kwargs):
-            requested = Path(python).read_text()
+            requested = Path(python).read_text(encoding="utf-8")
             version = resolutions[requested]
             if version in fixed_versions:
                 return SQLiteRuntimeInfo(

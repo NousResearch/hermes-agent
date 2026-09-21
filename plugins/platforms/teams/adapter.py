@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import sys
+from collections import deque
 from contextlib import contextmanager, suppress
 from typing import Any, Dict, Iterator, Optional
 from urllib.parse import urlparse
@@ -60,7 +61,8 @@ from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
-    coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+    coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    seed_extra_from_env as _seed_extra_from_env, send_error
 )
 
 logger = logging.getLogger(__name__)
@@ -344,20 +346,35 @@ class TeamsAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))
-        extra = config.extra or {}
+        # Kept on the instance: ``platforms.teams.extra.*`` keys are read after construction too.
+        self._extra: Dict[str, Any] = config.extra or {}
         self._client_id, self._client_secret, self._tenant_id = _credentials(config)
         # (token, expiry monotonic ts) for connector attachment auth; refreshed under
         # _bf_token_lock so concurrent attachments can't stampede the STS.
         self._bf_token_cache: Optional[tuple] = None
         self._bf_token_lock: Optional[asyncio.Lock] = None
-        self._port = coerce_port(extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
-        _raw_host = extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
+        self._port = coerce_port(self._extra.get("port") or _get_scoped_secret("TEAMS_PORT", str(_DEFAULT_PORT)), _DEFAULT_PORT)
+        _raw_host = self._extra.get("host") or _get_scoped_secret("TEAMS_HOST", "") or _DEFAULT_HOST  # falsy → dual-stack None
         self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._dedup = MessageDeduplicator(max_size=1000)
         # chat_id → ConversationReference so proactive cards use the right conversation type.
         self._conv_refs: Dict[str, Any] = {}
+        self._require_mention: bool = self._parse_require_mention(config)
+        # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
+        self._sent_ids: deque = deque(maxlen=500)
+
+    @staticmethod
+    def _parse_require_mention(config) -> bool:
+        """TEAMS_REQUIRE_MENTION (scoped) → ``require_mention`` in config.extra → false (opt-in, same
+        default as TELEGRAM_REQUIRE_MENTION). Without RSC Teams only delivers mention activities to a
+        group bot anyway, so the gate changes nothing until the app gains ChannelMessage.Read.Group /
+        ChatMessage.Read.Chat and starts receiving every conversation message."""
+        configured = _extra_or_secret(config.extra, "require_mention", "TEAMS_REQUIRE_MENTION", False)
+        if isinstance(configured, bool):
+            return configured
+        return str(configured).strip().lower() not in {"false", "0", "no", "off"}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Reconnect paths reach here without create_adapter()'s installer — re-run to bind SDK globals.
@@ -466,8 +483,12 @@ class TeamsAdapter(BasePlatformAdapter):
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         activity = ctx.activity
-        bot_id = self._app.id if self._app else None
-        if bot_id and getattr(activity.from_, "id", None) == bot_id:
+        # Teams writes the bot's conversation identity as ``28:<app id>`` (activity.recipient) while
+        # App.id is the bare app id — accept both when deciding "is this us".
+        recipient_id = getattr(getattr(activity, "recipient", None), "id", None)
+        bot_ids = {i for i in (self._app.id if self._app else None, recipient_id) if isinstance(i, str) and i}
+        bot_ids |= {f"28:{i}" for i in tuple(bot_ids) if not i.startswith("28:")}
+        if getattr(activity.from_, "id", None) in bot_ids:
             return
         msg_id = getattr(activity, "id", None)
         if msg_id and self._dedup.is_duplicate(msg_id):
@@ -477,6 +498,13 @@ class TeamsAdapter(BasePlatformAdapter):
         if conv_id:  # cache the conversation reference for proactive sends (approval cards, etc.)
             self._conv_refs[conv_id] = ctx.conversation_ref
         text = activity.text if hasattr(activity, "text") and activity.text else ""
+        if self._require_mention and getattr(conv, "conversation_type", None) != "personal":
+            # RSC-delivered history: every channel/groupChat message arrives. Keep the ones that
+            # @mention the bot or reply to one of its own messages; drop the rest BEFORE the
+            # attachment loop so a gated post never downloads anything onto the host.
+            if not self._activity_mentions_bot(activity, bot_ids, text) and getattr(activity, "reply_to_id", None) not in self._sent_ids:
+                logger.debug("[teams] Dropping non-personal message without a bot mention (chat=%s, msg=%s)", conv_id, msg_id)
+                return
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
         from_account = activity.from_
@@ -495,6 +523,16 @@ class TeamsAdapter(BasePlatformAdapter):
         await self.handle_message(MessageEvent(
             text=text, source=source, message_type=msg_type, message_id=msg_id,
             media_urls=[path for path, _, _ in media], media_types=[mt for _, mt, _ in media]))
+
+    @staticmethod
+    def _activity_mentions_bot(activity: Any, bot_ids: set, text: str) -> bool:
+        """True when a ``mention`` entity points at the bot (``mentioned.id`` is ``28:<app id>`` on the
+        wire; ``bot_ids`` carries both spellings). A payload with no mention entities at all falls back
+        to the rendered ``<at>`` tag; one that mentions only other people does not."""
+        mentions = [e for e in getattr(activity, "entities", None) or [] if getattr(e, "type", None) == "mention"]
+        if not mentions:
+            return "<at>" in text
+        return any(str(getattr(getattr(e, "mentioned", None), "id", "")) in bot_ids for e in mentions)
 
     async def _cache_attachment(self, att: Any) -> Optional[tuple]:
         """Download + cache one inbound attachment → ``(path, media_type, kind)`` or ``None``."""
@@ -563,8 +601,17 @@ class TeamsAdapter(BasePlatformAdapter):
         """Send ``activity`` through the cached ConversationReference, else ``App.send(fallback)``."""
         conv_ref = self._conv_refs.get(chat_id)
         if conv_ref:
-            return await self._app.activity_sender.send(activity, conv_ref)
-        return await self._app.send(chat_id, fallback)
+            result = await self._app.activity_sender.send(activity, conv_ref)
+        else:
+            result = await self._app.send(chat_id, fallback)
+        self._remember_sent(result)
+        return result
+
+    def _remember_sent(self, result: Any) -> None:
+        """Track an outbound activity id (bounded deque) for the require_mention reply exemption."""
+        sent_id = getattr(result, "id", None)
+        if isinstance(sent_id, str) and sent_id:
+            self._sent_ids.append(sent_id)
 
     @staticmethod
     def _invoke_message(text: str) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
@@ -665,6 +712,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 else:
                     result = await self._app.send(chat_id, chunk)
                 last_message_id = getattr(result, "id", None)
+                self._remember_sent(result)
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)

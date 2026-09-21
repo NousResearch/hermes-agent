@@ -400,17 +400,23 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
     root = str(Path(__file__).resolve().parents[2])
     worker.write_text(
         f"#!{sys.executable}\nimport sys, os, json;sys.path.insert(0, {root!r})\n"
-        "from tools.kanban_tools import _handle_complete\n"
-        f"result=_handle_complete({{'summary':'assigned worker'}});open({str(output)!r}, 'w').write(result)\n"
+        "from tools.kanban_tools import _handle_complete, heartbeat_current_worker_from_env\n"
+        "beat=heartbeat_current_worker_from_env()\n"
+        f"result=json.loads(_handle_complete({{'summary':'assigned worker'}}));result['beat']=beat\n"
+        f"open({str(output)!r}, 'w').write(json.dumps(result))\n"
     )
     worker.chmod(0o700)
     monkeypatch.setenv("HERMES_BIN", str(worker))
     # Building a new worker under an existing task must replace, not inherit, its scope.
     monkeypatch.setenv("HERMES_KANBAN_TASK", "prior-task")
+    # A dispatcher launched from an agent's shell carries the descendant fence itself; the worker it
+    # grants a task to must not (an inherited marker fences the worker's own heartbeat + handoff).
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path))
     pid = _default_spawn(task, str(tmp_path), board="default")
     assert pid is not None
     os.waitpid(pid, 0)  # windows-footgun: ok — Linux-only real dispatcher spawn
-    assert json.loads(output.read_text())["ok"]
+    result = json.loads(output.read_text())
+    assert result["ok"] and result["beat"] is True, result
     assert kb.get_task(conn, tid).status == "done"
     assert os.environ["HERMES_KANBAN_TASK"] == "prior-task"
     conn.close()

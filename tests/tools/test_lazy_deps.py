@@ -600,3 +600,47 @@ class TestInstallWarmsBytecode:
         cmd = uv_cmds[0]
         assert "--compile-bytecode" in cmd
         assert cmd.index("--compile-bytecode") < cmd.index("zzzfake==1.0")
+
+
+# ---------------------------------------------------------------------------
+# pip.conf index-url bridge for the uv tier (#95608)
+# ---------------------------------------------------------------------------
+
+class TestPipConfIndexBridge:
+    MIRROR = "https://user:p%40ss@mirror.example/simple"  # percent-encoded credential, the mirrored-host shape
+
+    def _run_with_fake_uv(self, monkeypatch, tmp_path, **env):
+        """Run _venv_pip_install against a stubbed uv (with *env* set) and return the env it was spawned with."""
+        conf = tmp_path / "pip.conf"
+        conf.write_text(f"[global]\nindex-url = {self.MIRROR}\n", encoding="utf-8")
+        # PIP_CONFIG_FILE is pip's highest file tier, so it wins over any host /etc file.
+        monkeypatch.setenv("PIP_CONFIG_FILE", str(conf))
+        monkeypatch.setattr(ld.Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(ld.sys, "prefix", str(tmp_path / "venv"))
+        for var in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX"):
+            monkeypatch.delenv(var, raising=False)
+        for var, value in env.items():
+            monkeypatch.setenv(var, value)
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            return ld.subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ld, "_run_installer", fake_run)
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
+        monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **k: None)
+        result = ld._venv_pip_install(("somepkg==1.0",))
+        assert result.success
+        return captured["env"]
+
+    def test_pip_conf_index_url_bridged_unless_uv_has_its_own_index(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("PIP_INDEX_URL", raising=False)
+        assert self._run_with_fake_uv(monkeypatch, tmp_path)["UV_INDEX_URL"] == self.MIRROR
+
+        env = self._run_with_fake_uv(monkeypatch, tmp_path, UV_DEFAULT_INDEX="https://custom.example/simple")
+        assert "UV_INDEX_URL" not in env
+
+    def test_pip_index_url_env_beats_pip_conf(self, monkeypatch, tmp_path):
+        env = self._run_with_fake_uv(monkeypatch, tmp_path, PIP_INDEX_URL="https://env.example/simple")
+        assert env["UV_INDEX_URL"] == "https://env.example/simple"

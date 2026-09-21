@@ -1,3 +1,6 @@
+import os from 'node:os'
+import path from 'node:path'
+
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
 
@@ -8,7 +11,7 @@ import { expect, test } from './test'
 // exactly the saved roster — the removed Bot never takes a turn again.
 
 const ROOM = 'Programmer, Reviewer'
-const SHOTS = '/tmp/batchbots/features-groups-ui/shots'
+const SHOTS = path.join(os.tmpdir(), 'batchbots/features-groups-ui/shots')
 let fixture: MockBackendFixture | null = null
 
 type Page = MockBackendFixture['page']

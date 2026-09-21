@@ -8,6 +8,7 @@ side-effect-free probe, so ``hermes update --plan`` is safe on a live fleet.
 from __future__ import annotations
 
 import logging
+import shlex
 import sys
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, asdict, fields as dataclass_fields
@@ -217,14 +218,49 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
 
 
+def _loaded_backend_launchd_jobs() -> list:
+    """Loaded launchd dashboard/serve jobs for supervisor classification.
+
+    The probe itself is darwin-gated (``[]`` on every other host); here any failure also degrades
+    to ``[]`` — classification falls back to the spawner probe and never aborts the inventory.
+    See #116503."""
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+
+        return _dash._loaded_launchd_backend_jobs()
+    return []
+
+
+def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> "tuple[str, str, int | None] | None":
+    """``(domain, label, live_pid)`` of the loaded launchd job owning this ledger row, if any.
+
+    A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead, so the
+    spawner probe alone misreads the row as ``manual-serve`` — and a respawn-argv restart then
+    fights the job's own KeepAlive respawn. The loaded-job match (live PID, an ancestor, or the
+    normalized ``ProgramArguments``) is the authoritative classification. See #116503."""
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+        from hermes_cli.dashboard_procs import _process_ancestors
+
+        try:
+            cmdline = shlex.split(str(entry.get("argv") or "")) or None
+        except ValueError:
+            cmdline = None
+        return _dash._launchd_job_owning_backend(pid, cmdline, jobs, ancestors=_process_ancestors(pid))
+    return None
+
+
 def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
-    supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours."""
+    supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
+    A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
+    detached argv respawn) — the spawner probe cannot see that (#116503)."""
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
+        launchd_jobs = _loaded_backend_launchd_jobs()
         for entry in ledger_entries():
             purpose, pid = entry.get("purpose"), entry.get("pid")
             if purpose not in _SERVE_KINDS or not isinstance(pid, int) or pid in seen:
@@ -232,13 +268,17 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
             seen.add(pid)
             # detail.create_time: process incarnation, not just the numeric PID — a post-update
             # survivor probe comparing PIDs alone calls a NEW serve that reused the number a survivor.
+            detail = {
+                "argv": entry.get("argv") or "", "host": entry.get("host") or "",
+                "port": entry.get("port"), "create_time": entry.get("create_time"),
+            }
+            job = _launchd_owner_for_ledger_entry(entry, pid, launchd_jobs) if launchd_jobs else None
+            if job:
+                supervisor, detail["launchd_domain"], detail["launchd_label"] = "launchd", job[0], job[1]
+            else:
+                supervisor = "desktop" if spawner_is_dead(entry) is False else "manual-serve"
             plan.runtimes.append(_runtime(
-                str(purpose), str(entry.get("profile") or "default"), pid,
-                "desktop" if spawner_is_dead(entry) is False else "manual-serve",
-                detail={
-                    "argv": entry.get("argv") or "", "host": entry.get("host") or "",
-                    "port": entry.get("port"), "create_time": entry.get("create_time"),
-                },
+                str(purpose), str(entry.get("profile") or "default"), pid, supervisor, detail=detail,
             ))
 
 
@@ -400,7 +440,13 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     STALE/DOWN fleet row (exit 1) — a promised restart silently missed is the class this phase
     exists to kill.
     """
-    deferred = [o for o in outcomes if o.get("outcome") == "deferred"]
+    manual = [o for o in outcomes if o.get("outcome") == "deferred" and o.get("mechanism") == "respawn-argv"]
+    if manual:
+        print()
+        print("  ⚠ Manual serve restarts deferred to their owner (reminders retained until the old processes exit):")
+        for o in manual:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']}: relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend")
+    deferred = [o for o in outcomes if o.get("outcome") == "deferred" and o.get("mechanism") != "respawn-argv"]
     if deferred:
         # Surfaced but not escalated: the updater has no authority over these, so holding
         # ``fleet_restart_pending`` for them would never be discharged. See #111494.

@@ -65,7 +65,7 @@ Hermes 在 WSL1 上无法可靠运行 —— WSL1 会动态转译 Linux 系统�
 
 ### 发行版选择
 
-我们以 Ubuntu（LTS）为测试基准。Debian 同样可用。Arch 和 NixOS 也有人在用，但一键安装脚本假设使用基于 Debian 的 `apt` 系统 —— 如需其他路径，请参阅 [Nix 安装指南](/getting-started/nix-setup)。
+我们以 Ubuntu（LTS）为测试基准。Debian 同样可用。Arch 和 NixOS 也有人在用，但一键安装脚本假设使用基于 Debian 的 `apt` 系统 —— 如需其他路径，请参阅 [Nix 安装指南](../getting-started/nix-setup.md)。
 
 ### 启用 systemd（推荐）
 
@@ -105,7 +105,7 @@ source ~/.bashrc
 hermes
 ```
 
-安装程序将 WSL2 视为普通 Linux —— 无需任何 WSL 专属配置。完整目录结构请参阅[安装说明](/getting-started/installation)。
+安装程序将 WSL2 视为普通 Linux —— 无需任何 WSL 专属配置。完整目录结构请参阅[安装说明](../getting-started/installation.md)。
 
 ## 文件系统：跨越 Windows ↔ WSL2 边界
 
@@ -188,7 +188,7 @@ dos2unix path/to/script.sh
 
 在 WSL 内 clone。始终如此，除非有特殊原因。典型的 Hermes 工作流（`hermes chat`、调用 `rg`/`ripgrep` 搜索仓库的工具、文件监听器、后台 gateway）在 `~/code/myrepo` 下会比在 `/mnt/c/Users/you/myrepo` 下快得多，也更可靠。
 
-一个例外：**启动 Windows 二进制文件的 MCP bridge。** 如果你通过 `cmd.exe` 使用 `chrome-devtools-mcp`（参见 [MCP 指南：WSL → Windows Chrome](/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)），当 Hermes 的当前工作目录是 `~` 时，Windows 可能会报 `UNC` 警告。此时请从 `/mnt/c/` 下的某个目录启动 Hermes，以便 Windows 进程拥有一个带盘符的工作目录。
+一个例外：**启动 Windows 二进制文件的 MCP bridge。** 如果你通过 `cmd.exe` 使用 `chrome-devtools-mcp`（参见 [MCP 指南：WSL → Windows Chrome](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)），当 Hermes 的当前工作目录是 `~` 时，Windows 可能会报 `UNC` 警告。此时请从 `/mnt/c/` 下的某个目录启动 Hermes，以便 Windows 进程拥有一个带盘符的工作目录。
 
 ## 网络：WSL ↔ Windows
 
@@ -200,7 +200,7 @@ WSL2 在轻量级虚拟机中运行，拥有独立的网络栈。这意味着 WS
 
 最常见的场景：你在 **Windows 上运行 Ollama、LM Studio 或 llama-server**，而 WSL 内的 Hermes 需要访问它。
 
-此场景的权威说明在 providers 指南中：**[WSL2 本地模型网络配置 →](/integrations/providers#wsl2-networking-windows-users)**
+此场景的权威说明在 providers 指南中：**[WSL2 本地模型网络配置 →](../integrations/providers.md#wsl2-networking-windows-users)**
 
 简要说明：
 
@@ -214,7 +214,7 @@ WSL2 在轻量级虚拟机中运行，拥有独立的网络栈。这意味着 WS
 这是反向情况，其他地方较少记录，但以下场景需要用到：
 
 - 从 Windows 浏览器使用 Hermes **Web Dashboard**。
-- 从 Windows 侧工具使用 **OpenAI 兼容 API 服务器**（当 `API_SERVER_ENABLED=true` 时由 `hermes gateway` 暴露）。参见 [API Server 功能页](/user-guide/features/api-server)。
+- 从 Windows 侧工具使用 **OpenAI 兼容 API 服务器**（当 `API_SERVER_ENABLED=true` 时由 `hermes gateway` 暴露）。参见 [API Server 功能页](./features/api-server.md)。
 - 测试**消息 gateway**（Telegram、Discord 等），平台会向本地 webhook URL 发送请求 —— 通常建议使用 `cloudflared`/`ngrok` 而非原始端口转发。
 
 #### 子情况 2a：从 Windows 宿主机本身访问
@@ -254,11 +254,11 @@ WSL2 在轻量级虚拟机中运行，拥有独立的网络栈。这意味着 WS
 
 由于 NAT 模式下 WSL 虚拟机 IP 在每次重启后都会变化，一次性配置的规则在下次 `wsl --shutdown` 后即失效。如需持久化，要么启用镜像模式，要么将端口代理步骤写入 Windows 登录时自动运行的脚本。
 
-对于来自云端消息服务商的 webhook（Telegram `setWebhook`、Slack 事件等），不建议折腾端口转发 —— 请使用 `cloudflared` 隧道。参见 [webhook 指南](/user-guide/messaging/webhooks)。
+对于来自云端消息服务商的 webhook（Telegram `setWebhook`、Slack 事件等），不建议折腾端口转发 —— 请使用 `cloudflared` 隧道。参见 [webhook 指南](./messaging/webhooks.md)。
 
 ## 在 Windows 上长期运行 Hermes 服务
 
-Hermes 的 [Tool Gateway](/user-guide/features/tool-gateway) 和 API 服务器都是长期运行的进程。在 WSL2 中，有以下几种方式保持它们持续运行。
+Hermes 的 [Tool Gateway](./features/tool-gateway.md) 和 API 服务器都是长期运行的进程。在 WSL2 中，有以下几种方式保持它们持续运行。
 
 ### 在 WSL 内使用 systemd（推荐）
 
@@ -292,7 +292,7 @@ AMD ROCm 和 Intel Arc 在 WSL2 内的支持仍在发展中，不在 Hermes 的�
 ## 常见问题
 
 **连接 Windows 上的 Ollama / LM Studio 时报"Connection refused"。**
-参见 [WSL2 网络配置](/integrations/providers#wsl2-networking-windows-users)。九成情况是服务绑定在 `127.0.0.1` 上，需要改为 `0.0.0.0`（Ollama：`OLLAMA_HOST=0.0.0.0`），或者缺少防火墙规则。
+参见 [WSL2 网络配置](../integrations/providers.md#wsl2-networking-windows-users)。九成情况是服务绑定在 `127.0.0.1` 上，需要改为 `0.0.0.0`（Ollama：`OLLAMA_HOST=0.0.0.0`），或者缺少防火墙规则。
 
 **`git status` / `hermes chat` 在仓库中极慢。**
 你很可能在 `/mnt/c/...` 下工作。将仓库移到 `~/code/...`（Linux 侧），速度会有数量级的提升。
@@ -326,7 +326,7 @@ WSL2 将虚拟机磁盘存储为 `%LOCALAPPDATA%\Packages\...` 下的稀疏 VHDX
 
 ## 下一步
 
-- **[安装说明](/getting-started/installation)** —— 实际安装步骤（Linux/WSL2/Termux 均使用同一安装程序）。
-- **[集成 → Providers → WSL2 网络配置](/integrations/providers#wsl2-networking-windows-users)** —— 本地模型服务器网络配置的权威深度说明。
-- **[MCP 指南 → WSL → Windows Chrome](/guides/use-mcp-with-hermes#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** —— 从 WSL 中的 Hermes 控制你已登录的 Windows Chrome。
-- **[Tool Gateway](/user-guide/features/tool-gateway)** 和 **[Web Dashboard](/user-guide/features/web-dashboard)** —— 你最常需要从 WSL 暴露到网络其他部分的长期运行服务。
+- **[安装说明](../getting-started/installation.md)** —— 实际安装步骤（Linux/WSL2/Termux 均使用同一安装程序）。
+- **[集成 → Providers → WSL2 网络配置](../integrations/providers.md#wsl2-networking-windows-users)** —— 本地模型服务器网络配置的权威深度说明。
+- **[MCP 指南 → WSL → Windows Chrome](../guides/use-mcp-with-hermes.md#wsl2-bridge-hermes-in-wsl-to-windows-chrome)** —— 从 WSL 中的 Hermes 控制你已登录的 Windows Chrome。
+- **[Tool Gateway](./features/tool-gateway.md)** 和 **[Web Dashboard](./features/web-dashboard.md)** —— 你最常需要从 WSL 暴露到网络其他部分的长期运行服务。

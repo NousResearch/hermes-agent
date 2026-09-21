@@ -17,6 +17,13 @@ from typing import Dict, Optional
 
 import yaml
 
+# Stale-module bridge: this module binds ``utils.file_signature`` at import time, so a fresh
+# import in a post-pull updater process (pre-handoff purge keeps root modules cached) dies
+# unless the stale ``utils`` is dropped first. See hermes_cli.stale_modules.
+from hermes_cli.stale_modules import drop_stale_root_modules
+
+drop_stale_root_modules()
+
 from utils import file_signature
 
 logger = logging.getLogger(__name__)

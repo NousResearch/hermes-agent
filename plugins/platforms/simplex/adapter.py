@@ -497,6 +497,14 @@ class SimplexAdapter(BasePlatformAdapter):
                 img.save(png_path, "PNG")
             thumb = img.copy()
             thumb.thumbnail((128, 128))
+            if thumb.mode not in ("RGB", "L"):
+                if thumb.mode in ("RGBA", "LA", "P"):
+                    layer = thumb.convert("RGBA")
+                    background = Image.new("RGB", layer.size, (255, 255, 255))
+                    background.paste(layer, mask=layer.getchannel("A"))
+                    thumb = background
+                else:
+                    thumb = thumb.convert("RGB")
             buf = io.BytesIO()
             thumb.save(buf, "JPEG", quality=70)
             thumb_uri = _THUMB_URI_PREFIX + base64.b64encode(buf.getvalue()).decode()
@@ -528,7 +536,11 @@ class SimplexAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=str(e))
         if not file_path or not Path(file_path).exists():
             return SendResult(success=False, error="Image file not found")
-        png_path, thumb_uri = self._prepare_image(file_path)
+        try:
+            png_path, thumb_uri = self._prepare_image(file_path)
+        except Exception as exc:
+            logger.warning("SimpleX: failed to prepare image: %s", exc)
+            return SendResult(success=False, error=f"Failed to prepare image: {exc}")
         # /_send addresses by numeric ID; /f only accepts display names.
         item = {"filePath": png_path, "msgContent": {"type": "image", "image": thumb_uri, "text": caption or ""}}
         return await self._send_items(chat_id, [item], "Failed to send image")

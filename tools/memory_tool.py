@@ -83,7 +83,8 @@ _STORE_ACTIONS = {
     "add": (lambda store, target, content, old_text: store.add(target, content),
             lambda label, content, old_text: (f"add to {label}", content or "")),
     "replace": (lambda store, target, content, old_text: store.replace(target, old_text, content),
-                lambda label, content, old_text: (f"replace in {label}", f"old: {old_text}\nnew: {content}")),
+                lambda label, content, old_text: (f"replace in {label}",
+                                                  f"entry matching: {old_text}\nwhole entry becomes: {content}")),
     "remove": (lambda store, target, content, old_text: store.remove(target, old_text),
                lambda label, content, old_text: (f"remove from {label}", old_text or ""))}
 
@@ -93,7 +94,9 @@ def _batch_op_line(op: Dict[str, Any]) -> str:
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
         return f"- remove: {old}"
-    return f"- replace: {old} -> {content}" if act == "replace" else f"- {act}: {content}"
+    # Whole-entry contract (#117952): the approver must not read this as a span patch.
+    return (f"- replace entry matching '{old}' -> whole entry becomes: {content}" if act == "replace"
+            else f"- {act}: {content}")
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str], old_text: Optional[str],
@@ -115,11 +118,14 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     if action == "add" and not content:
         return tool_error("Content is required for 'add' action.", success=False)
     if action in ("replace", "remove") and not old_text:
+        replace_hint = (" For 'replace', content is the COMPLETE new entry -- the whole "
+                        "matched entry is overwritten, not just the old_text span."
+                        if action == "replace" else "")
         return json.dumps({
             "success": False,
             "error": (f"'{action}' needs old_text -- a short unique substring of the entry "
                       f"to {action}. None was provided. Reissue the {action} with old_text "
-                      f"set to part of one of the current_entries below."),
+                      f"set to part of one of the current_entries below.{replace_hint}"),
             "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
     if action == "replace" and not content:
         return tool_error("content is required for 'replace' action.", success=False)
@@ -174,7 +180,8 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
                 store: Optional[MemoryStore] = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
-    aliases ``content`` — callers mirror ``old_text`` with it (patch-tool shape)."""
+    aliases ``content`` -- for 'replace' both mean the COMPLETE new entry (the
+    whole matched entry is overwritten; old_text only locates it)."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     if content is None and new_text is not None:
@@ -300,15 +307,15 @@ MEMORY_SCHEMA = {
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace' (single-op shape). Alias: 'new_text' is also accepted (mirrors old_text)."
+                "description": "The entry content. Required for 'add' and 'replace'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. Alias: 'new_text' is also accepted (same full-entry meaning)."
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry, it is not spliced out. Omit only for 'add'."
             },
             "new_text": {
                 "type": "string",
-                "description": "Alias for 'content' (single-op shape). Provided so the replace/remove old_text/new_text pairing works; if both are set, 'content' wins."
+                "description": "Alias for 'content' (single-op shape): the COMPLETE new entry for 'replace', not a patch of old_text. If both are set, 'content' wins."
             },
             "operations": {
                 "type": "array",
@@ -321,7 +328,7 @@ MEMORY_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string", "description": "Entry content for add/replace. Alias: 'new_text'."},
+                        "content": {"type": "string", "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten). Alias: 'new_text'."},
                         "new_text": {"type": "string", "description": "Alias for 'content' in a batch op."},
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
                     },

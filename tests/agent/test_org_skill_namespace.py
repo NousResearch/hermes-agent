@@ -220,10 +220,10 @@ class TestOrgPullIsWiredIn:
         import pathlib
 
         cli_src = (
-            pathlib.Path(__file__).resolve().parents[2] / "cli.py"
+            pathlib.Path(__file__).resolve().parents[2] / "hermes_cli" / "cli_tui_runtime_mixin.py"
         ).read_text(encoding="utf-8")
         assert "maybe_pull_org_skills" in cli_src, (
-            "cli.py session startup must call maybe_pull_org_skills() — "
+            "CLI session startup (hermes_cli/cli_tui_runtime_mixin.py) must call maybe_pull_org_skills() — "
             "without a call site the org mirror is never populated and org "
             "skills never load (the function being importable is not enough)."
         )

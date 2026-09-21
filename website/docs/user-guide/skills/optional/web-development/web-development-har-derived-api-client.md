@@ -15,7 +15,7 @@ Record a site's XHR into a HAR, derive an HTTP client.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/web-development/har-derived-api-client` |
-| Path | `optional-skills/web-development\har-derived-api-client` |
+| Path | `optional-skills/web-development/har-derived-api-client` |
 | Version | `0.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -170,9 +170,9 @@ for p in r.json()["pages"]:
 End-to-end proof against a live site with no API key:
 
 ```bash
-python3 scripts/har_capture.py "https://en.wikipedia.org/wiki/Main_Page" /tmp/wiki.har \
+python3 scripts/har_capture.py "https://en.wikipedia.org/wiki/Main_Page" ~/.hermes/cache/scratch/wiki.har \
   --action "fill:input[name=search]:dune messiah" --action "sleep:3" --wait 2
-python3 scripts/har_to_client.py /tmp/wiki.har --host wikipedia.org --max-body 200
+python3 scripts/har_to_client.py ~/.hermes/cache/scratch/wiki.har --host wikipedia.org --max-body 200
 ```
 
 Expect the derivation to print `GET https://en.wikipedia.org/w/rest.php/v1/search/title`

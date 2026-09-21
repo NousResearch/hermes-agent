@@ -76,6 +76,13 @@ def _install_modal_test_modules(
     env_package.__path__ = [str(TOOLS_DIR / "environments")]  # type: ignore[attr-defined]
     sys.modules["tools.environments"] = env_package
 
+    # The faked modal module below answers every SDK touch; the real lazy-dep
+    # gate (a version-pinned metadata check) must not refuse first on an
+    # install without the modal extra.
+    sys.modules["tools.lazy_deps"] = types.SimpleNamespace(
+        ensure=lambda *args, **kwargs: None
+    )
+
     class _DummyBaseEnvironment:
         def __init__(self, cwd: str, timeout: int, env=None):
             self.cwd = cwd

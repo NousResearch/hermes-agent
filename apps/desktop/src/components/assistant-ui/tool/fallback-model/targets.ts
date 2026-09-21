@@ -9,6 +9,11 @@ export function looksLikePath(value: string): boolean {
 }
 
 export function isPreviewableTarget(target: string): boolean {
+  // Renderer metadata is not a deliverable; app.asar.unpacked is a real directory.
+  if (/^file:\/\//i.test(target) && target.replace(/\\/g, '/').split('/').includes('app.asar')) {
+    return false
+  }
+
   return Boolean(
     target &&
     (/^file:\/\//i.test(target) ||

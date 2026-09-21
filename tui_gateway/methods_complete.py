@@ -63,7 +63,8 @@ def _profile_mention_items(prefix: str) -> list[dict]:
     try:
         from hermes_cli.profiles import list_profiles
         seen: set[str] = set()
-        for p in list_profiles():
+        # Per keystroke: only name/description are read, so never walk skill trees in-request (#114041).
+        for p in list_profiles(lazy_skill_count=True):
             if not (name := (p.name or "").strip()):
                 continue
             seen.add(name.lower())
@@ -165,8 +166,15 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
     )
     try:
         from tools.terminal_tool import terminal_tool
+        # Pre-confirm this internal read-only listing: its fixed `sh -c` script shape is
+        # guard-flagged as "shell command via -c/-lc flag", so under smart approvals every
+        # completion would fire an auxiliary-LLM call (the main model when no auxiliary is
+        # configured), and Desktop's ws reconnect loop turns that into model traffic from an
+        # idle machine (#115478). The script is a constant and the search dir is quoted, so
+        # nothing here needs an approval verdict.
         result = json.loads(terminal_tool(
-            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3))
+            f"sh -c {shlex.quote(script)} sh {shlex.quote(search_dir)}", task_id=session_key, timeout=3,
+            force=True))
     except Exception:
         return []
     if result.get("error") or result.get("exit_code") not in (0, None):
@@ -276,11 +284,15 @@ def _(rid, params: dict) -> dict:
     from prompt_toolkit.formatted_text import to_plain_text
     from agent.skill_commands import get_skill_commands
     from agent.skill_bundles import get_skill_bundles
+    # Skill/bundle lookups are home- and cwd-keyed: bind the calling session's profile and workspace so
+    # the popup offers the project-local skills ``command.dispatch`` accepts for that session (#114359).
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+        skill_commands, skill_bundles = dict(get_skill_commands()), dict(get_skill_bundles())
     completer = SlashCommandCompleter(
-        skill_commands_provider=lambda: get_skill_commands(), skill_bundles_provider=lambda: get_skill_bundles())
+        skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)
     # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):
     # skills/bundles are the only completions for an inline `/skill` typed mid-message.
-    skill_names = {key.lstrip("/").lower() for key in (*get_skill_commands(), *get_skill_bundles())}
+    skill_names = {key.lstrip("/").lower() for key in (*skill_commands, *skill_bundles)}
 
     def to_items(doc: Document) -> list[dict]:
         # display/display_meta are FormattedText; the TUI contract is a plain string
@@ -355,6 +367,11 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
     save_provider_env_credential(env_var, api_key)
     os.environ[env_var] = api_key  # so the refreshed inventory sees it
+    # The launch profile's boot record may still say "nothing configured"; the gated picker's
+    # own chat waits on setup.status, so the fresh key must move the record (+ setup.ready).
+    if not params.get("profile"):
+        from hermes_cli.free_tier_bootstrap import reconcile_record
+        reconcile_record()
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
     from hermes_cli.inventory import build_models_payload
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)

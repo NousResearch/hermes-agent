@@ -814,6 +814,40 @@ class TestBrowserUseSlashCommand:
         assert stub.session_resets == 0
 
 
+class TestBrowserSlashDispatch:
+    """/browser routes through the _BROWSER_SUBCOMMANDS table: the subcommand word is
+    case-insensitive, the argument keeps its case (CDP URL paths are case-sensitive),
+    and an unknown word prints the usage block without touching any handler."""
+
+    def _run(self, cmd, monkeypatch):
+        import contextlib
+        import io
+
+        import hermes_cli.cli_commands_mixin as mod
+
+        calls = []
+        monkeypatch.setattr(mod, "_browser_connect", lambda cli, url: calls.append(("connect", url)))
+        monkeypatch.setattr(mod, "_browser_disconnect", lambda cli: calls.append(("disconnect",)))
+        monkeypatch.setattr(mod, "_browser_status", lambda: calls.append(("status",)))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mod.CLICommandsMixin._handle_browser_command(object(), cmd)
+        return calls, buf.getvalue()
+
+    def test_connect_keeps_url_case_and_defaults_to_status(self, monkeypatch):
+        from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+
+        assert self._run("/browser CONNECT ws://127.0.0.1:9222/devtools/browser/AbC", monkeypatch)[0] == [
+            ("connect", "ws://127.0.0.1:9222/devtools/browser/AbC")]
+        assert self._run("/browser connect", monkeypatch)[0] == [("connect", DEFAULT_BROWSER_CDP_URL)]
+        assert self._run("/browser", monkeypatch)[0] == [("status",)]
+
+    def test_unknown_subcommand_prints_usage_only(self, monkeypatch):
+        calls, out = self._run("/browser frobnicate", monkeypatch)
+        assert calls == []
+        assert "Usage: /browser connect|disconnect|status|use" in out
+
+
 class TestNativeScreenshots:
     """Screenshots printed by capture_screenshot() attach directly to the
     model's context when it has native vision — no aux vision-LLM detour."""

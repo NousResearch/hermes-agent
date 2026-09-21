@@ -670,3 +670,26 @@ class TestProbeApiKeyForwarding:
         ) as detect:
             _lookup_supports_vision("custom", "llava", {"model": {"api_key": key}})
         assert detect.call_args.kwargs.get("api_key") == key
+
+
+class TestCodexContextVariantVisionLookup:
+    """Issue #102189: a VALID Codex ``-900k`` picker variant is an alias of its base slug, so the
+    vision-capability lookup must key on the base while ineligible ``-900k`` strings gain nothing."""
+
+    def test_valid_variant_resolves_against_base_slug(self, monkeypatch):
+        from types import SimpleNamespace
+        import agent.models_dev as models_dev
+        import agent.image_routing as image_routing
+
+        seen = []
+
+        def fake_caps(provider, model, allow_network=False):
+            seen.append(model)
+            return SimpleNamespace(supports_vision=True) if model == "gpt-5.6-sol" else None
+
+        monkeypatch.setattr(models_dev, "get_model_capabilities", fake_caps)
+        assert image_routing._probe_models_dev("openai-codex", "gpt-5.6-sol-900k", {}) is True
+        assert seen == ["gpt-5.6-sol"]
+        # Ineligible alias: looked up verbatim, no capability gained.
+        assert image_routing._probe_models_dev("openai-codex", "gpt-5.5-900k", {}) is None
+        assert seen[-1] == "gpt-5.5-900k"

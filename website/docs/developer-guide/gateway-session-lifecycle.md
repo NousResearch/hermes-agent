@@ -48,7 +48,7 @@ incoming `MessageEvent` and used for routing, isolation, and context injection.
 | `is_bot` | `bool` | `False` | True when the message author is a bot or webhook (Discord bots). |
 | `guild_id` | `Optional[str]` | `None` | Discord guild / Slack workspace / Matrix server scope identifier. |
 | `parent_chat_id` | `Optional[str]` | `None` | Parent channel when `chat_id` refers to a thread. |
-| `message_id` | `Optional[str]` | `None` | ID of the triggering message. Used for pin/reply/react operations and Discord ID injection. |
+| `message_id` | `Optional[str]` | `None` | ID of the triggering message. Used for pin/reply/react operations and Discord ID injection (the injected `[Triggering message id: …]` note rides the API-bound message only; the persisted user row keeps the authored text). |
 | `role_authorized` | `bool` | `False` | True when adapter granted access via a platform role (not individual user ID). |
 
 ### Key Methods
@@ -170,7 +170,7 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 | `get_or_create_session(source, force_new=False)` | Core entry point. Returns existing or creates new `SessionEntry`. Evaluates explicit suspension and restart recovery state. Creates/ends SQLite records. |
 | `update_session(session_key, last_prompt_tokens=None)` | Lightweight metadata update after an interaction. Bumps `updated_at`, optionally records `last_prompt_tokens`. |
 | `reset_session(session_key, display_name=None)` | Explicit reset (from `/new` or `/reset`). Creates new `session_id`, sets `is_fresh_reset=True`. Ends old SQLite session, creates new one. |
-| `switch_session(session_key, target_session_id)` | Switch to a different existing session ID (from `/resume`). Ends current SQLite session, reopens target. |
+| `switch_session(session_key, target_session_id, *, expected_session_id=None)` | Switch to a different existing session ID (from `/resume`). Ends current SQLite session, reopens target. With `expected_session_id=` the repoint is a compare-and-swap: returns `None` without switching when the key no longer points at that session, so a caller that resolved against a snapshot across an `await` (async-delegation re-pin, Telegram topic-binding heal) cannot overwrite a concurrent `/new` or `/resume`. |
 | `suspend_session(session_key)` | Mark session as `suspended=True` (from `/stop`). Forces auto-reset on next access. |
 | `mark_resume_pending(session_key, reason)` | Mark session as `resume_pending=True` (from drain timeout). Preserves session_id on next access. Will NOT override `suspended=True`. |
 | `clear_resume_pending(session_key)` | Clear `resume_pending` after a successful resumed turn. Called from gateway after `run_conversation()` returns. |
@@ -455,6 +455,24 @@ Called at the drain site after the slot was consumed. If there's an overflow ite
 ### Clearing
 
 Queued events for a session are cleared on `/new` and `/reset` (via `_handle_reset_command`).
+`/stop` drops the single-slot follow-up the user sent during the interrupted turn. An
+**internal** wake parked in either store (an async-delegation completion notice, a kanban/cron
+`notify+wake`) survives all three commands: `_interrupt_and_clear_session` leaves it in the slot
+(promoting it out of the overflow when a discarded human follow-up held the slot) so the
+post-command drain starts it right away instead of the session idling until the next user
+message. Whether a wake pinned to a session that `/new` just closed may still run is decided at
+processing time (`_resolve_async_delegation_session`, fail-closed).
+
+Both commands also end the session's **background delegations** (`tools.async_delegation.
+interrupt_for_session`, selected by routing key and by the spawner's durable session id):
+`_interrupt_and_clear_session` fans the stop out for the busy path, and `_handle_stop_command`
+does the same for an idle session whose dispatching turn already ended (replying "Stopped" rather
+than "No active task to stop"). The turn's own hard interrupt never reaches those units — they are
+detached from `_active_children` at dispatch — so without the fan-out they run to completion and wake
+the chat minutes later. Each stopped unit still finalizes normally and re-enters as its completion
+notice with `status="interrupted"` and the child's partial output. `/new` and `/reset` already did this
+in `_handle_reset_command`; the shared helper's earlier call is idempotent there (a hard interrupt
+requested twice is one stop).
 
 ### FIFO Invariant
 

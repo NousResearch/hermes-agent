@@ -51,6 +51,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus } from '@/types/hermes'
 
 import { ListRow, Pill, SettingsContent, SettingsSection, SettingsSkeleton } from './primitives'
+import { ActiveProfileNote } from './profile-scope'
 
 function ProgressBar({ percent }: { percent: number | undefined }) {
   return (
@@ -405,6 +406,7 @@ export function LocalModelsSettings() {
 
   return (
     <SettingsContent>
+      <ActiveProfileNote className="mb-5" />
       {/* ── Runtime ── */}
       <SettingsSection
         aside={

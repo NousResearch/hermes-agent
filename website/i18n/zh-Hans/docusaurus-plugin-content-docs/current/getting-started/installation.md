@@ -110,7 +110,7 @@ hermes setup          # 或运行完整的设置向导一次性配置所有内�
 ```
 
 :::tip 最快路径：Nous Portal
-一个订阅涵盖 300+ 个模型以及 [Tool Gateway](/user-guide/features/tool-gateway)（网络搜索、图像生成、TTS、云端浏览器）。无需逐一管理各工具的密钥：
+一个订阅涵盖 300+ 个模型以及 [Tool Gateway](../user-guide/features/tool-gateway.md)（网络搜索、图像生成、TTS、云端浏览器）。无需逐一管理各工具的密钥：
 
 ```bash
 hermes setup --portal

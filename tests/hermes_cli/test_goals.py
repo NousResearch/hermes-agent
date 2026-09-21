@@ -96,6 +96,23 @@ class TestJudgeGoal:
         assert verdict == "done"
         assert reason == "achieved"
 
+    def test_judge_is_told_to_quote_errors_verbatim_and_never_infer_a_service(self):
+        """A bare provider 401 in the response must not become 'the GitHub token is invalidated' in
+        the block reason (#114012): the system prompt the judge actually receives carries the rule."""
+        from hermes_cli import goals
+
+        seen = {}
+
+        def fake_call_llm(*a, **kw):
+            seen["messages"] = kw.get("messages") or a
+            return MagicMock(choices=[MagicMock(message=MagicMock(content='{"verdict": "blocked", "reason": "x"}'))])
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):
+            goals.judge_goal("ship it", "HTTP 401: invalidated oauth token (code: token_revoked)")
+        system_text = str(seen["messages"])
+        assert "quote the error text verbatim" in system_text
+        assert "Never infer one the response does not name" in system_text
+
 
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence

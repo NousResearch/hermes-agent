@@ -84,7 +84,7 @@ async def test_native_thread_rename_passes_only_the_initial_name_guard():
         def __init__(self, adapter):
             self.adapters = {Platform.DISCORD: adapter}
 
-        def _adapter_for_source(self, source):
+        def _delivery_adapter_for(self, source):
             return self.adapters[source.platform]
 
     source = types.SimpleNamespace(

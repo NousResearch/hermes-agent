@@ -621,6 +621,14 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(session.get("agent"))
+        # Background delegations are detached from the turn's interrupt fan-out; a stop ends them too
+        # (own UI sid + spawner id only — a viewer tab must not kill gateway work). Each returns as an
+        # interrupted completion with its partial output.
+        with contextlib.suppress(Exception):
+            from tools.async_delegation import interrupt_for_session
+            interrupt_for_session(
+                origin_ui_session_id=_lifecycle_own_sid(session, sid), reason="user_stop",
+                parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""))
         if not run_thread_alive:
             with session["history_lock"]:
                 if session.get("running"):
@@ -695,6 +703,14 @@ def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> Non
     """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``).
     Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
     at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
+    if transport is not _detached_ws_transport and _transport_is_dead(transport):
+        # The rebinding socket already closed: its disconnect cleanup ran before this late RPC (a
+        # resume-then-drop burst), so nothing will detach it again. The client is NOT back — re-arm the
+        # reap the caller cancelled instead of leaving a detached session with no Timer (#116464).
+        with _sessions_lock:
+            if _ws_session_is_detached(session) and sid not in _pending_ws_reaps:
+                _schedule_ws_orphan_reap(sid)
+        return
     _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.

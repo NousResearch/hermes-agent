@@ -663,6 +663,26 @@ class TestReplyCapture:
         finally:
             adapter._pop_pending("task-ok")
 
+    def test_on_processing_complete_recovers_streamed_reply(self):
+        """#116944: when the gateway's normal final send is suppressed because streaming
+        already delivered the body, send() is never called with notify=True and the future
+        is resolved here instead. It must carry the reply text the gateway stashed on the
+        event, not resolve TASK_STATE_COMPLETED with an empty string."""
+        from gateway.platforms.event import ProcessingOutcome
+
+        adapter = _bare_adapter()
+        fut = adapter._add_pending("task-streamed", "ctx-streamed")
+        event = SimpleNamespace(message_id="task-streamed", _streamed_final_response="SSE_OK")
+
+        async def run():
+            await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        try:
+            asyncio.run(run())
+            assert fut.result(timeout=0) == (protocol.STATE_COMPLETED, "SSE_OK")
+        finally:
+            adapter._pop_pending("task-streamed")
+
 
 # --------------------------------------------------------------------------
 # Adapter RPC handlers (driven directly, no HTTP)
@@ -1746,3 +1766,15 @@ class TestMultiplexConstructionScope:
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
         assert adapter._public_url == "https://default-profile.example.com/"
+
+
+def test_load_conversation_skips_non_dict_lines(monkeypatch, tmp_path):
+    """A scalar line in a conversation file must not break replay or pollute
+    the list[dict] contract."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    protocol.persist_message("ctx-mixed", "user", "hello", "t1")
+    path = protocol._conv_path("ctx-mixed")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("42\n")
+    convo = protocol.load_conversation("ctx-mixed")
+    assert len(convo) == 1 and convo[0]["text"] == "hello"

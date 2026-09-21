@@ -320,13 +320,13 @@ def detect_audio_environment() -> dict:
                 "Voice INPUT (recording) still requires a PulseAudio bridge:\n"
                 "  1. Set PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
                 "  2. Create ~/.asoundrc pointing ALSA at PulseAudio\n"
-                "  3. Verify with: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav")
+                "  3. Verify with: arecord -d 3 test.wav && aplay test.wav")
         else:
             warnings.append(
                 "Running in WSL -- audio requires a forwarded sound server.\n"
                 "  PulseAudio: export PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
                 "  PipeWire:   export PIPEWIRE_REMOTE=$XDG_RUNTIME_DIR/pipewire-0\n"
-                "  Then verify: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav")
+                "  Then verify: arecord -d 3 test.wav && aplay test.wav")
 
     _probe_audio_libraries(warnings, notices, has_forwarded_audio=has_forwarded_audio,
                            termux_mic_cmd=termux_mic_cmd, termux_app_installed=termux_app_installed)

@@ -24,7 +24,7 @@ def _make_runner(ctx):
     from gateway.run_turn_runner import TurnRunner
 
     class _StubGatewayRunner:
-        def _adapter_for_source(self, source):
+        def _delivery_adapter_for(self, source):
             return None
 
     return TurnRunner(_StubGatewayRunner(), ctx)

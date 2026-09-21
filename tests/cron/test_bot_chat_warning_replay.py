@@ -19,7 +19,7 @@ def owner(tmp_path, monkeypatch):
     db.set_session_title("chat", "Bot Chat")
     leases = []
     run = Mock(side_effect=AssertionError("must not launch a second owner"))
-    monkeypatch.setattr(delivery.subprocess, "run", run)
+    monkeypatch.setattr(delivery, "_run_bot_chat_turn", run)
 
     def acquire(live):
         lease, refusal = try_acquire_active_session(

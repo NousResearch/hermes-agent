@@ -83,6 +83,37 @@ Notes:
   profile-text indicator.
 - Off by default, since it mutates the bot's global profile.
 
+### Cold-boot pending queue (Optional)
+
+By default the adapter drops server-side pending updates on a cold boot
+(`drop_pending_updates=True` on the first `start_polling`). That fits
+always-on servers: a restart means "clean up," and the queue is treated as
+stale. It does not fit hosts that turn off (a desktop shut down overnight):
+messages sent while the gateway is offline sit in Telegram's Bot API queue,
+and the next boot discards them before Hermes ever sees them — silently, no
+log, no retry.
+
+Set `drop_pending_on_cold_boot: false` to receive that backlog in order on
+startup instead:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      drop_pending_on_cold_boot: false
+```
+
+Notes:
+
+- Default is `true`: existing behavior is unchanged unless you opt in.
+- Watcher reconnects (brief network outages with the process still alive)
+  always preserve the queue regardless of this setting.
+- Conflict recovery still drops pending updates to terminate the competing
+  `getUpdates` session — that path is unrelated to this knob.
+- After a crash, a preserved queue can redeliver an update the crashed
+  instance partially processed. Telegram's offset usually prevents this,
+  but time-sensitive commands sent during a long outage will run on boot.
+
 ### Command menu priority and cap (Optional)
 
 Hermes registers its command menu automatically when the Telegram gateway starts. The menu is built from the central slash-command registry plus eligible plugin/skill commands, then capped so Telegram accepts the payload reliably. The default cap is 60 commands — enough to keep all built-in commands plus common skill commands visible.
@@ -685,13 +716,13 @@ Each topic gets its own conversation session, history, and context — completel
 ### Configuration
 
 :::caution Prerequisites
-Before adding topics to your config, the user must **enable Topics mode** in the DM chat with the bot:
+Before adding topics to your config, the bot owner must **enable Threaded Mode** for the bot in **@BotFather**:
 
-1. Open your private chat with the Hermes bot in Telegram
-2. Tap the bot's name at the top to open chat info
-3. Enable **Topics** (the toggle to turn the chat into a forum)
+1. Open the BotFather **Mini App** (search `botfather` in Telegram, then tap **Open** on the search result — the classic `/mybots` text menu does not expose this setting)
+2. Go to **My bots → your bot → Bot Settings → Threads Settings**
+3. Turn on **Threaded Mode**
 
-Without this, Hermes will log `The chat is not a forum` on startup and skip topic creation. This is a Telegram client-side setting — the bot cannot enable it programmatically.
+There is no "Topics" toggle in the DM chat itself — a bot DM is not a group, so the group-forum toggle described in some older guides does not apply here. Without Threaded Mode, Hermes will log `The chat is not a forum` on startup and skip topic creation. See [Prerequisites](#prerequisites) below for the same steps with more detail.
 :::
 
 Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
@@ -1040,6 +1071,8 @@ gateway:
 
 When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
 
+**Long replies and flood control.** A reply longer than Telegram's 4,096-character limit is sent as numbered parts (`(1/3)`, `(2/3)`, …). Sends to one chat are delivered one reply at a time, so a scheduled report and a DM answer landing together cannot interleave their parts, and a file upload cannot land between two parts of the text it accompanies. If Telegram's flood control refuses a part mid-way, Hermes resumes from the refused part once the penalty passes instead of re-sending the parts already on screen, and while a chat is inside a known penalty window further sends to it fail closed locally (no extra requests that would lengthen the penalty). A penalty longer than the gateway's inline wait cap is handed to the delivery ledger, which redelivers the reply with a "part of it may already have arrived above" note.
+
 ## Group Allowlisting
 
 Telegram groups and forum chats have two orthogonal gates you can configure:
@@ -1372,4 +1405,4 @@ Always set `TELEGRAM_ALLOWED_USERS` to restrict who can interact with your bot. 
 
 Never share your bot token publicly. If compromised, revoke it immediately via BotFather's `/revoke` command.
 
-For more details, see the [Security documentation](/user-guide/security). You can also use [DM pairing](/user-guide/messaging#dm-pairing-alternative-to-allowlists) for a more dynamic approach to user authorization.
+For more details, see the [Security documentation](../security.md). You can also use [DM pairing](./index.md#dm-pairing-alternative-to-allowlists) for a more dynamic approach to user authorization.

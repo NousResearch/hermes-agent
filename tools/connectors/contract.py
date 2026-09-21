@@ -16,14 +16,12 @@ class TargetState(str, Enum):
     skipped = "skipped"
     failed = "failed"
     expired = "expired"
-    unavailable = "unavailable"
     # Stamped by settle() on every unresolved target; never a transition target.
     not_connected = "not_connected"
 
 
 class Actor(str, Enum):
     user = "user"
-    renderer_flow = "renderer_flow"
     backend_watcher = "backend_watcher"
     clock = "clock"
 
@@ -33,17 +31,17 @@ class SettleReason(str, Enum):
     continue_ = "continue"
     deadline = "deadline"
     interrupt = "interrupt"
-    unavailable = "unavailable"
 
 
 KINDS: Tuple[str, ...] = ("connector", "mcp")
 
-RESOLVED_STATES = frozenset({TargetState.connected, TargetState.skipped, TargetState.unavailable})
+RESOLVED_STATES = frozenset({TargetState.connected, TargetState.skipped})
 
 _S, _A = TargetState, Actor
 
-# (kind, from) -> {to: the only actor allowed to cause it}. A managed `connected` is witnessed by the
-# gateway alone; an MCP `connected` (auth completed) is reported by the renderer that ran the flow.
+# (kind, from) -> {to: the only actor allowed to cause it}. Every `connected` is witnessed by the
+# backend: the gateway's account list for a managed target, the install / enable / OAuth worker for
+# an MCP one. The card can only skip a target, or ask for a failed one to be run again.
 TRANSITIONS: Dict[Tuple[str, TargetState], Dict[TargetState, Actor]] = {
     ("connector", _S.pending): {_S.initiated: _A.backend_watcher, _S.failed: _A.backend_watcher, _S.skipped: _A.user},
     ("connector", _S.initiated): {
@@ -51,8 +49,8 @@ TRANSITIONS: Dict[Tuple[str, TargetState], Dict[TargetState, Actor]] = {
     },
     ("connector", _S.failed): {_S.initiated: _A.user, _S.skipped: _A.user},
     ("connector", _S.expired): {_S.initiated: _A.user, _S.skipped: _A.user},
-    ("mcp", _S.pending): {_S.initiated: _A.renderer_flow, _S.failed: _A.renderer_flow, _S.skipped: _A.user},
-    ("mcp", _S.initiated): {_S.connected: _A.renderer_flow, _S.failed: _A.renderer_flow, _S.skipped: _A.user},
+    ("mcp", _S.pending): {_S.initiated: _A.backend_watcher, _S.failed: _A.backend_watcher, _S.skipped: _A.user},
+    ("mcp", _S.initiated): {_S.connected: _A.backend_watcher, _S.failed: _A.backend_watcher, _S.skipped: _A.user},
     ("mcp", _S.failed): {_S.initiated: _A.user, _S.skipped: _A.user},
 }
 

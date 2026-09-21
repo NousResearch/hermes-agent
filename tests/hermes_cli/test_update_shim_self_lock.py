@@ -16,6 +16,7 @@ off at all.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -50,8 +51,8 @@ def _fake_psutil(monkeypatch, ancestor_exes: list[str]):
     """Stand in for psutil with a fixed self+ancestor executable chain."""
 
     class _Proc:
-        def __init__(self, exe=None):
-            self._exe = exe
+        def __init__(self, exe=None, pid=os.getpid()):
+            self._exe, self.pid = exe, pid
 
         def exe(self):
             if self._exe is None:
@@ -59,7 +60,7 @@ def _fake_psutil(monkeypatch, ancestor_exes: list[str]):
             return self._exe
 
         def parents(self):
-            return [_Proc(exe) for exe in ancestor_exes]
+            return [_Proc(exe, 1000 + i) for i, exe in enumerate(ancestor_exes)]
 
     monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(Process=_Proc))
 
@@ -107,6 +108,8 @@ def test_detects_shim_in_ancestor_chain(venv, monkeypatch):
     """The launcher is usually a separate parent process, not argv[0]."""
     _fake_psutil(monkeypatch, [str(venv / "hermes.exe")])
     assert main_install_repair._windows_shim_in_process_chain() == venv / "hermes.exe"
+    # ...and it is that launcher's pid, not ours, a detached child must outwait (#101600).
+    assert main_install_repair._windows_shim_holder_pid() == 1000
 
 
 def test_ignores_hermes_exe_outside_the_project_venv(venv, monkeypatch, tmp_path):
@@ -138,14 +141,24 @@ def test_no_shim_without_a_venv(venv, monkeypatch):
 def test_reexec_runs_same_args_under_venv_python(venv, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update", "--yes"])
     calls = _capture_popen(monkeypatch)
+    token = {"resume_needed": True, "profiles": {"default": 4}, "unmapped": []}
 
-    assert cli_main._reexec_dependency_sync_off_windows_shim() is True
+    assert cli_main._reexec_dependency_sync_off_windows_shim(token) is True
     cmd, env, kwargs = calls[0]
     assert cmd == [
         str(venv / "python.exe"), "-m", "hermes_cli.main", "update", "--yes",
     ]
     assert env[cli_main._UPDATE_REEXEC_ENV] == "1"
     assert "under the venv Python" in capsys.readouterr().out
+    # #101600: the child waits for THIS pid and resumes exactly the paused fleet; the parent's
+    # copy is disarmed so it exits instead of relaunching gateways while it still holds the shim.
+    from hermes_cli import update_handoff
+    assert env[update_handoff.SHIM_PARENT_PID_ENV] == str(os.getpid())
+    assert token["resume_needed"] is False
+    monkeypatch.setenv(update_handoff.GATEWAY_RESUME_ENV, env[update_handoff.GATEWAY_RESUME_ENV])
+    assert update_handoff.adopt_handed_off_gateway_resume() == {
+        "resume_needed": True, "profiles": {"default": 4}, "unmapped": []}
+    assert update_handoff.GATEWAY_RESUME_ENV not in os.environ
 
 
 def test_reexec_child_runs_unattended(venv, monkeypatch):
@@ -213,18 +226,22 @@ def test_up_to_date_run_never_hands_off(venv, monkeypatch, capsys):
 
 
 def test_sync_guard_hands_off_when_only_the_shim_is_held(venv, monkeypatch):
-    """No native module mapped, but we ARE the shim: hand off and exit 0."""
+    """No native module mapped, but we ARE the shim: hand off and exit 0 WITHOUT resuming the
+    paused fleet here — the child owns the token (#101600)."""
     from hermes_cli import update_cmd
 
     monkeypatch.setattr(sys, "argv", [str(venv / "hermes.exe"), "update"])
     monkeypatch.setattr(cli_main, "_detect_self_loaded_native_modules", lambda: [])
+    resumed = []
+    monkeypatch.setattr(cli_main, "_resume_windows_gateways_after_update", resumed.append)
     calls = _capture_popen(monkeypatch)
 
     with pytest.raises(SystemExit) as excinfo:
-        update_cmd._abort_dependency_sync_if_self_locked()
+        update_cmd._abort_dependency_sync_if_self_locked({"resume_needed": True, "profiles": {}})
 
     assert excinfo.value.code == 0
     assert calls, "expected the dependency sync to be handed to the venv python"
+    assert resumed == [], "the shim parent must exit at once, not relaunch gateways"
 
 
 def test_sync_guard_defers_native_lock_before_considering_the_shim(venv, monkeypatch):

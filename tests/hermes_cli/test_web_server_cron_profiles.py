@@ -974,102 +974,6 @@ async def test_dashboard_cron_rejects_missing_context_from(isolated_profiles):
     assert "missing-job-id" in update_exc.value.detail
 
 
-
-
-
-
-@pytest.mark.asyncio
-async def test_dashboard_cron_noop_inference_fields_keep_existing_snapshots(
-    isolated_profiles,
-    monkeypatch,
-):
-    from hermes_cli import runtime_provider, web_server
-
-    current_provider = {"name": "initial-provider"}
-    monkeypatch.setattr(
-        runtime_provider,
-        "resolve_runtime_provider",
-        lambda **kwargs: {"provider": current_provider["name"]},
-    )
-
-    job = _web_server_cron._call_cron_for_profile(
-        "worker_alpha",
-        "create_job",
-        prompt="managed by named profile",
-        schedule="every 1h",
-        name="dashboard-edit-job",
-    )
-
-    assert job["provider_snapshot"] == "initial-provider"
-    assert job["model_snapshot"] == "test-model"
-
-    current_provider["name"] = "changed-provider"
-    (isolated_profiles["worker_alpha"] / "config.yaml").write_text(
-        "model: changed-model\n",
-        encoding="utf-8",
-    )
-
-    updated = await _rt_cron.update_cron_job(
-        job["id"],
-        _web_models.CronJobUpdate(
-            updates={
-                "name": "dashboard-edit-job-renamed",
-                "provider": None,
-                "model": None,
-                "base_url": None,
-                "no_agent": False,
-            }
-        ),
-        profile="worker_alpha",
-    )
-
-    assert updated["name"] == "dashboard-edit-job-renamed"
-    assert updated["provider_snapshot"] == "initial-provider"
-    assert updated["model_snapshot"] == "test-model"
-
-
-@pytest.mark.asyncio
-async def test_update_cron_job_clears_snapshots_for_no_agent(
-    isolated_profiles,
-    monkeypatch,
-):
-    from hermes_cli import runtime_provider, web_server
-
-    monkeypatch.setattr(
-        runtime_provider,
-        "resolve_runtime_provider",
-        lambda **kwargs: {"provider": "worker-provider"},
-    )
-    scripts_dir = isolated_profiles["worker_alpha"] / "scripts"
-    scripts_dir.mkdir()
-    (scripts_dir / "collect.py").write_text("print('ok')\n", encoding="utf-8")
-
-    job = _web_server_cron._call_cron_for_profile(
-        "worker_alpha",
-        "create_job",
-        prompt="managed by named profile",
-        schedule="every 1h",
-        name="agent-to-script-job",
-    )
-
-    assert job["provider_snapshot"] == "worker-provider"
-    assert job["model_snapshot"] == "test-model"
-
-    updated = await _rt_cron.update_cron_job(
-        job["id"],
-        _web_models.CronJobUpdate(
-            updates={
-                "script": str(scripts_dir / "collect.py"),
-                "no_agent": True,
-            }
-        ),
-        profile="worker_alpha",
-    )
-
-    assert updated["provider_snapshot"] is None
-    assert updated["model_snapshot"] is None
-
-
 @pytest.mark.asyncio
 async def test_update_cron_job_rejects_id_mutation(isolated_profiles, monkeypatch):
     """Dashboard surfaces a 400 (not a 500 or silent rename) when an
@@ -1193,3 +1097,120 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     assert job["profile"] == "default"
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+
+def test_list_cron_jobs_carries_each_profiles_ticker_heartbeat_age(isolated_profiles):
+    """#114309 — the dashboard must be able to say "scheduler last ticked X hours ago":
+    every listed job carries its own profile's ticker heartbeat age (None = never/unknown)."""
+    import time
+
+    for name, home in isolated_profiles.items():
+        with _web_server_cron._cron_store_scope(home) as cron_jobs:
+            cron_jobs.create_job(prompt=f"{name} hourly", schedule="every 1h")
+    (isolated_profiles["worker_alpha"] / "cron" / "ticker_heartbeat").write_text(
+        str(time.time() - 25 * 3600)
+    )
+
+    ages = {job["profile"]: job["scheduler_heartbeat_age_s"] for job in _rt_cron._list_cron_jobs_sync("all")}
+
+    assert ages["default"] is None  # no heartbeat file: cannot date the last tick
+    assert 25 * 3600 <= ages["worker_alpha"] < 25 * 3600 + 60
+
+
+@pytest.mark.asyncio
+async def test_cron_run_history_resolves_the_jobs_owner_profile(isolated_profiles, monkeypatch):
+    """#115345 — the Desktop lists jobs cross-profile (``?profile=all``) while its
+    per-item calls carry the ambient active profile. The run lookup treated that
+    hint as the owning profile, opened the wrong profile's state.db and answered
+    ``200 {"runs": []}``, so every job owned by another profile rendered
+    "No runs yet" for history that existed."""
+    from hermes_cli import web_server
+
+    worker_job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="owned by worker",
+        schedule="every 1h",
+        name="cross-profile-runs",
+    )
+    default_job = _web_server_cron._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="owned by default",
+        schedule="every 1h",
+        name="default-owned-runs",
+    )
+
+    # Run sessions live in the state.db of the profile that owns the job, keyed
+    # by the canonical id in the session id (cron_{job_id}_{timestamp}).
+    runs_by_profile = {
+        ("worker_alpha", worker_job["id"]): [
+            {"id": f"cron_{worker_job['id']}_1", "started_at": 1.0}
+        ],
+        ("default", default_job["id"]): [
+            {"id": f"cron_{default_job['id']}_1", "started_at": 2.0}
+        ],
+    }
+    opened = []
+
+    class _FakeRunsDB:
+        def __init__(self, profile):
+            self.profile = profile
+
+        def list_cron_job_runs(self, job_id, limit=20, offset=0):
+            opened.append(self.profile)
+            return [dict(row) for row in runs_by_profile.get((self.profile, job_id), ())]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        _rt_cron,
+        "_open_session_db_for_profile",
+        lambda profile, *, read_only: _FakeRunsDB(profile),
+    )
+
+    # Active profile is `default`; the listed job belongs to worker_alpha.
+    ambient = await _rt_cron.list_cron_job_runs(worker_job["id"], profile="default")
+    assert [run["id"] for run in ambient["runs"]] == [f"cron_{worker_job['id']}_1"]
+    assert ambient["runs"][0]["profile"] == "worker_alpha"
+    assert opened == ["worker_alpha"]
+
+    # Scope is resolved, not widened: the owning-profile hint and the omitted
+    # legacy lookup still read the owner's store, and profile="default" still
+    # reads default's own job (and only that job) out of default's state.db.
+    opened.clear()
+    owner = await _rt_cron.list_cron_job_runs(worker_job["id"], profile="worker_alpha")
+    omitted = await _rt_cron.list_cron_job_runs(worker_job["id"])
+    own = await _rt_cron.list_cron_job_runs(default_job["id"], profile="default")
+
+    assert [run["id"] for run in owner["runs"]] == [f"cron_{worker_job['id']}_1"]
+    assert [run["id"] for run in omitted["runs"]] == [f"cron_{worker_job['id']}_1"]
+    assert [run["id"] for run in own["runs"]] == [f"cron_{default_job['id']}_1"]
+    assert opened == ["worker_alpha", "worker_alpha", "default"]
+
+
+@pytest.mark.asyncio
+async def test_cron_job_mutations_resolve_the_owner_when_the_hint_is_another_profile(isolated_profiles):
+    """#115345 sibling: the per-job get/pause/resume/delete calls carry the same ambient-profile
+    hint as the run lookup. A hint that does not hold the job must resolve to the owner instead of
+    404ing (or acting on the wrong profile's store); a hint that does hold it still wins."""
+    worker_job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job", prompt="owned by worker", schedule="every 1h", name="worker-mutations",
+    )
+    job_id = worker_job["id"]
+
+    got = await _rt_cron.get_cron_job(job_id, profile="default")
+    assert got["id"] == job_id and got["name"] == "worker-mutations"
+
+    paused = await _rt_cron.pause_cron_job(job_id, profile="default")
+    assert paused["id"] == job_id and paused.get("enabled") is False
+    owner_view = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job_id)
+    assert owner_view["enabled"] is False  # mutation landed in the owner's jobs.json
+    assert _web_server_cron._call_cron_for_profile("default", "list_jobs", True) == []  # not copied into the hint profile
+
+    await _rt_cron.delete_cron_job(job_id, profile="default")
+    assert _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job_id) is None
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.get_cron_job(job_id, profile="default")
+    assert exc.value.status_code == 404

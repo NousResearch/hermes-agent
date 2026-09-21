@@ -636,10 +636,15 @@ class TestSnapshotIsCredentialStore:
 
     def test_excluded_from_backup(self):
         import hermes_cli.backup as bk
-        # Exact-component match (both singular and plural browser dirs).
+        # Hyphen snapshot dirs are any-depth; Browser Use CLI underscore dir is root-scoped.
         assert "browser-profile" in bk._EXCLUDED_DIRS
         assert bk._should_exclude(
             __import__("pathlib").Path("browser-profile/chrome/Default/Cookies")
+        )
+        assert bk._should_exclude(
+            __import__("pathlib").Path(
+                "browser_profiles/browser-use-default/Default/Login Data"
+            )
         )
 
     def test_read_guard_blocks_snapshot(self, tmp_path, monkeypatch):

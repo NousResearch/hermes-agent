@@ -344,7 +344,11 @@ def _project_node(
             (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0) for s in rows),
         "totalCostUsd": sum(
             float(s.get("actual_cost_usd") or s.get("estimated_cost_usd") or 0) for s in rows),
-        "repos": repos, "previewSessions": preview_sessions}
+        "repos": repos, "previewSessions": preview_sessions,
+        # Every claimed row, not just the preview window: the renderer's live overlay
+        # uses this as the ONE owner (a sibling worktree row with git_repo_root NULL
+        # re-classifies to an ancestor project by cwd alone).
+        "sessionIds": [s["id"] for s in rows if s.get("id")]}
     node.update(flags)
     return node
 

@@ -40,6 +40,55 @@ def test_overflow_exhaustion_is_non_retryable_context_overflow_with_slash_comman
     assert build_error_surface_from_result(result)["code"] == "context_overflow"
 
 
+def _context_rejection(request_tokens: int, window: int = 65_536, error="HTTP 500: Context size has been exceeded."):
+    """Drive ``_recover_context_length`` with a provider "context exceeded" and a request the rough
+    estimator prices at ``request_tokens`` against a ``window``-token model (no output cap)."""
+    from unittest.mock import patch
+
+    from agent.turn_overflow import _recover_context_length
+    from agent.turn_retry_state import TurnRetryState
+
+    st = _recovery()
+    st.compression_attempts = 0
+    st.agent.max_tokens = None
+    st.agent.context_compressor = SimpleNamespace(context_length=window)
+    st.agent.provider, st.agent.base_url, st.agent.tools = "lmstudio", "http://127.0.0.1:1234/v1", None
+    st.agent._buffer_vprint = st.agent._buffer_diagnostic_status = lambda *a, **k: None
+    compressed = []
+    st.agent._compress_context = lambda msgs, *a, **k: (compressed.append(1) or [{"role": "user", "content": "x"}], None)
+    with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=request_tokens), \
+         patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=[request_tokens, 10]), \
+         patch("agent.turn_overflow.time.sleep", lambda _: None):
+        verdict = _recover_context_length(st, TurnRetryState(), error)
+    return verdict, compressed
+
+
+def test_context_rejection_far_below_the_window_is_not_blamed_on_the_conversation():
+    """A single-slot local server rejecting a ~3k-token request (another thread held its
+    context) must not read as "this conversation has grown too long": no compression, transient
+    + retryable, and the gateway's overflow verdict (drop message / auto-reset) stays off."""
+    from gateway.run_turn import is_context_overflow_failure_result
+
+    verdict, compressed = _context_rejection(3_000)
+    result = verdict.result
+    assert verdict.action == "return" and not compressed
+    assert result["failed"] is True and not result.get("compression_exhausted")
+    assert result["failure_reason"] == "server_error" and result["failure_retryable"] is True
+    text = result["final_response"]
+    assert "grown too long" not in text and "/new" not in text
+    assert "3,000" in text and "65,536" in text and "background" in text and "/retry" in text
+    assert is_context_overflow_failure_result(result, history_len=2) is False
+
+
+def test_context_rejection_near_the_window_still_compresses():
+    """Control: a request that plausibly overflows keeps the compress-and-retry path, and so does
+    a small local estimate when the SERVER quoted its own count — its measurement wins."""
+    verdict, compressed = _context_rejection(60_000)
+    assert compressed and verdict.action == "break"
+    verdict, compressed = _context_rejection(3_000, error="prompt is too long: 70000 tokens > 65536 maximum")
+    assert compressed and verdict.action == "break"
+
+
 def test_payload_and_context_overflow_share_one_next_step():
     """413 and context-length exhaustion differ in cause text but never in what to do."""
     a = _recovery().count_attempt(payload_too_large=True).result["final_response"]

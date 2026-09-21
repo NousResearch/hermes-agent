@@ -1491,3 +1491,26 @@ class TestOpenRouterRoutingVariantCatalogLookup:
         with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
             assert lookup_models_dev_context("openrouter", "z-ai/glm-5.2:free") == 256000
             assert lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash:free") is None
+
+
+class TestOpencodeRelayVisionMarker:
+    """#96066: an OpenCode Zen/Go ``*-vision*`` model id the catalog does not know is still vision-capable,
+    so ``image_input_mode: auto`` attaches native pixels; everything else about it stays unknown."""
+
+    @pytest.mark.parametrize("provider", ["opencode-go", "opencode-zen", "opencode-go-bridge"])
+    def test_vision_marker_fills_the_catalog_gap_for_opencode_family(self, provider):
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities(provider, "deepseek-v4-flash-vision-exp")
+        assert caps is not None and caps.supports_vision is True
+        assert caps.supports_reasoning is None  # only vision is claimed
+
+    def test_marker_needs_the_family_and_catalog_data_stays_authoritative(self):
+        registry = {"opencode-go": {"id": "opencode-go", "models": {
+            "deepseek-v4-flash-vision-exp": {"id": "deepseek-v4-flash-vision-exp", "modalities": {"input": ["text"]},
+                                             "limit": {"context": 500000}}}}}
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_capabilities("opencode-go", "deepseek-v4-flash") is None
+            assert get_model_capabilities("deepseek", "some-vision-model") is None
+        with patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("opencode-go", "deepseek-v4-flash-vision-exp")
+        assert caps.supports_vision is False and caps.context_window == 500000

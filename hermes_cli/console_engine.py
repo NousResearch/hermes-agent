@@ -706,8 +706,15 @@ def _sessions_rename(_engine: HermesConsoleEngine, args: list[str]) -> None:
 
 @_captured
 def _sessions_optimize(_engine: HermesConsoleEngine, args: list[str]) -> None:
-    _expect_no_args(args, "sessions optimize")
+    # --force is parsed HERE: the refusal below points at it, and a hint the surface cannot
+    # accept would make this command refuse forever whenever a gateway is running.
+    ns = _parse("sessions optimize", args, (("--force",), dict(action="store_true")))
     with _session_db(read_only=False) as db:
+        from hermes_state_holders import held_store_refusal
+        refusal = None if ns.force else held_store_refusal(
+            db.db_path, command="optimize", force_hint="`sessions optimize --force`")
+        if refusal:
+            raise ConsoleCommandError(refusal)
         print(f"Optimized {db.vacuum()} FTS index(es).")
 
 
@@ -820,7 +827,7 @@ _BUILTIN_COMMANDS = (
      "Export sessions to JSONL.", _sessions_export, "Export session data?"),
     (("sessions", "rename"), "sessions rename <session> <title>", "Rename a session.",
      _sessions_rename, "Rename this session?"),
-    (("sessions", "optimize"), "sessions optimize", "Optimize the session store.",
+    (("sessions", "optimize"), "sessions optimize [--force]", "Optimize the session store.",
      _sessions_optimize, "Optimize the session database?"),
     (("sessions", "repair"), "sessions repair [--check-only] [--no-backup]",
      "Repair a malformed session database schema.", _sessions_repair,

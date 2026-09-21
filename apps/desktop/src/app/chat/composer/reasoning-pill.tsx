@@ -10,7 +10,7 @@ import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
-import { reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { reasoningEffortClamp, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { $defaultReasoningEffort } from '@/store/session'
 
@@ -34,6 +34,7 @@ export function ReasoningPill({ disabled, model }: { disabled: boolean; model: C
   const copy = useI18n().t.shell.modelOptions
   const view = useSessionView()
   const reasoningEffort = useStore(view.$reasoningEffort)
+  const reasoningEffortWire = useStore(view.$reasoningEffortWire)
   const defaultEffort = useStore($defaultReasoningEffort)
   const [open, setOpen] = useState(false)
 
@@ -41,8 +42,16 @@ export function ReasoningPill({ disabled, model }: { disabled: boolean; model: C
     return null
   }
 
-  const label = reasoningEffortLabel(reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT)
-  const title = `${copy.effort}: ${label}`
+  const effort = reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT
+  // A clamped pick (`ultra` → `max`) keeps the pill compact ("Ultra→Max") and
+  // spells out the CLI's wording in the tooltip, so Ultra is never shown as a
+  // distinct wire level the route does not have (#61634).
+  const clamp = reasoningEffortClamp(effort, reasoningEffortWire)
+  const label = reasoningEffortLabel(effort, reasoningEffortWire)
+
+  const title = clamp
+    ? `${copy.effort}: ${copy[clamp.effort]} (${copy.sendsOnRoute(copy[clamp.wire])})`
+    : `${copy.effort}: ${label}`
 
   // Closing the menu ends its claim on the keyboard: Radix restores focus to
   // this pill (a toolbar button), so without the release the Enter that

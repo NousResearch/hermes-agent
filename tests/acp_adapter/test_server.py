@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -464,6 +465,69 @@ class TestPrompt:
 
         assert state.history == []
 
+    @pytest.mark.asyncio
+    async def test_prompt_after_tail_exception_runs_instead_of_queueing(self, agent, mock_manager, monkeypatch):
+        """A raise in the post-turn tail (here ``save_session``) costs at most that one turn:
+        the next prompt runs instead of queueing forever behind a turn that already ended (#115588)."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={"final_response": "done", "messages": []})
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+        monkeypatch.setattr(mock_manager, "save_session", MagicMock(side_effect=RuntimeError("disk full")))
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            await agent.prompt(prompt=[TextContentBlock(type="text", text="first")], session_id=resp.session_id)
+
+        monkeypatch.setattr(mock_manager, "save_session", MagicMock())
+        second = await agent.prompt(prompt=[TextContentBlock(type="text", text="second")], session_id=resp.session_id)
+
+        assert second.stop_reason == "end_turn"
+        assert state.queued_prompts == []
+        assert state.agent.run_conversation.call_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("executor_raises", [False, True])
+    async def test_prompt_fails_tool_calls_left_open_before_responding(self, agent, mock_manager, executor_raises):
+        """A ``tool.started`` that never sees ``tool.completed`` (blocked/denied/crashed turn) must
+        reach the client as a terminal ``failed`` update BEFORE the PromptResponse — on the normal
+        return path and when the executor body itself raises."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.model, state.agent.provider = "test-model", "openrouter"
+        events: list = []
+        mock_conn = MagicMock(spec=acp.Client)
+
+        async def _record(_sid, update):
+            events.append(update)
+
+        mock_conn.session_update = _record
+        agent._conn = mock_conn
+
+        def _turn(*args, **kwargs):
+            state.agent.tool_progress_callback("tool.started", "terminal", "ls", {"command": "ls"})
+            if executor_raises:
+                raise RuntimeError("executor blew up")
+            return {"final_response": "ok", "messages": []}
+
+        with patch.object(HermesACPAgent, "_run_agent_turn", side_effect=_turn):
+            started = asyncio.get_running_loop().time()
+            response = await asyncio.wait_for(
+                agent.prompt(prompt=[TextContentBlock(type="text", text="hi")], session_id=resp.session_id),
+                timeout=3,
+            )
+            seen_before_response = list(events)
+            # Flushing on the loop thread stalled the loop for ``_send_update``'s 5s wait per call.
+            assert asyncio.get_running_loop().time() - started < 4
+
+        assert isinstance(response, PromptResponse)
+        start = next(e for e in seen_before_response if isinstance(e, ToolCallStart))
+        closes = [e for e in seen_before_response if isinstance(e, ToolCallProgress) and e.tool_call_id == start.tool_call_id]
+        assert [e.status for e in closes] == ["failed"]
+
 
 
 
@@ -657,8 +721,11 @@ class TestRegisterSessionMcpServers:
         )
 
         registered_config = {}
+        pinned_cwd = {}
         def capture_register(config_map):
+            from agent.runtime_cwd import resolve_context_cwd
             registered_config.update(config_map)
+            pinned_cwd["value"] = resolve_context_cwd()  # the stdio default cwd reads this pin
             return ["mcp_test_server_tool1"]
 
         with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=capture_register), \
@@ -670,6 +737,8 @@ class TestRegisterSessionMcpServers:
         assert cfg["command"] == "/usr/bin/test"
         assert cfg["args"] == ["--flag"]
         assert cfg["env"] == {"KEY": "val"}
+        # Registration runs under the session's logical cwd so IDE-provided stdio servers spawn there.
+        assert pinned_cwd["value"] == Path("/tmp")
 
 
     @pytest.mark.asyncio

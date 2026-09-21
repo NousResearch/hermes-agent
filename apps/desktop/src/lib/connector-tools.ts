@@ -1,29 +1,6 @@
 import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 
-import type { ChatMessage } from '@/lib/chat-messages'
-
-export function latestConnectorPart(messages: ChatMessage[]) {
-  return messages
-    .flatMap(message => message.parts)
-    .filter(part => {
-      if (part.type !== 'tool-call') {
-        return false
-      }
-
-      if (part.toolName === 'manage_connections') {
-        const input = recordOf(part.args)
-
-        return (
-          (input.action ?? 'status') !== 'status' || (Array.isArray(input.connectors) && input.connectors.length > 0)
-        )
-      }
-
-      return connectorCalls(part.toolName, part.args).length > 0
-    })
-    .at(-1)
-}
-
 export interface McpTarget {
   name: string
   action: 'authorize' | 'enable' | 'install'
@@ -51,30 +28,22 @@ export function mcpTargets(toolName: string, args: ToolCallMessagePart['result']
   })
 }
 
-export type ConnectionStatus = 'active' | 'initiated' | 'failed' | 'expired' | 'revoked' | 'inactive' | 'initializing'
+/** The gateway's six-state account status; `pending` covers the vendor's INITIALIZING and INITIATED. */
+export type ConnectionStatus = 'active' | 'expired' | 'failed' | 'inactive' | 'pending' | 'revoked'
 
-const CONNECTION_STATUSES: readonly ConnectionStatus[] = [
-  'active',
-  'initiated',
-  'failed',
-  'expired',
-  'revoked',
-  'inactive',
-  'initializing'
-]
-
-const isConnectionStatus = (value: string): value is ConnectionStatus =>
-  CONNECTION_STATUSES.some(status => status === value)
-
-/** Display-only; these fields never grant access. */
+/** One `GET /v1/connectors` item as the gateway sends it. Display-only; these fields never grant access. */
 export interface ConnectorRow {
-  connector: string
-  connected?: boolean
-  enabled?: boolean
+  connected: boolean
   connectionStatus?: ConnectionStatus
-  name?: string
-  description?: string
+  connector: string
+  disabledTools?: string[]
+  enabled: boolean
+  statusReason?: string
 }
+
+/** The vendor's public logo for a toolkit, keyed by its slug (the gateway slug is the vendor slug; checked
+ *  for every lead-order pick). Served as an SVG with no CORS header, so it is only ever an `<img src>`. */
+export const connectorIconUrl = (slug: string): string => `https://logos.composio.dev/api/${slug}`
 
 export function connectorText(value: ToolCallMessagePart['result']): string | undefined {
   return typeof value === 'string' ? value : undefined
@@ -150,74 +119,6 @@ export function connectorCalls(name: string, args: ToolCallMessagePart['result']
 
     return callName !== undefined && connectorToolName(callName) ? [{ name: callName, arguments: call.arguments }] : []
   })
-}
-
-export function connectionRows(
-  args: ToolCallMessagePart['result'],
-  result: ToolCallMessagePart['result']
-): ConnectorRow[] {
-  const input = recordOf(args)
-  const output = recordOf(result)
-  const rows = new Map<string, ConnectorRow>()
-
-  const add = (item: ToolCallMessagePart['result']) => {
-    const slug = connectorText(item)
-
-    if (slug !== undefined) {
-      if (/^[a-z0-9_-]+$/i.test(slug)) {
-        rows.set(slug, rows.get(slug) ?? { connector: slug })
-      }
-
-      return
-    }
-
-    const row = recordOf(item)
-    const connector = connectorText(row.connector)
-
-    if (connector === undefined || !/^[a-z0-9_-]+$/i.test(connector)) {
-      return
-    }
-
-    const merged: ConnectorRow = { ...rows.get(connector), connector }
-
-    if (row.connected === true || row.connected === false) {
-      merged.connected = row.connected
-    }
-
-    if (row.enabled === true || row.enabled === false) {
-      merged.enabled = row.enabled
-    }
-
-    const connectionStatus = connectorText(row.connectionStatus)
-
-    if (connectionStatus && isConnectionStatus(connectionStatus)) {
-      merged.connectionStatus = connectionStatus
-    }
-
-    for (const key of ['name', 'description'] as const) {
-      const text = connectorText(row[key])
-
-      if (text !== undefined) {
-        merged[key] = text
-      }
-    }
-
-    rows.set(connector, merged)
-  }
-
-  if (Array.isArray(input.connectors)) {
-    input.connectors.forEach(add)
-  } else if (connectorText(input.connectors) !== undefined) {
-    add(input.connectors)
-  }
-
-  for (const key of ['connectors', 'results', 'pending']) {
-    if (Array.isArray(output[key])) {
-      output[key].forEach(add)
-    }
-  }
-
-  return [...rows.values()]
 }
 
 /** Authorization URLs may carry tokens; reject non-HTTPS or embedded credentials. */

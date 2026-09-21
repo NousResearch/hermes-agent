@@ -15,13 +15,13 @@ Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\google-workspace` |
+| Path | `skills/productivity/google-workspace` |
 | Version | `1.2.0` |
 | Author | Nous Research |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Google`, `Gmail`, `Calendar`, `Drive`, `Sheets`, `Docs`, `Contacts`, `Email`, `OAuth` |
-| Related skills | [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya) |
+| Related skills | [`himalaya`](../../bundled/email/email-himalaya.md) |
 
 ## Reference: full SKILL.md
 
@@ -288,8 +288,9 @@ $GAPI sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
 ### Docs
 
 ```bash
-# Read
+# Read (a tabbed Doc returns a "tabs" array; single-tab and legacy Docs also return "body")
 $GAPI docs get DOC_ID
+$GAPI docs get DOC_ID --tab TAB_ID     # read one tab of a tabbed Doc
 
 # Create a new Doc (optionally seeded with body text)
 $GAPI docs create --title "Meeting Notes"
@@ -297,6 +298,7 @@ $GAPI docs create --title "Draft" --body "First paragraph..."
 
 # Append text to the end of an existing Doc
 $GAPI docs append DOC_ID --text "Additional content to append"
+$GAPI docs append DOC_ID --tab TAB_ID --text "..."   # --tab required when the Doc has multiple tabs
 ```
 
 ## Output Format

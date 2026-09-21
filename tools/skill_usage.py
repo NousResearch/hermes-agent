@@ -181,14 +181,14 @@ def _read_hub_installed_names() -> Set[str]:
 
 
 def _prune_builtins_enabled() -> bool:
-    """``curator.prune_builtins`` (default True); lazy config import keeps this module importable during update/sync."""
+    """``curator.prune_builtins`` (default False); lazy config import keeps this module importable during update/sync."""
     try:
         from hermes_cli.config import load_config
         cur = load_config().get("curator")
-        return bool(cur.get("prune_builtins", True)) if isinstance(cur, dict) else True
+        return bool(cur.get("prune_builtins", False)) if isinstance(cur, dict) else False
     except Exception as e:  # pragma: no cover — best-effort config read
         logger.debug("Failed to read curator.prune_builtins: %s", e)
-        return True
+        return False
 
 
 def read_suppressed_names() -> Set[str]:
@@ -345,7 +345,9 @@ def adopt_skill(skill_name: str) -> Tuple[bool, str]:
 def _empty_record() -> Dict[str, Any]:
     return {"created_by": None, "use_count": 0, "view_count": 0, "last_used_at": None, "last_viewed_at": None,
             "patch_count": 0, "patch_generation": 0, "last_reused_patch_generation": 0, "last_patched_at": None,
-            "created_at": _now_iso(), "state": STATE_ACTIVE, "pinned": False, "archived_at": None}
+            "created_at": _now_iso(), "state": STATE_ACTIVE, "pinned": False, "archived_at": None,
+            # When the curator first anchored this skill's inactivity clock (seed or re-anchor); None = never seen.
+            "first_seen_at": None}
 
 
 def _backfilled(rec: Any) -> Dict[str, Any]:
@@ -409,8 +411,20 @@ def seed_record_if_missing(skill_name: str) -> None:
     if skill_name and is_curation_eligible(skill_name):
         # load_usage() already dropped non-dict values, so "missing" == key absent; dirty only when inserted.
         def _seed(data):
-            return None, skill_name not in data and data.setdefault(skill_name, _empty_record()) is not None
+            return None, skill_name not in data and data.setdefault(skill_name, {**_empty_record(), "first_seen_at": _now_iso()}) is not None
         _locked_update(skill_name, _seed, "skill_usage.seed_record_if_missing(%s) failed: %s")
+
+
+def reanchor_clock(skill_name: str) -> None:
+    """Start a skill's inactivity clock NOW, once. Telemetry writes a record the moment a bundled skill is
+    seeded, so by the curator's first sight ``created_at`` can be months old and every never-used built-in
+    goes stale on that first pass (#79295); ``first_seen_at`` marks the clock as anchored so later runs age
+    it normally. A record the bug already marked stale is reactivated — the staleness was the artifact."""
+    def _apply(rec: Dict[str, Any]) -> None:
+        rec["created_at"] = rec["first_seen_at"] = _now_iso()
+        if rec.get("state") == STATE_STALE:
+            rec["state"] = STATE_ACTIVE
+    _mutate(skill_name, _apply)
 
 
 def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False) -> Any:
@@ -617,7 +631,9 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
         return False, f"skill '{skill_name}' not found"
     if is_external_skill_path(skill_dir):
         return False, _external_read_only_message(skill_name)
-    dest = _archive_dir() / skill_dir.name
+    # Flatten under the skill NAME, not the directory name: `mlops/training/accelerate` is the skill
+    # `huggingface-accelerate`, and restore/list/purge all key on the name.
+    dest = _archive_dir() / skill_name
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -643,9 +659,12 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     # "<skill>-YYYYMMDDHHMMSS" counts — a bare startswith("<skill>-") would let restoring "git" steal "git-helpers".
     dirs = [p for p in archive_root.rglob("*") if p.is_dir()]
     prefix = f"{skill_name}-"
+    # Older archives were flattened under the DIRECTORY name (`accelerate` for `huggingface-accelerate`),
+    # so fall back to the frontmatter name before giving up.
     candidates = [p for p in dirs if p.name == skill_name] or sorted(
         (p for p in dirs if p.name.startswith(prefix) and len(p.name) - len(prefix) == 14
-         and p.name[len(prefix):].isdigit()), reverse=True)
+         and p.name[len(prefix):].isdigit()), reverse=True) or [
+        p for p in dirs if (p / "SKILL.md").is_file() and _read_skill_name(p / "SKILL.md", fallback=p.name) == skill_name]
     if not candidates:
         return False, f"skill '{skill_name}' not found in archive"
     if (dest := _skills_dir() / skill_name).exists():

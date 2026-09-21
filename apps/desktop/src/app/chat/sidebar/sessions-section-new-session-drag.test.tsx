@@ -178,6 +178,7 @@ beforeEach(() => {
 
 describe('Show all sessions', () => {
   const sessions = Array.from({ length: 6 }, (_, index) => ({ id: `session-${index + 1}` }) as SessionInfo)
+
   const renderRows = (items: SessionInfo[]) => (
     <>
       {items.map(item => (
@@ -204,6 +205,7 @@ describe('Show all sessions', () => {
     workspaceOpen.value = true
     $sidebarShowAllSessions.set(true)
     const now = Math.floor(Date.now() / 1000)
+
     const previewSessions = [0, 2, 10, 40].map(
       days =>
         ({
@@ -331,6 +333,25 @@ describe('project-associated new-session drag sources', () => {
       before: 'session-tile:next',
       cwd: '/repo/a'
     })
+  })
+
+  it('renders declared repo headers before the project has any sessions', () => {
+    const repo = (id: string, label: string) => ({ groups: [], id, label, path: id, sessionCount: 0 })
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        emptyState={<div>No sessions in this project</div>}
+        projectContent={project({
+          repos: [repo('/repo/a', 'Repo A'), repo('/repo/b', 'Repo B')],
+          sessionCount: 0
+        })}
+      />
+    )
+
+    expect(screen.getByRole('button', { name: 'New session in Repo A' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'New session in Repo B' })).toBeTruthy()
+    expect(screen.queryByText('No sessions in this project')).toBeNull()
   })
 
   it('drags profile-group add buttons to start a session in that profile', async () => {

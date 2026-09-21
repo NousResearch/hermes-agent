@@ -130,23 +130,12 @@ def test_repair_path_has_no_bare_connects() -> None:
             and first.args[0].id == "db_path"
         )
 
-    helper = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "_connect_repair_durable"
-    )
-    helper_calls = [node for node in ast.walk(helper) if is_db_path_connect(node)]
-    assert len(helper_calls) == 1, (
-        "_connect_repair_durable must own exactly one sqlite3.connect(str(db_path), ...)"
-    )
-
-    all_calls = [node for node in ast.walk(tree) if is_db_path_connect(node)]
-    elsewhere = [node for node in all_calls if node not in helper_calls]
-    assert elsewhere == [], (
-        f"{len(elsewhere)} repair/probe connection(s) still bypass "
-        "_connect_repair_durable() and write state.db without the macOS "
-        "fsync barriers"
+    # The helper itself opens through ``connect_tracked`` (byte-probe registry, #63386), so no
+    # ``sqlite3.connect(str(db_path), ...)`` may remain anywhere in the module.
+    bare = [node for node in ast.walk(tree) if is_db_path_connect(node)]
+    assert bare == [], (
+        f"{len(bare)} repair/probe connection(s) bypass _connect_repair_durable() and write "
+        "state.db without the macOS fsync barriers or the live-connection registry"
     )
 
 

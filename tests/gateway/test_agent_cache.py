@@ -89,7 +89,7 @@ class TestAgentConfigSignature:
         monkeypatch.setattr(
             runtime_provider,
             "resolve_runtime_provider",
-            lambda: {
+            lambda **_kw: {
                 "api_key": "test-key",
                 "base_url": "https://trusted-proxy.example/v1",
                 "provider": "custom",

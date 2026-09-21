@@ -32,10 +32,10 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
         data-slot={slot ?? 'aui_zoomable-image'}
       >
         <button
+          aria-label={canOpen ? copy.openImage : undefined}
           className="contents"
           disabled={!canOpen}
           onClick={() => canOpen && setLightboxOpen(true)}
-          title={canOpen ? copy.openImage : undefined}
           type="button"
         >
           <img alt={alt ?? ''} className={className} src={src} {...props} />
@@ -125,7 +125,6 @@ export function ImageActionButton({
         event.stopPropagation()
         void onClick()
       }}
-      title={saving ? copy.savingImage : copy.downloadImage}
       type="button"
     >
       <Download className={cn('size-4', saving && 'animate-pulse')} />

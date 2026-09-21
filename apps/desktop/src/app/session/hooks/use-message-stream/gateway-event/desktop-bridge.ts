@@ -3,7 +3,7 @@ import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
-import { $tipsEnabled, type ActiveTip, showTip } from '@/store/tips'
+import { $tipsEnabled, type ActiveTip, agentTipId, showTip } from '@/store/tips'
 
 import type { GatewayEventContext } from './types'
 
@@ -47,6 +47,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
         side: (payload?.side as ActiveTip['side']) ?? 'top',
         targets: [selector],
         text,
+        tipId: agentTipId(selector, text),
         title: typeof payload?.title === 'string' ? payload.title : undefined
       })
     }

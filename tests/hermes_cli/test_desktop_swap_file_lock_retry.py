@@ -31,7 +31,8 @@ def _staged_over_live(tmp_path: Path, monkeypatch):
     staged_exe = staging / _packaged_exe_rel()
     staged_exe.parent.mkdir(parents=True)
     staged_exe.write_text("new", encoding="utf-8")
-    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d: [])
+    # The swap point now passes ``also_posix=True`` (#116504); the double must accept the keyword.
+    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda d, **kw: [])
     slept: list[float] = []
     monkeypatch.setattr(main_desktop._time_mod, "sleep", slept.append)
     return desktop_dir, staging, live_exe, slept

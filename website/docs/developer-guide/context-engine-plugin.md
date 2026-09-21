@@ -267,6 +267,6 @@ Your engine must therefore assume:
 
 ## See also
 
-- [Context Compression and Caching](/developer-guide/context-compression-and-caching) — how the built-in compressor works
-- [Memory Provider Plugins](/developer-guide/memory-provider-plugin) — analogous single-select plugin system for memory
-- [Plugins](/user-guide/features/plugins) — general plugin system overview
+- [Context Compression and Caching](./context-compression-and-caching.md) — how the built-in compressor works
+- [Memory Provider Plugins](./memory-provider-plugin.md) — analogous single-select plugin system for memory
+- [Plugins](../user-guide/features/plugins.md) — general plugin system overview

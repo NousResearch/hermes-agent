@@ -96,9 +96,13 @@ class TestMetadata:
         assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
 
     def test_setup_schema_has_no_required_env_vars(self, provider):
+        """#102144: the keyless row must declare the shared Codex OAuth bootstrap hook (otherwise setup
+        saves the backend without ever signing in) and its hint must name a command that exists."""
         schema = provider.get_setup_schema()
         assert schema["env_vars"] == []
-        assert "hermes auth codex" in schema["post_setup_hint"]
+        assert schema["post_setup"] == "openai_codex"
+        assert "hermes auth add openai-codex" in schema["post_setup_hint"]
+        assert "hermes auth codex`" not in schema["post_setup_hint"]
 
 
 # ── Availability ────────────────────────────────────────────────────────────
@@ -174,9 +178,16 @@ class TestGenerate:
 
     def test_remote_source_url_is_fetched_and_inlined(self, provider, codex_backend, monkeypatch):
         # The backend's own URL downloader 400s on ordinary public images; we fetch client-side.
+        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
+        # codex_backend monkeypatches httpx.Client; build the fetch client from
+        # the unpatched class so the ref-image download gets the PNG responder.
+        real_client = httpx._client.Client
         monkeypatch.setattr(
-            httpx, "get",
-            lambda url, **kw: httpx.Response(200, content=_png_bytes(), request=httpx.Request("GET", url)))
+            "tools.url_safety.create_ssrf_safe_client",
+            lambda **kw: real_client(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(200, content=_png_bytes(), request=request)),
+                **kw))
 
         result = provider.generate("edit", image_url="https://example.com/ref.png")
 

@@ -165,8 +165,9 @@ def _toolset_enabled(config: Dict[str, object], toolset_key: str) -> bool:
     target_tools = set(resolve_toolset(toolset_key))
     if not target_tools:
         return False
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
     for platform, raw_toolsets in platform_toolsets.items():
-        toolset_names = list(raw_toolsets) if isinstance(raw_toolsets, list) else []
+        toolset_names = list(parse_platform_toolsets_value(raw_toolsets) or [])
         if not toolset_names:
             toolset_names = [t for t in (_DEFAULT_PLATFORM_TOOLSETS.get(platform),) if t]
         available_tools: Set[str] = set()

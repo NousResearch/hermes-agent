@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $gateway } from './gateway'
 import {
@@ -18,7 +19,7 @@ import {
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from './prompts'
 import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
-import { $activeSessionId, setActiveSessionId } from './session'
+import { $activeSessionId, setActiveSessionId, setSessions } from './session'
 import { dropSessionState, publishSessionState } from './session-states'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -165,6 +166,26 @@ describe('dispatchNativeNotification preferences', () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
     )
+  })
+})
+
+describe('dispatchNativeNotification session context', () => {
+  it('names the session on blocking-prompt titles only, falling back to the id tail without a row', () => {
+    setSessions([{ id: 'named-chat', title: 'Migrate the schema' } as SessionInfo])
+
+    try {
+      dispatchNativeNotification({ kind: 'input', sessionId: 'named-chat', title: 'Input needed' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Input needed — Migrate the schema' }))
+
+      dispatchNativeNotification({ kind: 'approval', sessionId: 'abcdef123456', title: 'Approval needed' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approval needed — #123456' }))
+
+      setActiveSessionId('named-chat')
+      dispatchNativeNotification({ kind: 'turnDone', sessionId: 'named-chat', title: 'Hermes finished' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Hermes finished' }))
+    } finally {
+      setSessions([])
+    }
   })
 })
 

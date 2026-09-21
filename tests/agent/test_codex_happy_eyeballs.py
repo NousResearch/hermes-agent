@@ -5,6 +5,7 @@ import socket
 import httpcore
 import pytest
 
+import hermes_bootstrap
 from agent import process_bootstrap
 
 
@@ -109,7 +110,7 @@ def test_connection_staggers_past_blackholed_ipv6(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        process_bootstrap.socket,
+        hermes_bootstrap.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [
             (
@@ -128,22 +129,22 @@ def test_connection_staggers_past_blackholed_ipv6(monkeypatch):
             ),
         ],
     )
-    monkeypatch.setattr(process_bootstrap.socket, "socket", FakeSocket)
+    monkeypatch.setattr(hermes_bootstrap.socket, "socket", FakeSocket)
     monkeypatch.setattr(
-        process_bootstrap.selectors, "DefaultSelector", FakeSelector
+        hermes_bootstrap.selectors, "DefaultSelector", FakeSelector
     )
     monkeypatch.setattr(
-        process_bootstrap.time, "monotonic", lambda: clock[0]
+        hermes_bootstrap.time, "monotonic", lambda: clock[0]
     )
 
-    winner = process_bootstrap._happy_eyeballs_create_connection(
+    winner = hermes_bootstrap._happy_eyeballs_create_connection(
         ("chatgpt.com", 443),
         timeout=10.0,
     )
 
     assert winner.family == socket.AF_INET
     assert winner.timeout == 10.0
-    assert clock[0] == process_bootstrap._HAPPY_EYEBALLS_DELAY_SECONDS
+    assert clock[0] == hermes_bootstrap._HAPPY_EYEBALLS_DELAY_SECONDS
     assert sockets[0].closed is True
     assert sockets[1].closed is False
 

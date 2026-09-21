@@ -56,6 +56,7 @@ describe('approval request.cancel', () => {
     const next = updateSessionState.mock.results[0]?.value as {
       messages: { role: string; parts: { text: string }[] }[]
     }
+
     expect(next.messages).toHaveLength(1)
     expect(next.messages[0].role).toBe('system')
     expect(next.messages[0].parts[0].text).toMatch(/timed out/i)

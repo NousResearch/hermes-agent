@@ -234,6 +234,21 @@ class TestClarifyTimeoutResolution:
         assert cm.resolve_clarify_timeout({"agent": {"clarify_timeout": 900}}) == 900
 
 
+    def test_cli_defaults_do_not_shadow_agent_clarify_timeout(self):
+        """The classic CLI builds its config from ``cli._cli_config_defaults()``; a seeded
+        legacy ``clarify.timeout`` there wins over the user's ``agent.clarify_timeout`` in
+        the resolver, capping every CLI modal at that value (120 s) while the docs promise
+        3600 s / unlimited. The CLI defaults must leave the legacy key unset."""
+        import cli
+        from tools import clarify_gateway as cm
+
+        defaults = cli._cli_config_defaults()
+        assert (defaults.get("clarify") or {}).get("timeout") is None
+        assert cm.resolve_clarify_timeout(defaults) == 3600
+        cli._merge_file_config(defaults, {"agent": {"clarify_timeout": 900}})
+        assert cm.resolve_clarify_timeout(defaults) == 900
+
+
     def test_non_positive_preserved_as_unlimited_sentinel(self):
         """<= 0 is passed through verbatim — the waiting loops read it as
         'unlimited', so the resolver must not clamp it to a positive default."""

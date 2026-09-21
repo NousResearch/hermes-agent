@@ -1552,6 +1552,51 @@ def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, m
     assert pool.entries() == []
 
 
+def test_load_pool_copilot_exchange_only_when_selected_and_warns_once(tmp_path, monkeypatch, caplog):
+    """An ambient gh-CLI Copilot credential is seeded without the token exchange (and without the
+    'degraded to RAW token' warning) until copilot is actually selected; once selected, the
+    degradation is reported once per token, not on every pool load (#114740)."""
+    import logging
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    from agent.credential_pool import _reset_copilot_raw_degradation_warned, load_pool
+    _reset_copilot_raw_degradation_warned()
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("gho_raw_initial", "gh auth token"))
+    exchanges = []
+
+    def degraded_exchange(token):
+        exchanges.append(token)
+        return token, None  # exchange unavailable -> RAW token, no enterprise URL
+
+    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", degraded_exchange)
+
+    def degradation_warnings():
+        return [r for r in caplog.records if "Copilot token exchange degraded to RAW token" in r.message]
+
+    with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+        # Main provider is deepseek; copilot is merely discovered via `gh auth token`.
+        (tmp_path / "hermes" / "config.yaml").write_text("model:\n  provider: deepseek\n  default: deepseek-chat\n", encoding="utf-8")
+        pool = load_pool("copilot")
+        load_pool("copilot")
+        assert exchanges == [] and degradation_warnings() == []
+        assert [e.access_token for e in pool.entries()] == ["gho_raw_initial"]  # credential still listed
+
+        # The user selects copilot for one auxiliary task: the exchange runs, the degradation is
+        # reported exactly once across repeated loads.
+        (tmp_path / "hermes" / "config.yaml").write_text(
+            "model:\n  provider: deepseek\n  default: deepseek-chat\nauxiliary:\n  approval:\n    provider: copilot\n", encoding="utf-8")
+        from hermes_cli import config as _cfg
+        _cfg._LOAD_CONFIG_CACHE.clear()
+        _cfg._RAW_CONFIG_CACHE.clear()  # same-second rewrite: the mtime signature may not change
+        load_pool("copilot")
+        load_pool("copilot")
+        assert len(exchanges) == 2 and len(degradation_warnings()) == 1
+
+        # A different token is a different degradation: warned again, once.
+        monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("gho_raw_rotated", "gh auth token"))
+        load_pool("copilot")
+        assert len(degradation_warnings()) == 2
 
 
 def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
@@ -2209,3 +2254,52 @@ def test_a_persist_without_declared_intent_still_cannot_erase_a_cooldown(
     entry = _disk_entry(tmp_path)
     assert entry["last_status"] == "exhausted"
     assert entry["last_error_code"] == 402
+
+
+def test_live_pool_flush_does_not_resurrect_a_cooldown_reset_by_another_process(tmp_path, monkeypatch):
+    """A running session's next ordinary flush must not undo ``hermes auth reset`` (#89415).
+
+    The live pool still holds the entry as exhausted in memory; the CLI in another
+    process clears it on disk. Before the fix the cleared disk row had no status,
+    so the recency merge let the stale in-memory cooldown win and the reset was
+    silently reverted by the next rotation / refresh / sibling 429. The reset's
+    own ``status_cleared_at`` marker now outranks any older in-memory status, on
+    the save side (disk stays clear) and on the read side (the live pool lifts
+    its cooldown and serves the credential again).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _exhausted_billing_store(tmp_path, age_seconds=5)
+
+    from agent.credential_pool import load_pool
+
+    live = load_pool("deepseek")                      # process A: session already running
+    assert live.has_available() is False
+    assert load_pool("deepseek").reset_statuses() == 1  # process B: `hermes auth reset deepseek`
+
+    live._persist()                                   # A's next ordinary flush
+    assert _disk_entry(tmp_path)["last_status"] is None
+    assert live.select() is not None                  # A honours the reset without a restart
+    assert _disk_entry(tmp_path)["last_status"] != "exhausted"
+
+
+def test_an_exhaustion_newer_than_the_reset_still_binds(tmp_path, monkeypatch):
+    """The reset marker is sticky, so it must only outrank OLDER statuses.
+
+    Reset first, then a fresh 402 on the same entry: the new cooldown postdates
+    the reset and has to survive both a flush and re-selection, or a single
+    reset would make the credential immune to benching for the rest of the run.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _exhausted_billing_store(tmp_path, age_seconds=5)
+
+    from agent.credential_pool import load_pool
+
+    assert load_pool("deepseek").reset_statuses() == 1
+    live = load_pool("deepseek")
+    assert live.select() is not None
+    live.mark_exhausted_and_rotate(status_code=402, api_key_hint="sk-test",
+                                   error_context={"message": "Insufficient Balance"})
+
+    live._persist()
+    assert _disk_entry(tmp_path)["last_status"] == "exhausted"
+    assert live.select() is None

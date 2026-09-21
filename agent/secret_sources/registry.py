@@ -52,6 +52,9 @@ class AppliedVar:
     source: str          # SecretSource.name
     shape: str           # "mapped" | "bulk"
     overrode_env: bool   # replaced a pre-existing .env/shell value
+    # The source may beat .env/shell for this var (``override_existing`` and not ``preserve_existing``), so a
+    # dotenv reload may re-assert it; a gap-fill or preserved name must keep following .env edits (#74265).
+    authoritative: bool = False
 
 
 @dataclass
@@ -359,7 +362,8 @@ class _Applier:
         self.env[var] = value
         self.claimed[var] = source.name
         sr.applied.append(var)
-        self.report.provenance[var] = AppliedVar(var, source.name, source.shape, overrode_env=existed)
+        self.report.provenance[var] = AppliedVar(var, source.name, source.shape, overrode_env=existed,
+                                                 authoritative=override and var not in self.preserve)
         return True
 
 

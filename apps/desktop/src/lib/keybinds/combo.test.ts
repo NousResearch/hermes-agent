@@ -150,7 +150,7 @@ describe('actionAllowedInInput', () => {
     expect(actionAllowedInInput('session.prev', 'ctrl+shift+tab')).toBe(true)
     expect(actionAllowedInInput('nav.commandPalette', 'mod+k')).toBe(true)
     expect(actionAllowedInInput('view.findInPage', 'mod+f')).toBe(true)
-    expect(actionAllowedInInput('nav.skills', 'mod+k')).toBe(true)
+    expect(actionAllowedInInput('nav.capabilities', 'mod+k')).toBe(true)
     expect(actionAllowedInInput('view.showTerminal', 'ctrl+`')).toBe(true)
     expect(actionAllowedInInput('profile.next', 'mod+shift+]')).toBe(true)
 
@@ -181,6 +181,31 @@ describe('actionAllowedInInput', () => {
     expect(actionAllowedInInput('session.prev', 'mod+left')).toBe(false)
     expect(actionAllowedInInput('nav.commandPalette', 'mod+pageup')).toBe(false)
     expect(actionAllowedInInput('view.findInPage', 'mod+end')).toBe(false)
+  })
+
+  it('lets an explicitly rebound two-modifier navigation chord fire while typing (#115980)', async () => {
+    const { actionAllowedInInput, comboFromEvent } = await loadCombo('MacIntel')
+
+    // ⌘⌥←/→ and Ctrl+Alt+←/→ carry Alt on top of a primary modifier — that
+    // shape has no native text-editing meaning (it is not ⌥← word-jump or
+    // ⌘← line-start), so a deliberate rebind of `session.next`/`session.prev`
+    // keeps firing with focus in the composer, matching `mod+alt+t`.
+    expect(actionAllowedInInput('session.next', 'mod+alt+right')).toBe(true)
+    expect(actionAllowedInInput('session.prev', 'mod+alt+left')).toBe(true)
+    expect(actionAllowedInInput('session.next', 'ctrl+alt+right')).toBe(true)
+    expect(actionAllowedInInput('session.prev', 'ctrl+alt+left')).toBe(true)
+
+    // The accidental-trap class stays input-local: single primary modifier
+    // (± Shift) and bare Alt remain native editing gestures.
+    expect(actionAllowedInInput('session.next', 'mod+right')).toBe(false)
+    expect(actionAllowedInInput('session.next', 'mod+shift+right')).toBe(false)
+    expect(actionAllowedInInput('session.next', 'ctrl+pageup')).toBe(false)
+    expect(actionAllowedInInput('session.next', 'alt+right')).toBe(false)
+
+    // The dispatcher consumes real keydowns: ⌘⌥→ canonicalizes to the combo
+    // the gate now lets through.
+    expect(comboFromEvent(keydown({ code: 'ArrowRight', metaKey: true, altKey: true }))).toBe('mod+alt+right')
+    expect(comboFromEvent(keydown({ code: 'ArrowLeft', metaKey: true, altKey: true }))).toBe('mod+alt+left')
   })
 })
 

@@ -34,6 +34,8 @@ from hermes_cli.clipboard import (
     _windows_save,
     _windows_has_image,
     _convert_to_png,
+    _pipe_to_file,
+    _probe,
 )
 from cli import _should_auto_attach_clipboard_image_on_paste
 
@@ -54,6 +56,26 @@ class TestSaveClipboardImage:
             with patch("hermes_cli.clipboard._linux_save", return_value=False):
                 save_clipboard_image(dest)
         assert dest.parent.exists()
+
+
+class TestClipboardChildStdin:
+    def test_probe_uses_devnull_stdin(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert _probe(["clipboard-tool"], 3, lambda result: result.returncode == 0)
+        assert mock_run.call_args.kwargs["stdin"] == subprocess.DEVNULL
+
+    def test_pipe_to_file_uses_devnull_stdin(self, tmp_path):
+        dest = tmp_path / "out.png"
+
+        def fake_run(_argv, **kwargs):
+            assert kwargs["stdin"] == subprocess.DEVNULL
+            kwargs["stdout"].write(FAKE_PNG)
+            return MagicMock(returncode=0)
+
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            assert _pipe_to_file(["clipboard-tool"], dest) is True
+        assert dest.read_bytes() == FAKE_PNG
 
 
 # ── macOS ────────────────────────────────────────────────────────────────
@@ -242,7 +264,10 @@ class TestWaylandHasImage:
 class TestWaylandSave:
     def test_png_extraction(self, tmp_path):
         dest = tmp_path / "out.png"
+        calls = []
+
         def fake_run(cmd, **kw):
+            calls.append(kw)
             if "--list-types" in cmd:
                 return MagicMock(stdout="image/png\ntext/plain\n", returncode=0)
             # Extract call — write fake data to stdout file
@@ -252,6 +277,7 @@ class TestWaylandSave:
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _wayland_save(dest) is True
         assert dest.stat().st_size > 0
+        assert all(kwargs["stdin"] == subprocess.DEVNULL for kwargs in calls)
 
 
     def test_prefers_png_over_bmp(self, tmp_path):

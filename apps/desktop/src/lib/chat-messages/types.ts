@@ -12,6 +12,8 @@ export interface TimelinePartMetadata {
   timestamp?: number
   /** Unix seconds when this segment stopped or handed off to the next one. */
   completedAt?: number
+  /** A tool call the user stopped or redirected before its result arrived. */
+  interrupted?: boolean
   /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
    * so the next delta re-renders from the source instead of the render. */
   mediaSource?: string
@@ -48,6 +50,12 @@ export type ChatMessage = {
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
   rowId?: number
+  /** Backend transcript rows this message represents — the hydration fold
+   *  merges a turn's tool rows into the assistant message they belong to, so a
+   *  message is not one backend row. The older-page offset (transcript-tail) is
+   *  counted in backend rows, so anything that rewinds that offset must convert
+   *  through this. Absent means one row. */
+  serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
 }
@@ -83,6 +91,7 @@ export type GatewayEventPayload = {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   approval_mode?: string

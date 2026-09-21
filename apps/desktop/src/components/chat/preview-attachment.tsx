@@ -138,7 +138,6 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
         className="flex shrink-0 items-center gap-1 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
         disabled={downloading}
         onClick={() => void downloadFile()}
-        title={t.fileMenu.download}
         type="button"
       >
         <Download className="size-3" />

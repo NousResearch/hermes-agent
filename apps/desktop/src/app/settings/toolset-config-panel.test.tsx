@@ -49,6 +49,9 @@ const saveHermesConfigRecord = vi.fn()
 const getElevenLabsVoices = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  // useHermesConfigRecord (via VoiceProviderFields) reads these from the barrel.
+  peekConfigReadOrigin: () => undefined,
+  retainConfigReadOrigin: (next: unknown) => next,
   getToolsetConfig: (name: string) => getToolsetConfig(name),
   getToolsetModels: (name: string, provider?: string) => getToolsetModels(name, provider),
   selectToolsetModel: (name: string, model: string, provider?: string) => selectToolsetModel(name, model, provider),
@@ -205,7 +208,12 @@ describe('ToolsetConfigPanel', () => {
     const voiceInput = screen.getByDisplayValue('alloy')
     fireEvent.change(voiceInput, { target: { value: 'marin' } })
     await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
-    const saved = saveHermesConfigRecord.mock.calls.at(-1)?.[0] as Record<string, Record<string, Record<string, string>>>
+
+    const saved = saveHermesConfigRecord.mock.calls.at(-1)?.[0] as Record<
+      string,
+      Record<string, Record<string, string>>
+    >
+
     expect(saved.tts.openai.voice).toBe('marin')
     // Unscoped panel (no Capabilities override) → profile rides as undefined,
     // preserving the active-profile default. A scoped panel forwards its scope.
@@ -238,10 +246,12 @@ describe('ToolsetConfigPanel', () => {
 
     fireEvent.change(await screen.findByDisplayValue('alloy'), { target: { value: 'marin' } })
     await waitFor(() => expect(saveHermesConfigRecord).toHaveBeenCalled(), { timeout: 3000 })
+
     const [saved, forwarded] = saveHermesConfigRecord.mock.calls.at(-1) as [
       Record<string, Record<string, Record<string, string>>>,
       unknown
     ]
+
     expect(saved.tts.openai.voice).toBe('marin')
     expect(forwarded).toEqual(scope)
   })

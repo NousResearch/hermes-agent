@@ -20,6 +20,7 @@ from hermes_cli.web_server_profiles import _profile_cli_args
 log = logging.getLogger("hermes_cli.web_server")
 
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
 # Config read-modify-write serialization for off-loop handlers (live lock —
 # LateState supports ``with``-blocks).
@@ -43,6 +44,43 @@ async def scoped_to_thread(profile: Optional[str], fn: Callable[[], Any]) -> Any
             return fn()
 
     return await asyncio.to_thread(_run)
+
+
+async def config_scoped_to_thread(profile: Optional[str], fn: Callable[[], Any]) -> Any:
+    """Run ``fn()`` inside ``_config_profile_scope(profile)`` on a worker thread —
+    home + secret scope without the process-global skills-module swap."""
+
+    def _run():
+        with _config_profile_scope(profile):
+            return fn()
+
+    return await asyncio.to_thread(_run)
+
+
+def destructive_profile(profile: Optional[str], route: str) -> Optional[str]:
+    """The profile a DESTRUCTIVE or PRIVILEGED route acts on, or 400 when it is ambiguous.
+
+    One backend serves every profile, so an omitted ``profile`` on a route that deletes,
+    overwrites or privileges profile-owned data is not a default — it silently meant
+    "whichever home this process launched with". Named profile: honoured. Omitted:
+    rejected as soon as the process hosts more than one profile
+    (``is_multiplex_active()``, decided once at boot by
+    ``activate_multi_profile_hosting_eagerly``). A genuinely single-profile host has
+    nothing to confuse, so there an omitted profile keeps meaning the launch profile
+    and `curl` against a plain ``hermes serve`` is unchanged.
+
+    "Privileged" is the same class as "destructive": arming an auto-approved shell hook
+    in the wrong profile is at least as bad as removing one from it.
+    """
+    if (profile or "").strip():
+        return profile
+    from agent.secret_scope import is_multiplex_active
+    if is_multiplex_active():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{route} requires an explicit profile: this backend serves several profiles, "
+                   "so an unnamed target would act on the wrong profile's data.")
+    return profile
 
 
 @contextlib.contextmanager

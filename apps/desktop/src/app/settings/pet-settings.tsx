@@ -116,7 +116,7 @@ export function PetSettings() {
 
   return (
     <div>
-      <SectionHeading icon={PawPrint} title={copy.title} />
+      <SectionHeading icon={PawPrint} page title={copy.title} />
       <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {copy.intro}
       </p>

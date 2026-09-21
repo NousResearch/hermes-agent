@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from utils import rmtree_readonly
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -231,17 +232,16 @@ def _looks_like_git_url(s: str) -> bool:
 def _git_clone(url: str, dest: Path) -> None:
     if _GITHUB_SHORTHAND_RE.match(url):
         url = f"https://{url.rstrip('/')}"
-    from hermes_cli.git_credentials import with_git_auth
+    from hermes_cli.git_credentials import run_git_with_credential_fallback
     try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(dest)], check=True, capture_output=True,
-            stdin=subprocess.DEVNULL, env=with_git_auth(noninteractive_git_env(), url),
+        result = run_git_with_credential_fallback(
+            ["git", "clone", "--depth", "1", url, str(dest)], url, env=noninteractive_git_env(),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError as exc:
         raise DistributionError("git is required for git-URL installs") from exc
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
-        raise DistributionError(f"git clone failed: {stderr.strip()}") from exc
+    if result.returncode != 0:
+        raise DistributionError(f"git clone failed: {(result.stderr or '').strip()}")
 
 
 def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
@@ -251,7 +251,9 @@ def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
     if _looks_like_git_url(src_str):
         staged, provenance = workdir / "clone", src_str
         _git_clone(src_str, staged)
-        shutil.rmtree(staged / ".git", ignore_errors=True)
+        # Not ``ignore_errors``: a half-deleted ``.git`` (read-only objects on Windows) would
+        # otherwise be copied into the profile as distribution content (#117184).
+        rmtree_readonly(staged / ".git")
         missing = (
             f"No {MANIFEST_FILENAME} at the root of {src_str!r}. "
             "This repository is not a Hermes profile distribution."

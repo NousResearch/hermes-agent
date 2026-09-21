@@ -198,3 +198,40 @@ class TestIssue78796NvidiaPrefixRepair:
             == "anthropic/claude-sonnet-4.6"
         )
 
+
+
+class TestColonProviderPrefixIsStrippedLikeSlash:
+    """Issue #64787: ``-m openai-codex:gpt-5.6-sol`` (Hermes's own ``provider:model`` switch syntax)
+    reached the Codex wire with the prefix attached and got HTTP 400. A matching ``provider:`` prefix
+    must normalize exactly like ``provider/``; a later colon (Ollama tags) is never a separator."""
+
+    def test_agent_init_strips_colon_prefix_before_the_wire(self, tmp_path, monkeypatch):
+        """Production path: ``AIAgent(model="openai-codex:gpt-5.6-sol", provider="openai-codex")`` —
+        the form that survives ``-m provider:model --provider X``, programmatic construction and
+        gateway config — must leave ``agent.model`` without the prefix (agent/agent_init.py)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="openai-codex:gpt-5.6-sol", provider="openai-codex", api_key="sk-dummy",
+            base_url="https://chatgpt.com/backend-api/codex", quiet_mode=True,
+            skip_context_files=True, skip_memory=True, platform="cli",
+        )
+        assert agent.model == "gpt-5.6-sol"
+
+    @pytest.mark.parametrize("model,provider,expected", [
+        ("openai:gpt-5.4", "openai-codex", "gpt-5.4"),
+        ("zai:glm-5.1", "zai", "glm-5.1"),
+        ("custom:qwen3:8b", "custom", "qwen3:8b"),
+    ])
+    def test_matching_colon_prefix_stripped(self, model, provider, expected):
+        assert normalize_model_for_provider(model, provider) == expected
+
+    @pytest.mark.parametrize("model,provider", [
+        ("qwen3:8b", "custom"),            # bare Ollama tag: first colon is not a provider prefix
+        ("anthropic:claude-x", "openai-codex"),  # non-matching prefix passes through untouched
+    ])
+    def test_non_matching_colon_untouched(self, model, provider):
+        assert normalize_model_for_provider(model, provider) == model

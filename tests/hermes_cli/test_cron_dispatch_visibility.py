@@ -105,7 +105,8 @@ class TestStatusLateJobsCallout:
         _print_active_jobs_summary(jobs)
 
         out = capsys.readouterr().out
-        assert "1 job(s) last fired late (missed-fire catch-up)" in out
+        assert "1 job(s) last fired late" in out
+        assert "catch-up after missed fire" in out
         assert "abc123" in out
         assert "31m late" in out
         # On-time job is not in the callout.

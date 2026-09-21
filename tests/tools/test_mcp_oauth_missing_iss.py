@@ -6,7 +6,17 @@ from types import SimpleNamespace
 
 import pytest
 
-pytest.importorskip("mcp.shared.auth", reason="mcp 2.x SDK not installed")
+# mcp.client.auth.utils also exists in the 1.x line — only the iss validator
+# below is 2.0-only, so a module presence check lets a stale SDK through and
+# the unguarded imports fail at collection time instead of skipping.
+_mcp_auth_utils = pytest.importorskip(
+    "mcp.client.auth.utils", reason="mcp 2.x SDK not installed"
+)
+if not hasattr(_mcp_auth_utils, "validate_authorization_response_iss"):
+    pytest.skip(
+        "mcp 2.x SDK not installed (older mcp distribution present)",
+        allow_module_level=True,
+    )
 
 from mcp.client.auth.oauth2 import OAuthClientProvider  # noqa: E402
 from mcp.client.auth.utils import validate_authorization_response_iss  # noqa: E402

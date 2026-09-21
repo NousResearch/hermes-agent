@@ -113,7 +113,16 @@ class MCPServerRunMixin:
                     # transports — clear the rapid-drop budget without pinging (#62212). An
                     # earlier wake (a hidden-then-missed recycle deadline) is not that proof.
                     if (not self._session_proven and proof_at is not None
-                            and time.monotonic() >= proof_at and not self._stdio_children_dead()):
+                            and time.monotonic() >= proof_at):
+                        if self._stdio_children_dead():
+                            # A dead child never fires a lifecycle event, so continuing here
+                            # would spin on zero-timeout waits forever (#115483). No mark_suspect:
+                            # the reconnect rebuilds the transport and the new child's handshake is
+                            # the health check.
+                            logger.warning("MCP server '%s' stdio child exited before the session proved "
+                                           "healthy; triggering reconnect (state: connected → degraded)",
+                                           self.name)
+                            break
                         self._mark_session_proven()
                     continue
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a
@@ -161,6 +170,21 @@ class MCPServerRunMixin:
         self._reconnect_event.clear()
         return "reconnect"
 
+    def _log_park(self, msg: str, *args) -> None:
+        """Park chatter control (#115713): re-parking a server that never revived is not a state
+        transition — ``hermes mcp list`` already surfaces the parked state, so one identical
+        WARNING per self-probe carries no new information. The first park (and the revived line
+        in ``_mark_session_proven``) stays a WARNING; an identical repeat while still parked is
+        demoted to DEBUG so a long-lived gateway's error log is not flooded (10k+ identical
+        lines/month). A park for a DIFFERENT reason (auth error after connection refused) is new
+        information and warns again."""
+        line = msg % args if args else msg
+        if self._was_parked and line == self._last_park_line:
+            logger.debug(msg, *args)
+        else:
+            self._last_park_line = line
+            logger.warning(msg, *args)
+
     async def _park(self, revival_reason: str) -> bool:
         """Drop this server's tools and wait for a reconnect request; True when shutdown came instead.
         The run task must NOT exit (it is the only ``_reconnect_event`` listener, so returning
@@ -178,20 +202,57 @@ class MCPServerRunMixin:
         self._park_reason = revival_reason
         self._deregister_tools()
         self._reconnect_event.clear()
-        outcome = await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL)
-        if outcome == "shutdown":
+        paused = False
+        while True:
+            outcome = await self._wait_for_reconnect_or_shutdown(
+                timeout=_core._PARKED_RETRY_INTERVAL)
+            if outcome == "shutdown":
+                return True
+            # A disabled or deleted config entry must stop the self-probe here: the probe
+            # rebuilds the transport from the config captured at start, so it would re-run
+            # OAuth setup for a server the user turned off, every interval, for the life of
+            # the process (background loops that do not run the gateway reconcile tick
+            # never learn the entry changed). An explicit reconnect request — manual
+            # refresh or `hermes mcp login` — still revives immediately regardless of the
+            # config gate; only the unattended probe honours it. Announce the pause once:
+            # a line per skipped wake would be the very flood this gate exists to stop.
+            if outcome == "self-probe" and not self._still_configured_enabled():
+                (logger.debug if paused else logger.info)(
+                    "MCP server '%s': parked entry is disabled or gone from mcp_servers; pausing the "
+                    "self-probe until it is re-enabled", self.name)
+                paused = True
+                continue
+            # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
+            # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
+            # task-local ContextVar reaches it; it stays set for the task's life — every later
+            # revival of a once-parked server is unattended too. Left interactive, an expired
+            # refresh token opened a new authorize tab every _PARKED_RETRY_INTERVAL, all night.
+            if outcome == "self-probe":
+                from tools.mcp_oauth import _oauth_interactive_enabled
+
+                _oauth_interactive_enabled.set(False)
+            logger.debug(
+                "MCP server '%s': attempting revival %s (%s); rebuilding transport.",
+                self.name,
+                revival_reason,
+                outcome,
+            )
+            return False
+
+    def _still_configured_enabled(self) -> bool:
+        """Whether ``mcp_servers`` on disk still wants this server connected: entry present
+        and ``enabled`` not false. Config read is cached on the file signature, so a parked
+        task polling this every ``_PARKED_RETRY_INTERVAL`` stays cheap. Fail-open on a
+        config-read error: a broken config must not wedge a healthy server's revival."""
+        try:
+            from tools import mcp_tool_config as _config
+            entry = (_config._load_mcp_config() or {}).get(self.name)
+            if entry is None:
+                return False
+            from tools.mcp_tool_common import _parse_boolish
+            return _parse_boolish(entry.get("enabled", True), default=True)
+        except Exception:
             return True
-        # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
-        # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
-        # task-local ContextVar reaches it; it stays set for the task's life — every later
-        # revival of a once-parked server is unattended too. Left interactive, an expired
-        # refresh token opened a new authorize tab every _PARKED_RETRY_INTERVAL, all night.
-        if outcome == "self-probe":
-            from tools.mcp_oauth import _oauth_interactive_enabled
-            _oauth_interactive_enabled.set(False)
-        logger.debug("MCP server '%s': attempting revival %s (%s); rebuilding transport.",
-                     self.name, revival_reason, outcome)
-        return False
 
     async def _prepare_run(self, config: dict) -> bool:
         """Bind config, build sampling/elicitation handlers, validate HTTP. False when the server
@@ -228,7 +289,8 @@ class MCPServerRunMixin:
                 await self._preflight_content_type(
                     config["url"], headers=dict(config.get("headers") or {}),
                     ssl_verify=config.get("ssl_verify", True),
-                    client_cert=_errors._resolve_client_cert(self.name, config))
+                    client_cert=_errors._resolve_client_cert(self.name, config),
+                    strict_redirect_headers=bool(config.get("strict_redirect_headers")))
         except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError) as exc:
             logger.warning("%s", exc)
             self._publish_error(exc)  # fail fast and non-retryably
@@ -240,6 +302,28 @@ class MCPServerRunMixin:
         self._error = exc
         self._ready.set()
 
+    _REMOTE_REBIND_KEYS = ("url", "auth", "oauth", "headers", "transport")
+
+    def _refresh_remote_config(self, config: dict) -> dict:
+        """Before rebuilding a remote transport, re-read this server's definition from config.yaml and
+        adopt it when the endpoint or its auth changed (#113907). ``run()`` otherwise keeps the dict it
+        was started with, so a ``url`` edited while the process runs (dashboard/Desktop re-auth, a
+        catalog migration) left the loop probing the OLD URL — and that stale-URL provider evicted the
+        fresh one the dashboard had just authorised for the new URL, dropping its tokens/DCR client."""
+        if not self._is_http():
+            return config
+        from tools import mcp_tool_config as _config
+        fresh = (_config._load_mcp_config() or {}).get(self.name)
+        if not isinstance(fresh, dict) or "url" not in fresh or all(
+                fresh.get(k) == config.get(k) for k in self._REMOTE_REBIND_KEYS):
+            return config
+        logger.info("MCP server '%s': definition changed in config.yaml (%s -> %s); rebuilding with the new one",
+                    self.name, config.get("url"), fresh.get("url"))
+        self._config = fresh
+        self._auth_type = (fresh.get("auth") or "").lower().strip()
+        self._sse_fallback = False  # latched for the old endpoint
+        return fresh
+
     async def run(self, config: dict):
         """Long-lived: connecting -> connected -> (degraded -> parked -> revived)*. Unproven drops
         and transport errors charge a rapid-drop budget with jittered backoff; exhausting it (or
@@ -249,8 +333,12 @@ class MCPServerRunMixin:
             return
         self._reconnect_retries = 0
         budget = _RetryBudget()
+        rebuild = False
         while True:
             try:
+                if rebuild:
+                    config = self._refresh_remote_config(config)
+                rebuild = True
                 run_transport = self._run_http if self._is_http() else self._run_stdio
                 if not await self._on_clean_return(await run_transport(config), budget):
                     break
@@ -302,7 +390,7 @@ class MCPServerRunMixin:
         else:
             self._reconnect_retries += 1
             if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
-                logger.warning(
+                self._log_park(
                     "MCP server '%s': %d consecutive reconnects without a healthy session (rapid-drop budget "
                     "exhausted), parking; will self-probe every %ds until it recovers (state: degraded → parked)",
                     self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL)
@@ -363,7 +451,7 @@ class MCPServerRunMixin:
             return await self._on_permanent_error(root, budget)
         self._reconnect_retries += 1
         if self._reconnect_retries > _core._MAX_RECONNECT_RETRIES:
-            logger.warning(
+            self._log_park(
                 "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe every %ds "
                 "until it recovers (state: degraded → parked): %s: %s",
                 self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
@@ -382,12 +470,12 @@ class MCPServerRunMixin:
             detail = (f"authentication, parking until credentials change; re-authenticate with "
                       f"`hermes mcp login {self.name}`" if _errors._is_auth_error(root)
                       else "connection with a permanent error, parking without retries")
-            logger.warning("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
+            self._log_park("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
                            self.name, detail, type(root).__name__, root)
             return await self._park_initial_failure(exc, "after permanent initial failure", budget)
         budget.initial_retries += 1
         if budget.initial_retries > _core._MAX_INITIAL_CONNECT_RETRIES:
-            logger.warning(
+            self._log_park(
                 "MCP server '%s' failed initial connection after %d attempts, parking until a reconnect is "
                 "requested (state: connecting → parked): %s: %s",
                 self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__, root)
@@ -415,7 +503,7 @@ class MCPServerRunMixin:
             await asyncio.sleep(_jittered(1.0))
             return not self._shutdown_event.is_set()
         # Deterministic failure on a working server: park now.
-        logger.warning(
+        self._log_park(
             "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
             "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
         return await self._park_and_rearm("from parked state (permanent error)", budget)

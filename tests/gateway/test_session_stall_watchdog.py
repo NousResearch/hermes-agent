@@ -289,7 +289,7 @@ async def test_check_session_stalls_queued_events_overflow_notifies():
     event = _pending_event()
     runner._queued_events[session_key] = [event]
     runner._running_agents[session_key] = _FakeAgent(time.time() - 120)
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
 
     assert await runner._check_session_stalls(60) == 1
     assert adapter.sent and "/new" in adapter.sent[0]["content"]

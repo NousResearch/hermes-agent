@@ -104,6 +104,15 @@ def _check_kanban_orchestrator_mode() -> bool:
 
 # --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---
 
+# Worker tools that terminate or transition a run's ownership. An unbound worker
+# (HERMES_KANBAN_RUN_ID unresolvable) must not run these: expected_run_id=None
+# would silently skip the run-ownership CAS in kanban_db. Non-lifecycle tools
+# (heartbeat / attach / attach_url) do not terminate a run and are not gated.
+_RUN_LIFECYCLE_TOOLS = frozenset({
+    "kanban_complete", "kanban_block",
+    "kanban_request_review", "kanban_request_changes",
+})
+
 class _Reject(Exception):
     """Carries a finished ``tool_error`` payload out of a validation helper."""
 
@@ -117,6 +126,16 @@ def _check(cond: Any, message: str) -> None:
         raise _Reject(message)
 
 
+# Keys a handler reads that its LLM-facing schema deliberately does not declare:
+# ``session_id`` is provenance stamped by internal callers (31fe2290393), ``project_id``
+# the pre-``project`` alias still honoured by ``_handle_create`` (e7811345c17).
+_UNDECLARED_ARGS: dict[str, frozenset[str]] = {
+    "kanban_create": frozenset({"session_id", "project_id"}),
+    # ``title`` is the pre-schema alias of ``filename`` that ``_handle_attach_url`` still honours.
+    "kanban_attach_url": frozenset({"title"}),
+}
+
+
 def _kanban_handler(tool_name: str) -> Callable:
     """Wrap a handler so every failure is a structured tool error. ``ValueError``
     (invalid board slug, DB validation such as cycle/self-link, ``AttachmentTooLarge``)
@@ -125,6 +144,13 @@ def _kanban_handler(tool_name: str) -> Callable:
         @functools.wraps(fn)
         def wrapper(args: dict, **kw) -> str:
             try:
+                # Reject typos before a handoff can succeed without its artifacts.
+                properties = registry.get_schema(tool_name)["parameters"]["properties"]
+                allowed = set(properties) | _UNDECLARED_ARGS.get(tool_name, frozenset())
+                unknown = sorted(set(args) - allowed)
+                _check(not unknown,
+                       f"{tool_name}: unknown parameter(s): {', '.join(unknown)}. "
+                       f"Valid parameters: {', '.join(sorted(properties))}. Nothing changed.")
                 return fn(args, **kw)
             except _Reject as e:
                 return e.args[0]
@@ -200,10 +226,36 @@ def _enforce_worker_task_ownership(tid: str) -> None:
 
 def _worker_guard(tool_name: str, args: dict) -> str:
     """Worker mutation preamble, in order: delegate-child rejection, task id
-    resolution, task-scope ownership. Returns the task id."""
+    resolution, task-scope ownership, run-identity proof. Returns the task id.
+
+    A dispatcher-spawned worker (``HERMES_KANBAN_TASK`` set) that cannot name
+    its run id is refused on the run-lifecycle mutations: ``expected_run_id=None``
+    would silently skip the run-ownership CAS in ``kanban_db`` (``complete_task`` /
+    ``block_task`` / ``request_review`` / ``request_changes`` only append
+    ``AND current_run_id = ?`` when the value is not ``None``), so an unbound
+    stale worker could complete a card a live successor owns. This mirrors
+    ``agent/kanban_stop.py``, which already treats an unbound run id as unknown
+    and fails closed. CLI / human / orchestrator paths (no ``HERMES_KANBAN_TASK``)
+    legitimately pass ``expected_run_id=None`` and are unaffected. Non-lifecycle
+    worker tools (heartbeat / attach / attach_url) do not terminate a run and are
+    not gated here.
+    """
     _reject_delegated_child_mutation(tool_name)
     tid = _require_task_id(args)
     _enforce_worker_task_ownership(tid)
+    if (
+        tool_name in _RUN_LIFECYCLE_TOOLS
+        and os.environ.get("HERMES_KANBAN_TASK")
+        and _worker_run_id(tid) is None
+    ):
+        raise _Reject(
+            f"{tool_name} refused: this worker cannot resolve its "
+            "HERMES_KANBAN_RUN_ID, so it cannot prove ownership of the card's "
+            "current run. A stale or unbound worker must not terminate a run a "
+            "live successor owns. Re-run through the dispatcher so the run id is "
+            "pinned, or use an orchestrator/CLI path that passes an explicit "
+            "expected_run_id."
+        )
     return tid
 
 
@@ -213,8 +265,8 @@ def _require_orchestrator_tool(tool_name: str) -> None:
     if os.environ.get("HERMES_KANBAN_TASK"):
         raise _Reject(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers must use "
-            "kanban_complete, kanban_block, kanban_heartbeat, or kanban_comment for their "
-            "assigned task.")
+            "kanban_complete, kanban_request_review, kanban_request_changes, kanban_block, "
+            "kanban_heartbeat, or kanban_comment for their assigned task.")
 
 
 @contextmanager
@@ -400,11 +452,24 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
     if not task or not task.goal_mode or not _goal_judge_available():
         return
     try:
-        verdict, reason, _, _, _ = judge_goal(
-            goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
+        # Headless gate runs outside any agent turn: bind the per-task relay-affinity scope
+        # (mirrors kanban_specify) so the relay does not reject the judge call (#113669).
+        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{tid}")
+        try:
+            verdict, reason, _, _, transport_failed = judge_goal(
+                goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
+        finally:
+            if affinity_token is not None:
+                reset_affinity_scope(affinity_token)
     except Exception as judge_exc:
         logger.warning(
             "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
+        return
+    if transport_failed:
+        # ``judge_goal`` fails open to ``continue`` on transport errors (relay 400, auth, timeout);
+        # an unreachable judge is not a human "not done" and must not reject the handoff (#83610).
+        logger.warning("goal judge unreachable (%s), allowing lifecycle handoff", reason)
         return
     if verdict == "done":
         return
@@ -434,16 +499,21 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
 # for the explicit tool which carries a model-supplied note.
 _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 _auto_heartbeat_last_attempt: float = 0.0
+_auto_heartbeat_fence_warned = False
 
 
 def heartbeat_current_worker_from_env() -> bool:
-    """Claim extension + board heartbeat for the current worker; True iff a write was
-    attempted. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
+    """Claim extension + board heartbeat for the current worker; True iff both writes
+    succeed. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
     heartbeated; ``HERMES_KANBAN_CLAIM_LOCK`` absent -> default claimer (local workers)."""
-    global _auto_heartbeat_last_attempt
+    global _auto_heartbeat_last_attempt, _auto_heartbeat_fence_warned
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
     if not tid or (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
+        return False
+    if _is_delegated_child_context():
+        # An in-process delegate child's activity is not the worker's liveness; checked before
+        # stamping the window so a chatty child cannot starve the worker's own heartbeat.
         return False
     _auto_heartbeat_last_attempt = now
     try:
@@ -451,13 +521,29 @@ def heartbeat_current_worker_from_env() -> bool:
         with _board(None, quiet_close=True) as (kb, conn):
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
                    (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
+            succeeded = True
             for fn, kwargs in ops:
                 op = fn.__name__
                 try:
-                    fn(conn, tid, **kwargs)
+                    succeeded = bool(fn(conn, tid, **kwargs)) and succeeded
+                except PermissionError as exc:
+                    # The board fence rejected the worker's own liveness write: this process
+                    # inherited HERMES_DELEGATED_CHILD_CONTEXT next to HERMES_KANBAN_TASK, so it is
+                    # a delegate descendant, not the dispatcher's worker (kanban_complete refuses
+                    # too). Loud once: at DEBUG the board just showed a worker that never beats.
+                    succeeded = False
+                    if not _auto_heartbeat_fence_warned:
+                        _auto_heartbeat_fence_warned = True
+                        logger.warning(
+                            "kanban auto-heartbeat for task %s refused (%s): this process carries "
+                            "HERMES_DELEGATED_CHILD_CONTEXT together with HERMES_KANBAN_TASK, so the board "
+                            "treats it as a delegate_task descendant and its claim will not be extended by "
+                            "activity. Only the dispatcher's own spawn grants worker scope; do not copy a "
+                            "worker's environment into a hand-launched process.", tid, exc)
                 except Exception:
                     logger.debug("auto-heartbeat: %s failed", op, exc_info=True)
-        return True
+                    succeeded = False
+        return succeeded
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
         return False
@@ -522,6 +608,10 @@ def _handle_show(args: dict, **kw) -> str:
         return json.dumps({
             "task": _fields(task, _TASK_FIELDS),
             "parents": kb.parent_ids(conn, tid),
+            # Non-terminal parents; on a running card this means the dependency
+            # gate is not holding it and kanban_complete will refuse.
+            "unsatisfied_parents": [
+                {"id": pid, "status": status} for pid, status in kb.unsatisfied_parents(conn, tid)],
             "children": kb.child_ids(conn, tid),
             "comments": [_fields(c, _COMMENT_FIELDS) for c in kb.list_comments(conn, tid)],
             # Capped; full log via CLI.
@@ -616,11 +706,35 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"in-flight (no state change). Retry kanban_complete with the same "
                 f"summary/metadata and either drop these ids from created_cards, or pass "
                 f"created_cards=[] to skip the card-claim check entirely.")
+        except kb.EmptyCompletionError as empty_err:
+            # Same shape as the card gate: nothing was mutated, the audit event
+            # already landed; the worker retries with evidence instead of stalling.
+            return tool_error(
+                f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
+                f"change). Retry kanban_complete with a non-empty summary or result describing "
+                f"what was done.")
         task = kb.get_task(conn, tid)
-        _check(ok, (task.last_failure_error if task else None) or
-               f"could not complete {tid} (unknown id, stale run, or already terminal)")
+        if not ok:
+            # complete_task reports every refusal as bare False; a reopened or
+            # never-finished parent is the actionable one. Name the blockers so
+            # the worker/operator completes the parents instead of re-running.
+            blockers = kb.unsatisfied_parents(conn, tid)
+            if blockers:
+                detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
+                raise _Reject(
+                    f"could not complete {tid}: unsatisfied parent dependencies: "
+                    f"{detail}; complete the parents first (done or archived)")
+            _check(False, (task.last_failure_error if task else None) or
+                   f"could not complete {tid} (unknown id, stale run, or already terminal)")
         run = kb.latest_run(conn, tid)
-        return _ok(task_id=tid, run_id=run.id if run else None)
+        # Artifact staging is atomic with the completion write, so a worker that
+        # read `kanban_attachments` before completing saw an empty list and has
+        # no way to observe what its completion just registered (#117360).
+        # Report the card's durable attachment set in the result.
+        return _ok(task_id=tid, run_id=run.id if run else None,
+                   attachments=[
+                       _fields(a, _ATTACHMENT_FIELDS)
+                       for a in kb.list_attachments(conn, tid)])
 
 
 @_kanban_handler("kanban_block")
@@ -651,7 +765,17 @@ def _handle_block(args: dict, **kw) -> str:
                f"the completion judge will evaluate it.")
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
-        return _ok_landed(kb, conn, tid, "blocked", block_kind=kind)
+        landed_kind = kb.get_task(conn, tid).block_kind
+        extra: dict = {"block_kind": landed_kind}
+        if kind == "dependency" and landed_kind != kind:
+            # block_task re-kinds a dependency wait that no open parent can satisfy.
+            extra["requested_kind"] = kind
+            extra["note"] = (
+                "kind='dependency' only waits on an incomplete parent; no parent is open, "
+                "so this was recorded as needs_input (sticky until a human unblocks) "
+                "instead of parking in todo where the dispatcher would respawn it."
+            )
+        return _ok_landed(kb, conn, tid, "blocked", **extra)
 
 
 @_kanban_handler("kanban_request_review")
@@ -852,6 +976,24 @@ def _handle_attachments(args: dict, **kw) -> str:
                 _fields(a, _ATTACHMENT_FIELDS) for a in kb.list_attachments(conn, tid)]})
 
 
+def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
+    """Return a session id only when it is present in this profile's state.db."""
+    if not session_id:
+        return None
+    try:
+        from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
+
+        state = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
+    except Exception:  # state.db may not exist for a CLI/dashboard invocation
+        logger.debug("Could not open state.db to verify Kanban provenance", exc_info=True)
+        return None
+    try:
+        return session_id if state.get_session(session_id) else None
+    finally:
+        state.close()
+
+
 @_kanban_handler("kanban_create")
 def _handle_create(args: dict, **kw) -> str:
     """Create a (child) task; orchestrator workers use this to fan out."""
@@ -875,13 +1017,19 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
+        from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
                     if _is_dispatcher_owned_worker() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
         # The worker/API runtime may be transient; the owning task's origin is durable.
-        session_id = (args.get("session_id") or (self_task.session_id if self_task else None)
-                      or _current_origin_session_id() or os.environ.get("HERMES_SESSION_ID"))
+        # The ambient id is the request-scoped ContextVar binding, not the process-global
+        # os.environ: in a multi-session gateway the env holds the LAST agent built, and an
+        # id that never reached its ``sessions`` row is provenance pointing at nothing.
+        session_id = (_persisted_session_id(args.get("session_id"))
+                      or (self_task.session_id if self_task else None)
+                      or _persisted_session_id(_current_origin_session_id())
+                      or _persisted_session_id(get_session_env("HERMES_SESSION_ID", "")))
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
@@ -1001,13 +1149,17 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
-    """Add a parent→child dependency edge after the fact (cycles/self-links → ValueError)."""
+    """Add a parent→child dependency edge after the fact (cycles/self-links/running
+    children → ValueError). A worker linking its OWN running card proves ownership
+    with its run id so the dependency-block handoff still works."""
     _reject_delegated_child_mutation("kanban_link")
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
     with _board(args.get("board")) as (kb, conn):
-        gated = kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+        gated = kb.link_tasks(
+            conn, parent_id=parent_id, child_id=child_id,
+            expected_child_run_id=_worker_run_id(str(child_id)))
         return _ok(parent_id=parent_id, child_id=child_id, gated=gated,
                    **({"gated_by": parent_id} if gated else {}))
 

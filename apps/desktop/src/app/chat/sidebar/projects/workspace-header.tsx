@@ -5,6 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { copyPath, revealPath } from '@/store/projects'
@@ -96,15 +97,20 @@ function useWorkspaceItems({ path, onRemove }: { path: null | string; onRemove: 
   const { t } = useI18n()
   const p = t.sidebar.projects
 
+  // The OS file manager needs the local filesystem; a remote backend's
+  // worktree is not on this computer (the file trees hide reveal the same way).
+  const localFs = !isDesktopFsRemoteMode()
+
   return (kit: MenuKit) => (
     <>
-      {renderActionItem(kit, {
-        disabled: !path,
-        icon: 'folder-opened',
-        key: 'reveal',
-        label: p.reveal,
-        onSelect: () => void revealPath(path)
-      })}
+      {localFs &&
+        renderActionItem(kit, {
+          disabled: !path,
+          icon: 'folder-opened',
+          key: 'reveal',
+          label: p.reveal,
+          onSelect: () => void revealPath(path)
+        })}
       {renderActionItem(kit, {
         disabled: !path,
         icon: 'copy',

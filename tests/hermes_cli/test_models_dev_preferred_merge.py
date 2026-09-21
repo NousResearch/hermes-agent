@@ -29,6 +29,18 @@ from hermes_cli.models import (
 
 
 class TestMergeHelper:
+    def test_deepseek_picker_ignores_models_dev_retired_ids(self):
+        """Native DeepSeek is curated-only: models.dev still indexes the retired ``deepseek-v4-flash*``
+        ids, so the registry union must not re-add them or reorder the picker (#117516)."""
+        with patch(
+            "agent.models_dev.list_agentic_models",
+            return_value=["deepseek-v4-flash-vision-exp", "deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro"],
+        ), patch("hermes_cli.models._PROVIDER_CATALOG_FETCHERS", {}), \
+                patch("hermes_cli.models._profile_live_catalog", return_value=None):
+            out = provider_model_ids("deepseek")
+
+        assert out == ["deepseek-flash", "deepseek-v4-pro"]
+
     def test_merge_empty_mdev_returns_curated(self):
         """When models.dev returns nothing, curated list is preserved verbatim."""
         with patch("agent.models_dev.list_agentic_models", return_value=[]):

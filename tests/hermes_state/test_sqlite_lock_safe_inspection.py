@@ -285,6 +285,68 @@ def test_session_db_read_only_is_tracked(tmp_path, clean_registry, monkeypatch):
     assert read_header_bytes_preopen(db_path, length=16) is not None
 
 
+def test_repair_connections_are_tracked_for_byte_probe_safety(tmp_path, clean_registry, monkeypatch):
+    """End-to-end: live repair/probe connections block byte-level reads (#63386).
+
+    The repair paths never go through ``SessionDB`` and they hold the strongest
+    locks in the process: ``_open_exclusive`` keeps ``locking_mode=EXCLUSIVE``
+    across the whole snapshot -> strategies -> promotion window, and the
+    write-health probe opens a ``BEGIN IMMEDIATE`` reservation. They used to
+    connect outside the registry, so the byte-probe guard could not see them and
+    every inspection ``open()``/``close()`` cancelled those POSIX advisory locks
+    (``howtocorrupt`` §2.2), letting an external writer commit into the database
+    the repair still believed it owned.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_state import SessionDB
+    from hermes_state_repair import _connect_repair_durable, _repair_conn
+
+    db_path = tmp_path / "state.db"
+    seed = SessionDB(db_path=db_path)
+    seed.create_session("s1", source="cli")
+    seed.close()
+    assert not has_live_connection(db_path)
+
+    conn = _connect_repair_durable(db_path)
+    try:
+        assert has_live_connection(db_path)
+        assert read_header_bytes_preopen(db_path, length=16) is None
+    finally:
+        conn.close()
+    assert not has_live_connection(db_path)
+
+    with _repair_conn(db_path):
+        assert has_live_connection(db_path)
+        assert read_header_bytes_preopen(db_path, length=16) is None
+    assert not has_live_connection(db_path)
+    # The guard is released with the connection, not for good.
+    assert read_header_bytes_preopen(db_path, length=16) is not None
+
+
+def test_byte_probe_never_cancels_the_repair_exclusion(tmp_path, clean_registry):
+    """A live repair's EXCLUSIVE lock must survive Hermes' own inspection (#63386).
+
+    With the connection tracked the probe is refused, so nothing closes an fd and
+    the exclusion keeps holding; if the probe were allowed through, its ``close()``
+    would cancel the lock and the intruder would commit into the file mid-repair.
+    """
+    import hermes_state_repair as repair
+
+    db_path = tmp_path / "state.db"
+    _make_db(db_path, "DELETE")
+
+    guard = repair._open_exclusive(db_path, "BEGIN EXCLUSIVE")
+    try:
+        assert _external_writer_can_break_in(db_path) is False
+        assert read_header_bytes_preopen(db_path, length=16) is None
+        assert _external_writer_can_break_in(db_path) is False, (
+            "the repair's EXCLUSIVE lock was cancelled by a byte-level probe "
+            "on the database it holds"
+        )
+    finally:
+        guard.close()
+
+
 
 
 

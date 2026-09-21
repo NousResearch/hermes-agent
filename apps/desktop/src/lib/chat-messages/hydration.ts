@@ -19,6 +19,12 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 
+// Gateway routing note for Discord turns (gateway/run_inbound.py::discord_triggering_note).
+// Current gateways persist the authored text; this heals rows written before that fix. Only
+// the note is model-facing — the `[Replying to: …]` pointer next to it is kept.
+const DISCORD_TRIGGERING_NOTE_RE =
+  /(^|\n)\[Triggering message id: `[^`\n]*` — use as `message_id` for reply\/react\/pin via the discord tools\.\]\n*/
+
 /**
  * Reply text from a Responses-API `codex_message_items` sidecar (#68321), for rows
  * whose `content` persisted empty. `commentary` / `analysis` items are mid-turn
@@ -88,11 +94,13 @@ function codexMessageItemText(message: SessionMessage): string {
 }
 
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
-  const textContent = textFromUnknown(content)
+  const rawText = textFromUnknown(content)
 
   if (role !== 'user') {
-    return textContent
+    return rawText
   }
+
+  const textContent = rawText.replace(DISCORD_TRIGGERING_NOTE_RE, '$1')
 
   // A `/skill` turn is stored expanded (the whole skill body). Current
   // gateways project it to the invocation before it ever reaches us; this is
@@ -234,11 +242,24 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   const result: ChatMessage[] = []
   let pendingToolParts: ChatMessagePart[] = []
   let pendingToolTimestamp: number | undefined
+  // Backend rows the pending batch stands for. The fold merges a turn's tool
+  // rows into one message, and the store's older-page offset is counted in
+  // backend rows, so the folded message has to report how many it covers
+  // (see ChatMessage.serverRowSpan).
+  let pendingToolRows = 0
   let activeAssistantIndex: null | number = null
 
   const clearPendingTools = () => {
     pendingToolParts = []
     pendingToolTimestamp = undefined
+    pendingToolRows = 0
+  }
+
+  /** Attribute `rows` backend rows to a folded message (absent field means one). */
+  const absorbRows = (message: ChatMessage | undefined, rows: number) => {
+    if (message && rows > 0) {
+      message.serverRowSpan = (message.serverRowSpan ?? 1) + rows
+    }
   }
 
   const earliestTimestamp = (...values: (number | undefined)[]) => {
@@ -262,6 +283,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     active.parts = [...active.parts, ...parts]
     active.timestamp = earliestTimestamp(active.timestamp, timestamp, ...parts.map(part => part.timestamp))
+    absorbRows(active, pendingToolRows)
 
     return true
   }
@@ -276,6 +298,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
         id: `${pendingToolTimestamp || Date.now()}-${index}-tools`,
         role: 'assistant',
         parts: pendingToolParts,
+        ...(pendingToolRows > 1 ? { serverRowSpan: pendingToolRows } : {}),
         timestamp: pendingToolTimestamp
       })
       activeAssistantIndex = result.length - 1
@@ -290,6 +313,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       if (updatedPendingToolParts) {
         pendingToolParts = updatedPendingToolParts
+        pendingToolRows += 1
 
         return
       }
@@ -300,6 +324,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
       pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
       pendingToolTimestamp ??= message.timestamp
+      pendingToolRows += 1
 
       return
     }
@@ -384,14 +409,18 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     if (isToolOnlyAssistant) {
       pendingToolParts = [...pendingToolParts, ...parts]
       pendingToolTimestamp ??= message.timestamp
+      pendingToolRows += 1
 
       return
     }
+
+    let pendingAbsorbedRows = 0
 
     if (message.role === 'assistant') {
       if (pendingToolParts.length) {
         if (!appendPartsToActiveAssistant(pendingToolParts, message.timestamp ?? pendingToolTimestamp)) {
           parts.unshift(...pendingToolParts)
+          pendingAbsorbedRows = pendingToolRows
         }
 
         clearPendingTools()
@@ -412,6 +441,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
           message.timestamp,
           ...parts.map(part => part.timestamp)
         )
+        absorbRows(activeAssistant, 1)
 
         return
       }
@@ -435,6 +465,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
+      ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })

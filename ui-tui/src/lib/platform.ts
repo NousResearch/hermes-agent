@@ -23,11 +23,13 @@ export const isActionMod = (key: { ctrl: boolean; meta: boolean; super?: boolean
  *   - Ctrl+K (kill-to-end) and Ctrl+W (delete-word-back) are standard readline
  *     bindings that users expect to work regardless of platform, even though
  *     no terminal rewrites Cmd into them.
+ *   - Ctrl+D is the terminal EOF convention (exit on an empty line); Cmd+D is
+ *     taken by the terminal itself in Ghostty (split pane), so it is no substitute.
  */
 export const isMacActionFallback = (
   key: { ctrl: boolean; meta: boolean; super?: boolean },
   ch: string,
-  target: 'a' | 'e' | 'u' | 'k' | 'w'
+  target: 'a' | 'd' | 'e' | 'u' | 'k' | 'w'
 ): boolean => isMac && key.ctrl && !key.meta && key.super !== true && ch.toLowerCase() === target
 
 /** Match action-modifier + a single character (case-insensitive). */

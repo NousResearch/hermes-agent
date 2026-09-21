@@ -33,16 +33,27 @@ class MemoryProviderConfigUpdate(BaseModel):
 class MemoryProviderSetupRequest(BaseModel):
     values: Dict[str, Any] = {}
 
+class CustomEndpointModelDetail(BaseModel):
+    """One ``/v1/models`` row with the routing metadata a gateway may advertise on a
+    reasoning alias (``gpt-5.6-sol-high`` → ``gpt-5.6-sol`` @ ``high``). See #93622."""
+    id: str
+    canonical_model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+
 class CustomEndpointUpdate(BaseModel):
     id: str = ""
     name: str
     base_url: str
     model: str
     api_key: Optional[str] = None
+    # Same choices as the CLI's custom-provider setup; "" = auto-detect at runtime.
+    # None (older UI payload) leaves a hand-written api_mode alone.
+    api_mode: Optional[Literal["", "chat_completions", "codex_responses", "anthropic_messages"]] = None
     context_length: Optional[int] = None
     discover_models: bool = True
     make_default: bool = False
     models: Optional[List[str]] = None
+    model_details: Optional[List[CustomEndpointModelDetail]] = None
 
 class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None

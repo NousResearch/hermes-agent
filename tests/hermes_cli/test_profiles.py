@@ -242,6 +242,60 @@ class TestCreateProfile:
         (default_home / "config.yaml").write_text("model: changed")
         assert yaml.safe_load((synced / "config.yaml").read_text())["model"] == "test"
 
+    @staticmethod
+    def _home_with_linked_skill(profile_env):
+        """Source home: ``skills/foo`` links into an ``external_dirs`` root, ``skills/local`` is physical."""
+        default_home = profile_env / ".hermes"
+        external = profile_env / "agents-skills"
+        (external / "foo").mkdir(parents=True)
+        (external / "foo" / "SKILL.md").write_text("# external foo\n", encoding="utf-8")
+        (default_home / "skills" / "local").mkdir(parents=True)
+        (default_home / "skills" / "local" / "SKILL.md").write_text("# local\n", encoding="utf-8")
+        (default_home / "config.yaml").write_text(f"model: test\nskills:\n  external_dirs:\n    - {external}\n")
+        return default_home, external
+
+    @pytest.mark.parametrize("clone_kwargs", [{"clone_config": True}, {"clone_all": True}])
+    def test_clone_recreates_skill_junctions_and_skips_dangling_ones(self, profile_env, monkeypatch, clone_kwargs):
+        """A junctioned skill stays a link (one candidate with its external original), a dangling
+        junction is skipped without failing the clone. The reparse-point predicate and CreateJunction
+        are Windows-only; simulate both so the copy/re-create contract runs on every host."""
+        default_home, external = self._home_with_linked_skill(profile_env)
+        # copytree sees plain directories (what a junction looks like to os.stat on Windows).
+        (default_home / "skills" / "foo").mkdir()
+        (default_home / "skills" / "foo" / "SKILL.md").write_text("# a physical copy would come from here\n")
+        (default_home / "skills" / "gone").mkdir()
+        targets = {str(default_home / "skills" / "foo"): str(external / "foo"),
+                   str(default_home / "skills" / "gone"): str(profile_env / "nowhere")}
+        monkeypatch.setattr(profiles, "_junction_target", lambda path: targets.get(path), raising=False)
+
+        def _create_junction(target, dst):
+            if not os.path.isdir(target):
+                raise OSError("target missing")  # what _winapi.CreateJunction does for a dangling junction
+            os.symlink(target, dst, target_is_directory=True)
+        monkeypatch.setitem(sys.modules, "_winapi", types.SimpleNamespace(CreateJunction=_create_junction))
+
+        clone = create_profile("clone", no_alias=True, **clone_kwargs)
+        foo = clone / "skills" / "foo"
+        assert foo.is_symlink() and foo.resolve() == (external / "foo").resolve()
+        assert (foo / "SKILL.md").read_text(encoding="utf-8") == "# external foo\n"
+        assert (clone / "skills" / "local" / "SKILL.md").is_file()
+        assert not (clone / "skills" / "gone").exists()
+        from tools.skills_tool import _collect_skill_candidates
+        assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
+
+    @pytest.mark.windows_only
+    def test_clone_keeps_real_ntfs_junction(self, profile_env):
+        import _winapi
+        default_home, external = self._home_with_linked_skill(profile_env)
+        _winapi.CreateJunction(str(external / "foo"), str(default_home / "skills" / "foo"))
+
+        clone = create_profile("clone", clone_config=True, no_alias=True)
+        foo = clone / "skills" / "foo"
+        assert os.lstat(foo).st_reparse_tag == profiles.stat.IO_REPARSE_TAG_MOUNT_POINT
+        assert foo.resolve() == (external / "foo").resolve()
+        from tools.skills_tool import _collect_skill_candidates
+        assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
+
     def test_sync_imports_requires_a_clone_source(self, profile_env):
         with pytest.raises(ValueError, match="--sync-imports requires"):
             create_profile("lonely", sync_imports=True, no_alias=True)
@@ -703,6 +757,108 @@ class TestListProfiles:
         assert "alpha" in names
         assert "beta" in names
 
+    def test_lazy_skill_count_never_walks_in_the_polled_request(self, profile_env, monkeypatch):
+        """Polled surfaces (``profiles.list`` RPC, ``GET /api/profiles``) must render
+        ``skill_count`` without any skill-tree walk on the request thread; the count arrives
+        from one background refresh per profile per recheck window (#114041). Control: the
+        synchronous ``list_profiles()`` still walks and reports the fresh number."""
+        import threading
+        import tui_gateway.server as srv
+
+        skills = profile_env / ".hermes" / "skills" / "cat"
+        for i in range(3):
+            (skills / f"s{i}").mkdir(parents=True)
+            (skills / f"s{i}" / "SKILL.md").write_text("# s\n", encoding="utf-8")
+        profiles._SKILL_COUNT_CACHE.clear()
+        profiles._SKILL_COUNT_NEXT_CHECK.clear()
+
+        walks: list[str] = []
+        real_walk = profiles._walk_skill_count
+
+        def spy(skills_dir):
+            walks.append(threading.current_thread().name)
+            return real_walk(skills_dir)
+
+        monkeypatch.setattr(profiles, "_walk_skill_count", spy)
+
+        def _rpc():
+            return srv._methods["profiles.list"](1, {"include_sessions": False})["result"]["profiles"]
+
+        first = _rpc()
+        assert walks == [] or set(walks) == {"hermes-skill-count"}
+        assert first[0]["skill_count"] in (0, 3)  # 0 until the refresh lands, never a stall
+        for t in threading.enumerate():
+            if t.name == "hermes-skill-count":
+                t.join(timeout=10)
+        assert walks == ["hermes-skill-count"]
+        assert _rpc()[0]["skill_count"] == 3
+        assert list_profiles(lazy_skill_count=True)[0].skill_count == 3
+        assert walks == ["hermes-skill-count"]  # a second poll inside the window schedules nothing
+
+        # GET /api/profiles (the router's own ``lazy_skill_count=True`` call) and the per-keystroke
+        # ``@<profile>`` completion must be just as walk-free: same spy, still one background walk.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from hermes_cli.web_routers import profiles as profiles_router
+        from tui_gateway import methods_complete
+        app = FastAPI()
+        app.include_router(profiles_router.router)
+        # Cold cache: a synchronous list_profiles() in either caller would walk on the request thread.
+        profiles._SKILL_COUNT_CACHE.clear()
+        resp = TestClient(app).get("/api/profiles")
+        assert resp.status_code == 200
+        assert resp.json()["profiles"][0]["name"] == "default"
+        assert walks == ["hermes-skill-count"]
+        assert any(i["text"] == "@default" for i in methods_complete._profile_mention_items("def"))
+        assert walks == ["hermes-skill-count"]
+
+        # Control: the detail/CLI path counts synchronously on the caller's thread.
+        profiles._SKILL_COUNT_CACHE.clear()
+        assert list_profiles()[0].skill_count == 3
+        assert walks[-1] == threading.current_thread().name
+
+    def test_skill_count_survives_subtree_vanishing_mid_walk(self, profile_env, monkeypatch):
+        """A skill removed while the tree is being counted (concurrent install/update) must
+        degrade the count, not abort profile enumeration with ``FileNotFoundError``."""
+        skills = profile_env / ".hermes" / "skills" / "cat"
+        for i in range(4):
+            (skills / f"s{i}" / "references").mkdir(parents=True)
+            (skills / f"s{i}" / "SKILL.md").write_text("# s\n", encoding="utf-8")
+        profiles._SKILL_COUNT_CACHE.clear()
+        real_scandir = os.scandir
+
+        class _Listing:
+            """A pre-read scandir result (context manager + iterator, like the real one)."""
+            def __init__(self, entries):
+                self._it = iter(entries)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self._it)
+
+            def close(self):
+                pass
+
+        def vanishing_scandir(path=".", *args, **kwargs):
+            with real_scandir(path, *args, **kwargs) as listing:
+                entries = list(listing)
+            if not isinstance(path, int) and os.fspath(path) == str(skills):
+                # Listed, then gone before the walk descends into it.
+                shutil.rmtree(skills / "s3", ignore_errors=True)
+            return _Listing(entries)
+
+        monkeypatch.setattr(os, "scandir", vanishing_scandir)
+        assert profiles._count_skills(profile_env / ".hermes") == 3
+        assert [p.name for p in list_profiles()] == ["default"]
+
 
 # ===================================================================
 # TestActiveProfile
@@ -1103,6 +1259,41 @@ class TestRenameProfile:
         assert "agent:oldname:feishu:dm:chatA" not in routing
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
+
+    def test_rename_records_previous_name(self, profile_env):
+        create_profile("oldname", no_alias=True)
+
+        # Mock alias collision to avoid subprocess calls
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            new_dir = rename_profile("oldname", "newname")
+
+        # The rename history is recorded in the new profile's metadata ...
+        assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
+        # ... and surfaces through list_profiles (the gateway's profiles.list
+        # source), so Bot Mode group chats can re-link stale member handles.
+        info = next(p for p in list_profiles() if p.name == "newname")
+        assert info.previous_names == ["oldname"]
+
+    def test_rename_accumulates_previous_names(self, profile_env):
+        create_profile("firstname", no_alias=True)
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("firstname", "secondname")
+            rename_profile("secondname", "thirdname")
+
+        info = next(p for p in list_profiles() if p.name == "thirdname")
+        assert info.previous_names == ["firstname", "secondname"]
+
+    def test_rename_succeeds_when_previous_name_write_fails(self, profile_env):
+        create_profile("oldname", no_alias=True)
+
+        # The history write is best-effort: it must never fail the rename.
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles.write_profile_meta", side_effect=OSError("disk full")):
+            new_dir = rename_profile("oldname", "newname")
+
+        assert new_dir.is_dir()
+
 
 
 class TestExportImport:

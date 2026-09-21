@@ -273,4 +273,28 @@ describe('useStatusSnapshot', () => {
 
     expect(requestGatewayMock).not.toHaveBeenCalled()
   })
+
+  it('keeps the same snapshot reference across a content-equal 60s re-read; a real change publishes', async () => {
+    vi.mocked(getStatus).mockImplementation(async () => ({ version: '1.0.0' }) as never)
+    const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+    const { result } = renderHook(() => useStatusSnapshot('open', requestGateway))
+    await flushAsync()
+
+    const first = result.current.statusSnapshot
+    expect(first).toEqual({ version: '1.0.0' })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(getStatus).toHaveBeenCalledTimes(2)
+    // Identity preserved on a no-op: consumers keyed on the snapshot must not re-render.
+    expect(result.current.statusSnapshot).toBe(first)
+
+    vi.mocked(getStatus).mockImplementation(async () => ({ version: '1.0.1' }) as never)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(result.current.statusSnapshot).toEqual({ version: '1.0.1' })
+  })
 })

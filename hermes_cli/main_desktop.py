@@ -230,8 +230,12 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
         shutil.rmtree(previous, ignore_errors=True)
         moved_aside = live_root.exists()
         if moved_aside:
-            # A Desktop may have reopened during the long packaging step.
-            stopped = _stop_desktop_processes_locking_build(desktop_dir)
+            # A Desktop may have reopened during the long packaging step (Windows lock) or
+            # never exited at all (a manual `hermes update`/`hermes desktop` run does not
+            # wait for it — only the update hand-offs do). Either way a renderer alive
+            # past the rename below keeps fetching its old hashed chunks from disk and
+            # dies on the next lazy import, so stop it on every platform (#109643).
+            stopped = _stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
             _rename_riding_out_file_lock(live_root, previous)
@@ -652,11 +656,15 @@ def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
     return _redownload_electron_dist(project_root, env, mirror=_ELECTRON_FALLBACK_MIRROR)
 
 
-def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
-    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree (Windows
-    only — its lock makes the pack die with ``Access is denied``; POSIX can unlink a running
-    binary). Never raises; returns the PIDs asked to stop."""
-    if sys.platform != "win32":
+def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
+    """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree.
+
+    Windows needs it everywhere: the exe lock makes the pack die with ``Access is denied``.
+    POSIX can rename a running app's files away, so the pack itself needs no stop — but a
+    renderer left alive through the stage-and-swap promotion keeps fetching its OLD hashed
+    chunks by path after the swap and dies on the next lazy import (#109643), so the swap
+    point passes ``also_posix=True``. Never raises; returns the PIDs asked to stop."""
+    if sys.platform != "win32" and not also_posix:
         return []
     try:
         import psutil
@@ -1401,12 +1409,38 @@ def _register_linux_desktop_entry(defer: bool = False):
     return None
 
 
+def _remove_half_installed_get_windows(project_root: Path) -> list[Path]:
+    """Delete a ``node_modules/get-windows`` an interrupted extract left without ``package.json``.
+
+    A Windows in-place update with the Desktop/gateway holding files open fails tar
+    extraction mid-package (#90829); npm never revisits a directory that already exists,
+    so the optional dep stayed unresolvable on every later update until a manual repair.
+    Both the workspace hoist and the app-local copy are checked.
+    """
+    removed = []
+    for candidate in (project_root / "node_modules" / "get-windows",
+                      project_root / "apps" / "desktop" / "node_modules" / "get-windows"):
+        if candidate.is_dir() and not (candidate / "package.json").exists():
+            shutil.rmtree(candidate, ignore_errors=True)
+            print(f"  ⚠ Removed half-installed {candidate} so npm re-extracts it")
+            removed.append(candidate)
+    return removed
+
+
 def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     """npm-install the desktop workspace; exits on a failure that isn't a repairable missing Electron dist."""
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_web_build import _run_npm_install_deterministic
-    from hermes_constants import with_hermes_node_path
+    from hermes_cli.update_cmd_deps import (
+        DESKTOP_NPM_SCOPE, _clear_npm_lockfile_hash, _desktop_deps_changed, _record_npm_lockfile_hash)
+    from hermes_constants import get_default_hermes_root, with_hermes_node_path
+    hermes_root = get_default_hermes_root()
+    if not _desktop_deps_changed(hermes_root) and (_electron_dir(PROJECT_ROOT) / "package.json").is_file():
+        print("→ Desktop workspace dependencies unchanged, skipping install")
+        return
     print("→ Installing desktop workspace dependencies...")
+    _clear_npm_lockfile_hash(hermes_root, DESKTOP_NPM_SCOPE)
+    _remove_half_installed_get_windows(PROJECT_ROOT)
     # Managed Node on PATH so npm's child scripts that shell out to bare `node`
     # (e.g. electron-winstaller's select-7z-arch.js) resolve it even when the
     # desktop updater chain lost shell PATH customizations. Wrapping the NixOS
@@ -1414,6 +1448,7 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
     nixos_env = with_hermes_node_path(_nixos_build_env())
     install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
     if install_result.returncode == 0:
+        _record_npm_lockfile_hash(hermes_root, DESKTOP_NPM_SCOPE)
         return
     if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
         print(f"✗ Desktop dependency install failed\n  Run manually:  cd {PROJECT_ROOT} && npm ci")
@@ -1435,6 +1470,11 @@ def _run_desktop_pack_with_recovery(
     A MISSING exe is the signature of the corrupt-download class; a late failure
     (e.g. macOS signing) leaves it in place and a redownload retry would only
     repeat the same slow failure.
+
+    Both rungs additionally require the Electron distributable to be MISSING.
+    "No staged exe" is also true of every failure before electron-builder ever
+    runs (compile, bundler, native link), and switching mirrors cannot repair
+    those — it just re-runs the whole pack behind a message blaming GitHub.
     """
     from hermes_cli.main import PROJECT_ROOT
     def _staged_exe() -> Optional[Path]:
@@ -1468,13 +1508,13 @@ def _run_desktop_pack_with_recovery(
         build_result.returncode != 0
         and staging_dir is not None
         and not env.get("ELECTRON_MIRROR")
-        and _staged_exe() is None):
+        and _staged_exe() is None
+        and not _electron_dist_ok(PROJECT_ROOT)):
         print("  ⚠ Desktop build still failing; the Electron download from "
               "GitHub looks blocked. Re-downloading via a public mirror "
               "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
         mirror_env = {**npm_build_env, "ELECTRON_MIRROR": _ELECTRON_FALLBACK_MIRROR}
-        if not _electron_dist_ok(PROJECT_ROOT):
-            _redownload_electron_dist(PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR)
+        _redownload_electron_dist(PROJECT_ROOT, env, mirror=_ELECTRON_FALLBACK_MIRROR)
         _stop_desktop_processes_locking_build(desktop_dir)
         build_result = _pack(mirror_env)
     return build_result

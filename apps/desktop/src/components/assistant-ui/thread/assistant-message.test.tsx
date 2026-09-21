@@ -5,7 +5,7 @@
 // AssistantMessage's action bar hide the button entirely when no handler is
 // supplied, matching how onDismissError/onRestoreToMessage already behave.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,6 +20,12 @@ import { Thread } from '.'
 
 const requestFreshSession = vi.hoisted(() => vi.fn())
 const startManualProviderOAuth = vi.hoisted(() => vi.fn())
+const requestModelMenuToggle = vi.hoisted(() => vi.fn<() => boolean>(() => true))
+
+vi.mock('@/app/chat/composer/focus', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  requestModelMenuToggle: () => requestModelMenuToggle()
+}))
 
 vi.mock('@/store/profile', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -42,6 +48,7 @@ afterEach(() => {
   cleanup()
   requestFreshSession.mockClear()
   startManualProviderOAuth.mockClear()
+  requestModelMenuToggle.mockReset().mockReturnValue(true)
 })
 
 function userMessage(): ThreadMessage {
@@ -163,15 +170,18 @@ function LocationProbe() {
 
 function Harness({
   assistant = assistantMessage(),
-  onBranchInNewChat
+  onBranchInNewChat,
+  onReload
 }: {
   assistant?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
+  onReload?: () => Promise<void>
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [userMessage(), assistant],
     isRunning: false,
-    onNew: async () => {}
+    onNew: async () => {},
+    ...(onReload ? { onReload } : {})
   })
 
   return (
@@ -298,6 +308,66 @@ describe('code-keyed error card copy and actions', () => {
   })
 })
 
+describe('scheduled retry at the usage-limit reset (#98852)', () => {
+  const rateLimited = (resetsAt: number) =>
+    failedMessage(
+      { code: 'rate_limit', layer: 'provider', provider: 'openai', resetsAt, retryable: true },
+      'HTTP 429: {"error":{"message":"Rate limit reached"}}'
+    )
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('fires the same reload as Retry exactly once, at resets_at and not before', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+
+    render(<Harness assistant={rateLimited(resetsAt)} onReload={onReload} />)
+
+    const arm = await screen.findByRole('button', { name: /^Retry when the limit resets \(\d\d:\d\d\)$/ })
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+
+    expect(screen.getByTestId('error-retry-scheduled').textContent).toMatch(/Retrying at \d\d:\d\d — in \d+m \d\ds/)
+    expect(screen.queryByRole('button', { name: /^Retry when the limit resets/ })).toBeNull()
+
+    await act(async () => vi.advanceTimersByTime(resetsAt * 1000 - Date.now() - 1_000))
+    expect(onReload).not.toHaveBeenCalled()
+
+    await act(async () => vi.advanceTimersByTime(1_000))
+    expect(onReload).toHaveBeenCalledTimes(1)
+
+    await act(async () => vi.advanceTimersByTime(3_600_000))
+    expect(onReload).toHaveBeenCalledTimes(1)
+  })
+
+  it('never fires after Cancel or unmount, and hides the button once the reset has passed', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+
+    const view = render(<Harness assistant={rateLimited(resetsAt)} onReload={onReload} />)
+    const armName = /^Retry when the limit resets/
+
+    fireEvent.click(await screen.findByRole('button', { name: armName }))
+    vi.useFakeTimers()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('error-retry-scheduled')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: armName }))
+    view.unmount()
+
+    await act(async () => vi.advanceTimersByTime(3_600_000))
+    expect(onReload).not.toHaveBeenCalled()
+    vi.useRealTimers()
+
+    render(<Harness assistant={rateLimited(Math.floor(Date.now() / 1000) - 60)} onReload={onReload} />)
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: armName })).toBeNull()
+  })
+})
+
 describe('rejected API key recovery', () => {
   it('names the key as the problem and deep-links Settings → Keys to that env var', async () => {
     render(
@@ -326,6 +396,44 @@ describe('rejected API key recovery', () => {
 
     screen.getByRole('button', { name: 'Update API key' }).click()
     await waitFor(() => expect(screen.getByTestId('location').textContent).toMatch(/\?tab=keys&key=OPENAI_API_KEY$/))
+  })
+})
+
+describe('switch provider on a live session (#95066)', () => {
+  const billingFailure = () =>
+    failedMessage({ code: 'billing', layer: 'billing', provider: 'openai-codex', retryable: false }, 'HTTP 429: quota')
+
+  it('opens the live session model menu instead of leaving the chat for Settings', async () => {
+    render(
+      <MemoryRouter>
+        <LocationProbe />
+        <Harness assistant={billingFailure()} />
+      </MemoryRouter>
+    )
+
+    const button = await screen.findByRole('button', { name: 'Switch provider' })
+    const before = screen.getByTestId('location').textContent
+
+    button.click()
+
+    expect(requestModelMenuToggle).toHaveBeenCalledTimes(1)
+    // Still on the chat: the pick lands on THIS session through model.switch.
+    expect(screen.getByTestId('location').textContent).toBe(before)
+  })
+
+  it('falls back to Settings → Models only when no chat surface is on screen', async () => {
+    requestModelMenuToggle.mockReturnValue(false)
+    render(
+      <MemoryRouter>
+        <LocationProbe />
+        <Harness assistant={billingFailure()} />
+      </MemoryRouter>
+    )
+
+    ;(await screen.findByRole('button', { name: 'Switch provider' })).click()
+
+    expect(requestModelMenuToggle).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.getByTestId('location').textContent).toMatch(/\?tab=config:model$/))
   })
 })
 

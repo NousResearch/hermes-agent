@@ -25,13 +25,19 @@ class Target:
     action: str
     state: TargetState = TargetState.pending
     detail: str = ""
+    instructions: str = ""
     connect_url: Optional[str] = None
+    # The vendor account a managed mint created or observed. Not the desktop transport's connection id.
+    connection_id: Optional[str] = None
     # Opaque per-attempt handle when the gateway mints one (absent today; the status route adds it).
     attempt: Optional[str] = None
-    # `reconnect force` on a connected account: the list reports the OLD account `active` until the user
-    # signs in again, so `connected` is not believed until the row has read as anything else once.
-    awaiting_new_attempt: bool = False
-    # Renderer-reported fields passed through to the model (``tools`` after MCP OAuth).
+    # Earliest the watcher may read this target's account again; set from a 429's Retry-After so a
+    # rate-limited route is not hammered once per second.
+    next_read_at: float = 0.0
+    # The credentials an MCP install still needs ({name, prompt, required}); the card draws a
+    # field per entry and holds its verb until every required one has text.
+    required_env: List[Dict[str, Any]] = field(default_factory=list)
+    # Fields a transition passes through to the model (``tools`` on a connected MCP target).
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -42,10 +48,16 @@ class Target:
         out: Dict[str, Any] = {"name": self.name, "kind": self.kind, "action": self.action, "state": self.state.value}
         if self.detail:
             out["detail"] = self.detail
+        if self.instructions:
+            out["instructions"] = self.instructions
         if with_url and self.connect_url:
             out["connect_url"] = self.connect_url
+        if self.connection_id:
+            out["connection_id"] = self.connection_id
         if self.attempt:
             out["attempt"] = self.attempt
+        if self.required_env:
+            out["required_env"] = self.required_env
         out.update(self.extra)
         return out
 
@@ -53,10 +65,14 @@ class Target:
 @dataclass
 class ConnectionOperation:
     # The gateway installs its ``connection.update`` emitter here once; pure data otherwise.
-    on_change: ClassVar[Optional[Callable[["ConnectionOperation", Optional[Dict[str, Any]]], None]]] = None
+    on_change: ClassVar[
+        Optional[Callable[["ConnectionOperation", Optional[Dict[str, Any]], Dict[str, Any]], None]]
+    ] = None
 
     targets: List[Target]
     session_key: str = ""
+    # Stamped by ``live.open``: the profile home the operation was opened under.
+    profile_key: str = ""
     # The model's id for the call that opened the operation; the card binds to that tool row only.
     tool_call_id: Optional[str] = None
     op_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -64,6 +80,9 @@ class ConnectionOperation:
     deadline_at: float = 0.0
     settled_at: Optional[float] = None
     settled_by: Optional[SettleReason] = None
+    # Monotonic write counter. Every frame carries the seq of the snapshot it was built from, so a
+    # renderer that keeps the highest seq per op can drop a frame that arrives after a newer one.
+    seq: int = 0
     # Set on every transition and on settle; the waiting loop sleeps on it.
     wake: threading.Event = field(default_factory=threading.Event, repr=False)
     _settled_snapshot: Optional[Dict[str, Any]] = field(default=None, repr=False)
@@ -78,7 +97,8 @@ class ConnectionOperation:
 
     def transition(
         self, name: str, to: TargetState, actor: Actor, *, detail: Optional[str] = None,
-        connect_url: Optional[str] = None, attempt: Optional[str] = None, **extra: Any,
+        connect_url: Optional[str] = None, connection_id: Optional[str] = None, attempt: Optional[str] = None,
+        **extra: Any,
     ) -> Optional[Dict[str, Any]]:
         """Move one target; the contract decides whether ``actor`` may. Returns the change, or None
         when the target is already in ``to``. Allowed after settlement: the frozen result stays."""
@@ -97,31 +117,49 @@ class ConnectionOperation:
             change["detail"] = target.detail
             if connect_url is not None:
                 target.connect_url = connect_url
+            if connection_id is not None:
+                target.connection_id = connection_id
             if attempt is not None:
                 target.attempt = attempt
             if extra:
                 target.extra = dict(extra)
+            snapshot = self._bump_locked()
         self.wake.set()
-        self._changed(change)
+        self._changed(change, snapshot)
         return change
 
-    def refresh(self, name: str, *, connect_url: Optional[str], detail: str) -> None:
-        """Replace a target's link and detail without a state change (a repeated failure)."""
+    def refresh(self, name: str, *, connect_url: Optional[str], detail: str, actor: Actor = Actor.user) -> None:
+        """Replace a target's link and detail without a state change (a repeated failure).
+
+        ``actor`` says who produced the new text: a second failure of a backend attempt is the
+        backend's report, not the user's move, and the frame must not claim otherwise."""
         target = self.target(name)
         if target is None:
             raise IllegalTransition(f"unknown target {name!r}")
         with self._lock:
             target.connect_url = connect_url
             target.detail = detail
-            change = {"target": name, "from": target.state.value, "to": target.state.value, "actor": Actor.user.value,
+            change = {"target": name, "from": target.state.value, "to": target.state.value, "actor": actor.value,
                       "detail": detail}
+            snapshot = self._bump_locked()
         self.wake.set()
-        self._changed(change)
+        self._changed(change, snapshot)
 
-    def _changed(self, change: Optional[Dict[str, Any]]) -> None:
+    def _bump_locked(self) -> Dict[str, Any]:
+        """Advance the write counter and take the snapshot that frame carries. Both happen under
+        ``_lock`` so a second writer cannot backdate this frame with its own state.
+
+        After settlement the frozen snapshot is the frame, seq included: a later write changes
+        nothing the renderer can see, so it must not leave the operation naming a seq no frame
+        carried (the resume snapshot would wait for a frame that never comes)."""
+        if self._settled_snapshot is None:
+            self.seq += 1
+        return self._result_locked()
+
+    def _changed(self, change: Optional[Dict[str, Any]], snapshot: Dict[str, Any]) -> None:
         hook = type(self).on_change
         if hook is not None:
-            hook(self, change)
+            hook(self, change, snapshot)
 
     @property
     def all_resolved(self) -> bool:
@@ -144,9 +182,9 @@ class ConnectionOperation:
             for target in self.targets:
                 if not target.resolved:
                     target.state = TargetState.not_connected
-            self._settled_snapshot = self._snapshot_locked()
+            self._settled_snapshot = self._bump_locked()
         self.wake.set()
-        self._changed(None)
+        self._changed(None, self._settled_snapshot)
         return True
 
     def settle_if_all_resolved(self) -> bool:
@@ -155,30 +193,58 @@ class ConnectionOperation:
     def _snapshot_locked(self, *, with_urls: bool = True) -> Dict[str, Any]:
         return {
             "op_id": self.op_id,
+            "seq": self.seq,
             "deadline_at": self.deadline_at,
             "settled_at": self.settled_at,
             "settled_by": self.settled_by.value if self.settled_by else None,
             "targets": [t.snapshot(with_url=with_urls) for t in self.targets],
         }
 
+    def _result_locked(self, *, with_urls: bool = True) -> Dict[str, Any]:
+        if self._settled_snapshot is not None:
+            targets = [dict(t) for t in self._settled_snapshot["targets"]]
+            if not with_urls:
+                for t in targets:
+                    t.pop("connect_url", None)
+            return dict(self._settled_snapshot, targets=targets)
+        return self._snapshot_locked(with_urls=with_urls)
+
     def result(self, *, with_urls: bool = True) -> Dict[str, Any]:
-        """The settled result (frozen at settle time), or the live snapshot before settlement."""
+        """The settled model result, or the live snapshot before settlement.
+
+        Deferred MCP listings are model-only result data. Change frames and request payloads use
+        the internal snapshots, so renderers never receive the catalog block.
+        """
         with self._lock:
-            if self._settled_snapshot is not None:
-                targets = [dict(t) for t in self._settled_snapshot["targets"]]
-                if not with_urls:
-                    for t in targets:
-                        t.pop("connect_url", None)
-                return dict(self._settled_snapshot, targets=targets)
-            return self._snapshot_locked(with_urls=with_urls)
+            result = self._result_locked(with_urls=with_urls)
+        if result.get("settled_at") is None:
+            return result
+        from tools.registry import registry
+        from tools.tool_search_catalog import build_catalog_listing_with_form
+
+        for target in result["targets"]:
+            # Setup instructions are the card's text for the user. A catalog entry's notes can be
+            # older than this flow ("restart your session to load the tools"), and the model would
+            # repeat them after a result that says the tools are callable now.
+            target.pop("instructions", None)
+            names = target.get("tools") if target.get("kind") == "mcp" else None
+            if not names:
+                continue
+            definitions = registry.get_definitions(set(names), quiet=True)
+            listing, _form = build_catalog_listing_with_form(definitions, max_tokens=1500)
+            if listing:
+                target["tools_listing"] = listing
+        return result
 
     def request_payload(self) -> Dict[str, Any]:
         """The ``connection.request`` payload and the resume snapshot: identity, live target snapshots
         (links included, the panel owns them), server-owned deadline."""
         with self._lock:
             targets = [t.snapshot() for t in self.targets]
+            seq = self.seq
         payload: Dict[str, Any] = {
             "op_id": self.op_id,
+            "seq": seq,
             "deadline_at": self.deadline_at,
             "timeout_seconds": OPERATION_DEADLINE_SECONDS,
             "targets": targets,

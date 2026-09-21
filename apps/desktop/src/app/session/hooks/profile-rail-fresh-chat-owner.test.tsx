@@ -511,72 +511,80 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     { connectionId: null, activeProfile: 'default' },
     { connectionId: 'local', activeProfile: 'default' },
     { connectionId: null, activeProfile: 'omar' }
-  ])('captures the saved $connectionId default before activation from remote $activeProfile', async ({ connectionId, activeProfile }) => {
-    const primary = makePrimary()
-    setPrimaryGateway(primary as never, 'default')
-    await ensureGatewayAgent(SOURCE_ID, activeProfile)
-    ownerPort = connectionId === null ? V1_PORT : OMAR_PORT
-    const activation = deferred<void>()
-    const desktop = window.hermesDesktop!
-    vi.mocked(desktop.getConnectionFor!).mockClear()
-    const getConnection = vi.mocked(desktop.getConnection).getMockImplementation()!
-    const getConnectionFor = vi.mocked(desktop.getConnectionFor!).getMockImplementation()!
+  ])(
+    'captures the saved $connectionId default before activation from remote $activeProfile',
+    async ({ connectionId, activeProfile }) => {
+      const primary = makePrimary()
+      setPrimaryGateway(primary as never, 'default')
+      await ensureGatewayAgent(SOURCE_ID, activeProfile)
+      ownerPort = connectionId === null ? V1_PORT : OMAR_PORT
+      const activation = deferred<void>()
+      const desktop = window.hermesDesktop!
+      vi.mocked(desktop.getConnectionFor!).mockClear()
+      const getConnection = vi.mocked(desktop.getConnection).getMockImplementation()!
+      const getConnectionFor = vi.mocked(desktop.getConnectionFor!).getMockImplementation()!
 
-    vi.mocked(desktop.getConnection).mockImplementation(async profile => {
-      await activation.promise
-      return { ...(await getConnection(profile)), mode: 'remote' }
-    })
-    vi.mocked(desktop.getConnectionFor!).mockImplementation(async route => {
-      await activation.promise
-      return getConnectionFor(route)
-    })
+      vi.mocked(desktop.getConnection).mockImplementation(async profile => {
+        await activation.promise
 
-    const ambientRequest = vi.fn(async (method: string, params?: Record<string, unknown>) =>
-      (activeGateway() as unknown as MockGateway).request(method, params)
-    )
-    let handle: HarnessHandle | null = null
-    render(<Harness ambientRequest={ambientRequest} onReady={h => (handle = h)} />)
-    await waitFor(() => expect(handle).not.toBeNull())
-    $defaultProfileRoute.set({ connectionId, profile: 'omar' })
-    let creating!: Promise<string | null>
+        return { ...(await getConnection(profile)), mode: 'remote' }
+      })
+      vi.mocked(desktop.getConnectionFor!).mockImplementation(async route => {
+        await activation.promise
 
-    try {
-      act(() => prepareDefaultNewSession())
-      expect(activeGatewayConnectionId()).toBe(SOURCE_ID)
-      expect(resolveNewChatOwnerRoute()).toEqual(connectionId === null ? null : { connectionId, profile: 'omar' })
-      creating = handle!.createSession()
-      expect(runtimeOwner).toBeNull()
-    } finally {
-      activation.resolve()
-    }
+        return getConnectionFor(route)
+      })
 
-    await expect(creating).resolves.toBe(mintedRuntimeId)
-    await expect(handle!.submitText('first prompt')).resolves.toBe(true)
-    await settleTurn(handle!)
-    await expect(handle!.submitText('second prompt')).resolves.toBe(true)
-    const owner = sockets.find(socket => socket.connectUrl?.includes(`:${ownerPort}`))!
-    expect(runtimeOwner).toBe(owner)
-    expect(calls(owner).filter(method => method === 'session.create')).toHaveLength(1)
-    expect(calls(owner).filter(method => method === 'prompt.submit')).toHaveLength(2)
-    expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({ connectionId: SOURCE_ID, profile: 'omar' })
+      const ambientRequest = vi.fn(async (method: string, params?: Record<string, unknown>) =>
+        (activeGateway() as unknown as MockGateway).request(method, params)
+      )
 
-    if (connectionId === null) {
-      expect(desktop.getConnection).toHaveBeenCalledWith('omar')
-      expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
-      expect($connection.get()?.mode).toBe('remote')
-      expect(getSessionOwnerHint(mintedStoredId)).toBeUndefined()
-    } else {
-      expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
-      expect(desktop.getConnection).not.toHaveBeenCalledWith('omar')
-      expect(getSessionOwnerHint(mintedStoredId)).toEqual({ connectionId, profile: 'omar' })
-    }
+      let handle: HarnessHandle | null = null
+      render(<Harness ambientRequest={ambientRequest} onReady={h => (handle = h)} />)
+      await waitFor(() => expect(handle).not.toBeNull())
+      $defaultProfileRoute.set({ connectionId, profile: 'omar' })
+      let creating!: Promise<string | null>
 
-    for (const socket of [primary, ...sockets]) {
-      if (socket !== owner) {
-        expect(socket.request.mock.calls.filter(call => sessionScoped(call[1]) || call[0] === 'session.create')).toEqual([])
+      try {
+        act(() => prepareDefaultNewSession())
+        expect(activeGatewayConnectionId()).toBe(SOURCE_ID)
+        expect(resolveNewChatOwnerRoute()).toEqual(connectionId === null ? null : { connectionId, profile: 'omar' })
+        creating = handle!.createSession()
+        expect(runtimeOwner).toBeNull()
+      } finally {
+        activation.resolve()
+      }
+
+      await expect(creating).resolves.toBe(mintedRuntimeId)
+      await expect(handle!.submitText('first prompt')).resolves.toBe(true)
+      await settleTurn(handle!)
+      await expect(handle!.submitText('second prompt')).resolves.toBe(true)
+      const owner = sockets.find(socket => socket.connectUrl?.includes(`:${ownerPort}`))!
+      expect(runtimeOwner).toBe(owner)
+      expect(calls(owner).filter(method => method === 'session.create')).toHaveLength(1)
+      expect(calls(owner).filter(method => method === 'prompt.submit')).toHaveLength(2)
+      expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({ connectionId: SOURCE_ID, profile: 'omar' })
+
+      if (connectionId === null) {
+        expect(desktop.getConnection).toHaveBeenCalledWith('omar')
+        expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
+        expect($connection.get()?.mode).toBe('remote')
+        expect(getSessionOwnerHint(mintedStoredId)).toBeUndefined()
+      } else {
+        expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
+        expect(desktop.getConnection).not.toHaveBeenCalledWith('omar')
+        expect(getSessionOwnerHint(mintedStoredId)).toEqual({ connectionId, profile: 'omar' })
+      }
+
+      for (const socket of [primary, ...sockets]) {
+        if (socket !== owner) {
+          expect(
+            socket.request.mock.calls.filter(call => sessionScoped(call[1]) || call[0] === 'session.create')
+          ).toEqual([])
+        }
       }
     }
-  })
+  )
 
   it('dials homelab::omar when boot published homelab on the active primary gateway', async () => {
     const primary = makePrimary()

@@ -163,6 +163,9 @@ type KanbanMessages = {
   // board switcher
   board: string
   newBoard: string
+  /** Tooltip on the page-header trigger — names the ACTION, since the visible
+   *  text is the board's own name and reads as a static label otherwise. */
+  switchBoard: string
   newBoardDots: string
   // Menu labels are bare verbs — the board they act on is the one named in the
   // switcher's trigger. The nouns come back for the native file-dialog and
@@ -380,6 +383,7 @@ export const en: KanbanMessages = {
   working: 'working',
   board: 'Board',
   newBoard: 'New board',
+  switchBoard: 'Switch board',
   newBoardDots: 'New board…',
   exportDots: 'Export…',
   importDots: 'Import…',
@@ -592,6 +596,7 @@ const ja: KanbanMessages = {
   working: '作業中',
   board: 'ボード',
   newBoard: '新しいボード',
+  switchBoard: 'ボードを切り替え',
   newBoardDots: '新しいボード…',
   exportDots: 'エクスポート…',
   importDots: 'インポート…',
@@ -802,6 +807,7 @@ const zh: KanbanMessages = {
   working: '进行中',
   board: '面板',
   newBoard: '新建面板',
+  switchBoard: '切换面板',
   newBoardDots: '新建面板…',
   exportDots: '导出…',
   importDots: '导入…',
@@ -1011,6 +1017,7 @@ const zhHant: KanbanMessages = {
   working: '進行中',
   board: '面板',
   newBoard: '新增面板',
+  switchBoard: '切換面板',
   newBoardDots: '新增面板…',
   exportDots: '匯出…',
   importDots: '匯入…',

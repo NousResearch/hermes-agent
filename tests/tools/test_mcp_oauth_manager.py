@@ -11,6 +11,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytest.importorskip(
+    "mcp.client.auth.oauth2",
+    reason="MCP SDK 1.26.0+ required for OAuth support",
+)
+
 
 def test_manager_isolates_same_named_servers_by_profile_home(tmp_path, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -61,12 +66,6 @@ def test_manager_restore_entry_preserves_newer_concurrent_entry(tmp_path, monkey
 
     assert manager.get_or_build_provider("shared", "https://new.example", {}) is new_provider
     assert new_provider is not old_provider
-
-pytest.importorskip(
-    "mcp.client.auth.oauth2",
-    reason="MCP SDK 1.26.0+ required for OAuth support",
-)
-
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()

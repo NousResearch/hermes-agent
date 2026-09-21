@@ -499,11 +499,13 @@ function ClarifyToolSinglePending({
   const trimmedDraft = draft.trim()
   // The answer is whichever input is active: a picked choice, or typed text.
   // Picking a choice no longer fires immediately — it selects, then the user
-  // confirms with Continue (or Enter from the field).
+  // confirms with Continue (or Enter from the field). Multi-select treats the
+  // typed text as one more answer alongside whatever is already picked.
+  const multiSelectAnswers = multiSelect && trimmedDraft ? [...selectedChoices, trimmedDraft] : selectedChoices
 
   const selectedAnswer = multiSelect
-    ? selectedChoices.length > 0
-      ? JSON.stringify(selectedChoices)
+    ? multiSelectAnswers.length > 0
+      ? JSON.stringify(multiSelectAnswers)
       : null
     : (selectedChoices[0] ?? null)
 
@@ -511,8 +513,12 @@ function ClarifyToolSinglePending({
 
   const selectChoice = useCallback(
     (choice: string, index: number) => {
-      // Picking a choice and typing are mutually exclusive answers.
-      setDraft('')
+      // Picking a choice and typing are mutually exclusive answers in
+      // single-select; multi-select keeps the typed text as one more answer.
+      if (!multiSelect) {
+        setDraft('')
+      }
+
       setSelectedChoices(selected => {
         if (!multiSelect) {
           return [choice]
@@ -535,11 +541,11 @@ function ClarifyToolSinglePending({
       const itemCount = choices.length + 1
 
       // Arrow navigation is a move, not a pick. Multi-select keeps staged
-      // choices while the cursor moves so the user can build a set; the
-      // single-select path retains its existing clear-on-navigation behaviour.
-      setDraft('')
-
+      // choices and the typed text while the cursor moves so the user can
+      // build a set; the single-select path retains its existing
+      // clear-on-navigation behaviour.
       if (!multiSelect) {
+        setDraft('')
         setSelectedChoices([])
       }
 
@@ -703,8 +709,9 @@ function ClarifyToolSinglePending({
     setDraft(value)
 
     // Typing is its own answer — drop any picked choice so the two inputs can't
-    // both look selected.
-    if (value.trim()) {
+    // both look selected. Multi-select allows both: the typed text becomes an
+    // additional answer instead of replacing the picked choices.
+    if (value.trim() && !multiSelect) {
       setSelectedChoices([])
     }
   }
@@ -769,7 +776,10 @@ function ClarifyToolSinglePending({
                 onBlur={() => setOtherFocused(false)}
                 onChange={event => onDraftChange(event.target.value)}
                 onFocus={() => {
-                  setSelectedChoices([])
+                  if (!multiSelect) {
+                    setSelectedChoices([])
+                  }
+
                   setActiveIndex(choices.length)
                   setOtherFocused(true)
                 }}
@@ -1030,12 +1040,19 @@ function ClarifyToolBatchPending({
   const stagedAnswer = useCallback(
     (question: ClarifyQuestion): string | null => {
       const stage = staged[question.qid] ?? emptyStage
+      const draft = stage.draft.trim()
 
-      if (stage.choices.length > 0) {
-        return question.multiSelect ? JSON.stringify(stage.choices.map(bareChoice)) : bareChoice(stage.choices[0])
+      if (question.multiSelect) {
+        // The typed text is an additional answer, not a replacement for the
+        // staged choices.
+        const combined = [...stage.choices.map(bareChoice), ...(draft ? [draft] : [])]
+
+        return combined.length > 0 ? JSON.stringify(combined) : null
       }
 
-      const draft = stage.draft.trim()
+      if (stage.choices.length > 0) {
+        return bareChoice(stage.choices[0])
+      }
 
       return draft ? draft : null
     },
@@ -1047,7 +1064,11 @@ function ClarifyToolBatchPending({
 
   const confirmAll = useCallback(async () => {
     if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
+      notifyError(
+        new Error(request ? copy.gatewayDisconnected : copy.notReady),
+        copy.sendFailed,
+        request ? { action: reconnectAction() } : {}
+      )
 
       return
     }
@@ -1097,12 +1118,20 @@ function ClarifyToolBatchPending({
           : [...stage.choices, choice]
         : [choice]
 
-      return { ...current, [question.qid]: { choices: next, draft: '' } }
+      // Multi-select keeps the typed text alongside the toggled choices;
+      // single-select stays mutually exclusive.
+      return { ...current, [question.qid]: { choices: next, draft: question.multiSelect ? stage.draft : '' } }
     })
   }, [])
 
   const draftFor = useCallback((question: ClarifyQuestion, value: string) => {
-    setStaged(current => ({ ...current, [question.qid]: { choices: [], draft: value } }))
+    setStaged(current => {
+      const stage = current[question.qid] ?? emptyStage
+
+      // Multi-select keeps the staged choices while the free-text field is
+      // edited; single-select stays mutually exclusive.
+      return { ...current, [question.qid]: { choices: question.multiSelect ? stage.choices : [], draft: value } }
+    })
   }, [])
 
   const cancelAll = useCallback(async () => {

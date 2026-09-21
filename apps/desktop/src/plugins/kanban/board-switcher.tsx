@@ -1,6 +1,6 @@
 /**
- * Board switcher projected through `titleBar.center` into the workspace
- * panel's tab-header space while the board page is mounted.
+ * Board switcher projected through `WORKSPACE_PAGE_HEADER_AREA` into the
+ * workspace panel's tab-header space while the board page is mounted.
  */
 
 import {
@@ -25,6 +25,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Tip,
   useI18n,
   useMutation,
   useQuery,
@@ -335,15 +336,24 @@ export function BoardSwitcher() {
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button className="h-full min-w-0 max-w-full gap-1.5 px-2" size="sm" variant="ghost">
-            <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
-            {typeof current?.total === 'number' && (
-              <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
-            )}
-            <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
-          </Button>
-        </DropdownMenuTrigger>
+        <Tip label={k.switchBoard}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label={`${k.board}: ${label}`}
+              className="h-full min-w-0 max-w-full gap-1.5 px-2"
+              size="sm"
+              variant="ghost"
+            >
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="project" size="0.8125rem" />
+              <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{k.board}</span>
+              <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
+              {typeof current?.total === 'number' && (
+                <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
+              )}
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Tip>
         <DropdownMenuContent align="center">
           {boards.boards.map(meta => (
             <DropdownMenuItem

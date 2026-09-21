@@ -36,7 +36,7 @@ def _jwt(**claims) -> str:
         "sub": "nas_user:status",
         "client_id": "nas-anonymous",
         "account_tier": "anonymous",
-        "scope": "inference:invoke tool:invoke",
+        "scope": "inference:invoke",
         "exp": int(time.time()) + 900,
         **claims,
     }

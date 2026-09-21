@@ -31,6 +31,7 @@ import select
 import signal
 import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -487,9 +488,9 @@ def main() -> int:
     p.add_argument("--tui-dir", default=str(DEFAULT_TUI_DIR))
     p.add_argument("--log", default=str(DEFAULT_LOG))
     p.add_argument("--save", metavar="LABEL",
-                   help="save the final metrics as /tmp/perf-<LABEL>.json for later --compare")
+                   help="save the final metrics as <tempdir>/perf-<LABEL>.json for later --compare")
     p.add_argument("--compare", metavar="LABEL",
-                   help="diff against /tmp/perf-<LABEL>.json after running")
+                   help="diff against <tempdir>/perf-<LABEL>.json after running")
     p.add_argument("--loop", action="store_true",
                    help="watch for source changes, rebuild, rerun, and diff vs previous run")
     p.add_argument("--extra-flag", dest="extra_flags", action="append", default=[],
@@ -507,17 +508,17 @@ def main() -> int:
     metrics = key_metrics(data)
 
     if args.save:
-        path = Path(f"/tmp/perf-{args.save}.json")
+        path = Path(tempfile.gettempdir()) / f"perf-{args.save}.json"
         path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         print(f"\n• saved: {path}")
 
     if args.compare:
-        path = Path(f"/tmp/perf-{args.compare}.json")
+        path = Path(tempfile.gettempdir()) / f"perf-{args.compare}.json"
         if not path.exists():
             print(f"\n⚠ no baseline at {path} — run with --save {args.compare} first")
         else:
             before = json.loads(path.read_text(encoding="utf-8"))
-            print(f"\n═══ A/B diff vs /tmp/perf-{args.compare}.json ═══")
+            print(f"\n═══ A/B diff vs {path} ═══")
             print(format_diff(before, metrics))
 
     if not data["react"] and not data["frame"]:

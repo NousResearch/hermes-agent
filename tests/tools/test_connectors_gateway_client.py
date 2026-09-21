@@ -40,7 +40,7 @@ class FakeTransport:
 
     def request(self, method, url, *, headers=None, json=None, timeout=None):
         self.requests.append(
-            {"method": method, "url": url, "headers": dict(headers or {}), "json": json}
+            {"method": method, "url": url, "headers": dict(headers or {}), "json": json, "timeout": timeout}
         )
         outcome = self.responses.pop(0)
         if isinstance(outcome, Exception):
@@ -219,6 +219,7 @@ def test_connection_required_stays_inside_the_200_envelope():
                             "message": "connect gmail",
                             "connector": "gmail",
                             "connectUrl": "https://example.test/connect/1",
+                            "connectionId": "ca_1",
                         },
                     }
                 ]
@@ -228,6 +229,7 @@ def test_connection_required_stays_inside_the_200_envelope():
     (result,) = make_client(transport).execute(planned(PLAN_CALLS[:1]))
     assert result["error"]["code"] == "CONNECTION_REQUIRED"
     assert result["error"]["connect_url"] == "https://example.test/connect/1"
+    assert result["error"]["connection_id"] == "ca_1"
 
 
 # ---------------------------------------------------------------------------

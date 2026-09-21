@@ -326,6 +326,19 @@ _SPECS = [
     _cmd("schedule", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason/timing note (also appended as a comment)"),
+        _arg("--due", metavar="WHEN",
+             help="Due time: ISO-8601 local (2026-09-16T01:40), an offset from now "
+                  "(+90m, +2h, +1d), or epoch seconds. The dispatcher tick wakes the "
+                  "task once it passes (deferred to the close of a reserved "
+                  "execution band) -- no cron entry needed. Reason words must come "
+                  "BEFORE the flags."),
+        _arg("--window-policy", choices=["defer", "ambient"], metavar="POLICY",
+             help="What to do when the due time lands inside an execution band: "
+                  "'defer' (default) holds the wake until the band closes; 'ambient' "
+                  "wakes anyway, for a wake that is a lightweight check and has to "
+                  "tick around the clock."),
+        _arg("--clear-due", action="store_true",
+             help="Drop the task's due time (it stays parked until woken by hand)."),
         _bulk_ids("schedule"),
     ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
     _cmd("unblock", [

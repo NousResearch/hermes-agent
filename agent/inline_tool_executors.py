@@ -53,6 +53,7 @@ def emit_terminal_post_tool_call(
             error_type=error_type,
             error_message=error_message,
             middleware_trace=list(middleware_trace or []),
+            agent=agent,
         )
     except Exception:
         pass

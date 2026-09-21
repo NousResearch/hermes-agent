@@ -128,42 +128,6 @@ jobs:
         # module-level state leakage between files.
         #
         run: |
-          if [[ "${{ matrix.slice.index }}" == "2" ]]; then
-            python3 -u - <<'PY' &
-          import datetime
-          import os
-          import pathlib
-          import shutil
-          import subprocess
-          import time
-
-          while True:
-              print(f"\n--- slice 2 runner diagnostics {datetime.datetime.now(datetime.timezone.utc).isoformat()} ---", flush=True)
-              for key in ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree"):
-                  line = next((line for line in pathlib.Path("/proc/meminfo").read_text().splitlines() if line.startswith(key + ":")), None)
-                  if line:
-                      print(line, flush=True)
-              for path in ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.events"):
-                  try:
-                      print(f"{path}: {pathlib.Path(path).read_text().strip()}", flush=True)
-                  except OSError:
-                      pass
-              usage = shutil.disk_usage(os.environ.get("RUNNER_TEMP", "/"))
-              print(f"disk: total={usage.total} used={usage.used} free={usage.free}", flush=True)
-              print(f"load average: {os.getloadavg()}", flush=True)
-              result = subprocess.run(
-                  ["ps", "-eo", "pid,ppid,pgid,pcpu,rss,etime,stat,args", "--sort=-pcpu"],
-                  capture_output=True,
-                  text=True,
-                  check=False,
-              )
-              for line in result.stdout.splitlines()[:16]:
-                  print("proc: " + line, flush=True)
-              time.sleep(20)
-          PY
-            monitor_pid=$!
-            trap 'kill "$monitor_pid" 2>/dev/null || true' EXIT
-          fi
           source .venv/bin/activate
           scripts/run_tests.sh --files '${{ matrix.slice.files }}'
         env:

@@ -135,6 +135,9 @@ class TestStreamStaleCircuitBreaker:
         def _stream_side_effect(*args, **kwargs):
             cm = MagicMock()
             stream = MagicMock()
+            # Socket shutdown walks real SDK response wrappers. MagicMock would
+            # fabricate an unbounded tree of private connection attributes.
+            stream.response = None
             stream.__iter__ = MagicMock(return_value=_blocking_gen())
             cm.__enter__ = MagicMock(return_value=stream)
             cm.__exit__ = MagicMock(return_value=False)

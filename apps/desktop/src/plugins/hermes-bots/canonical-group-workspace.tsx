@@ -1,5 +1,5 @@
 import { Button } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { CanonicalGroupAttachments } from './canonical-group-attachments'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
@@ -7,14 +7,32 @@ import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest, resolveCanonicalGroupMember } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
+import type {
+  CanonicalGroupBinding,
+  CanonicalPendingAction,
+  CanonicalRoom,
+  CanonicalRoomMember
+} from './canonical-groups'
 import { checkHostedRoomGateway } from './hosted-room-runtime'
 import type { GroupChat } from './types'
 
 type RoomEvent = CanonicalGroupEvent
-interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
-interface RoomState { room: CanonicalRoom; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
-interface CanonicalContinuity { group: string; room: GroupChat }
+interface Attachment {
+  attachment_id?: string
+  event_id?: string
+  kind: string
+  name: string
+  mime: string
+  size?: number
+}
+interface RoomState {
+  room: CanonicalRoom
+  driver_status?: { pending_actions?: CanonicalPendingAction[] }
+}
+interface CanonicalContinuity {
+  group: string
+  room: GroupChat
+}
 
 function canonicalMemberStatus(
   member: CanonicalRoomMember,
@@ -24,30 +42,69 @@ function canonicalMemberStatus(
   const availability = member.availability?.state
   const reason = member.availability?.reason
 
-  if (membership === 'former' || availability === 'retired') {return labels.memberFormer}
+  if (membership === 'retiring' || reason === 'member_retirement_pending') {
+    return labels.memberRemovalPending
+  }
 
-  if (availability === 'ready') {return labels.memberReady}
+  if (membership === 'former' || availability === 'retired') {
+    return labels.memberFormer
+  }
 
-  if (reason === 'local_profile_unavailable') {return labels.memberLocalUnavailable}
+  if (availability === 'ready') {
+    return labels.memberReady
+  }
 
-  if (reason === 'ambiguous_local_profile') {return labels.memberAmbiguous}
+  if (reason === 'local_profile_unavailable') {
+    return labels.memberLocalUnavailable
+  }
 
-  if (availability === 'authorization_required') {return labels.memberAuthorizationRequired}
+  if (reason === 'ambiguous_local_profile') {
+    return labels.memberAmbiguous
+  }
+
+  if (availability === 'authorization_required') {
+    return labels.memberAuthorizationRequired
+  }
 
   return labels.memberUnknown
 }
 
 
 
-export function CanonicalGroupWorkspace({ binding, continuity, visible = true, onBack }: {
-  binding: CanonicalGroupBinding; continuity?: CanonicalContinuity; visible?: boolean; onBack?: () => void
+
+export function CanonicalGroupWorkspace({
+  binding,
+  continuity,
+  visible = true,
+  onBack
+}: {
+  binding: CanonicalGroupBinding
+  continuity?: CanonicalContinuity
+  visible?: boolean
+  onBack?: () => void
 }) {
   // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView binding={binding} continuity={continuity} key={JSON.stringify(binding)} onBack={onBack} visible={visible} />
+  return (
+    <CanonicalRoomView
+      binding={binding}
+      continuity={continuity}
+      key={JSON.stringify(binding)}
+      onBack={onBack}
+      visible={visible}
+    />
+  )
 }
 
-function CanonicalRoomView({ binding: initialBinding, continuity, visible, onBack }: {
-  binding: CanonicalGroupBinding; continuity?: CanonicalContinuity; visible: boolean; onBack?: () => void
+function CanonicalRoomView({
+  binding: initialBinding,
+  continuity,
+  visible,
+  onBack
+}: {
+  binding: CanonicalGroupBinding
+  continuity?: CanonicalContinuity
+  visible: boolean
+  onBack?: () => void
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
@@ -66,24 +123,37 @@ function CanonicalRoomView({ binding: initialBinding, continuity, visible, onBac
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
   const revision = useRef(0)
 
+
   // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
   useEffect(() => {
     alive.current = true
     let cancelled = false
-    void readCanonicalGroupSend(binding).then(entry => {
-      if (cancelled) {return}
+    void readCanonicalGroupSend(binding)
+      .then(entry => {
+        if (cancelled || !current()) {
+          return
+        }
 
-      if (entry) {
-        setPending(entry)
-        setDraft(String(entry.params.payload.text ?? ''))
-        setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])
-      }
+        if (entry) {
+          setPending(entry)
+          setDraft(String(entry.params.payload.text ?? ''))
+          setAttachments((entry.params.payload.attachments as Attachment[] | undefined) ?? [])
+        }
 
-      setRestored(true)
-    }).catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
+        setRestored(true)
+      })
+      .catch(e => {
+        if (!cancelled && current()) {
+          setError(e instanceof Error ? e.message : String(e))
+        }
+      })
 
-    return () => { cancelled = true; alive.current = false; revision.current++ }
-  }, [binding])
+    return () => {
+      cancelled = true
+      alive.current = false
+      revision.current++
+    }
+  }, [binding, current])
 
   const refresh = async () => {
     const version = ++revision.current
@@ -106,57 +176,96 @@ function CanonicalRoomView({ binding: initialBinding, continuity, visible, onBac
       setState(snapshot)
       setEvents(log)
       setReadError('')
+
     }
   }
 
   useEffect(() => {
-    if (!visible) {return}
+    if (!visible) {
+      return
+    }
     let cancelled = false
     let timer: ReturnType<typeof setTimeout>
 
     const poll = async () => {
-      try { await refresh() } catch (e) { if (!cancelled) {setReadError(String(e instanceof Error ? e.message : e))} }
+      try {
+        await refresh()
+      } catch (e) {
+        if (!cancelled && current()) {
+          setReadError(String(e instanceof Error ? e.message : e))
+        }
+      }
 
-      if (!cancelled) {timer = setTimeout(() => void poll(), 2000)}
+      if (!cancelled && current()) {
+        timer = setTimeout(() => void poll(), 2000)
+      }
     }
 
     void poll()
 
-    return () => { cancelled = true; revision.current++; clearTimeout(timer) }
+    return () => {
+      cancelled = true
+      revision.current++
+      clearTimeout(timer)
+    }
     // The keyed parent freezes the authority binding for this lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible])
+  }, [current, visible])
 
   const mutate = async (operation: () => Promise<unknown>) => {
-    if (busyRef.current) {return}
+    if (busyRef.current || !current()) {
+      return
+    }
     busyRef.current = true
     setBusy(true)
     setError('')
 
-    try { await operation();
+    try {
+      await operation()
 
- if (alive.current) {await refresh()} }
-    catch (e) { if (alive.current) {setError(e instanceof Error ? e.message : String(e))} }
-    finally {
+      if (current()) {
+        await refresh()
+      }
+    } catch (e) {
+      if (current()) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    } finally {
       busyRef.current = false
 
-      if (alive.current) {setBusy(false)}
+      if (current()) {
+        setBusy(false)
+      }
     }
   }
 
   const send = () => {
-    if (!restored || busyRef.current || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    if (
+      !current() ||
+      !restored ||
+      busyRef.current ||
+      !state?.driver_status ||
+      (!pending && !draft.trim() && !attachments.length)
+    ) {
+      return
+    }
     void mutate(async () => {
-      const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments })
+      const exact = pending ?? (await prepareCanonicalGroupSend(binding, { text: draft, attachments }))
 
-      if (!alive.current) {return}
+      if (!current()) {
+        return
+      }
       setPending(exact)
       setDraft(String(exact.params.payload.text ?? ''))
       setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
       await canonicalGroupRequest(exact.binding, 'groups.send', exact.params)
       await retireCanonicalGroupSend(exact.binding, exact.params.event_id)
 
-      if (alive.current) {setPending(null); setDraft(''); setAttachments([])}
+      if (current()) {
+        setPending(null)
+        setDraft('')
+        setAttachments([])
+      }
     })
   }
 
@@ -164,12 +273,22 @@ function CanonicalRoomView({ binding: initialBinding, continuity, visible, onBac
     mutate(() => actCanonicalGroup(binding, action, choice))
 
   const checkGatewayAgain = async () => {
-    if (!continuity?.room.hostedStatus?.checkConnectionId || checkingGateway) {return}
+    if (!continuity?.room.hostedStatus?.checkConnectionId || checkingGateway) {
+      return
+    }
     setCheckingGateway(true)
 
-    try {await checkHostedRoomGateway(continuity.group)}
-    catch (e) {if (alive.current) {setError(e instanceof Error ? e.message : String(e))}}
-    finally {if (alive.current) {setCheckingGateway(false)}}
+    try {
+      await checkHostedRoomGateway(continuity.group)
+    } catch (e) {
+      if (current()) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    } finally {
+      if (current()) {
+        setCheckingGateway(false)
+      }
+    }
   }
 
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
@@ -233,4 +352,5 @@ function CanonicalRoomView({ binding: initialBinding, continuity, visible, onBac
       <Button disabled={!restored || busy || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>
   </section>
+
 }

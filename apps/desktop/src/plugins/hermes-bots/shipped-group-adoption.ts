@@ -1,26 +1,24 @@
 import { gatewayActivationEpoch, host } from '@hermes/plugin-sdk'
-import type { PluginStorage } from '@hermes/plugin-sdk'
+import type { PluginProfileRouteLease, PluginStorage } from '@hermes/plugin-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 
-import { bindAdoptedCanonicalGroup } from './canonical-group-registry'
 import {
-  canonicalGroupRequest,
-  importCanonicalGroupHistory
-} from './canonical-groups'
+  bindAdoptedCanonicalGroup,
+  revokeAdoptedCanonicalGroupsForConnection,
+  revokeCanonicalGroupBinding,
+  revokeStaleAdoptedCanonicalGroups
+} from './canonical-group-registry'
 import type {
   CanonicalGroupRoute,
   CanonicalRoom,
   ShippedGroupHeldWork,
   ShippedGroupHistoryEntry,
   ShippedGroupImportMember,
-  ShippedGroupImportRequest
+  ShippedGroupImportRequest,
+  ShippedGroupImportResult
 } from './canonical-groups'
-import {
-  $groupChats,
-  groupChatHostedGateway,
-  persistGroupChatRoomsRequired
-} from './group-chat'
+import { $groupChats, groupChatHostedGateway, persistGroupChatRoomsRequired } from './group-chat'
 import { classifyHostedRoomCapability } from './hosted-room-client'
 import type {
   Attachment,
@@ -43,6 +41,10 @@ interface ProfileRouteCandidate {
   targetProfile: string
 }
 
+export interface ShippedGroupOwnerChoice extends CanonicalGroupRoute {
+  label: string
+}
+
 interface BuiltShippedGroupImport {
   request: ShippedGroupImportRequest
   requestHash: string
@@ -63,6 +65,10 @@ interface CapabilityResult {
 let lifecycleGeneration = 0
 let currentRun: null | { generation: number; promise: Promise<void> } = null
 
+// Group-room authority changes publish synchronously. Retire a stale route
+// lease in that same writer turn, before a mounted continuation can dispatch.
+$groupChats.listen(revokeStaleAdoptedCanonicalGroups)
+
 function digest(value: string): string {
   return bytesToHex(sha256(utf8ToBytes(value)))
 }
@@ -82,7 +88,12 @@ function atMilliseconds(value: unknown): number {
 }
 
 function memberProfile(member: GroupMember): string {
-  return text(member.route?.targetProfile) || text(member.targetProfile) || text(member.hostedIdentity?.profile) || text(member.name)
+  return (
+    text(member.route?.targetProfile) ||
+    text(member.targetProfile) ||
+    text(member.hostedIdentity?.profile) ||
+    text(member.name)
+  )
 }
 
 function memberDisplayName(member: GroupMember): string {
@@ -136,7 +147,12 @@ function historicalMember(
   former: Map<string, ShippedGroupImportMember>,
   usedHandles: Set<string>
 ): ShippedGroupImportMember {
-  const signature = JSON.stringify([sourceId, text(author?.name), text(author?.source), author?.hostedIdentity?.memberId || ''])
+  const signature = JSON.stringify([
+    sourceId,
+    text(author?.name),
+    text(author?.source),
+    author?.hostedIdentity?.memberId || ''
+  ])
   const existing = former.get(signature)
 
   if (existing) {
@@ -176,13 +192,11 @@ function matchingMember(
   const authorSource = text(author?.source)
 
   let candidates = sourceMembers.filter(({ member, imported }) => {
-    const aliases = new Set([
-      text(member.name),
-      text(member.display_name),
-      text(member.title),
-      text(member.handle),
-      imported.profile
-    ].filter(Boolean))
+    const aliases = new Set(
+      [text(member.name), text(member.display_name), text(member.title), text(member.handle), imported.profile].filter(
+        Boolean
+      )
+    )
 
     return aliases.has(authorName)
   })
@@ -249,7 +263,9 @@ function heldWork(
 
   for (const [key, value] of Object.entries(room.stranded || {})) {
     const matches = sourceMembers.filter(({ member, imported }) => {
-      const aliases = [text(member.name), text(member.handle), imported.profile, imported.source_member_id].filter(Boolean)
+      const aliases = [text(member.name), text(member.handle), imported.profile, imported.source_member_id].filter(
+        Boolean
+      )
 
       return aliases.some(alias => key === alias || key.endsWith(`::${alias}`))
     })
@@ -272,7 +288,11 @@ function heldWork(
 
 /** Map exactly one released plugin-storage room. The original array order is
  * the event order; no mapped row enters a send or execution method. */
-export async function buildShippedGroupImport(group: string, room: GroupChat): Promise<BuiltShippedGroupImport> {
+export async function buildShippedGroupImport(
+  group: string,
+  room: GroupChat,
+  ownerConnectionId: string
+): Promise<BuiltShippedGroupImport> {
   const storedIdentity = text(room.roomId) || text(room.desktopAuthorityHash)
 
   if (!storedIdentity) {
@@ -301,7 +321,10 @@ export async function buildShippedGroupImport(group: string, room: GroupChat): P
       name,
       profile,
       handle: uniqueHandle(text(member.handle) || profile, sourceIdForMember, usedHandles),
-      remote_source: memberIsRemote(member),
+      // Released persistence intentionally labels every member remote-capable.
+      // Backend import needs a different fact: remote relative to the selected
+      // canonical owner connection.
+      remote_source: Boolean(connectionId && connectionId !== ownerConnectionId),
       active: true,
       ...(connectionId ? { connection_id: connectionId } : {}),
       ...(text(member.connectionLabel) ? { connection_label: text(member.connectionLabel) } : {})
@@ -382,7 +405,7 @@ export async function buildShippedGroupImport(group: string, room: GroupChat): P
   }
 }
 
-function mappingFailureCheckpoint(group: string, room: GroupChat, message: string): ShippedGroupAdoption | null {
+function sourceCheckpoint(group: string, room: GroupChat): ShippedGroupAdoption | null {
   const storedIdentity = text(room.roomId) || text(room.desktopAuthorityHash)
 
   if (!storedIdentity) {
@@ -396,11 +419,7 @@ function mappingFailureCheckpoint(group: string, room: GroupChat, message: strin
     state: 'waiting',
     sourceId,
     roomId: text(room.roomId) || `r${digest(sourceId).slice(0, 32)}`,
-    requestHash: digest(JSON.stringify([group, room.members || [], room.log || [], room.stranded || {}])),
-    issue: {
-      kind: 'conflict',
-      message
-    }
+    requestHash: digest(JSON.stringify([group, room.members || [], room.log || [], room.stranded || {}]))
   }
 }
 
@@ -414,20 +433,29 @@ function foregroundFence(): ForegroundFence {
 }
 
 function foregroundCurrent(fence: ForegroundFence, generation: number): boolean {
-  return generation === lifecycleGeneration && fence.activation === gatewayActivationEpoch() &&
+  return (
+    generation === lifecycleGeneration &&
+    fence.activation === gatewayActivationEpoch() &&
     fence.connectionId === text(host.state.connectionId?.get?.()) &&
     fence.gateway === text(host.state.gateway?.get?.()) &&
     fence.profile === text(host.state.profile?.get?.())
+  )
 }
 
 function checkpointMatches(room: GroupChat | undefined, expected: ShippedGroupAdoption): boolean {
   const current = room?.shippedAdoption
 
-  return Boolean(current && current.version === 1 && current.sourceId === expected.sourceId &&
-    current.roomId === expected.roomId && current.requestHash === expected.requestHash &&
+  return Boolean(
+    current &&
+    current.version === 1 &&
+    current.state === expected.state &&
+    current.sourceId === expected.sourceId &&
+    current.roomId === expected.roomId &&
+    current.requestHash === expected.requestHash &&
     current.route?.connectionId === expected.route?.connectionId &&
     current.route?.profile === expected.route?.profile &&
-    current.route?.authorityGatewayId === expected.route?.authorityGatewayId)
+    current.route?.authorityGatewayId === expected.route?.authorityGatewayId
+  )
 }
 
 async function persistRoom(
@@ -479,6 +507,7 @@ async function persistIssue(
   kind: ShippedGroupAdoptionIssueKind,
   message: string
 ): Promise<void> {
+  revokeCanonicalGroupBinding(group)
   const current = $groupChats.get()[group]
 
   if (!checkpointMatches(current, adoption)) {
@@ -519,38 +548,202 @@ function routeCandidates(value: unknown): ProfileRouteCandidate[] {
 
 async function chooseOwner(room: GroupChat): Promise<CanonicalGroupRoute | null> {
   const candidates = routeCandidates(await host.profileRoutes())
-  const localMembers = (room.members || []).filter(member => !memberIsRemote(member))
-  const historicalConnections = new Set(localMembers.map(memberConnectionId).filter(Boolean))
-
-  if (historicalConnections.size > 1 || !localMembers.length) {
-    return null
-  }
-
-  if (historicalConnections.size === 1) {
-    const [connectionId] = [...historicalConnections]
-    const exact = candidates.filter(candidate => candidate.connectionId === connectionId)
-
-    return exact.length === 1 ? { connectionId, profile: exact[0].profile } : null
-  }
-
+  const historicalConnections = new Set((room.members || []).map(memberConnectionId).filter(Boolean))
+  const evidenced = candidates.filter(candidate => historicalConnections.has(candidate.connectionId))
+  const evidencedLocal = evidenced.filter(candidate => candidate.mode === 'local')
   const local = candidates.filter(candidate => candidate.mode === 'local')
-  const exact = local.length === 1 ? local : local.length === 0 && candidates.length === 1 ? candidates : []
+
+  const exact =
+    evidencedLocal.length === 1
+      ? evidencedLocal
+      : evidenced.length === 1
+        ? evidenced
+        : historicalConnections.size === 0 && local.length === 1
+          ? local
+          : historicalConnections.size === 0 && local.length === 0 && candidates.length === 1
+            ? candidates
+            : []
 
   return exact.length === 1 ? { connectionId: exact[0].connectionId, profile: exact[0].profile } : null
+}
+
+export async function shippedGroupOwnerChoices(room: GroupChat): Promise<ShippedGroupOwnerChoice[]> {
+  const candidates = routeCandidates(await host.profileRoutes()).sort((left, right) =>
+    left.connectionId.localeCompare(right.connectionId)
+  )
+
+  const storedLabels = new Map<string, string>()
+
+  for (const member of room.members || []) {
+    const connectionId = memberConnectionId(member)
+    const label = text(member.connectionLabel)
+
+    if (connectionId && label && !storedLabels.has(connectionId)) {
+      storedLabels.set(connectionId, label)
+    }
+  }
+
+  try {
+    const registry = await window.hermesDesktop?.connections?.list?.()
+
+    for (const connection of registry?.connections || []) {
+      if (connection?.id && connection?.label && !storedLabels.has(connection.id)) {
+        storedLabels.set(connection.id, connection.label)
+      }
+    }
+  } catch {
+    // Labels are presentation only. Deterministic ordinals keep the choice
+    // usable when the registry label read is unavailable.
+  }
+
+  return candidates.map((candidate, index) => ({
+    connectionId: candidate.connectionId,
+    profile: candidate.profile,
+    label: storedLabels.get(candidate.connectionId) || `Device ${index + 1}`
+  }))
+}
+
+/** Pin an explicit owner only to the exact waiting source checkpoint the user
+ * saw. The selected route still runs through capability/installation proof. */
+export async function selectShippedGroupOwner(
+  storage: PluginStorage,
+  group: string,
+  expected: Pick<ShippedGroupAdoption, 'requestHash' | 'sourceId'>,
+  selected: CanonicalGroupRoute
+): Promise<void> {
+  const generation = lifecycleGeneration
+  const room = $groupChats.get()[group]
+  let adoption = room?.shippedAdoption
+
+  if (
+    !room ||
+    adoption?.state !== 'waiting' ||
+    adoption.route ||
+    adoption.issue?.kind !== 'owner-ambiguous' ||
+    adoption.sourceId !== expected.sourceId ||
+    adoption.requestHash !== expected.requestHash
+  ) {
+    throw new Error('This Group Chat owner choice is no longer current.')
+  }
+
+  const choices = await shippedGroupOwnerChoices(room)
+
+  const owner = choices.find(
+    choice => choice.connectionId === selected.connectionId && choice.profile === selected.profile
+  )
+
+  if (!owner || generation !== lifecycleGeneration || $groupChats.get()[group] !== room) {
+    throw new Error('This Group Chat owner choice is no longer available.')
+  }
+
+  let routeOwner: PluginProfileRouteLease | null = null
+
+  try {
+    routeOwner = await acquireOwnerRoute(owner)
+    const capability = await readCapability(routeOwner)
+    routeOwner.assertCurrent()
+
+    if (generation !== lifecycleGeneration || $groupChats.get()[group] !== room) {
+      return
+    }
+
+    if (!capability.methods.includes('groups.import_history')) {
+      await persistIssue(
+        storage,
+        group,
+        adoption,
+        'update-required',
+        'Update the gateway that owns this Group Chat, then reconnect. Its history and members are still here.'
+      )
+
+      return
+    }
+
+    const built = await buildShippedGroupImport(group, room, owner.connectionId)
+
+    const prepared: ShippedGroupAdoption = {
+      ...adoption,
+      state: 'prepared',
+      requestHash: built.requestHash,
+      ownerSelection: 'explicit',
+      route: {
+        connectionId: owner.connectionId,
+        profile: owner.profile,
+        authorityGatewayId: capability.authorityGatewayId
+      },
+      issue: undefined
+    }
+
+    if (!(await persistCheckpoint(storage, group, room, prepared))) {
+      return
+    }
+    routeOwner.assertCurrent()
+    adoption = prepared
+    const preparedRoute = prepared.route!
+
+    const transferred = await importPreparedGroup(
+      storage,
+      group,
+      prepared,
+      built,
+      owner,
+      routeOwner,
+      generation,
+      () => {
+        const checkpoint = $groupChats.get()[group]?.shippedAdoption
+
+        return (
+          generation === lifecycleGeneration &&
+          checkpoint?.sourceId === prepared.sourceId &&
+          checkpoint.roomId === prepared.roomId &&
+          checkpoint.requestHash === prepared.requestHash &&
+          checkpoint.route?.connectionId === preparedRoute.connectionId &&
+          checkpoint.route?.profile === preparedRoute.profile &&
+          checkpoint.route?.authorityGatewayId === preparedRoute.authorityGatewayId
+        )
+      }
+    )
+
+    if (transferred) {
+      routeOwner = null
+    }
+  } catch (error) {
+    if (generation !== lifecycleGeneration) {
+      return
+    }
+    const issue = issueForError(error)
+    await persistIssue(storage, group, adoption, issue.kind, issue.message)
+  } finally {
+    routeOwner?.release()
+  }
 }
 
 async function pinnedRoutePresent(route: ShippedGroupAdoptionRoute): Promise<boolean> {
   const candidates = routeCandidates(await host.profileRoutes())
 
-  return candidates.some(candidate => candidate.connectionId === route.connectionId && candidate.profile === route.profile)
+  return candidates.some(
+    candidate => candidate.connectionId === route.connectionId && candidate.profile === route.profile
+  )
 }
 
-async function readCapability(route: CanonicalGroupRoute): Promise<CapabilityResult> {
-  const value = await canonicalGroupRequest<Record<string, unknown>>(route, 'groups.capabilities')
+async function acquireOwnerRoute(route: CanonicalGroupRoute): Promise<PluginProfileRouteLease> {
+  return host.acquireProfileRoute({
+    connectionId: route.connectionId,
+    profile: route.profile,
+    targetProfile: route.profile,
+    mode: route.connectionId === 'local' ? 'local' : 'remote'
+  })
+}
 
-  const methods = Array.isArray(value?.methods) && value.methods.every(method => typeof method === 'string')
-    ? value.methods as string[]
-    : []
+async function readCapability(owner: PluginProfileRouteLease): Promise<CapabilityResult> {
+  const value = await owner.request<Record<string, unknown>>('groups.capabilities', {
+    profile: owner.route.targetProfile
+  })
+
+  const methods =
+    Array.isArray(value?.methods) && value.methods.every(method => typeof method === 'string')
+      ? (value.methods as string[])
+      : []
 
   const authorityGatewayId = text(value?.authority_gateway_id)
 
@@ -565,7 +758,8 @@ async function readCapability(route: CanonicalGroupRoute): Promise<CapabilityRes
 
 function issueForError(error: unknown): { kind: ShippedGroupAdoptionIssueKind; message: string } {
   const message = error instanceof Error ? error.message : String(error)
-  const tagged = error && typeof error === 'object' ? (error as { adoptionIssue?: ShippedGroupAdoptionIssueKind }) : null
+  const tagged =
+    error && typeof error === 'object' ? (error as { adoptionIssue?: ShippedGroupAdoptionIssueKind }) : null
 
   if (tagged?.adoptionIssue) {
     return {
@@ -577,28 +771,36 @@ function issueForError(error: unknown): { kind: ShippedGroupAdoptionIssueKind; m
   if (/could not be saved|storage unavailable|available storage/i.test(message)) {
     return {
       kind: 'storage',
-      message: 'Hermes could not save the Group Chat upgrade checkpoint. Free some storage and restart; the original history was kept.'
+      message:
+        'Hermes could not save the Group Chat upgrade checkpoint. Free some storage and restart; the original history was kept.'
     }
   }
 
   if (/This host has too many active Group Chats/i.test(message)) {
     return {
       kind: 'conflict',
-      message: 'The original gateway has reached its Group Chat limit. Remove an unused Group Chat there, then restart Hermes. The original history was kept.'
+      message:
+        'The original gateway has reached its Group Chat limit. Remove an unused Group Chat there, then restart Hermes. The original history was kept.'
     }
   }
 
-  if (/invalid (?:member|history|historical|source|room)|member .* must|historical attachment|must be a bounded|exceed(?:s|ed)|too many room members/i.test(message)) {
+  if (
+    /invalid (?:member|history|historical|source|room)|member .* must|historical attachment|must be a bounded|exceed(?:s|ed)|too many room members/i.test(
+      message
+    )
+  ) {
     return {
       kind: 'conflict',
-      message: 'This Group Chat contains saved data the new gateway cannot adopt safely. Its original history and members were kept for review.'
+      message:
+        'This Group Chat contains saved data the new gateway cannot adopt safely. Its original history and members were kept for review.'
     }
   }
 
   if (/different import content|already exists|conflict|changed while/i.test(message)) {
     return {
       kind: 'conflict',
-      message: 'This Group Chat changed while it was being upgraded. Its original history is still here; restart Hermes before trying again.'
+      message:
+        'This Group Chat changed while it was being upgraded. Its original history is still here; restart Hermes before trying again.'
     }
   }
 
@@ -635,6 +837,7 @@ async function verifyOwner(
   storage: PluginStorage,
   group: string,
   adoption: ShippedGroupAdoption,
+  owner: PluginProfileRouteLease,
   requireImport: boolean,
   current: () => boolean
 ): Promise<{ capability: CapabilityResult; route: CanonicalGroupRoute } | null> {
@@ -645,8 +848,10 @@ async function verifyOwner(
   }
 
   try {
-    if (!await pinnedRoutePresent(route)) {
-      if (!current()) {return null}
+    if (!(await pinnedRoutePresent(route))) {
+      if (!current()) {
+        return null
+      }
 
       await persistIssue(
         storage,
@@ -659,10 +864,14 @@ async function verifyOwner(
       return null
     }
 
+    owner.assertCurrent()
     const canonicalRoute = { connectionId: route.connectionId, profile: route.profile }
-    const capability = await readCapability(canonicalRoute)
+    const capability = await readCapability(owner)
+    owner.assertCurrent()
 
-    if (!current()) {return null}
+    if (!current()) {
+      return null
+    }
 
     if (capability.authorityGatewayId !== route.authorityGatewayId) {
       await persistIssue(
@@ -690,7 +899,9 @@ async function verifyOwner(
 
     return { capability, route: canonicalRoute }
   } catch (error) {
-    if (!current()) {return null}
+    if (!current()) {
+      return null
+    }
 
     const issue = issueForError(error)
     await persistIssue(storage, group, adoption, issue.kind, issue.message)
@@ -707,20 +918,34 @@ async function restoreAdoptedGroup(
   fence: ForegroundFence
 ): Promise<void> {
   const sourceCurrent = () => foregroundCurrent(fence, generation)
-  const owner = await verifyOwner(storage, group, adoption, false, sourceCurrent)
+  const route = adoption.route
 
-  if (!owner || !foregroundCurrent(fence, generation)) {
+  if (!route) {
     return
   }
+  let routeOwner: PluginProfileRouteLease | null = null
 
   try {
-    const state = await canonicalGroupRequest<{ room: CanonicalRoom }>(owner.route, 'groups.state', {
+    routeOwner = await acquireOwnerRoute(route)
+    const owner = await verifyOwner(storage, group, adoption, routeOwner, false, sourceCurrent)
+
+    if (!owner || !sourceCurrent()) {
+      return
+    }
+
+    const state = await routeOwner.request<{ room: CanonicalRoom }>('groups.state', {
+      profile: routeOwner.route.targetProfile,
       room_id: adoption.roomId
     })
 
-    if (!foregroundCurrent(fence, generation) || state.room?.room_id !== adoption.roomId ||
-        text(state.room?.authority_gateway_id) !== adoption.route?.authorityGatewayId ||
-        !checkpointMatches($groupChats.get()[group], adoption)) {
+    routeOwner.assertCurrent()
+
+    if (
+      !sourceCurrent() ||
+      state.room?.room_id !== adoption.roomId ||
+      text(state.room?.authority_gateway_id) !== adoption.route?.authorityGatewayId ||
+      !checkpointMatches($groupChats.get()[group], adoption)
+    ) {
       return
     }
 
@@ -728,19 +953,116 @@ async function restoreAdoptedGroup(
       const recovered: ShippedGroupAdoption = { ...adoption, issue: undefined }
       const current = $groupChats.get()[group]
 
-      if (!await persistCheckpoint(storage, group, current, recovered) ||
-          !checkpointMatches($groupChats.get()[group], recovered)) {
+      if (
+        !(await persistCheckpoint(storage, group, current, recovered)) ||
+        !checkpointMatches($groupChats.get()[group], recovered)
+      ) {
         return
       }
+
+      routeOwner.assertCurrent()
     }
 
-    bindAdoptedCanonicalGroup(group, owner.route, state.room)
+    routeOwner.assertCurrent()
+    bindAdoptedCanonicalGroup(
+      group,
+      owner.route,
+      state.room,
+      adoption,
+      generation,
+      () => generation === lifecycleGeneration && checkpointMatches($groupChats.get()[group], adoption),
+      routeOwner
+    )
+    routeOwner = null
   } catch (error) {
-    if (!sourceCurrent()) {return}
+    if (!sourceCurrent()) {
+      return
+    }
 
     const issue = issueForError(error)
     await persistIssue(storage, group, adoption, issue.kind, issue.message)
+  } finally {
+    routeOwner?.release()
   }
+}
+
+async function importPreparedGroup(
+  storage: PluginStorage,
+  group: string,
+  adoption: ShippedGroupAdoption,
+  built: BuiltShippedGroupImport,
+  ownerRoute: CanonicalGroupRoute,
+  routeOwner: PluginProfileRouteLease,
+  generation: number,
+  current: () => boolean
+): Promise<boolean> {
+  routeOwner.assertCurrent()
+
+  const result = await routeOwner.request<ShippedGroupImportResult>('groups.import_history', {
+    ...(built.request as unknown as Record<string, unknown>),
+    profile: routeOwner.route.targetProfile
+  })
+
+  routeOwner.assertCurrent()
+
+  if (!current() || !checkpointMatches($groupChats.get()[group], adoption)) {
+    return false
+  }
+
+  if (
+    result.source_id !== adoption.sourceId ||
+    result.room?.room_id !== adoption.roomId ||
+    text(result.room?.authority_gateway_id) !== adoption.route?.authorityGatewayId ||
+    !Number.isSafeInteger(result.room?.authority_epoch) ||
+    Number(result.room.authority_epoch) < 1
+  ) {
+    throw Object.assign(new Error('The gateway returned a different Group Chat identity.'), {
+      adoptionIssue: 'conflict' as const
+    })
+  }
+
+  const acknowledged: ShippedGroupAdoption = {
+    ...adoption,
+    state: 'adopted',
+    issue: undefined,
+    acknowledgedAt: Date.now(),
+    importedHistory: result.imported_history,
+    heldWork: result.held_work,
+    heldMembers: result.held_members,
+    retiredMembers: result.retired_members
+  }
+
+  const room = $groupChats.get()[group]
+
+  const persisted = await persistCheckpoint(storage, group, room, acknowledged, {
+    roomId: adoption.roomId,
+    hosted: adoption.route!.authorityGatewayId,
+    hostedConnectionId: adoption.route!.connectionId,
+    hostedEpoch: Number(result.room.authority_epoch),
+    hostedMembersVerified: false,
+    continuityMode: 'gateway',
+    continuityIssue: null,
+    epoch: Number(room.epoch || 0) + 1,
+    running: false
+  })
+
+  routeOwner.assertCurrent()
+
+  if (!persisted || !current() || !checkpointMatches($groupChats.get()[group], acknowledged)) {
+    return false
+  }
+  routeOwner.assertCurrent()
+  bindAdoptedCanonicalGroup(
+    group,
+    ownerRoute,
+    result.room,
+    acknowledged,
+    generation,
+    () => generation === lifecycleGeneration && checkpointMatches($groupChats.get()[group], acknowledged),
+    routeOwner
+  )
+
+  return true
 }
 
 async function processGroup(storage: PluginStorage, group: string, generation: number): Promise<void> {
@@ -754,42 +1076,28 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
   const existing = room.shippedAdoption
 
   if (existing?.state === 'adopted') {
+    revokeCanonicalGroupBinding(group)
     await restoreAdoptedGroup(storage, group, existing, generation, fence)
 
     return
   }
 
-  let built: BuiltShippedGroupImport
+  const source = sourceCheckpoint(group, room)
+  let adoption = existing
 
-  try {
-    built = await buildShippedGroupImport(group, room)
-  } catch (error) {
+  if (!source) {
     // Classic authority activation is the prerequisite source-identity writer.
-    // If it could not establish identity, retaining the untouched room is safer
-    // than fabricating one here.
-    const message = error instanceof Error
-      ? error.message
-      : 'This Group Chat could not be mapped safely. Its original data was kept.'
-
-    if (existing) {
-      await persistIssue(storage, group, existing, 'conflict', message)
-
-      return
-    }
-
-    const blocked = mappingFailureCheckpoint(group, room, message)
-
-    if (blocked) {
-      await persistCheckpoint(storage, group, room, blocked)
-    }
-
+    // Retain the untouched room instead of fabricating one here.
     return
   }
 
-  let adoption = existing
-
-  if (adoption && (adoption.sourceId !== built.request.source_id || adoption.roomId !== built.request.room_id ||
-      adoption.requestHash !== built.requestHash)) {
+  if (
+    adoption &&
+    adoption.state === 'waiting' &&
+    (adoption.sourceId !== source.sourceId ||
+      adoption.roomId !== source.roomId ||
+      adoption.requestHash !== source.requestHash)
+  ) {
     await persistIssue(
       storage,
       group,
@@ -802,15 +1110,9 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
   }
 
   if (!adoption) {
-    adoption = {
-      version: 1,
-      state: 'waiting',
-      sourceId: built.request.source_id,
-      roomId: built.request.room_id,
-      requestHash: built.requestHash
-    }
+    adoption = source
 
-    if (!await persistCheckpoint(storage, group, room, adoption)) {
+    if (!(await persistCheckpoint(storage, group, room, adoption))) {
       return
     }
 
@@ -821,136 +1123,161 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
     return
   }
 
-  if (!adoption.route) {
-    let owner: CanonicalGroupRoute | null = null
-
-    try {
-      owner = await chooseOwner(room)
-    } catch (error) {
-      if (!foregroundCurrent(fence, generation)) {return}
-
-      const issue = issueForError(error)
-      await persistIssue(storage, group, adoption, issue.kind, issue.message)
-
-      return
-    }
-
-    if (!owner) {
-      await persistIssue(
-        storage,
-        group,
-        adoption,
-        'owner-ambiguous',
-        'Hermes cannot safely tell which gateway originally owned this Group Chat. It kept the original history and will not choose another Bot or connection.'
-      )
-
-      return
-    }
-
-    let capability: CapabilityResult
-
-    try {
-      capability = await readCapability(owner)
-    } catch (error) {
-      if (!foregroundCurrent(fence, generation)) {return}
-
-      const issue = issueForError(error)
-      await persistIssue(storage, group, adoption, issue.kind, issue.message)
-
-      return
-    }
-
-    if (!capability.methods.includes('groups.import_history')) {
-      await persistIssue(
-        storage,
-        group,
-        adoption,
-        'update-required',
-        'Update the gateway that owns this Group Chat, then reconnect. Its history and members are still here.'
-      )
-
-      return
-    }
-
-    if (!foregroundCurrent(fence, generation)) {
-      return
-    }
-
-    const prepared: ShippedGroupAdoption = {
-      ...adoption,
-      state: 'prepared',
-      route: {
-        connectionId: owner.connectionId,
-        profile: owner.profile,
-        authorityGatewayId: capability.authorityGatewayId
-      },
-      issue: undefined
-    }
-
-    const current = $groupChats.get()[group]
-
-    if (!checkpointMatches(current, adoption) || !await persistCheckpoint(storage, group, current, prepared)) {
-      return
-    }
-
-    adoption = prepared
-    room = $groupChats.get()[group]
-  }
-
-  const owner = await verifyOwner(
-    storage,
-    group,
-    adoption,
-    true,
-    () => foregroundCurrent(fence, generation)
-  )
-
-  if (!owner || !foregroundCurrent(fence, generation) || !checkpointMatches($groupChats.get()[group], adoption)) {
-    return
-  }
+  let built: BuiltShippedGroupImport
+  let routeOwner: PluginProfileRouteLease | null = null
+  let ownerRoute: CanonicalGroupRoute | null = null
 
   try {
-    const result = await importCanonicalGroupHistory(owner.route, built.request)
+    if (!adoption.route) {
+      let owner: CanonicalGroupRoute | null = null
 
-    if (!foregroundCurrent(fence, generation) || !checkpointMatches($groupChats.get()[group], adoption)) {
+      try {
+        owner = await chooseOwner(room)
+      } catch (error) {
+        if (!foregroundCurrent(fence, generation)) {
+          return
+        }
+
+        const issue = issueForError(error)
+        await persistIssue(storage, group, adoption, issue.kind, issue.message)
+
+        return
+      }
+
+      if (!owner) {
+        await persistIssue(
+          storage,
+          group,
+          adoption,
+          'owner-ambiguous',
+          'Hermes cannot safely tell which gateway originally owned this Group Chat. It kept the original history and will not choose another Bot or connection.'
+        )
+
+        return
+      }
+
+      ownerRoute = owner
+      routeOwner = await acquireOwnerRoute(owner)
+      const capability = await readCapability(routeOwner)
+      routeOwner.assertCurrent()
+
+      if (!capability.methods.includes('groups.import_history')) {
+        await persistIssue(
+          storage,
+          group,
+          adoption,
+          'update-required',
+          'Update the gateway that owns this Group Chat, then reconnect. Its history and members are still here.'
+        )
+
+        return
+      }
+
+      if (!foregroundCurrent(fence, generation)) {
+        return
+      }
+
+      try {
+        built = await buildShippedGroupImport(group, room, owner.connectionId)
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'This Group Chat could not be mapped safely. Its original data was kept.'
+
+        await persistIssue(storage, group, adoption, 'conflict', message)
+
+        return
+      }
+
+      const prepared: ShippedGroupAdoption = {
+        ...adoption,
+        state: 'prepared',
+        requestHash: built.requestHash,
+        ownerSelection: 'inferred',
+        route: {
+          connectionId: owner.connectionId,
+          profile: owner.profile,
+          authorityGatewayId: capability.authorityGatewayId
+        },
+        issue: undefined
+      }
+
+      const current = $groupChats.get()[group]
+
+      if (!checkpointMatches(current, adoption) || !(await persistCheckpoint(storage, group, current, prepared))) {
+        return
+      }
+
+      routeOwner.assertCurrent()
+
+      adoption = prepared
+      room = $groupChats.get()[group]
+    } else {
+      ownerRoute = { connectionId: adoption.route.connectionId, profile: adoption.route.profile }
+
+      try {
+        built = await buildShippedGroupImport(group, room, adoption.route.connectionId)
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'This Group Chat could not be mapped safely. Its original data was kept.'
+
+        await persistIssue(storage, group, adoption, 'conflict', message)
+
+        return
+      }
+
+      if (
+        adoption.sourceId !== built.request.source_id ||
+        adoption.roomId !== built.request.room_id ||
+        adoption.requestHash !== built.requestHash
+      ) {
+        await persistIssue(
+          storage,
+          group,
+          adoption,
+          'conflict',
+          'This Group Chat changed after its upgrade was prepared. Its original history is still here; restart Hermes before trying again.'
+        )
+
+        return
+      }
+
+      routeOwner = await acquireOwnerRoute(ownerRoute)
+
+      const owner = await verifyOwner(storage, group, adoption, routeOwner, true, () =>
+        foregroundCurrent(fence, generation)
+      )
+
+      if (!owner) {
+        return
+      }
+    }
+
+    if (
+      !routeOwner ||
+      !ownerRoute ||
+      !foregroundCurrent(fence, generation) ||
+      !checkpointMatches($groupChats.get()[group], adoption)
+    ) {
       return
     }
 
-    if (result.source_id !== adoption.sourceId || result.room?.room_id !== adoption.roomId ||
-        text(result.room?.authority_gateway_id) !== adoption.route?.authorityGatewayId ||
-        !Number.isSafeInteger(result.room?.authority_epoch) || Number(result.room.authority_epoch) < 1) {
-      throw Object.assign(new Error('The gateway returned a different Group Chat identity.'), {
-        adoptionIssue: 'conflict' as const
-      })
-    }
+    const transferred = await importPreparedGroup(
+      storage,
+      group,
+      adoption,
+      built,
+      ownerRoute,
+      routeOwner,
+      generation,
+      () => foregroundCurrent(fence, generation)
+    )
 
-    const acknowledged: ShippedGroupAdoption = {
-      ...adoption,
-      state: 'adopted',
-      issue: undefined,
-      acknowledgedAt: Date.now(),
-      importedHistory: result.imported_history,
-      heldWork: result.held_work,
-      heldMembers: result.held_members,
-      retiredMembers: result.retired_members
-    }
-
-    const current = $groupChats.get()[group]
-
-    const persisted = await persistCheckpoint(storage, group, current, acknowledged, {
-      roomId: adoption.roomId,
-      hosted: adoption.route!.authorityGatewayId,
-      hostedConnectionId: adoption.route!.connectionId,
-      hostedEpoch: Number(result.room.authority_epoch),
-      hostedMembersVerified: false,
-      continuityMode: 'gateway',
-      continuityIssue: null,
-      epoch: Number(current.epoch || 0) + 1,
-      running: false
-    })
-
-    if (persisted && foregroundCurrent(fence, generation) && checkpointMatches($groupChats.get()[group], acknowledged)) {
-      bindAdoptedCanonicalGroup(group, owner.route, result.room)
+    if (transferred) {
+      routeOwner = null
     }
   } catch (error) {
     if (!foregroundCurrent(fence, generation)) {
@@ -959,6 +1286,8 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
 
     const issue = issueForError(error)
     await persistIssue(storage, group, adoption, issue.kind, issue.message)
+  } finally {
+    routeOwner?.release()
   }
 }
 
@@ -1010,4 +1339,5 @@ export function adoptShippedGroupChats(storage: PluginStorage): Promise<void> {
 
 export function stopShippedGroupAdoption(): void {
   lifecycleGeneration += 1
+  revokeAdoptedCanonicalGroupsForConnection()
 }

@@ -14,6 +14,7 @@ const runtime = vi.hoisted(() => ({
   gateway: 'open',
   handler: async (_route: unknown, _method: string, _params: Record<string, unknown>): Promise<unknown> => ({}),
   profile: 'default',
+  routeGeneration: 1,
   routes: [
     { connectionId: 'owner-a', mode: 'local', profile: 'default', targetProfile: 'default' },
     { connectionId: 'remote-b', mode: 'remote', profile: 'default', targetProfile: 'default' }
@@ -26,6 +27,32 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await pluginSdkMock({
     ...original.host,
     activeConnectionId: () => runtime.connectionId,
+    acquireProfileRoute: async (route: any) => {
+      const generation = runtime.routeGeneration
+      let released = false
+
+      const assertCurrent = () => {
+        if (released || generation !== runtime.routeGeneration) {
+          throw new Error('Hermes gateway route lease expired')
+        }
+      }
+
+      return {
+        generation,
+        route: { ...route },
+        assertCurrent,
+        release: () => {
+          released = true
+        },
+        request: async (method: string, params: Record<string, unknown>) => {
+          assertCurrent()
+          const result = await runtime.handler(route, method, params)
+          assertCurrent()
+
+          return result
+        }
+      }
+    },
     profileRoutes: async () => runtime.routes,
     requestProfile: (route: unknown, method: string, params: Record<string, unknown>) =>
       runtime.handler(route, method, params),
@@ -53,10 +80,14 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
         fileMenu: { download: 'Download' }
       }
     }),
-    usePluginI18n: () => (key: string) =>
-      key === 'group.checkAgain'
-        ? 'Check again'
-        : CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
+    usePluginI18n: () => (key: string) => {
+      if (key === 'group.checkAgain') {
+        return 'Check again'
+      }
+      const value = CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en]
+
+      return value ?? key
+    },
     useValue: useStore
   }
 })
@@ -99,12 +130,44 @@ interface ServerMember {
   profile: string
   handle: string
   display_name: string
-  membership: { state: 'active' | 'former' }
+  membership: { state: 'active' | 'former' | 'retiring' }
   availability: { state: 'authorization_required' | 'ready' | 'retired'; reason?: string }
   source: { remote_source: boolean; source_member_id: string; connection_id?: string; connection_label?: string }
 }
 
-function releasedRecord() {
+async function releasedRecord() {
+  const { durableGroupChatMembers } = await import('./group-membership')
+
+  const members = durableGroupChatMembers([
+    {
+      connectionId: 'owner-a',
+      connectionLabel: 'This Mac',
+      display_name: 'Reviewer',
+      handle: 'alpha',
+      name: 'alpha',
+      route: { connectionId: 'owner-a', mode: 'local', profile: 'alpha', targetProfile: 'alpha' },
+      targetProfile: 'alpha'
+    },
+    {
+      connectionId: 'owner-a',
+      connectionLabel: 'This Mac',
+      display_name: 'Reviewer',
+      handle: 'beta',
+      name: 'beta',
+      route: { connectionId: 'owner-a', mode: 'local', profile: 'beta', targetProfile: 'beta' },
+      targetProfile: 'beta'
+    },
+    {
+      connectionId: 'remote-b',
+      connectionLabel: 'Workshop Mac',
+      display_name: 'Remote Builder',
+      handle: 'builder',
+      name: 'builder',
+      route: { connectionId: 'remote-b', mode: 'remote', profile: 'builder', targetProfile: 'builder' },
+      targetProfile: 'builder'
+    }
+  ])
+
   return {
     Release: {
       log: [
@@ -118,36 +181,7 @@ function releasedRecord() {
         { at: 1_700_000_002, from: { kind: 'member', name: 'beta' }, text: 'Beta result' },
         { at: 1_700_000_003, from: { kind: 'member', name: 'departed' }, text: 'Former result' }
       ],
-      members: [
-        {
-          connectionId: 'owner-a',
-          connectionLabel: 'This Mac',
-          display_name: 'Reviewer',
-          handle: 'alpha',
-          name: 'alpha',
-          remoteSource: false,
-          targetProfile: 'alpha'
-        },
-        {
-          connectionId: 'owner-a',
-          connectionLabel: 'This Mac',
-          display_name: 'Reviewer',
-          handle: 'beta',
-          name: 'beta',
-          remoteSource: false,
-          targetProfile: 'beta'
-        },
-        {
-          connectionId: 'remote-b',
-          connectionLabel: 'Workshop Mac',
-          display_name: 'Remote Builder',
-          handle: 'builder',
-          name: 'builder',
-          remoteSource: true,
-          sourceScoped: true,
-          targetProfile: 'builder'
-        }
-      ],
+      members,
       sessions: { builder: 'session-before-upgrade' },
       stranded: { builder: { before: 3, thread: 'legacy' } },
       watermarks: {}
@@ -186,10 +220,22 @@ function backend({ failAfterFirstCommit = false }: { failAfterFirstCommit?: bool
   let firstCommitFailed = false
   let releaseImport: null | (() => void) = null
   let holdImport = false
+  let retiringMember = ''
 
   const room = () => {
-    if (!committed) {throw new Error('room not imported')}
-    const members = committed.members.map(serverMember)
+    if (!committed) {
+      throw new Error('room not imported')
+    }
+
+    const members = committed.members.map(serverMember).map(member =>
+      member.display_name === retiringMember
+        ? {
+            ...member,
+            membership: { state: 'retiring' as const },
+            availability: { state: 'authorization_required' as const, reason: 'member_retirement_pending' }
+          }
+        : member
+    )
 
     return {
       room_id: committed.room_id,
@@ -204,7 +250,9 @@ function backend({ failAfterFirstCommit = false }: { failAfterFirstCommit?: bool
   }
 
   const events = () => {
-    if (!committed) {return []}
+    if (!committed) {
+      return []
+    }
 
     const ids = new Map(committed.members.map(member => [member.source_member_id, `server:${member.source_member_id}`]))
 
@@ -263,7 +311,14 @@ function backend({ failAfterFirstCommit = false }: { failAfterFirstCommit?: bool
       return {
         authority_gateway_id: runtime.authority,
         driver: true,
-        methods: ['groups.capabilities', 'groups.import_history', 'groups.member.resolve', 'groups.state', 'groups.log', 'groups.send'],
+        methods: [
+          'groups.capabilities',
+          'groups.import_history',
+          'groups.member.resolve',
+          'groups.state',
+          'groups.log',
+          'groups.send'
+        ],
         persistent_process: true
       }
     }
@@ -273,11 +328,16 @@ function backend({ failAfterFirstCommit = false }: { failAfterFirstCommit?: bool
       imports.push(request)
 
       if (holdImport) {
-        await new Promise<void>(resolve => { releaseImport = resolve })
+        await new Promise<void>(resolve => {
+          releaseImport = resolve
+        })
       }
 
-      if (!committed) {committed = request}
-      else {expect(request).toEqual(committed)}
+      if (!committed) {
+        committed = request
+      } else {
+        expect(request).toEqual(committed)
+      }
 
       if (failAfterFirstCommit && !firstCommitFailed) {
         firstCommitFailed = true
@@ -297,20 +357,44 @@ function backend({ failAfterFirstCommit = false }: { failAfterFirstCommit?: bool
       }
     }
 
-    if (method === 'groups.state') {return { room: room(), driver_status: { pending_actions: [] } }}
+    if (method === 'groups.state') {
+      return { room: room(), driver_status: { pending_actions: [] } }
+    }
 
-    if (method === 'groups.log') {return { events: events(), cursor: events().length, latest_seq: events().length, has_more: false }}
+    if (method === 'groups.log') {
+      return { events: events(), cursor: events().length, latest_seq: events().length, has_more: false }
+    }
 
     if (method === 'groups.attachment.list') {
-      return { room_id: room().room_id, authority: { gateway_id: runtime.authority, epoch: 1 }, snapshot_seq: events().length, items: [], has_more: false, next_cursor: null }
+      return {
+        room_id: room().room_id,
+        authority: { gateway_id: runtime.authority, epoch: 1 },
+        snapshot_seq: events().length,
+        items: [],
+        has_more: false,
+        next_cursor: null
+      }
     }
 
     if (method === 'groups.attachment.download') {
-      return { attachment_id: params.attachment_id, event_id: params.event_id, kind: 'image', name: 'photo.png', mime: 'image/png', size: 3, data_base64: 'UE5H' }
+      return {
+        attachment_id: params.attachment_id,
+        event_id: params.event_id,
+        kind: 'image',
+        name: 'photo.png',
+        mime: 'image/png',
+        size: 3,
+        data_base64: 'UE5H'
+      }
     }
 
     if (method === 'groups.member.resolve') {
-      return { room: room(), member: room().members.find(member => member.member_id === params.member_id), action: params.action, changed: false }
+      return {
+        room: room(),
+        member: room().members.find(member => member.member_id === params.member_id),
+        action: params.action,
+        changed: false
+      }
     }
 
     throw new Error(`Unexpected method ${method}`)
@@ -319,8 +403,16 @@ function backend({ failAfterFirstCommit = false }: { failAfterFirstCommit?: bool
   return {
     calls,
     imports,
-    setHold(value: boolean) { holdImport = value },
-    release() { releaseImport?.(); releaseImport = null },
+    setHold(value: boolean) {
+      holdImport = value
+    },
+    setRetiring(name: string) {
+      retiringMember = name
+    },
+    release() {
+      releaseImport?.()
+      releaseImport = null
+    },
     committed: () => committed
   }
 }
@@ -354,11 +446,13 @@ beforeEach(async () => {
   runtime.connectionId = 'owner-a'
   runtime.gateway = 'open'
   runtime.profile = 'default'
+  runtime.routeGeneration += 1
   runtime.routes = [
     { connectionId: 'owner-a', mode: 'local', profile: 'default', targetProfile: 'default' },
     { connectionId: 'remote-b', mode: 'remote', profile: 'default', targetProfile: 'default' }
   ]
   localStorage.clear()
+  Element.prototype.scrollIntoView = vi.fn()
   URL.createObjectURL = vi.fn(() => 'blob:history')
   URL.revokeObjectURL = vi.fn()
   const loaded = await modules()
@@ -379,7 +473,7 @@ afterEach(async () => {
 describe('automatic shipped Group Chat adoption', () => {
   it('cold-hydrates a released record, retries the exact committed request, and mounts retained history in the canonical consumer', async () => {
     const transport = backend({ failAfterFirstCommit: true })
-    const storage = new Map<string, unknown>([['group-chats', releasedRecord()]])
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
     let loaded = await coldHydrate(storage)
 
     await Promise.all([
@@ -406,17 +500,28 @@ describe('automatic shipped Group Chat adoption', () => {
     const request = transport.imports[0]
     expect(request.source_id).toMatch(/^hermes\.plugin\.hermes-bots\.group-chats:/)
     expect(request.history.map(entry => entry.text)).toEqual([
-      'Keep this shipped history', 'Alpha result', 'Beta result', 'Former result'
+      'Keep this shipped history',
+      'Alpha result',
+      'Beta result',
+      'Former result'
     ])
     expect(request.history.map(entry => entry.thread_id)).toEqual(['legacy', 'legacy', 'legacy', 'legacy'])
     expect(request.history[0].attachments).toEqual([
       { kind: 'image', name: 'photo.png', data: 'data:image/png;base64,UE5H' }
     ])
     expect(request.members.filter(member => member.name === 'Reviewer')).toHaveLength(2)
-    expect(new Set(request.members.filter(member => member.name === 'Reviewer').map(member => member.source_member_id)).size).toBe(2)
+    expect(
+      new Set(request.members.filter(member => member.name === 'Reviewer').map(member => member.source_member_id)).size
+    ).toBe(2)
     expect(request.members.find(member => member.name === 'Remote Builder')).toMatchObject({
-      active: true, connection_id: 'remote-b', connection_label: 'Workshop Mac', remote_source: true
+      active: true,
+      connection_id: 'remote-b',
+      connection_label: 'Workshop Mac',
+      remote_source: true
     })
+    expect(
+      request.members.filter(member => member.name === 'Reviewer').every(member => member.remote_source === false)
+    ).toBe(true)
     expect(request.members.find(member => member.name === 'departed')).toMatchObject({ active: false })
     expect(request.held_work).toHaveLength(1)
 
@@ -428,8 +533,15 @@ describe('automatic shipped Group Chat adoption', () => {
       route: { connectionId: 'owner-a', profile: 'default', authorityGatewayId: 'install:owner-a' }
     })
     expect(adopted.Release.log).toHaveLength(4)
-    expect(loaded.registry.$canonicalGroupBindings.get().Release).toEqual({
-      connectionId: 'owner-a', profile: 'default', roomId: request.room_id
+    expect(loaded.registry.$canonicalGroupBindings.get().Release).toMatchObject({
+      connectionId: 'owner-a',
+      profile: 'default',
+      roomId: request.room_id
+    })
+    expect(loaded.registry.$canonicalGroupBindings.get().Release.adoptionOwner).toMatchObject({
+      authorityGatewayId: 'install:owner-a',
+      requestHash: adopted.Release.shippedAdoption.requestHash,
+      sourceId: adopted.Release.shippedAdoption.sourceId
     })
 
     // A later cold launch restores the same canonical binding without importing again.
@@ -455,8 +567,11 @@ describe('automatic shipped Group Chat adoption', () => {
     expect(within(memberList).getByText('departed').closest('div')?.textContent).toContain('Former member')
 
     fireEvent.click(within(remoteMember).getByRole('button', { name: 'Check again' }))
-    await waitFor(() => expect(transport.calls.some(call =>
-      call.method === 'groups.member.resolve' && call.params.action === 'refresh')).toBe(true))
+    await waitFor(() =>
+      expect(
+        transport.calls.some(call => call.method === 'groups.member.resolve' && call.params.action === 'refresh')
+      ).toBe(true)
+    )
     expect(transport.imports).toHaveLength(2)
     expect(transport.calls.some(call => call.method === 'groups.send')).toBe(false)
 
@@ -468,7 +583,7 @@ describe('automatic shipped Group Chat adoption', () => {
   it('coalesces overlapping adoption and leaves a late success unacknowledged after the foreground source moves', async () => {
     const transport = backend()
     transport.setHold(true)
-    const storage = new Map<string, unknown>([['group-chats', releasedRecord()]])
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
     const loaded = await coldHydrate(storage)
     const storageApi = scriptedStorage(storage).storage
     const first = loaded.adoption.adoptShippedGroupChats(storageApi)
@@ -494,10 +609,75 @@ describe('automatic shipped Group Chat adoption', () => {
     expect((storage.get('group-chats') as Record<string, any>).Release.shippedAdoption.state).toBe('adopted')
   })
 
+  it('rejects a same-connection route ABA after import response and recovers only through a fresh lease', async () => {
+    const transport = backend()
+    transport.setHold(true)
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    const storageApi = scriptedStorage(storage).storage
+    const importing = loaded.adoption.adoptShippedGroupChats(storageApi)
+
+    await waitFor(() => expect(transport.imports).toHaveLength(1))
+    runtime.routeGeneration += 1
+    runtime.routeGeneration += 1
+    transport.release()
+    await importing
+
+    expect((storage.get('group-chats') as Record<string, any>).Release.shippedAdoption).toMatchObject({
+      state: 'prepared',
+      issue: { kind: 'offline' }
+    })
+    expect(loaded.registry.$canonicalGroupBindings.get()).toEqual({})
+
+    transport.setHold(false)
+    await loaded.adoption.adoptShippedGroupChats(storageApi)
+    expect(transport.imports).toHaveLength(2)
+    expect(transport.imports[1]).toEqual(transport.imports[0])
+    expect((storage.get('group-chats') as Record<string, any>).Release.shippedAdoption.state).toBe('adopted')
+    expect(loaded.registry.$canonicalGroupBindings.get().Release?.isCurrent?.()).toBe(true)
+  })
+
+  it('rechecks route ownership after durable acknowledgement before binding', async () => {
+    const transport = backend()
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    const storageApi = scriptedStorage(storage).storage
+    const originalSet = storageApi.set.bind(storageApi)
+    let releaseAck!: () => void
+    const ackHeld = new Promise<void>(resolve => {
+      releaseAck = resolve
+    })
+    let ackStarted = false
+
+    storageApi.set = async (key, value) => {
+      await originalSet(key, value)
+      const rooms = value as Record<string, any>
+
+      if (key === 'group-chats' && rooms.Release?.shippedAdoption?.state === 'adopted') {
+        ackStarted = true
+        await ackHeld
+      }
+    }
+
+    const adopting = loaded.adoption.adoptShippedGroupChats(storageApi)
+    await waitFor(() => expect(ackStarted).toBe(true))
+    expect(transport.imports).toHaveLength(1)
+    runtime.routeGeneration += 1
+    releaseAck()
+    await adopting
+
+    expect((storage.get('group-chats') as Record<string, any>).Release.shippedAdoption.state).toBe('adopted')
+    expect(loaded.registry.$canonicalGroupBindings.get()).toEqual({})
+
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    expect(transport.imports).toHaveLength(1)
+    expect(loaded.registry.$canonicalGroupBindings.get().Release?.isCurrent?.()).toBe(true)
+  })
+
   it('fences a same-name local room replacement while the old import is in flight', async () => {
     const transport = backend()
     transport.setHold(true)
-    const storage = new Map<string, unknown>([['group-chats', releasedRecord()]])
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
     const loaded = await coldHydrate(storage)
     const storageApi = scriptedStorage(storage).storage
     const importing = loaded.adoption.adoptShippedGroupChats(storageApi)
@@ -524,20 +704,28 @@ describe('automatic shipped Group Chat adoption', () => {
   })
 
   it.each([
-    ['missing import capability', { authority_gateway_id: 'install:owner-a', driver: true, methods: ['groups.state'] }, 'update-required'],
+    [
+      'missing import capability',
+      { authority_gateway_id: 'install:owner-a', driver: true, methods: ['groups.state'] },
+      'update-required'
+    ],
     ['expired authentication', Object.assign(new Error('Unauthorized'), { status: 401 }), 'auth'],
     ['offline owner', new Error('Socket closed'), 'offline']
   ] as const)('reports %s accurately without starting import or dispatch', async (_label, outcome, issueKind) => {
-    const storage = new Map<string, unknown>([['group-chats', releasedRecord()]])
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
     const loaded = await coldHydrate(storage)
     const calls: string[] = []
 
     runtime.handler = async (_route, method) => {
       calls.push(method)
 
-      if (method !== 'groups.capabilities') {throw new Error(`Unexpected method ${method}`)}
+      if (method !== 'groups.capabilities') {
+        throw new Error(`Unexpected method ${method}`)
+      }
 
-      if (outcome instanceof Error) {throw outcome}
+      if (outcome instanceof Error) {
+        throw outcome
+      }
 
       return outcome
     }
@@ -551,7 +739,7 @@ describe('automatic shipped Group Chat adoption', () => {
 
   it('never crosses an owner installation and does not guess among ambiguous historical routes', async () => {
     const transport = backend({ failAfterFirstCommit: true })
-    const storage = new Map<string, unknown>([['group-chats', releasedRecord()]])
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
     let loaded = await coldHydrate(storage)
     await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
     expect(transport.imports).toHaveLength(1)
@@ -564,32 +752,137 @@ describe('automatic shipped Group Chat adoption', () => {
     expect(transport.imports).toHaveLength(1)
     const replaced = (storage.get('group-chats') as Record<string, any>).Release.shippedAdoption
     expect(replaced.route).toEqual({
-      connectionId: 'owner-a', profile: 'default', authorityGatewayId: 'install:owner-a'
+      connectionId: 'owner-a',
+      profile: 'default',
+      authorityGatewayId: 'install:owner-a'
     })
     expect(replaced.issue.kind).toBe('owner-replaced')
     expect(transport.calls.filter(call => call.route?.connectionId === 'remote-b')).toEqual([])
 
-    const ambiguousStorage = new Map<string, unknown>([['group-chats', {
-      Ambiguous: {
-        log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'Keep me' }],
-        members: [{ name: 'alpha' }, { name: 'beta' }],
-        watermarks: {}
-      }
-    }]])
+    const ambiguousStorage = new Map<string, unknown>([
+      [
+        'group-chats',
+        {
+          Ambiguous: {
+            log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'Keep me' }],
+            members: [{ name: 'alpha' }, { name: 'beta' }],
+            watermarks: {}
+          }
+        }
+      ]
+    ])
 
     runtime.routes = [
       { connectionId: 'remote-one', mode: 'remote', profile: 'default', targetProfile: 'default' },
       { connectionId: 'remote-two', mode: 'remote', profile: 'default', targetProfile: 'default' }
     ]
+    const ambiguousTransport = backend()
     loaded = await coldHydrate(ambiguousStorage)
-    const before = transport.calls.length
+    const before = ambiguousTransport.calls.length
     await loaded.adoption.adoptShippedGroupChats(scriptedStorage(ambiguousStorage).storage)
     const ambiguous = (ambiguousStorage.get('group-chats') as Record<string, any>).Ambiguous.shippedAdoption
 
-    expect(transport.calls).toHaveLength(before)
+    expect(ambiguousTransport.calls).toHaveLength(before)
     expect(ambiguous).toMatchObject({ state: 'waiting', issue: { kind: 'owner-ambiguous' } })
     expect(ambiguous.sourceId).toMatch(/^hermes\.plugin\.hermes-bots\.group-chats:/)
     expect(ambiguous.requestHash).toMatch(/^[0-9a-f]{64}$/)
     expect((ambiguousStorage.get('group-chats') as Record<string, any>).Ambiguous.log).toHaveLength(1)
+
+    const view = await import('./group-chat-view')
+    render(
+      <view.GroupChatWorkspace group="Ambiguous" members={loaded.chat.$groupChats.get().Ambiguous.members || []} />
+    )
+    expect(screen.queryByRole('textbox')).toBeNull()
+    const ownerButtons = await screen.findAllByRole('button', { name: /^Use Device / })
+    fireEvent.click(ownerButtons[1])
+    await waitFor(() =>
+      expect((ambiguousStorage.get('group-chats') as Record<string, any>).Ambiguous.shippedAdoption.state).toBe(
+        'adopted'
+      )
+    )
+    expect((ambiguousStorage.get('group-chats') as Record<string, any>).Ambiguous.shippedAdoption).toMatchObject({
+      ownerSelection: 'explicit',
+      route: { connectionId: 'remote-two', profile: 'default' }
+    })
+    expect(ambiguousTransport.imports.at(-1)?.members.every(member => member.remote_source === false)).toBe(true)
+    expect(loaded.registry.$canonicalGroupBindings.get().Ambiguous?.isCurrent?.()).toBe(true)
+  })
+
+  it('preserves another adopted checkpoint through disband and cold reload', async () => {
+    backend()
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    const adopted = structuredClone((storage.get('group-chats') as Record<string, any>).Release.shippedAdoption)
+
+    const rooms = {
+      ...loaded.chat.$groupChats.get(),
+      Other: { log: [], members: [], sessions: {}, watermarks: {}, roomId: 'other-room' }
+    }
+
+    loaded.chat.$groupChats.set(rooms)
+    await loaded.chat.persistGroupChatRoomsRequired(rooms, scriptedStorage(storage).storage)
+    const view = await import('./group-chat-view')
+    await view.disbandGroupChat('Other', [])
+
+    loaded.adoption.stopShippedGroupAdoption()
+    loaded.chat.$groupChats.set(loaded.chat.hydrateGroupChatRooms(storage.get('group-chats')))
+    expect(loaded.chat.$groupChats.get().Release.shippedAdoption).toEqual(adopted)
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    expect(loaded.registry.$canonicalGroupBindings.get().Release?.isCurrent?.()).toBe(true)
+  })
+
+  it('revokes adopted bindings on rename, same-name reuse, and lifecycle disposal', async () => {
+    backend()
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    const original = loaded.registry.$canonicalGroupBindings.get().Release
+    expect(original?.isCurrent?.()).toBe(true)
+
+    const view = await import('./group-chat-view')
+    await view.renameGroupChat('Release', 'Renamed', [], { hostedAlreadyRenamed: true })
+    expect(original?.isCurrent?.()).toBe(false)
+    expect(loaded.registry.$canonicalGroupBindings.get().Release).toBeUndefined()
+
+    loaded.chat.$groupChats.set({
+      ...loaded.chat.$groupChats.get(),
+      Release: {
+        log: [{ at: 2, from: { kind: 'user', name: 'You' }, text: 'New incarnation' }],
+        members: [],
+        watermarks: {}
+      }
+    })
+    render(<view.GroupChatWorkspace group="Release" members={[]} />)
+    expect(screen.getByText('New incarnation')).toBeTruthy()
+
+    loaded.adoption.stopShippedGroupAdoption()
+    expect(loaded.registry.$canonicalGroupBindings.get()).toEqual({})
+  })
+
+  it('renders durable retirement as removal pending and retries retire for the exact server member', async () => {
+    const transport = backend()
+    transport.setRetiring('Remote Builder')
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    const binding = loaded.registry.$canonicalGroupBindings.get().Release as CanonicalGroupBinding
+    render(<loaded.workspace.CanonicalGroupWorkspace binding={binding} />)
+
+    const pending = await screen.findByText('Removal pending. This Bot cannot receive new work.')
+    const row = pending.closest('div')!
+    expect(within(row).queryByRole('button', { name: 'Re-add' })).toBeNull()
+    expect(within(row).queryByRole('button', { name: 'Check again' })).toBeNull()
+    fireEvent.click(within(row).getByRole('button', { name: 'Retry removal' }))
+    await waitFor(() =>
+      expect(
+        transport.calls.some(
+          call =>
+            call.method === 'groups.member.resolve' &&
+            call.params.action === 'retire' &&
+            String(call.params.member_id).startsWith('server:member:2:')
+        )
+      ).toBe(true)
+    )
   })
 })

@@ -35,6 +35,15 @@ export interface GatewayRouteLease {
   request: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => Promise<T>
 }
 
+export interface GatewayRouteLease {
+  readonly connectionId: string
+  readonly generation: number
+  readonly profile: string
+  assertCurrent: () => void
+  release: () => void
+  request: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => Promise<T>
+}
+
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
 const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
@@ -359,7 +368,9 @@ interface AttachedRemoteProbe {
  *  ~30ms (`messages=1`) and never runs `session.create` (#96493). Isolated
  *  SSH/pooled backends (`sharedRemote: false`) still get their own secondary. */
 async function attachedRemoteProbe(
-  connectionId: null | string, profile: string, signal?: AbortSignal
+  connectionId: null | string,
+  profile: string,
+  signal?: AbortSignal
 ): Promise<AttachedRemoteProbe | null> {
   signal?.throwIfAborted()
   const id = String(connectionId ?? '').trim()
@@ -382,8 +393,12 @@ async function attachedRemoteProbe(
   const assertCurrent = () => {
     signal?.throwIfAborted()
 
-    if (gateway !== g.primaryGateway || id !== g.primaryConnectionId ||
-      primaryProfile !== g.primaryProfile || generation !== (g.primaryOwnerGeneration ?? 0)) {
+    if (
+      gateway !== g.primaryGateway ||
+      id !== g.primaryConnectionId ||
+      primaryProfile !== g.primaryProfile ||
+      generation !== (g.primaryOwnerGeneration ?? 0)
+    ) {
       throw new Error('Hermes gateway connection owner changed')
     }
   }
@@ -397,7 +412,9 @@ async function attachedRemoteProbe(
       `Timed out resolving shared-remote route for "${key}"`
     )
 
-    sharedRemote = Boolean(conn && typeof conn === 'object' && (conn as { sharedRemote?: boolean }).sharedRemote === true)
+    sharedRemote = Boolean(
+      conn && typeof conn === 'object' && (conn as { sharedRemote?: boolean }).sharedRemote === true
+    )
   } catch {
     // Probe failed. A secondary at this already-attached source is the #96493
     // ghost WebSocket (accept/close, messages=1). Prefer the primary until a
@@ -1104,6 +1121,7 @@ export async function requestGatewayForAgent<T>(
 export async function acquireGatewayRouteLease(
   connectionId: string,
   profile: string
+
 ): Promise<GatewayRouteLease> {
   const id = String(connectionId || '').trim()
   const key = normKey(profile)
@@ -1203,6 +1221,7 @@ export async function acquireGatewayRouteLease(
     if (released) {
       return
     }
+
 
     released = true
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
@@ -1585,9 +1604,14 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
 
   const key = turnLeaseKey(scope, sessionId)
 
-  if (!acceptExecutionEvent(turnExecutionAuthorities, key, event.type, event)) {return}
+  if (!acceptExecutionEvent(turnExecutionAuthorities, key, event.type, event)) {
+    return
+  }
 
-  if (event.type === 'message.start' || (event.type === 'session.info' && (event.payload as Record<string, unknown>)?.running === true)) {
+  if (
+    event.type === 'message.start' ||
+    (event.type === 'session.info' && (event.payload as Record<string, unknown>)?.running === true)
+  ) {
     // The gateway emits settled session.info before immediately chaining a
     // queued/goal follow-up. Keep the same route alive for that next turn.
     cancelTurnLeaseRelease(key)
@@ -1944,9 +1968,9 @@ export function openSecondaryCount(): number {
 export function touchSecondaryGateways(): void {
   // Older Desktop hosts own pooled children. Canonical hosts expose no touch
   // capability: their gateway lifetime is independent of renderer keepalives.
-  const desktop = window.hermesDesktop as (typeof window.hermesDesktop & {
+  const desktop = window.hermesDesktop as typeof window.hermesDesktop & {
     touchBackend?: (scope: string) => Promise<unknown>
-  })
+  }
 
   for (const entry of g.secondaries.values()) {
     if (entry.wantOpen && isOpen(entry.gateway)) {

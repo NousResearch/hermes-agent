@@ -1,4 +1,5 @@
 import { classicAuthorityClaim } from './group-desktop-authority'
+import { shippedGroupAdoptionOwnsExecution } from './types'
 import type { GroupChat, ProfileRoute } from './types'
 
 const MAX_COMMANDS_PER_CLAIM = 1
@@ -68,7 +69,7 @@ export function desktopRoomDescriptors(rooms: Record<string, GroupChat>): Deskto
     .filter(([, room]) => {
       const hosted = typeof room?.hosted === 'string' ? room.hosted.trim() : ''
 
-      return !hosted && !room?.tombstone && Array.isArray(room?.log)
+      return !hosted && !room?.tombstone && !shippedGroupAdoptionOwnsExecution(room) && Array.isArray(room?.log)
     })
     .flatMap(([name, room]) => {
       const authority = classicAuthorityClaim(room)

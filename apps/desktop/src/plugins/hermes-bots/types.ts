@@ -201,13 +201,7 @@ export interface HostedPeerProbeHint {
 }
 
 export type ShippedGroupAdoptionIssueKind =
-  | 'auth'
-  | 'conflict'
-  | 'offline'
-  | 'owner-ambiguous'
-  | 'owner-replaced'
-  | 'storage'
-  | 'update-required'
+  'auth' | 'conflict' | 'offline' | 'owner-ambiguous' | 'owner-replaced' | 'storage' | 'update-required'
 
 export interface ShippedGroupAdoptionRoute {
   authorityGatewayId: string
@@ -227,6 +221,9 @@ export interface ShippedGroupAdoption {
     kind: ShippedGroupAdoptionIssueKind
     message: string
   }
+  /** Historical evidence was inferred automatically, or the user explicitly
+   * selected the original device for this exact waiting checkpoint. */
+  ownerSelection?: 'explicit' | 'inferred'
   requestHash: string
   retiredMembers?: number
   roomId: string
@@ -234,6 +231,15 @@ export interface ShippedGroupAdoption {
   sourceId: string
   state: 'adopted' | 'prepared' | 'waiting'
   version: 1
+}
+
+/** Once a released room has entered adoption, no classic execution path may
+ * touch it again. Waiting/prepared records are held; adopted records belong to
+ * the canonical gateway even while their binding is being re-verified. */
+export function shippedGroupAdoptionOwnsExecution(
+  room: Pick<GroupChat, 'shippedAdoption'> | null | undefined
+): boolean {
+  return Boolean(room?.shippedAdoption)
 }
 
 export interface GroupChat {

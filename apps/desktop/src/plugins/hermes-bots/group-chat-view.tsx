@@ -41,7 +41,7 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
-import { $canonicalGroupBindings } from './canonical-group-registry'
+import { $canonicalGroupBindings, revokeCanonicalGroupBinding } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { canonicalGroupRequest } from './canonical-groups'
 import {
@@ -74,6 +74,7 @@ import {
   groupChatContinuityMode,
   groupChatHostedGateway,
   groupThreadOf,
+  persistGroupChatRoomsRequired,
   scheduleGroupChatServerSync,
   setGroupChatImage,
   updateGroupChat
@@ -82,6 +83,7 @@ import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { storedClassicDesktopAuthority } from './group-desktop-authority'
+
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
@@ -123,6 +125,9 @@ import { botsText, useBots } from './i18n'
 import { displayName, slugify } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
+import { selectShippedGroupOwner, shippedGroupOwnerChoices } from './shipped-group-adoption'
+import type { ShippedGroupOwnerChoice } from './shipped-group-adoption'
+import { shippedGroupAdoptionOwnsExecution } from './types'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
@@ -133,6 +138,8 @@ const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
  *  open. Other group memberships and the members' per-group gateway sessions
  *  ("Group: <roomId>", or legacy "Group: <name>") are intentionally KEPT. */
 export async function disbandGroupChat(group: string, members: RosterRow[]) {
+  revokeCanonicalGroupBinding(group)
+
   // Invalidate any in-flight round-robin FIRST: bump the epoch so a running
   // drive bails at its next member boundary instead of appending to a room
   // the user just discarded.
@@ -227,35 +234,10 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   $groupHostedNeedsYou.set(hostedNeeds)
   clearGroupClarify(group)
 
-  // Persist the room map WITHOUT the disbanded room so it can't come back
-  // on the next window load.
+  // Persist through the canonical projection/read-back writer. A bespoke
+  // whole-map projection used to erase other rooms' adoption checkpoints.
   try {
-    const durable: Record<string, GroupChat> = {}
-
-    for (const [name, room] of Object.entries($groupChats.get())) {
-      if (name !== group && Array.isArray(room.log)) {
-        durable[name] = {
-          ...storedClassicDesktopAuthority(room),
-          log: room.log,
-          watermarks: room.watermarks,
-          sessions: room.sessions || {},
-          sessionOwners: room.sessionOwners || {},
-          members: Array.isArray(room.members) ? room.members : [],
-          desktopCommandSettled: room.desktopCommandSettled || {},
-          roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-          hosted: groupChatHostedGateway(room) || null,
-          hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
-          hostedConnectionId:
-            typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
-          hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
-          continuityMode: groupChatContinuityMode(room),
-          image: room.image || null,
-          syncRevision: Math.max(0, Number(room.syncRevision || 0))
-        }
-      }
-    }
-
-    await Promise.resolve(getPluginCtx()?.storage?.set?.('group-chats', durable))
+    await persistGroupChatRoomsRequired($groupChats.get(), getPluginCtx()?.storage)
   } catch {
     /* storage unavailable — the atom reset above still empties the room */
   }
@@ -330,6 +312,8 @@ export async function renameGroupChat(
 
     return null
   }
+
+  revokeCanonicalGroupBinding(oldName)
 
   const beforeRename = $groupChats.get()[oldName]
 
@@ -467,6 +451,7 @@ interface GroupChatSettingsDialogProps {
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
 function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
+
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
@@ -593,18 +578,33 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const rooms = useValue($groupChats)
   const binding = bindings[props.group]
 
-  if (binding) {
-    const continuity = Object.entries(rooms).find(([, room]) =>
-      String(room?.roomId || '') === binding.roomId &&
-      String(room?.hostedConnectionId || '') === binding.connectionId
-    )
+  if (binding && binding.isCurrent?.() !== false) {
+    const exactAdoptionRoom =
+      rooms[props.group] &&
+      String(rooms[props.group].roomId || '') === binding.roomId &&
+      String(rooms[props.group].hostedConnectionId || '') === binding.connectionId
+        ? { group: props.group, room: rooms[props.group] }
+        : undefined
 
-    return <CanonicalGroupWorkspace
-      binding={binding}
-      continuity={continuity ? { group: continuity[0], room: continuity[1] } : undefined}
-      onBack={props.onBack}
-      visible={props.visible}
-    />
+    const discoveredRoom = binding.adoptionOwner
+      ? undefined
+      : Object.entries(rooms).find(
+          ([, room]) =>
+            String(room?.roomId || '') === binding.roomId &&
+            String(room?.hostedConnectionId || '') === binding.connectionId
+        )
+
+    const continuity =
+      exactAdoptionRoom || (discoveredRoom ? { group: discoveredRoom[0], room: discoveredRoom[1] } : undefined)
+
+    return (
+      <CanonicalGroupWorkspace
+        binding={binding}
+        continuity={continuity}
+        onBack={props.onBack}
+        visible={props.visible}
+      />
+    )
   }
 
   if (groupChatHostedGateway(rooms[props.group])) {
@@ -624,10 +624,28 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const activationEpoch = gatewayActivationEpoch()
   const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
   const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
+  const [ownerChoices, setOwnerChoices] = useState<ShippedGroupOwnerChoice[]>([])
+  const [ownerChoiceBusy, setOwnerChoiceBusy] = useState(false)
+  const [ownerChoiceError, setOwnerChoiceError] = useState('')
+  const [ownerChoiceScope] = useState(() => ({ mounted: true }))
   const mode = capability?.source === source ? capability.mode : 'checking'
+  const adoptionHeld = shippedGroupAdoptionOwnsExecution(room)
+  useEffect(() => {
+    ownerChoiceScope.mounted = true
+
+    return () => {
+      ownerChoiceScope.mounted = false
+    }
+  }, [ownerChoiceScope])
   useEffect(() => {
     let cancelled = false
     setCapability(null)
+
+    if (adoptionHeld) {
+      return () => {
+        cancelled = true
+      }
+    }
 
     if (gateway !== 'open') {
       setCapability({ source, mode: 'unavailable' })
@@ -650,13 +668,87 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     return () => {
       cancelled = true
     }
-  }, [connectionId, profile, gateway, source])
+  }, [adoptionHeld, connectionId, profile, gateway, source])
 
-  if (mode === 'legacy') {
+  const ownerCheckpoint = room?.shippedAdoption?.issue?.kind === 'owner-ambiguous' ? room.shippedAdoption : null
+
+  useEffect(() => {
+    let cancelled = false
+    setOwnerChoices([])
+    setOwnerChoiceError('')
+
+    if (ownerCheckpoint) {
+      void shippedGroupOwnerChoices(room)
+        .then(choices => {
+          if (!cancelled) {
+            setOwnerChoices(choices)
+          }
+        })
+        .catch(error => {
+          if (!cancelled) {
+            setOwnerChoiceError(error instanceof Error ? error.message : String(error))
+          }
+        })
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [ownerCheckpoint, room])
+
+  const chooseOriginalOwner = async (choice: ShippedGroupOwnerChoice) => {
+    if (!ownerCheckpoint || ownerChoiceBusy) {
+      return
+    }
+    const storage = getPluginCtx()?.storage
+
+    if (!storage) {
+      setOwnerChoiceError(b.canonical.upgradeStorage)
+
+      return
+    }
+
+    setOwnerChoiceBusy(true)
+    setOwnerChoiceError('')
+
+    const current = () => {
+      const checkpoint = $groupChats.get()[props.group]?.shippedAdoption
+
+      return (
+        ownerChoiceScope.mounted &&
+        checkpoint?.sourceId === ownerCheckpoint.sourceId &&
+        checkpoint.requestHash === ownerCheckpoint.requestHash
+      )
+    }
+
+    try {
+      await selectShippedGroupOwner(
+        storage,
+        props.group,
+        {
+          requestHash: ownerCheckpoint.requestHash,
+          sourceId: ownerCheckpoint.sourceId
+        },
+        choice
+      )
+    } catch (error) {
+      if (current()) {
+        setOwnerChoiceError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (current()) {
+        setOwnerChoiceBusy(false)
+      }
+    }
+  }
+
+  if (mode === 'legacy' && !adoptionHeld) {
     return <LegacyGroupChatWorkspace {...props} />
   }
 
-  const notice = room?.shippedAdoption?.issue?.message || room?.continuityIssue ||
+  const notice =
+    room?.shippedAdoption?.issue?.message ||
+    room?.continuityIssue ||
     (mode === 'canonical'
       ? b.canonical.upgradePreparing
       : mode === 'unavailable'
@@ -667,13 +759,41 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     <div className="flex h-full min-h-0 flex-col gap-3 p-3">
       <h2>{props.group}</h2>
       <p role="status">{notice}</p>
+      {ownerCheckpoint && (
+        <div className="grid gap-2">
+          <p>{b.canonical.upgradeChooseOwner}</p>
+          <div className="flex flex-wrap gap-2">
+            {ownerChoices.map(choice => (
+              <Button
+                disabled={ownerChoiceBusy}
+                key={`${choice.connectionId}:${choice.profile}`}
+                onClick={() => void chooseOriginalOwner(choice)}
+              >
+                {b.canonical.upgradeUseDevice.replace('{device}', choice.label)}
+              </Button>
+            ))}
+          </div>
+          {ownerChoiceError && <p role="alert">{ownerChoiceError}</p>}
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-auto" role="log">
-        {(room?.log || []).map((entry, index) => <div className="whitespace-pre-wrap py-2" key={entry.id || index}>
-          <strong><bdi>{entry.from?.name || b.canonical.unknownMember}</bdi>: </strong>
-          {entry.text}
-          {!!entry.images?.length && <div>{entry.images.map((attachment, attachmentIndex) =>
-            <span className="mr-2" key={`${attachment.name}:${attachmentIndex}`}>{attachment.name}</span>)}</div>}
-        </div>)}
+        {(room?.log || []).map((entry, index) => (
+          <div className="whitespace-pre-wrap py-2" key={entry.id || index}>
+            <strong>
+              <bdi>{entry.from?.name || b.canonical.unknownMember}</bdi>:{' '}
+            </strong>
+            {entry.text}
+            {!!entry.images?.length && (
+              <div>
+                {entry.images.map((attachment, attachmentIndex) => (
+                  <span className="mr-2" key={`${attachment.name}:${attachmentIndex}`}>
+                    {attachment.name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -963,6 +1083,25 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // Events are epoch-tagged, so a superseded run's history drops out of view.
   const activityEvents: GroupActivityEntry[] = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  // A later "settled" event must not hide a member that failed to answer.
+  // Successful completion for that member clears its unresolved warning.
+  const unresolvedFailures = new Map<string, GroupActivityEntry>()
+
+  for (const event of activityEvents) {
+    const key = event.member || ''
+
+    if (event.kind === 'failed' || event.kind === 'timed-out') {
+      unresolvedFailures.delete(key)
+      unresolvedFailures.set(key, event)
+    } else if (event.kind === 'replied' || event.kind === 'passed' || event.kind === 'delivered') {
+      unresolvedFailures.delete(key)
+    }
+  }
+
+  const summaryActivity =
+    !room.running && unresolvedFailures.size ? [...unresolvedFailures.values()].at(-1)! : latestActivity
+
+
   const hostedActivity = groupChatHostedGateway(room) ? room.hostedStatus?.label : null
   const retryTaskId = String(room.hostedStatus?.taskId || '')
   const retryCommandId = String(room.hostedStatus?.retryCommandId || '')
@@ -1035,8 +1174,11 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           <span className="shrink-0 font-medium">{b.group.activity}</span>
           {hostedActivity ? (
             <span className="min-w-0 flex-1 truncate">{hostedActivity}</span>
-          ) : latestActivity ? (
-            <span className="min-w-0 flex-1 truncate">{`${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`}</span>
+          ) : summaryActivity ? (
+            <span
+              className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}
+            >{`${groupActivityLabel(summaryActivity)} · ${relativeTime(summaryActivity.at)}`}</span>
+
           ) : null}
         </RowButton>
         {canStop ? (
@@ -1624,6 +1766,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         onClose={() => setSettingsOpen(false)}
         open={settingsOpen}
       />
+
       <ConfirmDialog
         busyLabel={b.group.disbanding}
         confirmLabel={b.group.disbandAction}

@@ -30,6 +30,7 @@ import {
   focusedMentionProfile
 } from './bot-state'
 import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
+import { revokeAdoptedCanonicalGroupsForConnection } from './canonical-group-registry'
 import { BotChatEmpty } from './chat-empty'
 import { bindProfileSync, RoutinesPane } from './cron'
 import {
@@ -149,17 +150,19 @@ export default {
         // Atom listeners seed synchronously. Treating that seed as a gateway
         // transition bumps every room epoch and can cancel a startup send.
         if (!bindingGatewayListener) {
+          // A transition revokes the classic mailbox consumer synchronously.
+          // It is restarted only after pull + shipped-room adoption settle, so
+          // no queued classic send can cross the ownership handoff.
+          stopDesktopRoomCommandRuntime()
           const transitioned = handleSessionsGatewayTransition()
 
-          if (gateway === 'open') {
-            void Promise.resolve(transitioned).then(() => {
+          void Promise.resolve(transitioned)
+            .then(() => (gateway === 'open' && !roomServicesDisposed ? adoptShippedGroupChats(ctx.storage) : undefined))
+            .finally(() => {
               if (!roomServicesDisposed) {
-                return adoptShippedGroupChats(ctx.storage)
+                startDesktopRoomCommands()
               }
             })
-          }
-
-          startDesktopRoomCommands()
         }
       })
       bindingGatewayListener = false
@@ -190,6 +193,7 @@ export default {
       ctx.onDispose(stopBotRelay)
       ctx.onDispose(() => {
         roomServicesDisposed = true
+        revokeAdoptedCanonicalGroupsForConnection()
         stopShippedGroupAdoption()
         stopHostedRoomRuntime()
         stopDesktopRoomCommandRuntime()
@@ -411,15 +415,17 @@ export default {
           }
         })
         .catch(() => {
-          const rooms = Object.fromEntries(Object.entries($groupChats.get()).map(([name, room]) => [
-            name,
-            groupChatHostedGateway(room)
-              ? room
-              : {
-                  ...room,
-                  continuityIssue: ctx.i18n.t('canonical.upgradeStorage')
-                }
-          ]))
+          const rooms = Object.fromEntries(
+            Object.entries($groupChats.get()).map(([name, room]) => [
+              name,
+              groupChatHostedGateway(room)
+                ? room
+                : {
+                    ...room,
+                    continuityIssue: ctx.i18n.t('canonical.upgradeStorage')
+                  }
+            ])
+          )
 
           $groupChats.set(rooms)
         })
@@ -452,6 +458,8 @@ export default {
       if (typeof window !== 'undefined') {
         unbindConnectionsChanged =
           window.hermesDesktop?.connections?.onChanged?.(payload => {
+            revokeAdoptedCanonicalGroupsForConnection(payload.connectionId)
+
             if (payload?.reason === 'removed') {
               sweepGroupChatMembersForRemovedConnection(payload.connectionId)
             }

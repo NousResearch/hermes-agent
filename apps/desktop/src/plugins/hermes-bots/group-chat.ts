@@ -998,37 +998,63 @@ function storedHostedPeerProbeHint(room: Partial<GroupChat>): HostedPeerProbeHin
 function storedShippedGroupAdoption(room: Partial<GroupChat>): ShippedGroupAdoption | undefined {
   const value = room.shippedAdoption
 
-  if (!value || typeof value !== 'object' || value.version !== 1 ||
-      !['waiting', 'prepared', 'adopted'].includes(String(value.state || '')) ||
-      typeof value.sourceId !== 'string' || !value.sourceId.trim() || value.sourceId.length > 512 ||
-      typeof value.roomId !== 'string' || !value.roomId.trim() || value.roomId.length > 128 ||
-      typeof value.requestHash !== 'string' || !/^[0-9a-f]{64}$/.test(value.requestHash)) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    value.version !== 1 ||
+    !['waiting', 'prepared', 'adopted'].includes(String(value.state || '')) ||
+    typeof value.sourceId !== 'string' ||
+    !value.sourceId.trim() ||
+    value.sourceId.length > 512 ||
+    typeof value.roomId !== 'string' ||
+    !value.roomId.trim() ||
+    value.roomId.length > 128 ||
+    typeof value.requestHash !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(value.requestHash)
+  ) {
     return undefined
   }
 
   const issueKinds = new Set<ShippedGroupAdoptionIssueKind>([
-    'auth', 'conflict', 'offline', 'owner-ambiguous', 'owner-replaced', 'storage', 'update-required'
+    'auth',
+    'conflict',
+    'offline',
+    'owner-ambiguous',
+    'owner-replaced',
+    'storage',
+    'update-required'
   ])
 
   const rawIssue = value.issue
 
-  const issue = rawIssue && issueKinds.has(rawIssue.kind) && typeof rawIssue.message === 'string' &&
-      rawIssue.message.trim() && rawIssue.message.length <= 1000
-    ? { kind: rawIssue.kind, message: rawIssue.message.trim() }
-    : undefined
+  const issue =
+    rawIssue &&
+    issueKinds.has(rawIssue.kind) &&
+    typeof rawIssue.message === 'string' &&
+    rawIssue.message.trim() &&
+    rawIssue.message.length <= 1000
+      ? { kind: rawIssue.kind, message: rawIssue.message.trim() }
+      : undefined
 
   const rawRoute = value.route
 
-  const route = rawRoute && typeof rawRoute.connectionId === 'string' && rawRoute.connectionId.trim() &&
-      rawRoute.connectionId.length <= 256 && typeof rawRoute.profile === 'string' && rawRoute.profile.trim() &&
-      rawRoute.profile.length <= 128 && typeof rawRoute.authorityGatewayId === 'string' &&
-      rawRoute.authorityGatewayId.trim() && rawRoute.authorityGatewayId.length <= 256
-    ? {
-        authorityGatewayId: rawRoute.authorityGatewayId.trim(),
-        connectionId: rawRoute.connectionId.trim(),
-        profile: rawRoute.profile.trim()
-      }
-    : undefined
+  const route =
+    rawRoute &&
+    typeof rawRoute.connectionId === 'string' &&
+    rawRoute.connectionId.trim() &&
+    rawRoute.connectionId.length <= 256 &&
+    typeof rawRoute.profile === 'string' &&
+    rawRoute.profile.trim() &&
+    rawRoute.profile.length <= 128 &&
+    typeof rawRoute.authorityGatewayId === 'string' &&
+    rawRoute.authorityGatewayId.trim() &&
+    rawRoute.authorityGatewayId.length <= 256
+      ? {
+          authorityGatewayId: rawRoute.authorityGatewayId.trim(),
+          connectionId: rawRoute.connectionId.trim(),
+          profile: rawRoute.profile.trim()
+        }
+      : undefined
 
   if ((value.state === 'prepared' || value.state === 'adopted') && !route) {
     return undefined
@@ -1046,6 +1072,9 @@ function storedShippedGroupAdoption(room: Partial<GroupChat>): ShippedGroupAdopt
     sourceId: value.sourceId.trim(),
     roomId: value.roomId.trim(),
     requestHash: value.requestHash,
+    ...(value.ownerSelection === 'explicit' || value.ownerSelection === 'inferred'
+      ? { ownerSelection: value.ownerSelection }
+      : {}),
     ...(route ? { route } : {}),
     ...(issue ? { issue } : {}),
     ...(count(value.importedHistory) !== undefined ? { importedHistory: count(value.importedHistory) } : {}),
@@ -1092,8 +1121,12 @@ export function hydrateGroupChatRooms(value: unknown): Record<string, GroupChat>
       hostedMembersVerified: room.hostedMembersVerified === true,
       peerProbeHint: storedHostedPeerProbeHint(room),
       continuityMode: room.hosted
-        ? room.continuityMode === 'distributed' ? 'distributed' : 'gateway'
-        : room.continuityMode === 'gateway' ? 'gateway' : 'desktop',
+        ? room.continuityMode === 'distributed'
+          ? 'distributed'
+          : 'gateway'
+        : room.continuityMode === 'gateway'
+          ? 'gateway'
+          : 'desktop',
       image: typeof room.image === 'string' && room.image ? room.image : null,
       rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
       pinned: Boolean(room.pinned),

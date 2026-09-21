@@ -265,6 +265,56 @@ afterEach(async () => {
 })
 
 describe('classic Desktop mailbox with the real room engine', () => {
+  it('keeps held shipped rooms out of every classic mailbox pump while healthy rooms continue', async () => {
+    const loaded = await load({ turn: () => '(pass)' })
+    seed(loaded, 'Held', 'room-held')
+    seed(loaded, 'Healthy', 'room-healthy')
+    loaded.chat.updateGroupChat(
+      'Held',
+      room => ({
+        ...room,
+        shippedAdoption: {
+          version: 1,
+          state: 'waiting',
+          sourceId: 'hermes.plugin.hermes-bots.group-chats:held',
+          roomId: 'room-held',
+          requestHash: 'a'.repeat(64),
+          issue: { kind: 'offline', message: 'Reconnect the original device.' }
+        }
+      }),
+      { sync: false }
+    )
+    loaded.mailbox.queue({
+      action: 'send',
+      command_id: 'held:send',
+      room_id: 'room-held',
+      payload: { message: 'Do not replay this', recipients: members }
+    })
+    loaded.mailbox.queue({
+      action: 'send',
+      command_id: 'healthy:send',
+      room_id: 'room-healthy',
+      payload: { message: 'Continue normally', recipients: members }
+    })
+
+    await loaded.runtime.startDesktopRoomCommandRuntime()
+    await vi.advanceTimersByTimeAsync(120_000)
+
+    expect(loaded.mailbox.commands.get('held:send')).toMatchObject({ state: 'pending' })
+    expect(loaded.mailbox.commands.get('held:send')?.attempts || 0).toBe(0)
+    expect(loaded.mailbox.commands.get('healthy:send')).toMatchObject({ state: 'completed', attempts: 1 })
+    expect(loaded.chat.$groupChats.get().Held.log).toEqual([])
+    expect(loaded.chat.$groupChats.get().Healthy.log.some(entry => entry.id === 'healthy:send')).toBe(true)
+    expect(loaded.rounds.sendToGroupChat('Held', members, 'Direct old composer send')).toBeNull()
+    expect(loaded.chat.$groupChats.get().Held.log).toEqual([])
+
+    const heldAuthorities = loaded.mailbox.calls
+      .flatMap(call => call.params.room_authorities || [])
+      .filter(authority => (authority as Record<string, unknown>).room_id === 'room-held')
+
+    expect(heldAuthorities).toEqual([])
+  })
+
   it('keeps cold-start sends pending until discovery completes while Stop remains available', async () => {
     const loaded = await load({ turn: () => 'Ready after discovery' })
     seed(loaded)
@@ -273,10 +323,16 @@ describe('classic Desktop mailbox with the real room engine', () => {
     const data = await import('./data')
     data.$lastRoster.set(remoteMembers)
     loaded.mailbox.queue({
-      action: 'send', command_id: 'cold:send', room_id: 'room-1',
+      action: 'send',
+      command_id: 'cold:send',
+      room_id: 'room-1',
       payload: { message: '@reviewer Reply once', recipients: remoteMembers }
     })
-    const request = host.requestProfile as (route: ProfileRoute, method: string, params: Record<string, unknown>) => Promise<unknown>
+    const request = host.requestProfile as (
+      route: ProfileRoute,
+      method: string,
+      params: Record<string, unknown>
+    ) => Promise<unknown>
 
     host.requestProfile = (route: ProfileRoute, method: string, params: Record<string, unknown>) => {
       if (method === 'groups.capabilities') {
@@ -292,8 +348,11 @@ describe('classic Desktop mailbox with the real room engine', () => {
     expect(loaded.mailbox.commands.get('cold:send')).toMatchObject({ state: 'pending' })
     expect(loaded.mailbox.commands.get('cold:send')?.attempts || 0).toBe(0)
     expect(loaded.gateway.rpcFor('prompt.submit')).toHaveLength(0)
-    expect(loaded.mailbox.calls.some(call => call.method === 'groups.desktop.claim' &&
-      (call.params.actions as string[])?.includes('stop'))).toBe(true)
+    expect(
+      loaded.mailbox.calls.some(
+        call => call.method === 'groups.desktop.claim' && (call.params.actions as string[])?.includes('stop')
+      )
+    ).toBe(true)
 
     const hosted = await import('./hosted-room-runtime')
 
@@ -310,13 +369,25 @@ describe('classic Desktop mailbox with the real room engine', () => {
     }
   })
 
-  const reviewState = (loaded: Loaded) => structuredClone(Object.fromEntries(
-    Object.entries(loaded.chat.$groupChats.get()).map(([name, room]) => [name, {
-      log: room.log, epoch: room.epoch, running: room.running, turn: room.turn,
-      sessions: room.sessions, holds: room.holds, settled: room.desktopCommandSettled,
-      tombstone: room.tombstone, token: room.desktopAuthorityToken
-    }])
-  ))
+  const reviewState = (loaded: Loaded) =>
+    structuredClone(
+      Object.fromEntries(
+        Object.entries(loaded.chat.$groupChats.get()).map(([name, room]) => [
+          name,
+          {
+            log: room.log,
+            epoch: room.epoch,
+            running: room.running,
+            turn: room.turn,
+            sessions: room.sessions,
+            holds: room.holds,
+            settled: room.desktopCommandSettled,
+            tombstone: room.tombstone,
+            token: room.desktopAuthorityToken
+          }
+        ])
+      )
+    )
 
   it.each(['disband', 'removed', 'replacement'] as const)(
     'delayed session creation cannot mutate %s room',
@@ -324,16 +395,25 @@ describe('classic Desktop mailbox with the real room engine', () => {
       const loaded = await load()
       loaded.chat.updateGroupChat('Legacy', () => ({ log: [], members, sessions: {}, watermarks: {} }), { sync: false })
       loaded.mailbox.tokens.set('name:Legacy', String(loaded.chat.$groupChats.get().Legacy.desktopAuthorityToken))
-      const originalRequest = host.requestProfile as (target: ProfileRoute, method: string, params: Record<string, unknown>) => Promise<unknown>
+      const originalRequest = host.requestProfile as (
+        target: ProfileRoute,
+        method: string,
+        params: Record<string, unknown>
+      ) => Promise<unknown>
       const originalLocalRequest = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
       let release!: () => void
       let created = false
-      const blocked = new Promise<void>(resolve => { release = resolve })
+      const blocked = new Promise<void>(resolve => {
+        release = resolve
+      })
 
       host.request = async (method: string, params: Record<string, unknown>) => {
         const result = await originalLocalRequest(method, params)
 
-        if (method === 'session.create') { created = true; await blocked }
+        if (method === 'session.create') {
+          created = true
+          await blocked
+        }
 
         return result
       }
@@ -349,8 +429,12 @@ describe('classic Desktop mailbox with the real room engine', () => {
         return result
       }
 
-      loaded.mailbox.queue({ action: 'send', command_id: 'review:delayed-create', room_id: 'name:Legacy',
-        payload: { message: 'Obsolete input', recipients: members } })
+      loaded.mailbox.queue({
+        action: 'send',
+        command_id: 'review:delayed-create',
+        room_id: 'name:Legacy',
+        payload: { message: 'Obsolete input', recipients: members }
+      })
       const work = runCycle(loaded, 'desktop:one', ['send'])
       await vi.advanceTimersByTimeAsync(250)
       expect(created).toBe(true)
@@ -362,10 +446,15 @@ describe('classic Desktop mailbox with the real room engine', () => {
         loaded.chat.$groupChats.set({})
       } else {
         const { classicAuthorityHash } = await import('./group-desktop-authority')
-        loaded.chat.$groupChats.set({ Legacy: {
-          ...loaded.chat.$groupChats.get().Legacy, log: [], sessions: { reviewer: 'replacement-session' },
-          desktopAuthorityToken: 'authority:replacement', desktopAuthorityHash: classicAuthorityHash('authority:replacement')
-        } })
+        loaded.chat.$groupChats.set({
+          Legacy: {
+            ...loaded.chat.$groupChats.get().Legacy,
+            log: [],
+            sessions: { reviewer: 'replacement-session' },
+            desktopAuthorityToken: 'authority:replacement',
+            desktopAuthorityHash: classicAuthorityHash('authority:replacement')
+          }
+        })
       }
 
       await vi.advanceTimersByTimeAsync(500)
@@ -383,20 +472,33 @@ describe('classic Desktop mailbox with the real room engine', () => {
     async kind => {
       const loaded = await load()
       const original = seed(loaded)
-      loaded.mailbox.queue({ action: 'stop', command_id: 'review:waiting-stop', room_id: 'room-1',
-        payload: { target_command_id: 'review:pending-send' } })
+      loaded.mailbox.queue({
+        action: 'stop',
+        command_id: 'review:waiting-stop',
+        room_id: 'room-1',
+        payload: { target_command_id: 'review:pending-send' }
+      })
       const work = runCycle(loaded, 'desktop:one', ['stop'])
       await vi.advanceTimersByTimeAsync(100)
       const { classicAuthorityHash } = await import('./group-desktop-authority')
 
-      const next = kind === 'removed' ? {} : { Workshop: {
-        ...original,
-        ...(kind === 'hosted' ? { hosted: 'gateway-new' } : {}),
-        ...(kind === 'conflict' ? { desktopAuthorityConflict: true } : {}),
-        ...(kind === 'replacement' ? {
-          desktopAuthorityToken: 'authority:replacement', desktopAuthorityHash: classicAuthorityHash('authority:replacement')
-        } : {})
-      }, ...(kind === 'duplicate' ? { Duplicate: { ...original } } : {}) }
+      const next =
+        kind === 'removed'
+          ? {}
+          : {
+              Workshop: {
+                ...original,
+                ...(kind === 'hosted' ? { hosted: 'gateway-new' } : {}),
+                ...(kind === 'conflict' ? { desktopAuthorityConflict: true } : {}),
+                ...(kind === 'replacement'
+                  ? {
+                      desktopAuthorityToken: 'authority:replacement',
+                      desktopAuthorityHash: classicAuthorityHash('authority:replacement')
+                    }
+                  : {})
+              },
+              ...(kind === 'duplicate' ? { Duplicate: { ...original } } : {})
+            }
 
       loaded.chat.$groupChats.set(next)
       const snapshot = reviewState(loaded)
@@ -413,7 +515,9 @@ describe('classic Desktop mailbox with the real room engine', () => {
     const originalRequest = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
     let release!: () => void
     let created = false
-    const blocked = new Promise<void>(resolve => { release = resolve })
+    const blocked = new Promise<void>(resolve => {
+      release = resolve
+    })
 
     host.request = async (method: string, params: Record<string, unknown>) => {
       const result = await originalRequest(method, params)
@@ -426,21 +530,32 @@ describe('classic Desktop mailbox with the real room engine', () => {
       return result
     }
 
-    loaded.mailbox.queue({ action: 'send', command_id: 'review:recreated', room_id: 'old-room',
-      payload: { message: 'Obsolete input', recipients: members } })
+    loaded.mailbox.queue({
+      action: 'send',
+      command_id: 'review:recreated',
+      room_id: 'old-room',
+      payload: { message: 'Obsolete input', recipients: members }
+    })
     const work = runCycle(loaded, 'desktop:one', ['send'])
     await vi.advanceTimersByTimeAsync(250)
     expect(created).toBe(true)
     await (await import('./group-chat-view')).disbandGroupChat('Workshop', members)
     await vi.advanceTimersByTimeAsync(1_000)
 
-    const replacementSession = await originalRequest('session.create', {
-      profile: 'reviewer', title: 'Group: new-room', hidden: true
-    }) as { stored_session_id: string }
+    const replacementSession = (await originalRequest('session.create', {
+      profile: 'reviewer',
+      title: 'Group: new-room',
+      hidden: true
+    })) as { stored_session_id: string }
 
     loaded.chat.updateGroupChat('Workshop', () => ({
-      roomId: 'new-room', log: [], members, sessions: { reviewer: replacementSession.stored_session_id },
-      watermarks: {}, running: false, epoch: 0
+      roomId: 'new-room',
+      log: [],
+      members,
+      sessions: { reviewer: replacementSession.stored_session_id },
+      watermarks: {},
+      running: false,
+      epoch: 0
     }))
     const replacementToken = loaded.chat.$groupChats.get().Workshop.desktopAuthorityToken
     release()
@@ -449,11 +564,13 @@ describe('classic Desktop mailbox with the real room engine', () => {
     expect(loaded.gateway.rpcFor('prompt.submit')).toHaveLength(0)
     expect(loaded.chat.$groupChats.get().Workshop.desktopAuthorityToken).toBe(replacementToken)
     const bound = loaded.chat.$groupChats.get().Workshop.sessions?.reviewer
-    const persisted = (loaded.gateway.storage.get('group-chats') as Record<string, GroupChat>).Workshop.sessions?.reviewer
+    const persisted = (loaded.gateway.storage.get('group-chats') as Record<string, GroupChat>).Workshop.sessions
+      ?.reviewer
     loaded.rounds.sendToGroupChat('Workshop', members, 'New room input')
     await vi.advanceTimersByTimeAsync(5_000)
     expect({ bound, persisted, submittedTitle: loaded.gateway.calls[0]?.title }).toEqual({
-      bound: replacementSession.stored_session_id, persisted: replacementSession.stored_session_id,
+      bound: replacementSession.stored_session_id,
+      persisted: replacementSession.stored_session_id,
       submittedTitle: 'Group: new-room'
     })
   })
@@ -463,17 +580,32 @@ describe('classic Desktop mailbox with the real room engine', () => {
     seed(loaded)
     const controller = new AbortController()
 
-    const work = loaded.runtime.executeDesktopRoomCommand({ action: 'send', command_id: 'review:rotation',
-      room_id: 'room-1', payload: { message: 'Original input', recipients: members } },
-      loaded.client.desktopRoomDescriptors(loaded.chat.$groupChats.get()),
-      { consumerId: 'desktop:one', request: async () => ({}), route, signal: controller.signal })
-      .then(result => ({ result }), error => ({ error }))
+    const work = loaded.runtime
+      .executeDesktopRoomCommand(
+        {
+          action: 'send',
+          command_id: 'review:rotation',
+          room_id: 'room-1',
+          payload: { message: 'Original input', recipients: members }
+        },
+        loaded.client.desktopRoomDescriptors(loaded.chat.$groupChats.get()),
+        { consumerId: 'desktop:one', request: async () => ({}), route, signal: controller.signal }
+      )
+      .then(
+        result => ({ result }),
+        error => ({ error })
+      )
 
     await vi.advanceTimersByTimeAsync(250)
     expect(loaded.gateway.rpcFor('prompt.submit')).toHaveLength(1)
     const { classicAuthorityHash } = await import('./group-desktop-authority')
-    loaded.chat.$groupChats.set({ Workshop: { ...loaded.chat.$groupChats.get().Workshop,
-      desktopAuthorityToken: 'authority:replacement', desktopAuthorityHash: classicAuthorityHash('authority:replacement') } })
+    loaded.chat.$groupChats.set({
+      Workshop: {
+        ...loaded.chat.$groupChats.get().Workshop,
+        desktopAuthorityToken: 'authority:replacement',
+        desktopAuthorityHash: classicAuthorityHash('authority:replacement')
+      }
+    })
     const snapshot = reviewState(loaded)
     controller.abort('lease-lost')
     await settle(work)
@@ -485,20 +617,33 @@ describe('classic Desktop mailbox with the real room engine', () => {
   it('replacement during Stop interrupt cannot receive old receipts', async () => {
     const loaded = await load({ pollsBusy: 8 })
     seed(loaded)
-    loaded.mailbox.queue({ action: 'send', command_id: 'review:send-stop', room_id: 'room-1',
-      payload: { message: 'Original input', recipients: members } })
+    loaded.mailbox.queue({
+      action: 'send',
+      command_id: 'review:send-stop',
+      room_id: 'room-1',
+      payload: { message: 'Original input', recipients: members }
+    })
     const send = runCycle(loaded, 'desktop:one', ['send'])
     await vi.advanceTimersByTimeAsync(250)
-    const originalRequest = host.requestProfile as (target: ProfileRoute, method: string, params: Record<string, unknown>) => Promise<unknown>
+    const originalRequest = host.requestProfile as (
+      target: ProfileRoute,
+      method: string,
+      params: Record<string, unknown>
+    ) => Promise<unknown>
     const originalLocalRequest = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
     let release!: () => void
     let interrupted = false
-    const blocked = new Promise<void>(resolve => { release = resolve })
+    const blocked = new Promise<void>(resolve => {
+      release = resolve
+    })
 
     host.request = async (method: string, params: Record<string, unknown>) => {
       const result = await originalLocalRequest(method, params)
 
-      if (method === 'session.interrupt') { interrupted = true; await blocked }
+      if (method === 'session.interrupt') {
+        interrupted = true
+        await blocked
+      }
 
       return result
     }
@@ -506,20 +651,36 @@ describe('classic Desktop mailbox with the real room engine', () => {
     host.requestProfile = async (target: ProfileRoute, method: string, params: Record<string, unknown>) => {
       const result = await originalRequest(target, method, params)
 
-      if (method === 'session.interrupt') { interrupted = true; await blocked }
+      if (method === 'session.interrupt') {
+        interrupted = true
+        await blocked
+      }
 
       return result
     }
 
-    loaded.mailbox.queue({ action: 'stop', command_id: 'review:stop', room_id: 'room-1',
-      payload: { target_command_id: 'review:send-stop' } })
+    loaded.mailbox.queue({
+      action: 'stop',
+      command_id: 'review:stop',
+      room_id: 'room-1',
+      payload: { target_command_id: 'review:send-stop' }
+    })
     const stop = runCycle(loaded, 'desktop:one', ['stop'])
     await vi.advanceTimersByTimeAsync(100)
     expect(interrupted).toBe(true)
     const { classicAuthorityHash } = await import('./group-desktop-authority')
-    loaded.chat.$groupChats.set({ Workshop: { ...loaded.chat.$groupChats.get().Workshop,
-      desktopAuthorityToken: 'authority:replacement', desktopAuthorityHash: classicAuthorityHash('authority:replacement'),
-      desktopCommandSettled: {}, holds: {}, running: true, epoch: 20, log: [] } })
+    loaded.chat.$groupChats.set({
+      Workshop: {
+        ...loaded.chat.$groupChats.get().Workshop,
+        desktopAuthorityToken: 'authority:replacement',
+        desktopAuthorityHash: classicAuthorityHash('authority:replacement'),
+        desktopCommandSettled: {},
+        holds: {},
+        running: true,
+        epoch: 20,
+        log: []
+      }
+    })
     const snapshot = reviewState(loaded)
     release()
     await settle(Promise.all([send, stop]))
@@ -530,14 +691,23 @@ describe('classic Desktop mailbox with the real room engine', () => {
 
   it.each([true, false])('does not resume disbanded in-flight work, legacy=%s', async legacy => {
     const loaded = await load({ pollsBusy: 8, turn: () => 'late legacy reply' })
-    loaded.chat.updateGroupChat('Legacy', () => ({
-      log: [], members, sessions: {}, watermarks: {},
-      ...(legacy ? {} : { roomId: 'room-stable' })
-    }), { sync: false })
+    loaded.chat.updateGroupChat(
+      'Legacy',
+      () => ({
+        log: [],
+        members,
+        sessions: {},
+        watermarks: {},
+        ...(legacy ? {} : { roomId: 'room-stable' })
+      }),
+      { sync: false }
+    )
     const roomId = legacy ? 'name:Legacy' : 'room-stable'
     loaded.mailbox.tokens.set(roomId, String(loaded.chat.$groupChats.get().Legacy.desktopAuthorityToken))
     loaded.mailbox.queue({
-      action: 'send', command_id: 'legacy:inflight', room_id: roomId,
+      action: 'send',
+      command_id: 'legacy:inflight',
+      room_id: roomId,
       payload: { message: 'Original legacy work', recipients: members }
     })
     const work = runCycle(loaded, 'desktop:one', ['send'])
@@ -565,7 +735,9 @@ describe('classic Desktop mailbox with the real room engine', () => {
       loaded.chat.updateGroupChat('Legacy', () => ({ log: [], members, sessions: {}, watermarks: {} }), { sync: false })
       loaded.mailbox.tokens.set('name:Legacy', String(loaded.chat.$groupChats.get().Legacy.desktopAuthorityToken))
       loaded.mailbox.queue({
-        action: 'send', command_id: 'legacy:obsolete', room_id: 'name:Legacy',
+        action: 'send',
+        command_id: 'legacy:obsolete',
+        room_id: 'name:Legacy',
         payload: { message: 'Original work', recipients: members }
       })
       const work = runCycle(loaded, 'desktop:one', ['send'])
@@ -574,18 +746,23 @@ describe('classic Desktop mailbox with the real room engine', () => {
       const original = loaded.chat.$groupChats.get().Legacy
       const { classicAuthorityHash } = await import('./group-desktop-authority')
 
-      const next: Record<string, GroupChat> = kind === 'removed' ? {} : {
-        Legacy: {
-          ...original,
-          ...(kind === 'hosted' ? { hosted: 'gateway-new' } : {}),
-          ...(kind === 'conflict' ? { desktopAuthorityConflict: true } : {}),
-          ...(kind === 'replacement' ? {
-            log: [],
-            desktopAuthorityToken: 'authority:replacement',
-            desktopAuthorityHash: classicAuthorityHash('authority:replacement')
-          } : {})
-        }
-      }
+      const next: Record<string, GroupChat> =
+        kind === 'removed'
+          ? {}
+          : {
+              Legacy: {
+                ...original,
+                ...(kind === 'hosted' ? { hosted: 'gateway-new' } : {}),
+                ...(kind === 'conflict' ? { desktopAuthorityConflict: true } : {}),
+                ...(kind === 'replacement'
+                  ? {
+                      log: [],
+                      desktopAuthorityToken: 'authority:replacement',
+                      desktopAuthorityHash: classicAuthorityHash('authority:replacement')
+                    }
+                  : {})
+              }
+            }
 
       if (kind === 'duplicate') {
         next.Duplicate = { ...original, roomId: 'name:Legacy' }
@@ -593,12 +770,21 @@ describe('classic Desktop mailbox with the real room engine', () => {
 
       loaded.chat.$groupChats.set(next)
 
-      const executionState = (rooms: Record<string, groupChat.GroupChatRoom>) => Object.fromEntries(
-        Object.entries(rooms).map(([name, room]) => [name, {
-          log: room.log, epoch: room.epoch, running: room.running, turn: room.turn,
-          sessions: room.sessions, holds: room.holds, settled: room.desktopCommandSettled
-        }])
-      )
+      const executionState = (rooms: Record<string, groupChat.GroupChatRoom>) =>
+        Object.fromEntries(
+          Object.entries(rooms).map(([name, room]) => [
+            name,
+            {
+              log: room.log,
+              epoch: room.epoch,
+              running: room.running,
+              turn: room.turn,
+              sessions: room.sessions,
+              holds: room.holds,
+              settled: room.desktopCommandSettled
+            }
+          ])
+        )
 
       const snapshot = structuredClone(executionState(next))
 
@@ -993,6 +1179,7 @@ describe('classic Desktop mailbox with the real room engine', () => {
       }
     }
   )
+
 
   it('does not stop or overwrite a newer user thread when the older mailbox lease is lost', async () => {
     const loaded = await load()

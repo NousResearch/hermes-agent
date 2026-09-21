@@ -27,6 +27,7 @@ import { classicAuthorityClaim } from './group-desktop-authority'
 import { groupChatBotsFromDescriptors, groupChatMemberBots } from './group-membership'
 import { cancelGroupThreadForLeaseLoss, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { groupChatContinuityReady } from './hosted-room-runtime'
+import { shippedGroupAdoptionOwnsExecution } from './types'
 import type { GroupMember, ProfileRoute } from './types'
 
 const DESKTOP_ROOM_COMMAND_INTERVAL_MS = 60_000
@@ -66,7 +67,12 @@ function desktopRoomEntry(roomId: string, descriptors: DesktopRoomDescriptor[]) 
 
   const entries = Object.entries($groupChats.get()).filter(([name, room]) => desktopRoomIdentity(name, room) === roomId)
 
-  if (entries.length !== 1 || groupChatHostedGateway(entries[0][1]) || entries[0][1].tombstone) {
+  if (
+    entries.length !== 1 ||
+    groupChatHostedGateway(entries[0][1]) ||
+    entries[0][1].tombstone ||
+    shippedGroupAdoptionOwnsExecution(entries[0][1])
+  ) {
     return null
   }
 
@@ -81,7 +87,7 @@ function desktopRoomEntry(roomId: string, descriptors: DesktopRoomDescriptor[]) 
 function desktopCommandEligibleRooms(forSend = false) {
   return Object.fromEntries(
     Object.entries($groupChats.get()).filter(([, room]) => {
-      if (groupChatHostedGateway(room) || room?.tombstone) {
+      if (groupChatHostedGateway(room) || room?.tombstone || shippedGroupAdoptionOwnsExecution(room)) {
         return false
       }
 
@@ -128,7 +134,8 @@ async function requestDesktopCommandGateway(route: ProfileRoute, method: string,
   }
 
   if (method === 'groups.desktop.claim' || method === 'groups.desktop.presence') {
-    const forSend = method === 'groups.desktop.claim' && Array.isArray(params.actions) && params.actions.includes('send')
+    const forSend =
+      method === 'groups.desktop.claim' && Array.isArray(params.actions) && params.actions.includes('send')
     const expected = desktopRoomDescriptors(desktopCommandEligibleRooms(forSend))
     await persistDesktopCommandState()
 

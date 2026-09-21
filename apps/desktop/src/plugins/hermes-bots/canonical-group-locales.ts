@@ -39,10 +39,14 @@ export interface CanonicalGroupMessages {
   memberUnknown: string
   memberActivate: string
   memberRetire: string
+  memberRemovalPending: string
+  memberRetryRemoval: string
   upgradeChecking: string
   upgradePreparing: string
   upgradeReconnect: string
   upgradeStorage: string
+  upgradeChooseOwner: string
+  upgradeUseDevice: string
   unknownMember: string
 
 }
@@ -72,10 +76,17 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnknown: 'Member status unavailable.',
     memberActivate: 'Re-add',
     memberRetire: 'Remove from new work',
+    memberRemovalPending: 'Removal pending. This Bot cannot receive new work.',
+    memberRetryRemoval: 'Retry removal',
     upgradeChecking: 'Checking this Group Chat…',
     upgradePreparing: 'Finishing this Group Chat upgrade. Its history and members will appear here automatically.',
-    upgradeReconnect: 'Reconnect this Group Chat’s original connection to continue. Its history and members are still here.',
-    upgradeStorage: 'Hermes could not save this Group Chat before upgrading it. Free some storage and restart; the original history was kept.',
+    upgradeReconnect:
+      'Reconnect this Group Chat’s original connection to continue. Its history and members are still here.',
+    upgradeStorage:
+      'Hermes could not save this Group Chat before upgrading it. Free some storage and restart; the original history was kept.',
+    upgradeChooseOwner:
+      'Which device originally hosted this Group Chat? Hermes will verify your choice before moving any history.',
+    upgradeUseDevice: 'Use {device}',
     unknownMember: 'Unknown member',
 
     refreshGroups: 'Refresh gateway groups',
@@ -120,10 +131,16 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnknown: 'メンバーの状態を取得できません。',
     memberActivate: '再追加',
     memberRetire: '新しい作業から外す',
+    memberRemovalPending: '削除を完了できていません。このBotは新しい作業を受け取りません。',
+    memberRetryRemoval: '削除を再試行',
     upgradeChecking: 'このグループチャットを確認しています…',
     upgradePreparing: 'このグループチャットの更新を完了しています。履歴とメンバーは自動的にここへ表示されます。',
-    upgradeReconnect: '続行するには、このグループチャットの元の接続を再接続してください。履歴とメンバーは保持されています。',
-    upgradeStorage: '更新前にこのグループチャットを保存できませんでした。空き容量を増やして再起動してください。元の履歴は保持されています。',
+    upgradeReconnect:
+      '続行するには、このグループチャットの元の接続を再接続してください。履歴とメンバーは保持されています。',
+    upgradeStorage:
+      '更新前にこのグループチャットを保存できませんでした。空き容量を増やして再起動してください。元の履歴は保持されています。',
+    upgradeChooseOwner: 'このグループチャットを元々管理していたデバイスを選んでください。履歴を移す前に確認します。',
+    upgradeUseDevice: '{device} を使う',
     unknownMember: '不明なメンバー',
 
     refreshGroups: 'ゲートウェイのグループを更新',
@@ -168,10 +185,14 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnknown: '成员状态不可用。',
     memberActivate: '重新加入',
     memberRetire: '不再接收新任务',
+    memberRemovalPending: '移除尚未完成。此 Bot 不会接收新任务。',
+    memberRetryRemoval: '重试移除',
     upgradeChecking: '正在检查此群聊…',
     upgradePreparing: '正在完成此群聊的升级。历史记录和成员将自动显示在这里。',
     upgradeReconnect: '请重新连接此群聊原来的连接以继续。历史记录和成员仍已保留。',
     upgradeStorage: '升级前无法保存此群聊。请释放一些存储空间并重启；原历史记录已保留。',
+    upgradeChooseOwner: '请选择最初托管此群聊的设备。Hermes 会先验证，再迁移历史记录。',
+    upgradeUseDevice: '使用 {device}',
     unknownMember: '未知成员',
 
     refreshGroups: '刷新网关群组',
@@ -216,10 +237,14 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnknown: '成員狀態無法取得。',
     memberActivate: '重新加入',
     memberRetire: '不再接收新工作',
+    memberRemovalPending: '移除尚未完成。此 Bot 不會接收新工作。',
+    memberRetryRemoval: '重試移除',
     upgradeChecking: '正在檢查此群組聊天…',
     upgradePreparing: '正在完成此群組聊天的升級。歷史記錄和成員會自動顯示在這裡。',
     upgradeReconnect: '請重新連線此群組聊天原本的連線以繼續。歷史記錄和成員仍已保留。',
     upgradeStorage: '升級前無法儲存此群組聊天。請釋放一些儲存空間並重新啟動；原始歷史記錄已保留。',
+    upgradeChooseOwner: '請選擇最初託管此群組聊天的裝置。Hermes 會先驗證，再移轉歷史記錄。',
+    upgradeUseDevice: '使用 {device}',
     unknownMember: '未知成員',
 
     refreshGroups: '重新整理閘道群組',
@@ -264,10 +289,15 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnknown: 'حالة العضو غير متاحة.',
     memberActivate: 'إعادة الإضافة',
     memberRetire: 'إزالته من العمل الجديد',
+    memberRemovalPending: 'الإزالة معلّقة. لن يتلقى هذا الروبوت عملًا جديدًا.',
+    memberRetryRemoval: 'إعادة محاولة الإزالة',
     upgradeChecking: 'جارٍ التحقق من هذه المحادثة الجماعية…',
     upgradePreparing: 'يتم إكمال ترقية هذه المحادثة الجماعية. سيظهر السجل والأعضاء هنا تلقائيًا.',
     upgradeReconnect: 'أعد توصيل الاتصال الأصلي لهذه المحادثة الجماعية للمتابعة. ما زال السجل والأعضاء محفوظين.',
-    upgradeStorage: 'تعذر حفظ هذه المحادثة الجماعية قبل ترقيتها. حرر بعض مساحة التخزين وأعد التشغيل؛ تم الاحتفاظ بالسجل الأصلي.',
+    upgradeStorage:
+      'تعذر حفظ هذه المحادثة الجماعية قبل ترقيتها. حرر بعض مساحة التخزين وأعد التشغيل؛ تم الاحتفاظ بالسجل الأصلي.',
+    upgradeChooseOwner: 'اختر الجهاز الذي استضاف هذه المحادثة الجماعية أولًا. سيتحقق Hermes من اختيارك قبل نقل أي سجل.',
+    upgradeUseDevice: 'استخدام {device}',
     unknownMember: 'عضو غير معروف',
 
     refreshGroups: 'تحديث مجموعات البوابة',
@@ -312,10 +342,16 @@ export const CANONICAL_GROUP_LOCALES = {
     memberUnknown: 'Статус участника недоступен.',
     memberActivate: 'Добавить снова',
     memberRetire: 'Убрать из новой работы',
+    memberRemovalPending: 'Удаление не завершено. Этот бот не получает новую работу.',
+    memberRetryRemoval: 'Повторить удаление',
     upgradeChecking: 'Проверка этого группового чата…',
     upgradePreparing: 'Завершается обновление этого группового чата. История и участники появятся здесь автоматически.',
     upgradeReconnect: 'Переподключите исходное соединение этого группового чата. История и участники сохранены.',
-    upgradeStorage: 'Не удалось сохранить групповой чат перед обновлением. Освободите место и перезапустите Hermes; исходная история сохранена.',
+    upgradeStorage:
+      'Не удалось сохранить групповой чат перед обновлением. Освободите место и перезапустите Hermes; исходная история сохранена.',
+    upgradeChooseOwner:
+      'Выберите устройство, на котором изначально находился этот групповой чат. Hermes проверит выбор до переноса истории.',
+    upgradeUseDevice: 'Использовать {device}',
     unknownMember: 'Неизвестный участник',
 
     refreshGroups: 'Обновить группы шлюза',

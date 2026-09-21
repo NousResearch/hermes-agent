@@ -47,6 +47,7 @@ vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() })
 
 const {
   $gateway,
+  acquireGatewayRouteLease,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
@@ -191,6 +192,88 @@ describe('requestGatewayForProfile', () => {
 })
 
 describe('requestGatewayForAgent', () => {
+  it('holds one background socket across capability and import and fences material edits before bytes', async () => {
+    setPrimaryGateway(makePrimary() as never, 'default')
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile }))
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(),
+      getConnectionFor,
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true,
+        wsUrl: `ws://${connectionId}/${profile}`
+      }))
+    }
+
+    const lease = await acquireGatewayRouteLease('source-a', 'default')
+    await expect(lease.request('groups.capabilities')).resolves.toEqual({ method: 'groups.capabilities', params: {} })
+    const socket = secondaryGateways[0]
+
+    disposeSecondariesForConnection('source-a', { redial: true })
+
+    expect(() => lease.assertCurrent()).toThrow('route lease expired')
+    await expect(lease.request('groups.import_history', { private_history: 'bytes' })).rejects.toThrow(
+      'route lease expired'
+    )
+    expect(socket.request).toHaveBeenCalledTimes(1)
+    expect(socket.close).not.toHaveBeenCalled()
+    lease.release()
+    await vi.waitFor(() => expect(socket.close).toHaveBeenCalledOnce())
+  })
+
+  it('invalidates and closes a leased background socket immediately on connection removal', async () => {
+    setPrimaryGateway(makePrimary() as never, 'default')
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true,
+        wsUrl: `ws://${connectionId}/${profile}`
+      }))
+    }
+    const lease = await acquireGatewayRouteLease('source-a', 'default')
+    const socket = secondaryGateways[0]
+
+    disposeSecondariesForConnection('source-a')
+
+    expect(socket.close).toHaveBeenCalledOnce()
+    expect(() => lease.assertCurrent()).toThrow('route lease expired')
+    await expect(lease.request('groups.import_history', { private_history: 'bytes' })).rejects.toThrow(
+      'route lease expired'
+    )
+    expect(socket.request).not.toHaveBeenCalled()
+    lease.release()
+  })
+
+  it('rejects a held response after same-connection ABA and lets a fresh lease recover', async () => {
+    setPrimaryGateway(makePrimary() as never, 'default')
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnection: vi.fn(),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => ({ connectionId, port: 5151, profile })),
+      getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
+        ok: true,
+        wsUrl: `ws://${connectionId}/${profile}`
+      }))
+    }
+    const lease = await acquireGatewayRouteLease('source-a', 'default')
+    const held = deferred<{ ok: boolean }>()
+    secondaryGateways[0].request.mockReturnValueOnce(held.promise)
+    const response = lease.request('groups.import_history', { private_history: 'bytes' })
+    await vi.waitFor(() => expect(secondaryGateways[0].request).toHaveBeenCalledOnce())
+
+    disposeSecondariesForConnection('source-a', { redial: true })
+    disposeSecondariesForConnection('source-a', { redial: true })
+    held.resolve({ ok: true })
+    await expect(response).rejects.toThrow('route lease expired')
+    lease.release()
+    await vi.waitFor(() => expect(secondaryGateways).toHaveLength(2))
+
+    const fresh = await acquireGatewayRouteLease('source-a', 'default')
+    await expect(fresh.request('groups.capabilities')).resolves.toEqual({ method: 'groups.capabilities', params: {} })
+    fresh.release()
+  })
+
   it('reuses the active primary socket when its registry connection owns the session', async () => {
     const primary = makePrimary()
 

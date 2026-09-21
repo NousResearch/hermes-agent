@@ -32,12 +32,16 @@ const {
   $gateway, closeSecondaryGateways, configureGatewayRegistry, disposeSecondariesForConnection, ensureGatewayForAgent,
   openGatewayForAgent, requestGatewayForAgent, retainGatewayForAgent,
   setPrimaryGateway, setPrimaryGatewayConnectionId
+
 } = await import('./gateway')
 
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: Error) => void
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes
+    reject = no
+  })
 
   return { promise, resolve, reject }
 }
@@ -87,6 +91,7 @@ const races = ownerChanges.flatMap(change => outcomes.map(outcome => ({ change, 
 
 it('leases the SDK shared route across RPCs and rejects an in-flight primary ABA', async () => {
   desktop()
+
   const a = primary()
   setPrimaryGateway(a as never)
   setPrimaryGatewayConnectionId('gateway-a')
@@ -166,6 +171,7 @@ it('keeps an isolated lease on one socket and fences edit, removal, and same-id 
     params: {}
   })
   recovered.release()
+
 })
 
 it.each(races)(
@@ -192,8 +198,9 @@ it.each(races)(
     ]
 
     expect(descriptor).toHaveBeenCalledTimes(pending.length)
-    expect(descriptor.mock.calls.every(([arg]) =>
-      arg.connectionId === 'gateway-a' && arg.profile === 'reviewer')).toBe(true)
+    expect(descriptor.mock.calls.every(([arg]) => arg.connectionId === 'gateway-a' && arg.profile === 'reviewer')).toBe(
+      true
+    )
     expect(a.request).not.toHaveBeenCalled()
     expect(sockets.created).not.toHaveBeenCalled()
 
@@ -239,11 +246,15 @@ it.each(races)(
     const current = change === 'gateway' ? b : a
     descriptor.mockResolvedValue({ sharedRemote: true })
     const freshParams = { session_id: 'fresh-session', profile: 'wrong' }
-    await expect(host.requestProfile(route(freshId, 'fresh-worker'), 'session.resume', freshParams, 23_456))
-      .resolves.toEqual({ method: 'session.resume', params: { ...freshParams, profile: 'fresh-worker' } })
+    await expect(
+      host.requestProfile(route(freshId, 'fresh-worker'), 'session.resume', freshParams, 23_456)
+    ).resolves.toEqual({ method: 'session.resume', params: { ...freshParams, profile: 'fresh-worker' } })
     expect(descriptor).toHaveBeenLastCalledWith({ connectionId: freshId, profile: 'fresh-worker' })
     expect(current.request).toHaveBeenCalledExactlyOnceWith(
-      'session.resume', { ...freshParams, profile: 'fresh-worker' }, 23_456, undefined
+      'session.resume',
+      { ...freshParams, profile: 'fresh-worker' },
+      23_456,
+      undefined
     )
     expect(sockets.created).not.toHaveBeenCalled()
     expect(payload.profile).toBe('must-be-replaced')
@@ -263,7 +274,12 @@ it.each(outcomes)('honors supplied request cancellation across a held %s descrip
   // The SDK has no signal parameter; exercise the actual registry's optional
   // signal contract, without inventing a cancellation overload for the SDK.
   const pending = requestGatewayForAgent(
-    'gateway-a', 'reviewer', 'session.list', { query: 'cancelled-private' }, undefined, controller.signal
+    'gateway-a',
+    'reviewer',
+    'session.list',
+    { query: 'cancelled-private' },
+    undefined,
+    controller.signal
   ).catch(error => error)
 
   expect(descriptor).toHaveBeenCalledOnce()
@@ -283,12 +299,16 @@ it.each(outcomes)('honors supplied request cancellation across a held %s descrip
   const live = new AbortController()
   await requestGatewayForAgent('gateway-a', 'reviewer', 'session.list', { query: 'fresh' }, undefined, live.signal)
   expect(a.request).toHaveBeenCalledExactlyOnceWith(
-    'session.list', { query: 'fresh', profile: 'reviewer' }, undefined, live.signal
+    'session.list',
+    { query: 'fresh', profile: 'reviewer' },
+    undefined,
+    live.signal
   )
 })
 
 it.each(['shared', 'probe-error', 'isolated', 'exact-primary', 'plain-profile'] as const)(
-  'preserves current-owner %s routing and explicit request arguments', async kind => {
+  'preserves current-owner %s routing and explicit request arguments',
+  async kind => {
     const descriptor = vi.fn(async () => {
       if (kind === 'probe-error') {
         throw new Error('native descriptor failed')
@@ -304,7 +324,8 @@ it.each(['shared', 'probe-error', 'isolated', 'exact-primary', 'plain-profile'] 
     await ensureGatewayForAgent('gateway-a', 'default')
     // No-op primary writers do not retire valid pending probes.
     const params = { session_id: 'current-session', profile: 'caller-profile' }
-    const target = kind === 'plain-profile' ? 'reviewer' : route('gateway-a', kind === 'exact-primary' ? 'default' : 'reviewer')
+    const target =
+      kind === 'plain-profile' ? 'reviewer' : route('gateway-a', kind === 'exact-primary' ? 'default' : 'reviewer')
     const pending = host.requestProfile(target, 'session.resume', params)
     setPrimaryGateway(a as never)
     setPrimaryGatewayConnectionId('gateway-a')

@@ -48,8 +48,8 @@ import {
   $groupChats,
   $groupChatWorkspace,
   activateClassicGroupAuthorities,
-  assignLegacyThreads,
   handleSessionsGatewayTransition,
+  hydrateGroupChatRooms,
   pullGroupChatServerState,
   scheduleGroupChatServerSync,
   setGroupChatSyncDisposed,
@@ -58,11 +58,8 @@ import {
   updateGroupChat
 } from './group-chat'
 import { renameGroupChat } from './group-chat-view'
-import { boundedDesktopCommandSettled } from './group-command-receipts'
-import { storedClassicDesktopAuthority } from './group-desktop-authority'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { startHostedRoomRuntime, stopHostedRoomRuntime } from './hosted-room-runtime'
-import { reconcileHostedUserEvents, storedHostedUserEvent } from './hosted-user-events'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
@@ -78,7 +75,7 @@ import {
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
-import type { GroupChat, RosterRow } from './types'
+import type { RosterRow } from './types'
 import { loadBotSections } from './user-sections'
 
 // ── plugin ───────────────────────────────────────────────────────────────────
@@ -346,6 +343,7 @@ export default {
                 }
               }
             }
+
 
             $groupChats.set({
               ...rooms,

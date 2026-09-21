@@ -594,7 +594,17 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const binding = bindings[props.group]
 
   if (binding) {
-    return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />
+    const continuity = Object.entries(rooms).find(([, room]) =>
+      String(room?.roomId || '') === binding.roomId &&
+      String(room?.hostedConnectionId || '') === binding.connectionId
+    )
+
+    return <CanonicalGroupWorkspace
+      binding={binding}
+      continuity={continuity ? { group: continuity[0], room: continuity[1] } : undefined}
+      onBack={props.onBack}
+      visible={props.visible}
+    />
   }
 
   if (groupChatHostedGateway(rooms[props.group])) {

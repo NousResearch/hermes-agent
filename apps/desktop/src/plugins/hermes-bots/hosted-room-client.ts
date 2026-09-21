@@ -60,7 +60,7 @@ function hostedCapabilityLimits(capabilities: Record<string, unknown>): HostedRo
 
 const MAX_HOSTED_ROOM_OUTBOX_COMMANDS = 256
 
-export type HostedRoomCapabilityKind = 'driver-capable' | 'transient-failure' | 'unsupported'
+export type HostedRoomCapabilityKind = 'auth-failure' | 'driver-capable' | 'transient-failure' | 'unsupported'
 
 export interface HostedRoomCapability {
   authorityId: null | string
@@ -307,6 +307,23 @@ function isMissingCapabilityMethod(error: unknown): boolean {
   )
 }
 
+function isExplicitAuthenticationFailure(error: unknown): boolean {
+  const outer = record(error)
+  const inner = record(outer?.error)
+  const status = outer?.statusCode ?? outer?.status_code ?? outer?.status ??
+    inner?.statusCode ?? inner?.status_code ?? inner?.status
+
+  if (outer?.needsOauthLogin === true || inner?.needsOauthLogin === true || status === 401 || status === 403) {
+    return true
+  }
+
+  const message = errorMessage(error)
+
+  // Only explicit transport status markers authorize an auth classification.
+  // A timeout duration or generic failure body containing 401/403 does not.
+  return /(?:^\s*|error:\s*)(?:http\s+)?(?:401|403)(?=\s|:|$)/i.test(message)
+}
+
 function capabilityResult(probe: unknown): Record<string, unknown> | null {
   const candidate = record(probe)
 
@@ -371,10 +388,11 @@ export function classifyHostedRoomCapability(
 
   if (error) {
     const unsupported = isMissingCapabilityMethod(error)
+    const authFailure = !unsupported && isExplicitAuthenticationFailure(error)
 
     return {
-      kind: unsupported ? 'unsupported' : 'transient-failure',
-      reason: unsupported ? 'old-gateway' : 'probe-failed',
+      kind: unsupported ? 'unsupported' : authFailure ? 'auth-failure' : 'transient-failure',
+      reason: unsupported ? 'old-gateway' : authFailure ? 'reauth-required' : 'probe-failed',
       connectionId: localConnectionId,
       exactPeerGrantRevoke: false,
       authorityId: null,

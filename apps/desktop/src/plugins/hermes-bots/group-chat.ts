@@ -45,6 +45,7 @@ import type {
   GroupMessage,
   GroupMessageAuthor,
   GroupPrompt,
+  HostedPeerProbeHint,
   RosterRow
 } from './types'
 
@@ -983,6 +984,65 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
   return rooms
 }
 
+function storedHostedPeerProbeHint(room: Partial<GroupChat>): HostedPeerProbeHint | undefined {
+  const hint = room.peerProbeHint
+  const connectionId = typeof hint?.connectionId === 'string' ? hint.connectionId.trim().slice(0, 256) : ''
+  const installationId = typeof hint?.installationId === 'string' ? hint.installationId.trim().slice(0, 256) : ''
+  const memberId = typeof hint?.memberId === 'string' ? hint.memberId.trim().slice(0, 256) : ''
+
+  return connectionId && installationId && memberId ? { connectionId, installationId, memberId } : undefined
+}
+
+/** Parse the exact local-storage room shape used by plugin registration. */
+export function hydrateGroupChatRooms(value: unknown): Record<string, GroupChat> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  const rooms: Record<string, GroupChat> = {}
+
+  for (const [name, raw] of Object.entries(value)) {
+    const room = raw as GroupChat
+
+    if (!room || !Array.isArray(room.log)) {
+      continue
+    }
+
+    const log = room.log.map(storedHostedUserEvent)
+    rooms[name] = {
+      ...storedClassicDesktopAuthority(room),
+      log: assignLegacyThreads(room.roomId && room.hosted ? reconcileHostedUserEvents(room.roomId, log) : log),
+      watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
+      sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
+      sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},
+      stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
+      holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
+      desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
+      members: Array.isArray(room.members) ? room.members : [],
+      roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+      hosted: typeof room.hosted === 'string' && room.hosted ? room.hosted : null,
+      hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
+      hostedConnectionId:
+        typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
+      hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+      hostedMembersVerified: room.hostedMembersVerified === true,
+      peerProbeHint: storedHostedPeerProbeHint(room),
+      continuityMode: room.hosted
+        ? room.continuityMode === 'distributed' ? 'distributed' : 'gateway'
+        : room.continuityMode === 'gateway' ? 'gateway' : 'desktop',
+      image: typeof room.image === 'string' && room.image ? room.image : null,
+      rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
+      pinned: Boolean(room.pinned),
+      sectionId: room.sectionId ?? null,
+      syncRevision: Math.max(0, Number(room.syncRevision || 0)),
+      epoch: 0,
+      running: false
+    }
+  }
+
+  return rooms
+}
+
 export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupChats.get()) {
   const durable: Record<string, GroupChat> = {}
 
@@ -1021,6 +1081,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
         typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
       hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
       hostedMembersVerified: room.hostedMembersVerified === true,
+      peerProbeHint: storedHostedPeerProbeHint(room),
       continuityMode: groupChatContinuityMode(room),
       image: room.image || null,
       rosterOrder: room.rosterOrder,
@@ -1671,6 +1732,7 @@ export function updateGroupChat(
           typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
         hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
         hostedMembersVerified: room.hostedMembersVerified === true,
+        peerProbeHint: storedHostedPeerProbeHint(room),
         continuityMode: groupChatContinuityMode(room),
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,

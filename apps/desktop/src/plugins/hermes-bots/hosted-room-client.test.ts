@@ -105,6 +105,28 @@ describe('hosted Group Chat capability negotiation', () => {
     ).toBe(false)
   })
 
+  it.each([
+    [Object.assign(new Error('401: session expired'), { statusCode: 401 })],
+    [{ ok: false, error: { status: 403, message: 'forbidden' } }],
+    [{ ok: false, error: { needsOauthLogin: true, message: 'sign in again' } }]
+  ])('classifies explicit authentication rejection as reauthorization', probe => {
+    expect(classifyHostedRoomCapability(probe)).toMatchObject({
+      kind: 'auth-failure',
+      reason: 'reauth-required'
+    })
+  })
+
+  it.each([
+    new Error('socket closed during reconnect'),
+    new Error('gateway timed out after 401 ms'),
+    { ok: false, error: { code: -32000, message: 'upstream unavailable' } }
+  ])('keeps generic transport failure offline rather than inventing auth: %j', probe => {
+    expect(classifyHostedRoomCapability(probe)).toMatchObject({
+      kind: 'transient-failure',
+      reason: 'probe-failed'
+    })
+  })
+
   it('offers hosted continuity only when every member resolves to one gateway', () => {
     const same = resolveSingleGatewayRoute(
       [

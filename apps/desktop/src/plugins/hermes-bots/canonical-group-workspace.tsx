@@ -8,20 +8,24 @@ import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroup
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
 import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
 import type { CanonicalGroupBinding, CanonicalPendingAction } from './canonical-groups'
+import { checkHostedRoomGateway } from './hosted-room-runtime'
+import type { GroupChat } from './types'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface RoomState { room: { name: string }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
+interface CanonicalContinuity { group: string; room: GroupChat }
 
-export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
-  binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
+
+export function CanonicalGroupWorkspace({ binding, continuity, visible = true, onBack }: {
+  binding: CanonicalGroupBinding; continuity?: CanonicalContinuity; visible?: boolean; onBack?: () => void
 }) {
   // Remount on identity changes: old polls and pending confirmations never cross rooms.
-  return <CanonicalRoomView binding={binding} key={JSON.stringify(binding)} onBack={onBack} visible={visible} />
+  return <CanonicalRoomView binding={binding} continuity={continuity} key={JSON.stringify(binding)} onBack={onBack} visible={visible} />
 }
 
-function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
-  binding: CanonicalGroupBinding; visible: boolean; onBack?: () => void
+function CanonicalRoomView({ binding: initialBinding, continuity, visible, onBack }: {
+  binding: CanonicalGroupBinding; continuity?: CanonicalContinuity; visible: boolean; onBack?: () => void
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
@@ -34,6 +38,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [restored, setRestored] = useState(false)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
   const [busy, setBusy] = useState(false)
+  const [checkingGateway, setCheckingGateway] = useState(false)
   const busyRef = useRef(false)
   const alive = useRef(true)
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
@@ -136,6 +141,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const act = (action: CanonicalPendingAction, choice?: 'once' | 'deny') =>
     mutate(() => actCanonicalGroup(binding, action, choice))
 
+  const checkGatewayAgain = async () => {
+    if (!continuity?.room.hostedStatus?.checkConnectionId || checkingGateway) {return}
+    setCheckingGateway(true)
+
+    try {await checkHostedRoomGateway(continuity.group)}
+    catch (e) {if (alive.current) {setError(e instanceof Error ? e.message : String(e))}}
+    finally {if (alive.current) {setCheckingGateway(false)}}
+  }
+
   return <section className="flex h-full min-h-0 flex-col gap-3 p-3">
     <header className="flex items-center gap-2">
       {onBack && <Button onClick={onBack}>{labels.back}</Button>}
@@ -144,6 +158,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     </header>
     {readError && <div role="alert">{readError}<Button onClick={() => void refresh().catch(e => setReadError(String(e)))}>{labels.refresh}</Button></div>}
     {error && <div role="alert">{error}</div>}
+    {continuity?.room.hostedStatus && <div className="flex flex-wrap items-center gap-2" role="status">
+      <span>{continuity.room.hostedStatus.label}</span>
+      {continuity.room.continuityIssue && <span>{continuity.room.continuityIssue}</span>}
+      {continuity.room.hostedStatus.checkConnectionId && <Button
+        aria-busy={checkingGateway}
+        disabled={checkingGateway}
+        onClick={() => void checkGatewayAgain()}
+      >{labels.checkAgain}</Button>}
+    </div>}
     {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
     <div className="min-h-0 flex-1 overflow-auto" role="log">
       <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} />

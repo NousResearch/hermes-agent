@@ -1,29 +1,55 @@
 import { useStore } from '@nanostores/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
-import type { ComponentProps } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-const request = vi.hoisted(() => vi.fn())
-vi.mock('@hermes/plugin-sdk', async () => {
+const { request, routes } = vi.hoisted(() => ({
+  request: vi.fn(),
+  routes: { value: [] as Array<Record<string, unknown>> }
+}))
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof HermesSdk>()
+
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
   const gateway = createGroupGateway()
   const { en } = await import('@/i18n/en')
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
 
-  return { ...await pluginSdkMock(gateway.host), atom, useValue: useStore,
-    useI18n: () => ({ t: en }),
-    usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
+  return { ...sdk, ...await pluginSdkMock(gateway.host), atom, useValue: useStore,
+    useI18n: () => ({ locale: 'en', t: en }),
+    usePluginI18n: () => (key: string) => key === 'group.checkAgain'
+      ? 'Check again'
+      : CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
-    host: { ...gateway.host, requestProfile: request } }
+    Codicon: () => <span />,
+    Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
+    host: { ...gateway.host, profileRoutes: async () => routes.value, requestProfile: request } }
+
 })
-import { registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend } from './canonical-group-send'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
+import { $groupChats } from './group-chat'
 import { GroupChatWorkspace } from './group-chat-view'
+import { scriptedStorage } from './group-test-utils'
+import { startHostedRoomRuntime, stopHostedRoomRuntime } from './hosted-room-runtime'
+
 const originalDesktop = window.hermesDesktop
-beforeEach(() => { Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined }) })
-afterEach(() => { cleanup(); request.mockReset(); localStorage.clear(); window.hermesDesktop = originalDesktop })
+beforeEach(() => {
+  Object.defineProperty(window, 'hermesDesktop', { configurable: true, writable: true, value: undefined })
+  routes.value = []
+  $canonicalGroupBindings.set({})
+  $groupChats.set({})
+})
+afterEach(() => {
+  stopHostedRoomRuntime()
+  cleanup()
+  request.mockReset()
+  localStorage.clear()
+  window.hermesDesktop = originalDesktop
+})
 
 it('restores a frozen send after remount and retires only its acknowledged exact retry', async () => {
   const binding = { connectionId: 'remote', profile: 'team', roomId: 'restore' }
@@ -137,4 +163,95 @@ it('reads back retry on the same authority and sends only through the group driv
   await waitFor(() => expect(request.mock.calls.some(c => c[1] === 'groups.send')).toBe(true))
   expect(screen.getByText('Owner reply')).toBeTruthy()
   expect(request.mock.calls.every(c => c[1].startsWith('groups.'))).toBe(true)
+})
+
+it('renders mixed-gateway recovery in the registered canonical workspace and runs the real bounded check', async () => {
+  routes.value = [
+    { connectionId: 'gateway-a', mode: 'remote', profile: 'default', targetProfile: 'default' },
+    { connectionId: 'gateway-b', mode: 'remote', profile: 'default', targetProfile: 'default' }
+  ]
+  const members = [
+    { handle: 'research', member_id: 'research', profile: 'research' },
+    {
+      display_name: 'Remote Builder',
+      handle: 'builder',
+      member_id: 'builder',
+      profile: 'builder',
+      target: { installation_id: 'install:peer', kind: 'peer', peer_id: 'install:peer' }
+    }
+  ]
+  const serverRoom = {
+    authority_epoch: 1,
+    authority_gateway_id: 'install:home',
+    latest_seq: 0,
+    members,
+    name: 'Release',
+    room_id: 'room-1'
+  }
+  let upgraded = false
+  let holdUpgrade = false
+  let upgradeStarted!: () => void
+  let releaseUpgrade!: () => void
+  const upgradeRequest = new Promise<void>(resolve => { upgradeStarted = resolve })
+  const upgradeResponse = new Promise<Record<string, unknown>>(resolve => {
+    releaseUpgrade = () => resolve({
+      authority_gateway_id: 'install:peer',
+      driver: true,
+      methods: ['groups.peer.revoke_exact'],
+      persistent_process: true
+    })
+  })
+
+  request.mockImplementation(async (route, method) => {
+    const connectionId = String(route?.connectionId || '')
+
+    if (method === 'groups.capabilities') {
+      if (connectionId === 'gateway-b') {
+        if (!upgraded) {throw Object.assign(new Error('Method not found'), { code: -32601 })}
+
+        if (holdUpgrade) {upgradeStarted(); return upgradeResponse}
+
+        return {
+          authority_gateway_id: 'install:peer',
+          driver: true,
+          methods: ['groups.peer.revoke_exact'],
+          persistent_process: true
+        }
+      }
+
+      return {
+        authority_gateway_id: 'install:home',
+        driver: true,
+        features: ['peer_route_grant_fingerprint'],
+        persistent_process: true
+      }
+    }
+
+    if (method === 'groups.list') {return connectionId === 'gateway-b' ? { rooms: [] } : { rooms: [serverRoom] }}
+    if (method === 'groups.state') {return { driver_status: { peer_routes: [{ member_id: 'builder', status: 'needs_reauthorization' }] }, room: serverRoom }}
+    if (method === 'groups.log') {return { events: [], has_more: false, latest_seq: 0 }}
+    throw new Error(`Unexpected method: ${method}`)
+  })
+
+  await startHostedRoomRuntime(scriptedStorage(new Map()).storage)
+  const key = registerCanonicalGroup(
+    { connectionId: 'gateway-a', profile: 'default' },
+    { room_id: 'room-1', name: 'Release', members }
+  )
+  render(<GroupChatWorkspace group={key} members={[]} />)
+
+  await screen.findByText('Update this device to keep this Group Chat running.')
+  const check = screen.getByRole('button', { name: 'Check again' }) as HTMLButtonElement
+  upgraded = true
+  holdUpgrade = true
+  fireEvent.click(check)
+  await upgradeRequest
+  expect(check.getAttribute('aria-busy')).toBe('true')
+  expect(check.disabled).toBe(true)
+  expect(request.mock.calls.filter(call => call[1] === 'groups.send')).toEqual([])
+
+  releaseUpgrade()
+  await waitFor(() => expect(screen.getByText('Reconnect Remote Builder to continue this Group Chat.')).toBeTruthy())
+  expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
+  expect(request.mock.calls.filter(call => call[1] === 'groups.capabilities' && call[0]?.connectionId === 'gateway-b')).toHaveLength(2)
 })

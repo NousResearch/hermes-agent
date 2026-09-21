@@ -237,20 +237,24 @@ export function hostedUnavailableState(
   room: GroupChat,
   capability: HostedRoomCapability | undefined,
   connectionName: string,
-  unsupported = false,
   checkConnectionId = ''
 ): GroupChat {
+  const unsupported = capability?.kind === 'unsupported'
+  const reauth = capability?.kind === 'auth-failure'
+
   return {
     ...room,
     running: false,
     hostedStatus: {
-      state: unsupported ? 'unsupported' : 'offline',
+      state: unsupported ? 'unsupported' : reauth ? 'reauth' : 'offline',
       label: unsupported
         ? botsText().group.hostUpdateNeeded(connectionName)
-        : botsText().group.hostedUnavailable(connectionName),
-      ...(unsupported && checkConnectionId ? { checkConnectionId } : {})
+        : reauth
+          ? botsText().group.hostReauthNeeded(connectionName)
+          : botsText().group.hostedUnavailable(connectionName),
+      ...(checkConnectionId ? { checkConnectionId } : {})
     },
-    continuityIssue: unsupported ? null : botsText().group.hostReconnectToContinue(connectionName),
+    continuityIssue: unsupported || reauth ? null : botsText().group.hostReconnectToContinue(connectionName),
     ...unavailableHostedReadOnlyState(room, capability)
   }
 }

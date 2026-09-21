@@ -7,7 +7,7 @@
  * module through narrow verbs.
  */
 
-import { atom, host } from '@hermes/plugin-sdk'
+import { atom, gatewayActivationEpoch, host } from '@hermes/plugin-sdk'
 import type { PluginContext } from '@hermes/plugin-sdk'
 
 import { $lastRoster } from './data'
@@ -114,12 +114,16 @@ const hostedRoomLocallyDeleted = new Set<string>()
 const hostedRoomObservations = new HostedRoomObservations()
 let hostedRoomSyncTimer: ReturnType<typeof setTimeout> | null = null
 let hostedRoomSyncRunning = false
+let hostedRoomRefreshPromise: Promise<void> | null = null
+let hostedRoomRefreshSuccessorPromise: Promise<void> | null = null
+const hostedRoomRefreshSuccessorGuards = new Set<() => boolean>()
 let hostedRoomSyncDisposed = true
 let hostedRoomLifecycleGeneration = 0
 let hostedOutboxDispatchPromise: Promise<void> | null = null
 let hostedRoomStorage: null | PluginContext['storage'] = null
 let hostedRoomHooks: HostedRoomRuntimeHooks = {}
 const hostedUnsupportedUntil = new Map<string, number>()
+const hostedRoomManualChecks = new Map<string, Promise<boolean>>()
 
 export function hostedRoomLifecycleToken() {
   return hostedRoomLifecycleGeneration
@@ -293,7 +297,7 @@ function sourceLabel(connectionId: string) {
   return String(source?.connectionLabel || botsText().group.thisHost)
 }
 
-function markHostedConnectionUnavailable(connectionId: string, unsupported = false) {
+function markHostedConnectionUnavailable(connectionId: string) {
   const connectionName = sourceLabel(connectionId)
 
   for (const [name, room] of Object.entries($groupChats.get())) {
@@ -308,7 +312,6 @@ function markHostedConnectionUnavailable(connectionId: string, unsupported = fal
           current,
           $hostedRoomCapabilities.get()[connectionId],
           connectionName,
-          unsupported,
           connectionId
         ),
       {
@@ -336,7 +339,7 @@ function storeHostedCapabilities(next: Record<string, HostedRoomCapability>, rep
 
   for (const [connectionId, capability] of Object.entries(next)) {
     if (!isHostedRoomReadEligible(capability)) {
-      markHostedConnectionUnavailable(connectionId, capability.kind === 'unsupported')
+      markHostedConnectionUnavailable(connectionId)
     }
   }
 
@@ -381,36 +384,84 @@ export function invalidateHostedRoomPoll(roomId: string) {
 
 /** Recheck only the connection named by an update notice. This refreshes
  * capability and room projections; it never retries or dispatches Bot work. */
-export async function checkHostedRoomGateway(group: string) {
+export function checkHostedRoomGateway(group: string): Promise<boolean> {
   const room = $groupChats.get()[group]
   const connectionId = String(room?.hostedStatus?.checkConnectionId || '')
 
   if (!room || !groupChatHostedGateway(room) || !connectionId) {
-    return false
+    return Promise.resolve(false)
   }
 
-  const routeExists = (await hostedDefaultRoutes()).some(candidate => candidate.connectionId === connectionId)
+  const owner = {
+    activation: gatewayActivationEpoch(),
+    authorityId: groupChatHostedGateway(room),
+    checkConnectionId: connectionId,
+    group,
+    lifecycle: hostedRoomLifecycleGeneration,
+    ownerConnectionId: String(room.hostedConnectionId || ''),
+    roomId: String(room.roomId || ''),
+    sourceConnectionId: activeConnectionId(),
+    sourceGateway: String(host.state.gateway?.get?.() || ''),
+    sourceProfile: String(host.state.profile?.get?.() || ''),
+    hint: room.peerProbeHint ? { ...room.peerProbeHint } : undefined
+  }
+  const key = JSON.stringify(owner)
+  const pending = hostedRoomManualChecks.get(key)
 
-  if (!routeExists) {
-    return false
+  if (pending) {
+    return pending
   }
 
-  hostedUnsupportedUntil.delete(connectionId)
-  invalidateHostedRoomsForConnection(connectionId)
-  invalidateHostedRoomPoll(String(room.roomId || ''))
+  const current = (requireCheckHint = true) => {
+    const live = $groupChats.get()[group]
+    const hint = live?.peerProbeHint
 
-  if (hostedRoomSyncRunning) {
-    // Retire the older observation and let one immediate successor own the
-    // reprobe; do not race it with a second capability request.
-    scheduleHostedRoomSync(0)
-
-    return false
+    return Boolean(
+      live &&
+      !hostedRoomSyncDisposed &&
+      hostedRoomLifecycleGeneration === owner.lifecycle &&
+      gatewayActivationEpoch() === owner.activation &&
+      activeConnectionId() === owner.sourceConnectionId &&
+      String(host.state.profile?.get?.() || '') === owner.sourceProfile &&
+      String(host.state.gateway?.get?.() || '') === owner.sourceGateway &&
+      String(live.roomId || '') === owner.roomId &&
+      groupChatHostedGateway(live) === owner.authorityId &&
+      String(live.hostedConnectionId || '') === owner.ownerConnectionId &&
+      (!requireCheckHint ||
+        (String(live.hostedStatus?.checkConnectionId || '') === owner.checkConnectionId &&
+          (!owner.hint ||
+            (hint?.connectionId === owner.hint.connectionId &&
+              hint.installationId === owner.hint.installationId &&
+              hint.memberId === owner.hint.memberId))))
+    )
   }
 
-  await refreshHostedRooms()
-  scheduleHostedRoomSync(0)
+  const check = (async () => {
+    const routes = await hostedDefaultRoutes()
 
-  return String($groupChats.get()[group]?.hostedStatus?.checkConnectionId || '') !== connectionId
+    if (!current() || !routes.some(candidate => candidate.connectionId === connectionId)) {
+      return false
+    }
+
+    hostedUnsupportedUntil.delete(connectionId)
+    invalidateHostedRoomsForConnection(connectionId)
+    invalidateHostedRoomPoll(owner.roomId)
+    await refreshHostedRoomsAfterCurrent(current)
+
+    if (!current(false)) {
+      return false
+    }
+
+    return String($groupChats.get()[group]?.hostedStatus?.checkConnectionId || '') !== connectionId
+  })().finally(() => {
+    if (hostedRoomManualChecks.get(key) === check) {
+      hostedRoomManualChecks.delete(key)
+    }
+  })
+
+  hostedRoomManualChecks.set(key, check)
+
+  return check
 }
 
 export function shouldRefreshHostedRoom(room: GroupChat | undefined, listed: unknown) {
@@ -438,15 +489,80 @@ export function shouldRefreshHostedRoom(room: GroupChat | undefined, listed: unk
 /** Replay every hosted room only after plugin storage/ui_meta hydration has
  * settled. The contiguous cursor is persisted with the room, so reconnects
  * fetch only missing events and a gap never skips unseen history. */
-export async function refreshHostedRooms() {
-  if (hostedRoomSyncDisposed || hostedRoomSyncRunning) {
-    return
+export function refreshHostedRooms(stillCurrent?: () => boolean): Promise<void> {
+  if (hostedRoomSyncDisposed || stillCurrent?.() === false) {
+    return Promise.resolve()
+  }
+
+  if (hostedRoomRefreshPromise) {
+    return hostedRoomRefreshPromise
+  }
+
+  hostedRoomSyncRunning = true
+  const refresh = performHostedRoomRefresh(stillCurrent).finally(() => {
+    if (hostedRoomRefreshPromise === refresh) {
+      hostedRoomRefreshPromise = null
+    }
+  })
+
+  hostedRoomRefreshPromise = refresh
+
+  return refresh
+}
+
+/** Manual invalidation during a running observation needs one successor. All
+ * callers await the same refresh-only promise; maintenance dispatch is never
+ * part of this path. */
+function refreshHostedRoomsAfterCurrent(stillCurrent: () => boolean): Promise<void> {
+  const active = hostedRoomRefreshPromise
+
+  if (!active) {
+    return refreshHostedRooms(stillCurrent)
+  }
+
+  hostedRoomRefreshSuccessorGuards.add(stillCurrent)
+
+  if (hostedRoomRefreshSuccessorPromise) {
+    return hostedRoomRefreshSuccessorPromise
   }
 
   const lifecycleGeneration = hostedRoomLifecycleGeneration
-  const syncStale = () => hostedRoomSyncDisposed || lifecycleGeneration !== hostedRoomLifecycleGeneration
+  const anyCurrent = () => [...hostedRoomRefreshSuccessorGuards].some(guard => guard())
+  const successor = active
+    .catch(() => undefined)
+    .then(() =>
+      !hostedRoomSyncDisposed && lifecycleGeneration === hostedRoomLifecycleGeneration && anyCurrent()
+        ? refreshHostedRooms(anyCurrent)
+        : undefined
+    )
+    .finally(() => {
+      if (hostedRoomRefreshSuccessorPromise === successor) {
+        hostedRoomRefreshSuccessorPromise = null
+        hostedRoomRefreshSuccessorGuards.clear()
+      }
+    })
 
-  hostedRoomSyncRunning = true
+  hostedRoomRefreshSuccessorPromise = successor
+
+  return successor
+}
+
+async function performHostedRoomRefresh(stillCurrent?: () => boolean) {
+  const lifecycleGeneration = hostedRoomLifecycleGeneration
+  const source = {
+    activation: gatewayActivationEpoch(),
+    connectionId: activeConnectionId(),
+    gateway: String(host.state.gateway?.get?.() || ''),
+    profile: String(host.state.profile?.get?.() || '')
+  }
+  const syncStale = () =>
+    hostedRoomSyncDisposed ||
+    lifecycleGeneration !== hostedRoomLifecycleGeneration ||
+    gatewayActivationEpoch() !== source.activation ||
+    activeConnectionId() !== source.connectionId ||
+    String(host.state.gateway?.get?.() || '') !== source.gateway ||
+    String(host.state.profile?.get?.() || '') !== source.profile ||
+    stillCurrent?.() === false
 
   try {
     const routes = await hostedDefaultRoutes()
@@ -553,7 +669,7 @@ export async function refreshHostedRooms() {
         hostedRoomObservations.read(observation, () => requestHostedConnection<T>(route, method, params))
 
       if (!isHostedRoomReadEligible(capability)) {
-        markHostedConnectionUnavailable(connectionId, capability.kind === 'unsupported')
+        markHostedConnectionUnavailable(connectionId)
 
         if (capability.reason === 'old-gateway') {
           hostedRoomObservations.publish(hostedRoomObservations.capture(connectionId), new Set(), true)
@@ -789,15 +905,30 @@ export async function refreshHostedRooms() {
               String(reconnectMember?.profile || reconnectMember?.member_id || '')
         )
 
+        const reconnectHint = existing?.peerProbeHint
+        const reconnectHintMatches = Boolean(
+          reconnectMemberId &&
+          reconnectAuthority &&
+          reconnectHint?.memberId === reconnectMemberId &&
+          reconnectHint.installationId === reconnectAuthority
+        )
+        const reconnectFallbackConnections = Object.keys(capabilities).filter(id => id !== connectionId)
         const reconnectConnectionId =
           Object.entries(capabilities).find(([, candidate]) => candidate.authorityId === reconnectAuthority)?.[0] ||
-          String(existing?.hostedStatus?.checkConnectionId || '') ||
-          String(reconnectPrior?.route?.connectionId || reconnectPrior?.connectionId || '')
+          (reconnectHintMatches ? String(reconnectHint?.connectionId || '') : '') ||
+          String(reconnectPrior?.route?.connectionId || reconnectPrior?.connectionId || '') ||
+          (reconnectFallbackConnections.length === 1 ? reconnectFallbackConnections[0] : '')
 
         const reconnectCapability = reconnectConnectionId ? capabilities[reconnectConnectionId] : undefined
         const reconnectCapabilityKnown = Boolean(reconnectCapability)
         const reconnectIdentityVerified = Boolean(
           reconnectCapability?.authorityId && reconnectCapability.authorityId === reconnectAuthority
+        )
+        const reconnectIdentityMismatch = Boolean(
+          reconnectAuthority &&
+          reconnectCapability?.kind === 'driver-capable' &&
+          reconnectCapability.authorityId &&
+          reconnectCapability.authorityId !== reconnectAuthority
         )
 
         const reconnectSupported = Boolean(
@@ -808,7 +939,7 @@ export async function refreshHostedRooms() {
           reconnectCapability.exactPeerGrantRevoke
         )
 
-        const reconnectUpdateConnectionId = !capability.routeGrantFingerprint
+        const reconnectUpdateConnectionId = reconnectMemberId && !capability.routeGrantFingerprint
           ? connectionId
           : reconnectCapability?.kind === 'unsupported' ||
               (reconnectIdentityVerified &&
@@ -816,6 +947,9 @@ export async function refreshHostedRooms() {
                 !reconnectCapability.exactPeerGrantRevoke)
             ? reconnectConnectionId
             : ''
+        const reconnectCheckConnectionId = reconnectMemberId && reconnectConnectionId && !reconnectSupported
+          ? reconnectConnectionId
+          : reconnectUpdateConnectionId
 
         const stopping = $hostedRoomOutbox
           .get()
@@ -867,6 +1001,13 @@ export async function refreshHostedRooms() {
               members: memberDescriptors,
               hostedMembersVerified: true,
               hostedMembersNeedRefresh: false,
+              peerProbeHint: reconnectMemberId && reconnectAuthority && reconnectConnectionId
+                ? {
+                    connectionId: reconnectConnectionId,
+                    installationId: reconnectAuthority,
+                    memberId: reconnectMemberId
+                  }
+                : undefined,
               log: mergeGroupChatRoomEntries(
                 current,
                 restoreHostedUserOutboxIntents(current, $hostedRoomOutbox.get()),
@@ -885,14 +1026,10 @@ export async function refreshHostedRooms() {
                 : {
                     ...hostedStatus(friendly, sourceLabel(connectionId)),
                     ...(retryAction && !reconnectMemberId ? { taskId: String(retryAction.task_id) } : {}),
-                    ...(reconnectMemberId && reconnectSupported
-                      ? {
-                          canReconnect: true,
-                          reconnectMemberId
-                        }
-                      : {}),
-                    ...(reconnectUpdateConnectionId
-                      ? { checkConnectionId: reconnectUpdateConnectionId }
+                    ...(reconnectMemberId ? { canReconnect: reconnectSupported } : {}),
+                    ...(reconnectMemberId && reconnectSupported ? { reconnectMemberId } : {}),
+                    ...(reconnectCheckConnectionId
+                      ? { checkConnectionId: reconnectCheckConnectionId }
                       : {}),
                     ...(reconnectMemberId &&
                     (!reconnectCapabilityKnown || reconnectCapability?.kind === 'transient-failure')
@@ -906,11 +1043,15 @@ export async function refreshHostedRooms() {
                 : reconnectMemberId
                   ? !reconnectCapabilityKnown || reconnectCapability?.kind === 'transient-failure'
                     ? botsText().group.reconnectFailed
-                    : reconnectSupported
-                      ? botsText().group.memberReconnectToContinue(reconnectName)
-                      : botsText().group.hostUpdateNeeded(
-                          reconnectUpdateConnectionId ? sourceLabel(reconnectUpdateConnectionId) : reconnectName
-                        )
+                    : reconnectCapability?.kind === 'auth-failure'
+                      ? botsText().group.hostReauthNeeded(sourceLabel(reconnectConnectionId))
+                      : reconnectIdentityMismatch
+                        ? botsText().group.memberCorrectDevice(reconnectName)
+                        : reconnectSupported
+                          ? botsText().group.memberReconnectToContinue(reconnectName)
+                          : botsText().group.hostUpdateNeeded(
+                              reconnectUpdateConnectionId ? sourceLabel(reconnectUpdateConnectionId) : reconnectName
+                            )
                   : replay.complete
                     ? null
                     : botsText().group.hostedSyncing,
@@ -939,7 +1080,7 @@ export async function refreshHostedRooms() {
 
         if (
           replay.complete &&
-          (!reconnectMemberId || Boolean(reconnectUpdateConnectionId)) &&
+          (!reconnectMemberId || Boolean(reconnectCheckConnectionId) || reconnectSupported) &&
           Number(hostedRoomPollGenerations.get(roomId) || 0) === pollGeneration
         ) {
           hostedRoomPollCache.set(roomId, hostedRoomPollFingerprint(listedRoom))
@@ -1990,6 +2131,11 @@ export async function startHostedRoomRuntime(storage: PluginContext['storage'], 
 export function stopHostedRoomRuntime() {
   hostedRoomLifecycleGeneration += 1
   hostedRoomSyncDisposed = true
+  hostedRoomRefreshPromise = null
+  hostedRoomRefreshSuccessorPromise = null
+  hostedRoomRefreshSuccessorGuards.clear()
+  hostedRoomManualChecks.clear()
+  hostedRoomSyncRunning = false
   stopHostedRoomCleanup()
   hostedRoomStorage = null
   hostedRoomHooks = {}

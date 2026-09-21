@@ -218,10 +218,12 @@ type BotsMessages = {
     hostedRenameFailed: (host: string) => string
     hostRouteMissing: string
     hostUpdateNeeded: (host: string) => string
+    hostReauthNeeded: (host: string) => string
     checkAgain: string
     hostReconnectToContinue: (host: string) => string
     hostedReconnectToDelete: (host: string) => string
     hostedSyncing: string
+    memberCorrectDevice: (member: string) => string
     continuityOnTitle: string
     continuityOnDesc: string
     continuityDesktopTitle: string
@@ -508,10 +510,13 @@ const en: BotsMessages = {
     hostedRenameFailed: host => `Could not rename. Reconnect ${host} and retry.`,
     hostRouteMissing: 'This Group Chat connection is unavailable.',
     hostUpdateNeeded: host => `Update ${host} to keep this Group Chat running.`,
+    hostReauthNeeded: host => `Sign in to ${host} again, then check this Group Chat.`,
     checkAgain: 'Check again',
     hostReconnectToContinue: host => `Reconnect ${host} to continue.`,
     hostedReconnectToDelete: host => `Reconnect ${host} to delete this Group Chat.`,
     hostedSyncing: 'Syncing recent activity…',
+    memberCorrectDevice: member =>
+      `Reconnect ${member} from the device where this Bot is installed, then check again.`,
     continuityOnTitle: 'Works without Desktop',
     continuityOnDesc: 'Bots can continue while Desktop is closed.',
     continuityDesktopTitle: 'Keep Desktop open',
@@ -793,10 +798,13 @@ const ja: BotsMessages = {
     hostedRenameFailed: host => `名前を変更できませんでした。${host} を再接続して再試行してください。`,
     hostRouteMissing: 'このグループチャットの接続を利用できません。',
     hostUpdateNeeded: host => `継続実行するには ${host} を更新してください。`,
+    hostReauthNeeded: host => `${host} にもう一度サインインしてから、このグループチャットを再確認してください。`,
     checkAgain: '再確認',
     hostReconnectToContinue: host => `続行するには ${host} を再接続してください。`,
     hostedReconnectToDelete: host => `このグループチャットを削除するには ${host} を再接続してください。`,
     hostedSyncing: '最近のアクティビティを同期中…',
+    memberCorrectDevice: member =>
+      `${member} がインストールされているデバイスから再接続して、もう一度確認してください。`,
     continuityOnTitle: 'Desktopを閉じても大丈夫です',
     continuityOnDesc: 'このグループチャットのボットは作業を続けます。',
     continuityDesktopTitle: 'Desktopを開いたままにしてください',
@@ -1071,10 +1079,12 @@ const zh: BotsMessages = {
     hostedRenameFailed: host => `无法重命名。请重新连接 ${host} 后重试。`,
     hostRouteMissing: '此群聊连接不可用。',
     hostUpdateNeeded: host => `请更新 ${host} 以保持此群聊运行。`,
+    hostReauthNeeded: host => `请重新登录 ${host}，然后再次检查此群聊。`,
     checkAgain: '再次检查',
     hostReconnectToContinue: host => `请重新连接 ${host} 以继续。`,
     hostedReconnectToDelete: host => `请重新连接 ${host} 以删除此群聊。`,
     hostedSyncing: '正在同步近期活动…',
+    memberCorrectDevice: member => `请从安装了 ${member} 的设备重新连接，然后再次检查。`,
     continuityOnTitle: '可以关闭 Desktop',
     continuityOnDesc: '此群聊中的机器人会继续工作。',
     continuityDesktopTitle: '请保持 Desktop 打开',
@@ -1349,10 +1359,12 @@ const zhHant: BotsMessages = {
     hostedRenameFailed: host => `無法重新命名。請重新連接 ${host} 後再試一次。`,
     hostRouteMissing: '此群組聊天連線無法使用。',
     hostUpdateNeeded: host => `請更新 ${host} 以保持此群組聊天運作。`,
+    hostReauthNeeded: host => `請重新登入 ${host}，然後再次檢查此群組聊天。`,
     checkAgain: '再次檢查',
     hostReconnectToContinue: host => `請重新連接 ${host} 以繼續。`,
     hostedReconnectToDelete: host => `請重新連接 ${host} 以刪除此群組聊天。`,
     hostedSyncing: '正在同步近期活動…',
+    memberCorrectDevice: member => `請從安裝了 ${member} 的裝置重新連接，然後再次檢查。`,
     continuityOnTitle: '可以關閉 Desktop',
     continuityOnDesc: '此群組聊天中的機器人會繼續工作。',
     continuityDesktopTitle: '請保持 Desktop 開啟',

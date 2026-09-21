@@ -191,6 +191,15 @@ export interface GroupHold {
   noted?: boolean
 }
 
+/** Durable lookup hint for a peer capability probe. It is not an executable
+ * route and never authorizes reconnect: the live capability must still prove
+ * this installation and the required permission before use. */
+export interface HostedPeerProbeHint {
+  connectionId: string
+  installationId: string
+  memberId: string
+}
+
 export interface GroupChat {
   /** User-facing continuity choice. Missing records are classic Desktop rooms. */
   continuityMode?: 'desktop' | 'distributed' | 'gateway'
@@ -223,6 +232,8 @@ export interface GroupChat {
   hostedMembersVerified?: boolean
   /** A conflicting display mirror requires a fresh authoritative membership read. */
   hostedMembersNeedRefresh?: boolean
+  /** Non-authorizing peer capability lookup retained across cold launches. */
+  peerProbeHint?: HostedPeerProbeHint
   hostedStatus?: null | {
     canReconnect?: boolean
     canRetry?: boolean

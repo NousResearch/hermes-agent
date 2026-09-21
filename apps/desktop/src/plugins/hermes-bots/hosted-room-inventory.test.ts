@@ -145,6 +145,25 @@ function heldResponse() {
 }
 
 describe('capability reply freshness', () => {
+  it.each([
+    [Object.assign(new Error('401: session expired'), { statusCode: 401 }), 'reauth', /Sign in .* again/, null],
+    [new Error('socket closed during reconnect'), 'offline', /offline/, 'Reconnect this device to continue.']
+  ] as const)('keeps user-visible auth and connection recovery distinct: %s', async (failure, state, label, issue) => {
+    const loaded = await load(method => {
+      if (method === 'groups.capabilities') {throw failure}
+      throw new Error(`unexpected method: ${method}`)
+    })
+    loaded.chat.$groupChats.set({
+      Classic: projected({ hosted: 'install:home', hostedConnectionId: 'local', hostedEpoch: 1 })
+    })
+    await loaded.runtime.startHostedRoomRuntime(loaded.storage)
+    const status = loaded.chat.$groupChats.get().Classic
+
+    expect(status.hostedStatus).toMatchObject({ checkConnectionId: 'local', state, label: expect.stringMatching(label) })
+    expect(status.continuityIssue).toBe(issue)
+    loaded.runtime.stopHostedRoomRuntime()
+  })
+
   it('waits for the first accepted capability without throwing or granting classic absence', async () => {
     const older = heldResponse()
     const newer = heldResponse()

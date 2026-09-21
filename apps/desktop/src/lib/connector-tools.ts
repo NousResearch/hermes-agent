@@ -45,7 +45,6 @@ export interface ConnectorRow {
  *  for every lead-order pick). Served as an SVG with no CORS header, so it is only ever an `<img src>`. */
 export const connectorIconUrl = (slug: string): string => `https://logos.composio.dev/api/${slug}`
 
-
 export function connectorText(value: ToolCallMessagePart['result']): string | undefined {
   return typeof value === 'string' ? value : undefined
 }

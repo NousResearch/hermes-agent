@@ -68,10 +68,12 @@ const { cache, hostMock, live } = vi.hoisted(() => {
       notify: vi.fn(),
       request: vi.fn(async () => ({})),
       requestProfile: vi.fn(async () => ({})),
-      agents: vi.fn(async (): Promise<{ agents: Array<Record<string, unknown>>; sources: Array<Record<string, unknown>> }> => ({
-        agents: [],
-        sources: []
-      })),
+      agents: vi.fn(
+        async (): Promise<{ agents: Array<Record<string, unknown>>; sources: Array<Record<string, unknown>> }> => ({
+          agents: [],
+          sources: []
+        })
+      ),
       state: {
         connectionId: { get: () => 'local', listen: () => () => undefined },
         focusedSessionProfile: { get: () => live.focused, listen: () => () => undefined },
@@ -330,26 +332,32 @@ describe('@-mention completions', () => {
 
   it.each([
     { label: 'local first', profiles: [{ name: 'default' }, { name: 'researcher' }, ...REMOTE_DEFAULTS] },
-    { label: 'remotes first', profiles: [...REMOTE_DEFAULTS].reverse().concat([{ name: 'researcher' }, { name: 'default' }]) }
-  ])('lists titled remote defaults under their slug, qualified on collision, and keeps @hermes local ($label)', async ({ profiles }) => {
-    const { handler, provide } = await contributions({ focused: 'researcher', profiles })
-    const inserts = provide('').map(item => item.insert)
+    {
+      label: 'remotes first',
+      profiles: [...REMOTE_DEFAULTS].reverse().concat([{ name: 'researcher' }, { name: 'default' }])
+    }
+  ])(
+    'lists titled remote defaults under their slug, qualified on collision, and keeps @hermes local ($label)',
+    async ({ profiles }) => {
+      const { handler, provide } = await contributions({ focused: 'researcher', profiles })
+      const inserts = provide('').map(item => item.insert)
 
-    // Both remote defaults tag as "CoS Bot" — the bare slug names neither, so
-    // the picker pins each to its connection; the local default stays @hermes.
-    expect(inserts).toEqual(expect.arrayContaining(['@hermes', '@cos-bot@vps', '@cos-bot@wsl']))
-    expect(inserts).not.toContain('@cos-bot')
-    expect(inserts.filter(insert => insert === '@hermes')).toHaveLength(1)
+      // Both remote defaults tag as "CoS Bot" — the bare slug names neither, so
+      // the picker pins each to its connection; the local default stays @hermes.
+      expect(inserts).toEqual(expect.arrayContaining(['@hermes', '@cos-bot@vps', '@cos-bot@wsl']))
+      expect(inserts).not.toContain('@cos-bot')
+      expect(inserts.filter(insert => insert === '@hermes')).toHaveLength(1)
 
-    const qualified = await handler({ text: 'ask @cos-bot@wsl for the plan' })
-    expect(qualified.text).toMatch(/message_agent target: "default@wsl"/)
-    expect(qualified.text).not.toMatch(/default@vps/)
+      const qualified = await handler({ text: 'ask @cos-bot@wsl for the plan' })
+      expect(qualified.text).toMatch(/message_agent target: "default@wsl"/)
+      expect(qualified.text).not.toMatch(/default@vps/)
 
-    // A bare @hermes is this machine's default in either roster order.
-    const local = await handler({ text: '@hermes summarize' })
-    expect(local.text).toMatch(/@hermes = agent profile "default"/)
-    expect(local.text).not.toMatch(/message_agent target: "default@/)
-  })
+      // A bare @hermes is this machine's default in either roster order.
+      const local = await handler({ text: '@hermes summarize' })
+      expect(local.text).toMatch(/@hermes = agent profile "default"/)
+      expect(local.text).not.toMatch(/message_agent target: "default@/)
+    }
+  )
 
   it('offers a uniquely titled remote default under its title slug', async () => {
     const { handler, provide } = await contributions({ profiles: [{ name: 'default' }, REMOTE_DEFAULTS[0]] })
@@ -464,7 +472,13 @@ describe('the mention middleware', () => {
     hostMock.requestProfile.mockResolvedValueOnce({ profiles: [{ name: 'default' }] })
     hostMock.agents.mockResolvedValueOnce({
       agents: [
-        { connectionId: 'local', connectionKind: 'local', connectionLabel: 'This device', handle: 'default-this-device', profile: 'default' },
+        {
+          connectionId: 'local',
+          connectionKind: 'local',
+          connectionLabel: 'This device',
+          handle: 'default-this-device',
+          profile: 'default'
+        },
         {
           connectionId: 'vps',
           connectionKind: 'remote',
@@ -474,7 +488,10 @@ describe('the mention middleware', () => {
           profileMetadata: { ui_meta: { 'hermes-bots': { title: 'CoS Bot' } } }
         }
       ],
-      sources: [{ connectionId: 'local', kind: 'local' }, { connectionId: 'vps', kind: 'remote' }]
+      sources: [
+        { connectionId: 'local', kind: 'local' },
+        { connectionId: 'vps', kind: 'remote' }
+      ]
     })
 
     const { handler, provide } = await contributions({ profiles: null })

@@ -2462,8 +2462,11 @@ class TestTruncateToolCallArgsJson:
         # Must parse — otherwise downstream provider returns 400
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].startswith(huge_content[:200])
-        assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
+        # write_file is an ARG-PAYLOAD tool: its content argument is EXEMPT from
+        # elision up to _ARG_EXEMPT_HARD_CAP (60k) — eliding it corrupted real
+        # writes, landing a truncated fragment on disk while write_file still
+        # reported success. This payload (well under the cap) survives whole.
+        assert parsed["content"] == huge_content
 
 
 class TestTruncationMarkerNotImitable:

@@ -1260,6 +1260,23 @@ def terminal_tool(
         # Session key for cwd records: the contextvar doesn't cross tool-worker
         # threads, so fall back to the raw task_id (the top-level agent's
         # session_key) as a stable anchor.
+        #
+        # Fail closed if context transport injected a history-elision marker.
+        # Executing such a command can run only the surviving fragment or the
+        # literal marker, which is worse than refusing it loudly.
+        truncation_markers = (
+            "[value of ", "...[truncated]", "…[truncated]",
+            "... [truncated]", "ELIDED HISTORY", "HERMES-CONTEXT-COMPRESSION:",
+        )
+        if any(marker in command for marker in truncation_markers):
+            logger.error("Rejected terminal command containing truncation marker")
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": "Rejected: terminal command contains a context truncation marker; resend the complete command.",
+                "status": "error",
+            }, ensure_ascii=False)
+
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")

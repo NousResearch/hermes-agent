@@ -1265,6 +1265,64 @@ def _last_assistant_index(messages: "List[Dict[str, Any]]") -> int:
     return _last_index_with_role(messages, "assistant")
 
 
+def _pending_tool_call_indices(result: "List[Dict[str, Any]]") -> set:
+    """Assistant indices whose tool_calls have no tool result yet.
+
+    A tool_call still awaiting its result is PENDING WORK, not
+    history: eliding its arguments corrupts the call in flight.
+    Protecting only ``_last_assistant_index`` is not enough — a
+    turn that emits several calls, or any turn followed by another
+    assistant message before its results land, falls outside that
+    single index and gets sliced to ``head_chars`` mid-word
+    (measured 2026-08-31: 276-283 char dispatch briefs, refused by
+    the control plane's elision guard).
+    """
+    answered = set()
+    for m in result:
+        if isinstance(m, dict) and m.get("role") == "tool":
+            tcid = m.get("tool_call_id")
+            if tcid:
+                answered.add(tcid)
+    pending = set()
+    for i, m in enumerate(result):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        for tc in m.get("tool_calls") or []:
+            if isinstance(tc, dict) and tc.get("id") not in answered:
+                pending.add(i)
+                break
+    return pending
+
+
+# Tools whose ARGUMENTS are payloads, not conversation. Eliding these
+# produces a marker sentence that the model then copies forward by hand
+# into the NEXT call — measured 2026-09-05: a dispatch brief arrived as
+# 0 chars of content plus a 70-char "[value of N chars removed...]"
+# notice, and only the control plane's elision guard stopped a job
+# running on the fragment. The compressor is behaving correctly here;
+# the defect is that its "this is gone" sentence is indistinguishable
+# from content when re-read. For these tools the args ARE the work, so
+# they are exempt rather than summarised.
+#
+# HARD_CAP bounds the exemption: a genuinely enormous payload is still
+# elided, because an unbounded exemption would defeat compression on
+# the one axis it exists to protect.
+_ARG_PAYLOAD_TOOLS = {
+    "mcp__control_plane__jsbc_call",  # dispatch briefs, findings, items
+    "write_file",                      # file contents
+    "patch",                           # old_string/new_string
+    "mcp__hermes___write_file",
+    "mcp__hermes___patch",
+}
+_ARG_EXEMPT_HARD_CAP = 60_000
+# Deferred tools arrive under a generic wrapper; the payload tool is in
+# arguments.name. The wrapper path gets a TIGHTER cap than the direct
+# path so widening the exemption cannot remove an unbounded amount of
+# reclaimable context from a long session.
+_WRAPPER_TOOLS = {"mcp__hermes___tool_call", "tool_call"}
+_WRAPPER_EXEMPT_CAP = 8_000
+
+
 def _part_text(item: Any) -> Optional[str]:
     """Text of a content part: the string itself, a dict's ``text``, else None."""
     return item if isinstance(item, str) else item.get("text") if isinstance(item, dict) else None
@@ -1429,6 +1487,18 @@ _COMPRESSION_MARKER_TEMPLATE = (
     "This is NOT part of the original tool call and must never be reproduced in new "
     "output — always write full, untruncated content.⟫"
 )
+
+
+def _elided(n: int) -> str:
+    """Placeholder for an elided string value.
+
+    Returns NO prefix of the original. A head+marker shape is itself the
+    defect: it is a well-formed example of a truncated value, and the model
+    reproduces the shape by hand in the NEXT call. Measured 2026-09-01:
+    cuts at exactly 200 chars come from here; cuts at 199/201 were hand-made
+    copies. A pure sentence cannot be mistaken for content.
+    """
+    return f"[value of {n} chars removed from history; not available in this turn]"
 
 
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
@@ -2936,17 +3006,53 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return pruned
 
     @staticmethod
-    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
-        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
+    def _truncate_tool_call_args_at(
+        result: List[Dict[str, Any]], idx: int,
+        pending_idx: Optional[set] = None, last_assistant_idx: Optional[int] = None,
+    ) -> bool:
+        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid).
+
+        Skips the newest assistant turn and any turn whose calls are still
+        awaiting results (live work, not history — see
+        ``_pending_tool_call_indices``), and exempts arg-payload tools
+        (write_file/patch/jsbc_call) up to a hard cap: their arguments ARE
+        the work, so eliding them destroys the target while the tool still
+        reports success.
+        """
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
             return False
+        if idx == last_assistant_idx or (pending_idx and idx in pending_idx):
+            return False
         new_tcs = []
+        modified = False
         for tc in msg["tool_calls"]:
-            args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
-            new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
-        modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
+            if isinstance(tc, dict):
+                fn = tc.get("function", {}) if isinstance(tc.get("function"), dict) else {}
+                name = fn.get("name") or ""
+                args = fn.get("arguments", "")
+                # A DEFERRED tool is dispatched through a generic wrapper whose
+                # own name says nothing about the payload: the real tool is in
+                # arguments.name. Reading only the outer name made every
+                # dispatch brief eligible for elision even though the tool it
+                # wraps is exempt. Measured 2026-09-07: wrapper calls elided
+                # 6/6, the same tool called directly 0/6.
+                eff_name, eff_cap = name, _ARG_EXEMPT_HARD_CAP
+                if name in _WRAPPER_TOOLS:
+                    try:
+                        inner = json.loads(args or "{}")
+                        inner_name = inner.get("name")
+                        if isinstance(inner_name, str) and inner_name:
+                            eff_name, eff_cap = inner_name, _WRAPPER_EXEMPT_CAP
+                    except (ValueError, TypeError):
+                        pass
+                exempt = eff_name in _ARG_PAYLOAD_TOOLS and len(args) <= eff_cap
+                if len(args) > 500 and not exempt:
+                    new_args = _truncate_tool_call_args_json(args)
+                    if new_args != args:
+                        tc = {**tc, "function": {**tc["function"], "arguments": new_args}}
+                        modified = True
+            new_tcs.append(tc)
         if modified:
             result[idx] = {**msg, "tool_calls": new_tcs}
         return modified
@@ -2995,9 +3101,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _pressure_demote_tail(
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int,
+        pending_idx: Optional[set] = None,
     ) -> int:
         """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
         Keeps a short recent floor verbatim; overrides the skill guard (else the dead-end recurs).
+        Never overrides the pending-tool-call guard: a call still awaiting its result is live work,
+        and eliding its args corrupts the request in flight (#8adf333d1b / measured 2026-09-01: this
+        pass cut dispatch briefs that pass 3 had correctly protected).
         Returns the number of tool results demoted (arg truncations are logged but not counted)."""
         soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
@@ -3014,7 +3124,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
-            if self._truncate_tool_call_args_at(result, i):
+            if (not pending_idx or i not in pending_idx) and self._truncate_tool_call_args_at(result, i, pending_idx):
                 pressure_hits += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
@@ -3058,14 +3168,20 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # Without this, a skill loaded moments before a compaction can be demoted to metadata while the
         # model still believes its instructions are in context. See #32106.
         protected_skills = _collect_protected_skill_names(result, prune_boundary)
+        # Pending tool_calls (awaiting results) and the newest assistant turn are live work, not
+        # history — eliding their args mid-flight corrupts the call in flight. See
+        # _pending_tool_call_indices / #8adf333d1b.
+        pending_idx = _pending_tool_call_indices(result)
+        last_assistant_idx = _last_assistant_index(result)
         # Pass 2: summarize old tool results. Pass 3: shrink large tool_call arguments INSIDE the parsed JSON so
         # the result stays valid; otherwise providers 400 on every turn until the call leaves the window.
         pruned += sum(
             self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, protected_skills)
             for i in range(max(0, prune_boundary))
         )
+        # Pass 2: Replace old tool results with informative summaries
         for i in range(max(0, prune_boundary)):
-            self._truncate_tool_call_args_at(result, i)
+            self._truncate_tool_call_args_at(result, i, pending_idx, last_assistant_idx)
         # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
         # Newest frames stay live for follow-up QA; older ones become placeholders. See #92699.
@@ -3073,6 +3189,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
             pruned += self._pressure_demote_tail(
                 result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars,
+                pending_idx,
             )
         return result, pruned
 

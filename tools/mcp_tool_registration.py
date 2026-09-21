@@ -26,6 +26,7 @@ logger = logging.getLogger("tools.mcp_tool")
 _SCOPE_REFRESH_LOCKS = tuple(threading.RLock() for _ in range(16))
 
 _UTILITY_ORIGIN_PREFIX = "generated utility "
+_SERVER_INSTRUCTIONS_HEADING = "MCP server instructions:"
 # Utility tool key -> handler factory; each takes (server_name, tool_timeout).
 _UTILITY_HANDLER_FACTORIES = {
     "list_resources": _make_list_resources_handler, "read_resource": _make_read_resource_handler,
@@ -247,8 +248,33 @@ class _Candidate:
         return self.origin.startswith(_UTILITY_ORIGIN_PREFIX)
 
 
+def _server_instructions(server: "MCPServerTask") -> str:
+    """Return the negotiated server instructions, or an empty string when absent.
+
+    ``InitializeResult.instructions`` is optional and server-controlled, so malformed or blank
+    values must leave the existing tool surface untouched.  The normal MCP description scanner
+    is intentionally fail-open too: instructions are protocol metadata that belongs with the
+    server's tool contract, not a reason to drop an otherwise usable server.
+    """
+    instructions = getattr(getattr(server, "initialize_result", None), "instructions", None)
+    if not isinstance(instructions, str):
+        return ""
+    instructions = instructions.strip()
+    if instructions:
+        _schema._scan_mcp_description(server.name, "initialize instructions", instructions)
+    return instructions
+
+
+def _with_server_instructions(schema: dict, instructions: str) -> dict:
+    """Attach non-empty initialize instructions to a model-facing tool schema."""
+    if not instructions:
+        return schema
+    return {**schema, "description": f"{schema.get('description') or ''}\n\n"
+                                      f"{_SERVER_INSTRUCTIONS_HEADING}\n{instructions}"}
+
+
 def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[[str], bool],
-                     tool_timeout) -> List[_Candidate]:
+                     tool_timeout, instructions: str = "") -> List[_Candidate]:
     """Native tools (live SDK objects or cache stand-ins) -> candidates. The injection scan runs on
     BOTH paths: the cache file is user-writable JSON."""
     out: List[_Candidate] = []
@@ -257,18 +283,19 @@ def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[
             logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, t.name)
             continue
         _schema._scan_mcp_description(name, t.name, t.description or "")
-        schema = _schema._convert_mcp_schema(name, t)
+        schema = _with_server_instructions(_schema._convert_mcp_schema(name, t), instructions)
         handler = _handlers._make_tool_handler(name, t.name, tool_timeout)
         out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler))
     return out
 
 
-def _utility_candidates(name: str, entries: Iterable[Any], tool_timeout) -> List[_Candidate]:
+def _utility_candidates(name: str, entries: Iterable[Any], tool_timeout, instructions: str = "") -> List[_Candidate]:
     """``{schema, handler_key}`` rows (live selection or cache) -> candidates; malformed rows dropped."""
     out: List[_Candidate] = []
     for raw in entries:
         schema, key = (raw.get("schema"), raw.get("handler_key")) if isinstance(raw, dict) else (None, None)
         if isinstance(schema, dict) and key in _UTILITY_HANDLER_FACTORIES and schema.get("name"):
+            schema = _with_server_instructions(schema, instructions)
             out.append(_Candidate(schema["name"], f"{_UTILITY_ORIGIN_PREFIX}{key!r}", schema,
                                   _UTILITY_HANDLER_FACTORIES[key](name, tool_timeout)))
     return out
@@ -360,12 +387,15 @@ def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: C
     return registered
 
 
-def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should_register) -> None:
+def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should_register,
+                        instructions: Optional[str] = None) -> None:
     """Write-through: persist the manifest so the next startup registers this server lazily (no spawn). Never raises."""
     try:
         # Write-through (#56832): refresh the on-disk schema cache after a live connect so the next startup
         # can lazily register this server without spawning it. Cache failures never break registration.
         from tools.mcp_schema_cache import config_fingerprint, write_cache_entry
+        if instructions is None:
+            instructions = _server_instructions(server)
         tools_payload = []
         for t in server._tools:
             if not should_register(t.name):
@@ -381,7 +411,11 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
                 "inputSchema": schema_obj if isinstance(schema_obj, dict) else {},
                 "annotations": {"readOnlyHint": _annotation_read_only_hint(t)},  # lazy path trust-gates identically
             })
-        utility_payload = [{"schema": e["schema"], "handler_key": e["handler_key"]}
+            if instructions:
+                tools_payload[-1]["description"] = _with_server_instructions(
+                    {"description": tools_payload[-1]["description"]}, instructions)["description"]
+        utility_payload = [
+            {"schema": _with_server_instructions(e["schema"], instructions), "handler_key": e["handler_key"]}
                            for e in _select_utility_schemas(name, server, config)]
         cache_meta = getattr(server, "_list_cache_meta", None) or {}
         write_cache_entry(name, config_fingerprint(config), tools=tools_payload, utility_tools=utility_payload,
@@ -397,13 +431,15 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     should_register = _make_tool_filter(name, config)
     key = _server_key_for_task(server)
     _record_tool_trust_metadata(name, config, server._tools, key)
-    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
-    candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
+    instructions = _server_instructions(server)
+    candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout, instructions)
+    candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout,
+                                      instructions)
     registered = _register_candidates(
         name, _resolve_name_collisions(name, candidates),
         check_fn=_make_check_fn(name), scope=lambda: _core._server_registry_scope(key), lazy=False, key=key)
     if registered:
-        _write_schema_cache(name, server, config, should_register)
+        _write_schema_cache(name, server, config, should_register, instructions)
     return registered
 
 
@@ -500,9 +536,11 @@ def _register_connected_into_current_scope(servers: dict) -> int:
         _record_scope_trust(name, config, scope)
         if registry.get_tool_names_for_toolset(f"mcp-{name}"):
             continue
-        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)
+        instructions = _server_instructions(server)
+        candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout,
+                                      instructions)
         candidates += _utility_candidates(
-            name, _select_utility_schemas(name, server, config), server.tool_timeout)
+            name, _select_utility_schemas(name, server, config), server.tool_timeout, instructions)
         names = _register_candidates(
             name, _resolve_name_collisions(name, candidates),
             check_fn=_make_check_fn(name), scope=lambda: scope, lazy=False, key=key)

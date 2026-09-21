@@ -1,0 +1,15 @@
+name: memory-zvec
+repo: https://github.com/kuntao2011/kkk-hermes-memory-zvec
+sha: 654e1f2e6e3fce9c02cc3b87f024a3eba9013a58
+description: Community Zvec memory backend for Hermes Agent - in-process HNSW + RocksDB FTS store with
+  native hybrid retrieval (MultiQuery + RRFReRanker) and session-safe lock governance; local Ollama
+  bge-m3 embeddings, drop-in compatible with memory-lancedb tool schemas.
+maintainer: kuntao2011
+tier: community
+category: memory
+docs_url: https://github.com/kuntao2011/kkk-hermes-memory-zvec#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

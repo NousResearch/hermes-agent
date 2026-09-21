@@ -779,6 +779,38 @@ class TestMediaDeliveryDefaultMode:
             == str(doc.resolve())
         )
 
+    def test_nested_service_home_only_exempts_its_safe_subtree(self, tmp_path, monkeypatch):
+        """A StateDirectory home under /var/lib may deliver agent artifacts without making
+        credentials or sibling services below that system prefix deliverable (#117900)."""
+        self._patch_roots(monkeypatch)
+
+        denied_root = tmp_path / "var" / "lib"
+        fake_home = denied_root / "hermes"
+        hermes_home = fake_home / ".hermes"
+        workspace_file = fake_home / "workspace" / "report.md"
+        ssh_key = fake_home / ".ssh" / "id_rsa"
+        config = hermes_home / "config.yaml"
+        sibling_file = denied_root / "postgresql" / "data.csv"
+        for path in (workspace_file, ssh_key, config, sibling_file):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("content")
+
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_home)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_home)
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(denied_root),),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            str(workspace_file)
+        ) == str(workspace_file.resolve())
+        assert BasePlatformAdapter.validate_media_delivery_path(str(ssh_key)) is None
+        assert BasePlatformAdapter.validate_media_delivery_path(str(config)) is None
+        assert BasePlatformAdapter.validate_media_delivery_path(str(sibling_file)) is None
+
 
     def test_profile_scoped_cache_delivers_under_symlinked_root(self, tmp_path, monkeypatch):
         """Reopened #31733: a profile gateway whose HERMES_HOME is symlinked

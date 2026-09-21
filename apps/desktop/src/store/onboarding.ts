@@ -15,8 +15,8 @@ import {
 import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
+import { setMainModelAssignment } from '@/store/model-assignment'
 import { notify, notifyError } from '@/store/notifications'
 import { guidedOnboardingActive } from '@/store/onboarding-gate'
 import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
@@ -1102,6 +1102,10 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   // the endpoint is up; an unreachable probe hard-blocks because we can't
   // resolve a model to route to.
   let model = ''
+  // The probe tries the URL as entered and its /v1 variant; persist the one that answered —
+  // the runtime POSTs {base_url}/chat/completions verbatim, so a bare host root that only
+  // "detected" via /v1/models would 404 every chat (#65488).
+  let resolvedUrl = url
 
   try {
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
@@ -1119,6 +1123,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     }
 
     model = (probe.models?.[0] ?? '').trim()
+    resolvedUrl = probe.resolved_base_url?.trim() || url
   } catch {
     return { ok: false, message: `Could not reach ${url}.` }
   }
@@ -1131,7 +1136,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   }
 
   try {
-    await setMainModelAssignment({ provider: 'custom', model, base_url: url, api_key: key }, ctx.profile)
+    await setMainModelAssignment({ provider: 'custom', model, base_url: resolvedUrl, api_key: key }, ctx.profile)
 
     if (generation !== flowGeneration) {
       return { ok: false }
@@ -1152,7 +1157,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     if (!runtime.ready) {
       const detail = (runtime.reason ?? '').trim()
 
-      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${url}.` }
+      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${resolvedUrl}.` }
     }
 
     notifyReady('Local / custom endpoint')
@@ -1169,7 +1174,15 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
 
 // User picked a different model from the dropdown on the confirm card.
 // Persists immediately so the displayed value is always what's on disk.
-export async function setOnboardingModel(model: string) {
+//
+// The picker can surface models from ANY configured provider, not just the
+// one the user just authenticated. The selection therefore carries the
+// model's real provider slug — persist against that, or a foreign model
+// gets paired with the sign-in provider (config says provider A serves a
+// model only provider B has; chat errors "provider doesn't have the
+// selected model"). Also keep the flow's providerSlug/label in sync so the
+// confirm card shows the provider that actually serves the picked model.
+export async function setOnboardingModel(model: string, providerSlug: string, label?: string) {
   const generation = flowGeneration
   const { flow } = $desktopOnboarding.get()
 
@@ -1177,14 +1190,18 @@ export async function setOnboardingModel(model: string) {
     return
   }
 
+  // The picker may not know the provider's display name yet (catalog still
+  // loading); keep the current label rather than blanking the card.
+  const displayLabel = label || flow.label
+
   // Optimistic update so the dropdown feels instant; revert on failure.
-  const previous = flow.currentModel
-  setFlow({ ...flow, currentModel: model, saving: true })
+  const previous = { currentModel: flow.currentModel, label: flow.label, providerSlug: flow.providerSlug }
+  setFlow({ ...flow, currentModel: model, providerSlug, label: displayLabel, saving: true })
 
   try {
     await setMainModelAssignment(
       {
-        provider: flow.providerSlug,
+        provider: providerSlug,
         model
       },
       flowProfile ?? $desktopOnboarding.get().targetProfile
@@ -1197,7 +1214,7 @@ export async function setOnboardingModel(model: string) {
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {
-      setFlow({ ...current, currentModel: model, saving: false })
+      setFlow({ ...current, currentModel: model, providerSlug, label: displayLabel, saving: false })
     }
   } catch (error) {
     if (generation !== flowGeneration) {
@@ -1208,7 +1225,7 @@ export async function setOnboardingModel(model: string) {
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {
-      setFlow({ ...current, currentModel: previous, saving: false })
+      setFlow({ ...current, ...previous, saving: false })
     }
   }
 }

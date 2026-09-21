@@ -3513,22 +3513,24 @@ class TestStandaloneSend:
 class TestBuzzAdapterEdit:
 
     @pytest.mark.asyncio
-    async def test_edit_targets_the_original_event_and_uses_stdin(self):
+    @pytest.mark.parametrize("content", ["partial answer\nGrüezi 🌍\n", "--status\n- checking progress"])
+    async def test_edit_preserves_literal_content_and_original_target(self, content):
         adapter = _make_adapter()
         adapter._channel_state[CHANNEL] = {"chat_type": "group", "last_ts": 0, "seen": {}}
         cli = _ScriptedCli()
         cli.script("messages", "edit", {"accepted": True, "event_id": "edit1", "message": ""})
         adapter._run_cli = cli
 
-        result = await adapter.edit_message(CHANNEL, "orig1", "partial answer")
+        result = await adapter.edit_message(CHANNEL, "orig1", content)
         assert result.success is True
+        assert result.message_id == "orig1"
 
         args, stdin_text = cli.calls[0]
         assert args[:2] == ["messages", "edit"]
-        assert args[args.index("--event") + 1] == "orig1"
-        # Content travels via stdin (--content -), never argv, same as send
-        assert args[args.index("--content") + 1] == "-"
-        assert stdin_text == "partial answer"
+        # Unlike ``messages send``, ``messages edit`` takes ``--content`` literally (no stdin); the ``=``
+        # form keeps hyphen-leading replacement text from being parsed as a flag.
+        assert args[2:] == ["--event", "orig1", f"--content={content}"]
+        assert stdin_text is None
 
     @pytest.mark.asyncio
     async def test_edit_returns_the_original_id_not_the_cli_event_id(self):

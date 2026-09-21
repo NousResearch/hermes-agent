@@ -1275,8 +1275,8 @@ class TestRunJobConfigEnvVarExpansion:
             "id": "auth-fallback",
             "name": "auth fallback",
             "prompt": "hi",
-            "provider_snapshot": "openai-codex",
-            "model_snapshot": "gpt-5.6-sol",
+            "provider": "openai-codex",
+            "model": "gpt-5.6-sol",
         }
         fake_db = MagicMock()
         requested = []
@@ -1284,7 +1284,6 @@ class TestRunJobConfigEnvVarExpansion:
         def resolve_runtime(**kwargs):
             requested.append(kwargs.get("requested"))
             if kwargs.get("requested") == "openai-codex":
-                # The unpinned job's provider_snapshot is its effective pin.
                 raise AuthError("No Codex credentials stored")
             assert kwargs["requested"] == "openrouter"
             assert kwargs["target_model"] == "z-ai/glm-5.2"
@@ -2455,7 +2454,8 @@ class TestCronDeliveryMirror:
         # Session row created for the thread, then brief mirrored into it.
         store.get_or_create_session.assert_called_once()
         seeded_source = store.get_or_create_session.call_args[0][0]
-        assert seeded_source.chat_type == "thread"
+        # Telegram forum-topic replies key on the parent supergroup's ``group`` slot.
+        assert seeded_source.chat_type == "group"
         assert seeded_source.thread_id == "9001"
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("thread_id") == "9001"
@@ -2640,7 +2640,7 @@ class TestCronContinuableSurfaceInChannel:
             def __init__(self, *a, **k):
                 pass
 
-            async def _deliver_to_platform(self, target, text, metadata):
+            async def _deliver_to_platform(self, target, text, metadata, transport=None):
                 captured["target"] = target
                 return {"success": True, "message_id": "msg_1"}
 
@@ -2679,7 +2679,7 @@ class TestCronContinuableSurfaceInChannel:
             def __init__(self, *a, **k):
                 pass
 
-            async def _deliver_to_platform(self, target, text, metadata):
+            async def _deliver_to_platform(self, target, text, metadata, transport=None):
                 captured["metadata"] = metadata
                 return {"success": True, "message_id": "msg_1"}
 
@@ -2711,7 +2711,7 @@ class TestCronContinuableSurfaceInChannel:
             def __init__(self, *a, **k):
                 pass
 
-            async def _deliver_to_platform(self, target, text, metadata):
+            async def _deliver_to_platform(self, target, text, metadata, transport=None):
                 captured["metadata"] = metadata
                 return {"success": True, "message_id": "msg_1"}
 

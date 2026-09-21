@@ -349,6 +349,38 @@ class TestConcurrencyCap:
         assert resp.status == 429
         assert resp.headers.get("Retry-After")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("at_cap", [True, False], ids=["at-cap", "under-cap"])
+    @pytest.mark.parametrize(
+        ("endpoint", "payload"),
+        [
+            ("/api/sessions/s1/chat", {"message": "hi"}),
+            ("/api/sessions/s1/chat/stream", {"message": "hi"}),
+            ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}),
+        ],
+        ids=["session-chat", "session-chat-stream", "chat-completions"],
+    )
+    async def test_every_route_that_starts_a_turn_is_refused_at_the_cap(self, adapter, endpoint, payload, at_cap):
+        """Each of these routes runs its turn through ``_run_agent``, so each already COUNTS
+        toward ``max_concurrent_runs``. A route that spends the budget without checking it can
+        never be refused while pushing every other caller into 429, and a fleet's cross-machine
+        DMs — which all land on the session-chat routes — start a turn apiece regardless of the
+        cap. Under the cap every route must still be admitted."""
+        adapter._max_concurrent_runs = 2
+        adapter._inflight_agent_runs = 2 if at_cap else 0
+        app = _create_app(adapter)
+
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ({"final_response": "ok", "messages": [], "api_calls": 1},
+                                     {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(endpoint, json=payload)
+
+        assert (response.status == 429) is at_cap, await response.text()
+        if at_cap:
+            assert response.headers.get("Retry-After")
+            assert mock_run.await_count == 0, "the turn must not start once the cap is reached"
+
 
 # ---------------------------------------------------------------------------
 # Helpers for HTTP tests
@@ -2658,7 +2690,7 @@ class TestModelRoutesAgentCreation:
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-            lambda provider: {
+            lambda provider, target_model=None: {
                 "provider": provider,
                 "api_key": f"sk-{provider}",
                 "base_url": f"https://{provider}.example/v1",

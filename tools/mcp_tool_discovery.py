@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from tools.mcp_tool_common import _core, _parse_boolish
 from tools import mcp_tool_config as _config
@@ -19,6 +21,26 @@ from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
 from tools.mcp_tool_scope import _key_name, _key_scope, _key_visible_in_scope, _resolve_server_key, _server_key
 
 logger = logging.getLogger("tools.mcp_tool")
+
+# Default max concurrent MCP server connections per discovery pass (one unbounded
+# `asyncio.gather` spawned every server's subprocess tree simultaneously); config.yaml
+# ``mcp.discovery_concurrency`` overrides it, 0 = unlimited (#117373).
+_DISCOVERY_CONNECT_CONCURRENCY = 4
+
+
+def _discovery_connect_concurrency() -> int:
+    """``mcp.discovery_concurrency`` from config (0 = unlimited); a non-integer or negative value
+    warns and falls back to the default rather than silently running unbounded."""
+    try:
+        from hermes_cli.config import load_config
+        raw = (load_config().get("mcp") or {}).get("discovery_concurrency", _DISCOVERY_CONNECT_CONCURRENCY)
+    except Exception:
+        return _DISCOVERY_CONNECT_CONCURRENCY
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        logger.warning("mcp.discovery_concurrency=%r is not a non-negative integer; using %d",
+                       raw, _DISCOVERY_CONNECT_CONCURRENCY)
+        return _DISCOVERY_CONNECT_CONCURRENCY
+    return raw
 
 
 def _record_connect_failure(server_name: str) -> None:
@@ -48,6 +70,60 @@ def _enabled(cfg: dict) -> bool:
     return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
+def _owner_scope_home() -> Optional[Path]:
+    """The profile home whose secret scope MCP credential reads must resolve under, or None when
+    the caller is already scoped or this is a single-profile process (scope key ``None``).
+
+    The owner is the profile the connection is keyed under (``_mcp_registry_scope()``), never the
+    ambient one, so a served profile is never handed another profile's token (#111151)."""
+    from agent.secret_scope import current_secret_scope
+    if current_secret_scope() is not None:
+        return None
+    scope_key = _core._mcp_registry_scope()
+    return None if scope_key is None else Path(scope_key)
+
+
+async def _install_owner_secret_scope():
+    """Bind the connection OWNER's profile secret scope when the caller has none; else None.
+
+    ``MCPServerTask.start`` ensure_futures the run task, which copies THIS context, so one
+    binding covers transport bring-up (``_build_safe_env`` stdio child env) and every later
+    revival inside that task; unscoped, those ``get_secret`` reads fail closed under multiplexing
+    and the server parks with zero tools (#113746). ``${VAR}`` refs are interpolated earlier, at
+    config load, under :func:`_owner_secret_scope`.
+    """
+    from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+    home = _owner_scope_home()
+    if home is None:
+        return None
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    # Off-loop: an external source runs a helper subprocess (once per home, then cached).
+    await asyncio.to_thread(hydrate_profile_secret_sources, home)
+    return set_secret_scope(build_profile_secret_scope(home))
+
+
+@contextmanager
+def _owner_secret_scope():
+    """Sync twin of :func:`_install_owner_secret_scope` for the config load in the caller's thread.
+
+    ``_load_mcp_config`` interpolates ``${VAR}`` header/URL refs through ``get_secret`` and swallows
+    the resulting ``UnscopedSecretError`` into ``{}``, so an unscoped discover / reconcile / status /
+    probe for a routed profile saw ZERO servers — stdio siblings included — before the connect-site
+    binding could ever run (#113746). Same owner rule; scope key ``None`` binds nothing."""
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    home = _owner_scope_home()
+    if home is None:
+        yield
+        return
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    hydrate_profile_secret_sources(home)
+    token = set_secret_scope(build_profile_secret_scope(home))
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
+
+
 async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
     """Create an MCPServerTask, start it, return once ready (tear down with ``server.shutdown()``
     on the same loop). Raises on bad config, missing HTTP support or connect failure."""
@@ -57,7 +133,9 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         claim(server)
     # The run task copies this context: don't retain the discovery closure for its life.
     claim_token = _core._connect_server_claim.set(None) if claim is not None else None
+    scope_token = None
     try:
+        scope_token = await _install_owner_secret_scope()
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel
@@ -70,6 +148,9 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
                 logger.debug("MCP server '%s' shutdown during orphan-reap failed: %s", name, shutdown_exc)
         raise
     finally:
+        if scope_token is not None:
+            from agent.secret_scope import reset_secret_scope
+            reset_secret_scope(scope_token)
         if claim_token is not None:
             _core._connect_server_claim.reset(claim_token)
     return server
@@ -311,9 +392,24 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
 
 
 async def _discover_all(new_servers: Dict[str, dict]) -> None:
-    """Connect every candidate concurrently; record per-server outcome."""
+    """Connect every candidate concurrently; record per-server outcome.
+
+    Concurrency is bounded: every stdio server spawns child processes, so an
+    unbounded gather turns a config with many servers into a simultaneous
+    N-process spawn burst (RAM/CPU spike, EMFILE risk) on every backend boot.
+    """
+    # Flat cap for all transports; 0 (unlimited) keeps the original unbounded gather.
+    cap = _discovery_connect_concurrency()
+    semaphore = asyncio.Semaphore(cap) if cap > 0 else None
+
+    async def _connect_bounded(name: str, cfg: dict):
+        if semaphore is None:
+            return await _discover_and_register_server(name, cfg)
+        async with semaphore:
+            return await _discover_and_register_server(name, cfg)
+
     results = await asyncio.gather(
-        *(_discover_and_register_server(name, cfg) for name, cfg in new_servers.items()),
+        *(_connect_bounded(name, cfg) for name, cfg in new_servers.items()),
         return_exceptions=True)
     for name, result in zip(new_servers, results):
         if isinstance(result, BaseException):
@@ -334,7 +430,17 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
     if _was_interrupted:
         _set_interrupt(False)
     try:
-        _loop._run_on_mcp_loop(lambda: _discover_all(new_servers), timeout=120)
+        # Budget scales with the concurrency cap: a bounded gather finishes in
+        # ceil(N/cap) waves, so N > cap multiplies the wall clock the base
+        # (unbounded) gather never needed. 120s per wave keeps the original
+        # per-wave ceiling; a slow fleet aborts later, not never. Capped by
+        # _MCP_DISCOVERY_PASS_MAX_SEC so one stuck connect cannot pin the
+        # calling thread (and the cross-process discovery lock) for tens of
+        # minutes; the lock waiter's budget is derived from the same ceiling.
+        cap = _discovery_connect_concurrency() or len(new_servers) or 1
+        waves = max(1, -(-len(new_servers) // cap))
+        timeout = min(120 * waves, _core._MCP_DISCOVERY_PASS_MAX_SEC)
+        _loop._run_on_mcp_loop(lambda: _discover_all(new_servers), timeout=timeout)
     except (TimeoutError, InterruptedError) as _e:
         # Stranded _server_connecting entries would block future reconnects.
         how = "timed out" if isinstance(_e, TimeoutError) else "interrupted"
@@ -347,30 +453,41 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
                     _core._server_connecting.discard(_server_key(_sn))
                     _core._server_connect_errors.setdefault(
                         _server_key(_sn), f"Connection attempt {how} during discovery")
+                    # Its attempt is still running on the MCP loop; without a cooldown the next
+                    # reconcile tick would spawn a second one beside it.
+                    _record_connect_failure(_sn)
         raise
     finally:
         if _was_interrupted:
             _set_interrupt(True)
 
 
-def _connected_summary(names, *, lazy_tools: int = 0, lazy_servers: int = 0) -> Tuple[int, int, int]:
-    """(tool count, connected count, failed count) for candidate names, plus lazy servers."""
+def _connected_summary(names, *, lazy_tools: int = 0,
+                       lazy_servers: int = 0) -> Tuple[int, int, List[Tuple[str, str]]]:
+    """(tool count, connected count, ``[(failed name, reason)]``) for candidate names, plus lazy
+    servers. The reason is the recorded connect error; a candidate this pass never attempted (still
+    inside its retry cooldown from an earlier failure) has none."""
     with _core._lock:
         keys = {n: _server_key(n) for n in names}
         connected = [n for n in names
                      if keys[n] in _core._servers and keys[n] not in _core._server_connect_errors]
         tool_count = sum(len(getattr(_core._servers[keys[n]], "_registered_tool_names", [])) for n in connected)
-    failed = len(names) - len(connected)
+        failed = [(n, _core._server_connect_errors.get(keys[n]) or "not attempted (in retry cooldown)")
+                  for n in names if n not in connected]
     return tool_count + lazy_tools, len(connected) + lazy_servers, failed
 
 
 def _log_summary(prefix: str, names, **lazy) -> None:
-    """Log ``<prefix> N tool(s) from M server(s) (K failed)`` when anything happened."""
+    """Log ``<prefix> N tool(s) from M server(s) (K failed: name (reason), ...)`` when anything
+    happened. The failures are named on the summary line itself (#114746): the count alone left
+    the failing server identifiable only by elimination, and a candidate skipped for its retry
+    cooldown never gets a per-server WARNING at all."""
     new_tool_count, connected_count, failed = _connected_summary(names, **lazy)
     if new_tool_count or failed or lazy.get("lazy_servers"):
         summary = f"{prefix} {new_tool_count} tool(s) from {connected_count} server(s)"
         if failed:
-            summary += f" ({failed} failed)"
+            summary += f" ({len(failed)} failed: " + "; ".join(
+                f"{name} ({reason})" for name, reason in failed) + ")"
         if lazy.get("lazy_servers"):
             summary += f" ({lazy['lazy_servers']} lazy, not spawned yet)"
         logger.info(summary)
@@ -444,7 +561,8 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
     list simply don't match); ``None`` spawns every configured server. Used by
     ``hermes -z -t <toolsets>`` to skip cold-starting servers the caller doesn't need (10-60s
     each); it only affects which servers start, not which names ``-t`` validation can see."""
-    servers = _config._load_mcp_config()
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
     if not servers:
         logger.debug("No MCP servers configured")
         return []
@@ -493,12 +611,14 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     """Bring the live server set in step with ``mcp_servers`` as it is on disk NOW: tear down
     servers that were removed from config or set ``enabled: false`` (a parked server keeps
     self-probing forever otherwise — for hours after the user deleted its entry), then connect
-    anything newly configured via :func:`discover_mcp_tools`. Scoped to the current registry
+    anything enabled that is not live via :func:`discover_mcp_tools` — newly configured, or one
+    whose earlier connect failed and whose cooldown has lapsed. Scoped to the current registry
     scope (one multiplexed profile's config prunes only its own connections). A lazily registered
     (schema-cache) server loses its cached tools; one still mid-connect cannot be torn down yet and
     is reported under ``"pending"`` so the caller retries. Returns
     ``{"removed": [...], "added": [...], "pending": [...]}``; a no-op when nothing changed."""
-    servers = _config._load_mcp_config()
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
     wanted = {name for name, cfg in servers.items() if _enabled(cfg)}
     scope = _core._mcp_registry_scope()
     with _core._lock:
@@ -514,10 +634,18 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     for key in lazy:
         _forget_lazy_server(key)
     with _core._lock:
-        known = {_key_name(key) for key, owner in _core._server_scope_keys.items()
-                 if owner == scope and (key in _core._servers or key in _core._server_connecting)}
-        known |= {_key_name(key) for key in _core._lazy_server_configs}
-    added = sorted(wanted - known)
+        # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared
+        # one it adopted from another profile counts as live. Owner==scope alone misses the adopted
+        # case, so a multiplexed profile would re-enter discovery (cross-process lock) and log
+        # "added" every tick forever for a server that is already serving it.
+        known = {name for name in wanted
+                 if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                 or key in _core._server_connecting or key in _core._lazy_server_configs}
+    # A configured server that is not live is retried here — this is the only reviver for one whose
+    # FIRST connect failed (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
+    # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
+    # waiting when another process holds it) and logs a failed pass, every tick, for nothing.
+    added = sorted(name for name in wanted - known if not _connect_cooldown_active(name))
     if added:
         discover_mcp_tools()
     return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
@@ -553,7 +681,11 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
     ``lazy`` is a registered-but-not-spawned server (``lazy: true``, tools from the schema
     cache): its tools are callable and the process starts on first use. Reporting it as
     ``configured`` (never registered) misreads a working setup (#111717)."""
-    configured = _config._load_mcp_config() if configured is None else dict(configured)
+    if configured is None:
+        with _owner_secret_scope():
+            configured = _config._load_mcp_config()
+    else:
+        configured = dict(configured)
     if not configured:
         return []
     current_scope = _core._mcp_registry_scope()
@@ -599,12 +731,30 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
     return result
 
 
+def mcp_server_reconnecting(name: str) -> bool:
+    """True when this profile's connection to *name* connected once in this process and is now
+    between sessions (degraded/parked) after a transient failure: the run task is alive and
+    self-probing, so the outage is environmental and heals on its own. A server that never
+    connected here (wrong URL, other profile's credentials) is not reconnecting, and neither is one
+    parked on a PERMANENT error (revoked credentials, endpoint gone): its self-probe fails the same
+    way every time, so callers must treat it as blocked rather than wait forever. Reads cached
+    state; never connects."""
+    with _core._lock:
+        server = _core._servers.get(_resolve_server_key(name))
+    if server is None or server.session is not None or not server._ever_connected:
+        return False
+    if server._park_reason and "permanent" in server._park_reason:
+        return False
+    return server._task is None or not server._task.done()
+
+
 def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     """Connect each enabled server, list ``(tool_name, description)``, disconnect; nothing is
     registered and failed servers are omitted."""
     if not _core._ensure_mcp_sdk():
         return {}
-    enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if _enabled(v)}
+    with _owner_secret_scope():
+        enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if _enabled(v)}
     if not enabled:
         return {}
     _loop._ensure_mcp_loop()

@@ -77,6 +77,8 @@ export interface RpcCall {
   params: Record<string, unknown>
   /** Socket refcount after this request released its own lease. */
   refcountAfter: number
+  spawnPriority?: 'background' | 'foreground'
+  timeoutMs?: number
 }
 
 export interface GatewayOptions {
@@ -102,6 +104,10 @@ export interface GatewayOptions {
   onResumePoll?: (polls: number) => void
   /** Report the member inflight for the first N post-submit polls. */
   pollsBusy?: number
+  /** After a submit, every resume replays the gateway's RETAINED failed turn
+   *  (`inflight: { status: 'error', error }`, `running: false`) instead of a
+   *  reply — the snapshot `_fail_inflight_turn` leaves for reconnecting clients. */
+  retainedErrorAfterSubmit?: string
   turn?: TurnScript
 }
 
@@ -123,6 +129,8 @@ export interface ScriptedGateway {
   rpc: RpcCall[]
   /** Filter `rpc` by method. */
   rpcFor: (method: string) => RpcCall[]
+  /** Route retentions acquired for explicit multi-RPC member turns. */
+  retains: Array<{ spawnPriority?: 'background' | 'foreground' }>
   /** Live socket refcount — zero between turns, never zero during one. */
   refcount: () => number
   /** Sessions by stored id, so a test can pre-seed a finished transcript. */
@@ -146,6 +154,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
   const calls: PromptCall[] = []
   const attaches: AttachCall[] = []
   const rpc: RpcCall[] = []
+  const retains: Array<{ spawnPriority?: 'background' | 'foreground' }> = []
   const timeline: string[] = []
   const storage = new Map<string, unknown>()
   const uiMeta: Record<string, unknown> = {}
@@ -269,8 +278,13 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
       const clarify = options.clarifyUntil?.[session.profile]
       const approval = options.approvalUntil?.[session.profile]
 
+      const retained =
+        options.retainedErrorAfterSubmit && session.messages.at(-1)?.role === 'user'
+          ? { error: options.retainedErrorAfterSubmit, status: 'error', streaming: false }
+          : null
+
       return {
-        inflight: busy,
+        inflight: retained ?? busy,
         message_count: busy ? 0 : session.messages.length,
         messages: busy || params.omit_messages ? [] : [...session.messages],
         running: false,
@@ -357,7 +371,13 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     notify: vi.fn(),
     notifyError: vi.fn(),
     request: async (method: string, params: Record<string, unknown> = {}) => record(method, params),
-    requestProfile: async (_route: unknown, method: string, params: Record<string, unknown> = {}) => {
+    requestProfile: async (
+      _route: unknown,
+      method: string,
+      params: Record<string, unknown> = {},
+      timeoutMs?: number,
+      options?: { spawnPriority?: 'background' | 'foreground' }
+    ) => {
       refcount += 1
 
       try {
@@ -369,11 +389,12 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
           disposals += 1
         }
 
-        rpc.push({ method, params, refcountAfter: refcount })
+        rpc.push({ method, params, refcountAfter: refcount, spawnPriority: options?.spawnPriority, timeoutMs })
         timeline.push(method)
       }
     },
-    retainProfile: async () => {
+    retainProfile: async (_route: unknown, options?: { spawnPriority?: 'background' | 'foreground' }) => {
+      retains.push({ spawnPriority: options?.spawnPriority })
       timeline.push('retain')
       refcount += 1
       let released = false
@@ -408,6 +429,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     refcount: () => refcount,
     rpc,
     rpcFor: (method: string) => rpc.filter(entry => entry.method === method),
+    retains,
     sessions,
     storage,
     timeline,
@@ -433,7 +455,8 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
     host,
-    SkillsView: undefined,
+    CapabilitiesView: undefined,
+    MessageTextContent: undefined,
     Streamdown: undefined,
     queryClient: { invalidateQueries: () => undefined },
     useQuery: () => ({ data: [], isLoading: false }),

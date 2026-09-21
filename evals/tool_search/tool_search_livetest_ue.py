@@ -18,7 +18,7 @@ Env: TS_BENCH_REPS (default 2), TS_UE_MODES, TS_UE_SCALE, TS_UE_SUMMARY.
 """
 from __future__ import annotations
 
-import json, os, re, shutil, sys, time, traceback
+import json, os, re, shutil, sys, tempfile, time, traceback
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -29,7 +29,7 @@ sys.path.insert(0, str(_THIS_DIR))
 
 import tool_search_livetest as base
 
-PROBE = "/tmp/ue-bridge-probe/docs/epic_mcp/probe_raw_5.8.0_alltoolsets.json"
+PROBE = os.environ.get("UE_BRIDGE_PROBE", os.path.join(tempfile.gettempdir(), "ue-bridge-probe/docs/epic_mcp/probe_raw_5.8.0_alltoolsets.json"))
 N_REPS = int(os.environ.get("TS_BENCH_REPS", "2"))
 
 EDITOR_TOOLSETS = (
@@ -49,7 +49,7 @@ def _mock_result(tool_name: str) -> str:
         return json.dumps({"result": [{"name": "Cube_1", "path": "/Game/Level:PersistentLevel.Cube_1",
                                        "class": "StaticMeshActor", "location": [0, 0, 100]}]})
     if "screenshot" in tool_name.lower() or "capture" in tool_name.lower():
-        return json.dumps({"result": {"image_path": "/tmp/ue_viewport_0001.png", "width": 1280, "height": 720}})
+        return json.dumps({"result": {"image_path": "/nonexistent/ue_viewport_0001.png", "width": 1280, "height": 720}})
     return json.dumps({"result": {"ok": True, "op": short, "actor": "/Game/Level:PersistentLevel.Cube_1"}})
 
 

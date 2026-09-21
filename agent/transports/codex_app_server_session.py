@@ -19,7 +19,9 @@ from typing import Any, Callable, Optional
 
 from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
-from agent.transports.codex_app_server import CodexAppServerClient, CodexAppServerError
+from agent.transports.codex_app_server import (
+    CodexAppServerClient, CodexAppServerError, CodexAppServerTransportError,
+)
 from agent.transports.codex_event_projector import CodexEventProjector, ProjectionResult
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 
@@ -52,7 +54,7 @@ class TurnResult:
     token_usage_last: Optional[dict[str, Any]] = None
     model_context_window: Optional[int] = None
     compacted: bool = False
-    # Codex likely wedged (turn timeout, watchdog, token refresh failure): caller respawns next turn.
+    # Codex likely wedged (turn timeout, dead subprocess, token refresh failure): caller respawns next turn.
     should_retire: bool = False
 
 
@@ -99,32 +101,71 @@ def _notification_belongs_to_turn(note: dict, *, thread_id: Optional[str], turn_
     )
 
 
-def _coerce_turn_input_text(user_input: Any) -> str:
-    """Collapse rich content parts into app-server text (``turn/start`` is text-only; images become a marker)."""
+_TEXT_PART_TYPES = frozenset({"text", "input_text"})
+_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+_IMAGE_URL_SCHEMES = ("data:", "http://", "https://")
+
+
+def _image_part_to_turn_input(item: dict) -> Optional[dict]:
+    """Map one Hermes image part onto the app-server ``UserInput`` shape.
+
+    ``turn/start`` accepts ``{type: image, url}`` (data:/http URLs) and ``{type: localImage, path}``
+    natively (protocol schema ``v2/UserInput``), so nothing here is flattened into a text marker.
+    """
+    ref = item.get("image_url") or item.get("url") or item.get("path") or item.get("image")
+    if isinstance(ref, dict):
+        ref = ref.get("url") or ref.get("path")
+    ref = (ref or "").strip() if isinstance(ref, str) else ""
+    if not ref:
+        return None
+    if ref.startswith(_IMAGE_URL_SCHEMES):
+        return {"type": "image", "url": ref}
+    if ref.startswith("file://"):
+        ref = ref[len("file://"):]
+    return {"type": "localImage", "path": ref}
+
+
+def _build_turn_input(user_input: Any) -> tuple[list[dict], str]:
+    """Build the ``turn/start`` ``input`` list plus the text the wire will echo back.
+
+    Text parts stay text; image parts ride natively (#51053 — a text marker in their place left the
+    model blind to the attachment). Returns ``(input_items, submitted_text)``.
+    """
     if isinstance(user_input, str):
-        return user_input
+        return [{"type": "text", "text": user_input}], user_input
     if not isinstance(user_input, list):
-        return "" if user_input is None else str(user_input)
-    parts: list[str] = []
+        text = "" if user_input is None else str(user_input)
+        return [{"type": "text", "text": text}], text
+    texts: list[str] = []
+    images: list[dict] = []
     for item in user_input:
         if not isinstance(item, dict):
             if item.strip() if isinstance(item, str) else item is not None:
-                parts.append(str(item))
-        elif item.get("type") in {"text", "input_text"}:
-            parts.append(str(item.get("text") or item.get("content") or ""))
-        elif item.get("type") in {"image", "image_url", "input_image"}:
-            parts.append("[image attached]")
-    return "\n\n".join(p for p in parts if p).strip() or "What do you see in this image?"
+                texts.append(str(item))
+        elif item.get("type") in _TEXT_PART_TYPES:
+            texts.append(str(item.get("text") or item.get("content") or ""))
+        elif item.get("type") in _IMAGE_PART_TYPES:
+            mapped = _image_part_to_turn_input(item)
+            if mapped is not None:
+                images.append(mapped)
+    text = "\n\n".join(t for t in texts if t).strip()
+    if not text and images:
+        text = "What do you see in this image?"
+    items: list[dict] = [{"type": "text", "text": text}] if text or not images else []
+    return items + images, text
 
 
-# Substrings in codex stderr / JSON-RPC errors signalling expired OAuth creds.
-# Conservative: only redirect to `codex login` on a strong signal.
+# Strong credential-failure signals: trusted whether they appear in the primary
+# JSON-RPC error or in ambient app-server stderr.
 _OAUTH_REFRESH_FAILURE_HINTS = (
     "invalid_grant", "invalid grant", "refresh token", "refresh_token", "token refresh", "token_refresh",
-    "token has expired", "expired_token", "expired token", "not authenticated", "unauthenticated", "unauthorized",
-    "401 unauthorized", "re-authenticate", "reauthenticate", "please log in", "please login", "auth profile",
-    "no auth profile", "oauth",
+    "token has expired", "expired_token", "token_expired", "expired token", "not authenticated", "unauthenticated",
+    "re-authenticate", "reauthenticate", "please log in", "please login", "no auth profile",
 )
+# Generic auth words are authoritative only in the primary error. codex writes
+# independent ChatGPT plugin prewarm failures ("HTTP 401 Unauthorized") to stderr,
+# so there they must not mask an unrelated RPC error or timeout (#75167).
+_PRIMARY_ONLY_OAUTH_HINTS = ("401 unauthorized", "unauthorized", "oauth", "auth profile")
 
 _OAUTH_REAUTH_HINT = (
     "Codex authentication failed — your ChatGPT/Codex login looks expired or invalid. Run `codex login` to refresh, "
@@ -132,10 +173,13 @@ _OAUTH_REAUTH_HINT = (
 )
 
 
-def _classify_oauth_failure(*parts: str) -> Optional[str]:
-    """Re-auth hint if any part looks like a codex OAuth/token-refresh failure, else None."""
-    haystack = " ".join(p for p in parts if p).lower()
-    return _OAUTH_REAUTH_HINT if any(needle in haystack for needle in _OAUTH_REFRESH_FAILURE_HINTS) else None
+def _classify_oauth_failure(primary: str = "", *, stderr: str = "") -> Optional[str]:
+    """Re-auth hint when ``primary`` (the operation's own error) or ``stderr`` proves the codex login is broken."""
+    primary_l = (primary or "").lower()
+    stderr_l = (stderr or "").lower()
+    if any(n in primary_l for n in _OAUTH_REFRESH_FAILURE_HINTS + _PRIMARY_ONLY_OAUTH_HINTS):
+        return _OAUTH_REAUTH_HINT
+    return _OAUTH_REAUTH_HINT if any(n in stderr_l for n in _OAUTH_REFRESH_FAILURE_HINTS) else None
 
 
 @dataclass
@@ -144,6 +188,21 @@ class _ServerRequestRouting:
 
     auto_approve_exec: bool = False
     auto_approve_apply_patch: bool = False
+
+
+class CodexThreadResumeError(CodexAppServerError):
+    """``thread/resume`` did not hand back the stored thread (unknown/garbage id, rollout still locked by
+    a killed app-server, or codex answered with a different thread). The caller decides the policy."""
+
+    def __init__(self, thread_id: str, detail: str) -> None:
+        super().__init__(code=-32600, message=f"codex thread {thread_id[:8]} could not be resumed: {detail}")
+        self.thread_id = thread_id
+
+
+def _extract_thread_id(result: dict) -> Optional[str]:
+    """Different codex versions serialize the id under thread.id / sessionId / threadId."""
+    thread_obj = result.get("thread") or {}
+    return thread_obj.get("id") or thread_obj.get("sessionId") or result.get("sessionId") or result.get("threadId")
 
 
 class CodexAppServerSession:
@@ -156,10 +215,28 @@ class CodexAppServerSession:
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        model: Optional[str] = None, model_provider: Optional[str] = None,
+        developer_instructions: Optional[str] = None, resume_thread_id: Optional[str] = None,
+        history_seed: Optional[str] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
+        # A codex thread id persisted by an earlier process for this Hermes session: the first
+        # ``ensure_started`` issues ``thread/resume`` for it instead of ``thread/start``.
+        self._resume_thread_id = resume_thread_id
+        # ``thread/start.model`` / ``.modelProvider``: select a provider from codex's own
+        # ``[model_providers.<id>]`` table. Only the id travels; codex reads base_url/env_key itself.
+        self._model = (model or "").strip() or None
+        self._model_provider = (model_provider or "").strip() or None
+        # Hermes' composed system prompt (SOUL.md, memory, channel overrides). Sent ONCE per thread as
+        # ``thread/start.developerInstructions``: codex keeps its own base instructions (tool guidance) and
+        # inserts this as the first developer message of every model request. ``baseInstructions`` would
+        # REPLACE codex's base and ``instructions`` is accepted but ignored (verified against codex 0.147).
+        self._developer_instructions = developer_instructions
+        # Hermes' prior transcript, appended to developerInstructions ONLY when a thread is started from
+        # scratch: a resumed thread already holds the conversation (agent/codex_runtime_history_seed.py).
+        self._history_seed = history_seed
         self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
             os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
         )
@@ -179,25 +256,55 @@ class CodexAppServerSession:
         self._closed = False
 
     def ensure_started(self) -> str:
-        """Spawn, handshake, and ``thread/start``; idempotent, returns the codex thread id."""
+        """Spawn, handshake, and ``thread/start`` (or ``thread/resume`` for a stored id); idempotent, returns
+        the codex thread id. A failed resume raises :class:`CodexThreadResumeError` once; the next call
+        starts a fresh thread on the same handshaken client."""
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
             self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
-        self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
+            self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
-        result = self._client.request("thread/start", {"cwd": self._cwd}, timeout=15)
-        # Different codex versions serialize the id under thread.id / sessionId / threadId.
-        thread_obj = result.get("thread") or {}
-        thread_id = thread_obj.get("id") or thread_obj.get("sessionId") or result.get("sessionId") or result.get("threadId")
-        if not thread_id:
-            raise CodexAppServerError(
-                code=-32603, message=f"codex thread/start returned no thread id (payload keys: {sorted(result.keys())})",
-            )
+        # Hermes supplies the agent identity through its own system prompt; ``personality: "none"`` strips
+        # codex's built-in "# Personality" section from the base instructions so it cannot compete (#72104).
+        params: dict[str, Any] = {"cwd": self._cwd, "personality": "none"}
+        if self._developer_instructions and self._developer_instructions.strip():
+            params["developerInstructions"] = self._developer_instructions
+        if self._model_provider:
+            params["modelProvider"] = self._model_provider
+        if self._model:
+            params["model"] = self._model
+        if self._resume_thread_id:
+            wanted, self._resume_thread_id = self._resume_thread_id, None  # one attempt per stored id
+            thread_id = self._resume_thread(wanted, params)
+            logger.info("codex app-server thread resumed: id=%s cwd=%s", thread_id[:8], self._cwd)
+        else:
+            if self._history_seed:
+                params["developerInstructions"] = "\n\n".join(
+                    part for part in (params.get("developerInstructions"), self._history_seed) if part)
+            result = self._client.request("thread/start", params, timeout=15)
+            thread_id = _extract_thread_id(result)
+            if not thread_id:
+                raise CodexAppServerError(
+                    code=-32603, message=f"codex thread/start returned no thread id (payload keys: {sorted(result.keys())})",
+                )
+            logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
         self._thread_id = thread_id
-        logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
         return thread_id
+
+    def _resume_thread(self, wanted: str, params: dict[str, Any]) -> str:
+        """``thread/resume`` for the stored id; the same thread/start params ride along so the resumed thread
+        carries the CURRENT prompt composition and provider (accepted by the resume schema, codex 0.147)."""
+        assert self._client is not None
+        try:
+            result = self._client.request("thread/resume", {"threadId": wanted, **params}, timeout=15)
+        except CodexAppServerError as exc:
+            raise CodexThreadResumeError(wanted, exc.message) from exc
+        thread_id = _extract_thread_id(result)
+        if thread_id != wanted:
+            raise CodexThreadResumeError(wanted, f"app-server answered with thread {str(thread_id)[:8]!r}")
+        return wanted
 
     def close(self) -> None:
         if self._closed:
@@ -249,7 +356,8 @@ class CodexAppServerSession:
         return f"{base}\ncodex stderr (last {len(tail)} lines):\n{redact_sensitive_text(joined, force=True)}"
 
     def _stderr_blob(self, n: int) -> str:
-        return "\n".join(self._client.stderr_tail(n))
+        client = self._client
+        return "" if client is None else "\n".join(client.stderr_tail(n))
 
     @staticmethod
     def _retire(result: TurnResult, error: str) -> None:
@@ -259,7 +367,7 @@ class CodexAppServerSession:
 
     def _set_classified_error(self, result: TurnResult, prefix: str, classify_text: str, detail: Any) -> None:
         """OAuth failures -> re-auth hint AND retire (token store broken though JSON-RPC is fine); else stderr tail."""
-        hint = _classify_oauth_failure(classify_text, self._stderr_blob(40))
+        hint = _classify_oauth_failure(classify_text, stderr=self._stderr_blob(40))
         if hint is not None:
             self._retire(result, hint)
         else:
@@ -280,18 +388,29 @@ class CodexAppServerSession:
         """Issue ``method``; on failure fill ``result.error`` and return None. A timeout always retires."""
         try:
             return self._client.request(method, params, timeout=10)
+        except CodexAppServerTransportError as exc:
+            self._retire(result, self._format_error_with_stderr(f"{label} failed", exc))
         except CodexAppServerError as exc:
             self._set_classified_error(result, f"{label} failed", exc.message, exc)
         except TimeoutError as exc:
-            hint = _classify_oauth_failure(self._stderr_blob(40))
+            hint = _classify_oauth_failure(stderr=self._stderr_blob(40))
             self._retire(result, hint or self._format_error_with_stderr(f"{label} timed out", exc))
         return None
 
-    def _subprocess_died(self, result: TurnResult) -> bool:
-        """Bail out early (rather than waiting on the deadline) when codex exited."""
-        if self._client.is_alive():
+    def _subprocess_died(self, result: TurnResult, client: Optional[CodexAppServerClient]) -> bool:
+        """Bail out early (rather than waiting on the deadline) when codex exited or close() ran.
+
+        ``client`` is the loop's snapshot: close() on another thread nulls ``self._client``
+        mid-turn (session expiry), which must end the turn, not raise AttributeError. A
+        ``None`` snapshot means close() already landed before the loop started.
+        """
+        if client is None or self._closed or self._client is not client:
+            result.interrupted = True
+            self._retire(result, "codex app-server session closed while the turn was in flight")
+            return True
+        if client.is_alive():
             return False
-        hint = _classify_oauth_failure(self._stderr_blob(60))
+        hint = _classify_oauth_failure(stderr=self._stderr_blob(60))
         self._retire(result, hint or self._format_error_with_stderr("codex app-server subprocess exited unexpectedly", tail_lines=20))
         return True
 
@@ -330,12 +449,11 @@ class CodexAppServerSession:
     ) -> TurnResult:
         """Send a user message and block until turn/completed, bridging approvals and projecting items.
 
-        post_tool_quiet_timeout: silence this long after a tool completes fast-fails and retires.
-
         post_tool_quiet_timeout: if codex emits a tool completion and then goes quiet for this many seconds
-        without emitting another item or `turn/completed`, fast-fail and mark the session for retirement.
-        Mirrors openclaw beta.8's post-tool completion watchdog (#81697) so a wedged codex doesn't burn the
-        full turn deadline.
+        without emitting another item or `turn/completed`, log a warning (once per tool result) and keep
+        waiting. Wire silence is not evidence of a wedged process: after a large tool output codex can
+        reason for minutes without emitting a single event while the app-server still answers RPCs
+        (#112928). Only subprocess death or ``turn_timeout`` retires the session.
         """
         result = TurnResult()
         if self._start_for(result):
@@ -344,10 +462,10 @@ class CodexAppServerSession:
             if self._interrupt_event.is_set():
                 result.interrupted = True
             else:
-                result.submitted_user_text = _coerce_turn_input_text(user_input)
+                input_items, result.submitted_user_text = _build_turn_input(user_input)
                 ts = self._request_for(
                     result, "turn/start",
-                    {"threadId": self._thread_id, "input": [{"type": "text", "text": result.submitted_user_text}]},
+                    {"threadId": self._thread_id, "input": input_items},
                     "turn/start",
                 )
                 if ts is not None:
@@ -359,21 +477,26 @@ class CodexAppServerSession:
         self, result: TurnResult, ts: dict, turn_timeout: float, notification_poll_timeout: float,
         post_tool_quiet_timeout: float,
     ) -> None:
-        """Drive an accepted ``turn/start`` to completion: watchdog, approvals, projection."""
+        """Drive an accepted ``turn/start`` to completion: quiet warning, approvals, projection."""
         projector = CodexEventProjector()
+        client = self._client
         result.turn_id = (ts.get("turn") or {}).get("id")
         with self._active_turn_lock:
             self._active_turn_id = result.turn_id
-        # Post-tool watchdog: armed on each tool completion, cleared by any other activity.
+        # Post-tool quiet timer: armed on each tool completion, cleared by any other activity.
+        # Observability only — it never interrupts or retires (see run_turn docstring).
         last_tool_completion_at: Optional[float] = None
 
-        def watchdog_tripped() -> bool:
+        def warn_if_quiet() -> bool:
+            nonlocal last_tool_completion_at
             if last_tool_completion_at is None or (time.monotonic() - last_tool_completion_at) <= post_tool_quiet_timeout:
                 return False
-            self._issue_interrupt(result.turn_id)
-            result.interrupted = True
-            self._retire(result, f"codex went silent for {post_tool_quiet_timeout:.0f}s after a tool result; retiring app-server session.")
-            return True
+            last_tool_completion_at = None
+            logger.warning(
+                "codex has emitted no events for %.0fs after a tool result; still waiting (turn deadline %.0fs)",
+                post_tool_quiet_timeout, turn_timeout,
+            )
+            return False
 
         def on_server_request(sreq: dict) -> bool:
             nonlocal last_tool_completion_at
@@ -381,7 +504,7 @@ class CodexAppServerSession:
             # current for the approval decision and display events still reach on_event.
             turn_complete = False
             for _ in range(8):
-                pending = self._client.take_notification(timeout=0)
+                pending = client.take_notification(timeout=0)
                 if pending is None:
                     break
                 if not _notification_belongs_to_turn(pending, thread_id=self._thread_id, turn_id=result.turn_id):
@@ -392,7 +515,7 @@ class CodexAppServerSession:
                     last_tool_completion_at = time.monotonic()
                 turn_complete = turn_complete or aborted
             self._handle_server_request(sreq)
-            # An approval round-trip is live signal — don't let it trip the watchdog.
+            # An approval round-trip is live signal — don't let it trip the quiet warning.
             last_tool_completion_at = None
             return turn_complete
 
@@ -414,7 +537,7 @@ class CodexAppServerSession:
 
         self._drive_turn(
             result, turn_timeout=turn_timeout, notification_poll_timeout=notification_poll_timeout,
-            timeout_label="turn", before_poll=watchdog_tripped, on_server_request=on_server_request,
+            timeout_label="turn", before_poll=warn_if_quiet, on_server_request=on_server_request,
             on_note=on_note, accept_final_text_at_deadline=True,
         )
         with self._active_turn_lock:
@@ -429,7 +552,7 @@ class CodexAppServerSession:
     ) -> None:
         """Shared poll loop for run_turn / compact_thread until turn/completed or deadline.
 
-        Per iteration: interrupt -> subprocess death -> ``before_poll`` (watchdog) ->
+        Per iteration: interrupt -> subprocess death -> ``before_poll`` (quiet warning) ->
         server requests (answered first so codex isn't blocked) -> one notification,
         filtered by ``pre_scope_filter`` then turn scope, handed to ``on_note``. Hooks
         return True to complete the turn. Deadline without completion interrupts and
@@ -437,20 +560,25 @@ class CodexAppServerSession:
         """
         deadline = time.monotonic() + turn_timeout
         turn_complete = False
+        client = self._client
         while time.monotonic() < deadline and not turn_complete:
             if self._interrupt_event.is_set():
                 self._issue_interrupt(result.turn_id)
                 result.interrupted = True
                 break
-            if self._subprocess_died(result):
+            if self._subprocess_died(result, client) or client is None:  # `is None` narrows only; already retired
                 break
             if before_poll is not None and before_poll():
                 break
-            sreq = self._client.take_server_request(timeout=0)
+            sreq = client.take_server_request(timeout=0)
             if sreq is not None:
-                turn_complete = on_server_request(sreq)
+                try:
+                    turn_complete = on_server_request(sreq)
+                except CodexAppServerTransportError as exc:
+                    self._retire(result, self._format_error_with_stderr("codex app-server request response failed", exc))
+                    break
                 continue
-            note = self._client.take_notification(timeout=notification_poll_timeout)
+            note = client.take_notification(timeout=notification_poll_timeout)
             if note is None:
                 continue
             method = note.get("method", "")
@@ -539,10 +667,11 @@ class CodexAppServerSession:
         return result
 
     def _issue_interrupt(self, turn_id: Optional[str]) -> None:
-        if self._client is None or self._thread_id is None or turn_id is None:
+        client = self._client
+        if client is None or self._thread_id is None or turn_id is None:
             return
         try:
-            self._client.request("turn/interrupt", {"threadId": self._thread_id, "turnId": turn_id}, timeout=5)
+            client.request("turn/interrupt", {"threadId": self._thread_id, "turnId": turn_id}, timeout=5)
         except CodexAppServerError as exc:
             # "no active turn to interrupt" is fine — already done.
             logger.debug("turn/interrupt non-fatal: %s", exc)
@@ -555,7 +684,8 @@ class CodexAppServerSession:
         Permission escalations are always declined (the user chose their profile in
         ~/.codex/config.toml); unknown methods get a JSON-RPC error so codex doesn't hang.
         """
-        if self._client is None:
+        client = self._client
+        if client is None:
             return
         method = req.get("method", "")
         rid = req.get("id")
@@ -563,9 +693,9 @@ class CodexAppServerSession:
         handler = self._SERVER_REQUEST_HANDLERS.get(method)
         if handler is None:
             logger.warning("Unknown codex server request: %s", method)
-            self._client.respond_error(rid, code=-32601, message=f"Unsupported method: {method}")
+            client.respond_error(rid, code=-32601, message=f"Unsupported method: {method}")
             return
-        self._client.respond(rid, handler(self, params))
+        client.respond(rid, handler(self, params))
 
     def _respond_elicitation(self, params: dict) -> dict:
         """MCP elicitation: auto-accept our own hermes-tools server (opted in by enabling the runtime;

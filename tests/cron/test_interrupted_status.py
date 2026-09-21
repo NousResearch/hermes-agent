@@ -57,8 +57,9 @@ def test_interrupted_run_reads_as_interrupted_not_error(tmp_path):
     home.mkdir()
     with jobs.use_cron_store(home):
         job_id, owner = _claimed_job(jobs, home, streak=2)
-        sched._running_job_ids.add(job_id)
-        sched._running_fire_owners[job_id] = {object(): (owner, home)}
+        inflight_key = sched._inflight_key(job_id, home)
+        sched._running_job_ids.add(inflight_key)
+        sched._running_fire_owners[inflight_key] = {object(): (owner, home)}
 
         marked = sched.mark_running_jobs_interrupted(SHUTDOWN_REASON)
         record = jobs.get_job(job_id)

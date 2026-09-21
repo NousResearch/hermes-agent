@@ -198,14 +198,11 @@ const TranscriptPane = memo(function TranscriptPane({
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
-              {ui.theme.brand.messageStyle !== 'cards' &&
-                row.msg.role === 'user' &&
-                firstUserIdx >= 0 &&
-                row.index > firstUserIdx && (
-                  <Box marginTop={1}>
-                    <Text color={ui.theme.color.border}>───</Text>
-                  </Box>
-                )}
+              {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
+                <Box marginTop={1}>
+                  <Text color={ui.theme.color.border}>───</Text>
+                </Box>
+              )}
 
               {row.msg.kind === 'intro' ? (
                 <Box flexDirection="column" paddingTop={1}>

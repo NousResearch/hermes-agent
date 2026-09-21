@@ -385,8 +385,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
-  const conversationCards = ui.theme.brand.messageStyle === 'cards'
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${conversationCards ? 'cards' : 'plain'}:${detailsLayoutKey}`
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
   // Build a render-local snapshot. Registering/pruning the shared cache is a
   // post-commit transition below, so an abandoned concurrent render cannot
@@ -412,7 +411,6 @@ export function useMainApp(gw: GatewayClient) {
     (index: number) =>
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
-        conversationCards,
         details: detailsVisible,
         leadGap: hasLeadGap(
           prevRenderedMsg(i => virtualRows[i]?.msg, index, {
@@ -430,7 +428,6 @@ export function useMainApp(gw: GatewayClient) {
       }),
     [
       cols,
-      conversationCards,
       detailsVisible,
       firstUserIdx,
       historyThinkingExpanded,

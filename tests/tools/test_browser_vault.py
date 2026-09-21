@@ -424,8 +424,12 @@ class TestBrowserVaultTools:
             def get_meta(self, handle):
                 return meta if handle == meta.id else None
 
-            def resolve_password(self, handle):
-                return "s3cret-pw"
+            def resolve_login(self, handle):
+                return {
+                    "identifier": meta.identifier,
+                    "identifier_type": meta.identifier_type,
+                    "password": "s3cret-pw",
+                }
 
         controls = [
             {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},

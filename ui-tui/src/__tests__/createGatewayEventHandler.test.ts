@@ -1818,7 +1818,7 @@ describe('createGatewayEventHandler', () => {
     expect(line).not.toContain('turn_author')
   })
 
-   it('opens the secure login capture for vault.save_login instead of rejecting the request', () => {
+  it('opens the secure login capture for vault.save_login instead of rejecting the request', () => {
     const { handled, respond } = serverRequest(
       'vault.save_login',
       { origin: 'https://example.test', site: 'Example' },
@@ -1881,8 +1881,8 @@ describe('createGatewayEventHandler', () => {
     serverRequest('vault.save_login', { origin: 'https://example.test', site: 'Example' }, 'vault-save-2')
     onEvent({ payload: { id: 'vault-save-2', method: 'vault.save_login', reason: 'timeout' }, type: 'request.cancel' } as any)
 
-     expect(getOverlayState().vaultSaveLogin).toBeNull()
-   })
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+  })
 
   // ── Batch (multi-question) clarify ─────────────────────────────────
 

@@ -67,6 +67,18 @@ def _new_runtime_ids(params: dict) -> tuple[str, str]:
     return uuid.uuid4().hex[:8], _resolve_session_source(_str_param(params, "source") or None)
 
 
+def _notify_session_open(session_id: object, platform: object = "tui") -> bool:
+    """Public plugin lifecycle bridge used by session RPC handlers (REM-304).
+
+    Fires ``on_session_open`` once per active addressable-session lifecycle,
+    BEFORE the deferred agent build / history hydration for the session.
+    Idempotent per ``(platform, session_id)`` until a finalize/reset boundary
+    releases the id (see ``hermes_cli.plugins.notify_session_open``)."""
+    from hermes_cli.plugins import notify_session_open
+
+    return notify_session_open(session_id, platform)
+
+
 def _profile_build_scope(profile_home):
     """Bind HERMES_HOME + secret + terminal scope for an agent build: the same composition a turn
     binds (``_session_profile_runtime_scope``). Home alone leaves ``get_secret()`` on the LAUNCH
@@ -398,6 +410,10 @@ def _(rid, params: dict) -> dict:
         # ── END KENSEI CUSTOM ──
     elif history:
         _seed_row(_sessions[sid])
+    # Host-open lifecycle (REM-304): the session is live and addressable; fire
+    # on_session_open BEFORE the deferred agent build so plugins can register
+    # a peer before the first model turn.
+    _notify_session_open(key, "tui")
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
@@ -898,6 +914,10 @@ def _(rid, params: dict) -> dict:
         if (resp := _resume_guard(ctx)) is not None:
             return resp
         ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
+        # Host-open lifecycle (REM-304): fire on_session_open BEFORE any build /
+        # hydration path (deferred, cold, eager) so plugins observe the session
+        # before its first turn. Idempotent — a re-resumed live session no-ops.
+        _notify_session_open(ctx.target, "tui")
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)

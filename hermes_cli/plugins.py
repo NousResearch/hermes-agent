@@ -24,6 +24,7 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
+from collections import OrderedDict
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
@@ -2319,7 +2320,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
 # ── KENSEI CUSTOM — on_session_open lifecycle hook (ported) ──
 _SESSION_OPEN_LIMIT = 4096
 _session_open_lock = threading.RLock()
-_session_open_seen: Dict[Tuple[str, str], None] = {}
+_session_open_seen: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
 
 
 def notify_session_open(session_id: object, platform: object) -> bool:

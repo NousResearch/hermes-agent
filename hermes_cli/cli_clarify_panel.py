@@ -23,7 +23,7 @@ def render_batch(cli, state):
     entry = questions[active]
     answers = state['answers']
     reviewing = state.get('reviewing', False)
-    width = _panel_box_width('Hermes needs your input', [entry['question']])
+    width = _panel_box_width('Hermes needs your input', [entry['question']], max_width=100)
     inner = max(1, width - 2)
     available = max(5, _term_rows() - _PANEL_RESERVED_BELOW)
     panel = _Panel('class:clarify-border', width, 'Hermes needs your input', 'class:clarify-title')
@@ -46,7 +46,7 @@ def render_batch(cli, state):
         multi = state.get('multi_select')
         freetext = cli._clarify_freetext
         # Reserve a visible choice even at small heights; only the active body is expanded.
-        question_budget = max(1, min(3, budget - min(len(choices) + 1, 3)))
+        question_budget = max(1, min(8, budget - min(len(choices) + 1, 3)))
         question_rows = _wrap_panel_text(entry['question'], inner)
         if len(question_rows) > question_budget:
             question_rows = question_rows[:question_budget]

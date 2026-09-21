@@ -720,9 +720,12 @@ class CLITuiMixin:
         choice_labels = [_label(i, c) for i, c in enumerate(choices)]
         other_label = _label(other_idx, "Other (type below)" if freetext else "Other (type your answer)")
 
-        preview_lines = wrap(question, 60)
-        preview_lines.extend(w for _i, w in _wrap_rows(wrap, choice_labels + [other_label], 60, "    "))
-        box_width = _panel_box_width(title, preview_lines)
+        # On roomy terminals widen the panel so long questions wrap to fewer
+        # rows and are less likely to hit the truncation budget below.
+        preview_width = max(60, min(100, shutil.get_terminal_size((100, 20)).columns - 8))
+        preview_lines = wrap(question, preview_width)
+        preview_lines.extend(w for _i, w in _wrap_rows(wrap, choice_labels + [other_label], preview_width, "    "))
+        box_width = _panel_box_width(title, preview_lines, max_width=preview_width + 4)
         inner_text_width = max(8, box_width - 2)
 
         # Mandatory rows: choices + Other (or the freetext guidance line when there are no choices).

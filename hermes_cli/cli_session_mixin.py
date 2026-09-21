@@ -431,9 +431,11 @@ class CLISessionMixin:
         flush_tool_summary()
         _cli_visible_print()
 
-    def _notify_session_boundary(self, event_type: str) -> None:
+    def _notify_session_boundary(self, event_type: str, old_session_id: Optional[str] = None) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize / on_session_reset).
-        Non-blocking; errors swallowed. Safe from shutdown, /new, /reset."""
+        Non-blocking; errors swallowed. Safe from shutdown, /new, /reset.
+        ``old_session_id`` threads through on_session_reset so plugins can finalise
+        exactly the rotated session (REM-307)."""
         with contextlib.suppress(Exception):
             from hermes_cli.lifecycle import finalize_session, invoke_hook
 
@@ -444,6 +446,7 @@ class CLISessionMixin:
             if event_type == "on_session_finalize":
                 finalize_session(**context)
             else:
+                context["old_session_id"] = old_session_id
                 invoke_hook(event_type, **context)
 
     def _discard_session_if_empty(self, session_id: Optional[str]) -> bool:

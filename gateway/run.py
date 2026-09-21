@@ -2257,6 +2257,26 @@ def _best_effort(fn: Callable[[], Any], debug_msg: Optional[str] = None) -> Any:
         return None
 
 
+def _construct_agent_with_session_open(
+    constructor,
+    *,
+    session_id: object,
+    platform: object,
+):
+    """Emit the addressable-session boundary before agent construction.
+
+    Host-open lifecycle seam (REM-304/306): ``on_session_open`` fires once per
+    active ``(platform, session_id)`` BEFORE the constructor runs, so plugins
+    can register a peer before the agent's first model turn. Idempotent —
+    repeated opens for a live session no-op (see
+    ``hermes_cli.plugins.notify_session_open``).
+    """
+    from hermes_cli.plugins import notify_session_open
+
+    notify_session_open(session_id, platform)
+    return constructor()
+
+
 # Shutdown quiesce ceiling for the gateway-owned thread pool. Drain already waited for the agents; what
 # remains is short blocking work; anything slower is a stuck worker not worth waiting on (leash-clamped).
 _EXECUTOR_QUIESCE_TIMEOUT = 2.0

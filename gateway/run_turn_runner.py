@@ -1101,21 +1101,19 @@ class TurnRunner:
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
                            reasoning_config, pr, skip_context_files):
-        from gateway.run import _checkpoint_agent_kwargs
+        from gateway.run import _checkpoint_agent_kwargs, _construct_agent_with_session_open
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
-        # KENSEI CUSTOM — addressable-session boundary before first model turn
-        try:
-            from hermes_cli.plugins import notify_session_open
-            notify_session_open(ctx.session_key, src)
-        except Exception:
-            pass
-        return ctx.AIAgent(
-            model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
-            max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
-            enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
-            ephemeral_system_prompt=combined_ephemeral or None,
+        # Host-open lifecycle (REM-304/306): the addressable-session boundary
+        # fires through the shared gateway seam BEFORE the constructor, so
+        # plugins can register a peer before the first model turn.
+        return _construct_agent_with_session_open(
+            lambda: ctx.AIAgent(
+                model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
+                max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
+                enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
+                ephemeral_system_prompt=combined_ephemeral or None,
             prefill_messages=runner._prefill_messages or None,
             reasoning_config=reasoning_config, service_tier=runner._service_tier,
             request_overrides=turn_route.get("request_overrides"),
@@ -1133,6 +1131,9 @@ class TurnRunner:
             skip_context_files=skip_context_files,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
+            ),
+            session_id=ctx.session_id,
+            platform=platform_key,
         )
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):

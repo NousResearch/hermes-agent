@@ -29,7 +29,8 @@ import pytest
 
 # Optional dep: CI installs [all] extras, but local envs may lack aiohttp —
 # skip cleanly instead of crashing collection.
-aiohttp = pytest.importorskip("aiohttp")
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
 
 from plugins.platforms.mattermost.adapter import MattermostAdapter
 

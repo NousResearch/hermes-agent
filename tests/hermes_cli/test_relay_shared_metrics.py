@@ -165,7 +165,14 @@ def _record_client_active_in_process(
 ) -> None:
     store = SharedMetricsStore(Path(database_path), Path(outbox_directory))
     start_barrier.wait()
-    store.record_client_active(_resource())
+    try:
+        store.record_client_active(_resource())
+    except sqlite3.OperationalError as exc:
+        # The subscriber treats a busy database as best-effort telemetry. One
+        # concurrent process must still commit the install record; the parent
+        # asserts that invariant after both workers exit.
+        if exc.sqlite_errorcode != sqlite3.SQLITE_BUSY:
+            raise
 
 
 def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_path):
@@ -699,6 +706,7 @@ def test_tool_outcome_is_bounded(status, expected):
         ("deny", "denied"),
         ("smart_deny", "denied"),
         ("timeout", "timed_out"),
+        ("cancelled", "cancelled"),
         (None, "unknown"),
     ],
 )
@@ -1377,10 +1385,22 @@ def test_concurrent_package_builders_commit_one_delta(tmp_path):
         ready.wait(timeout=5)
         return worker_store.create_and_export_package()
 
+    busy_calls = 0
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(export) for _ in range(2)]
         for future in futures:
-            future.result()
+            try:
+                future.result()
+            except sqlite3.OperationalError as exc:
+                assert exc.sqlite_errorcode == sqlite3.SQLITE_BUSY
+                busy_calls += 1
+
+    # Interactive package creation can fail fast on a contended write. At
+    # least one racing builder must commit; retry after the lock is released
+    # if its peer reported the expected SQLITE_BUSY result.
+    assert busy_calls < len(futures)
+    if busy_calls:
+        store.create_and_export_package()
 
     with sqlite3.connect(database_path) as connection:
         [outbox_count] = connection.execute(

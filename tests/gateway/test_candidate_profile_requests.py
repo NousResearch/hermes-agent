@@ -540,7 +540,9 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     for profile in ("task-orchestrator", "market-data-authority-auditor"):
-        (home / "profiles" / profile).mkdir(parents=True)
+        profile_home = home / "profiles" / profile
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text("model:\n  default: test-model\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()

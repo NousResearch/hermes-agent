@@ -183,6 +183,17 @@ class TestApplyStoredSessionRuntime:
         assert choice.api_key is self._AMBIENT_KEY
         assert choice.api_mode is None
 
+    def test_opencode_row_rederives_wire_from_stored_model(self, tmp_path):
+        """A row persisted while an opencode-go session ran an anthropic_messages model (MiniMax) must
+        not pin that wire onto a chat_completions model on ``--resume``: api_mode and the relay URL
+        follow the stored model (#96066), the oneshot twin of ``_restore_session_model``."""
+        meta = self._stored_db(tmp_path, model="deepseek-v4-flash-vision-exp", route={
+            "provider": "opencode-go", "base_url": "https://opencode.ai/zen/go", "api_mode": "anthropic_messages"})
+        choice = _apply_stored_session_runtime(
+            _ModelChoice("ambient-model", "openrouter", api_key=self._AMBIENT_KEY), meta, explicit_model=False)
+        assert (choice.model, choice.provider) == ("deepseek-v4-flash-vision-exp", "opencode-go")
+        assert (choice.api_mode, choice.base_url) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+
 class TestRunAgentResumeRuntime:
     """End-to-end wiring: ``_run_agent`` must hand AIAgent the session's stored runtime
     and a reopened session row (both regressions from the review on #105957)."""

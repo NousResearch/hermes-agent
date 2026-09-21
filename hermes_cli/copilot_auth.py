@@ -280,12 +280,9 @@ def _read_jwt_store(path: Path) -> Optional[dict]:
 
 
 def _write_jwt_store(path: Path, store: dict) -> None:
-    """Atomically write the JWT store (tmp + os.replace), best-effort 0o600."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(store), encoding="utf-8")
-    with contextlib.suppress(Exception):
-        os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    """Atomically write the JWT store with 0o600 applied when its temp is created."""
+    from utils import atomic_json_write
+    atomic_json_write(path, store, mode=0o600)
 
 
 def _jwt_disk_path() -> Optional[Path]:

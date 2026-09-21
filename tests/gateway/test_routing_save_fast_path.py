@@ -34,7 +34,7 @@ def _make_store(tmp_path, monkeypatch, **config_kwargs) -> SessionStore:
     # the same file, matching the store this harness inspects.
     import hermes_constants
 
-    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     return SessionStore(
         sessions_dir=tmp_path / "sessions",
         config=GatewayConfig(**config_kwargs),
@@ -207,7 +207,7 @@ class TestPeerRecordConsistency:
         monkeypatch.setattr(
             store,
             "_record_gateway_session_peer",
-            lambda sid, key, origin, display_name=None: recorded.append(
+            lambda sid, key, origin, display_name=None, **_kw: recorded.append(
                 (sid, key, display_name)
             ),
         )

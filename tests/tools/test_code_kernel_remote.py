@@ -11,6 +11,7 @@ state_lost/state_reset reporting, fail-open, and owner isolation.
 import json
 import os
 import sys
+import time
 import unittest
 from unittest.mock import patch
 

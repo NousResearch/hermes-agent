@@ -46,7 +46,8 @@ def oauth_fixture(mode="success"):
                 return self.reply(401, {}, {"WWW-Authenticate": f'Bearer resource_metadata="{base}/prm"'})
             if self.path == "/prm" or "oauth-protected-resource" in self.path:
                 return self.reply(200, {"resource": base + ("/wrong" if mode == "resource" else "/mcp"),
-                                        "authorization_servers": [base]})
+                                        "authorization_servers": ([base + "/wrong", base]
+                                                                  if mode == "multi_issuer" else [base])})
             if "oauth-authorization-server" in self.path:
                 metadata = {"issuer": base + ("/wrong" if mode == "issuer" else ""),
                             "authorization_endpoint": base + "/authorize", "token_endpoint": base + "/token",

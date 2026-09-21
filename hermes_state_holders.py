@@ -21,6 +21,12 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
     psutil = None  # type: ignore[assignment]
 
 
+def read_only_db_uri(db_path) -> str:
+    """``file:`` URI for a ``mode=ro`` open. ``as_uri()`` percent-encodes ``?``/``#`` in the home
+    path; a raw ``f"file:{path}?mode=ro"`` truncates there and opens the wrong (empty) database."""
+    return Path(db_path).resolve().as_uri() + "?mode=ro"
+
+
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -75,6 +81,18 @@ def _read_proc_argv(pid: int) -> Optional[List[str]]:
         return argv or None
     except OSError:
         return None
+
+
+def describe_holder_pid(pid: int) -> str:
+    """``PID 123 (hermes gateway run)`` for operator-facing holder lists; /proc argv first, psutil elsewhere."""
+    argv = _read_proc_argv(pid)
+    if argv is None and psutil is not None:
+        try:
+            argv = psutil.Process(pid).cmdline() or None
+        except Exception:
+            argv = None
+    who = " ".join(" ".join([os.path.basename(argv[0]), *argv[1:]]).split())[:80] if argv else "command line unavailable"
+    return f"PID {pid} ({who})"
 
 
 def _looks_like_python_executable(program: str) -> bool:
@@ -217,7 +235,9 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     if _IS_WINDOWS:
         return []
 
-    db_path_str = os.path.abspath(os.fspath(db_path))
+    # realpath, not abspath: psutil/libproc report the kernel-resolved pathname, so a symlinked
+    # HERMES_HOME would otherwise make every holder invisible and let maintenance proceed.
+    db_path_str = os.path.realpath(os.fspath(db_path))
     watched = {
         canonical_sqlite_path(db_path_str),
         canonical_sqlite_path(db_path_str + "-wal"),
@@ -332,7 +352,7 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                 continue
             for opened in info.get("open_files") or ():
                 path = getattr(opened, "path", "")
-                if path and canonical_sqlite_path(path) in watched:
+                if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
                     holders.append((pid, path))
     except Exception as exc:
         logger.warning(
@@ -344,20 +364,56 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     return holders
 
 
+def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str] = "--force") -> Optional[str]:
+    """Operator-facing refusal for structural maintenance (VACUUM, index rebuild, bulk delete) while another
+    process holds ``db_path`` or a WAL sidecar; ``None`` when the store is provably quiet.
+
+    Running ``hermes sessions optimize-storage`` underneath a fleet of live gateways put every agent into
+    the retired-WAL refusal until all writers were stopped (#110054). Same fail-closed scan doctor and
+    repair use: an incomplete scan refuses too, it never reads as an all-clear.
+    """
+    holders = foreign_state_db_holders(db_path)
+    if not holders:
+        return None
+    from hermes_constants import profile_cli_selector
+    from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
+
+    by_pid: dict[int, Set[str]] = {}
+    unknown: List[str] = []
+    for pid, target in holders:
+        if pid <= 0 or target.startswith("uninspectable"):
+            unknown.append(target)
+        else:
+            by_pid.setdefault(pid, set()).add(Path(target.removesuffix(" (deleted)")).name)
+    lines = [f"Refusing `hermes sessions {command}`: another process is using {db_path}."]
+    lines += [f"  {describe_holder_pid(pid)}: {', '.join(sorted(by_pid[pid]))}" for pid in sorted(by_pid)]
+    if unknown:
+        lines.append(f"  cannot prove the database is quiet (holder scan incomplete: {unknown[0][:120]})")
+    profile_arg = profile_cli_selector()
+    lines += [
+        "Rewriting the database under a live writer is how every agent ends up refusing turns with the "
+        "retired state.db-wal error. Nothing is lost.",
+        f"Stop them first (`hermes {profile_arg}gateway stop`, quit the Desktop app, pause cron), then re-run.",
+    ]
+    if force_hint:
+        lines.append(f"Override with {force_hint} if you accept the risk.")
+    lines.append(f"Recovery guide: {STORAGE_RECOVERY_DOCS_URL}")
+    return "\n".join(lines)
+
+
 def live_writer_holds_db(
     db_path: Path,
     *,
     connect_repair_durable: Callable[..., sqlite3.Connection],
 ) -> bool:
-    """Return whether repair lacks proven exclusive ownership of ``db_path``."""
-    foreign_holders = foreign_state_db_holders(db_path)
-    if any(
-        pid < 0
-        or path.startswith("uninspectable holder:")
-        or path.startswith("uninspectable descriptor:")
-        or path.endswith(" (deleted)")
-        for pid, path in foreign_holders
-    ):
+    """Return whether repair lacks proven exclusive ownership of ``db_path``.
+
+    ANY foreign process holding the DB or a sidecar is a live holder (#103339): the lock probe below
+    cannot see a DELETE-mode reader (SHARED only) and cannot run at all on a malformed file, and those
+    are exactly the states repair/VACUUM/checkpoint get invoked in. The holder scan is the authority and
+    fails closed on its own failures (unknown/uninspectable sentinels); the probe only adds a positive
+    lock signal on top."""
+    if foreign_state_db_holders(db_path):
         return True
 
     probe = None
@@ -371,8 +427,7 @@ def live_writer_holds_db(
         lowered = str(exc).lower()
         return "locked" in lowered or "busy" in lowered
     except sqlite3.DatabaseError:
-        return False
-    except Exception:
+        # Malformed/unreadable with no holder on the scan: nobody else has it open, so repair may run.
         return False
     finally:
         if probe is not None:

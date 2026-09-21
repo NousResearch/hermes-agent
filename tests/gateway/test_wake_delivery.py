@@ -12,6 +12,9 @@ import asyncio
 
 import pytest
 
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.wake import deliver_wake, adapter_supports_push

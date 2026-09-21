@@ -7,6 +7,7 @@ monkeypatch points authoritative.
 
 import json
 import logging
+import sys
 from typing import Any, List, Optional
 
 logger = logging.getLogger("tools.terminal_tool")
@@ -19,7 +20,7 @@ _SILENT_BACKGROUND_HINT = (
     'will not be told when it exits. If this is a bounded task (test suite, build, CI poller, '
     'deploy, anything with a defined end), you almost certainly wanted notify_on_complete=true '
     'so the system pings you on exit. Re-launch with notify_on_complete=true, or call '
-    "process_manage(action='poll') / process_manage(action='wait') yourself to learn the outcome. Only "
+    "process(action='poll') / process(action='wait') yourself to learn the outcome. Only "
     'ignore this hint for genuine long-lived processes that never exit (servers, watchers, '
     'daemons).'
 )
@@ -41,7 +42,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     '"$2==\\"pending\\""`) for sharded matrices. Load '
     "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
-    "each tick to a known file (`tee -a /tmp/ci.log`) and rely on `process_manage(action='log')` to "
+    "each tick to a known file (`tee -a $TMPDIR/ci.log`) and rely on `process(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '
     'loops.'
 )
@@ -50,7 +51,7 @@ _ASYNC_UNSUPPORTED_NOTE = (
     'notify_on_complete / watch_patterns are not available in this session — it cannot receive '
     'an async completion after the turn ends (a one-shot runner such as `hermes -z`, a cron '
     'job, a Kanban worker, or a stateless HTTP endpoint). The process is running in the '
-    "background; retrieve its result with process_manage(action='poll') or process_manage(action='wait')."
+    "background; retrieve its result with process(action='poll') or process(action='wait')."
 )
 
 # proc_session attribute -> HERMES_SESSION_* env var carrying it.
@@ -115,21 +116,33 @@ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_pa
 
 def _register_completion_watcher(process_registry, proc_session, session_key) -> None:
     """Gateway mode: register a fast watcher so completion triggers a new
-    agent turn (CLI mode uses the completion_queue directly)."""
+    agent turn (CLI mode uses the completion_queue directly).
+
+    Armed on the live gateway loop right away: the post-turn drain alone leaves a
+    process that finishes while its launching turn is still running unwatched, and
+    the chat mute for as long as that turn lasts (#112033). Before the gateway
+    serves, or while it stops, the descriptor waits in ``pending_watchers`` for the
+    startup / post-turn drain instead."""
     proc_session.watcher_interval = 5
-    process_registry.pending_watchers.append({
+    watcher = {
         "session_id": proc_session.id, "check_interval": 5, "session_key": session_key,
         "platform": proc_session.watcher_platform,
         **{attr.removeprefix("watcher_"): getattr(proc_session, attr)
            for attr, _ in _ROUTING_FIELDS[:-1]},
         "notify_on_complete": True, "parent_session_id": proc_session.parent_session_id,
-    })
+    }
+    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    runner = runner_ref() if callable(runner_ref) else None
+    if runner is not None and runner.arm_process_watcher(watcher):
+        return
+    process_registry.pending_watchers.append(watcher)
 
 
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
+    completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
@@ -175,6 +188,8 @@ def spawn_background_process(
         if notify_on_complete:
             proc_session.notify_on_complete = True
             result_data["notify_on_complete"] = True
+            if completion_output_chars:
+                proc_session.completion_output_chars = int(completion_output_chars)
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
             from agent.delegation_context import is_delegated_child_context

@@ -25,7 +25,7 @@ import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $lastRoster, ROSTER_REFETCH_INTERVAL, useRoster } from './data'
+import { $lastRoster, useRoster } from './data'
 import type { RosterRow } from './types'
 
 const { hostMock } = vi.hoisted(() => ({
@@ -111,12 +111,6 @@ beforeEach(() => {
 
 afterEach(() => {
   $lastRoster.set([])
-})
-
-describe('roster refresh policy', () => {
-  it('does not poll while the Desktop is idle', () => {
-    expect(ROSTER_REFETCH_INTERVAL).toBe(false)
-  })
 })
 
 describe('no union roster', () => {
@@ -570,10 +564,12 @@ describe('connect-on-demand sources', () => {
 
   it('drops cached rows omitted by a successfully enumerated source', async () => {
     $lastRoster.set(previouslyPainted('alias'))
+
     const rows = await mergedRoster(
       { profiles: [{ name: 'default' }] },
       localOnlyUnion([{ connectionId: 'alias', kind: 'remote', reachable: true }])
     )
+
     expect(rows.find(row => row.connectionId === 'alias')).toBeUndefined()
   })
 
@@ -586,6 +582,42 @@ describe('connect-on-demand sources', () => {
     )
 
     expect(rows.find(row => row.connectionId === 'gone')).toBeUndefined()
+  })
+})
+
+describe('an aggregate roster failure keeps the last-known remote rows', () => {
+  // Same shape the pane paints: one rich local row + one remote row already
+  // carried into $lastRoster by a previous successful refresh.
+  const previouslyPainted = (connectionId: string) =>
+    [
+      { last_session: { id: 'this-chat', last_active: 1 }, name: 'default' },
+      {
+        connectionId,
+        connectionKind: 'ssh',
+        connectionLabel: 'Spark',
+        handle: 'bob',
+        name: 'bob',
+        remoteSource: true,
+        sourceScoped: true
+      }
+    ] as RosterRow[]
+
+  it('retains previously painted remote rows as unreachable when host.agents() rejects', async () => {
+    // mergedRoster(local, null) rejects host.agents(): the union probe fails
+    // (e.g. a registered WSL backend's localhost forwarding went down) while
+    // the active source's profiles.list still answers (#98844).
+    $lastRoster.set(previouslyPainted('spark'))
+
+    const rows = await mergedRoster(
+      { profiles: [{ last_session: { id: 'this-chat', last_active: 1 }, name: 'default' }] },
+      null
+    )
+
+    expect(rows.find(row => row.name === 'bob' && row.connectionId === 'spark')).toMatchObject({
+      remoteSource: true,
+      sourceReachable: false
+    })
+    expect(rows.filter(row => row.name === 'default')).toHaveLength(1)
   })
 })
 

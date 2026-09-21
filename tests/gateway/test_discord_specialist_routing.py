@@ -67,13 +67,27 @@ def test_specialist_route_creates_one_handoff_and_acknowledges(monkeypatch, tmp_
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    (tmp_path / ".hermes" / "profiles" / "task-orchestrator").mkdir(parents=True)
+    profile_dir = tmp_path / ".hermes" / "profiles" / "task-orchestrator"
+    profile_dir.mkdir(parents=True)
+    # Create identity markers so named_profile_has_identity returns True
+    (profile_dir / "config.yaml").write_text("")
+    (profile_dir / "identity.json").write_text("{}")
     adapter = _adapter(monkeypatch)
     settings = adapter._specialist_routing_settings()
     settings["capabilities"]["task-orchestrator"] = dict(
         settings["capabilities"]["burndown-patch-steward"])
     registry = adapter._specialist_capability_registry(settings)
     registry.register_configured_profile("task-orchestrator")
+    import threading
+    loop_thread = threading.get_ident()
+    registry_threads = []
+    original_registry = adapter._specialist_capability_registry
+
+    def tracked_registry(settings):
+        registry_threads.append(threading.get_ident())
+        return original_registry(settings)
+
+    monkeypatch.setattr(adapter, "_specialist_capability_registry", tracked_registry)
     adapter._classify_specialist_event = AsyncMock(
         return_value=SpecialistRouteDecision(
             kind=RouteKind.SPECIALIST, profile="burndown-patch-steward",
@@ -85,6 +99,7 @@ def test_specialist_route_creates_one_handoff_and_acknowledges(monkeypatch, tmp_
     with connect_closing(configured_board_db_path(settings["board"]), board=settings["board"]) as conn:
         tasks = conn.execute("SELECT body, assignee FROM tasks").fetchall()
         candidates = conn.execute("SELECT request_id, requested_profile_id FROM candidate_profile_requests").fetchall()
+    assert registry_threads and all(thread != loop_thread for thread in registry_threads)
     assert len(tasks) == len(candidates) == 1
     assert tasks[0]["assignee"] == "task-orchestrator"
     assert json.loads(tasks[0]["body"])["candidate_request_id"] == candidates[0]["request_id"]

@@ -248,10 +248,18 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 
-    # Cache each successful fetch's full clean text (best-effort; oversized skipped).
-    for url, fetched in zip(fetch_urls, results):
+    # Cache each successful fetch under the REQUESTED url it reports as its own — never by list
+    # position: providers omit failed URLs or return successes out of request order, and a positional
+    # write filed one page's text under another URL's key for the whole TTL. ``metadata.sourceURL``
+    # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
+    # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
+    requested = set(fetch_urls)
+    for fetched in results:
+        meta = fetched.get("metadata")
+        source = meta.get("sourceURL") if isinstance(meta, dict) else None
+        url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
-        if _content and not fetched.get("error"):
+        if url and _content and not fetched.get("error"):
             extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
     return results
 

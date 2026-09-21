@@ -3667,6 +3667,7 @@ def _prepare_same_provider_retry(
     max_tokens: Optional[int], tools: Optional[list], effective_timeout: float,
     effective_extra_body: dict, reasoning_config: Optional[dict], async_mode: bool,
     extra_headers: Optional[Dict[str, str]] = None,
+    retry_client_out: Optional[list] = None,
 ) -> Tuple[Any, Dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
     if task == "vision":
@@ -3700,6 +3701,9 @@ def _prepare_same_provider_retry(
         retry_kwargs["extra_headers"] = dict(extra_headers)
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+    if retry_client_out is not None:
+        # In-memory request identity only: never attach credentials to exceptions.
+        retry_client_out[:] = [retry_client]
     return retry_client, retry_kwargs
 
 
@@ -7542,22 +7546,19 @@ def _ladder_credential_rungs(
         if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
+            retry_clients = []
             try:
                 return (yield _LadderStep(
-                    "retry_same_provider", (resolved_provider, route.resolved_model))), None
+                    "retry_same_provider", (resolved_provider, route.resolved_model, retry_clients))), None
             except Exception as retry2_err:
-                # The post-rotation retry also hit a wall. Attribute the failure to the key
-                # we KNOW failed (_client_api_key): the retry runs through the route-label
-                # client cache (e.g. "auto"), which embeds the pre-rotation main-runtime key,
-                # so a fast retry2 failure is usually the SAME stale key again. Marking the
-                # pool's current() here benches the just-rotated-to healthy entry with the
-                # old key's error (observed: healthy second z.ai key benched 0.4s after
-                # rotation, taking the whole pool offline). If the rotated key genuinely
-                # failed, the next recovery cycle identifies and marks it via its own
-                # _client_api_key instead — one extra failure cycle at worst.
+                # Auto routes can rebuild with stale runtime credentials; explicit routes
+                # can use the newly selected key. Neither the original client nor the
+                # pool's current entry identifies the retry. Use its actual client.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
-                    _recover_provider_pool(pool_provider, retry2_err, failed_api_key=_client_api_key)
+                    retry_key = str(getattr(retry_clients[0], "api_key", "") or "") if retry_clients else ""
+                    if retry_key:
+                        _recover_provider_pool(pool_provider, retry2_err, failed_api_key=retry_key)
                     first_err = retry2_err
                 else:
                     raise
@@ -7889,8 +7890,11 @@ def _ladder_step_call(
     if step.kind == "call":
         return "call", step.args, dict(provider=req.resolved_provider, api_mode=req.resolved_api_mode)
     if step.kind == "retry_same_provider":
-        retry_provider, retry_model = step.args
-        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        retry_provider, retry_model = step.args[:2]
+        kw = dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+        if len(step.args) > 2:
+            kw["retry_client_out"] = step.args[2]
+        return "retry", (), kw
     return "fallback", step.args, candidate_kwargs
 
 

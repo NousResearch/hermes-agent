@@ -204,3 +204,22 @@ describe('session cwd → terminal tab linking', () => {
     expect($activeTerminalId.get()).toBe(first)
   })
 })
+
+describe('terminal pane title', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('labels the pane with the live tab name and falls back when no tab is open', async () => {
+    const { $activeTerminal, createTerminal, renameTerminal, terminalPaneTitle } = await loadTerminalStore()
+
+    const id = createTerminal('/repo')
+    expect(terminalPaneTitle($activeTerminal.get(), 'terminal')).toBe('Terminal')
+
+    renameTerminal(id, 'api')
+    expect(terminalPaneTitle($activeTerminal.get(), 'terminal')).toBe('api')
+
+    expect(terminalPaneTitle(null, 'terminal')).toBe('terminal')
+  })
+})

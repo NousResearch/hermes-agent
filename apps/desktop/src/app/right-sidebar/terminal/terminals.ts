@@ -433,6 +433,14 @@ export function updateTerminalAppearance(id: string, appearance: { color?: Termi
   )
 }
 
+/** Pane-tab label for the terminal zone: the ACTIVE tab's name, so the zone's
+ *  tab reads as the terminal you're looking at instead of a generic label — the
+ *  same rule the workspace tab follows for sessions. Falls back to the caller's
+ *  generic label while no tab exists. */
+export function terminalPaneTitle(term: Pick<TerminalEntry, 'title'> | null | undefined, fallback: string): string {
+  return term?.title?.trim() || fallback
+}
+
 /** A live terminal reports its resolved shell; adopt it as the label only while
  *  the user hasn't named the tab themselves. */
 export function reportTerminalShell(id: string, shell: string): void {

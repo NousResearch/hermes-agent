@@ -5,6 +5,11 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
+import {
+  $activeTerminal,
+  $terminals,
+  terminalPaneTitle
+} from '@/app/right-sidebar/terminal/terminals'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { AskDirective } from '@/components/assistant-ui/ask-directive'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
@@ -120,6 +125,9 @@ import { ContribWiring, WiredPane } from './wiring'
 // ONE render identity for the workspace pane — syncWorkspaceTitle re-registers
 // the contribution (new title) and a fresh closure would remount the chat.
 const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
+// Same rule for the terminal pane: its tab reads as the ACTIVE tab's name, so
+// retitling must not remount the PTY view — one render identity, reused.
+const renderTerminalPane = () => <WiredPane part="terminal" />
 
 // Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
 // them to idle so they're off the first-paint path, warm before reveal.
@@ -157,6 +165,32 @@ const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => vo
   return true
 }
 
+/** The terminal zone's contribution. The title tracks the active tab
+ *  (terminalPaneTitle) so the tab names the terminal you're in; `render` is the
+ *  shared constant above, so a retitle re-registers without remounting the shell. */
+const terminalPaneContribution = () => ({
+  id: 'terminal',
+  area: 'panes' as const,
+  title: terminalPaneTitle($activeTerminal.get(), 'terminal'),
+  // revealOnPreset: choosing a layout that places the terminal (e.g.
+  // "Terminal deck") turns takeover on so the zone actually shows, instead of
+  // staying collapsed behind the ⌃` toggle. height sizes the fixed track (a
+  // single-pane zone declaring a height is a fixed track — the preset weight
+  // is moot): a short deck, not a third of the window.
+  //
+  // NO minHeight: a tool panel drags all the way down to its collapsed
+  // header (the sash floors it at COLLAPSED_ZONE_PX and folds the zone to
+  // its rail there). A real floor left a sliver of unusable terminal.
+  data: {
+    placement: 'bottom' as const,
+    height: '20vh',
+    maxHeight: '80vh',
+    revealOnPreset: true,
+    lifecycleKeepAlive: true
+  },
+  render: renderTerminalPane
+})
+
 registry.registerMany([
   {
     id: 'sessions',
@@ -193,28 +227,7 @@ registry.registerMany([
     },
     render: renderWorkspacePane
   },
-  {
-    id: 'terminal',
-    area: 'panes',
-    title: 'terminal',
-    // revealOnPreset: choosing a layout that places the terminal (e.g.
-    // "Terminal deck") turns takeover on so the zone actually shows, instead of
-    // staying collapsed behind the ⌃` toggle. height sizes the fixed track (a
-    // single-pane zone declaring a height is a fixed track — the preset weight
-    // is moot): a short deck, not a third of the window.
-    //
-    // NO minHeight: a tool panel drags all the way down to its collapsed
-    // header (the sash floors it at COLLAPSED_ZONE_PX and folds the zone to
-    // its rail there). A real floor left a sliver of unusable terminal.
-    data: {
-      placement: 'bottom',
-      height: '20vh',
-      maxHeight: '80vh',
-      revealOnPreset: true,
-      lifecycleKeepAlive: true
-    },
-    render: () => <WiredPane part="terminal" />
-  },
+  terminalPaneContribution(),
   {
     id: 'files',
     area: 'panes',
@@ -489,6 +502,13 @@ $sessions.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
+
+// The terminal tab reads as the terminal you're looking at, matching the rule the
+// main tab follows for sessions.
+const syncTerminalTitle = () => registry.register(terminalPaneContribution())
+
+$activeTerminal.listen(syncTerminalTitle)
+$terminals.listen(syncTerminalTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the
 // workspace) instead of re-scattering them — pre-placed before adoption.

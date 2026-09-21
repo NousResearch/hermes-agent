@@ -359,8 +359,12 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
             filtered.append(token)
     for i, token in enumerate(filtered):
         if token == "gateway":
-            # Bare `hermes gateway` defaults to `run`.
-            return filtered[i + 1] if i + 1 < len(filtered) else "run"
+            # The gateway parser accepts parent flags before the optional
+            # lifecycle verb.  With no verb, `hermes gateway` defaults to run.
+            return next(
+                (part for part in filtered[i + 1:] if not part.startswith("-")),
+                "run",
+            )
     return None
 
 

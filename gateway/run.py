@@ -3682,10 +3682,11 @@ class GatewayRunner(
         # state.db was never pruned or vacuumed by anybody, and the launch profile's
         # retention_days/auto_prune decided whether it happened at all.
         from gateway.run_profile_reconcile import _for_each_served_profile
+        _launch_sessions = _launch_sessions_dir(self.config)  # resolved OUTSIDE any profile scope
         _housekeeping_chore(
             "state.db startup maintenance",
             lambda: _for_each_served_profile(
-                self, lambda _label: _housekeeping_state_db_maintenance()))
+                self, lambda _label: _housekeeping_state_db_maintenance(_launch_sessions)))
         # Checkpoint store pruning is a housekeeping chore (``_housekeeping_checkpoint_prune``), not a
         # constructor step: its ``git gc`` repacks the whole store (tens of seconds on a GB store) and
         # here it ran before the control socket, adapters and the code_sha stamp — so the first
@@ -4583,7 +4584,33 @@ def _housekeeping_org_skill_sync() -> None:
     maybe_pull_org_skills()
 
 
-def _housekeeping_state_db_maintenance() -> None:
+def _launch_sessions_dir(config) -> Optional[Tuple[Path, Path]]:
+    """``(launch home, its configured transcript dir)``, or ``None`` when the gateway carries none.
+
+    MUST be called outside any profile scope — ``get_hermes_home()`` is what identifies the launch
+    home. Consumed by :func:`_profile_sessions_dir`.
+    """
+    sessions_dir = getattr(config, "sessions_dir", None)
+    if sessions_dir is None:
+        return None
+    return get_hermes_home(), Path(sessions_dir)
+
+
+def _profile_sessions_dir(launch: Optional[Tuple[Path, Path]]) -> Path:
+    """Transcript dir of the profile currently in scope.
+
+    ``gateway.sessions_dir`` overrides the LAUNCH profile's transcript dir only; every other served
+    profile keeps ``<home>/sessions``. Hardcoding ``<home>/sessions`` for the launch home too wrote
+    transcripts to the configured dir while the prune unlinked under the default one, orphaning
+    every pruned session's ``.json``/``.jsonl``/``request_dump_*`` forever.
+    """
+    home = get_hermes_home()
+    if launch is not None and Path(launch[0]) == home:
+        return Path(launch[1])
+    return home / "sessions"
+
+
+def _housekeeping_state_db_maintenance(launch: Optional[Tuple[Path, Path]] = None) -> None:
     """Stale-session auto-archive plus auto-prune/VACUUM for ONE profile's state.db; both are gated
     by sessions.min_interval_hours (VACUUM additionally by its own throttles). Opens its own
     SessionDB — SQLite connections are thread-bound.
@@ -4592,7 +4619,8 @@ def _housekeeping_state_db_maintenance() -> None:
     resolve through the active scope, so an unscoped run swept only the LAUNCH profile's store with
     the LAUNCH profile's retention settings and a multiplexed secondary was never archived, pruned
     or vacuumed by anyone — the dashboard/serve trigger defers to the gateway for every profile a
-    gateway owns (``web_server_sessions``)."""
+    gateway owns (``web_server_sessions``). *launch* carries the launch home's configured transcript
+    dir (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
@@ -4610,8 +4638,7 @@ def _housekeeping_state_db_maintenance() -> None:
                 min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                 min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
                 vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
-                # This profile's own transcript dir, not the launch profile's ``config.sessions_dir``.
-                sessions_dir=get_hermes_home() / "sessions")
+                sessions_dir=_profile_sessions_dir(launch))
     finally:
         release_or_close(_adb)
 
@@ -4706,7 +4733,11 @@ def _start_gateway_housekeeping(
         (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
         (60, "Sync pull tick", profile_scoped_chore(runner, _housekeeping_skill_sync)),
         (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
-        (60, "state.db maintenance tick", profile_scoped_chore(runner, _housekeeping_state_db_maintenance)),
+        (60, "state.db maintenance tick", profile_scoped_chore(
+            runner,
+            # Default-bound now, i.e. OUTSIDE any profile scope: this is the launch home's override.
+            lambda _launch=_launch_sessions_dir(getattr(runner, "config", None)):
+                _housekeeping_state_db_maintenance(_launch))),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),

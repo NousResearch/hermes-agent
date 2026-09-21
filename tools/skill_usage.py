@@ -315,24 +315,35 @@ def unmanaged_report() -> List[Dict[str, Any]]:
             for n in list_unmanaged_skill_names()]
 
 
-def adopt_skill(skill_name: str) -> Tuple[bool, str]:
-    """User-declared handover: writes the ``created_by: agent`` marker (inactivity clock NOT reset). Refuses hub,
-    external, bundled and protected skills. Returns (ok, message)."""
+def adoption_refusal(skill_name: str) -> Optional[str]:
+    """Read-only adoption preflight shared by previews and real adoption.
+
+    None means ownership permits adoption, not that the skill is unmanaged.
+    """
     if not skill_name:
-        return False, "no skill name given"
+        return "no skill name given"
     if is_protected_builtin(skill_name):
-        return False, f"'{skill_name}' is a protected built-in; the curator never manages it"
+        return f"'{skill_name}' is a protected built-in; the curator never manages it"
     if is_hub_installed(skill_name):
-        return False, f"'{skill_name}' is hub-installed; its upstream owns it"
+        return f"'{skill_name}' is hub-installed; its upstream owns it"
     if is_bundled(skill_name):  # governed by prune_builtins; stamping created_by=agent would change nothing
-        return False, f"'{skill_name}' is a bundled built-in — it is governed by curator.prune_builtins, not by adoption"
+        return f"'{skill_name}' is a bundled built-in — it is governed by curator.prune_builtins, not by adoption"
     skill_dir = _find_skill_dir(skill_name)
     if skill_dir is None:
         if _find_external_skill_dir(skill_name) is not None:
-            return False, f"'{skill_name}' lives in skills.external_dirs and is read-only to the curator"
-        return False, f"skill '{skill_name}' not found"
+            return f"'{skill_name}' lives in skills.external_dirs and is read-only to the curator"
+        return f"skill '{skill_name}' not found"
     if is_external_skill_path(skill_dir):
-        return False, _external_read_only_message(skill_name)
+        return _external_read_only_message(skill_name)
+    return None
+
+
+def adopt_skill(skill_name: str) -> Tuple[bool, str]:
+    """User-declared handover: writes the ``created_by: agent`` marker (inactivity clock NOT reset). Refuses hub,
+    external, bundled and protected skills. Returns (ok, message)."""
+    refusal = adoption_refusal(skill_name)
+    if refusal is not None:
+        return False, refusal
     if is_curator_managed(skill_name):
         return True, f"'{skill_name}' is already curator-managed"
     mark_agent_created(skill_name)

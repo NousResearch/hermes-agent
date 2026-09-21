@@ -4,7 +4,6 @@ import { gatewayLine } from "@/lib/gateway-line";
 import type { StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
-import { en } from "@/i18n/en";
 
 /** Gateway + session summary for the System sidebar block (no separate strip chrome). */
 export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {

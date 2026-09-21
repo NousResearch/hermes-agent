@@ -28,7 +28,7 @@ import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRec
 import { $settingsRequestProfile } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
-import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
+import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
@@ -104,9 +104,6 @@ function ConfigSettingsInner({
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord(scopeProfile)
-  // Writes land on the same cache key the query above reads (base key when
-  // following the active profile, suffixed when a scope override is set).
-  const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
 
   const {
     data: schemaResponse,
@@ -217,9 +214,11 @@ function ConfigSettingsInner({
           // pre-save value diffs to nothing and the revert never reaches disk.
           configBaselineRef.current = snapshot
 
-          // Mirror the saved record into the shared cache so MCP/model surfaces
-          // reflect the edit without their own refetch.
-          writeConfigCache(snapshot)
+          // The server merges the patch with its current record. Refetch that
+          // truth: the page's full draft may contain untouched, stale fields.
+          // Keep the local draft baseline above so later edits still send only
+          // user changes, rather than writing externally changed fields back.
+          await refetchConfig()
 
           if (saveVersionRef.current === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace

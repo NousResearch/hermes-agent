@@ -1,9 +1,11 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { queryClient } from '@/lib/query-client'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
@@ -17,6 +19,7 @@ vi.mock('@/hermes', () => ({
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
+  getProfiles: async () => ({ profiles: [] }),
   setApiRequestProfile: () => {}
 }))
 
@@ -59,16 +62,16 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  queryClient.clear()
   vi.clearAllMocks()
 })
 
 function renderConfigSettings(activeSectionId = 'safety') {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
   render(
     <MemoryRouter>
-      <QueryClientProvider client={client}>
+      <QueryClientProvider client={queryClient}>
         <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} />
       </QueryClientProvider>
     </MemoryRouter>
@@ -107,6 +110,41 @@ describe('ConfigSettings autosave', () => {
     }
   })
 
+  it('refreshes the shared record after a patch without replacing an externally changed field', async () => {
+    let diskRecord = { checkpoints: { enabled: false }, model: { default: 'initial-model' } }
+
+    getHermesConfigRecord.mockImplementation(async () => structuredClone(diskRecord))
+    saveHermesConfig.mockImplementation(async (patch: { checkpoints: { enabled: boolean } }) => {
+      diskRecord = { ...diskRecord, checkpoints: patch.checkpoints }
+
+      return { ok: true }
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings()
+      const toggle = await screen.findByRole('switch')
+
+      // The runtime changes an untouched field after this page seeded its draft.
+      diskRecord = { ...diskRecord, model: { default: 'external-model' } }
+      await act(async () => {
+        toggle.click()
+        await vi.advanceTimersByTimeAsync(700)
+      })
+
+      await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
+      expect(saveHermesConfig).toHaveBeenCalledWith({ checkpoints: { enabled: true } }, undefined)
+      await waitFor(() =>
+        expect(queryClient.getQueryData(['hermes-config-record'])).toEqual({
+          checkpoints: { enabled: true },
+          model: { default: 'external-model' }
+        })
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 
@@ -118,15 +156,19 @@ describe('ConfigSettings autosave', () => {
       const toggle = await screen.findByRole('switch')
 
       // Edit: flip checkpoints.enabled on, let the debounced autosave fire.
-      toggle.click()
-      await vi.advanceTimersByTimeAsync(700)
+      await act(async () => {
+        toggle.click()
+        await vi.advanceTimersByTimeAsync(700)
+      })
 
       await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
       expect(saveHermesConfig.mock.calls[0][0]).toEqual({ checkpoints: { enabled: true } })
 
       // Revert: flip it back to its original value and let autosave fire again.
-      toggle.click()
-      await vi.advanceTimersByTimeAsync(700)
+      await act(async () => {
+        toggle.click()
+        await vi.advanceTimersByTimeAsync(700)
+      })
 
       await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
       // Must still explicitly send the reverted value — diffing against the

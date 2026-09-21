@@ -417,6 +417,12 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False, _windo
     """Update via ZIP archive; used on Windows when git file I/O is broken (antivirus / NTFS filter
     drivers causing 'Invalid argument'). Swaps the tree, then hands the rest of the run to an
     interpreter born on the new code (never returns; the child owns the receipt and exit code)."""
+    if getattr(args, "no_zip_fallback", False):
+        from hermes_cli.update_cmd import _finalize_receipt
+
+        print("✗ ZIP fallback refused by --no-zip-fallback; the existing code tree is preserved.")
+        _finalize_receipt("failed", "Update receipt finalize (ZIP refused) failed: %s")
+        raise SystemExit(1)
     from hermes_cli.update_cmd import _hand_off_post_swap, _m, _read_project_version, _resolve_update_options, _sweep_bytecode_after_update
     gateway_mode = bool(getattr(args, "gateway", False))
     opts = _resolve_update_options(args, gateway_mode)

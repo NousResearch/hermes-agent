@@ -1213,7 +1213,7 @@ def _handle_update_called_process_error(
     _windows_gateway_resume=None) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
     stage = _format_update_failure_stage(e)
-    if _should_zip_fallback_on_update_error(e):
+    if not getattr(args, "no_zip_fallback", False) and _should_zip_fallback_on_update_error(e):
         print(f"⚠ {stage}: {e}")
         print("→ Falling back to ZIP download...")
         print()
@@ -1348,6 +1348,7 @@ def _apply_pulled_update(
 # ``store_true`` update flags the post-swap child must see exactly as the user passed them.
 _POST_SWAP_FORWARDED_FLAGS = (
     ("gateway", "--gateway"), ("no_backup", "--no-backup"), ("backup", "--backup"),
+    ("no_zip_fallback", "--no-zip-fallback"),
     ("yes", "--yes"), ("keep_stash", "--keep-stash"), ("switch_branch", "--switch-branch"),
     ("force", "--force"), ("force_venv", "--force-venv"),
     ("no_gateway_restart", "--no-gateway-restart"),

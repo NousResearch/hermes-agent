@@ -10,6 +10,7 @@ has already succeeded by then, so the ZIP cannot fix the actual failure.
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -86,6 +87,49 @@ def test_windows_git_failure_still_zips(monkeypatch):
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
     exc = _cpe(["git", "pull"], returncode=1)
     assert update_cmd._should_zip_fallback_on_update_error(exc) is True
+
+
+def test_no_zip_fallback_flag_survives_post_swap_handoff():
+    from hermes_cli.subcommands.update import build_update_parser
+
+    parser = argparse.ArgumentParser()
+    build_update_parser(parser.add_subparsers(), cmd_update=lambda _args: None)
+    assert parser.parse_args(["update"]).no_zip_fallback is False
+    args = parser.parse_args(["update", "--no-zip-fallback", "--branch", "main"])
+    child = parser.parse_args(["update", *update_cmd._post_swap_argv_tail(args)])
+    assert child.no_zip_fallback is True
+    assert child.branch == "main"
+
+
+def test_git_error_with_no_zip_fallback_exits_without_archive(monkeypatch):
+    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
+    exc = _cpe(["git", "pull"], returncode=1)
+    with patch.object(update_cmd, "_update_via_zip") as archive, patch.object(
+        update_cmd, "_finalize_receipt"
+    ) as finalize:
+        with pytest.raises(SystemExit) as failure:
+            update_cmd._handle_update_called_process_error(
+                exc, SimpleNamespace(no_zip_fallback=True), False, False
+            )
+    assert failure.value.code == 1
+    archive.assert_not_called()
+    assert finalize.call_args.args[0] == "failed"
+
+
+def test_direct_zip_entry_refuses_before_configuration_or_download(monkeypatch, capsys):
+    from hermes_cli import update_cmd_zip
+
+    with patch.object(update_cmd, "_resolve_update_options") as resolve, patch.object(
+        update_cmd_zip, "_download_and_swap_zip"
+    ) as download, patch.object(update_cmd, "_finalize_receipt") as finalize:
+        with pytest.raises(SystemExit) as failure:
+            update_cmd_zip._update_via_zip(SimpleNamespace(no_zip_fallback=True))
+    assert failure.value.code == 1
+    resolve.assert_not_called()
+    download.assert_not_called()
+    assert finalize.call_args.args[0] == "failed"
+    assert "--no-zip-fallback" in capsys.readouterr().out
 
 
 def test_posix_git_failure_does_not_zip(monkeypatch):

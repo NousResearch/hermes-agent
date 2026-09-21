@@ -730,6 +730,10 @@ class Task:
     creator_task_id: Optional[str] = None
     root_task_id: Optional[str] = None
     worker_started_at: Optional[str] = None
+    failure_disposition: Optional[str] = None
+    recovery_attempt: int = 0
+    recovery_next_at: Optional[int] = None
+    recovery_state: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -747,6 +751,8 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            recovery_attempt=int(g("recovery_attempt") or 0),
+            recovery_state=_json_dict(g("recovery_state")) or None,
         )
 
 
@@ -761,6 +767,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
     "creator_task_id", "root_task_id", "worker_started_at",
+    "failure_disposition", "recovery_next_at",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -967,7 +974,13 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences     INTEGER NOT NULL DEFAULT 0,
+    -- Durable automatic-recovery state. Internal failures remain scheduler-owned;
+    -- only user_action_required may project needs_user_action.
+    failure_disposition   TEXT,
+    recovery_attempt      INTEGER NOT NULL DEFAULT 0,
+    recovery_next_at      INTEGER,
+    recovery_state        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (

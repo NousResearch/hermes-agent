@@ -839,6 +839,10 @@ _LATER_TASK_COLUMNS = (
     ("worker_started_at", "worker_started_at INTEGER"),
     ("creator_task_id", "creator_task_id TEXT"),
     ("root_task_id", "root_task_id TEXT"),
+    ("failure_disposition", "failure_disposition TEXT"),
+    ("recovery_attempt", "recovery_attempt INTEGER NOT NULL DEFAULT 0"),
+    ("recovery_next_at", "recovery_next_at INTEGER"),
+    ("recovery_state", "recovery_state TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

@@ -1782,6 +1782,12 @@ DEFAULT_CONFIG = {
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
+        # Internal recovery uses persisted exponential backoff; these bounds
+        # prevent a failed dependency/provider from becoming a busy loop.
+        "recovery_backoff_base_seconds": 5,
+        "recovery_backoff_cap_seconds": 120,
+        # A spawned worker must establish liveness with its first heartbeat.
+        "dispatch_startup_grace_seconds": 120,
         # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,

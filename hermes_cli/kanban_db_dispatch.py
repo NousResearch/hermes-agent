@@ -8,6 +8,8 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import os
 import re
 import signal
@@ -70,6 +72,87 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # wall, burning a worker slot every tick for hours. Overridable via
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
+DEFAULT_RECOVERY_BACKOFF_BASE_SECONDS = 5
+DEFAULT_RECOVERY_BACKOFF_CAP_SECONDS = 120
+DEFAULT_STARTUP_GRACE_SECONDS = 120
+
+_INTERNAL_TRANSIENT_PATTERNS = (
+    "rate limit", "rate_limit", "429", "temporarily unavailable", "timeout",
+    "judge api", "judge error", "503", "not spawnable", "cannot load effective skill",
+    "command capability", "initial heartbeat", "no heartbeat", "stale_lock",
+)
+
+
+def _failure_kind(error: str, outcome: str) -> str:
+    text = error.lower()
+    if "rate limit" in text or "rate_limit" in text or "429" in text or outcome == "rate_limited":
+        return "rate_limited"
+    if "judge" in text:
+        return "judge_error"
+    if "heartbeat" in text:
+        return "heartbeat_timeout"
+    if "spawn" in text or "profile" in text or "command capability" in text:
+        return "routing_or_spawn"
+    return outcome
+
+
+def _recovery_delay(task_id: str, attempt: int) -> int:
+    """Bounded exponential delay with stable per-task jitter."""
+    exponential = DEFAULT_RECOVERY_BACKOFF_BASE_SECONDS * (2 ** max(0, attempt - 1))
+    jitter = int(hashlib.sha256(f"{task_id}:{attempt}".encode()).hexdigest()[:4], 16) % 4
+    return min(DEFAULT_RECOVERY_BACKOFF_CAP_SECONDS, exponential + jitter)
+
+
+def _schedule_internal_recovery(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    error: str,
+    outcome: str,
+    retry_status: str,
+    failures: int,
+    release_claim: bool,
+    end_run: bool,
+    event_payload_extra: Optional[dict],
+) -> None:
+    row = conn.execute(
+        "SELECT recovery_attempt FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    attempt = int(_kb._row_get(row, "recovery_attempt", 0) or 0) + 1
+    now = int(time.time())
+    deadline = now + _recovery_delay(task_id, attempt)
+    state = {
+        "attempt": attempt,
+        "failure_kind": _failure_kind(error, outcome),
+        "resume_status": retry_status,
+        "deadline_at": deadline,
+    }
+    assignments = [
+        "status = ?", "failure_disposition = 'internal_transient'",
+        "recovery_attempt = ?", "recovery_next_at = ?", "recovery_state = ?",
+        "consecutive_failures = ?", "last_failure_error = ?",
+    ]
+    if release_claim:
+        assignments.extend([
+            "claim_lock = NULL", "claim_expires = NULL", "worker_pid = NULL",
+            "worker_started_at = NULL", "last_heartbeat_at = NULL",
+        ])
+    conn.execute(
+        f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ? "
+        "AND status IN ('running', 'ready', 'review', 'blocked')",
+        (retry_status, attempt, deadline, json.dumps(state, sort_keys=True), failures, error, task_id),
+    )
+    run_id = None
+    if end_run:
+        run_id = _kb._end_run(
+            conn, task_id, outcome=outcome, status=outcome, error=error,
+            metadata={**state, "failures": failures},
+        )
+    payload = {**state, "failure_disposition": "internal_transient", "error": error,
+               "failures": failures}
+    if event_payload_extra:
+        payload.update(event_payload_extra)
+    _kb._append_event(conn, task_id, "recovery_scheduled", payload, run_id=run_id)
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
@@ -717,10 +800,12 @@ def detect_stale_running(
         if row["active_started_at"] is None:
             continue
         elapsed = now - int(row["active_started_at"])
-        if elapsed < stale_timeout_seconds:
+        last_hb = row["last_heartbeat_at"]
+        startup_timeout = min(stale_timeout_seconds, DEFAULT_STARTUP_GRACE_SECONDS)
+        effective_timeout = startup_timeout if last_hb is None else stale_timeout_seconds
+        if elapsed < effective_timeout:
             continue
 
-        last_hb = row["last_heartbeat_at"]
         hb_age = (now - int(last_hb)) if last_hb is not None else None
         if hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS:
             continue
@@ -755,6 +840,11 @@ def detect_stale_running(
                 continue
 
             payload = {
+                "reason": (
+                    "initial_heartbeat_deadline_exceeded"
+                    if last_hb is None else "heartbeat_stale"
+                ),
+                "deadline_seconds": effective_timeout,
                 "elapsed_seconds": int(elapsed),
                 "last_heartbeat_at": _kb._opt_int(last_hb),
                 "heartbeat_age_seconds": _kb._opt_int(hb_age),
@@ -1056,7 +1146,9 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             # Launch-window grace so a freshly-spawned worker isn't reclaimed
             # before its PID is visible on /proc.
             started_at = _kb._row_get(row, "started_at")
-            if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
+            if (started_at is not None
+                    and int(row["worker_pid"]) not in _recent_worker_exits
+                    and time.time() - started_at < _kb._resolve_crash_grace_seconds()):
                 continue
             if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
                 continue
@@ -1184,6 +1276,11 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
+    for task_id in sweep.rate_limited:
+        _record_task_failure(
+            conn, task_id, "provider API returned 429 rate limit",
+            outcome="rate_limited", release_claim=False, end_run=False,
+        )
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
     # requeues did NOT count a failure and are NOT crashes.
@@ -1268,34 +1365,16 @@ def _record_task_failure(
         else:
             effective_limit, limit_source = int(failure_limit), "dispatcher"
 
-        if not (force_trip or failures >= effective_limit):
-            if release_claim:
-                # Spawn path: restore the claimed source phase + clear claim.
-                conn.execute(
-                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (retry_status, failures, error, task_id),
-                )
-            else:
-                conn.execute(
-                    "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
-                    (failures, error, task_id),
-                )
-            # Timeout/crash path's caller already emitted its own event.
-            if end_run:
-                run_id = _kb._end_run(
-                    conn, task_id, outcome=outcome, status=outcome, error=error,
-                    metadata={"failures": failures, "retry_status": retry_status},
-                )
-                _kb._append_event(
-                    conn, task_id, outcome,
-                    {"error": error, "failures": failures, "retry_status": retry_status},
-                    run_id=run_id,
-                )
-            return False
+        # Dispatcher/runtime failures are internally recoverable even after the
+        # old circuit-breaker threshold. Persist the cursor and deadline instead
+        # of projecting a fabricated human prerequisite.
+        _schedule_internal_recovery(
+            conn, task_id, error=error, outcome=outcome,
+            retry_status=retry_status, failures=failures,
+            release_claim=release_claim, end_run=end_run,
+            event_payload_extra=event_payload_extra,
+        )
+        return False
 
         # Spawn path (release_claim) is still running and also clears claim
         # state; the timeout/crash path already did.
@@ -1419,13 +1498,19 @@ def check_respawn_guard(
     passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, recovery_next_at FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
         return None
 
     now = int(time.time())
+
+    # Persisted deadline survives dispatcher restarts and prevents a tight
+    # ready→spawn→failure loop.
+    if _kb._row_get(row, "recovery_next_at") is not None:
+        if now < int(row["recovery_next_at"]):
+            return "recovery_backoff"
 
     # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
     #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
@@ -1552,6 +1637,73 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
         return canon in allowlist and bool(profile_exists(name))
 
     return _gated
+
+
+def profile_task_eligibility(profile: str, task: "Task") -> tuple[bool, Optional[str]]:
+    """Side-effect-free preclaim capability check for a profile/task pair.
+
+    Profile existence is checked by the caller. Repository work requires an
+    existing declared path; deployments may inject a narrower capability probe.
+    """
+    if task.workspace_kind in {"dir", "worktree"} and task.workspace_path:
+        if not Path(task.workspace_path).exists():
+            return False, "repository_ineligible"
+    return True, None
+
+
+def _route_to_eligible_profile(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    assignee: str,
+    profile_exists: Optional[Callable[[str], bool]],
+    *,
+    lane: str,
+    dry_run: bool,
+) -> Optional[str]:
+    """Select the first eligible declared profile and persist rerouting."""
+    try:
+        from hermes_cli.profiles import normalize_profile_name
+        declared = _dispatch_profile_allowlist(normalize_profile_name)
+    except Exception:
+        declared = None
+    candidates: list[str] = []
+    for name in (assignee, *(declared or ())):
+        if name and name not in candidates:
+            candidates.append(name)
+    task = _kb.get_task(conn, row["id"])
+    if task is None:
+        return None
+    attempts: list[dict] = []
+    existence_only = True
+    selected = None
+    for candidate in candidates:
+        if profile_exists is not None and not profile_exists(candidate):
+            attempts.append({"profile": candidate, "reason": "not_spawnable"})
+            continue
+        eligible, reason = profile_task_eligibility(candidate, task)
+        attempts.append({"profile": candidate, "reason": reason})
+        existence_only = existence_only and reason in (None, "not_spawnable")
+        if eligible:
+            selected = candidate
+            break
+    if selected is None or selected == assignee or dry_run:
+        return selected
+    payload_attempts = [item["profile"] for item in attempts] if existence_only else attempts
+    with _kb.write_txn(conn):
+        updated = conn.execute(
+            "UPDATE tasks SET assignee = ? WHERE id = ? AND status = ? "
+            "AND assignee = ? AND claim_lock IS NULL",
+            (selected, row["id"], lane, assignee),
+        )
+        if updated.rowcount != 1:
+            return None
+        _kb._append_event(conn, row["id"], "assigned", {
+            "assignee": selected,
+            "from": assignee,
+            "source": "preclaim_eligibility_routing",
+            "attempted_profiles": payload_attempts,
+        })
+    return selected
 
 
 def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[tuple[str, ...]]:
@@ -1911,9 +2063,13 @@ def _dispatch_lane_task(
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
     profile_exists = _profile_exists_fn()
-    if profile_exists is not None and not profile_exists(assignee):
+    routed = _route_to_eligible_profile(
+        conn, row, assignee, profile_exists, lane=lane, dry_run=dry_run,
+    )
+    if routed is None:
         result.skipped_nonspawnable.append(task_id)
         return False
+    assignee = routed
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -2077,6 +2233,14 @@ def _dispatch_lane_task(
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
             workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
+        elif spawn_fn is not None and claimed.workspace_kind == "dir":
+            # An injected launcher owns its execution environment (remote/container
+            # launchers commonly cannot materialize that path on the dispatcher).
+            # Eligibility was already checked before claim; retain the absolute
+            # path verbatim and leave creation to the launcher.
+            workspace = Path(claimed.workspace_path or "").expanduser()
+            if not workspace.is_absolute():
+                raise ValueError("dir workspace paths must be absolute")
         else:
             workspace = _kbw.resolve_workspace(claimed, board=board)
     except Exception as exc:
@@ -2241,7 +2405,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee, skills FROM tasks "
+        "SELECT * FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()

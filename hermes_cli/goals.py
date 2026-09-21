@@ -1618,8 +1618,16 @@ def run_kanban_goal_loop(
         except Exception as exc:
             _log(f"kanban goal loop: block_fn failed ({exc})")
 
-    def _result(outcome: str, reason: str) -> Dict[str, Any]:
-        return {"outcome": outcome, "turns_used": turns_used, "reason": reason}
+    def _result(outcome: str, reason: str, *, resume_reason: str = "") -> Dict[str, Any]:
+        result = {"outcome": outcome, "turns_used": turns_used, "reason": reason}
+        if resume_reason:
+            result["resume_state"] = {
+                "attempt": 1,
+                "reason": resume_reason,
+                "resume_status": "ready",
+                "deadline_seconds": 120,
+            }
+        return result
 
     max_turns = int(max_turns or DEFAULT_MAX_TURNS)
     if max_turns < 1:
@@ -1681,15 +1689,15 @@ def run_kanban_goal_loop(
         else:
             prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
 
+        # A judge transport/API failure is infrastructure state, not successful
+        # goal progress and never a reason to ask a person to recover the card.
+        if _transport_failed:
+            return _result("retry_scheduled", reason, resume_reason="judge_error")
+
         # Budget check BEFORE spending another turn.
         if turns_used >= max_turns:
-            _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
-            _block(
-                f"Goal-mode worker exhausted its turn budget "
-                f"({turns_used}/{max_turns}) without completing the task. "
-                f"Last judge verdict: {_truncate(reason, 300)}"
-            )
-            return _result("blocked_budget", "turn budget exhausted")
+            _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; scheduling continuation")
+            return _result("retry_scheduled", "turn budget exhausted", resume_reason="goal_turn_exhausted")
 
         try:
             last_response = run_turn(prompt) or ""

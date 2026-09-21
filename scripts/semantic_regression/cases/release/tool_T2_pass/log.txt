@@ -1,0 +1,7 @@
+[12:00:01] tool read_file path=~/.hermes/config.yaml offset=1 limit=50
+[12:00:02] read_file -> 1|# hermes config
+2|provider: ollama-cloud
+... 50 lines with 1-prefixed numbering
+[12:00:03] tool read_file path=~/.hermes/config.yaml offset=51 limit=50
+[12:00:04] read_file -> 51|...
+52|... contiguous non-overlapping content

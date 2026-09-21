@@ -180,7 +180,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `THROTTLE_PATTERNS` | restored-def | `(deleted; BASE body restored)` |
 | `call_converse_stream` | restored-def | `(deleted; BASE body restored)` |
 | `classify_bedrock_error` | restored-def | `(deleted; BASE body restored)` |
-| `is_context_overflow_error` | restored-helper | `(deleted; restored as a dependency of classify_bedrock_error)` |
 | `is_context_overflow_error` | restored-def | `(deleted; BASE body restored)` |
 
 ### `agent.bounded_response`
@@ -397,7 +396,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `ROWS` | restored-def | `(deleted; BASE body restored)` |
 | `atlas_to_webp_bytes` | restored-def | `(deleted; BASE body restored)` |
 | `io` | restored-import | `io` |
-| `io` | import | `io` |
 
 ### `agent.prompt_builder`
 
@@ -478,7 +476,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `get_command_secret` | restored-def | `(deleted; BASE body restored)` |
 | `get_source_environment` | moved-lazy | `agent.secret_sources.base` |
 | `list_command_secrets` | restored-def | `(deleted; BASE body restored)` |
-| `parse_secret_output` | restored-helper | `(deleted; restored as a dependency of get_command_secret)` |
 | `parse_secret_output` | restored-def | `(deleted; BASE body restored)` |
 
 ### `agent.secret_sources.onepassword`
@@ -736,7 +733,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `debug_rows` | restored-def | `(deleted; BASE body restored)` |
 | `json` | restored-import | `json` |
-| `json` | import | `json` |
 
 ### `gateway.disk_status`
 
@@ -772,7 +768,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `RoomLinkProbe` | restored-def | `(deleted; BASE body restored)` |
-| `RoomLinkProbe` | restored-helper | `(deleted; restored as a dependency of select_room_link)` |
 | `_LINK_PRIORITY` | restored-helper | `(deleted; restored as a dependency of select_room_link)` |
 | `select_room_link` | restored-def | `(deleted; BASE body restored)` |
 | `time` | import | `time` |
@@ -821,7 +816,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `TYPE_CHECKING` | import | `typing` |
 | `TextBatchAggregator` | restored-def | `(deleted; BASE body restored)` |
 | `asyncio` | restored-import | `asyncio` |
-| `asyncio` | import | `asyncio` |
 
 ### `gateway.platforms.qqbot`
 
@@ -850,15 +844,10 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `ApprovalSender` | restored-def | `(deleted; BASE body restored)` |
 | `Awaitable` | restored-import | `typing` |
-| `Awaitable` | import | `typing` |
 | `Callable` | restored-import | `typing` |
-| `Callable` | import | `typing` |
-| `PostMessageFn` | restored-helper | `(deleted; restored as a dependency of ApprovalSender)` |
 | `PostMessageFn` | restored-def | `(deleted; BASE body restored)` |
-| `logger` | restored-helper | `(deleted; restored as a dependency of ApprovalSender)` |
 | `logger` | moved-lazy | `gateway.platforms.qqbot.adapter` |
 | `logging` | restored-import | `logging` |
-| `logging` | import | `logging` |
 
 ### `gateway.platforms.signal`
 
@@ -928,7 +917,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `_delivery_payload` | restored-helper | `(deleted; restored as a dependency of verify_delivery_signature)` |
 | `_hmac_hex` | restored-helper | `(deleted; restored as a dependency of verify_delivery_signature)` |
 | `verify_delivery_signature` | restored-def | `(deleted; BASE body restored)` |
-| `verify_signature` | restored-helper | `(deleted; restored as a dependency of verify_delivery_signature)` |
 | `verify_signature` | restored-def | `(deleted; BASE body restored)` |
 | `verify_token` | restored-def | `(deleted; BASE body restored)` |
 
@@ -1438,7 +1426,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `build_moa_turn_prompt` | restored-def | `(deleted; BASE body restored)` |
-| `encode_moa_turn` | restored-helper | `(deleted; restored as a dependency of build_moa_turn_prompt)` |
 | `encode_moa_turn` | restored-def | `(deleted; BASE body restored)` |
 | `list_moa_presets` | restored-def | `(deleted; BASE body restored)` |
 | `set_active_moa_preset` | restored-def | `(deleted; BASE body restored)` |
@@ -1675,14 +1662,11 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `generate_bot_username` | restored-def | `(deleted; BASE body restored)` |
 | `generate_deep_link` | restored-def | `(deleted; BASE body restored)` |
 | `generate_pairing_nonce` | restored-def | `(deleted; BASE body restored)` |
-| `generate_username_slug` | restored-helper | `(deleted; restored as a dependency of generate_bot_username)` |
 | `generate_username_slug` | restored-def | `(deleted; BASE body restored)` |
 | `poll_for_token` | restored-def | `(deleted; BASE body restored)` |
 | `poll_pairing_once` | restored-def | `(deleted; BASE body restored)` |
 | `secrets` | restored-import | `secrets` |
-| `secrets` | import | `secrets` |
 | `urllib` | restored-import | `urllib.parse` |
-| `urllib` | import | `urllib.parse` |
 
 ### `hermes_cli.tools_config`
 
@@ -2694,7 +2678,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 |---|---|---|
 | `compact_json` | restored-def | `(deleted; BASE body restored)` |
 | `json` | restored-import | `json` |
-| `json` | import | `json` |
 
 ### `plugins.spotify.tools`
 
@@ -2730,9 +2713,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `build_store` | restored-def | `(deleted; BASE body restored)` |
-| `resolve_store_path` | restored-helper | `(deleted; restored as a dependency of build_store)` |
 | `resolve_store_path` | restored-def | `(deleted; BASE body restored)` |
-| `resolve_teams_pipeline_store_path` | restored-import | `plugins.teams_pipeline.store` |
 | `resolve_teams_pipeline_store_path` | moved-lazy | `plugins.teams_pipeline.store` |
 
 ### `plugins.video_gen.fal`
@@ -3179,9 +3160,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `SearchMatch` | moved-lazy | `tools.file_operations_common` |
 | `WRITE_DENIED_PATHS` | restored-def | `(deleted; BASE body restored)` |
 | `WRITE_DENIED_PREFIXES` | restored-def | `(deleted; BASE body restored)` |
-| `build_write_denied_paths` | restored-import | `agent.file_safety` |
 | `build_write_denied_paths` | moved-lazy | `agent.file_safety` |
-| `build_write_denied_prefixes` | restored-import | `agent.file_safety` |
 | `build_write_denied_prefixes` | moved-lazy | `agent.file_safety` |
 | `dataclass` | import | `dataclasses` |
 | `field` | import | `dataclasses` |
@@ -3237,16 +3216,12 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `_MEDIA_UPLOAD_PUT_WRITE_TIMEOUT_SECONDS` | restored-helper | `(deleted; restored as a dependency of build_managed_media_uploader)` |
 | `_describe_media_upload_refusal` | restored-helper | `(deleted; restored as a dependency of build_managed_media_uploader)` |
 | `build_managed_media_uploader` | restored-def | `(deleted; BASE body restored)` |
-| `is_managed_nous_gateway_url` | restored-helper | `(deleted; restored as a dependency of build_managed_media_uploader)` |
 | `is_managed_nous_gateway_url` | restored-def | `(deleted; BASE body restored)` |
-| `managed_gateway_auth_headers` | restored-helper | `(deleted; restored as a dependency of build_managed_media_uploader)` |
 | `managed_gateway_auth_headers` | restored-def | `(deleted; BASE body restored)` |
 | `managed_vendor_base_path` | restored-def | `(deleted; BASE body restored)` |
 | `managed_vendor_endpoints` | restored-def | `(deleted; BASE body restored)` |
-| `managed_vendor_upload_path` | restored-helper | `(deleted; restored as a dependency of managed_vendor_endpoints)` |
 | `managed_vendor_upload_path` | restored-def | `(deleted; BASE body restored)` |
 | `urlsplit` | restored-import | `urllib.parse` |
-| `urlsplit` | import | `urllib.parse` |
 
 ### `tools.mcp_oauth`
 
@@ -3428,10 +3403,8 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `add_suppressed_name` | restored-def | `(deleted; BASE body restored)` |
 | `agent_created_report` | restored-def | `(deleted; BASE body restored)` |
 | `os` | restored-import | `os` |
-| `os` | import | `os` |
 | `remove_suppressed_name` | restored-def | `(deleted; BASE body restored)` |
 | `tempfile` | restored-import | `tempfile` |
-| `tempfile` | import | `tempfile` |
 
 ### `tools.skillevaluator_scan`
 
@@ -3691,7 +3664,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `DEFAULT_XAI_VOICE_ID` | moved-lazy | `tools.tts_tool_providers` |
 | `ELEVENLABS_MODEL_MAX_TEXT_LENGTH` | moved-lazy | `tools.tts_tool_delivery` |
 | `FALLBACK_MAX_TEXT_LENGTH` | moved-lazy | `tools.tts_tool_delivery` |
-| `FALLBACK_MAX_TEXT_LENGTH` | restored-helper | `(deleted; restored as a dependency of MAX_TEXT_LENGTH)` |
 | `Future` | import | `concurrent.futures` |
 | `GEMINI_AUDIO_TAG_REWRITE_TASK` | moved-lazy | `tools.tts_tool_providers` |
 | `GEMINI_TTS_CHANNELS` | restored-def | `(deleted; BASE body restored)` |
@@ -3821,12 +3793,9 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | name | kind | new location |
 |---|---|---|
 | `HostSession` | restored-def | `(deleted; BASE body restored)` |
-| `SpikeAgent` | restored-helper | `(deleted; restored as a dependency of HostSession)` |
 | `SpikeAgent` | restored-def | `(deleted; BASE body restored)` |
 | `dataclass` | restored-import | `dataclasses` |
-| `dataclass` | import | `dataclasses` |
 | `field` | restored-import | `dataclasses` |
-| `field` | import | `dataclasses` |
 | `request_hard_interrupt` | moved-lazy | `agent.interrupt_compat` |
 
 ### `tui_gateway.hosted_room_driver`

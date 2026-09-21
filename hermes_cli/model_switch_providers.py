@@ -935,6 +935,9 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             sib_vars = set(sib.api_key_env_vars) if sib else set()
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
+        if cp_config and cp_config.auth_type == "external_process":
+            from hermes_cli.auth import get_external_process_provider_status
+            has_creds = bool(get_external_process_provider_status(cp.slug).get("configured"))
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
         if not has_creds and cp_config is not None and cp_config.auth_type == "external_process":
@@ -1005,6 +1008,12 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
             discovery_allowed=grp["discovery_allowed"], is_current=is_current)
         if discovered is not None:
             models_list = discovered
+
+        # KENSEI CUSTOM (ported from Sahil 5a3466e349): xkiro-free serves cached non-free
+        # models; restrict the row to free-tier SKUs so the picker matches the plan's access.
+        ep_name_lower = str(ep_name).strip().lower()
+        if ep_name_lower in ("xkiro-free", "xkiro_free") and models_list:
+            models_list = [m for m in models_list if str(m).endswith((":free", "-free"))]
 
         b.add_endpoint_row(ep_name, display_name, api_url, models_list, is_current, native_catalog_empty)
         b.seen_slugs.update(ep_aliases)

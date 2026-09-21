@@ -388,6 +388,203 @@ _remove_role = _mutation(
     "Role {role_id} removed from user {user_id}.")
 
 
+
+
+# ── KENSEI CUSTOM — channel management ported from fork ──
+
+def _create_channel(
+    token: str, guild_id: str, name: str,
+    channel_type: int = 0,
+    parent_id: str = "",
+    topic: str = "",
+    **_kwargs: Any,
+) -> str:
+    """Create a channel (text/voice/forum) in a guild.
+
+    Voice channels (type 2) reject a ``topic`` field, so it is omitted there.
+    """
+    body: Dict[str, Any] = {"name": name, "type": int(channel_type)}
+    if parent_id:
+        body["parent_id"] = parent_id
+    # Voice channels (type 2) do not accept a topic — Discord returns 50035.
+    if topic and int(channel_type) != 2:
+        body["topic"] = topic
+    ch = _discord_request("POST", f"/guilds/{guild_id}/channels", token, body=body)
+    return json.dumps({
+        "success": True,
+        "channel_id": ch["id"],
+        "name": ch.get("name"),
+        "type": _channel_type_name(ch.get("type", channel_type)),
+        "parent_id": ch.get("parent_id"),
+    })
+
+
+def _create_category(token: str, guild_id: str, name: str, **_kwargs: Any) -> str:
+    """Create a category (type 4) to group channels under."""
+    ch = _discord_request("POST", f"/guilds/{guild_id}/channels", token, body={"name": name, "type": 4})
+    return json.dumps({"success": True, "channel_id": ch["id"], "name": ch.get("name"), "type": "category"})
+
+
+def _edit_channel(
+    token: str, channel_id: str, name: str = "", topic: str = "", **_kwargs: Any,
+) -> str:
+    """Rename and/or re-topic an existing channel."""
+    body: Dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if topic:
+        body["topic"] = topic
+    if not body:
+        return json.dumps({"error": "edit_channel needs at least one of: name, topic."})
+    ch = _discord_request("PATCH", f"/channels/{channel_id}", token, body=body)
+    return json.dumps({
+        "success": True,
+        "channel_id": ch["id"],
+        "name": ch.get("name"),
+        "topic": ch.get("topic"),
+    })
+
+
+def _move_channel(
+    token: str, channel_id: str, parent_id: str = "", position: str = "", **_kwargs: Any,
+) -> str:
+    """Move a channel to a category and/or set its position."""
+    body: Dict[str, Any] = {}
+    if parent_id:
+        body["parent_id"] = parent_id
+    if position != "":
+        try:
+            body["position"] = int(position)
+        except (TypeError, ValueError):
+            return json.dumps({"error": f"Invalid position {position!r}; must be an integer."})
+    if not body:
+        return json.dumps({"error": "move_channel needs at least one of: parent_id, position."})
+    ch = _discord_request("PATCH", f"/channels/{channel_id}", token, body=body)
+    return json.dumps({
+        "success": True,
+        "channel_id": ch["id"],
+        "parent_id": ch.get("parent_id"),
+        "position": ch.get("position"),
+    })
+
+
+def _delete_channel(token: str, channel_id: str, confirm: str = "", **_kwargs: Any) -> str:
+    """Delete a channel or category. Destructive and irreversible.
+
+    Must be called with ``confirm="true"`` to prevent accidental deletion by
+    a misguided or prompt-injected agent.
+    """
+    if str(confirm).strip().lower() != "true":
+        return json.dumps({
+            "error": (
+                "delete_channel requires confirm=\"true\" to proceed. "
+                "Verify the channel_id and re-call with confirm=\"true\"."
+            ),
+        })
+    _discord_request("DELETE", f"/channels/{channel_id}", token)
+    return json.dumps({"success": True, "message": f"Channel {channel_id} deleted."})
+
+
+def _set_channel_permissions(
+    token: str, channel_id: str, overwrite_id: str,
+    overwrite_type: int = 0,
+    allow: str = "0",
+    deny: str = "0",
+    **_kwargs: Any,
+) -> str:
+    """Set a single permission overwrite on a channel (append-style, PUT).
+
+    ``overwrite_type`` 0 = role, 1 = member. ``allow``/``deny`` are Discord
+    permission bitfield strings. Only the safe channel-scoped bits below are
+    permitted; dangerous bits (ADMINISTRATOR, MANAGE_GUILD, etc.) are masked
+    out to prevent accidental or injected privilege escalation.
+    Requires the bot to have MANAGE_ROLES in the channel.
+    """
+    # Safe bits: VIEW_CHANNEL, SEND_MESSAGES, READ_MESSAGE_HISTORY,
+    # EMBED_LINKS, ATTACH_FILES, ADD_REACTIONS, SEND_TTS_MESSAGES,
+    # MENTION_EVERYONE (controlled), USE_EXTERNAL_EMOJIS,
+    # CONNECT, SPEAK, USE_VAD, DEAFEN_MEMBERS, MUTE_MEMBERS, MOVE_MEMBERS,
+    # CREATE_PUBLIC_THREADS, CREATE_PRIVATE_THREADS, SEND_MESSAGES_IN_THREADS,
+    # MANAGE_MESSAGES, MANAGE_THREADS.
+    _SAFE_PERMISSION_BITS = (
+        0x0000000000000400   # VIEW_CHANNEL
+        | 0x0000000000000800  # SEND_MESSAGES
+        | 0x0000000000010000  # READ_MESSAGE_HISTORY
+        | 0x0000000000004000  # EMBED_LINKS
+        | 0x0000000000008000  # ATTACH_FILES
+        | 0x0000000000000040  # ADD_REACTIONS
+        | 0x0000000000001000  # SEND_TTS_MESSAGES
+        | 0x0000000000020000  # USE_EXTERNAL_EMOJIS
+        | 0x0000000000100000  # CONNECT
+        | 0x0000000000200000  # SPEAK
+        | 0x0000000000400000  # MUTE_MEMBERS
+        | 0x0000000000800000  # DEAFEN_MEMBERS
+        | 0x0000000001000000  # MOVE_MEMBERS
+        | 0x0000000002000000  # USE_VAD
+        | 0x0000000800000000  # MANAGE_MESSAGES
+        | 0x0000001000000000  # CREATE_PUBLIC_THREADS
+        | 0x0000002000000000  # CREATE_PRIVATE_THREADS
+        | 0x0000004000000000  # SEND_MESSAGES_IN_THREADS
+        | 0x0000010000000000  # MANAGE_THREADS
+    )
+    try:
+        allow_bits = int(allow or "0") & _SAFE_PERMISSION_BITS
+        deny_bits = int(deny or "0") & _SAFE_PERMISSION_BITS
+    except (ValueError, TypeError):
+        return json.dumps({"error": "allow/deny must be integer bitfield strings."})
+    body = {
+        "type": int(overwrite_type),
+        "allow": str(allow_bits),
+        "deny": str(deny_bits),
+    }
+    _discord_request("PUT", f"/channels/{channel_id}/permissions/{overwrite_id}", token, body=body)
+    return json.dumps({
+        "success": True,
+        "message": f"Permission overwrite set for {overwrite_id} on channel {channel_id}.",
+        "allow_applied": str(allow_bits),
+        "deny_applied": str(deny_bits),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Action dispatch + metadata
+# ---------------------------------------------------------------------------
+
+_ACTIONS = {
+    "list_guilds": _list_guilds,
+    "server_info": _server_info,
+    "list_channels": _list_channels,
+    "channel_info": _channel_info,
+    "list_roles": _list_roles,
+    "member_info": _member_info,
+    "search_members": _search_members,
+    "fetch_messages": _fetch_messages,
+    "list_pins": _list_pins,
+    "pin_message": _pin_message,
+    "unpin_message": _unpin_message,
+    "delete_message": _delete_message,
+    "create_thread": _create_thread,
+    "add_role": _add_role,
+    "remove_role": _remove_role,
+    "create_channel": _create_channel,
+    "create_category": _create_category,
+    "edit_channel": _edit_channel,
+    "move_channel": _move_channel,
+    "delete_channel": _delete_channel,
+    "set_channel_permissions": _set_channel_permissions,
+}
+
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
+
+_CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
+_ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _ADMIN_ACTION_NAMES}
+
+# Single-source-of-truth manifest: action → (signature, one-line description).
+# Consumed by :func:`_build_schema` so the schema's top-level description
+# always matches the registered action set.
+
+
 # ── action dispatch + metadata ───────────────────────────────────────────────
 # Single source of truth: (action, handler, required-param signature, description). Order is
 # the schema/enum order; the signature drives runtime required-param validation.
@@ -407,6 +604,12 @@ _ACTION_MANIFEST = [
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
+    ("create_channel", _create_channel, "(guild_id, name, [channel_type], [parent_id], [topic])", "create a text/voice/forum channel; channel_type 0=text 2=voice 15=forum; topic ignored for voice"),
+    ("create_category", _create_category, "(guild_id, name)", "create a category to group channels"),
+    ("edit_channel", _edit_channel, "(channel_id, [name], [topic])", "rename and/or re-topic a channel"),
+    ("move_channel", _move_channel, "(channel_id, [parent_id], [position])", "move a channel to a category / set position"),
+    ("delete_channel", _delete_channel, "(channel_id)", "delete a channel or category (destructive)"),
+    ("set_channel_permissions", _set_channel_permissions, "(channel_id, overwrite_id, [overwrite_type], [allow], [deny])", "set one permission overwrite (role/member); needs MANAGE_ROLES"),
 ]
 _ACTIONS = {name: fn for name, fn, _sig, _desc in _ACTION_MANIFEST}
 _REQUIRED_PARAMS: Dict[str, List[str]] = {
@@ -563,7 +766,29 @@ _ACTION_403_HINT = {
     "search_members": (
         "Likely missing the Server Members privileged intent — enable it in the Discord Developer Portal "
         "under your bot's settings."),
-    "member_info": "Bot cannot see this guild member (missing Server Members intent or insufficient permissions)."}
+    "member_info": "Bot cannot see this guild member (missing Server Members intent or insufficient permissions).",
+    "create_channel": (
+        "Bot lacks MANAGE_CHANNELS in this guild, or cannot see the target category."
+    ),
+    "create_category": (
+        "Bot lacks MANAGE_CHANNELS in this guild."
+    ),
+    "edit_channel": (
+        "Bot lacks MANAGE_CHANNELS, or cannot view the channel."
+    ),
+    "move_channel": (
+        "Bot lacks MANAGE_CHANNELS, or cannot view the channel/target category."
+    ),
+    "delete_channel": (
+        "Bot lacks MANAGE_CHANNELS in this channel, or cannot view it."
+    ),
+    "set_channel_permissions": (
+        "Bot needs MANAGE_ROLES (not just MANAGE_CHANNELS) to edit permission "
+        "overwrites, and its own role must sit above the overwrite target. "
+        "Combined invite permission value 268553232 grants both."
+    ),
+}
+
 
 
 def _enrich_403(action: str, body: str) -> str:

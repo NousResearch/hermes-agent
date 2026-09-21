@@ -9,6 +9,7 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
+import { AskUserQuestionsTool } from './askUserQuestionsTool.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
@@ -59,7 +60,11 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
 export function PromptZone({
   cols,
   onApprovalChoice,
+  onAskUserQuestionsAnswer,
   onClarifyAnswer,
+  onClarifyBatchCancel,
+  onClarifyBatchSubmit,
+  onPromptOptimizationChoice,
   onClarifyQuestionAnswer,
   onSecretSubmit,
   onSudoSubmit,
@@ -68,7 +73,11 @@ export function PromptZone({
   AppOverlaysProps,
   | 'cols'
   | 'onApprovalChoice'
+  | 'onAskUserQuestionsAnswer'
   | 'onClarifyAnswer'
+  | 'onClarifyBatchCancel'
+  | 'onClarifyBatchSubmit'
+  | 'onPromptOptimizationChoice'
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
@@ -147,13 +156,31 @@ export function PromptZone({
       <PromptCell cols={cols} id="clarify">
         <ClarifyPrompt
           cols={cols}
+          key={overlay.clarify.requestId}
           onAnswer={onClarifyAnswer}
+          onBatchCancel={onClarifyBatchCancel}
+          onBatchSubmit={onClarifyBatchSubmit}
           onCancel={() => onClarifyAnswer('')}
           onQuestionAnswer={onClarifyQuestionAnswer}
           req={overlay.clarify}
           t={theme}
         />
       </PromptCell>
+    )
+  }
+
+  if (overlay.askUserQuestions) {
+    const askUserQuestions = overlay.askUserQuestions
+
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <AskUserQuestionsTool
+          onAnswer={onAskUserQuestionsAnswer}
+          onCancel={() => onAskUserQuestionsAnswer({}, askUserQuestions.requestId)}
+          req={askUserQuestions}
+          t={theme}
+        />
+      </Box>
     )
   }
 

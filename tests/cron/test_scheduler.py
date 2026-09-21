@@ -1916,9 +1916,9 @@ class TestSendMediaViaAdapter:
         from concurrent.futures import Future
 
         def fake_run_coro(coro, _loop):
-            coro.close()
+            import asyncio
             completed = Future()
-            completed.set_result(MagicMock(success=True))
+            completed.set_result(asyncio.run(coro))
             return completed
 
         with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
@@ -2255,8 +2255,13 @@ class TestSendMediaTimeoutCancelsFuture:
         futures_iter = iter([timeout_future, ok_future])
 
         def fake_run_coro(coro, _loop):
-            coro.close()
-            return next(futures_iter)
+            import asyncio
+            future = next(futures_iter)
+            if future is timeout_future:
+                coro.close()  # First send never dispatched; cancellation is required.
+            else:
+                asyncio.run(coro)
+            return future
 
         root = tmp_path / "media-cache"
         slow = root / "slow.png"

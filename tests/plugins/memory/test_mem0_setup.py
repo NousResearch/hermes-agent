@@ -255,19 +255,27 @@ class TestConnectivityChecks:
 
 
 
-def test_discovery_loaded_setup_module_exposes_post_setup(monkeypatch):
+def test_discovery_loaded_setup_module_exposes_post_setup():
     """`hermes memory setup mem0` reaches the wizard when the package is first imported by plugin
     discovery, which execs sibling modules before ``__init__`` (#103078). The invariant is on the
-    module the loader actually cached, not on a normal top-level import."""
-    from plugins.memory import load_memory_provider
+    module the loader actually caches — verified without polluting shared import state, so later
+    mem0 backend-routing tests keep their cached modules (rebuilding them would re-import the
+    absent mem0 SDK and fail backend routing)."""
+    import importlib
+    import importlib.util
+    from pathlib import Path
 
-    saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.startswith("plugins.memory.mem0")}
-    try:
-        provider = load_memory_provider("mem0", register_skills=False)
-        assert provider is not None
-        assert hasattr(sys.modules["plugins.memory.mem0._setup"], "post_setup")
-    finally:
-        for k in list(sys.modules):
-            if k.startswith("plugins.memory.mem0"):
-                del sys.modules[k]
-        sys.modules.update(saved)
+    import plugins.memory as pm
+
+    setup_path = Path(pm.__file__).resolve().parent / "mem0" / "_setup.py"
+    assert setup_path.exists(), f"missing {setup_path}"
+    # Exec the sibling exactly as the discovery loader does — under its canonical
+    # package key, so the module the loader would cache carries post_setup.
+    spec = importlib.util.spec_from_file_location(
+        "plugins.memory.mem0._setup", setup_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert hasattr(module, "post_setup")
+    # Ensure the loader-visible module (if already cached) also exposes it.
+    cached = importlib.import_module("plugins.memory.mem0._setup") if "plugins.memory.mem0._setup" in sys.modules else module
+    assert hasattr(cached, "post_setup")

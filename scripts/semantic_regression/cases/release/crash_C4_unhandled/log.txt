@@ -1,0 +1,3 @@
+[12:00:01] agent running tool skill_view
+[12:00:02] Unhandled exception in agent loop: TypeError: 'NoneType' object is not callable
+[12:00:03] session aborted

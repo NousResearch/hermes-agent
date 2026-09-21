@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>📡 Daily Research Brief — 27 Jun 2026</title>
+<style>
+:root { --bg:#11100f; --card:#1c1a18; --accent:#fbbf24; --text:#e7e5e4; --muted:#a8a29e; --red:#ef4444; --blue:#3b82f6; --grey:#9ca3af; --border:#292524; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--text); font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; line-height:1.55; padding:2rem 1rem; }
+.container { max-width:800px; margin:0 auto; }
+header { border-bottom:2px solid var(--accent); padding-bottom:1rem; margin-bottom:1.5rem; }
+header h1 { font-size:1.6rem; color:var(--accent); letter-spacing:-0.02em; }
+header .date { color:var(--muted); font-size:0.9rem; margin-top:0.3rem; }
+.section { margin-bottom:2rem; }
+.section-header { font-size:0.85rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; padding:0.4rem 0.8rem; border-radius:6px; display:inline-block; margin-bottom:1rem; }
+.news-h { background:rgba(239,68,68,0.15); color:var(--red); border:1px solid rgba(239,68,68,0.3); }
+.tools-h { background:rgba(59,130,246,0.15); color:var(--blue); border:1px solid rgba(59,130,246,0.3); }
+.signal-h { background:rgba(156,163,175,0.15); color:var(--grey); border:1px solid rgba(156,163,175,0.3); }
+.item { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:1rem 1.2rem; margin-bottom:1rem; }
+.item-title { font-weight:700; font-size:1rem; color:var(--text); margin-bottom:0.3rem; }
+.item-title a { color:var(--accent); text-decoration:none; }
+.item-title a:hover { text-decoration:underline; }
+.item-meta { font-size:0.8rem; color:var(--muted); margin-bottom:0.4rem; }
+.item-summary { font-size:0.92rem; color:var(--text); margin-bottom:0.4rem; }
+.item-take { font-size:0.9rem; color:var(--muted); font-style:italic; border-left:3px solid var(--accent); padding-left:0.6rem; }
+.age { display:inline-block; font-size:0.7rem; font-weight:600; text-transform:uppercase; padding:0.15rem 0.4rem; border-radius:4px; margin-left:0.5rem; }
+.age-today { background:rgba(251,191,36,0.15); color:var(--accent); }
+.age-yesterday { background:rgba(59,130,246,0.15); color:var(--blue); }
+.age-2d { background:rgba(156,163,175,0.15); color:var(--grey); }
+footer { border-top:1px solid var(--border); margin-top:2rem; padding-top:1rem; font-size:0.8rem; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+<h1>📡 Daily Research Brief</h1>
+<div class="date">Saturday, 27 June 2026 &mdash; compiled at 05:30 UTC</div>
+</header>
+
+<div class="section">
+<div class="section-header news-h">── News (5) ──</div>
+
+<div class="item">
+<div class="item-title"><a href="https://www.semafor.com/article/06/27/2026/us-releases-powerful-anthropic-model-mythos-to-some-us-companies" target="_blank">US Government Clears Anthropic Mythos 5 for Trusted Organisations</a><span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">HN 301 pts &middot; Reuters, Semafor, CNN, CNBC</div>
+<div class="item-summary">The US government partially reversed its export-control block on Anthropic's top-tier Claude Mythos 5 model, granting access to roughly 100 vetted US companies and federal agencies. This comes weeks after the same administration suspended all foreign-national access to the model.</div>
+<div class="item-take">Remii's Take: The "trusted org" carve-out creates a two-tier AI market &mdash; US-only premium models vs. globally available open weights. For Sahil, this is a structural tailwind for open-source alternatives. If frontier closed models become geopolitical bargaining chips, open-weight models become the safe default for builders.</div>
+</div>
+
+<div class="item">
+<div class="item-title"><a href="https://techcrunch.com/2026/06/25/the-white-house-is-asking-openai-to-slow-roll-the-release-of-its-new-model-over-safety-concerns/" target="_blank">White House Asks OpenAI to Stagger GPT-5.6 Release</a><span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">HN 46 pts &middot; TechCrunch, The Guardian, Axios, Bloomberg</div>
+<div class="item-summary">The Trump administration reportedly asked OpenAI to slow-roll the release of GPT-5.6 over national-security concerns. Sam Altman told staff the model would now ship in a limited preview to a small partner group before broader availability.</div>
+<div class="item-take">Remii's Take: Both Anthropic and OpenAI got government-managed releases in the same week. This is not coincidence &mdash; it's a policy pivot. The "staggered release" framework is becoming the new normal for frontier models. Builders should plan for API availability uncertainty and not bet product roadmaps on single-model access.</div>
+</div>
+
+<div class="item">
+<div class="item-title"><a href="https://blog.doubleword.ai/frontier-os-llm" target="_blank">The Gap Between Open-Weights LLMs and Closed-Source LLMs</a><span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">HN 149 pts &middot; DoubleWord blog</div>
+<div class="item-summary">A data-driven analysis arguing that the capability gap between frontier open-weight models and closed-source APIs has narrowed to roughly 3-6 months on most benchmarks, with some tasks already at parity.</div>
+<div class="item-take">Remii's Take: This post got 149 HN points because it quantifies what developers already feel. The influencers are treating this as confirmation bias, but the real signal is economic: if the gap is months not years, the "API tax" for marginal gains becomes harder to justify. Sahil's local-first setup (Hermes + Ollama + vLLM) is well-positioned here.</div>
+</div>
+
+<div class="item">
+<div class="item-title"><a href="https://deep-reinforce.com/ornith_1_0.html" target="_blank">Ornith-1.0: Self-Scaffolding LLMs for Agentic Coding</a><span class="age age-today">today</span></div>
+<div class="item-meta">HN 3 pts &middot; DeepReinforce &middot; MIT licence &middot; 9B-397B family</div>
+<div class="item-summary">DeepReinforce open-sourced Ornith-1.0, a coding model family that learns its own RL scaffolds during training rather than relying on fixed human-engineered harnesses. Models available on Hugging Face in dense and MoE variants.</div>
+<div class="item-take">Remii's Take: This is the most technically interesting launch of the week. Most "agentic coding" is a capable model + static scaffold. Moving the scaffold into the weights is a genuine architectural shift. The 9B GGUF is runnable locally &mdash; worth testing against Claude Code for Sahil's workflow. Early X buzz is strong but unverified on real tasks.</div>
+</div>
+
+<div class="item">
+<div class="item-title"><a href="https://github.com/ggml-org/llama.cpp/releases/tag/b9821" target="_blank">llama.cpp b9821 Released</a><span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">GitHub &middot; ggml-org/llama.cpp</div>
+<div class="item-summary">Latest daily build of llama.cpp with ongoing inference optimisations. Two builds landed within hours (b9817 &rarr; b9821), showing active development cadence.</div>
+<div class="item-take">Remii's Take: Not headline news, but the daily build cadence matters for Sahil's local inference stack. Worth keeping Hermes gateway's llama.cpp dependency pinned to a recent build for performance gains.</div>
+</div>
+</div>
+
+<div class="section">
+<div class="section-header tools-h">── Tools (5) ──</div>
+
+<div class="item">
+<div class="item-title"><a href="https://github.com/workweave/router" target="_blank">Workweave Router: Smart Model Routing for Claude, Codex &amp; Cursor</a><span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">HN 156 pts &middot; Drop-in Anthropic/OpenAI-compatible endpoint</div>
+<div class="item-summary">A local model router that intercepts inference requests from Claude Code, Codex, Cursor, or custom apps and routes each prompt to the most cost-effective model based on a cluster-scoring system. Early users report ~70% cost reduction.</div>
+<div class="item-take">Remii's Take: This hit 156 HN points for a reason. It's solving a real pain: Claude Code burns tokens on trivial tasks. A router layer is becoming essential infra, not a nice-to-have. For Sahil's multi-bot architecture, a shared router could cut API spend across Kensei, Octacon, and CeeCee instances.</div>
+</div>
+
+<div class="item">
+<div class="item-title"><a href="https://www.agent-kits.com" target="_blank">AgentKits: 60 Production-Ready AI Agent Blueprints</a><span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">HN 14 pts &middot; With guardrails and templates</div>
+<div class="item-summary">A marketplace of pre-built agent blueprints covering common workflows (RAG, web scraping, data pipelines) with built-in guardrails, error handling, and observability hooks.</div>
+<div class="item-take">Remii's Take: Low HN engagement (14 pts) suggests this is more productised template library than genuine innovation. Still, if the guardrails are well-designed, it's a time-saver for bootstrapping new agents. Treat as reference, not dependency.</div>
+</div>
+
+<div class="item">
+<div class="item-title"><a href="https://verity.md" target="_blank">Verity: Self-Healing Review Gate for Claude Code</a><span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">HN 4 pts &middot; Free public beta &middot; Codacy + adversarial review</div>
+<div class="item-summary">When a Claude Code session ends, Verity runs static analysis (via Codacy) and then passes the diff through a different model for adversarial review across three severity tiers before merging.</div>
+<div class="item-take">Remii's Take: The "review gate for agents" category is heating up. This is lightweight and Claude-native. For Sahil's build-review pipeline, layering a second-model review on Octacon's output is worth testing. Free beta makes it low-risk to evaluate.</div>
+</div>
+
+<div class="item">
+<div class="item-title"><a href="https://agentbrush.dev/" target="_blank">AgentBrush: Image Generation MCP for Coding Agents</a><span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">HN 4 pts &middot; MCP server &middot; Claude Code / Cursor / Windsurf</div>
+<div class="item-summary">An MCP server that lets coding agents generate on-brand images (icons, diagrams, UI assets) directly from within Claude Code or Cursor sessions without leaving the terminal.</div>
+<div class="item-take">Remii's Take: Niche but clever. Coding agents that can produce visual assets cut a workflow step. For Sahil's content pipeline (CeeCee), this could be interesting if extended to social-image generation. Otherwise, more curiosity than must-have.</div>
+</div>
+
+<div class="item">
+<div class="item-title"><a href="https://github.com/insightitsGit/prismlib" target="_blank">PrismLib: Semantic LLM Cache &amp; Cluster Mesh</a><span class="age age-today">today</span></div>
+<div class="item-meta">HN 2 pts &middot; Apache 2.0 &middot; Tensor-native</div>
+<div class="item-summary">An open-source semantic caching layer that cuts LLM API spend by matching queries on embedding similarity rather than exact string match, with cluster-mesh support for distributed deployments.</div>
+<div class="item-take">Remii's Take: Semantic caching is 2026's "obvious infra that nobody built well yet." PrismLib is early and only 2 HN points, but the category is right. For Hermes' multi-bot architecture where many prompts are repetitive (cron summaries, status checks), a shared semantic cache would materially reduce token costs.</div>
+</div>
+</div>
+
+<div class="section">
+<div class="section-header signal-h">── Signal (3) ──</div>
+
+<div class="item">
+<div class="item-title">US Government Now Manages Frontier Model Release Timelines<span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">Pattern &middot; Anthropic + OpenAI same week</div>
+<div class="item-summary">For the first time, both leading frontier labs had their release schedules directly influenced by the same administration within a 48-hour window. This signals a new era of government-managed AI deployment.</div>
+<div class="item-take">Remii's Take: The "staggered release" framework is here to stay. Expect more carve-outs (US-only, enterprise-only, government-only). This makes open-weight models not just cheaper but more reliable from a compliance standpoint. Sahil's bet on local inference and open weights is looking prescient.</div>
+</div>
+
+<div class="item">
+<div class="item-title">Router / Mux Layer Becoming Essential Coding-Agent Infra<span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">Pattern &middot; Workweave + TBD + Workbench + amux</div>
+<div class="item-summary">Multiple router/multiplexer tools for coding agents launched in the past week: Workweave (model routing), TBD (Mac-native agent mux), Workbench (TUI parallel agents). The category is maturing fast.</div>
+<div class="item-take">Remii's Take: When a category gets 3+ serious entries in a week, it's not a coincidence &mdash; it's a bottleneck being solved. Coding agents at scale need orchestration. Sahil's multi-bot setup already has this conceptually (Kensei + Octacon + CeeCee), but a lower-level router for model selection could be the missing piece.</div>
+</div>
+
+<div class="item">
+<div class="item-title">Claude Code v2.1.195 + Codex 0.142.3 Landed Same Day<span class="age age-yesterday">yesterday</span></div>
+<div class="item-meta">GitHub releases &middot; Both on 26 Jun</div>
+<div class="item-summary">Claude Code added autoMode and auto-mode denial reasons to transcripts. Codex (Rust) improved MCP tool search by default and shipped 0.143.0-alpha previews. Both tools are iterating weekly.</div>
+<div class="item-take">Remii's Take: The weekly release cadence from both Anthropic and OpenAI means features worth adopting show up fast but also churn fast. Sahil should pin Claude Code to stable releases for the Hermes gateway and only bump after a 48h soak on a test branch. The autoMode feature is worth testing &mdash; it reduces manual mode-switching friction.</div>
+</div>
+</div>
+
+<footer>
+Sources: Hacker News (Algolia), Hugging Face daily papers &amp; trending models, GitHub releases, X/Twitter, TechCrunch, Semafor, Reuters, The Guardian, Axios, Bloomberg, CNBC.<br>
+Compiled by Remii, Kensei Research Lead. Freshness gate: 48 hours. Items older than 2 days discarded.<br>
+Next brief: 28 Jun 2026.
+</footer>
+</div>
+</body>
+</html>

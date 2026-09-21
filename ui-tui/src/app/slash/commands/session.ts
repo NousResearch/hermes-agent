@@ -16,9 +16,15 @@ import type {
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
-import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
+import {
+  AGENT_MODES,
+  type AgentMode,
+  DEFAULT_INDICATOR_STYLE,
+  INDICATOR_STYLES,
+  type IndicatorStyle
+} from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState } from '../../uiStore.js'
+import { getUiState, patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
 const USAGE_CTA = 'Run /subscription to change plan · /topup to add to your balance'
@@ -660,6 +666,40 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'verbose', session_id: ctx.sid, value: arg || 'cycle' })
         .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`verbose: ${r.value}`)))
+    }
+  },
+
+  // ── KENSEI CUSTOM: agent mode slash command ──
+  // See skill `agent-modes` for full spec.  Must survive upstream merges.
+  // NOTE: 'gods_plan' is the internal name; user-facing label is "UltraPlan".
+  {
+    help: 'agent mode: plan, UltraPlan, recon, auto [status]',
+    name: 'mode',
+    usage: `/mode [${AGENT_MODES.join('|')}]`,
+    run: (arg, ctx) => {
+      const value = arg.trim().toLowerCase()
+
+      if (!value || value === 'status') {
+        const current = getUiState().agentMode
+
+        return ctx.transcript.sys(`mode: ${current}`)
+      }
+
+      if (!(AGENT_MODES as readonly string[]).includes(value)) {
+        return ctx.transcript.sys(`usage: /mode [${AGENT_MODES.join('|')}]`)
+      }
+
+      patchUiState({ agentMode: value as AgentMode })
+
+      return ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mode', session_id: ctx.sid, value }).then(
+        ctx.guarded<ConfigSetResponse>(r => {
+          ctx.transcript.sys(`mode → ${r.value || value}`)
+
+          if (r.prompt_cache_reset) {
+            ctx.transcript.sys('note: mode change resets the model prompt cache on the next request')
+          }
+        })
+      )
     }
   },
 

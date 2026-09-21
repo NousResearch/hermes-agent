@@ -420,6 +420,7 @@ gateway:
     no_data:                  "No hay datos de uso disponibles para esta sesión."
     unknown_subcommand:       "Subcomando /usage desconocido: `{args}`. Prueba `/usage` o `/usage reset [--force]`."
     reset_wrong_provider:     "Los reinicios de límite acumulados solo están disponibles con el proveedor openai-codex. Cambia primero con `/model`."
+    reset_no_credential:      "Cannot redeem a reset credit without an active account credential. Send a message to establish the active account, then run /usage reset."
 
   credits:
     not_logged_in:            "No has iniciado sesión en Nous Portal. Inicia sesión para ver tu saldo de créditos y recargar."

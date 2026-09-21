@@ -27,6 +27,148 @@ DEFAULT_CONFIG = {
     # of switching the turn to a fallback model.
     "fallback": {"min_switch_reset_seconds": 0},
     "credential_pool_strategies": {},
+
+    'governance': {
+        'profile_activity_ledger': {
+            # Append-only SQLite + JSONL audit ledger for profile/worker activity.
+            # Enabled 2026-06-03: single source of truth for the Skill Access &
+            # Lifecycle Manager (skill borrows/grants/loads + task events). The
+            # ledger is central (one store under ~/.hermes/governance) and the
+            # inline hooks are best-effort, so enabling fleet-wide is safe.
+            'enabled': True,
+        },
+    },
+
+    "council": {
+        # Panel members: the models that independently review PRD+Spec.
+        # Each member MUST include ``provider`` and ``model``. Optional
+        # ``fallback`` chain is tried in order if the primary provider
+        # returns a transient error (402, 429, connection failure).
+        # Diversity across providers is recommended — lint warns on
+        # same-family panels.
+        # Fallbacks are cross-provider so an opencode-go outage cannot drop two
+        # of three panellists. Slugs are limited to the already-approved panel
+        # models; adjust to taste in config.yaml.
+        "panel": [
+            {"provider": "opencode-go",  "model": "minimax-m3",
+             "fallback": [
+                 {"provider": "custom:CommandCode", "model": "minimax-m3"},
+             ]},
+            {"provider": "opencode-go",  "model": "mimo-v2.5-pro",
+             "fallback": [
+                 {"provider": "custom:CommandCode", "model": "mimo-v2.5-pro"},
+                 {"provider": "opencode-go", "model": "qwen3.6-plus"},
+             ]},
+            {"provider": "ollama-cloud", "model": "glm-5.1",
+             "fallback": [
+                 {"provider": "opencode-go", "model": "deepseek-v4-flash"},
+             ]},
+        ],
+        # Chairman model: reads all critiques + rankings and emits the
+        # final APPROVED or REVISE verdict. Falls back through the shared
+        # pool if the primary is unavailable.
+        "chairman": {
+            "provider": "custom:CommandCode",
+            "model": "deepseek-v4-pro",
+            "fallback": [
+                {"provider": "opencode-go", "model": "deepseek-v4-pro"},
+                {"provider": "custom:CommandCode", "model": "qwen3.7-plus"},
+            ],
+        },
+        # Shared fallback pool — tried in order after each member's own
+        # fallbacks. Models already in use by another active member are
+        # skipped. Provider diversity: OpenCode-Go, CommandCode, OpenCode-Zen, Ollama-Cloud.
+        "fallback_pool": [
+            {"provider": "opencode-go",    "model": "deepseek-v4-pro"},
+            {"provider": "opencode-go",    "model": "qwen3.7-plus"},
+            {"provider": "opencode-go",    "model": "qwen3.6-plus"},
+            {"provider": "custom:CommandCode",    "model": "deepseek-v4-pro"},
+            {"provider": "custom:CommandCode",    "model": "minimax-m3"},
+            {"provider": "custom:CommandCode",    "model": "mimo-v2.5-pro"},
+            {"provider": "custom:CommandCode",    "model": "qwen3.7-plus"},
+            {"provider": "custom:CommandCode",    "model": "qwen3.6-plus"},
+            {"provider": "ollama-cloud",   "model": "deepseek-v4-flash"},
+            {"provider": "ollama-cloud",   "model": "glm-5.1"},
+            {"provider": "opencode-zen",   "model": "deepseek-v4-flash-free"},
+            {"provider": "opencode-zen",   "model": "mimo-v2.5-free"},
+            {"provider": "opencode-zen",   "model": "minimax-m3-free"},
+        ],
+        # Per-council token cap (backstop for cost governance).
+        # Limits total tokens consumed across all three phases.
+        # None = no cap (uses provider-level limits).
+        "token_cap": 200_000,
+        # Max times the council can REVISE a spec before the dispatcher
+        # escalates to the operator. This is the canonical home for the
+        # cap (design doc §4); ``pipeline.max_revise_loops`` is read as a
+        # legacy fallback for back-compat.
+        "max_revise_loops": 4,
+        # Max seconds for the entire council deliberation before timeout.
+        "timeout_seconds": 600,
+        # Per-member LLM call timeout in seconds.
+        "member_timeout_seconds": 180,
+        # ------------------------------------------------------------------
+        # Additive council features (all default OFF — existing 3-phase
+        # behaviour is unchanged unless explicitly enabled).
+        # ------------------------------------------------------------------
+        # Phase 0: dynamically assemble diverse advisor personas.
+        "compose": False,
+        # Insert a cross-examination round between Phase 1 and Phase 2.
+        "cross_examination": False,
+        # Insert a skeptic cascade-breaker between Phase 2 and Phase 3.
+        "cascade_breaker": False,
+        # Lowest-confidence member writes a minority report after Phase 3.
+        "minority_report": False,
+        # Phase 1 reviewers tag every claim with its evidence type.
+        "evidence_labels": False,
+        # Emit a standalone council-report.html alongside the verdict.
+        "html_report": False,
+        # Deliberation protocol:
+        #   deliberate — cross-exam + ranking + optional cascade + chairman
+        #   vote       — ranking + deterministic majority verdict
+        #   synthesize — chairman synthesis without peer ranking
+        "protocol": "deliberate",
+        # For deliberate + cross-examination, skip ranking when Phase 1 and
+        # revised confidence distributions converge.
+        "adaptive_stopping": False,
+    },
+
+    "pipeline": {
+        # Maximum number of times the council can REVISE a spec before
+        # escalating to the operator. Prevents infinite loops when the
+        # council and spec author disagree on scope or approach.
+        "max_revise_loops": 4,
+        # Per-council token cap (backstop for cost governance).
+        # Limits total tokens consumed across all council phases.
+        # None = no cap (uses provider-level limits).
+        "token_cap": None,
+        # Enable express workflow (drops PRD, Council, Tech Review).
+        # Express runs are logged as bypasses for Denji review.
+        "express_enabled": True,
+        # Artifact storage base directory. Artifacts are stored as
+        # <base>/<task_id>/<artifact-name>.md. Relative to HERMES_HOME
+        # if not absolute.
+        "artifact_dir": "feature-artifacts",
+        # Stage ownership: which profile is responsible for each stage.
+        # Used for dispatch routing and notifications.
+        # ROUTING MODEL (Sahil directive, 2026-08-13, Option A): work goes to
+        # the LEAD profile first — the lead executes the stage itself and
+        # re-delegates specialist sub-work via delegate_task / kanban_create.
+        # Leads are spawnable workers (removed from nonspawnable where
+        # needed); only kensei (root, operator-run) stays nonspawnable and
+        # is handled in-session. Leads do NOT carry feature-pipeline in
+        # always_skills, so the dispatcher injects the pipeline-stage
+        # protocol into the worker prompt (see _default_spawn).
+        "stage_owners": {
+            "research": "remii",
+            "prd": "kensei-review",
+            "spec": "octacon",
+            "tech_review": "octacon",
+            "pr+qa": "quan",
+            "audit": "quan",
+            "document": "light",
+            "council": "",  # Phase B: council service
+        },
+    },
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).
@@ -735,11 +877,13 @@ DEFAULT_CONFIG = {
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
-        # are ignored. Compression: raise timeout for local models. no_progress_timeout
+        # are ignored. Compression: raise timeout for local models. max_output_tokens is only
+        # honored with a concrete provider/model AND ``reasoning_effort: none``; 0 = uncapped
+        # (KENSEI: output-cap removal stance). no_progress_timeout
         # (Codex/Responses streams only): seconds without a substantive event before the stream
         # fails fast; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
-        "compression": _aux(120, no_progress_timeout=None),
+        "compression": _aux(120, max_output_tokens=0, no_progress_timeout=None),
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
@@ -771,7 +915,34 @@ DEFAULT_CONFIG = {
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
-        "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
+        # KENSEI CUSTOM: judge runs on a fast API provider with a fallback chain, independent of the
+        # worker's main route — provider: auto inherits the WORKER profile's local model at
+        # judge time and timed out repeatedly (Spectator Mode incident t_9df6f54b, 2026-08-13).
+        "goal_judge": {
+            "provider": "nvidia",
+            "model": "stepfun-ai/step-3.7-flash",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "timeout": 60,
+            "extra_body": {},
+            "reasoning_effort": "",
+            "fallback_chain": [
+                {
+                    "provider": "nvidia",
+                    "model": "stepfun-ai/step-3.7-flash",
+                    "base_url": "https://integrate.api.nvidia.com/v1",
+                },
+                {
+                    "provider": "ollama-cloud",
+                    "model": "minimax-m3",
+                    "base_url": "https://ollama.com/v1",
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                    "base_url": "https://openrouter.ai/api/v1",
+                },
+            ],
+        },
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
         # of skills); route cheaper via `hermes model` → auxiliary → Curator.
         "curator": _aux(600),
@@ -1883,6 +2054,10 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # KENSEI CUSTOM: per-tick spawn budget (distinct from max_spawn / max_in_progress):
+        # throttles how many new workers a single dispatcher tick may start (burst throttle
+        # across ready, review, and pipeline lanes). None = no per-tick budget.
+        "max_spawn_per_tick": None,
         # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
         # this home's dispatcher may claim (list or comma-separated string). None = any existing
         # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a
@@ -1898,6 +2073,29 @@ DEFAULT_CONFIG = {
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,
+        # KENSEI CUSTOM: Loop diagnostics: record each worker action as a graph node and
+        # causal/data/loop/retry dependency edges for failure diagnosis.
+        # When disabled (default) the plugin registers zero hooks and the
+        # recorder adds no per-tool overhead.  See
+        # docs/loop-diagnostics-design.md and
+        # hermes_cli/observability/schemas/hermes.loop_diagnostics.v1.schema.json.
+        "loop_diagnostics": {
+            # Master switch. False = the loop-diagnostics plugin registers
+            # no hooks and writes nothing.
+            "enabled": False,
+            # When True (and ``enabled``), a terminal attempt failure
+            # (crashed / timed_out / spawn_failed / blocked with an open
+            # run / gave_up) runs the diagnosis engine on the run's trace
+            # and attaches the report as a ``diagnosis`` task event +
+            # ``<run_id>.diagnosis.json``. When False, failure reporting is
+            # byte-identical to today (no event, no diagnosis file).
+            "diagnose_on_failure": True,
+            # Per-run cap on trace events (header/footer bypass the cap).
+            # Bounds memory + disk growth on long-running workers.
+            "max_events_per_run": 10000,
+            # How many run trace files to keep per task after pruning.
+            "retain_runs": 20,
+        },
         # Each tick, requeue 'running' cards with broken claim bookkeeping (claim_lock or
         # claim_expires NULL with a dead worker) that TTL/crash/stale recovery can't see. False
         # keeps orphans frozen for manual forensics.
@@ -2001,7 +2199,7 @@ DEFAULT_CONFIG = {
         # providers: {openrouter: {url: https://example.com/my-curation.json}}.
         "providers": {},
     },
-    # Per-model metadata overrides. Fields: context_window, supports_tools,
+    # Per-model metadata overrides. Fields: context_window, max_output_tokens, supports_tools,
     # supports_vision, supports_reasoning, model_family. <provider>.<model_id> wins over
     # models.dev/OpenRouter/hardcoded defaults for the fields it sets (chain order in
     # agent/model_metadata.py). <provider>._default and top-level _default fill gaps ONLY for models
@@ -2244,7 +2442,10 @@ DEFAULT_CONFIG = {
         # Minimum hours between auto-maintenance runs (tracked in state.db state_meta, shared across
         # processes).
         "min_interval_hours": 24,
-
+        # Legacy ~/.hermes/sessions/session_{sid}.json snapshots rewritten every turn. state.db is
+        # canonical (superset); snapshots consumed GBs on heavy users. Enable only for an external
+        # tool that reads the JSON files directly.
+        "write_json_snapshots": False,
         # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes
         # stay until `hermes sessions optimize-storage` runs, since the rebuild is disk-heavy on
         # large DBs. advise = `hermes update` prints a one-line notice with reclaimable size when a

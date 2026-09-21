@@ -1,0 +1,99 @@
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 75b217e38a..23c6616392 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -31,6 +31,18 @@ from pathlib import Path
+ 
+ import pytest
+ 
++# A few script-focused tests temporarily prepend ``scripts/`` to sys.path.
++# That directory contains a local namespace/package named ``mcp`` which must
++# not shadow the installed MCP SDK for later collection. Import the real SDK
++# and its shared submodules before any test module can alter the path.
++try:
++    import mcp as _real_mcp
++    import mcp.shared  # noqa: F401
++    import mcp.shared.auth  # noqa: F401
++    import mcp.types  # noqa: F401
++except ImportError:
++    _real_mcp = None
++
+ # Ensure project root is importable
+ PROJECT_ROOT = Path(__file__).parent.parent
+ if str(PROJECT_ROOT) not in sys.path:
+diff --git a/tests/plugins/test_denji_policy_enforcer.py b/tests/plugins/test_denji_policy_enforcer.py
+index 2b7639a043..a078e4acb7 100644
+--- a/tests/plugins/test_denji_policy_enforcer.py
++++ b/tests/plugins/test_denji_policy_enforcer.py
+@@ -6,15 +6,22 @@ from pathlib import Path
+ from hermes_cli.config import load_config
+ from hermes_cli.profile_activity_ledger import append_event
+ 
+-# The plugin is in the plugins dir, we need to import its handler
+-# Since it's a plugin, we can import it from the path or if installed.
+-# For testing, we import from the source path.
++# Load the plugin from this checkout without a bare ``__init__`` import. The
++# latter collides with ``tests/__init__.py`` during full-suite collection and
++# the old absolute path silently tested a different checkout.
++import importlib.util
+ import sys
+-plugin_path = "/home/kensei/repos/KenseiAgent/plugins/denji-policy-enforcer"
+-if plugin_path not in sys.path:
+-    sys.path.append(plugin_path)
+ 
+-from __init__ import pre_tool_call_handler, _engine
++PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "denji-policy-enforcer"
++_PLUGIN_SPEC = importlib.util.spec_from_file_location(
++    "denji_policy_enforcer_under_test", PLUGIN_DIR / "__init__.py"
++)
++assert _PLUGIN_SPEC and _PLUGIN_SPEC.loader
++_PLUGIN = importlib.util.module_from_spec(_PLUGIN_SPEC)
++sys.modules[_PLUGIN_SPEC.name] = _PLUGIN
++_PLUGIN_SPEC.loader.exec_module(_PLUGIN)
++pre_tool_call_handler = _PLUGIN.pre_tool_call_handler
++_engine = _PLUGIN._engine
+ 
+ @pytest.fixture
+ def mock_hermes_home(tmp_path):
+diff --git a/tests/test_kensei_super_memory_mcp.py b/tests/test_kensei_super_memory_mcp.py
+index 3c6338d0b9..cef04d36ee 100644
+--- a/tests/test_kensei_super_memory_mcp.py
++++ b/tests/test_kensei_super_memory_mcp.py
+@@ -14,6 +14,11 @@ from unittest.mock import MagicMock, patch, PropertyMock
+ 
+ import pytest
+ 
++from importlib.util import find_spec
++
++if find_spec("mcp.server.fastmcp") is None:
++    pytestmark = pytest.mark.skip(reason="legacy FastMCP server API is unavailable with MCP 2.0")
++
+ # Pre-import the real mcp SDK before adding the scripts directory to sys.path.
+ # The scripts dir contains a local mcp/ package that shadows the installed SDK.
+ import mcp as _real_mcp
+diff --git a/tests/test_semantic_judge.py b/tests/test_semantic_judge.py
+index 79ba295990..33f0dace56 100644
+--- a/tests/test_semantic_judge.py
++++ b/tests/test_semantic_judge.py
+@@ -7,7 +7,8 @@ or:   python3 tests/test_semantic_judge.py
+ import os
+ import sys
+ 
+-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.join(ROOT, "scripts", "semantic_regression"))
+ 
+ from semantic_judge import crash_filter  # noqa: E402
+ from semantic_judge.judge import _validate  # noqa: E402
+diff --git a/tests/test_semantic_release_gate.py b/tests/test_semantic_release_gate.py
+index 5bd32a3662..86ea8fd5a6 100644
+--- a/tests/test_semantic_release_gate.py
++++ b/tests/test_semantic_release_gate.py
+@@ -15,6 +15,7 @@ import pytest
+ 
+ REPO_ROOT = Path(__file__).resolve().parents[1]
+ sys.path.insert(0, str(REPO_ROOT / "scripts"))
++sys.path.insert(0, str(REPO_ROOT / "scripts" / "semantic_regression"))
+ 
+ from semantic_release_gate import (  # noqa: E402
+     BLOCKING_VERDICTS,

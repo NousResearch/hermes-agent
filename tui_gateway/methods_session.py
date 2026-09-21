@@ -67,6 +67,18 @@ def _new_runtime_ids(params: dict) -> tuple[str, str]:
     return uuid.uuid4().hex[:8], _resolve_session_source(_str_param(params, "source") or None)
 
 
+def _notify_session_open(session_id: object, platform: object = "tui") -> bool:
+    """Public plugin lifecycle bridge used by session RPC handlers (REM-304).
+
+    Fires ``on_session_open`` once per active addressable-session lifecycle,
+    BEFORE the deferred agent build / history hydration for the session.
+    Idempotent per ``(platform, session_id)`` until a finalize/reset boundary
+    releases the id (see ``hermes_cli.plugins.notify_session_open``)."""
+    from hermes_cli.plugins import notify_session_open
+
+    return notify_session_open(session_id, platform)
+
+
 def _profile_build_scope(profile_home):
     """Bind HERMES_HOME + secret + terminal scope for an agent build: the same composition a turn
     binds (``_session_profile_runtime_scope``). Home alone leaves ``get_secret()`` on the LAUNCH
@@ -384,8 +396,24 @@ def _(rid, params: dict) -> dict:
     # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
     if parent_session_id and history:
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+        # ── KENSEI CUSTOM — branch inherits the parent's todo sidecar (ported) ──
+        # A copied transcript does not encode human completion/cancellation overrides, so
+        # hydrating the child from history alone can reopen work the user closed.
+        try:
+            with _sessions_lock:
+                _parent = _sessions.get(parent_session_id) or next(
+                    (s for s in _sessions.values() if s.get("session_key") == parent_session_id), None)
+                if _parent is not None and _parent.get("todo_state"):
+                    _sessions[sid]["todo_state"] = dict(_parent["todo_state"])
+        except Exception:
+            logger.debug("branch todo-state inheritance failed", exc_info=True)
+        # ── END KENSEI CUSTOM ──
     elif history:
         _seed_row(_sessions[sid])
+    # Host-open lifecycle (REM-304): the session is live and addressable; fire
+    # on_session_open BEFORE the deferred agent build so plugins can register
+    # a peer before the first model turn.
+    _notify_session_open(key, "tui")
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
@@ -886,6 +914,10 @@ def _(rid, params: dict) -> dict:
         if (resp := _resume_guard(ctx)) is not None:
             return resp
         ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
+        # Host-open lifecycle (REM-304): fire on_session_open BEFORE any build /
+        # hydration path (deferred, cold, eager) so plugins observe the session
+        # before its first turn. Idempotent — a re-resumed live session no-ops.
+        _notify_session_open(ctx.target, "tui")
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
@@ -986,6 +1018,54 @@ def _(rid, params: dict, session: dict) -> dict:
             _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
     return _ok(rid, _live_session_payload(
         sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))
+@_session_method("session.activate")
+def _(rid, params: dict, session: dict) -> dict:
+    """Attach the frontend to a live TUI session without closing the previously focused one."""
+    return _ok(rid, _live_session_payload(
+        str(params.get("session_id") or ""), session, touch=True, transport=current_transport() or _stdio_transport,
+        omit_messages=is_truthy_value(params.get("omit_messages", False))))
+
+def _(rid, params: dict, session: dict) -> dict:
+    """Attach the frontend to a live TUI session without closing the previously focused one."""
+    sid = str(params.get("session_id") or "")
+    # Only the rebind is atomic with grace expiry; the payload (a DB history read unless
+    # ``omit_messages``) must not hold the process-wide resume lock.
+    with _session_resume_lock:
+        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+            return refusal
+        with session["history_lock"]:
+            _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
+    return _ok(rid, _live_session_payload(
+        sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))
+@method("session.activate")
+def _(rid, params: dict) -> dict:
+    """Attach the frontend to an already-live TUI session.
+
+    This intentionally does not close the previously focused session; it merely
+    returns enough state for Ink to redraw around another live session id.
+    """
+    sid = str(params.get("session_id") or "")
+    session, err = _sess_nowait({"session_id": sid}, rid)
+    if err:
+        return err
+    assert session is not None
+
+    return _ok(
+        rid,
+        _live_session_payload(
+            sid,
+            session,
+            touch=True,
+            transport=current_transport() or _stdio_transport,
+            omit_messages=is_truthy_value(params.get("omit_messages", False)),
+        ),
+    )
+@_session_method("session.activate")
+def _(rid, params: dict, session: dict) -> dict:
+    """Attach the frontend to a live TUI session without closing the previously focused one."""
+    return _ok(rid, _live_session_payload(
+        str(params.get("session_id") or ""), session, touch=True, transport=current_transport() or _stdio_transport,
+        omit_messages=is_truthy_value(params.get("omit_messages", False))))
 
 
 @method("session.delete")
@@ -1289,6 +1369,24 @@ def _(rid, params: dict, session: dict) -> dict:
 _PET_OFF = {"enabled": False}
 
 
+def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
+    """kitty payload for a TTY that speaks it (dashboard PTY falls through); only kitty is grid-safe in Ink."""
+    from agent.pet import constants, render
+    from agent.pet.render import PetRenderer
+    configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
+    if (render.detect_terminal_graphics() if configured in ("", "auto") else configured) != "kitty":
+        return None
+    image_id = render.kitty_image_id(pet.slug)
+    # kitty sizes from scaled pixels, so unicode_cols is moot here.
+    payload = PetRenderer(str(pet.spritesheet), mode="kitty", scale=scale).kitty_payload(state, image_id=image_id)
+    if not payload:
+        return None
+    return {"graphics": "kitty", "imageId": image_id, "color": render.kitty_color_hex(image_id),
+            "cols": payload["cols"], "rows": payload["rows"], "placeholder": payload["placeholder"],
+            "frames": payload["frames"], "frameMs": constants.LOOP_MS / max(1, len(payload["frames"]) or 1),
+            "scale": scale}
+
+
 @_pet_method("pet.info", fail_open=_PET_OFF)
 def _(rid, params: dict) -> dict:
     """Active pet for sprite renderers: spritesheet (base64) + frame geometry + state-row taxonomy."""
@@ -1332,6 +1430,7 @@ def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | Non
             "cols": payload["cols"], "rows": payload["rows"], "placeholder": payload["placeholder"],
             "frames": payload["frames"], "frameMs": constants.LOOP_MS / max(1, len(payload["frames"]) or 1),
             "scale": scale}
+
 
 
 @_pet_method("pet.cells", fail_open=_PET_OFF)
@@ -2063,6 +2162,118 @@ def _(rid, params: dict, session: dict) -> dict:
                      "message_count": len(history), "messages": _history_to_messages(history),
                      "info": _session_info(agent, _sessions.get(new_sid))})
 
+def _(rid, params: dict, session: dict) -> dict:
+    # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5008)
+        old_key = session["session_key"]
+        history = _branch_source_history(db, session, old_key)
+        if not history:
+            return _err(rid, 4008, "nothing to branch — send a message first")
+        if isinstance(count := params.get("count"), int) and count > 0:
+            history = history[:count]
+        new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
+        try:
+            title = params.get("name", "") or _branch_title(db, old_key)
+            home = session.get("profile_home")
+            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
+                            profile_name=profile_name_for_home(home) or _current_profile_name(),
+                            copy_fields=_BRANCH_COPY_FIELDS)
+        except Exception as e:
+            return _err(rid, 5008, f"branch failed: {e}")
+    try:
+        agent = _build_branch_agent(session, new_sid, new_key, history, source)
+    except Exception as e:
+        return _err(rid, 5000, f"agent init failed on branch: {e}")
+    return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
+                     "message_count": len(history), "messages": _history_to_messages(history),
+                     "info": _session_info(agent, _sessions.get(new_sid))})
+
+def _(rid, params: dict, session: dict) -> dict:
+    # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5008)
+        old_key = session["session_key"]
+        history = _branch_source_history(db, session, old_key)
+        if not history:
+            return _err(rid, 4008, "nothing to branch — send a message first")
+        if isinstance(count := params.get("count"), int) and count > 0:
+            history = history[:count]
+        new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
+        try:
+            title = params.get("name", "") or _branch_title(db, old_key)
+            home = session.get("profile_home")
+            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
+                            profile_name=profile_name_for_home(home) or _current_profile_name(),
+                            copy_fields=_BRANCH_COPY_FIELDS)
+        except Exception as e:
+            return _err(rid, 5008, f"branch failed: {e}")
+    try:
+        agent = _build_branch_agent(session, new_sid, new_key, history, source)
+    except Exception as e:
+        return _err(rid, 5000, f"agent init failed on branch: {e}")
+    return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
+                     "message_count": len(history), "messages": _history_to_messages(history),
+                     "info": _session_info(agent, _sessions.get(new_sid))})
+
+def _(rid, params: dict, session: dict) -> dict:
+    # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5008)
+        old_key = session["session_key"]
+        history = _branch_source_history(db, session, old_key)
+        if not history:
+            return _err(rid, 4008, "nothing to branch — send a message first")
+        if isinstance(count := params.get("count"), int) and count > 0:
+            history = history[:count]
+        new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
+        try:
+            title = params.get("name", "") or _branch_title(db, old_key)
+            home = session.get("profile_home")
+            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
+                            profile_name=profile_name_for_home(home) or _current_profile_name(),
+                            copy_fields=_BRANCH_COPY_FIELDS)
+        except Exception as e:
+            return _err(rid, 5008, f"branch failed: {e}")
+    try:
+        agent = _build_branch_agent(session, new_sid, new_key, history, source)
+    except Exception as e:
+        return _err(rid, 5000, f"agent init failed on branch: {e}")
+    return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
+                     "message_count": len(history), "messages": _history_to_messages(history),
+                     "info": _session_info(agent, _sessions.get(new_sid))})
+
+def _(rid, params: dict, session: dict) -> dict:
+    # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5008)
+        old_key = session["session_key"]
+        history = _branch_source_history(db, session, old_key)
+        if not history:
+            return _err(rid, 4008, "nothing to branch — send a message first")
+        if isinstance(count := params.get("count"), int) and count > 0:
+            history = history[:count]
+        new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
+        try:
+            title = params.get("name", "") or _branch_title(db, old_key)
+            home = session.get("profile_home")
+            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
+                            profile_name=profile_name_for_home(home) or _current_profile_name(),
+                            copy_fields=_BRANCH_COPY_FIELDS)
+        except Exception as e:
+            return _err(rid, 5008, f"branch failed: {e}")
+    try:
+        agent = _build_branch_agent(session, new_sid, new_key, history, source)
+    except Exception as e:
+        return _err(rid, 5000, f"agent init failed on branch: {e}")
+    return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
+                     "message_count": len(history), "messages": _history_to_messages(history),
+                     "info": _session_info(agent, _sessions.get(new_sid))})
+
 
 # ── interrupt / steer / redirect ─────────────────────────────────────
 @method("session.interrupt")
@@ -2113,6 +2324,47 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
             _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})
+
+
+def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):
+    """steer/redirect RPC: ``params.text`` (4002, checked before the session) into a live session;
+    ``supported(agent)`` gates 4010."""
+    @method(name)
+    def _(rid, params: dict) -> dict:
+        if not (text := (params.get("text") or "").strip()):
+            return _err(rid, 4002, "text is required")
+        session, err = _sess_nowait(params, rid)
+        if err:
+            return err
+        agent = session.get("agent")
+        # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
+        # a misleading 4010 the client swallows into a lost follow-up.
+        if verb == "redirect" and agent is None and session.get("running"):
+            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+            session["last_active"] = time.time()
+            return _ok(rid, {"status": "queued", "text": text})
+        if not supported(agent):
+            return _err(rid, 4010, unsupported)
+        return _apply_correction(rid, session, verb, text, accepted_status)
+
+
+# Inject text into the next tool result without interrupting (AIAgent.steer(): no new user turn, no role
+# alternation violation).
+_correction_method("session.steer", "steer", "queued", lambda agent: hasattr(agent, "steer"),
+                   "agent does not support steer")
+# Redirect the active model turn while preserving valid work/context.
+_correction_method("session.redirect", "redirect", "redirected",
+                   lambda agent: getattr(agent, "_supports_active_turn_redirect", False) is True
+                   and hasattr(agent, "redirect"), "agent does not support active-turn redirect")
+
+
+# ── delegation / spawn trees ─────────────────────────────────────────
+@method("delegation.status")
+def _(rid, params: dict) -> dict:
+    from tools import delegate_tool as dt
+    return _ok(rid, {"active": dt.list_active_subagents(), "paused": dt.is_spawn_paused(),
+                     "max_spawn_depth": dt._get_max_spawn_depth(),
+                     "max_concurrent_children": dt._get_max_concurrent_children()})
 
 
 def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):

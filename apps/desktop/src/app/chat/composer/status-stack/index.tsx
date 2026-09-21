@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useMemo } from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
@@ -14,9 +14,11 @@ import { FreeTierNoticeStrip, useFreeTierNoticeOwner } from '@/components/free-t
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { parseTodoSnapshot } from '@/lib/todos'
 import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
@@ -33,6 +35,20 @@ import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/f
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
+import {
+  createTodoMutationController,
+  humanTodoTarget,
+  todoGatewayErrorCode,
+  type TodoGatewayRequest,
+  type TodoHumanStatus,
+  TodoMutationFailure
+} from '@/store/todo-mutation'
+import {
+  $sessionTodoSnapshots,
+  applyOptimisticTodoStatus,
+  currentSessionTodoSnapshot,
+  setSessionTodoSnapshot
+} from '@/store/todos'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
@@ -74,7 +90,9 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
   }
 
   if (group.type === 'todo') {
-    return s.todos(group.items.filter(i => i.todoStatus === 'completed').length, group.items.length)
+    const counted = group.items.filter(item => item.todoStatus !== 'cancelled')
+
+    return s.todos(counted.filter(item => item.todoStatus === 'completed').length, counted.length)
   }
 
   return group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
@@ -83,10 +101,19 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
 const hasRunningTodo = (group: StatusGroup) =>
   group.type === 'todo' && group.items.some(item => item.todoStatus === 'in_progress' && item.state === 'running')
 
+interface TodoConfirmTarget {
+  authority: { generation: number; revision: number }
+  item: ComposerStatusItem
+  status: TodoHumanStatus
+}
+
+type TodoSyncState = 'failed' | 'ready' | 'session' | 'syncing' | 'unsupported'
+
 interface ComposerStatusStackProps {
   onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   /** The queue, built by the composer (it owns the queue's callbacks). */
   queue: ReactNode
+  requestGateway?: TodoGatewayRequest
   sessionId: null | string
 }
 
@@ -95,7 +122,7 @@ interface ComposerStatusStackProps {
  * every session-scoped status — subagents, background tasks, queue — grouped by
  * type and separated by light dividers. Collapses to nothing when empty.
  */
-export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
+export function ComposerStatusStack({ onSubmit, queue, requestGateway, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const storedSessionId = useStore(useSessionView().$storedId)
@@ -125,6 +152,31 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const ownsFreeTierNotice = useFreeTierNoticeOwner()
   const freeTierNotice = ownsFreeTierNotice && freeTierStripPending(freeTierStatus, freeTierRoute)
 
+  const todoAuthority = useStoreSelector($sessionTodoSnapshots, snapshots =>
+    sessionId ? (snapshots[sessionId] ?? null) : null
+  )
+
+  const [todoConfirm, setTodoConfirm] = useState<TodoConfirmTarget | null>(null)
+  const [pendingTodoItemId, setPendingTodoItemId] = useState<string | null>(null)
+  const [todoCollapsed, setTodoCollapsed] = useState(false)
+  const [todoSyncState, setTodoSyncState] = useState<TodoSyncState>(requestGateway ? 'syncing' : 'unsupported')
+  const todoActionOriginRef = useRef<HTMLButtonElement | null>(null)
+  const todoDisclosureRef = useRef<HTMLButtonElement | null>(null)
+  const todoSyncControllerRef = useRef<AbortController | null>(null)
+
+  const todoController = useMemo(
+    () =>
+      requestGateway
+        ? createTodoMutationController({
+            applySnapshot: setSessionTodoSnapshot,
+            getSnapshot: currentSessionTodoSnapshot,
+            optimisticStatus: applyOptimisticTodoStatus,
+            request: requestGateway
+          })
+        : null,
+    [requestGateway]
+  )
+
   const isStructuredSupported = controlEntry?.capability === 'supported'
 
   const groups = useMemo(() => {
@@ -136,6 +188,44 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
     return raw
   }, [items, isStructuredSupported])
+
+  const refreshTodoSnapshot = useCallback(async () => {
+    if (!sessionId || !requestGateway) {
+      setTodoSyncState('unsupported')
+
+      return
+    }
+
+    todoSyncControllerRef.current?.abort()
+    const controller = new AbortController()
+    todoSyncControllerRef.current = controller
+    setTodoSyncState('syncing')
+
+    try {
+      const raw = await requestGateway<unknown>('todo.snapshot', { session_id: sessionId })
+      const snapshot = parseTodoSnapshot(raw)
+
+      if (controller.signal.aborted) {
+        return
+      }
+
+      if (!snapshot || snapshot.session_id !== sessionId) {
+        setTodoSyncState('failed')
+
+        return
+      }
+
+      setSessionTodoSnapshot(snapshot)
+      setTodoSyncState('ready')
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return
+      }
+
+      const code = todoGatewayErrorCode(error)
+      setTodoSyncState(code === -32601 ? 'unsupported' : code === 4001 ? 'session' : 'failed')
+    }
+  }, [requestGateway, sessionId])
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream. This must NOT reset
@@ -151,6 +241,24 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       void refreshSessionControl(sessionId)
     }
   }, [sessionId])
+
+  useEffect(() => {
+    setTodoConfirm(null)
+    setPendingTodoItemId(null)
+    setTodoCollapsed(false)
+
+    if (!sessionId || !requestGateway) {
+      setTodoSyncState('unsupported')
+
+      return
+    }
+
+    void refreshTodoSnapshot()
+
+    return () => {
+      todoSyncControllerRef.current?.abort()
+    }
+  }, [refreshTodoSnapshot, requestGateway, sessionId])
 
   const hasRunningBackground = groups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
 
@@ -184,6 +292,95 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const openSubagent = (item: ComposerStatusItem) =>
     item.sessionId ? void openSessionInNewWindow(item.sessionId, { watch: true }) : openAgents()
 
+  const requestTodoAction = useCallback((item: ComposerStatusItem, origin: HTMLButtonElement) => {
+    if (!item.todoStatus || !item.todoItemId || !todoAuthority || todoSyncState !== 'ready') {
+      return
+    }
+
+    todoActionOriginRef.current = origin
+    setTodoConfirm({
+      authority: { generation: todoAuthority.generation, revision: todoAuthority.revision },
+      item,
+      status: humanTodoTarget(item.todoStatus)
+    })
+  }, [todoAuthority, todoSyncState])
+
+  const closeTodoConfirm = useCallback(() => {
+    setTodoConfirm(null)
+    setPendingTodoItemId(null)
+    queueMicrotask(() => {
+      const origin = todoActionOriginRef.current
+      const focusTarget = origin?.isConnected ? origin : todoDisclosureRef.current
+      focusTarget?.focus()
+    })
+  }, [])
+
+  const confirmTodoAction = useCallback(async () => {
+    if (!todoConfirm?.item.todoItemId || !sessionId || !todoController) {
+      return
+    }
+
+    const itemId = todoConfirm.item.todoItemId
+    setPendingTodoItemId(itemId)
+
+    try {
+      const result = await todoController.run({
+        content: todoConfirm.item.title,
+        expectedGeneration: todoConfirm.authority.generation,
+        expectedRevision: todoConfirm.authority.revision,
+        itemId,
+        sessionId,
+        status: todoConfirm.status
+      })
+
+      const allTerminal =
+        result.todos.length > 0 &&
+        result.todos.every(todo => todo.status === 'completed' || todo.status === 'cancelled')
+
+      setTodoCollapsed(allTerminal)
+    } catch (error) {
+      const kind = error instanceof TodoMutationFailure ? error.kind : 'unavailable'
+
+      const message =
+        kind === 'stale'
+          ? t.statusStack.taskChanged
+          : kind === 'missing'
+            ? t.statusStack.taskMissing
+            : kind === 'session'
+              ? t.statusStack.taskSessionMissing
+              : t.statusStack.taskUpdateFailed
+
+      throw new Error(message, { cause: error })
+    } finally {
+      setPendingTodoItemId(null)
+    }
+  }, [sessionId, t.statusStack, todoConfirm, todoController])
+
+  const todoMutationUnavailableLabel =
+    todoSyncState === 'failed'
+      ? t.statusStack.taskSyncFailed
+      : todoSyncState === 'session'
+        ? t.statusStack.taskSessionMissing
+        : todoSyncState === 'unsupported'
+          ? t.statusStack.taskUpdatesUnavailable
+          : t.statusStack.syncingTask
+
+  const todoRetry =
+    requestGateway && (todoSyncState === 'failed' || todoSyncState === 'session') ? (
+      <Button
+        className="text-muted-foreground/75 hover:text-foreground/90"
+        onClick={() => void refreshTodoSnapshot()}
+        size="micro"
+        type="button"
+        variant="text"
+      >
+        {t.statusStack.retryTaskSync}
+      </Button>
+    ) : undefined
+
+  // Preview links live as child rows of the background group — a localhost dev
+  // server and its preview are the same thing — so they no longer float as an
+  // odd, differently-indented standalone block under the stack.
   const previewRows =
     visiblePreviews.length > 0 && sessionId
       ? visiblePreviews.map(item => (
@@ -238,7 +435,9 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       node: (
         <StatusSection
           accessory={
-            group.type === 'subagent' ? (
+            group.type === 'todo' ? (
+              todoRetry
+            ) : group.type === 'subagent' ? (
               <Tip label={<TipKeybindLabel actionId="nav.agents" text={t.statusStack.agents} />}>
                 <Button
                   className="text-muted-foreground/75 hover:text-foreground/90"
@@ -252,6 +451,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
               </Tip>
             ) : undefined
           }
+          collapsed={group.type === 'todo' ? todoCollapsed : undefined}
           collapsedIndicator={
             hasRunningTodo(group) ? (
               <GlyphSpinner
@@ -264,6 +464,8 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
           defaultCollapsed={group.type !== 'todo'}
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
           label={groupLabel(group, t.statusStack)}
+          onCollapsedChange={group.type === 'todo' ? setTodoCollapsed : undefined}
+          triggerRef={group.type === 'todo' ? todoDisclosureRef : undefined}
         >
           {group.items.map(item => (
             <StatusItemRow
@@ -272,6 +474,10 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
               onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
               onOpen={() => openSubagent(item)}
               onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
+              onTodoAction={requestTodoAction}
+              todoMutationEnabled={Boolean(requestGateway && todoAuthority && todoSyncState === 'ready')}
+              todoMutationPending={Boolean(item.todoItemId && pendingTodoItemId === item.todoItemId)}
+              todoMutationUnavailableLabel={todoMutationUnavailableLabel}
             />
           ))}
         </StatusSection>
@@ -294,24 +500,28 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // rows up here you press instead of read, so nothing may ever stack on top
   // of them. Rendered outside the card (below) so the pills float.
   const visible = sections.length > 0
+  const hasTodoRows = groups.some(group => group.type === 'todo' && group.items.length > 0)
 
   // No height to publish: the stack is an in-flow child of the composer dock,
   // so the dock's own measurement (--composer-measured-height) already covers
   // it and the thread clears both with one number.
 
-  if (!visible) {
+  if (!visible && !todoConfirm) {
     return null
   }
 
+  const completingTodo = todoConfirm?.status === 'completed'
+
   return (
-    <div
-      // In flow in the dock column, directly above the composer. The dock is
-      // bottom-anchored, so this grows upward over the thread without needing
-      // to be positioned — and it shares the dock's left edge for free.
-      className="flex max-h-[40vh] min-h-0 flex-col overflow-hidden"
-      data-slot="composer-status-stack"
-      onPointerDownCapture={() => blurComposerInput()}
-    >
+    <>
+      <div
+        // In flow in the dock column, directly above the composer. The dock is
+        // bottom-anchored, so this grows upward over the thread without needing
+        // to be positioned — and it shares the dock's left edge for free.
+        className="flex max-h-[40vh] min-h-0 flex-col overflow-hidden"
+        data-slot="composer-status-stack"
+        onPointerDownCapture={() => blurComposerInput()}
+      >
       {/* The card paints the shared --composer-fill (rest / scrolled / focused
           all match the composer surface by construction); on scroll we only
           ghost the CONTENT — element opacity on the card would kill the blur.
@@ -331,7 +541,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             <div
               className={cn(
                 'transition-opacity duration-200 ease-out',
-                scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+                scrolledUp && !hasTodoRows ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
               )}
               data-slot="status-stack-content"
             >
@@ -344,6 +554,26 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
           </div>
         </div>
       )}
-    </div>
+      </div>
+      <ConfirmDialog
+        busyLabel={completingTodo ? t.statusStack.markingDone : t.statusStack.reopening}
+        confirmLabel={completingTodo ? t.statusStack.markDone : t.statusStack.reopen}
+        description={
+          todoConfirm ? (
+            <span className="space-y-2">
+              <span className="block break-words text-foreground">{todoConfirm.item.title}</span>
+              <span className="block">
+                {completingTodo ? t.statusStack.markDoneDescription : t.statusStack.reopenDescription}
+              </span>
+            </span>
+          ) : undefined
+        }
+        doneLabel={completingTodo ? t.statusStack.markedDone : t.statusStack.reopened}
+        onClose={closeTodoConfirm}
+        onConfirm={confirmTodoAction}
+        open={Boolean(todoConfirm)}
+        title={completingTodo ? t.statusStack.markDoneTitle : t.statusStack.reopenTitle}
+      />
+    </>
   )
 }

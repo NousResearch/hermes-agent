@@ -17,6 +17,15 @@ import yaml
 
 from hermes_constants import get_hermes_home
 from agent.skill_commands import command_snapshot, diff_command_snapshots, resolve_slash_key, slugify_skill_name as _slugify
+# ── KENSEI CUSTOM — strict persona bundles (ported) ──
+from agent.strict_persona_bundles import (
+    MANIFEST_NAME as STRICT_PERSONA_MANIFEST,
+    StrictPersonaError,
+    approval_registry_path,
+    build_strict_persona_invocation,
+    load_strict_persona_bundle,
+)
+# ── END KENSEI CUSTOM ──
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +41,18 @@ def _bundles_dir() -> Path:
 
 def _iter_bundle_files() -> List[Path]:
     base = _bundles_dir()
-    return [f for ext in ("*.yaml", "*.yml") for f in sorted(base.glob(ext))] if base.exists() else []
+    files: List[Path] = []
+    if not base.exists():
+        # ── KENSEI CUSTOM — strict persona approval registry freshness (ported) ──
+        registry = approval_registry_path()
+        return [registry] if registry.exists() else []
+        # ── END KENSEI CUSTOM ──
+    # ── KENSEI CUSTOM — include strict-persona PACK.json manifests (ported) ──
+    for ext in ("*.yaml", "*.yml"):
+        files.extend(sorted(base.glob(ext)))
+    files.extend(sorted(base.glob(f"*/{STRICT_PERSONA_MANIFEST}")))
+    # ── END KENSEI CUSTOM ──
+    return files
 
 
 def _max_mtime(files: List[Path]) -> float:
@@ -43,6 +63,14 @@ def _max_mtime(files: List[Path]) -> float:
             mtimes.append(f.stat().st_mtime)
         except OSError:
             continue
+    # ── KENSEI CUSTOM — strict persona approval registry freshness (ported) ──
+    registry = approval_registry_path()
+    if registry.exists():
+        try:
+            mtimes.append(registry.stat().st_mtime)
+        except OSError:
+            pass
+    # ── END KENSEI CUSTOM ──
     return max(mtimes, default=0.0)
 
 
@@ -50,7 +78,7 @@ def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
     """Parse one bundle YAML; ``None`` (logged) on any error so a broken bundle can't break discovery."""
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Could not read bundle %s: %s", path, exc)
         return None
     except yaml.YAMLError as exc:
@@ -60,6 +88,14 @@ def _load_bundle_file(path: Path) -> Optional[Dict[str, Any]]:
         logger.warning("Bundle %s %s; skipping", path, reason)
     if not isinstance(data, dict):
         return _skip("is not a mapping")
+    # ── KENSEI CUSTOM — strict persona bundles (ported) ──
+    if path.name == STRICT_PERSONA_MANIFEST or data.get("kind") == "persona":
+        try:
+            return load_strict_persona_bundle(path, bundles_root=_bundles_dir())
+        except (OSError, StrictPersonaError) as exc:
+            logger.warning("Strict persona bundle %s rejected: %s", path, exc)
+            return None
+    # ── END KENSEI CUSTOM ──
     name = str(data.get("name") or path.stem).strip()
     if not name:
         return _skip("has no name")
@@ -141,6 +177,35 @@ def build_bundle_invocation_message(
     info = get_skill_bundles().get(cmd_key)
     if not info:
         return None
+    # ── KENSEI CUSTOM — strict persona invocation path (ported) ──
+    strict_persona = info.get("strict") is True and info.get("kind") == "persona"
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        disabled_names = get_disabled_skill_names(platform=platform)
+    except Exception as exc:
+        if strict_persona:
+            logger.warning(
+                "Strict persona invocation %s rejected: disabled-skill policy "
+                "could not be read: %s",
+                cmd_key,
+                exc,
+            )
+            return None
+        disabled_names = set()
+
+    if strict_persona:
+        try:
+            return build_strict_persona_invocation(
+                info,
+                bundles_root=_bundles_dir(),
+                disabled_names=set(disabled_names),
+                user_instruction=user_instruction,
+                task_id=task_id,
+            )
+        except (OSError, StrictPersonaError) as exc:
+            logger.warning("Strict persona invocation %s rejected: %s", cmd_key, exc)
+            return None
+    # ── END KENSEI CUSTOM ──
     # Late import keeps skill_bundles cheap to import (no tools/* at import time).
     from agent.skill_commands import _disabled_skill_names, _load_skill_blocks, _load_skill_payload, _scaffold_header
     bundle_name = info["name"]

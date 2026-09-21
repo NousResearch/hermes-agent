@@ -155,6 +155,17 @@ def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) 
     if name in _core_tool_names():
         return False
     toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
+    if toolset is not None:
+        try:
+            from tools.registry import registry
+            if registry.is_ambient(toolset):
+                # Ambient tools (e.g. Toolaria's rescuer_fetch) stay visible in
+                # every session; deferring one would force a scoped session to
+                # discover it via tool_search before it could redeem a rescue
+                # handle the model was just told to fetch directly.
+                return False
+        except Exception:
+            pass
     return toolset is not None and (
         toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)
 

@@ -141,7 +141,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
+    for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "group", "task_transcripts", *_ROUTING_KEYS)
         if key in record}
     try:  # where the children's terminals started; lets recovery add a git-state hint
         task_payload["owner_cwd"] = os.getcwd()
@@ -158,6 +158,65 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
              record.get("parent_session_id"), record["dispatched_at"], now, os.getpid(), owner_started_at,
              json.dumps(task_payload), record.get("origin_session_id", "")))
     _prune_durable_records()
+
+
+def record_unit_child(delegation_id: str, entry: Dict[str, Any]) -> None:
+    """Durably record ONE finished child of a still-running multi-child unit on the unit's own row, so a crash before
+    the unit joins loses only the children that had not finished. Stored in ``result_json`` (overwritten by the real
+    result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
+    fidelity, never the live result."""
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            row = conn.execute("SELECT result_json FROM async_delegations WHERE delegation_id=? AND state='running'",
+                               (delegation_id,)).fetchone()
+            if row is None:
+                return
+            partial = json.loads(row[0] or "{}") or {}
+            results = [r for r in partial.get("results") or [] if r.get("task_index") != entry.get("task_index")]
+            results.append(entry)
+            conn.execute("UPDATE async_delegations SET result_json=?, updated_at=? WHERE delegation_id=? AND state='running'",
+                         (json.dumps({"results": results, "partial": True}), time.time(), delegation_id))
+    except Exception:  # noqa: BLE001 — recovery bookkeeping must never fail a live child
+        logger.warning("Async delegation %s: could not record finished child %s", delegation_id, entry.get("task_index"), exc_info=True)
+
+
+def push_task_failure_notice(delegation_id: str, entry: Dict[str, Any], *, n_tasks: int) -> None:
+    """Surface ONE failed child of a still-running detached batch to the parent now, instead of
+    when the slowest sibling finishes. In a 1,393-agent run every wave-1 child died in a 401 storm
+    at 08:29 and the parent learned of it at 09:36, when the batch's "unknown outcome" block finally
+    arrived: 66 minutes of a dead wave with nothing running. The notice rides the same
+    ``type="async_delegation"`` event shape as the batch result (so every drain/route/format path
+    treats it identically) with ``task_failure_notice=True`` and a single-entry ``results`` list; the
+    batch record is NOT finalized and its consolidated result still arrives as before."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("status") not in _ACTIVE_STATES:
+            return
+        snapshot = dict(record)
+    try:
+        from tools.process_registry import process_registry
+    except Exception as exc:  # pragma: no cover
+        logger.error("Async delegation batch %s: task failure notice dropped (process_registry import): %s", delegation_id, exc)
+        return
+    evt = {
+        "type": "async_delegation", "task_failure_notice": True, "is_batch": True, "n_tasks": n_tasks,
+        "delegation_id": delegation_id, "results": [entry],
+        "session_key": snapshot.get("session_key", ""),
+        "origin_ui_session_id": snapshot.get("origin_ui_session_id", ""),
+        "origin_session_id": snapshot.get("origin_session_id", ""),
+        "parent_session_id": snapshot.get("parent_session_id"),
+        "goal": snapshot.get("goal", ""), "goals": snapshot.get("goals"), "context": snapshot.get("context"),
+        "toolsets": snapshot.get("toolsets"), "role": snapshot.get("role"), "model": snapshot.get("model"),
+        "status": "running", "dispatched_at": snapshot.get("dispatched_at") or time.time(), "completed_at": time.time(),
+        **{k: snapshot[k] for k in _ROUTING_KEYS if snapshot.get(k)}}
+    try:
+        process_registry.completion_queue.put(evt)
+    except Exception as exc:  # pragma: no cover
+        logger.error("Async delegation batch %s: failed to enqueue task failure notice: %s", delegation_id, exc)
+
+
+# Stable name used by the delegation completion contract.
+publish_child_failure_notice = push_task_failure_notice
 
 
 def _prune_durable_records() -> None:
@@ -186,33 +245,65 @@ def _prune_durable_records() -> None:
 
 
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Persist a redacted, replay-safe completion envelope only (KENSEI CUSTOM: redaction)."""
     now = time.time()
+    # KENSEI CUSTOM — redact at-rest completion state (ported from fork).
+    durable_event = _redact_durable_value(event)
+    durable_result = {
+        key: durable_event.get(key)
+        for key in (
+            "status", "summary", "error", "api_calls", "duration_seconds",
+            "model", "exit_reason",
+        )
+        if durable_event.get(key) is not None
+    }
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
                WHERE delegation_id=?""",
-            (event.get("status", "completed"), event.get("completed_at", now), now,
-             json.dumps(event), json.dumps(result), event["delegation_id"]))
+            (durable_event.get("status", "completed"), durable_event.get("completed_at", now), now,
+             json.dumps(durable_event), json.dumps(durable_result), durable_event["delegation_id"]))
 
 
-def record_unit_child(delegation_id: str, entry: Dict[str, Any]) -> None:
-    """Durably record ONE finished child of a still-running multi-child unit on the unit's own row, so a crash before
-    the unit joins loses only the children that had not finished. Stored in ``result_json`` (overwritten by the real
-    result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
-    fidelity, never the live result."""
-    try:
-        with _DB_LOCK, _transaction() as conn:
-            row = conn.execute("SELECT result_json FROM async_delegations WHERE delegation_id=? AND state='running'",
-                               (delegation_id,)).fetchone()
-            if row is None:
-                return
-            partial = json.loads(row[0] or "{}") or {}
-            results = [r for r in partial.get("results") or [] if r.get("task_index") != entry.get("task_index")]
-            results.append(entry)
-            conn.execute("UPDATE async_delegations SET result_json=?, updated_at=? WHERE delegation_id=? AND state='running'",
-                         (json.dumps({"results": results, "partial": True}), time.time(), delegation_id))
-    except Exception:  # noqa: BLE001 — recovery bookkeeping must never fail a live child
-        logger.warning("Async delegation %s: could not record finished child %s", delegation_id, entry.get("task_index"), exc_info=True)
+# ── KENSEI CUSTOM — durable-record redaction + delivery bookkeeping (ported) ──
+
+def _redact_durable_value(value: Any) -> Any:
+    """Return a JSON-safe, secret-redacted value for at-rest delegation state."""
+    if isinstance(value, str):
+        try:
+            from agent.redact import redact_sensitive_text
+
+            return redact_sensitive_text(value, force=True)
+        except Exception:
+            # Durable recovery metadata is optional; fail closed rather than
+            # writing an unredacted credential when the redactor is unavailable.
+            return "«redacted-unavailable»"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, list):
+        return [_redact_durable_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_durable_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_durable_value(item)
+            for key, item in value.items()
+        }
+    return None
+
+
+def _note_delivery_attempt(delegation_id: str) -> None:
+    with _DB_LOCK, _transaction() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET delivery_attempts=delivery_attempts+1, updated_at=? WHERE delegation_id=?",
+            (time.time(), delegation_id),
+        )
+
+
+def _delete_durable_delegation(delegation_id: str) -> None:
+    with _DB_LOCK, _transaction() as conn:
+        conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+# ── END KENSEI CUSTOM ──
 
 
 def _recovered_results(task: Dict[str, Any], result_json: Optional[str], error: str) -> Optional[List[Dict[str, Any]]]:
@@ -351,7 +442,7 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 def is_interim_delegation_event(evt: Dict[str, Any]) -> bool:
     """An early per-task notice for a batch that is still running. It shares the batch's
     ``delegation_id`` but is NOT the durable completion: it must never claim, acknowledge or
-    dedup against the final result's row (independent review reproduced exactly that loss)."""
+    dedup against the final result's row."""
     return evt.get("type") == "async_delegation" and bool(evt.get("task_failure_notice"))
 
 
@@ -770,41 +861,6 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
     except Exception as exc:  # pragma: no cover
         logger.error(f"Async delegation{label} %s: failed to enqueue completion event; "
                      "result lost: %s", record.get("delegation_id"), exc)
-
-
-def push_task_failure_notice(delegation_id: str, entry: Dict[str, Any], *, n_tasks: int) -> None:
-    """Surface ONE failed child of a still-running detached batch to the parent now, instead of
-    when the slowest sibling finishes. In a 1,393-agent run every wave-1 child died in a 401 storm
-    at 08:29 and the parent learned of it at 09:36, when the batch's "unknown outcome" block finally
-    arrived: 66 minutes of a dead wave with nothing running. The notice rides the same
-    ``type="async_delegation"`` event shape as the batch result (so every drain/route/format path
-    treats it identically) with ``task_failure_notice=True`` and a single-entry ``results`` list; the
-    batch record is NOT finalized and its consolidated result still arrives as before."""
-    with _records_lock:
-        record = _records.get(delegation_id)
-        if record is None or record.get("status") not in _ACTIVE_STATES:
-            return
-        snapshot = dict(record)
-    try:
-        from tools.process_registry import process_registry
-    except Exception as exc:  # pragma: no cover
-        logger.error("Async delegation batch %s: task failure notice dropped (process_registry import): %s", delegation_id, exc)
-        return
-    evt = {
-        "type": "async_delegation", "task_failure_notice": True, "is_batch": True, "n_tasks": n_tasks,
-        "delegation_id": delegation_id, "results": [entry],
-        "session_key": snapshot.get("session_key", ""),
-        "origin_ui_session_id": snapshot.get("origin_ui_session_id", ""),
-        "origin_session_id": snapshot.get("origin_session_id", ""),
-        "parent_session_id": snapshot.get("parent_session_id"),
-        "goal": snapshot.get("goal", ""), "goals": snapshot.get("goals"), "context": snapshot.get("context"),
-        "toolsets": snapshot.get("toolsets"), "role": snapshot.get("role"), "model": snapshot.get("model"),
-        "status": "running", "dispatched_at": snapshot.get("dispatched_at") or time.time(), "completed_at": time.time(),
-        **{k: snapshot[k] for k in _ROUTING_KEYS if snapshot.get(k)}}
-    try:
-        process_registry.completion_queue.put(evt)
-    except Exception as exc:  # pragma: no cover
-        logger.error("Async delegation batch %s: failed to enqueue task failure notice: %s", delegation_id, exc)
 
 
 # ── Stale monitor ───────────────────────────────────────────────────────────

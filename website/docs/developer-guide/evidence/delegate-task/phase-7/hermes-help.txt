@@ -1,0 +1,224 @@
+usage: hermes [-h] [--version] [-z PROMPT] [--usage-file PATH] [-m MODEL]
+              [--provider PROVIDER] [--reasoning LEVEL] [-t TOOLSETS]
+              [--resume SESSION] [--no-restore-cwd] [--in DIR]
+              [--continue [SESSION_NAME]] [--worktree] [--accept-hooks]
+              [--skills SKILLS] [--yolo] [--pass-session-id]
+              [--ignore-user-config] [--ignore-rules] [--safe-mode] [--tui]
+              [--cli] [--dev]
+              {chat,model,moa,fallback,worktree,browser,secrets,egress,migrate,gateway,proxy,lsp,setup,whatsapp,whatsapp-cloud,slack,send,login,logout,auth,status,pause,resume,cron,sync,webhook,peer,portal,kanban,project,hooks,doctor,verify,security,approvals,dump,debug,backup,checkpoints,import,import-agent,config,skin,console,pairing,skills,bundles,plugins,curator,pets,journey,learning,memory-graph,memory,tools,computer-use,mcp,sessions,insights,monitoring,claw,update,uninstall,acp,profile,completion,dashboard,serve,desktop,gui,logs,prompt-size}
+              ...
+
+Hermes Agent - AI assistant with tool-calling capabilities
+
+positional arguments:
+  {chat,model,moa,fallback,worktree,browser,secrets,egress,migrate,gateway,proxy,lsp,setup,whatsapp,whatsapp-cloud,slack,send,login,logout,auth,status,pause,resume,cron,sync,webhook,peer,portal,kanban,project,hooks,doctor,verify,security,approvals,dump,debug,backup,checkpoints,import,import-agent,config,skin,console,pairing,skills,bundles,plugins,curator,pets,journey,learning,memory-graph,memory,tools,computer-use,mcp,sessions,insights,monitoring,claw,update,uninstall,acp,profile,completion,dashboard,serve,desktop,gui,logs,prompt-size}
+                        Command to run
+    chat                Interactive chat with the agent
+    model               Select default model and provider
+    moa                 Configure Mixture of Agents provider/model slots
+    fallback            Manage fallback providers (tried when the primary
+                        model fails)
+    worktree            Audit and reclaim accumulated git worktrees and merged
+                        branches
+    browser             Real-profile browsing helpers (close a browser locking
+                        its profile)
+    secrets             Manage external secret sources (Bitwarden, 1Password)
+    egress              Manage the iron-proxy egress credential-injection
+                        firewall
+    migrate             Migrate configuration for retired models or deprecated
+                        settings
+    gateway             Messaging gateway management
+    proxy               Local OpenAI-compatible proxy to OAuth providers
+    lsp                 Language Server Protocol management
+    setup               Interactive setup wizard
+    whatsapp            Set up WhatsApp integration
+    whatsapp-cloud      Set up WhatsApp Business Cloud API integration
+    slack               Slack integration helpers (manifest generation, etc.)
+    send                Send a message to a configured platform (scripts, cron
+                        jobs, CI).
+    logout              Clear authentication for an inference provider
+    auth                Manage pooled provider credentials
+    status              Show status of all components
+    pause               Emergency stop: pause cron/kanban dispatch and new
+                        gateway turns
+    resume              Lift the emergency stop set by `hermes pause`
+    cron                Cron job management
+    sync                Skill Sync — sync your skills across devices and with
+                        your team
+    webhook             Manage dynamic webhook subscriptions
+    peer                Bot-to-bot DMs across machines (peer Hermes gateways)
+    portal              Set up Nous Portal (login, model pick, Tool Gateway);
+                        see also `portal info`
+    kanban              Multi-profile collaboration board (tasks, links,
+                        comments)
+    project             Manage projects (named, multi-folder workspaces)
+    hooks               Inspect and manage shell-script hooks
+    doctor              Check configuration and dependencies
+    verify              Detect a project's run recipe and smoke-test it
+    security            Supply-chain audit (OSV.dev) for venv, plugins, and
+                        MCP servers
+    approvals           Approval-prompt tools (mine history into allowlist
+                        proposals)
+    dump                Dump setup summary for support/debugging
+    debug               Debug tools — upload logs and system info for support
+    backup              Back up Hermes home directory to a zip file
+    checkpoints         Inspect / prune / clear ~/.hermes/checkpoints/
+    import              Restore a Hermes backup from a zip file
+    import-agent        Import a Claude Code or Codex CLI setup into Hermes
+    config              View and edit configuration
+    skin                List, switch, and tweak skins
+    console             Open the safe Hermes command console
+    pairing             Manage DM pairing codes for user authorization
+    skills              Search, install, configure, and manage skills
+    bundles             Create, list, and manage skill bundles (aliases for
+                        multiple skills)
+    plugins             Manage and validate plugins
+    curator             Background skill maintenance (curator) — status, run,
+                        pause, pin
+    pets                Browse, install, and select petdex animated pets
+    journey (learning, memory-graph)
+                        Timeline of learned skills + memories over time
+    memory              Configure external memory provider
+    tools               Configure which tools are enabled per platform
+    computer-use        Manage the Computer Use (cua-driver) backend
+                        (macOS/Windows/Linux)
+    mcp                 Manage MCP servers and run Hermes as an MCP server
+    sessions            Manage session history (list, rename, export, prune,
+                        delete)
+    insights            Show usage insights and analytics
+    monitoring          Inspect gateway monitoring (health & diagnostics
+                        export)
+    claw                OpenClaw migration tools
+    update              Update Hermes Agent to the latest version
+    uninstall           Uninstall Hermes Agent
+    acp                 Run Hermes Agent as an ACP (Agent Client Protocol)
+                        server
+    profile             Manage profiles — multiple isolated Hermes instances
+    completion          Print shell completion script (bash, zsh, or fish)
+    dashboard           Start the web UI dashboard
+    serve               Start the Hermes backend server (headless; powers the
+                        desktop app and remote backends)
+    desktop (gui)       Build and launch the native desktop app
+    logs                View and filter Hermes log files
+    prompt-size         Show a byte breakdown of the system prompt + tool
+                        schemas
+
+options:
+  -h, --help            show this help message and exit
+  --version, -V         Show version and exit
+  -z PROMPT, --oneshot PROMPT
+                        One-shot mode: send a single prompt and print ONLY the
+                        final response text to stdout. No banner, no spinner,
+                        no tool previews, no session_id line. Tools, memory,
+                        rules, and AGENTS.md in the CWD are loaded as normal;
+                        approvals are auto-bypassed. Intended for scripts /
+                        pipes.
+  --usage-file PATH     One-shot mode only: after the run, write a JSON usage
+                        report (estimated cost, token counts, model,
+                        api_calls) to PATH. The report is written even when
+                        the run fails, so pipelines can always account for
+                        spend. No effect outside -z/--oneshot.
+  -m MODEL, --model MODEL
+                        Model override for this invocation (e.g.
+                        anthropic/claude-sonnet-4.6). Applies to -z/--oneshot
+                        and --tui. Also settable via HERMES_INFERENCE_MODEL
+                        env var.
+  --provider PROVIDER   Provider override for this invocation (e.g.
+                        openrouter, anthropic). Applies to -z/--oneshot and
+                        --tui. The persistent provider lives in config.yaml
+                        under model.provider — use `hermes setup` or edit the
+                        file to change it.
+  --reasoning LEVEL     Reasoning effort for this invocation: none, minimal,
+                        low, medium, high, xhigh, max, or ultra. Overrides
+                        agent.reasoning_effort in config.yaml for this run
+                        only; the persistent level lives there (or per-model
+                        under agent.reasoning_overrides).
+  -t TOOLSETS, --toolsets TOOLSETS
+                        Comma-separated toolsets to enable for this
+                        invocation. Applies to -z/--oneshot and --tui.
+  --resume SESSION, -r SESSION
+                        Resume a previous session by ID or title, or pass
+                        'latest' for the most recent session (workspace-
+                        scoped, like -c with no name)
+  --no-restore-cwd      Don't cd into a resumed session's recorded working
+                        directory.
+  --in DIR              Change into DIR before starting or resuming. Combined
+                        with '--resume latest' or -c, the most recent session
+                        for DIR's workspace is picked, and the session stays
+                        in DIR (skips the recorded-cwd restore).
+  --continue [SESSION_NAME], -c [SESSION_NAME]
+                        Resume a session by name, or the most recent if no
+                        name given
+  --worktree, -w        Run in an isolated git worktree (for parallel agents)
+  --accept-hooks        Auto-approve any unseen shell hooks declared in
+                        config.yaml without a TTY prompt. Equivalent to
+                        HERMES_ACCEPT_HOOKS=1 or hooks_auto_accept: true in
+                        config.yaml. Use on CI / headless runs that can't
+                        prompt.
+  --skills SKILLS, -s SKILLS
+                        Preload one or more skills for the session (repeat
+                        flag or comma-separate)
+  --yolo                Bypass all dangerous command approval prompts (use at
+                        your own risk)
+  --pass-session-id     Include the session ID in the agent's system prompt
+  --ignore-user-config  Ignore ~/.hermes/config.yaml and fall back to built-in
+                        defaults (credentials in .env are still loaded)
+  --ignore-rules        Skip auto-injection of AGENTS.md, SOUL.md,
+                        .cursorrules, memory, and preloaded skills
+  --safe-mode           Troubleshooting mode: disable ALL customizations —
+                        user config, AGENTS.md/memory injection, plugins, and
+                        MCP servers (implies --ignore-user-config and
+                        --ignore-rules)
+  --tui                 Launch the modern TUI instead of the classic REPL
+  --cli                 Force the classic prompt_toolkit REPL (overrides
+                        display.interface=tui)
+  --dev                 With --tui: run TypeScript sources via tsx (skip dist
+                        build)
+
+Examples:
+    hermes                        Start interactive chat
+    hermes chat -q "Hello"        Single query mode
+    hermes --tui                  Launch the modern TUI (or set display.interface: tui)
+    hermes --cli                  Force the classic REPL (overrides display.interface: tui)
+    hermes -c                     Resume the most recent session
+    hermes -c "my project"        Resume a session by name (latest in lineage)
+    hermes --resume <session_id>  Resume a specific session by ID
+    hermes --resume latest        Resume the most recent session (same as -c)
+    hermes --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
+    hermes setup                  Run setup wizard
+    hermes logout                 Clear stored authentication
+    hermes auth add <provider>    Add a pooled credential
+    hermes auth list              List pooled credentials
+    hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
+    hermes auth reset <provider>  Clear exhaustion status for a provider
+    hermes model                  Select default model
+    hermes fallback [list]        Show fallback provider chain
+    hermes fallback add           Add a fallback provider (same picker as `hermes model`)
+    hermes fallback remove        Remove a fallback provider from the chain
+    hermes config                 View configuration
+    hermes config edit            Edit config in $EDITOR
+    hermes config set model gpt-4 Set a config value
+    hermes gateway                Run messaging gateway
+    hermes -s hermes-agent-dev,github-auth
+    hermes -w                     Start in isolated git worktree
+    hermes gateway install        Install gateway background service
+    hermes sessions list          List past sessions
+    hermes sessions browse        Interactive session picker
+    hermes sessions rename ID T   Rename/title a session
+    hermes logs                   View agent.log (last 50 lines)
+    hermes logs -f                Follow agent.log in real time
+    hermes logs errors            View errors.log
+    hermes logs --since 1h        Lines from the last hour
+    hermes debug share             Upload debug report for support
+    hermes validate-config         Validate configuration (exit non-zero on warnings)
+    hermes doctor                  Check configuration and dependencies with optional fixes
+    hermes security [audit]        Supply-chain vulnerability scan
+    hermes console                Open the safe Hermes command console
+    hermes update                 Update to latest version
+    hermes dashboard              Start web UI dashboard (port 9119)
+    hermes dashboard --stop       Stop running dashboard processes
+    hermes dashboard --status     List running dashboard processes
+
+For more help on a command:
+    hermes <command> --help
+0

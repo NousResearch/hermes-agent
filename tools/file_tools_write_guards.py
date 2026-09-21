@@ -159,6 +159,20 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Use the terminal tool with sudo if you need to modify system files.")
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
+    # ── KENSEI CUSTOM — profile config protection (ported) ──
+    # Named-profile config.yaml files carry per-profile credentials and
+    # gateway settings; an agent must never rewrite a sibling profile's
+    # config (the terminal side is blocked by approval.py's sensitive list).
+    _profile_cfg_prefixes = (
+        os.path.expanduser("~/.hermes/profiles/"),
+        os.path.expanduser("~/.hermes/profiles"),
+    )
+    for _pcand in candidates:
+        if any(_pcand.startswith(_p) for _p in _profile_cfg_prefixes) and _pcand.endswith("/config.yaml"):
+            return (
+                f"Refusing to write to sensitive system path: {filepath}\n"
+                "Use the terminal tool with sudo if you need to modify system files.")
+    # ── END KENSEI CUSTOM ──
     hermes_config = _get_hermes_config_resolved()
     if hermes_config and hermes_config in candidates:
         return (

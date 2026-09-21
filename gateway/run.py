@@ -820,6 +820,41 @@ def _approval_send_outcome(future, timeout: float) -> str:
     return "failed"
 
 
+async def _send_gateway_clarify(
+    adapter,
+    *,
+    chat_id: str,
+    question: str,
+    choices,
+    clarify_id: str,
+    session_key: str,
+    metadata,
+    multi_select: bool,
+):
+    """KENSEI CUSTOM (merged): choose a render path that preserves the prompt's
+    selection semantics. Multi-select prefers an adapter's dedicated
+    ``send_clarify_text_fallback`` when one exists (native one-shot buttons
+    cannot express a checkbox answer set), else the adapter's ``send_clarify``
+    — whose base implementation renders the numbered-text form with the
+    multi-select hint. The send-disposition / bounded-wait primitives this
+    used to sit beside now live in ``gateway.run_turn_runner_clarify_delivery``.
+    """
+    sender = (
+        getattr(adapter, "send_clarify_text_fallback", None)
+        if multi_select
+        else None
+    ) or adapter.send_clarify
+
+    return await sender(
+        chat_id=chat_id,
+        question=question,
+        choices=choices,
+        clarify_id=clarify_id,
+        session_key=session_key,
+        metadata=metadata,
+    )
+
+
 def _resolve_progress_thread_id(
     platform: Any, source_thread_id: Any, event_message_id: Any, *, reply_in_thread: bool = True
 ) -> Optional[str]:
@@ -2220,6 +2255,26 @@ def _best_effort(fn: Callable[[], Any], debug_msg: Optional[str] = None) -> Any:
         if debug_msg:
             logger.debug(debug_msg, exc)
         return None
+
+
+def _construct_agent_with_session_open(
+    constructor,
+    *,
+    session_id: object,
+    platform: object,
+):
+    """Emit the addressable-session boundary before agent construction.
+
+    Host-open lifecycle seam (REM-304/306): ``on_session_open`` fires once per
+    active ``(platform, session_id)`` BEFORE the constructor runs, so plugins
+    can register a peer before the agent's first model turn. Idempotent —
+    repeated opens for a live session no-op (see
+    ``hermes_cli.plugins.notify_session_open``).
+    """
+    from hermes_cli.plugins import notify_session_open
+
+    notify_session_open(session_id, platform)
+    return constructor()
 
 
 # Shutdown quiesce ceiling for the gateway-owned thread pool. Drain already waited for the agents; what
@@ -4638,10 +4693,45 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
         logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
 
 
+def _spawn_curator_governance_hook(summary: str, on_summary: Callable[[str], None]) -> None:
+    """Log a curator summary and best-effort spawn the direct governance hook."""
+    try:
+        on_summary(summary)
+    except Exception as exc:
+        logger.debug("curator summary delivery failed: %s", exc)
+    _spawn_curator_governance_hook_process(summary)
+
+
+def _spawn_curator_governance_hook_process(summary: str) -> None:
+    """Spawn the governance hook detached; failures never escape housekeeping."""
+    try:
+        hook_path = get_hermes_home() / "scripts" / "curator-governance-hook.py"
+        if not hook_path.is_file():
+            logger.debug("curator governance hook not present at %s — skipping", hook_path)
+            return
+        import subprocess
+        subprocess.Popen(
+            [sys.executable, str(hook_path), "--direct"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            shell=False,
+        )
+        logger.debug("spawned curator governance hook (--direct)")
+    except Exception as exc:
+        logger.debug("curator governance hook spawn failed: %s", exc)
+
+
 def _housekeeping_curator() -> None:
     """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
     from agent.curator import maybe_run_curator
-    maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
+    maybe_run_curator(
+        idle_for_seconds=float("inf"),
+        on_summary=lambda msg: _spawn_curator_governance_hook(
+            msg, lambda summary: logger.info("curator: %s", summary)
+        ),
+    )
 
 
 def _housekeeping_skill_sync() -> None:

@@ -1,0 +1,17 @@
+{
+  "repo": "NousResearch/hermes-agent",
+  "pr": {"number": 42, "title": "Fix watcher", "url": "https://example.test/pr/42"},
+  "reviews": [
+    {"id": "R-1", "author": {"login": "alice"}, "body": "Please add a regression test.", "state": "CHANGES_REQUESTED"},
+    {"id": "R-bot", "author": {"login": "dependabot[bot]"}, "body": "Automated note"},
+    {"id": "R-self", "author": {"login": "Sahil-SS9"}, "body": "Self note"}
+  ],
+  "review_comments": [
+    {"id": "I-1", "user": {"login": "bob"}, "body": "Rename this variable.", "path": "scripts/watcher.py", "line": 12},
+    {"id": "I-mossy", "user": {"login": "Mossy"}, "body": "Self note"}
+  ],
+  "comments": [
+    {"id": "C-1", "author": {"login": "carol"}, "body": "Thanks, this looks good."},
+    {"id": "C-2", "author": {"login": "Teknium"}, "body": "Please clarify why this is safe."}
+  ]
+}

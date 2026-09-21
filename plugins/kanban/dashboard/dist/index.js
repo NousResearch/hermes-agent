@@ -645,6 +645,8 @@
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
+    const [epicFilter, setEpicFilter] = useState("");
+    const [epics, setEpics] = useState([]);
     const [includeArchived, setIncludeArchived] = useState(false);
     const [search, setSearch] = useState("");
     const [laneByProfile, setLaneByProfile] = useState(true);
@@ -702,6 +704,15 @@
         .finally(function () { setLoading(false); });
     }, [tenantFilter, includeArchived, board]);
 
+    // --- load epics for filter dropdown + card badges ----------------------
+    const loadEpics = useCallback(function () {
+      return SDK.fetchJSON(withBoard(`${API}/epics`, board))
+        .then(function (data) {
+          setEpics((data && data.epics) || []);
+        })
+        .catch(function () { setEpics([]); });
+    }, [board]);
+
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/boards`, board))
@@ -736,6 +747,7 @@
 
     useEffect(function () {
       loadBoard();
+      loadEpics();
       return function () {
         if (reloadTimerRef.current) {
           clearTimeout(reloadTimerRef.current);
@@ -815,12 +827,19 @@
     }, [!!boardData, board, scheduleReload]);
 
     // --- filtering ----------------------------------------------------------
+    const epicMap = useMemo(function () {
+      const m = {};
+      epics.forEach(function (e) { m[e.id] = e.title; });
+      return m;
+    }, [epics]);
+
     const filteredBoard = useMemo(function () {
       if (!boardData) return null;
       const q = search.trim().toLowerCase();
       const filterTask = function (t) {
         if (tenantFilter && t.tenant !== tenantFilter) return false;
         if (assigneeFilter && t.assignee !== assigneeFilter) return false;
+        if (epicFilter && t.epic_id !== epicFilter) return false;
         if (q) {
           const hay = `${t.id} ${t.title || ""} ${t.body || ""} ${t.result || ""} ${t.latest_summary || ""} ${t.assignee || ""} ${t.tenant || ""}`.toLowerCase();
           if (hay.indexOf(q) === -1) return false;
@@ -832,7 +851,7 @@
           return Object.assign({}, col, { tasks: col.tasks.filter(filterTask) });
         }),
       });
-    }, [boardData, tenantFilter, assigneeFilter, search]);
+    }, [boardData, tenantFilter, assigneeFilter, epicFilter, search]);
 
     // --- actions ------------------------------------------------------------
     // Performs the actual move (optimistic UI + PATCH) once any required
@@ -1315,6 +1334,7 @@
           board: boardData,
           tenantFilter, setTenantFilter,
           assigneeFilter, setAssigneeFilter,
+          epicFilter, setEpicFilter, epics,
           includeArchived, setIncludeArchived,
           laneByProfile, setLaneByProfile,
           search, setSearch,
@@ -2581,6 +2601,19 @@
           }),
         ),
       ),
+      (props.epics && props.epics.length > 0) ? h("div", { className: "flex flex-col gap-1",
+                 title: "Filter by epic. Epics group related tasks into features or projects (Kanban v2)." },
+        h(Label, { className: "text-xs text-muted-foreground" }, "Epic"),
+        h(Select, Object.assign({
+          value: props.epicFilter,
+          className: "h-8",
+        }, selectChangeHandler(props.setEpicFilter)),
+          h(SelectOption, { value: "" }, "All epics"),
+          props.epics.map(function (e) {
+            return h(SelectOption, { key: e.id, value: e.id }, e.title);
+          }),
+        ),
+      ) : null,
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
         h(Checkbox, {
@@ -2937,6 +2970,7 @@
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
+          epicMap: epicMap,
         });
       }),
       h(TrashDropZone, {
@@ -3066,6 +3100,7 @@
                   lane.tasks.map(function (tk) {
                     return h(TaskCard, {
                       key: tk.id, task: tk,
+                      epicMap: props.epicMap,
                       selected: props.selectedIds.has(tk.id),
                       failed: props.failedIds && props.failedIds.has(tk.id),
                       draggingTaskId: props.draggingTaskId,
@@ -3080,6 +3115,7 @@
             : props.column.tasks.map(function (tk) {
                 return h(TaskCard, {
                   key: tk.id, task: tk,
+                  epicMap: props.epicMap,
                   selected: props.selectedIds.has(tk.id),
                   failed: props.failedIds && props.failedIds.has(tk.id),
                   draggingTaskId: props.draggingTaskId,
@@ -3227,6 +3263,11 @@
             t.priority > 0
               ? h(Badge, { className: "hermes-kanban-priority",
                            title: `Priority ${t.priority}. Higher-priority tasks are claimed first by the dispatcher.` }, `P${t.priority}`)
+              : null,
+            t.epic_id
+              ? h(Badge, { variant: "outline", className: "hermes-kanban-epic-badge",
+                           title: `Epic: ${props.epicMap[t.epic_id] || t.epic_id}. This task is grouped under the named epic for feature-level tracking (Kanban v2).` },
+                  props.epicMap[t.epic_id] || t.epic_id.slice(0, 20))
               : null,
             t.tenant
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
@@ -4039,6 +4080,10 @@
             : "on",
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
+        t.created_at ? h(MetaRow, { label: tx(i18n, "createdAt", "Created"), value: t.created_at }) : null,
+        t.done_at ? h(MetaRow, { label: tx(i18n, "doneAt", "Done at"), value: t.done_at }) : null,
+        t.archived_at ? h(MetaRow, { label: tx(i18n, "archivedAt", "Archived at"), value: t.archived_at }) : null,
+        h(MetaRow, { label: tx(i18n, "lastUpdated", "Last updated"), value: t.updated_at || t.created_at || "" }),
       ),
       h(StatusActions, {
         task: t,

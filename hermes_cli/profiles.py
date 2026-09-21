@@ -1,6 +1,7 @@
 """Profile management for multiple isolated Hermes instances."""
 
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -25,6 +26,50 @@ from hermes_constants import (
 logger = logging.getLogger(__name__)
 
 _PROFILE_ID_RE = PROFILE_ID_RE  # legacy alias; hermes_constants.PROFILE_ID_RE is canonical
+
+# ── KENSEI CUSTOM — PROFILE-GATE defence-in-depth (ported) ──
+# Profile CREATE/DELETE from an autonomous kanban worker must route through the
+# Discord approval gate; the worker never runs the op itself (the gateway
+# resolver does, after Sahil approves). Human CLI / web dashboard / wizard /
+# tests run outside a spawned worker (HERMES_KANBAN_TASK unset), so they are
+# unaffected. The worker marker is snapshotted ONCE at import so worker code
+# cannot clear HERMES_KANBAN_TASK mid-process to slip the gate.
+_WORKER_MARKER = os.environ.get("HERMES_KANBAN_TASK")
+
+# Holds the approval token the resolver is currently authorised under, or None.
+_lifecycle_authorised: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "_lifecycle_authorised", default=None
+)
+
+
+@contextlib.contextmanager
+def lifecycle_authorised(token: str):
+    """Authorise a single in-context profile create/delete (one-shot token)."""
+    if not token:
+        raise ValueError("lifecycle_authorised requires the approval token")
+    tok = _lifecycle_authorised.set(token)
+    try:
+        yield
+    finally:
+        _lifecycle_authorised.reset(tok)
+
+
+def _assert_lifecycle_authorised(op: str, name: str) -> None:
+    """Fail closed if an autonomous worker tries a lifecycle op un-gated."""
+    if not _WORKER_MARKER:
+        return  # human / web / wizard / test path
+    if _lifecycle_authorised.get():
+        return  # resolver executing an approved op under its token
+    raise PermissionError(
+        f"profile {op} '{name}' blocked: autonomous lifecycle ops require "
+        f"human approval via the Discord profile gate (PROFILE-GATE). Route "
+        f"through request_profile_lifecycle_approval / "
+        f"resolve_profile_lifecycle_approval; do not call the "
+        f"primitive directly from a worker. Fail-closed."
+    )
+# ── END KENSEI CUSTOM ──
+
+_WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile. ``home`` is the back-compat/Docker
 # HOME for tool subprocesses (host subprocesses keep the real HOME so CLI credentials
@@ -1123,6 +1168,7 @@ def create_profile(
     canon = _canon_valid(name)
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
+    _assert_lifecycle_authorised("create", canon)  # KENSEI CUSTOM gate
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists() and not named_profile_has_identity(profile_dir):
         if named_profile_is_deleted(profile_dir):
@@ -1518,6 +1564,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     canon = normalize_profile_name(name)
     if canon == "default":
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
+    _assert_lifecycle_authorised("delete", canon)  # KENSEI CUSTOM gate
     canon, profile_dir = _existing_profile_dir(canon)
     gw_running = _check_gateway_running(profile_dir)
     wrapper_path = _get_wrapper_dir() / canon

@@ -46,6 +46,35 @@ from utils import base_url_host_matches, is_truthy_value
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
 logger = logging.getLogger("run_agent")
 
+# One-shot guard so a broken fallback_floor config warns once rather than
+# spamming a line per agent/delegate/aux spawn.
+_FLOOR_WARN_EMITTED = False
+
+
+def apply_fallback_floor(chain, floor, *, primary_provider="", primary_model=""):
+    """Return ``chain`` with a last-resort fallback entry appended, unless that
+    entry is already present or is the primary backend.
+
+    Non-mutating: returns a new list, never touches the input or the config dict
+    it came from. A floor that is falsy, malformed, already in the chain, or
+    equal to the primary provider/model is a no-op, so failing over never loops
+    back to the backend that just failed. Provider and model are compared
+    case-insensitively (a backend is the same backend regardless of casing).
+    """
+    if not isinstance(floor, dict):
+        return chain
+    fp_l = str(floor.get("provider") or "").strip().lower()
+    fm_l = str(floor.get("model") or "").strip().lower()
+    if not fp_l or not fm_l:
+        return chain
+    if fp_l == (primary_provider or "").strip().lower() and fm_l == (primary_model or "").strip().lower():
+        return chain
+    for e in chain:
+        if (str(e.get("provider", "")).strip().lower() == fp_l
+                and str(e.get("model", "")).strip().lower() == fm_l):
+            return chain
+    return list(chain) + [{**floor, "is_floor": True}]
+
 
 # Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.
 _warned_unavailable_providers: set[str] = set()
@@ -1170,10 +1199,17 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
         from tools.approval import _YOLO_MODE_FROZEN
         if _YOLO_MODE_FROZEN:
             agent._session_init_model_config["yolo_mode"] = True
-
-    # In-memory todo list for task planning (one per agent/session)
-    from tools.todo_tool import TodoStore
-    agent._todo_store = TodoStore()
+    
+    # Session-scoped todo list, restored from and persisted to state.db.
+    from agent.todo_state import build_todo_store
+    agent._todo_store = build_todo_store(agent)
+    
+    # Load config once for memory, skills, and compression sections
+    try:
+        from hermes_cli.config import load_config_readonly as _load_agent_config
+        _agent_cfg = _load_agent_config()
+    except Exception:
+        _agent_cfg = {}
 
 
 def _apply_display_config(agent, _agent_cfg, platform):
@@ -1317,10 +1353,10 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                     agent._memory_manager.initialize_all(**_memory_provider_init_kwargs(agent, platform))
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
                 else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                    logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                     agent._memory_manager = None
         except Exception as _mpe:
-            _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
+            logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
     from agent.memory_manager import inject_memory_provider_tools
@@ -1835,7 +1871,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
 
     _lmstudio_runtime_context_length = agent._ensure_lmstudio_runtime_loaded(_config_context_length)
     if agent._lmstudio_load_was_unverified(_lmstudio_runtime_context_length):
-        _ra().logger.warning(
+        logger.warning(
             "LM Studio model activation was rejected or completed without a "
             "verifiable active context length; falling back to configured context"
         )
@@ -1938,7 +1974,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
         )
         if not agent.quiet_mode:
-            _ra().logger.info("Using context engine: %s", _selected_engine.name)
+            logger.info("Using context engine: %s", _selected_engine.name)
     else:
         agent.context_compressor = ContextCompressor(
             model=agent.model, threshold_percent=cs.threshold, protect_first_n=cs.protect_first,
@@ -2132,7 +2168,7 @@ def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
         and _override is None
         and agent._ollama_num_ctx > _config_context_length
     ):
-        _ra().logger.info(
+        logger.info(
             "Ollama num_ctx capped: %d -> %d (model.context_length override)",
             agent._ollama_num_ctx, _config_context_length,
         )
@@ -2297,6 +2333,7 @@ _GATEWAY_IDENTITY_PARAMS = (
 _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
+    "ask_user_questions_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
     "read_window_below_callback", "connection_callback", "tour_callback",
     "step_callback", "stream_delta_callback", "interim_assistant_callback",
@@ -2319,7 +2356,9 @@ def init_agent(
     session_id: str = None, tool_progress_callback: callable = None,
     tool_start_callback: callable = None, tool_complete_callback: callable = None,
     thinking_callback: callable = None, reasoning_callback: callable = None,
-    clarify_callback: callable = None, read_terminal_callback: callable = None,
+    clarify_callback: callable = None,
+    ask_user_questions_callback: callable = None,  # KENSEI CUSTOM
+    read_terminal_callback: callable = None,
     read_preview_callback: callable = None, drive_preview_callback: callable = None,
     read_window_below_callback: callable = None, connection_callback: callable = None,
     tour_callback: callable = None, step_callback: callable = None,

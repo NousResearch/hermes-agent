@@ -1,0 +1,44 @@
+# Moss — Open Source Community Contributor
+# Reports to Octacon (coding lead)
+
+agent:
+  model: glm-5.2
+  provider: opencode-go
+  max_iterations: 30
+  reasoning_effort: medium
+
+fallback_providers:
+  - provider: ollama-cloud
+    model: deepseek-v4-pro
+    base_url: https://ollama.com/v1
+  - provider: ollama-cloud
+    model: glm-5.2
+    base_url: https://ollama.com/v1
+
+# Moss only needs basic tools — no Discord, no kanban, no cron
+enabled_toolsets:
+  - terminal
+  - file
+  - web
+  - search
+  - skills
+  - session_search
+  - browser
+
+# Default skills auto-loaded for every task
+# opensource-contributions provides the phase-by-phase checklist
+# github-* skills provide the concrete commands for each phase
+default_skills:
+  - opensource-contributions
+  - github-issues
+  - github-pr-workflow
+  - github-code-review
+  - github-auth
+  - codebase-inspection
+  - systematic-debugging
+  - simplify-swarm
+  - hermaguard
+
+# Governance — Moss cannot self-modify
+governance:
+  eval_domains: []

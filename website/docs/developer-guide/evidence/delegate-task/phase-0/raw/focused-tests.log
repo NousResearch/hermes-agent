@@ -1,0 +1,230 @@
+..s..........................F.FFFFF.F...............................    [100%]
+=================================== FAILURES ===================================
+_________ TestProfileParameter.test_build_child_agent_accepts_profile __________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x77d56c221c10>
+
+    def test_build_child_agent_accepts_profile(self):
+        """_build_child_agent accepts the new profile and profile_content params."""
+        parent = _make_mock_parent()
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test task",
+            context=None,
+            toolsets=None,
+            model=None,
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "skills": {"always_skills": ["test-driven-development"]},
+                },
+                "soul_md": "# Octacon\n\nYou are octacon, the coding lead.",
+                "skills": ["test-driven-development"],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:90: TypeError
+___________ TestProfileParameter.test_profile_model_overrides_parent ___________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x77d56c0548d0>
+
+    def test_profile_model_overrides_parent(self):
+        """Profile's model should be used instead of parent's when no explicit model given."""
+        parent = _make_mock_parent()
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,
+            model=None,  # No explicit model — profile's model should win over parent
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Octacon",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:162: TypeError
+__________ TestProfileParameter.test_explicit_model_wins_over_profile __________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x77d56c054490>
+
+    def test_explicit_model_wins_over_profile(self):
+        """Explicit model parameter should override profile's model."""
+        parent = _make_mock_parent()
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,
+            model="deepseek-v4-flash",  # Explicit — should win over profile
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Octacon",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:190: TypeError
+_____ TestProfileParameter.test_profile_model_wins_over_delegation_config ______
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x77d56c056890>
+
+    def test_profile_model_wins_over_delegation_config(self):
+        """Profile's model should win when delegation config has a different model.
+        This simulates the parent's delegation config (deepseek-v4-flash) being
+        overridden by the profile's model (glm-5.1)."""
+        parent = _make_mock_parent()
+        # Parent's delegation config would set model=deepseek-v4-flash
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,
+            model=None,  # No explicit model — simulates delegation config value
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Octacon",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:221: TypeError
+______ TestProfileParameter.test_profile_toolsets_intersected_with_parent ______
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x77d56c056110>
+
+    def test_profile_toolsets_intersected_with_parent(self):
+        """Profile toolsets should be intersected with parent's — subagent can't gain tools parent lacks."""
+        parent = _make_mock_parent()
+        # Parent has: terminal, file, web, kanban, hermes-cli
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,  # No explicit toolsets — profile's should be used
+            model=None,
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="remii",
+            profile_content={
+                "name": "remii",
+                "config": {
+                    "model": {"default": "deepseek-v4-flash", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban", "web", "browser"],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Remii",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:250: TypeError
+___________ TestProfileParameter.test_profile_fallback_chain_loaded ____________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x77d56c055350>
+
+    def test_profile_fallback_chain_loaded(self):
+        """Profile's fallback_providers should be used as the child's fallback chain."""
+        parent = _make_mock_parent()
+    
+>       child = _build_child_agent(
+            task_index=0,
+            goal="Test",
+            context=None,
+            toolsets=None,
+            model=None,
+            max_iterations=30,
+            task_count=1,
+            parent_agent=parent,
+            profile="octacon",
+            profile_content={
+                "name": "octacon",
+                "config": {
+                    "model": {"default": "glm-5.1", "provider": "ollama-cloud"},
+                    "toolsets": ["hermes-cli", "kanban"],
+                    "fallback_providers": [
+                        {"provider": "ollama-cloud", "model": "deepseek-v4-pro"},
+                    ],
+                    "skills": {"always_skills": []},
+                },
+                "soul_md": "# Octacon",
+                "skills": [],
+            },
+        )
+E       TypeError: _build_child_agent() got an unexpected keyword argument 'profile'
+
+tests/tools/test_delegate_profile.py:281: TypeError
+____________ TestProfileParameter.test_schema_has_profile_parameter ____________
+
+self = <tests.tools.test_delegate_profile.TestProfileParameter object at 0x77d56c054e10>
+
+    def test_schema_has_profile_parameter(self):
+        """The delegate_task tool schema should include the profile parameter."""
+        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+>       assert "profile" in props
+E       assert 'profile' in {'tasks': {'type': 'array', 'minItems': 1, 'items': {'type': 'object', 'properties': {'goal': {'type': 'string', 'desc... action='steer': the course correction, appended to the child's next tool result mid-run. Be directive and specific."}}
+
+tests/tools/test_delegate_profile.py:330: AssertionError
+=============================== warnings summary ===============================
+tests/tools/test_async_delegation.py::test_gateway_formatter_renders_async_block
+  /home/kensei/repos/KenseiAgent/agent/account_usage.py:11: HermesPluginCompatWarning: hermes plugin compat: `agent.anthropic_adapter.resolve_anthropic_token` moved to `agent.anthropic_credentials.resolve_anthropic_token`. The old path is kept only for external plugins and is removed on 2026-09-14; update your import.
+    from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_build_child_agent_accepts_profile
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_profile_model_overrides_parent
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_explicit_model_wins_over_profile
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_profile_model_wins_over_delegation_config
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_profile_toolsets_intersected_with_parent
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_profile_fallback_chain_loaded
+FAILED tests/tools/test_delegate_profile.py::TestProfileParameter::test_schema_has_profile_parameter
+7 failed, 61 passed, 1 skipped, 1 warning in 14.79s
+
+FOCUSED_EXIT=1

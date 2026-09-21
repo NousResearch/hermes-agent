@@ -20,6 +20,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+from cron.delivery_expiry import dispatch_before_expiry
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -1138,7 +1140,22 @@ def _send_media_via_adapter(
             errors.append(f"attachment dropped by media path policy: {raw_path}")
 
     route_platform = platform if platform is not None else getattr(adapter, "platform", None)
+    # KENSEI CUSTOM — partition documents from native media. Documents batch
+    # into a single send_multiple_documents call (the Base contract every
+    # adapter owns; Discord overrides it to chunk multi-attachment messages,
+    # Telegram inherits the per-document fallback). Prevents multi-file
+    # reports arriving as N separate messages or silently dropping files.
+    doc_files: list = []
+    native_files: list = []
     for media_path, _is_voice in media_files:
+        ext = _sched.Path(media_path).suffix.lower()
+        if (should_send_media_as_audio(route_platform, ext, is_voice=_is_voice)
+                or ext in _VIDEO_EXTS or ext in _IMAGE_EXTS):
+            native_files.append((media_path, _is_voice))
+        else:
+            doc_files.append((media_path, _is_voice))
+
+    for media_path, _is_voice in native_files:
         try:
             ext = _sched.Path(media_path).suffix.lower()
             if should_send_media_as_audio(route_platform, ext, is_voice=_is_voice):
@@ -1149,8 +1166,10 @@ def _send_media_via_adapter(
                 method, path_kw = "send_image_file", "image_path"
             else:
                 method, path_kw = "send_document", "file_path"
-            coro = getattr(adapter, method)(
-                chat_id=chat_id, metadata=metadata, **{path_kw: media_path})
+            coro = dispatch_before_expiry(
+                [(media_path, _is_voice)],
+                lambda method=method, path_kw=path_kw, media_path=media_path: getattr(adapter, method)(
+                    chat_id=chat_id, metadata=metadata, **{path_kw: media_path}))
             future = safe_schedule_threadsafe(coro, loop)
             if future is None:
                 _note_target_error(
@@ -1172,6 +1191,63 @@ def _send_media_via_adapter(
             # TimeoutError etc. have an empty str(); fall back to the class name.
             _note_target_error(
                 job_ref, f"failed to send media {media_path}: {str(e) or type(e).__name__}", errors)
+
+    # KENSEI CUSTOM — document batch: one call, per-batch error surfaced.
+    # Adapters without the batch contract (test doubles, minimal stubs) fall back
+    # to per-document sends so per-file failures still surface to the caller.
+    batch_adapter = hasattr(adapter, "send_multiple_documents")
+    if doc_files and not batch_adapter:
+        for media_path, _is_voice in doc_files:
+            try:
+                coro = dispatch_before_expiry(
+                    [(media_path, _is_voice)],
+                    lambda media_path=media_path: adapter.send_document(
+                        chat_id=chat_id, metadata=metadata, file_path=media_path))
+                future = safe_schedule_threadsafe(coro, loop)
+                if future is None:
+                    _note_target_error(
+                        job_ref, f"cannot send document {media_path}: gateway loop unavailable", errors)
+                    return errors
+                try:
+                    result = future.result(timeout=_script._get_media_send_timeout())
+                except TimeoutError:
+                    future.cancel()
+                    raise
+                if result and not getattr(result, "success", True):
+                    _note_target_error(
+                        job_ref,
+                        f"document send failed for {media_path}: {getattr(result, 'error', 'unknown')}",
+                        errors)
+            except Exception as e:
+                _note_target_error(
+                    job_ref, f"failed to send document {media_path}: {str(e) or type(e).__name__}", errors)
+        return errors
+    if doc_files:
+        try:
+            coro = dispatch_before_expiry(
+                doc_files,
+                lambda: adapter.send_multiple_documents(
+                    chat_id=chat_id, documents=doc_files, metadata=metadata))
+            future = safe_schedule_threadsafe(coro, loop)
+            if future is None:
+                _note_target_error(
+                    job_ref,
+                    f"cannot send {len(doc_files)} document(s): gateway loop unavailable",
+                    errors)
+                return errors
+            try:
+                result = future.result(timeout=_script._get_media_send_timeout())
+            except TimeoutError:
+                future.cancel()
+                raise
+            if result and not getattr(result, "success", True):
+                _note_target_error(
+                    job_ref,
+                    f"document batch send failed: {getattr(result, 'error', 'unknown')}",
+                    errors)
+        except Exception as e:
+            _note_target_error(
+                job_ref, f"failed to send document batch: {str(e) or type(e).__name__}", errors)
     return errors
 
 
@@ -1462,7 +1538,7 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
 
 def _live_send_text(
     t: _TargetDelivery, text_to_send: str, route_thread_id: Optional[str], route_metadata: dict, *,
-    target_errors: list, delivery_errors: list, unverified_targets: list,
+    target_errors: list, delivery_errors: list, unverified_targets: list, media_files=(),
 ) -> tuple[bool, bool, Any]:
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
     Re-raises a real send error so the caller falls through to standalone."""
@@ -1478,8 +1554,10 @@ def _live_send_text(
     # dict cannot re-derive the SharedRouteAdapters satellite grant (the satellite owned
     # platforms.<p> block is disabled), yields None, and drops the delivery (#115656).
     future = safe_schedule_threadsafe(
-        router._deliver_to_platform(
-            route_target, text_to_send, route_metadata, transport=t.transport), t.loop)
+        dispatch_before_expiry(
+            media_files,
+            lambda: router._deliver_to_platform(route_target, text_to_send, route_metadata, transport=t.transport)),
+        t.loop)
     if future is None:
         target_errors.append("live adapter event loop scheduling failed")
         return False, False, None
@@ -1633,7 +1711,7 @@ def _deliver_via_live_adapter(
             adapter_ok, timed_out, delivered_message_id = _live_send_text(
                 t, text_to_send, route_thread_id, route_metadata,
                 target_errors=target_errors, delivery_errors=delivery_errors,
-                unverified_targets=unverified_targets,
+                unverified_targets=unverified_targets, media_files=media_files,
             )
 
         # Media rides the same DM-topic-aware routing as text. Skipped after a confirmation
@@ -1684,11 +1762,16 @@ def _standalone_send(
     send_timeout = _get_standalone_send_timeout()
 
     async def _send():
-        # The bound lives inside the coroutine: the running-loop fallback below closes ``coro``
-        # unstarted, and a wait_for wrapper created out here would be left never awaited.
-        return await asyncio.wait_for(_send_to_platform(
-            t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files), timeout=send_timeout)
+        # KENSEI MERGE: upstream's send-timeout bound (#115469) nested inside our media-expiry
+        # gate (dispatch_before_expiry) — expiry validation and the expiry-bounded await wrap
+        # the timeout-bounded wire call. The wait_for bound lives inside the coroutine: the
+        # running-loop fallback below closes ``coro`` unstarted, and a wait_for wrapper created
+        # out here would be left never awaited.
+        return await dispatch_before_expiry(
+            media_files,
+            lambda: asyncio.wait_for(_send_to_platform(
+                t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
+                media_files=media_files), timeout=send_timeout))
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1707,9 +1790,17 @@ def _standalone_send(
     # success=True for empty content WITHOUT an API call) — a phantom delivery would result.
     if not content.strip() and not media_files:
         return _warned(f"standalone send skipped (empty text and no media) for {t.where}")
-    coro = _send()
+    def _run_send():
+        # Create inside the executing thread. If executor submission fails,
+        # there is no abandoned coroutine; mocked/refused asyncio.run also closes it.
+        coro = _send()
+        try:
+            return asyncio.run(coro)
+        finally:
+            coro.close()
+
     try:
-        return asyncio.run(coro), None
+        return _run_send(), None
     except TimeoutError:
         # The send may still complete on the gateway loop (the dispatch shield keeps an in-flight
         # send un-cancelled); the run is released instead of waiting on it unbounded (#115469).
@@ -1718,8 +1809,7 @@ def _standalone_send(
         logger.error("Job '%s': %s", job["id"], msg)
         return None, msg
     except RuntimeError as run_err:
-        # asyncio.run() refuses inside a running loop; close the unstarted coro, retry in a thread.
-        coro.close()
+        # asyncio.run() refuses inside a running loop; retry creation in a thread.
         if _sched._interpreter_shutting_down(run_err):
             return _warned(shutdown_msg)
         # The fallback can itself raise (SMTP, result timeout); catch it or remaining targets skip.
@@ -1728,7 +1818,7 @@ def _standalone_send(
             try:
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
-                return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
+                return pool.submit(contextvars.copy_context().run, _run_send).result(
                     timeout=30), None
             finally:
                 pool.shutdown(wait=False)
@@ -1976,6 +2066,22 @@ def _deliver_result(
     # response text reaches delivery unscanned — so a job that surfaced a credential (echoed a
     # failing curl with an API key, summarised a config file) sent it verbatim to the chat.
     cleaned_delivery_content = _redact_cron_payload(cleaned_delivery_content, "delivery content")
+    # ── KENSEI CUSTOM (restored): coerce bare file paths into attachments ──
+    # Cron LLMs often emit the deliverable path as prose instead of a MEDIA:
+    # tag; without this the user gets a dead path link instead of a native
+    # file. Mirrors the defence-in-depth pattern used for memory leaks.
+    # Runs AFTER redaction: coercion reads the delivered text, so it must never
+    # see (or re-attach from) an unredacted payload.
+    try:
+        from gateway.platforms.base import BasePlatformAdapter as _BPA
+        _local_files, cleaned_delivery_content = _BPA.extract_local_files(
+            cleaned_delivery_content)
+        for _lf in _local_files:
+            if (_lf, False) not in media_files:
+                media_files.append((_lf, False))
+    except Exception as e:
+        logger.debug("local-file coercion skipped: %s", e)
+    # ── END KENSEI CUSTOM ──
     requested_media = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.

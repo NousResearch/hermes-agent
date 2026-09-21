@@ -1,0 +1,12 @@
+{
+  "name": "kensei-triage",
+  "label": "Triage",
+  "description": "Sessions needing attention (failures last 24h, long-running >2h) plus recently completed.",
+  "icon": "AlertCircle",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/kensei-triage",
+    "position": "after:kensei-overview"
+  },
+  "entry": "dist/index.js"
+}

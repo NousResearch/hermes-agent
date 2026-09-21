@@ -24,13 +24,14 @@ import {
   generatedImageEchoSources,
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
-import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
+import { todoSnapshotFromGatewayPayload } from '@/lib/todo-events'
+import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision, parseTodos } from '@/lib/todos'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
-import { $todosBySession, setSessionTodos } from '@/store/todos'
+import { $todosBySession, setSessionTodos, setSessionTodoSnapshot } from '@/store/todos'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -484,10 +485,21 @@ export function useMessageStream({
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
       if (payload && isTodoToolName(payload.name)) {
-        const todos = nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload)
+        const snapshot = todoSnapshotFromGatewayPayload(payload, sessionId)
 
-        if (todos) {
-          setSessionTodos(sessionId, todos, parseTodoRevision(payload))
+        if (snapshot) {
+          setSessionTodoSnapshot(snapshot)
+        } else {
+          const todos =
+            nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload) ??
+            parseTodos(payload.todos) ??
+            parseTodos(payload.result) ??
+            parseTodos(payload.args)
+
+          if (todos) {
+            setSessionTodos(sessionId, todos, parseTodoRevision(payload))
+          }
+
         }
       }
 

@@ -26,6 +26,12 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_create.add_argument(
         "prompt", nargs="?", help="Optional self-contained prompt or task instruction")
     cron_create.add_argument("--name", help="Optional human-friendly job name")
+    # KENSEI CUSTOM: create paused via --disabled (paired with enabled= in hermes_cli/cron.py cron_create).
+    cron_create.add_argument(
+        "--disabled",
+        action="store_true",
+        help="Create the job paused and ineligible for scheduling until explicitly resumed.",
+    )
     cron_create.add_argument("--deliver",
         help="Delivery target: origin, local, telegram, discord, signal, "
             "platform:chat_id, or bot-chat[:profile] (inject output into a "

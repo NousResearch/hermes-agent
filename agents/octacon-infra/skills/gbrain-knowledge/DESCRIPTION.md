@@ -1,0 +1,1 @@
+Browse, search, and update the structured GBrain knowledge wiki at ~/brain/. Canonical Markdown knowledge base organised by category (people, projects, apps, properties, accounts, conventions, concepts, timeline).

@@ -6500,6 +6500,7 @@ def _project_provider_profile(
 
 def _merge_aux_extra_body(
     extra_body: Optional[dict], projection: _ProfileProjection, reasoning_config: Optional[dict], provider_norm: str,
+    effective_base: str = "", task: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Caller extra_body + profile body/reasoning + generic reasoning fallback + Nous tags."""
     merged_extra = dict(extra_body or {})
@@ -6521,6 +6522,30 @@ def _merge_aux_extra_body(
     # Profiles supply route defaults, but an explicit vendor wire control in the task/call config
     # is already provider-specific and must not be replaced by that default.
     merged_extra.update(caller_reasoning_fields)
+    # ── KENSEI CUSTOM — local (Turbofit) identity tagging (ported) ──
+    # Bind auxiliary calls to the rotation-stable conversation scope and classify
+    # them below the main interactive lane (dedicated compression/curator precedence).
+    try:
+        from agent.local_client_meta import local_client_meta_extra_body
+
+        if effective_base:
+            local_identity = local_client_meta_extra_body(
+                base_url=effective_base,
+                session_id=(
+                    _runtime_main_value("cache_scope")
+                    or _runtime_main_value("session_id")
+                ),
+                task=task or "auxiliary",
+            )
+            if local_identity:
+                local_meta = dict(local_identity["client_meta"])
+                explicit_meta = merged_extra.get("client_meta")
+                if isinstance(explicit_meta, dict):
+                    local_meta.update(explicit_meta)
+                merged_extra["client_meta"] = local_meta
+    except Exception:
+        pass
+    # ── END KENSEI CUSTOM ──
     if reasoning_config and isinstance(reasoning_config, dict) and not projection.handles_reasoning:
         if caller_disabled:
             merged_extra["reasoning"] = {"enabled": False}
@@ -6599,7 +6624,7 @@ def _build_call_kwargs(
         known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
-    merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm)
+    merged_extra = _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm, effective_base=effective_base, task=task)
     if "response_format" in merged_extra:
         from agent.auxiliary_structured_output import without_unsupported_response_format
         merged_extra = without_unsupported_response_format(merged_extra, provider_norm, effective_base, model, task)

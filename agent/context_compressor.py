@@ -733,7 +733,18 @@ _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES = 3
 # see _bound_summary_input). NEVER add a max_tokens wire cap on the summary call.
 _SUMMARY_INPUT_MAX_CHARS = 160_000
 
-_PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+# ── KENSEI CUSTOM — retrieval pointer (ported) ──
+# Includes a retrieval pointer so the model can recover the original via
+# session_search (role_filter='tool'). The session DB preserves full tool
+# outputs indexed by tool name + call ID; the placeholder tells the model
+# the retrieval path exists.
+_PRUNED_TOOL_PLACEHOLDER = (
+    "[Old tool output cleared to save context space. "
+    "The full original output is preserved in the session database. "
+    "Retrieve it by calling session_search with role_filter='tool' "
+    "and the tool name or a content keyword as the query.]"
+)
+# ── END KENSEI CUSTOM ──
 
 
 def _is_summary_stub(content: str) -> bool:
@@ -2658,6 +2669,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.last_prompt_tokens = self.last_completion_tokens = 0
         self._reset_real_usage_pairing()
         self.summary_model = summary_model_override or ""
+        # Set by the feasibility probe when the configured primary cannot build a client. The summary
+        # dispatch must keep that proven route instead of independently resolving the failed primary again.
+        self._feasibility_summary_route: Optional[Dict[str, Any]] = None
         self._session_db: Any = None
         self._session_id: str = ""
         # Per-session state (also reset by /new, /reset and session end).
@@ -3534,6 +3548,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         }
         if self.summary_model:
             call_kwargs["model"] = self.summary_model
+        if self._feasibility_summary_route:
+            call_kwargs.update(
+                {
+                    field: self._feasibility_summary_route[field]
+                    for field in _PINNED_ROUTE_FIELDS
+                    if self._feasibility_summary_route.get(field) not in (None, "")
+                }
+            )
         # Pinned route (stall fallback) overrides task routing so the retry leaves the stalled backend.
         call_kwargs.update(_pinned_summary_call_kwargs())
         # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.

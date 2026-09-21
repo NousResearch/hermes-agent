@@ -24,7 +24,12 @@ from gateway.kanban_watchers_common import (
     _to_thread_process_service,
     logger,
 )
-from gateway.kanban_watchers_notifier import _KanbanNotification, _notifier_collect
+from gateway.kanban_watchers_notifier import (
+    _KanbanNotification,
+    _notifier_collect,
+    _profile_gate_collect,
+    _profile_gate_mark_notified,
+)
 from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
     _log_spawn_results,
@@ -116,8 +121,70 @@ class GatewayKanbanWatchersMixin:
                     await _KanbanNotification(
                         self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
                     ).deliver()
+                    # KENSEI CUSTOM: event-driven lead shared-memory injection
+                    # (locked decision 2 / R5). Best-effort — the helper never
+                    # raises into this tick; see _kanban_shared_injection.
+                    if getattr(d.get("task"), "status", "") == "archived":
+                        await asyncio.to_thread(
+                            self._kanban_shared_injection,
+                            d["sub"], d["task"], d.get("board"),
+                        )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
+            await self._sleep_between_ticks(interval)
+
+    async def _profile_gate_watcher(self, interval: float = 5.0) -> None:
+        """Deliver pending PROFILE-GATE approvals to Discord as button prompts.
+
+        KENSEI CUSTOM (restored from fork commit 863c2bbecc; the delivery
+        loop was lost in the 20260904 watcher refactor and is now re-ported
+        into the split watcher modules). Polls each board's
+        ``profile_lifecycle_approvals`` for undelivered pending rows and
+        posts an Approve / Reject prompt to the Discord home channel. Runs
+        only on the dispatch-owning gateway (same gate as the dispatcher) so
+        a single process owns kanban-DB access. Marking a row ``notified``
+        is the idempotency guard against re-posting every tick.
+        """
+        boot = self._kanban_dispatcher_boot()
+        if boot is None:
+            return
+        _load_config, _kb, _kanban_cfg = boot  # noqa: F841 — boot gate only
+        from gateway.config import Platform as _Platform
+
+        await asyncio.sleep(6)  # let adapters wire up
+
+        while self._running:
+            try:
+                adapter = self.adapters.get(_Platform.DISCORD)
+                home = self.config.get_home_channel(_Platform.DISCORD)
+                if adapter is None or home is None:
+                    await self._sleep_between_ticks(interval)
+                    continue
+
+                pending = await asyncio.to_thread(_profile_gate_collect, _kb)
+                for slug, row in pending:
+                    metadata = {"thread_id": home.thread_id} if home.thread_id else None
+                    try:
+                        res = await adapter.send_profile_gate(
+                            home.chat_id, row, board=slug, metadata=metadata,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "profile-gate watcher: send failed for %s: %s",
+                            row.get("id"), exc,
+                        )
+                        continue
+                    if getattr(res, "success", False):
+                        await asyncio.to_thread(
+                            _profile_gate_mark_notified, _kb, slug, row["id"],
+                        )
+                    else:
+                        logger.warning(
+                            "profile-gate watcher: delivery unsuccessful for %s: %s",
+                            row.get("id"), getattr(res, "error", "?"),
+                        )
+            except Exception:
+                logger.exception("profile-gate watcher tick failed")
             await self._sleep_between_ticks(interval)
 
     def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> None:
@@ -142,6 +209,54 @@ class GatewayKanbanWatchersMixin:
     def _kanban_rewind(self, sub: dict, claimed_cursor: int, old_cursor: int, board: Optional[str] = None) -> None:
         """Undo a claimed notification cursor after send failure."""
         self._kanban_sub_op(board, "rewind_notify_cursor", sub, claimed_cursor=claimed_cursor, old_cursor=old_cursor)
+    # KENSEI CUSTOM: event-driven lead shared-memory injection (locked
+    # decision 2 / R5). Distils the team's shared surface into the lead's
+    # scope on terminal task transition. Best-effort and scope-safe: only a
+    # REGISTERED team (task tenant key present in the TEAMS registry) with
+    # SEVERIAN_STORAGE set triggers anything; all failures are logged,
+    # never raised — the notifier tick must not wedge.
+    def _kanban_shared_injection(
+        self,
+        sub: dict,
+        task: Optional[Any],
+        board_slug: Optional[str],
+    ) -> None:
+        """Event-driven lead shared-memory injection (locked decision 2 / R5)."""
+        from gateway.shared_injection import (
+            TEAMS as _SI_TEAMS,
+            inject_on_task_completion,
+        )
+        from severian.composition import build_bundle as _si_bundle
+        from severian.infrastructure.embedding_resolver import (
+            embedding_from_env as _si_embedding_from_env,
+        )
+
+        _team_key = getattr(task, "tenant", None) or ""
+        _team_key = _team_key if _team_key in _SI_TEAMS else ""
+        _store = os.environ.get("SEVERIAN_STORAGE", "").strip()
+        if not (_store and _team_key):
+            return
+        # embedding_from_env is the resolver's single SEVERIAN_EMBEDDING
+        # entry point (F-03 contract): the seam honours the exact same
+        # embedding space as gateways and cron scripts.
+        _bundle = _si_bundle(
+            backend="sqlite",
+            database=Path(_store) / "severian.db",
+            fts=Path(_store) / "severian.fts",
+            vectors=Path(_store) / "severian.vec",
+            embedding=_si_embedding_from_env(),
+        )
+        try:
+            inject_on_task_completion(
+                bundle=_bundle,
+                task_id=sub["task_id"],
+                title=(task.title if task else "")[:120],
+                board=board_slug or "",
+                team=_team_key,
+            )
+        finally:
+            _bundle.close()
+
 
     async def _deliver_kanban_artifacts(self, *, adapter, chat_id: str, metadata: dict, event_payload: Optional[dict], task) -> None:
         """Upload artifact files referenced by a completed kanban task.

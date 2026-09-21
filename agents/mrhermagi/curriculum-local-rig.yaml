@@ -1,0 +1,134 @@
+meta:
+  title: "Local AI Rig: Build, Run, and Master"
+  description: "From Windows dev to Linux AI rig owner. 2x RTX 3090, 64GB DDR4, Ryzen 5900."
+  total_days: 28
+  total_weeks: 4
+  start_date: "DD/MM/YY"
+  frequency: "daily"
+  duration_per_lesson: "45-75 mins"
+
+weeks:
+  - week: 1
+    theme: "Linux Migration Masterclass"
+    days:
+      - day: 1
+        title: "Linux Is Just Another OS — Terminal Basics"
+        topic: "bash vs PowerShell, ls/cd/cat/grep, pipes, man pages, tab completion"
+      - day: 2
+        title: "Package Management: apt, snap, flatpak"
+        topic: "Installing software, dependency resolution, PPAs, finding packages"
+      - day: 3
+        title: "Users, Permissions, and the Filesystem"
+        topic: "chmod/chown, sudo, /home /etc /var /tmp, where configs live"
+      - day: 4
+        title: "systemd: Running Services 24/7"
+        topic: "systemctl, service units, journalctl, enabling/disabling, timers"
+      - day: 5
+        title: "SSH & Remote Headless Management"
+        topic: "ssh keys, scp/rsync, tmux/screen, remote reboots, firewall basics"
+      - day: 6
+        title: "Bash Scripting vs PowerShell"
+        topic: "Variables, conditionals, loops, functions, shebang, cron + scripts"
+      - day: 7
+        title: "Docker on Linux: Desktop → Engine"
+        topic: "Docker Engine vs Docker Desktop, compose, volumes, networks, registries"
+    milestone:
+      title: "Linux Migration Checkpoint"
+      desc: "You can navigate, install, manage services, and SSH to your rig without Windows habits"
+
+  - week: 2
+    theme: "Inference Architecture: 24/7 Server + Batch"
+    days:
+      - day: 8
+        title: "GPU Resource Allocation & Scheduling"
+        topic: "CUDA_VISIBLE_DEVICES, nvidia-smi, process isolation, GPU memory monitoring"
+      - day: 9
+        title: "Queue Management for Batch Jobs"
+        topic: "FIFO queues, job schedulers, priority, batching strategy, parallel vs sequential"
+      - day: 10
+        title: "Running Inference Servers as systemd Services"
+        topic: "ollama serve, llama-server, auto-restart, logging, resource limits, health checks"
+      - day: 11
+        title: "Docker Compose for Multi-Workload Orchestration"
+        topic: "Compose files, service dependencies, shared volumes, GPU passthrough, network isolation"
+      - day: 12
+        title: "Monitoring Both Workloads Simultaneously"
+        topic: "GPU utilisation, memory, temperature, power, logs, alerting, dashboards (netdata/htop)"
+      - day: 13
+        title: "Batch Image/Video Generation Pipelines"
+        topic: "FLUX, Stable Diffusion, ComfyUI, batching, VRAM limits, output organisation"
+      - day: 14
+        title: "Week 2 Integration: Server + Batch Together"
+        topic: "Resource negotiation, queuing, graceful handling, failure recovery"
+    milestone:
+      title: "Inference Architecture Demo"
+      desc: "Run 24/7 ollama server + batch ComfyUI generation simultaneously without conflict"
+
+  - week: 3
+    theme: "HuggingFace Models, MoE, and Multi-GPU"
+    days:
+      - day: 15
+        title: "HuggingFace Hub: Models at Your Fingertips"
+        topic: "HF CLI, model cards, download, cache, disk space planning, safetensors"
+      - day: 16
+        title: "Loading Models: Transformers Pipeline"
+        topic: "AutoModel, tokenizers, device_map, dtype, batch inference, saving outputs"
+      - day: 17
+        title: "Mixture of Experts: Why DeepSeek is Different"
+        topic: "Sparse routing, active vs total parameters, expert gating, VRAM tricks"
+      - day: 18
+        title: "Multi-GPU Loading for Models > 24GB"
+        topic: "pipeline parallelism, tensor parallelism, device_map='auto', offloading"
+      - day: 19
+        title: "vLLM and TGI: Production Serving"
+        topic: "vLLM PagedAttention, TGI, continuous batching, OpenAI-compatible API, throughput"
+      - day: 20
+        title: "Model Evaluation: Does It Work on Your Rig?"
+        topic: "lm-eval-harness, custom tasks, speed benchmarking, quality vs speed tradeoffs"
+      - day: 21
+        title: "Quantisation for Non-GGUF Models"
+        topic: "GPTQ, AWQ, BnB, when to use what, accuracy loss, speed gains"
+    milestone:
+      title: "Multi-GPU MoE Demo"
+      desc: "Run a 70B+ MoE model across both 3090s, verify routing, measure throughput"
+
+  - week: 4
+    theme: "Upgrade Path, Reliability, and Production"
+    days:
+      - day: 22
+        title: "Cooling: Air vs Water for Sustained Load"
+        topic: "Thermal throttling, fan curves, AIO vs custom loop, noise, 24/7 implications"
+      - day: 23
+        title: "Power: PSU Headroom and Efficiency"
+        topic: "Wattage calculation, 80 Plus ratings, efficiency curves, dual PSU considerations"
+      - day: 24
+        title: "Storage: 2TB Fills Fast"
+        topic: "Model weights, generated media, cache cleanup, tiered storage, NAS/SAN options"
+      - day: 25
+        title: "Network: Remote Access and Transfers"
+        topic: "Tailscale/WireGuard, Samba/NFS, model download optimisation, bandwidth"
+      - day: 26
+        title: "RAM: When 64GB Bottlenecks"
+        topic: "CPU offloading, swap performance, video models, prefetching, upgrade timing"
+      - day: 27
+        title: "Clustering and Second Rig Thinking"
+        topic: "Distributed inference, networking multiple rigs, Kubernetes vs bare metal"
+      - day: 28
+        title: "The Full Picture: Your Rig as a Product"
+        topic: "Architecture review, monitoring stack, upgrade roadmap, cost/benefit analysis"
+    milestone:
+      title: "Rig Production Review"
+      desc: "Document your full setup: inference server, batch pipeline, monitoring, upgrade plan"
+
+delivery:
+  format: "forum_thread_reply"
+  thread_per_week: true
+  include_html: true
+  include_audio: true
+  dark_mode_html: true
+
+teaching:
+  style: "analogy-driven, Socratic, hands-on"
+  starting_knowledge: "Windows/PowerShell/WSL, Docker Desktop, Claude Code, APIs, basic Python"
+  tools_they_use: "Claude Code, Docker, bash, nvidia-smi, systemctl, HuggingFace Hub"
+  hardware_required: true

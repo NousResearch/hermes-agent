@@ -3,12 +3,20 @@ import { atom, computed } from 'nanostores'
 import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
 
+export interface ClarifyChoiceMeta {
+  description?: string
+  label: string
+  recommended?: boolean
+}
+
 export interface ClarifyQuestion {
   /** Server-generated wire id (q0..qN) — clarify.respond keys answers by it. */
   qid: string
   question: string
   choices: string[] | null
+  header?: string
   multiSelect: boolean
+  options?: ClarifyChoiceMeta[]
 }
 
 export interface ClarifyRequest {
@@ -16,6 +24,7 @@ export interface ClarifyRequest {
   question: string
   choices: string[] | null
   multiSelect: boolean
+  expiresAt?: number
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
   receivedAt?: number
   sessionId: string | null
@@ -96,10 +105,37 @@ export function normalizeQuestions(questions: unknown): ClarifyQuestion[] {
     }
 
     const choices = normalizeChoices(row.choices)
+    const header = typeof row.header === 'string' && row.header.trim() ? row.header.trim() : undefined
+
+    const options = Array.isArray(row.options)
+      ? row.options
+          .map(option => {
+            if (typeof option !== 'object' || option === null) {
+              return null
+            }
+
+            const item = option as Record<string, unknown>
+            const label = typeof item.label === 'string' ? item.label.trim() : ''
+
+            if (!label) {
+              return null
+            }
+
+            return {
+              description:
+                typeof item.description === 'string' && item.description.trim() ? item.description.trim() : undefined,
+              label,
+              recommended: item.recommended === true
+            }
+          })
+          .filter((option): option is NonNullable<typeof option> => option !== null)
+      : undefined
 
     normalized.push({
       choices: choices.length > 0 ? choices : null,
+      header,
       multiSelect: row.multi_select === true && choices.length > 0,
+      options: options?.length ? options : undefined,
       qid,
       question
     })

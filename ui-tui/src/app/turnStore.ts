@@ -15,6 +15,7 @@ const buildTurnState = (): TurnState => ({
   streamSegments: [],
   streaming: '',
   subagents: [],
+  todoArchiveSignature: '',
   todoCollapsed: false,
   todos: [],
   toolTokens: 0,
@@ -40,6 +41,9 @@ export const patchTurnState = (next: Partial<TurnState> | ((state: TurnState) =>
 
 export const toggleTodoCollapsed = () => patchTurnState(state => ({ ...state, todoCollapsed: !state.todoCollapsed }))
 
+export const todoSignature = (todos: readonly TodoItem[]) =>
+  JSON.stringify(todos.map(todo => [todo.id, todo.content, todo.status]))
+
 export const archiveDoneTodos = () => archiveTodosAtTurnEnd()
 
 export const archiveTodosAtTurnEnd = () => {
@@ -50,6 +54,11 @@ export const archiveTodosAtTurnEnd = () => {
   }
 
   const done = isTodoDone(state.todos)
+  const signature = todoSignature(state.todos)
+
+  if (!done && state.todoArchiveSignature === signature) {
+    return []
+  }
 
   const msg: Msg = {
     kind: 'trail',
@@ -59,7 +68,14 @@ export const archiveTodosAtTurnEnd = () => {
     ...(done ? { todoCollapsedByDefault: true } : { todoIncomplete: true })
   }
 
-  patchTurnState({ todoCollapsed: false, todos: [] })
+  if (done) {
+    patchTurnState({ todoArchiveSignature: '', todoCollapsed: false, todos: [] })
+  } else {
+    // Keep unfinished work anchored above the composer after a turn stops.
+    // The archived copy preserves scrollback; the signature prevents the same
+    // unchanged snapshot being appended again on every follow-up turn.
+    patchTurnState({ todoArchiveSignature: signature, todoCollapsed: false })
+  }
 
   return [msg]
 }
@@ -77,6 +93,7 @@ export interface TurnState {
   streamSegments: Msg[]
   streaming: string
   subagents: SubagentProgress[]
+  todoArchiveSignature: string
   todoCollapsed: boolean
   todos: TodoItem[]
   toolTokens: number

@@ -1155,6 +1155,27 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "ok", "remaining": remaining})
 
 
+@method("ask_user_questions.respond")
+def _(rid, params: dict) -> dict:
+    """KENSEI CUSTOM (agent-modes): answer a legacy multi-question batch prompt.
+
+    The primary AUQ path now rides the clarify lane (``clarify.lock`` /
+    response frames); this RPC stays for older renderers that still send
+    ``ask_user_questions.respond``. A response frame with ``answers``
+    resolves any open ``ask_user_questions`` server request; without one it
+    is a cancel-all.
+    """
+    request_id = str(params.get("request_id") or "")
+    answers = params.get("answers")
+    if not request_id:
+        return _err(rid, 4002, "request_id required")
+    from tui_gateway import server_requests
+    frame = {"jsonrpc": "2.0", "id": request_id, "result": {"answers": answers} if isinstance(answers, dict) else {}}
+    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
+        return _ok(rid, {"status": "ok"})
+    return _ok(rid, {"status": "expired"})
+
+
 @method("request.answer")
 def _(rid, params: dict) -> dict:
     """Answer an open server→client request from a client that did not receive it (a Bot Mode room
@@ -1169,6 +1190,36 @@ def _(rid, params: dict) -> dict:
     if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
         return _ok(rid, {"status": "ok"})
     return _ok(rid, {"status": "expired"})
+
+
+@method("prompt.optimize.preview")
+def _(rid, params: dict) -> dict:
+    """Return a structured optimisation preview for the TUI overlay."""
+    session_id = params.get("session_id") or ""
+    text = params.get("text") or ""
+    if not text:
+        return _err(rid, 4004, "text required")
+    if not session_id:
+        return _err(rid, 4001, "session_id required")
+
+    session = _sessions.get(session_id)
+    model = ""
+    provider = ""
+    if session:
+        agent = session.get("agent")
+        if agent:
+            model = getattr(agent, "model", "") or ""
+            provider = getattr(agent, "provider", "") or ""
+
+    try:
+        from hermes_plugins.prompt_optimizer import get_tui_preview
+
+        preview = get_tui_preview(session_id, text, model, provider)
+        return _ok(rid, preview)
+    except ImportError:
+        return _ok(rid, {"status": "bypass", "reason": "plugin_not_loaded"})
+    except Exception as e:
+        return _ok(rid, {"status": "bypass", "reason": f"error: {e}"})
 
 
 # ── approvals ───────────────────────────────────────────────────────────────

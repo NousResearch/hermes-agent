@@ -2,6 +2,7 @@ import { isPreviewableTarget, toolPreviewOutcome } from '@/components/assistant-
 import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
 import { toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { todoSnapshotFromGatewayPayload } from '@/lib/todo-events'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
@@ -9,7 +10,7 @@ import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-sta
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
-import { restoreSessionTodosFromSnapshot } from '@/store/todos'
+import { restoreSessionTodosFromSnapshot, setSessionTodoSnapshot } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
@@ -25,7 +26,13 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'todo.updated') {
     if (sessionId && !sessionInterrupted(sessionId)) {
-      restoreSessionTodosFromSnapshot(sessionId, payload, true)
+      const snapshot = todoSnapshotFromGatewayPayload(payload, sessionId)
+
+      if (snapshot) {
+        setSessionTodoSnapshot(snapshot)
+      } else {
+        restoreSessionTodosFromSnapshot(sessionId, payload, true)
+      }
     }
 
     return true

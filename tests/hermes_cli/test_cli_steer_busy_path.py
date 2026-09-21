@@ -25,6 +25,8 @@ import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _make_cli():
     """Create a HermesCLI instance with prompt_toolkit stubbed out."""
@@ -144,3 +146,18 @@ if __name__ == "__main__":  # pragma: no cover
     import pytest
 
     pytest.main([__file__, "-v"])
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    ``_make_cli`` reloads the ``cli`` module while prompt_toolkit is stubbed
+    with MagicMocks; without a follow-up reload, cli's globals stay bound to
+    mocks and every later test touching real prompt_toolkit behaviour fails.
+    Same pattern as ``test_cli_init._make_cli``.
+    """
+    yield
+    import cli as _cli_restore
+
+    importlib.reload(_cli_restore)

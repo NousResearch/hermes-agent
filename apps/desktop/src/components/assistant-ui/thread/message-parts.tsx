@@ -105,7 +105,8 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ImageGenerateTool {...props} />
   }
 
-  if (props.toolName === 'clarify') {
+  // KENSEI CUSTOM: ask_user_questions renders through the same live ClarifyTool card.
+  if (props.toolName === 'clarify' || props.toolName === 'ask_user_questions') {
     // Stopped on this question, never answered: history. ClarifyTool reads
     // the session's live clarify request, so a later turn's question would
     // otherwise paint onto this row as a second live card.

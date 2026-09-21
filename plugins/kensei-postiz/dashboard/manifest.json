@@ -1,0 +1,13 @@
+{
+  "name": "kensei-postiz",
+  "label": "Postiz",
+  "description": "Schedule and review Postiz posts from inside the dashboard. Proxies to local Postiz on :4007.",
+  "icon": "Globe",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/kensei-postiz",
+    "position": "after:kensei-overview"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

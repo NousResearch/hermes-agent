@@ -1,0 +1,18 @@
+model:
+  default: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+  api_key: ""
+reasoning_effort: false
+toolsets:
+- file
+- terminal
+always_skills:
+- governance
+- kanban-worker
+- avoid-ai-writing
+onboarding:
+  seen:
+    tool_progress_prompt: true
+cron:
+  script_timeout_seconds: 300

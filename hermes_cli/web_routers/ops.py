@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from hermes_cli.config import redact_key
@@ -825,3 +825,221 @@ async def prune_checkpoints(profile: Optional[str] = None):
         log_msg="Failed to spawn checkpoints prune", prefix="Failed to prune checkpoints",
         profile=destructive_profile(profile, "POST /api/ops/checkpoints/prune"),
     )
+
+# ── KENSEI CUSTOM — pipeline / council / Denji / human-gate dashboard (ported) ──
+
+def _get_pipeline_tasks_by_stage() -> Dict[str, List[Dict[str, Any]]]:
+    """Return tasks currently in a pipeline stage, grouped by stage.
+
+    Reads pipeline_stage, pipeline_mode, title, id, assignee from the
+    tasks table.  Tasks with a NULL pipeline_stage are skipped.
+    """
+    from hermes_cli.kanban_db import connect
+
+    try:
+        conn = connect()
+        rows = conn.execute(
+            "SELECT id, title, assignee, pipeline_stage, pipeline_mode "
+            "FROM tasks "
+            "WHERE pipeline_stage IS NOT NULL "
+            "ORDER BY pipeline_stage, id"
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        _log.warning("Pipeline tasks query failed: %s", exc)
+        return {}
+
+    by_stage: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        task_id, title, assignee, stage, mode = row
+        by_stage.setdefault(stage, []).append({
+            "id": task_id,
+            "title": title or "",
+            "assignee": assignee or "",
+            "pipeline_stage": stage,
+            "pipeline_mode": mode or "full",
+        })
+    return by_stage
+
+
+def _parse_council_verdict(content: str) -> Optional[str]:
+    """Extract the ``**Verdict: ...**`` line from a council-verdict.md."""
+    import re
+    m = re.search(r"\*\*Verdict:\s*(.+?)\*\*", content, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    # Fallback: plain "Verdict: ..." line
+    m = re.search(r"^Verdict:\s*(.+)$", content, re.IGNORECASE | re.MULTILINE)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _get_council_verdicts(task_ids: List[str], artifacts_base: str) -> Dict[str, str]:
+    """Return {task_id: verdict_string} for tasks that have a council-verdict.md."""
+    verdicts: Dict[str, str] = {}
+    for task_id in task_ids:
+        path = os.path.join(artifacts_base, task_id, "council-verdict.md")
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path) as f:
+                content = f.read()
+            verdict = _parse_council_verdict(content)
+            if verdict:
+                verdicts[task_id] = verdict
+        except OSError:
+            continue
+    return verdicts
+
+
+def _get_human_gate_queue() -> List[Dict[str, Any]]:
+    """Return tasks waiting at sign_off or final_sign_off, with wait time.
+
+    created_at in task_events is an INTEGER epoch (seconds).
+    """
+    from hermes_cli.kanban_db import connect
+    from hermes_cli.feature_pipeline import HUMAN_GATE_STAGES
+
+    try:
+        conn = connect()
+        placeholders = ",".join("?" for _ in HUMAN_GATE_STAGES)
+        rows = conn.execute(
+            f"SELECT id, title, assignee, pipeline_stage, pipeline_mode "
+            f"FROM tasks "
+            f"WHERE pipeline_stage IN ({placeholders})",
+            list(HUMAN_GATE_STAGES),
+        ).fetchall()
+    except Exception as exc:
+        _log.warning("Human gate queue query failed: %s", exc)
+        return []
+
+    result = []
+    now = time.time()
+    for row in rows:
+        task_id, title, assignee, stage, mode = row
+        # Find when the task entered this stage
+        waiting_hours: Optional[float] = None
+        try:
+            ev = conn.execute(
+                "SELECT created_at FROM task_events "
+                "WHERE task_id = ? AND kind = 'pipeline_advanced' "
+                "AND json_extract(payload, '$.to_stage') = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (task_id, stage),
+            ).fetchone()
+            if ev and ev[0] is not None:
+                try:
+                    entered_epoch = float(ev[0])
+                except (TypeError, ValueError):
+                    entered_epoch = None
+                if entered_epoch is not None:
+                    waiting_hours = max(0.0, (now - entered_epoch) / 3600.0)
+        except Exception:
+            pass
+
+        result.append({
+            "id": task_id,
+            "title": title or "",
+            "assignee": assignee or "",
+            "pipeline_stage": stage,
+            "pipeline_mode": mode or "full",
+            "waiting_hours": waiting_hours,
+        })
+
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+    return result
+
+
+def _get_denji_events(limit: int = 20) -> List[Dict[str, Any]]:
+    """Return recent Denji-related events from task_events.
+
+    Covers kind IN ('denji_review_signal', 'pipeline_spawn', 'bypass_record').
+    created_at is epoch-seconds (INTEGER).
+    """
+    from hermes_cli.kanban_db import connect
+
+    kinds = ("denji_review_signal", "pipeline_spawn", "bypass_record")
+    placeholders = ",".join("?" for _ in kinds)
+    try:
+        conn = connect()
+        rows = conn.execute(
+            f"SELECT task_id, kind, payload, created_at "
+            f"FROM task_events "
+            f"WHERE kind IN ({placeholders}) "
+            f"ORDER BY created_at DESC LIMIT ?",
+            [*kinds, limit],
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        _log.warning("Denji events query failed: %s", exc)
+        return []
+
+    events = []
+    for task_id, kind, payload_raw, created_at_raw in rows:
+        payload: Any = None
+        if payload_raw:
+            try:
+                payload = json.loads(payload_raw)
+            except Exception:
+                payload = payload_raw
+        # Normalise created_at to epoch float
+        try:
+            created_at = float(created_at_raw)
+        except (TypeError, ValueError):
+            created_at = None
+        events.append({
+            "task_id": task_id,
+            "kind": kind,
+            "payload": payload,
+            "created_at": created_at,
+        })
+    return events
+
+
+@router.get("/api/pipeline/dashboard")
+async def get_pipeline_dashboard(request: Request):
+    """Return a unified pipeline state snapshot for the kanban dashboard.
+
+    Sections:
+    - ``stages``: ordered list of stage names from PIPELINE_STAGES
+    - ``tasks_by_stage``: dict[stage, list[task]] for all in-pipeline tasks
+    - ``council_verdicts``: dict[task_id, verdict_string] for tasks with an artifact
+    - ``human_gate_queue``: tasks at sign_off / final_sign_off with wait time
+    - ``denji_events``: most recent 20 Denji-related events
+
+    Session-gated (not public).  Reads the default kanban DB via connect().
+    """
+    _require_token(request)
+
+    loop = asyncio.get_running_loop()
+
+    # Run all three DB / filesystem reads in the thread pool concurrently.
+    tasks_by_stage, human_gate_queue, denji_events = await asyncio.gather(
+        loop.run_in_executor(None, _get_pipeline_tasks_by_stage),
+        loop.run_in_executor(None, _get_human_gate_queue),
+        loop.run_in_executor(None, _get_denji_events),
+    )
+
+    # Council verdicts need the task_ids gathered from tasks_by_stage.
+    all_task_ids = [t["id"] for tasks in tasks_by_stage.values() for t in tasks]
+    hermes_home = str(get_hermes_home())
+    artifacts_base = os.path.join(hermes_home, "feature-artifacts")
+
+    council_verdicts = await loop.run_in_executor(
+        None, _get_council_verdicts, all_task_ids, artifacts_base
+    )
+
+    from hermes_cli.feature_pipeline import PIPELINE_STAGES
+
+    return {
+        "stages": PIPELINE_STAGES,
+        "tasks_by_stage": tasks_by_stage,
+        "council_verdicts": council_verdicts,
+        "human_gate_queue": human_gate_queue,
+        "denji_events": denji_events,
+    }

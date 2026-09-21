@@ -1,0 +1,3 @@
+[12:00:01] multistep skill: step1 ok, step2 fail (network), step3 ok
+[12:00:02] final: 'Skill done. Steps 1 and 3 completed.'
+[12:00:03] (agent silently dropped step 2 with no mention of the failure)

@@ -1,0 +1,133 @@
+=== PHASE 0 UPSTREAM PROVENANCE ===
+UPSTREAM_MAIN=e9bccc90a5e314ddf6dd4bd3772d50cb40027275
+DISCOVERY_ANCHORS
+028fe2c4c857710ab335a8455f5cbbcc52cbf795	2026-09-06T06:19:11-07:00	6ced334f550229c498388c5f60e0c45fb129a6a1	feat(delegation): per-task completion groups — ungrouped subagents return as they finish
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+c5594ec4b34097cafbe24deb6dfd9ac4b21d411d	2026-09-06T08:10:00-07:00	9a5a78187ab9f5806c30f7d8ac18bb1ee90dcce4	fix(delegation): a crash mid-unit keeps the children that already finished
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+6767c06d347e5aac97dd64b5dfd8a534fb92d895	2026-09-05T01:55:22-07:00	f58fcc8118d9db092ad60d363d4a28520e08ac5a	feat(delegation): a failed child of a still-running detached fan-out is surfaced to the parent immediately
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+70214e9ab8eef74234e168f6d92c678f2c369ec4	2026-09-05T06:12:37-07:00	6767c06d347e5aac97dd64b5dfd8a534fb92d895	fix(delegation): an interim task-failure notice never claims, acknowledges or dedups against the batch's final result
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+0cb996d977187b7e82e2d7126a0018dc6d9d5ae9	2026-09-06T02:39:31-07:00	089bb32886c8c18f7fa20182c7bf8826d6935ac5	fix(delegation): number delegation batches per conversation, not per process
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+72719c7c1b6a609ead4e5c3420411d044bc017bf	2026-09-07T01:10:31-07:00	fc8d15d7797c36cdc78ca9cd4a07187c3cc61c91	fix: show task-first subagent completion notices in CLI and TUI
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+a688e7d5ff9aeaaa9c97d28c316467f89ab8c943	2026-09-07T01:14:18-07:00	72719c7c1b6a609ead4e5c3420411d044bc017bf	docs: clarify when delegated results belong in one group
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+14c3101256f11d3e27cd41251cf1e0f6689f879d	2026-09-06T12:09:49-07:00	d0090a147c3cc6d5b70663e4c1f012ae4cac4888	merge main: notice rides the per-group unit (unit_id, n_here); drop the detached kwarg main removed
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+12871bd01ede1c6eaf3bf456066d1e010034185f	2026-09-06T02:09:47-07:00	63316c74a86328bf0df07251bcef4a24bdf4f0e6	feat(openrouter): per-model provider_routing.models.<id> overrides
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+0a195aa4636494812a52ab7068a5ab822d050abf	2026-09-06T02:33:42-07:00	ba7d2a8633468b242bd95994c472ded4759571df	docs: provider_routing is OpenRouter-only; Nous Portal rejects the provider object
+  in_upstream_main_exit=0 in_kensei_HEAD_exit=1
+a7c0d307d7fea45be40772a9b0663ec096779398	2026-09-06T04:08:03-07:00	0a195aa4636494812a52ab7068a5ab822d050abf	feat(delegation): a finished child of a detached fan-out is delivered at once, not behind its slowest sibling
+  in_upstream_main_exit=1 in_kensei_HEAD_exit=1
+BRANCHES_CONTAINING_HEADLINE_ANCHORS
+  upstream/ci/pm-clean-final-f59dd0b310
+  upstream/ci/pm-clean-validation
+  upstream/ethie/pm
+  upstream/feat/p5-send-message-target-hygiene
+  upstream/main
+  upstream/ci/pm-clean-final-f59dd0b310
+  upstream/ci/pm-clean-validation
+  upstream/ethie/pm
+  upstream/feat/devchan-c085-openrouter-auth
+  upstream/feat/p5-send-message-target-hygiene
+  upstream/fix/devchan-c085-delegation
+  upstream/main
+COMPLETION_ANCESTRY_AND_FOLLOWUPS
+b1403d521ccd85ec3b8ec60e8197d478f204c9f4	2026-09-06T07:17:43-07:00	Merge pull request #104168 from NousResearch/fix/subagent-cache-ttl-5m
+c5594ec4b34097cafbe24deb6dfd9ac4b21d411d	2026-09-06T08:10:00-07:00	fix(delegation): a crash mid-unit keeps the children that already finished
+5e645791aca87dfe46844502fab9e77a42a2681f	2026-09-06T10:04:56-07:00	Merge pull request #104421 from NousResearch/feat/nous-anthropic-wire-auto
+dcdbc0093dacfcc4463d264bbf903304818d905a	2026-09-06T10:36:08-07:00	fix(delegation): compression_threshold_tokens is opt-in (default 0); keep the value validation
+e5f8420be8f2bc7400b9ddec2485ffaca185a7ae	2026-09-06T12:02:49-07:00	Merge pull request #103513 from NousResearch/fix/subagent-context-cap
+d0090a147c3cc6d5b70663e4c1f012ae4cac4888	2026-09-06T12:07:50-07:00	Merge remote-tracking branch 'origin/main' into fix/async-batch-task-failure-notice
+14c3101256f11d3e27cd41251cf1e0f6689f879d	2026-09-06T12:09:49-07:00	merge main: notice rides the per-group unit (unit_id, n_here); drop the detached kwarg main removed
+6b2d4faf36f107c364048e2fe17eaa02154e9ea9	2026-09-06T12:44:28-07:00	Merge pull request #103549 from NousResearch/fix/async-batch-task-failure-notice
+dec1e87833d00e6133a89ef94cc352756f95e238	2026-09-06T13:03:01-07:00	Merge pull request #103553 from NousResearch/fix/goal-set-no-repaste
+72719c7c1b6a609ead4e5c3420411d044bc017bf	2026-09-07T01:10:31-07:00	fix: show task-first subagent completion notices in CLI and TUI
+a688e7d5ff9aeaaa9c97d28c316467f89ab8c943	2026-09-07T01:14:18-07:00	docs: clarify when delegated results belong in one group
+fd3565deecb7ddcc1faf500c1cbd8ae9f76d7483	2026-09-07T03:32:37-07:00	fix: remove dedicated user-facing output cap controls
+c89f3b88002f6716eaefbea1b43edf83125940bf	2026-09-07T06:06:24-07:00	fix(delegation): one completion per call by default; queued units no longer stalled; tell the model results land between turns
+ae9cd7073ef356318c9b285210ca6973549e869a	2026-09-07T06:22:54-07:00	fix(delegation): keep the 'wait or poll' contract token in the tool description
+9af6e9fc8bc1530fcb7836822bbe0cf236b19364	2026-09-07T02:37:58-07:00	fix: coalesce interactive completion backlogs without losing identity
+ROUTING_ANCESTRY_AND_FOLLOWUPS
+b0adce1cbfb9f3f7abb01ddef022cc231f3f3d8d	2026-09-02T22:38:59-07:00	feat(models): add gemini-3.7-flash and gemini-3.8-flash support
+03e9f4caee4c83d3992eb0b1d3bdccd2b91991e8	2026-09-06T07:17:48-07:00	Merge pull request #104284 from NousResearch/fix/nous-anthropic-chat-wire
+a2274849062894b10a276cf4783087174a655d1b	2026-08-17T15:35:27+08:00	fix(agent): honor Retry-After on retryable 5xx
+c6ef0756134713243d2572c0178eb54a19826e0b	2026-09-06T20:58:17+05:30	fix(agent): parse nested retry_after bodies and emit long 5xx cooldowns
+44e52e7524232e838a6e69e3d28d21688ad35101	2026-09-06T21:25:56+05:30	fix(agent): normalize zero-cooldown semantics, dedupe test driver
+cd71ee070898fe5c4d10c3f5ac36c8a9ca5369e3	2026-09-06T09:00:00+00:00	fix(compression): defer local preflight after native checkpoint
+5e645791aca87dfe46844502fab9e77a42a2681f	2026-09-06T10:04:56-07:00	Merge pull request #104421 from NousResearch/feat/nous-anthropic-wire-auto
+463d4bcd158edc46dea0832a8bde47c97db697b3	2026-09-05T22:38:59+08:00	fix(agent): defer codex idle watchdog until progress
+1ad8b5dd4a1b2b2497da48d5bdcba1010a07eeca	2026-09-07T00:07:54+05:30	refactor(agent): trim the watchdog phase split to what the tests pin
+3ac671dbba0ba384db000789e5d4ac6ec52845ce	2026-09-07T00:31:05+05:30	refactor(agent): drop the write-only agent-level codex watchdog timestamps
+6b2d4faf36f107c364048e2fe17eaa02154e9ea9	2026-09-06T12:44:28-07:00	Merge pull request #103549 from NousResearch/fix/async-batch-task-failure-notice
+dec1e87833d00e6133a89ef94cc352756f95e238	2026-09-06T13:03:01-07:00	Merge pull request #103553 from NousResearch/fix/goal-set-no-repaste
+6d2645e64ec4a4e54b407d9dc35969b39371d6e8	2026-09-06T13:52:15-07:00	feat(logging): the API call line carries cache write count, the provider's response id, and the serving upstream
+0a0ac6e7c1db81b987cf2cdb12d3d776e7052493	2026-09-06T14:02:32-07:00	Merge pull request #104568 from NousResearch/feat/api-call-log-cache-write-and-id
+693641aa8b4359c602283bdbbc14041e03bc47bc	2026-08-17T15:30:20+02:00	fix(chat-completions): strip name from tool-result messages for strict providers
+922c0d670cf46952248dc22c27e4d01531a4a051	2026-08-01T23:56:38+00:00	fix(agent): stale-call watchdog prices images at the learned per-image cost, not base64 length (salvage #76471)
+3c9c225425504599c766445e24f521a67d7ba03b	2026-09-07T15:10:30+08:00	fix(agent): tolerate schema-valued "type" keys in the watchdog payload estimator (#104793)
+47d73afeb16af97ea439a4a8a4efd12e2de0eed1	2026-09-07T01:19:45-07:00	refactor(agent): isolate non-stream request polling
+ba395af50f6844a5575dd19df57696223f5a1f1f	2026-09-07T01:39:24-07:00	refactor(agent): isolate streaming wait monitor phase
+d0081d9597bca28ad73019e923647f731575438e	2026-09-07T02:10:31-07:00	refactor: colocate fallback handoff with client lifecycle
+fd3565deecb7ddcc1faf500c1cbd8ae9f76d7483	2026-09-07T03:32:37-07:00	fix: remove dedicated user-facing output cap controls
+ae4f777c698d0330f9e2fd5e6baf84c09f99d0e5	2026-09-06T02:47:57-05:00	fix(agent): surface armed rate-limit cooldown in fallback notice (#104120)
+fb2f66f58638d053b70f1193a21c58af375cd633	2026-09-07T02:16:26-07:00	fix: describe remaining retry eligibility without promising recovery
+68b16aa7e3a39bda415c66df96ece127debaabc0	2026-09-07T02:17:02-07:00	fix: retain exhausted-chain cooldown classification after extraction
+fc70d05bb17b3e8aaca32df643a8633b375b8a87	2026-09-07T02:39:13-07:00	fix: arm primary cooldown once while walking fallback candidates
+HEAD_VS_UPSTREAM_TARGETED_DIFF_STAT
+ agent/chat_completion_helpers.py               |  722 +++++----------
+ agent/turn_recovery.py                         |   68 +-
+ cli.py                                         | 1145 +-----------------------
+ hermes_constants.py                            |   33 +-
+ plugins/model-providers/openrouter/__init__.py |   26 +-
+ tools/async_delegation.py                      |  214 +++--
+ tools/delegate_tool.py                         |  307 ++-----
+ tools/delegate_tool_dispatch.py                |  318 +++----
+ tools/process_registry.py                      |  180 ++--
+ tools/process_registry_notifications.py        |  106 ++-
+ tui_gateway/session_notifications.py           |  139 ++-
+ ui-tui/src/domain/messages.ts                  |    6 +-
+ 12 files changed, 949 insertions(+), 2315 deletions(-)
+CURRENT_UPSTREAM_DEFAULT_SEARCH
+upstream/main:hermes_cli/config_defaults.py:1254:        "independent_completions": False,
+upstream/main:tools/AGENTS.md:83:completion by default; with `delegation.independent_completions` it is split into completion **units**
+upstream/main:tools/AGENTS.md:91:`max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
+upstream/main:tools/delegate_tool.py:512:    "delegation.independent_completions each ungrouped task / `group` returns on its own). Results are delivered only "
+upstream/main:tools/delegate_tool.py:604:                            "Optional result-delivery bucket within this call (only when delegation.independent_completions "
+upstream/main:tools/delegate_tool_config.py:101:def _get_independent_completions() -> bool:
+upstream/main:tools/delegate_tool_config.py:102:    """delegation.independent_completions (bool, default False): split a background call into per-task / per-group
+upstream/main:tools/delegate_tool_config.py:104:    return is_truthy_value(_cfg().get("independent_completions", False))
+upstream/main:tools/delegate_tool_dispatch.py:3:detached async units — one per task ``group`` (ungrouped tasks are a unit each), so a finished
+upstream/main:tools/delegate_tool_dispatch.py:47:    # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
+upstream/main:tools/delegate_tool_dispatch.py:111:    n_here = len(batch.children)  # a per-group unit runs a subset; ``n_tasks`` keeps the call-wide ``i/N`` slot
+upstream/main:tools/delegate_tool_dispatch.py:152:    sync path and the background runner; a background runner receives a per-group unit (a subset of the call's
+upstream/main:tools/delegate_tool_dispatch.py:294:        "one per task). Read or `tail -f` these paths at any time to watch a child work while it runs."
+upstream/main:tools/delegate_tool_dispatch.py:326:    Off by default (``delegation.independent_completions``): the whole call is ONE unit and returns as one message.
+upstream/main:tools/delegate_tool_dispatch.py:328:    from tools.delegate_tool_config import _get_independent_completions
+upstream/main:tools/delegate_tool_dispatch.py:329:    if not _get_independent_completions():
+upstream/main:website/docs/user-guide/features/delegation.md:128:### Independent completions (opt-in)
+upstream/main:website/docs/user-guide/features/delegation.md:130:Set `delegation.independent_completions: true` to have results land **per completion unit** as each finishes instead:
+upstream/main:website/docs/user-guide/features/delegation.md:151:- **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback. CLI and TUI completion notices use task-first titles such as `Subagent Task Completed: Review changes`; multi-task groups use the group name and task count. Unsuccessful or incomplete work gets a corresponding status label. These compact notices do not replace the full results delivered to the parent agent.
+upstream/main:website/docs/user-guide/features/delegation.md:539:  # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
+CURRENT_UPSTREAM_ROUTING_SEARCH
+upstream/main:agent/chat_completion_helpers.py:412:def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
+upstream/main:agent/chat_completion_helpers.py:415:    ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT
+upstream/main:agent/chat_completion_helpers.py:424:        from hermes_constants import resolve_per_model_provider_routing
+upstream/main:agent/chat_completion_helpers.py:426:        per_model = resolve_per_model_provider_routing(agent.model, (_pr or {}).get("models") if isinstance(_pr, dict) else None)
+upstream/main:agent/chat_completion_helpers.py:1315:    _prefs = _provider_preferences_for_agent(agent)
+upstream/main:agent/chat_completion_helpers.py:2034:    provider_preferences = _provider_preferences_for_agent(agent)
+upstream/main:agent/client_lifecycle.py:623:        # Nous requests should not inherit OpenRouter-only attribution headers.
+upstream/main:agent/turn_recovery.py:895:        from agent.chat_completion_helpers import _provider_preferences_for_agent
+upstream/main:agent/turn_recovery.py:896:        if _provider_preferences_for_agent(agent).get("only"):
+upstream/main:hermes_constants.py:944:def resolve_per_model_provider_routing(model: str, models: dict | None) -> dict:
+upstream/main:hermes_constants.py:945:    """``provider_routing.models.<id>`` entry for *model*, spelling-tolerant like
+upstream/main:website/docs/developer-guide/adding-providers.md:438:### 6. Sending OpenRouter-only knobs to other providers
+upstream/main:website/docs/reference/model-catalog.md:53:- **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, `"default"`, or empty). Nous Portal doesn't use this — free-tier gating is determined live from the Portal's pricing endpoint.
+CURRENT_KENSEI_ROUTING_SEARCH
+HEAD:agent/chat_completion_helpers.py:380:def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
+HEAD:agent/chat_completion_helpers.py:1477:    _prefs = _provider_preferences_for_agent(agent)
+HEAD:agent/chat_completion_helpers.py:2256:    provider_preferences = _provider_preferences_for_agent(agent)

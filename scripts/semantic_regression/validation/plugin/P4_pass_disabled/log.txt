@@ -1,0 +1,3 @@
+[12:00:01] plugins.enabled in config.yaml does NOT include 'optin'
+[12:00:02] optin plugin NOT loaded: no hooks, no tools, no slash commands registered
+[12:00:03] enabled plugins loaded normally

@@ -26,7 +26,7 @@ from typing import Any, Callable, Iterator, Optional
 from fastapi import (
     APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status)
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from hermes_cli import kanban_db
 from hermes_cli.web_read_coalescing import coalesced_read
@@ -38,6 +38,39 @@ from hermes_cli import kanban_diagnostics as kd
 from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
 
 log = logging.getLogger(__name__)
+
+# ── KENSEI CUSTOM (ported) — canonical ProjectKanbanHost seam ──
+from hermes_cli.project_kanban_host import HostError, ProjectKanbanHost
+
+
+def _host(board: Optional[str] = None) -> ProjectKanbanHost:
+    """Compose the canonical host against this request's home and board."""
+    selected = _resolve_board(board) or kanban_db.get_current_board()
+    return ProjectKanbanHost(
+        hermes_home=kanban_db.kanban_home(),
+        board=selected,
+    )
+
+
+def _raise_host_http(exc: HostError) -> None:
+    status_by_code = {
+        "board_not_found": 404,
+        "epic_not_found": 404,
+        "project_not_found": 404,
+        "task_not_found": 404,
+        "invalid_limit": 400,
+        "validation_error": 400,
+        "transition_conflict": 409,
+        "link_not_found": 404,
+        "write_conflict": 409,
+        "write_forbidden": 403,
+        "unsupported_capability": 501,
+    }
+    raise HTTPException(
+        status_code=status_by_code.get(exc.code, 503),
+        detail=exc.message,
+    ) from None
+# ── END KENSEI CUSTOM ──
 
 router = APIRouter()
 
@@ -166,7 +199,8 @@ def _errors_to_500(prefix: str) -> Iterator[None]:
 
 # Dashboard columns, left-to-right ("archived" is a filter toggle, not a column). Keep in
 # sync with kanban_db.VALID_STATUSES — a status missing here gets mis-bucketed into ``todo``.
-BOARD_COLUMNS: list[str] = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"]
+# KENSEI CUSTOM (ported): backlog restored as a first-class column; scheduled is first-class waiting.
+BOARD_COLUMNS: list[str] = ["backlog", "triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"]
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
@@ -376,7 +410,10 @@ def get_task(
 
 # --- POST /tasks ------------------------------------------------------------
 
+# ── KENSEI CUSTOM (ported) — strict body model ──
 class CreateTaskBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str
     body: Optional[str] = None
     assignee: Optional[str] = None
@@ -393,36 +430,82 @@ class CreateTaskBody(BaseModel):
     goal_max_turns: Optional[int] = None
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
-    reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
-    project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
-
-
+    # Per-task thinking depth (none|minimal|…|ultra). None = inherit the
+    # assigned profile's own agent.reasoning_effort.
+    reasoning_effort: Optional[str] = None
+    # Explicit project link; when omitted, create_task inherits the board's
+    # scoped project (if any) so a project-scoped board anchors every task.
+    project_id: Optional[str] = None
+    # P2a: canonical task kind (task|bug|spike|subtask|gate). Defaults 'task'.
+    task_kind: Optional[str] = None
+    # P2a: non-blocking containment parent (same board). Never a dependency.
+    parent_task_id: Optional[str] = None
+    # P2a: attach the new task to an epic (same board).
+    epic_id: Optional[str] = None
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
-    with _board_conn(board) as (board, conn), _value_error_400():
-        # CreateTaskBody field names match create_task's keyword parameters.
-        task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
-        task = kanban_db.get_task(conn, task_id)
-        body: dict[str, Any] = {"task": _task_dict(task) if task else None}
-        # Dispatcher-presence warning so the UI can banner a ready+assigned task that would
-        # otherwise sit idle (no gateway / dispatch_in_gateway=false); triage/todo are expected
-        # to wait, unassigned tasks can't dispatch anyway. Probe the request's active home: the
-        # dashboard backend may run under a different HERMES_HOME than the board's profile.
-        if task and task.status == "ready" and task.assignee:
+    try:
+        task = _host(board).create_task(
+            title=payload.title,
+            body=payload.body,
+            assignee=payload.assignee,
+            created_by="dashboard",
+            workspace_kind=payload.workspace_kind,
+            workspace_path=payload.workspace_path,
+            tenant=payload.tenant,
+            priority=payload.priority,
+            parents=payload.parents,
+            triage=payload.triage,
+            idempotency_key=payload.idempotency_key,
+            max_runtime_seconds=payload.max_runtime_seconds,
+            skills=payload.skills,
+            goal_mode=payload.goal_mode,
+            goal_max_turns=payload.goal_max_turns,
+            model_override=payload.model_override,
+            provider_override=payload.provider_override,
+            reasoning_effort=payload.reasoning_effort,
+            project_id=payload.project_id,
+            task_kind=payload.task_kind,
+            parent_task_id=payload.parent_task_id,
+            epic_id=payload.epic_id,
+        )
+        response: dict[str, Any] = {"task": task}
+        # Surface a dispatcher-presence warning so the UI can show a
+        # banner when a `ready` task would otherwise sit idle because no
+        # gateway is running (or dispatch_in_gateway=false). Only emit
+        # for ready+assigned tasks; triage/todo are expected to wait,
+        # and unassigned tasks can't be dispatched regardless.
+        if task["status"] == "ready" and task["assignee"]:
             try:
                 from hermes_cli.kanban import _check_dispatcher_presence
                 from hermes_constants import get_hermes_home
-                running, message = _check_dispatcher_presence(hermes_home=get_hermes_home())
+
+                running, message = _check_dispatcher_presence(
+                    hermes_home=get_hermes_home()
+                )
                 if not running and message:
-                    body["warning"] = message
+                    response["warning"] = message
             except Exception:
-                pass  # probe failure must never block the create itself
-        return body
+                pass
+        return response
+    except HostError as exc:
+        _raise_host_http(exc)
 
 
-# --- Attachments — upload / list / download / delete ------------------------
-# Size cap, filename sanitiser, and collision resolver live in ``kanban_db`` so the
-# dashboard, agent toolset, and CLI share one implementation.
+# ---------------------------------------------------------------------------
+# Attachments — upload / list / download / delete (#35338)
+# ---------------------------------------------------------------------------
+
+# The size cap, filename sanitiser, and collision resolver now live in
+# ``kanban_db`` so the dashboard, the agent toolset, and the CLI share one
+# implementation and cannot drift. ``_safe_attachment_name`` raises a plain
+# ``ValueError`` there; the upload handler's ``except ValueError`` below maps
+# it to a 400, preserving the previous response.
+from hermes_cli.kanban_db import (  # noqa: E402
+    KANBAN_ATTACHMENT_MAX_BYTES,
+    _collision_free_path,
+    _safe_attachment_name,
+)
 
 @router.get("/tasks/{task_id}/attachments")
 def list_task_attachments(task_id: str, board: Optional[str] = Query(None)):
@@ -493,28 +576,44 @@ def remove_attachment(attachment_id: int, board: Optional[str] = Query(None)):
 
 # --- PATCH /tasks/:id  and  POST /tasks/bulk ---------------------------------
 
+# ── KENSEI CUSTOM (ported) — strict body model ──
 class UpdateTaskBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     status: Optional[str] = None
     assignee: Optional[str] = None
     priority: Optional[int] = None
     title: Optional[str] = None
     body: Optional[str] = None
+    task_kind: Optional[str] = None
+    parent_task_id: Optional[str] = None
+    epic_id: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
-    # Handoff fields forwarded to complete_task on -> 'done' (parity with ``hermes kanban complete``).
+    # Structured handoff fields — forwarded to complete_task when status
+    # transitions to 'done'. Dashboard parity with ``hermes kanban
+    # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
-    # In a PATCH ``None`` means "field not sent", so ``clear_*=True`` is the explicit clear signal.
-    # ``reasoning_effort="none"`` is a VALUE (thinking off); it is cleared separately so
-    # dropping a model override doesn't silently reset the depth.
+    # Per-task model/provider override (the board's model dropdown).
+    # ``model_override=""`` clears both. ``clear_model_override=True`` is
+    # the explicit clear signal — needed because Optional[str]=None means
+    # "field not sent" in a PATCH, not "set to NULL".
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
     clear_model_override: bool = False
+    # Per-task thinking depth. ``"none"`` is a VALUE (thinking off), not a
+    # clear — use ``clear_reasoning_effort=True`` to fall back to the
+    # profile's own level. Separate from the model clear so dropping a model
+    # override doesn't silently reset the depth the operator chose.
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
 
 
+# ── KENSEI CUSTOM (ported) — strict body model ──
 class BulkTaskBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ids: list[str]
     status: Optional[str] = None
     assignee: Optional[str] = None  # "" or None = unassign
@@ -524,10 +623,11 @@ class BulkTaskBody(BaseModel):
     summary: Optional[str] = None
     metadata: Optional[dict] = None
     reclaim_first: bool = False
-    # Same semantics as UpdateTaskBody.
+    # Bulk model/provider override — same semantics as UpdateTaskBody.
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
     clear_model_override: bool = False
+    # Bulk thinking-depth override — same semantics as UpdateTaskBody.
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
 
@@ -553,10 +653,9 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 
 # Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
-# detection) and ``done`` pass ``force=True``: a dashboard action is a human override of a live worker claim.
+# detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
-    "done": lambda conn, tid, p: kanban_db.complete_task(
-        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
+    "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(
@@ -652,30 +751,72 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
         conn, task_id, [f for f in ("title", "body") if getattr(payload, f) is not None], board=board)
 
 
+# ── KENSEI CUSTOM (ported) — host-backed canonical mutation ──
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
-    with _board_conn(board) as (board, conn):
-        _require_task(conn, task_id)
-        # For a combined assignee+review patch, request_review must capture the
-        # current implementer before the task is routed to the reviewer.
-        review_assignee_deferred = payload.status == "review" and payload.assignee is not None
-        if payload.assignee is not None and not review_assignee_deferred:
-            with _map_errors(409, RuntimeError):
-                _require_ok(kanban_db.assign_task(conn, task_id, payload.assignee or None))
-        if payload.status is not None:
-            _patch_status(conn, task_id, payload, review_assignee_deferred)
-        for wanted, apply, _refused in _OVERRIDE_OPS:
-            if wanted(payload):
-                with _map_errors(400, ValueError, RuntimeError):
-                    ok = apply(conn, task_id, payload)
-                _require_ok(ok)
-        if payload.priority is not None:
-            _set_priority(conn, task_id, payload.priority, board)
-        if payload.title is not None or payload.body is not None:
-            _patch_title_body(conn, task_id, payload, board)
-        updated = kanban_db.get_task(conn, task_id)
-        return {"task": _task_dict(updated) if updated else None}
+    fields = payload.model_fields_set
+    host = _host(board)
+    try:
+        host.get_task(task_id)
+        review_assignee_deferred = (
+            payload.status == "review" and payload.assignee is not None
+        )
 
+        if payload.assignee is not None and not review_assignee_deferred:
+            host.assign_task(task_id, payload.assignee or None)
+
+        if payload.status is not None:
+            host.transition_task(
+                task_id,
+                payload.status,
+                reason=payload.block_reason,
+                result=payload.result,
+                summary=payload.summary,
+                metadata=payload.metadata,
+                reviewer=(payload.assignee or None),
+                force_review=True,
+            )
+            if review_assignee_deferred and not payload.assignee:
+                host.assign_task(task_id, None)
+
+        changes: dict[str, Any] = {}
+        for field in (
+            "title",
+            "body",
+            "priority",
+            "task_kind",
+            "parent_task_id",
+            "epic_id",
+        ):
+            value = getattr(payload, field)
+            if field not in fields:
+                continue
+            if field in {"title", "body", "priority"} and value is None:
+                continue
+            changes[field] = value
+
+        if payload.clear_model_override:
+            changes["model_override"] = None
+            changes["provider_override"] = None
+        elif payload.model_override is not None:
+            changes["model_override"] = payload.model_override.strip() or None
+            changes["provider_override"] = payload.provider_override
+
+        if payload.clear_reasoning_effort:
+            changes["reasoning_effort"] = None
+        elif payload.reasoning_effort is not None:
+            changes["reasoning_effort"] = payload.reasoning_effort
+
+        if changes:
+            host.update_task(task_id, **changes)
+        return {"task": host.get_task(task_id)["task"]}
+    except HostError as exc:
+        _raise_host_http(exc)
+
+
+# ---------------------------------------------------------------------------
+# DELETE /tasks/:id
+# ---------------------------------------------------------------------------
 
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: str, board: Optional[str] = Query(None)):
@@ -704,12 +845,11 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
     """Direct status write for drag-drop moves without a structured verb (todo<->ready,
     running<->ready) + a ``status`` event. Leaving ``running`` closes the run as 'reclaimed'
     so attempt history isn't orphaned; the worker is killed only AFTER the txn commits."""
-    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
+    terminations: list[tuple[Optional[int], Optional[str]]] = []
     effective_status = new_status
     with kanban_db.write_txn(conn):
         prev = conn.execute(
-            "SELECT status, current_run_id, worker_pid, claim_lock, worker_started_at FROM tasks WHERE id = ?",
-            (task_id,)).fetchone()
+            "SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if prev is None:
             return False
         if prev["status"] == "running" and new_status == "ready":
@@ -736,7 +876,7 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             run_id = kanban_db._end_run(
                 conn, task_id, outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)")
-            terminations.append((prev["worker_pid"], prev["claim_lock"], prev["worker_started_at"]))
+            terminations.append((prev["worker_pid"], prev["claim_lock"]))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, ?, 'status', ?, ?)",
             (task_id, run_id, json.dumps({"status": effective_status, "requested_status": new_status}), int(time.time())))
@@ -745,8 +885,8 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             # back worker terminations to perform post-commit.
             result = kanban_db.invalidate_descendants_for_parent_reopen(conn, task_id, author="dashboard")
             terminations.extend(result["terminations"])
-    for pid, claim_lock, started_at in terminations:
-        kanban_db._terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
+    for pid, claim_lock in terminations:
+        kanban_db._terminate_reclaimed_worker(pid, claim_lock)
     # Re-opening something may have made children stale.
     if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)
@@ -755,38 +895,64 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
 
 # --- Comments / links -------------------------------------------------------
 
+# ── KENSEI CUSTOM (ported) — strict body model ──
 class CommentBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     body: str
     author: Optional[str] = "dashboard"
-
-
 @router.post("/tasks/{task_id}/comments")
 def add_comment(task_id: str, payload: CommentBody, board: Optional[str] = Query(None)):
     if not payload.body.strip():
         raise HTTPException(status_code=400, detail="body is required")
-    with _board_conn(board) as (board, conn):
-        _require_task(conn, task_id)
-        kanban_db.add_comment(conn, task_id, author=payload.author or "dashboard", body=payload.body)
+    try:
+        _host(board).add_comment(
+            task_id,
+            author=payload.author or "dashboard",
+            body=payload.body,
+        )
         return {"ok": True}
+    except HostError as exc:
+        _raise_host_http(exc)
 
 
+# ---------------------------------------------------------------------------
+# Links
+# ---------------------------------------------------------------------------
+
+# ── KENSEI CUSTOM (ported) — strict body model ──
 class LinkBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     parent_id: str
     child_id: str
-
-
 @router.post("/links")
 def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
-    with _board_conn(board) as (board, conn), _value_error_400():
-        gated = kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
-        return {"ok": True, "gated": gated}
+    try:
+        _host(board).link_tasks(payload.parent_id, payload.child_id)
+        return {"ok": True}
+    except HostError as exc:
+        _raise_host_http(exc)
 
-
+# ── KENSEI CUSTOM (ported) — host-backed canonical mutation ──
 @router.delete("/links")
-def delete_link(parent_id: str = Query(...), child_id: str = Query(...), board: Optional[str] = Query(None)):
-    with _board_conn(board) as (board, conn):
-        return {"ok": bool(kanban_db.unlink_tasks(conn, parent_id, child_id))}
+def delete_link(
+    parent_id: str = Query(...),
+    child_id: str = Query(...),
+    board: Optional[str] = Query(None),
+):
+    try:
+        _host(board).unlink_tasks(parent_id, child_id)
+        return {"ok": True}
+    except HostError as exc:
+        if exc.code == "link_not_found":
+            return {"ok": False}
+        _raise_host_http(exc)
 
+
+# ---------------------------------------------------------------------------
+# Bulk actions (multi-select on the board)
+# ---------------------------------------------------------------------------
 
 def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str], entry: dict) -> None:
     """Apply the bulk patch to one task, recording refusals in ``entry`` without aborting the
@@ -816,29 +982,90 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
                 entry.update(ok=False, error=str(e))
 
 
+# ── KENSEI CUSTOM (ported) — host-backed canonical mutation ──
 @router.post("/tasks/bulk")
 def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
-    """Apply the same patch to every id. Independent iteration — per-task
-    failures don't abort siblings; returns per-id outcome for partials."""
-    ids = [i for i in (payload.ids or []) if i]
+    """Apply one host-backed patch independently to every requested task."""
+    ids = [item for item in (payload.ids or []) if item]
     if not ids:
         raise HTTPException(status_code=400, detail="ids is required")
-    results: list[dict] = []
-    with _board_conn(board) as (board, conn):
-        for tid in ids:
-            entry: dict[str, Any] = {"id": tid, "ok": True}
-            try:
-                if kanban_db.get_task(conn, tid) is None:
-                    entry.update(ok=False, error="not found")
-                else:
-                    _bulk_apply_one(conn, tid, payload, board, entry)
-            except Exception as e:  # one bad id shouldn't kill the batch (incl. _StatusRejected)
-                entry.update(ok=False, error=str(e))
-            results.append(entry)
-        return {"results": results}
+
+    host = _host(board)
+    results: list[dict[str, Any]] = []
+    valid_statuses = {
+        "archived",
+        "backlog",
+        "blocked",
+        "done",
+        "ready",
+        "review",
+        "scheduled",
+        "todo",
+        "triage",
+    }
+    for task_id in ids:
+        entry: dict[str, Any] = {"id": task_id, "ok": True}
+        try:
+            host.get_task(task_id)
+            if payload.archive:
+                host.transition_task(task_id, "archived")
+            elif payload.status is not None:
+                if payload.status == "running":
+                    entry.update(ok=False, error="running is dispatcher-managed")
+                    results.append(entry)
+                    continue
+                if payload.status not in valid_statuses:
+                    entry.update(
+                        ok=False,
+                        error=f"unknown status {payload.status!r}",
+                    )
+                    results.append(entry)
+                    continue
+                host.transition_task(
+                    task_id,
+                    payload.status,
+                    result=payload.result,
+                    summary=payload.summary,
+                    metadata=payload.metadata,
+                    reviewer=(payload.assignee or None),
+                    force_review=True,
+                )
+
+            if payload.assignee is not None:
+                host.assign_task(
+                    task_id,
+                    payload.assignee or None,
+                    reclaim_first=payload.reclaim_first,
+                )
+
+            changes: dict[str, Any] = {}
+            if payload.priority is not None:
+                changes["priority"] = int(payload.priority)
+            if payload.clear_model_override:
+                changes["model_override"] = None
+                changes["provider_override"] = None
+            elif payload.model_override is not None:
+                changes["model_override"] = (
+                    payload.model_override.strip() or None
+                )
+                changes["provider_override"] = payload.provider_override
+            if payload.clear_reasoning_effort:
+                changes["reasoning_effort"] = None
+            elif payload.reasoning_effort is not None:
+                changes["reasoning_effort"] = payload.reasoning_effort
+            if changes:
+                host.update_task(task_id, **changes)
+        except HostError as exc:
+            entry.update(ok=False, error=exc.message)
+        results.append(entry)
+    return {"results": results}
 
 
-# --- Diagnostics — fleet-wide distress signals (see kanban_diagnostics) ------
+# ---------------------------------------------------------------------------
+# Diagnostics — fleet-wide distress signals (hallucinations, crashes,
+# spawn failures, stuck-blocked). See hermes_cli.kanban_diagnostics for
+# the rule engine.
+# ---------------------------------------------------------------------------
 
 @router.get("/diagnostics")
 def list_diagnostics(
@@ -1032,7 +1259,7 @@ class EstimateBody(BaseModel):
 @router.post("/estimate")
 def estimate_text_endpoint(payload: EstimateBody):
     """Estimate from raw title/body (create dialog, before a task exists)."""
-    return _run_estimate(payload.title, payload.body, task_id=None)
+    return _run_estimate(payload.title, payload.body)
 
 
 @router.post("/tasks/{task_id}/estimate")
@@ -1040,7 +1267,7 @@ def estimate_task_endpoint(task_id: str, board: Optional[str] = Query(None)):
     """Estimate for an existing task; ``{ok, est_tokens, complexity, rationale, model}``."""
     with _board_conn(board) as (board, conn):
         task = _require_task(conn, task_id)
-    return _run_estimate(task.title, task.body, task_id=task_id)
+    return _run_estimate(task.title, task.body)
 
 
 def _cap(s: Optional[str], n: int) -> str:
@@ -1048,7 +1275,7 @@ def _cap(s: Optional[str], n: int) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) -> dict:
+def _run_estimate(title: str, body: Optional[str]) -> dict:
     """Never raises — config/parse/API errors become ``{"ok": False, "reason"}`` so the UI renders them inline."""
     if not (title or "").strip():
         return {"ok": False, "reason": "a title is required to estimate"}
@@ -1057,11 +1284,6 @@ def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) ->
     except Exception:
         return {"ok": False, "reason": "auxiliary client unavailable"}
     user_msg = f"Title: {_cap(title, 400)}\n\nDescription:\n{_cap(body, 4000) or '(none)'}"
-    # Headless like specify/decompose's _call_aux: without a bound affinity scope the relay-affinity
-    # headers are omitted and the OpenCode Go relay answers 400 MissingSessionID (#112043). The
-    # create dialog has no task yet, so it shares one stable key.
-    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
-    affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id or 'estimate'}")
     try:
         resp = call_llm(
             task="kanban_estimator",
@@ -1069,9 +1291,6 @@ def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) ->
             temperature=0.0, max_tokens=300, timeout=60)
     except Exception as exc:
         return {"ok": False, "reason": f"LLM error: {type(exc).__name__}"}
-    finally:
-        if affinity_token is not None:
-            reset_affinity_scope(affinity_token)
     try:
         raw = (resp.choices[0].message.content or "").strip()
         model = getattr(resp, "model", None)
@@ -1386,6 +1605,127 @@ def list_boards(include_archived: bool = Query(False)):
         proj = proj_map.get(pid) if pid else None
         b["project_name"] = proj.name if proj else None
     return {"boards": boards, "current": current}
+
+
+@router.get("/epics")
+def list_epics(board: Optional[str] = Query(None)):
+    """Return all epics with task counts by status.
+
+    Kanban v2: epic-level grouping for JIRA-style visibility.
+    Consumes the public ``kanban_db`` epic primitives; scans the active
+    board (or the specified board) only — the multi-board raw-SQL scan was
+    superseded by per-board routing.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        epics = kanban_db.list_epics(conn, board_slug=board)
+        counts = kanban_db.epic_task_counts(conn)
+    finally:
+        conn.close()
+
+    out = []
+    for e in epics:
+        c = counts.get(e.id, {})
+        out.append({
+            "id": e.id,
+            "title": e.title,
+            "board_slug": e.board_slug or "",
+            "status": e.status,
+            "parent_epic_id": e.parent_epic_id or "",
+            "description": e.description or "",
+            "total": c.get("total", 0),
+            "done": c.get("done", 0),
+            "active": sum(c.get(s, 0) for s in ("running", "ready", "todo", "review", "in_progress")),
+            "backlog": c.get("backlog", 0),
+            "blocked": c.get("blocked", 0),
+            "archived": c.get("archived", 0),
+        })
+    return {"epics": out}
+
+
+class CreateEpicBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    description: Optional[str] = None
+    parent_epic_id: Optional[str] = None
+    status: Optional[str] = None
+
+
+class UpdateEpicBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: Optional[str] = None
+    description: Optional[str] = None
+    parent_epic_id: Optional[str] = None
+    status: Optional[str] = None
+
+
+# ── KENSEI CUSTOM (ported) — host-backed canonical mutation ──
+@router.post("/epics")
+def create_epic(payload: CreateEpicBody, board: Optional[str] = Query(None)):
+    """Create an epic (optionally under a parent epic) on the active board."""
+    try:
+        epic = _host(board).create_epic(
+            title=payload.title,
+            description=payload.description,
+            parent_epic_id=payload.parent_epic_id,
+            status=payload.status or "active",
+        )
+        epic["description"] = epic.get("description") or ""
+        epic["board_slug"] = epic.get("board_slug") or ""
+        epic["parent_epic_id"] = epic.get("parent_epic_id") or ""
+        return {"epic": epic}
+    except HostError as exc:
+        _raise_host_http(exc)
+
+# ── KENSEI CUSTOM (ported) — host-backed canonical mutation ──
+@router.patch("/epics/{epic_id}")
+def update_epic(
+    epic_id: str,
+    payload: UpdateEpicBody,
+    board: Optional[str] = Query(None),
+):
+    """Update canonical epic fields, including cycle-safe hierarchy changes."""
+    try:
+        changes = {
+            field: getattr(payload, field)
+            for field in payload.model_fields_set
+        }
+        epic = _host(board).update_epic(epic_id, **changes)
+        epic["description"] = epic.get("description") or ""
+        epic["board_slug"] = epic.get("board_slug") or ""
+        epic["parent_epic_id"] = epic.get("parent_epic_id") or ""
+        return {"epic": epic}
+    except HostError as exc:
+        _raise_host_http(exc)
+
+@router.get("/epics/{epic_id}")
+def get_epic(epic_id: str, board: Optional[str] = Query(None)):
+    """Return a single epic (with board annotation)."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        epic = kanban_db.get_epic(conn, epic_id)
+    finally:
+        conn.close()
+    if epic is None:
+        raise HTTPException(status_code=404, detail=f"epic {epic_id} not found")
+    return {"epic": _epic_dict(epic)}
+
+
+def _epic_dict(epic: kanban_db.Epic) -> dict[str, Any]:
+    return {
+        "id": epic.id,
+        "title": epic.title,
+        "description": epic.description or "",
+        "board_slug": epic.board_slug or "",
+        "status": epic.status,
+        "parent_epic_id": epic.parent_epic_id or "",
+        "created_at": epic.created_at,
+        "updated_at": epic.updated_at,
+    }
 
 
 def _validate_workdir(raw: str) -> str:

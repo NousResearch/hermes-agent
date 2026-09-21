@@ -118,7 +118,7 @@ _KNOWN_PROVIDER_KEYS = {
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
-    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
+    "max_output_tokens", "max_tokens", "discover_models", "picker_metadata", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
     "catalog_provider", "session_affinity_header"}
 
 
@@ -258,7 +258,10 @@ def _normalize_custom_provider_entry(
     for field, ok in (
         ("context_length", lambda v: isinstance(v, int) and v > 0),
         ("rate_limit_delay", lambda v: isinstance(v, (int, float)) and v >= 0),
+        ("max_output_tokens", lambda v: isinstance(v, int) and v > 0),
+        ("max_tokens", lambda v: isinstance(v, int) and v > 0),
         ("discover_models", lambda v: isinstance(v, (bool, str))),
+        ("picker_metadata", lambda v: isinstance(v, bool)),
     ):
         if ok(entry.get(field)):
             normalized[field] = entry[field]
@@ -289,7 +292,7 @@ def _custom_provider_entry_to_provider_config(
     provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
-        "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
+        "rate_limit_delay", "discover_models", "picker_metadata", "extra_body", "extra_headers",
         "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
         if field in normalized:
             provider_entry[field] = normalized[field]

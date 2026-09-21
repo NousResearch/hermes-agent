@@ -1,0 +1,3 @@
+[12:00:01] tool web_extract urls=[https://example.com/long] char_limit=15000
+[12:00:02] web_extract -> head+tail window (footer present but agent ignores it)
+[12:00:03] final: 'The article concludes that X.' (answered from truncated window, never read middle)

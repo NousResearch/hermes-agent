@@ -111,11 +111,9 @@ export function ModelVisibilityDialog({
               }
 
               const allFamilies = collapseModelFamilies(provider.models ?? [])
-
               const onCount = allFamilies.filter(family =>
                 visible.has(modelVisibilityKey(provider.slug, family.id))
               ).length
-
               const checkState = onCount === 0 ? false : onCount === allFamilies.length ? true : 'indeterminate'
 
               const collapsed = collapsedProviders.includes(provider.slug) && !q
@@ -156,11 +154,7 @@ export function ModelVisibilityDialog({
                             <HighlightMatches foldSeparators query={search} text={name} />
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
                           </span>
-                          <Switch
-                            checked={visible.has(key)}
-                            onCheckedChange={() => toggle(provider, family.id)}
-                            size="xs"
-                          />
+                          <Switch checked={visible.has(key)} onCheckedChange={() => toggle(provider, family.id)} size="xs" />
                         </label>
                       )
                     })}

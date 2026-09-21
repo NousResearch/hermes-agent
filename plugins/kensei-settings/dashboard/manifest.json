@@ -1,0 +1,14 @@
+{
+  "name": "kensei-settings",
+  "label": "KENSEI Settings",
+  "description": "KENSEI plugin credentials (Postiz, Gateway) and Workspace iframe URL. Hidden from nav; opened via the gear icon in the header.",
+  "icon": "Settings",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/kensei-settings",
+    "position": "end",
+    "hidden": true
+  },
+  "slots": ["header-right"],
+  "entry": "dist/index.js"
+}

@@ -143,6 +143,24 @@ async def test_reader_exit_at_end_of_initialization_retires_client(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_silent_initialize_times_out_as_protocol_error(tmp_path: Path, monkeypatch):
+    """A hung server (initialize accepted, never answered) must surface as LSPProtocolError.
+
+    Regression for a load-induced flake: the 45s ``INITIALIZE_TIMEOUT`` fired while the runner was
+    heavily loaded and the raw ``asyncio.TimeoutError`` escaped the test's
+    ``except LSPProtocolError`` — start()'s failure contract is "one exception type for 'server
+    failed to come up'".  Shorten the timeout so the hang path is exercised in seconds.
+    """
+    import agent.lsp.client as client_mod
+
+    monkeypatch.setattr(client_mod, "INITIALIZE_TIMEOUT", 2.0)
+    client = _client(tmp_path, "no_initialize")
+    with pytest.raises(LSPProtocolError, match="failed to initialize within"):
+        await client.start()
+    assert client.state == "error"
+    assert not client.is_running
+    assert client._proc is None
+    await client.shutdown()
 async def test_cancelled_start_terminates_spawned_server(tmp_path: Path):
     """An outer startup budget may cancel initialize before the manager registers the client."""
     client = _client(tmp_path, "slow")

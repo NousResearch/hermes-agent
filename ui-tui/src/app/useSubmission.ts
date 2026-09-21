@@ -11,7 +11,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
+import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken, SubmissionOptions } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -103,7 +103,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       showUserMessage = true,
       displayText?: string,
       expandOverride?: (value: string) => string,
-      submitOpts: { skipDetectDrop?: boolean } = {}
+      submitOpts: SubmissionOptions = {}
     ) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
@@ -251,7 +251,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
   )
 
   const dispatchSubmission = useCallback(
-    (full: string) => {
+    (full: string, options?: SubmissionOptions) => {
       if (!full.trim()) {
         return
       }
@@ -339,11 +339,23 @@ export function useSubmission(opts: UseSubmissionOptions) {
         patchUiState({ busy: true })
 
         return interpolate(full, text =>
-          send(prepareSubmission(text, submissionTokens).text, true, text, value => value)
+          send(
+            prepareSubmission(text, submissionTokens).text,
+            options?.showUserMessage ?? true,
+            options?.displayText ?? text,
+            value => value,
+            options
+          )
         )
       }
 
-      send(submission.text, true, submission.display, value => value)
+      send(
+        submission.text,
+        options?.showUserMessage ?? true,
+        options?.displayText ?? submission.display,
+        value => value,
+        options
+      )
     },
     [
       appendMessage,
@@ -360,7 +372,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
   )
 
   const submit = useCallback(
-    (value: string) => {
+    (value: string, options?: SubmissionOptions) => {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
         const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
@@ -404,7 +416,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return composerActions.setInput('')
       }
 
-      dispatchSubmission([...composerState.inputBuf, value].join('\n'))
+      dispatchSubmission([...composerState.inputBuf, value].join('\n'), options)
     },
     [appendMessage, composerActions, composerRefs, composerState, dispatchSubmission, gw, sys]
   )
@@ -437,6 +449,6 @@ export interface UseSubmissionOptions {
   gw: GatewayClient
   setLastUserMsg: (value: string) => void
   slashRef: MutableRefObject<(cmd: string) => boolean>
-  submitRef: MutableRefObject<(value: string) => void>
+  submitRef: MutableRefObject<(value: string, options?: SubmissionOptions) => void>
   sys: (text: string) => void
 }

@@ -352,6 +352,30 @@ export const formatAbandonedClarifyBatch = (
   return [`ask (${questions.length} questions)`, ...lines, `  (${reason})`].join('\n')
 }
 
+export const parseClarifyMultiAnswer = (value: string | undefined): string[] => {
+  if (!value) {
+    return []
+  }
+
+  try {
+    const parsed = JSON.parse(value)
+
+    return Array.isArray(parsed) && parsed.every(item => typeof item === 'string') ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+export const displayClarifyAnswer = (value: string | undefined, multiSelect = false): string => {
+  if (!value) {
+    return '(skipped)'
+  }
+
+  const selected = multiSelect ? parseClarifyMultiAnswer(value) : []
+
+  return selected.length > 0 ? selected.join(', ') : value
+}
+
 /**
  * Cursor/draft restore for re-visiting an answered batch clarify question
  * (Tab/Shift-Tab): a choice answer puts the cursor back on its row; an

@@ -352,6 +352,7 @@ class CLIInitMixin:
         """Per-run mutable UI state; must exist before any chat() call since -q never goes through run()."""
         from cli import CLI_CONFIG, _status_bar_visible_from_display_config
         self._pending_input = queue.Queue()
+        self._injected_input = queue.Queue()  # KENSEI CUSTOM: plugin injection queue (H-101..H-108)
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
@@ -371,6 +372,14 @@ class CLIInitMixin:
         self._slash_confirm_state = self._model_picker_state = None
         self._clarify_deadline = self._sudo_deadline = self._approval_deadline = self._slash_confirm_deadline = 0
         self._approval_lock = threading.Lock()
+        # ── KENSEI CUSTOM (restored): todo inspector panel + AUQ overlay state ──
+        from hermes_cli.todo_progress import TodoPanelState as _TodoPanelState
+
+        self._todo_panel_state = _TodoPanelState()
+        self._todo_panel_widget = None
+        self._auq_state: Optional[dict] = None
+        self._auq_deadline: float = 0.0
+        # ── END KENSEI CUSTOM ──
         try:  # composer placeholder chosen once so it stays stable on screen
             from hermes_cli.tips import get_random_composer_placeholder
             self._composer_placeholder = get_random_composer_placeholder()

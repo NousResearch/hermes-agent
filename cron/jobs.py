@@ -71,6 +71,8 @@ HERMES_DIR = get_hermes_home().resolve()
 # Default-profile fallback and compatibility surface for callers/tests. Cross-profile callers must
 # scope paths with use_cron_store() instead of mutating these process-wide.
 CRON_DIR = HERMES_DIR / "cron"
+LASTGOOD_FILE = CRON_DIR / "jobs.json.lastgood"  # KENSEI CUSTOM: last-known-good snapshot
+
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat: touched every ticker loop so `hermes cron status` can tell the ticker THREAD is alive,
 # not just the gateway PROCESS; success = last tick that completed WITHOUT raising.
@@ -626,6 +628,61 @@ def ensure_dirs():
 
 
 # --- Schedule Parsing ---
+
+def _capture_job_owner_profile() -> Optional[str]:
+    """Best-effort capture of the profile that owns a cron job.
+
+    Attribution seam for governance telemetry: ``_record_cron_activity``
+    reads ``job["profile"]`` for ``actor_profile`` so per-profile failure
+    analysis (e.g. denji-self-eval-trigger's repeated_failure reason) can
+    attribute ``job_run_error`` events. The root gateway's fleet crons
+    resolve to ``"default"`` via get_active_profile_name(); that is mapped
+    to ``"root"`` so it matches the fleet's profile vocabulary. Any failure
+    here must never break job creation — return None (legacy unattributed).
+    """
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        name = get_active_profile_name()
+        if not name:
+            return None
+        return "root" if name == "default" else name
+    except Exception:
+        return None
+
+
+def _record_cron_activity(event_type: str, job: Dict[str, Any], **extra: Any) -> None:
+    """Best-effort Profile Activity Ledger hook for cron job changes."""
+    try:
+        from hermes_cli.profile_activity_ledger import record_event_if_enabled
+
+        job_id = str(job.get("id") or "")
+        idempotency_key = extra.pop("idempotency_key", None)
+        payload = {
+            "job_id": job_id,
+            "name": job.get("name"),
+            "schedule_display": job.get("schedule_display"),
+            "deliver": job.get("deliver"),
+            "model": job.get("model"),
+            "provider": job.get("provider"),
+            "profile": job.get("profile"),
+        }
+        severity = "error" if event_type.endswith("error") else "info"
+        correlation_id = job_id or None
+        payload.update(extra)
+        payload["severity"] = severity
+        payload["correlation_id"] = correlation_id
+        record_event_if_enabled(
+            source="cron",
+            actor_profile=job.get("profile"),
+            event_type=event_type,
+            event_id=idempotency_key,
+            summary=f"cron {event_type} for {job_id or job.get('name') or 'job'}",
+            payload=payload,
+        )
+    except Exception:
+        pass
+
 
 def normalize_repeat_value(repeat: Any) -> Optional[int]:
     """Coerce a repeat value (int or user-facing string) into ``Optional[int]``:
@@ -1498,6 +1555,8 @@ def _save_jobs_unlocked(
             tmp_path = None
             _secure_file(jobs_file)
             _preserve_file_ownership(jobs_file, _stat_before)
+            # KENSEI CUSTOM — refresh last-good snapshot on known-good write
+            _write_lastgood(jobs)
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
             # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).
             _record_load_stamp(None)
@@ -1563,6 +1622,42 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
         raise ValueError(f"Cron workdir is not a directory: {resolved}")
     return str(resolved)
 
+
+def _write_lastgood(jobs: List[Dict[str, Any]]) -> None:
+    """Atomically refresh the last-known-good snapshot. Best-effort: a failure
+    here must never break a load/save, so all errors are swallowed (logged)."""
+    try:
+        ensure_dirs()
+        fd, tmp_path = tempfile.mkstemp(dir=str(LASTGOOD_FILE.parent), suffix='.tmp', prefix='.lastgood_')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, LASTGOOD_FILE)
+            _secure_file(LASTGOOD_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception as e:  # noqa: BLE001 - recovery snapshot is best-effort
+        logger.warning("Could not refresh jobs.json.lastgood snapshot: %s", e)
+
+
+def _recover_from_lastgood() -> Optional[List[Dict[str, Any]]]:
+    """Try to load jobs from the last-known-good snapshot. Returns the jobs list
+    on success, or None if no usable snapshot exists."""
+    if not LASTGOOD_FILE.exists():
+        return None
+    try:
+        with open(LASTGOOD_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:  # noqa: BLE001
+        logger.error("jobs.json.lastgood is itself unreadable: %s", e)
+        return None
+    return _coerce_jobs_shape(data)
 
 def _main_model_pin() -> Tuple[Optional[str], Optional[str]]:
     """``(provider, model)`` the main agent runs on right now (``model.default`` + the provider it
@@ -1727,6 +1822,8 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    # KENSEI CUSTOM — atomic disabled creation (fork a730814ae5); supersedes paused when set.
+    enabled: Optional[bool] = None,
     pinned: bool = False,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
@@ -1743,6 +1840,9 @@ def create_job(
         raise ValueError("paused_reason must be a string.")
     if paused_reason is not None and not paused:
         raise ValueError("paused_reason requires paused=True.")
+    if enabled is not None:
+        # KENSEI CUSTOM: enabled=False is atomic paused-creation (legacy CLI contract).
+        paused = not enabled
     parsed_schedule = parse_schedule(schedule)
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
@@ -1813,6 +1913,7 @@ def create_job(
         "failure_streak": 0,
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        "profile": _capture_job_owner_profile(),  # KENSEI CUSTOM — governance attribution
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
     }
@@ -1828,6 +1929,11 @@ def create_job(
 
     with _jobs_lock():
         save_jobs(load_jobs() + [job])
+    _record_cron_activity(  # KENSEI CUSTOM — governance ledger
+        "job_created",
+        job,
+        idempotency_key=f"cron:{job_id}:created:{now}",
+    )
     return job
 
 
@@ -2250,6 +2356,11 @@ def clear_preflight_alerted(job_id: str) -> None:
     _set_alert_flag(job_id, "preflight_alerted", False)
 
 
+def mark_drift_alerted(job_id: str) -> bool:
+    """Mark the job as drift-alerted; return True if it already was."""
+    return _set_alert_flag(job_id, "drift_alerted", True)
+
+
 def note_fire_forward_failure(job_id: str, detail: str) -> bool:
     """Durably record (as ``last_fire_error``) that a scheduled fire could not be handed to the
     runner — written by the dashboard fire webhook when the loopback forward fails. Without it
@@ -2281,6 +2392,7 @@ def _record_run_outcome(
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
         # the forward-failure stamp so it only describes CURRENT auto-fire health.
         job.pop("preflight_alerted", None)
+        job.pop("drift_alerted", None)
         job.pop("last_fire_error", None)
         job["failure_streak"] = 0
     else:

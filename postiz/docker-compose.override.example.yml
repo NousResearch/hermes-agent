@@ -1,0 +1,16 @@
+# Optional local override template.
+# Copy to docker-compose.override.yml for machine-specific changes.
+# docker-compose.override.yml is ignored by git and auto-loaded by Docker Compose.
+
+services:
+  postiz:
+    environment:
+      # Example: change these if you move from SSH tunnel to Tailscale/domain access.
+      MAIN_URL: 'http://localhost:4007'
+      FRONTEND_URL: 'http://localhost:4007'
+      NEXT_PUBLIC_BACKEND_URL: 'http://localhost:4007/api'
+
+  # Optional: expose the app DB on localhost for maintenance/debugging.
+  # postiz-postgres:
+  #   ports:
+  #     - '127.0.0.1:5432:5432'

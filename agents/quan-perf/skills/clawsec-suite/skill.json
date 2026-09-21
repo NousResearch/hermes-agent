@@ -1,0 +1,283 @@
+{
+  "name": "clawsec-suite",
+  "version": "0.1.7",
+  "description": "ClawSec suite manager with embedded advisory-feed monitoring, cryptographic signature verification, approval-gated malicious-skill response, and guided setup for additional security skills.",
+  "author": "prompt-security",
+  "license": "AGPL-3.0-or-later",
+  "homepage": "https://clawsec.prompt.security/",
+  "keywords": [
+    "security",
+    "skills",
+    "catalog",
+    "installer",
+    "integrity",
+    "advisory",
+    "feed",
+    "threat-intel",
+    "hooks",
+    "approval",
+    "agents",
+    "ai",
+    "suite",
+    "openclaw",
+    "signature",
+    "verification"
+  ],
+  "sbom": {
+    "files": [
+      {
+        "path": "SKILL.md",
+        "required": true,
+        "description": "Suite skill documentation and installation guide"
+      },
+      {
+        "path": "CHANGELOG.md",
+        "required": true,
+        "description": "Version history and security improvements changelog"
+      },
+      {
+        "path": "HEARTBEAT.md",
+        "required": true,
+        "description": "Portable heartbeat and update-check procedure"
+      },
+      {
+        "path": "advisories/feed.json",
+        "required": true,
+        "description": "Embedded advisory feed seed (merged from clawsec-feed)"
+      },
+      {
+        "path": "advisories/feed.json.sig",
+        "required": false,
+        "description": "Detached Ed25519 signature for advisory feed when bundled with the local suite seed"
+      },
+      {
+        "path": "advisories/checksums.json",
+        "required": false,
+        "description": "SHA-256 checksum manifest for advisory artifacts when bundled with the local suite seed"
+      },
+      {
+        "path": "advisories/checksums.json.sig",
+        "required": false,
+        "description": "Detached Ed25519 signature for checksum manifest when bundled with the local suite seed"
+      },
+      {
+        "path": "advisories/feed-signing-public.pem",
+        "required": true,
+        "description": "Pinned Ed25519 public key for feed signature verification"
+      },
+      {
+        "path": "hooks/clawsec-advisory-guardian/HOOK.md",
+        "required": true,
+        "description": "OpenClaw hook metadata for advisory-driven malicious-skill checks"
+      },
+      {
+        "path": "hooks/clawsec-advisory-guardian/handler.ts",
+        "required": true,
+        "description": "OpenClaw hook handler for approval-gated advisory actions with signature verification"
+      },
+      {
+        "path": "hooks/clawsec-advisory-guardian/lib/utils.mjs",
+        "required": true,
+        "description": "Shared utility functions (isObject, normalizeSkillName, uniqueStrings)"
+      },
+      {
+        "path": "hooks/clawsec-advisory-guardian/lib/version.mjs",
+        "required": true,
+        "description": "Shared semver parsing and version matching logic"
+      },
+      {
+        "path": "hooks/clawsec-advisory-guardian/lib/feed.mjs",
+        "required": true,
+        "description": "Advisory feed loading with Ed25519 signature and checksum manifest verification"
+      },
+      {
+        "path": "hooks/clawsec-advisory-guardian/lib/local_file_io.mjs",
+        "required": true,
+        "description": "Feed-local file access helpers used by advisory loading"
+      },
+      {
+        "path": "hooks/clawsec-advisory-guardian/lib/types.ts",
+        "required": true,
+        "description": "TypeScript type definitions for hook and feed structures"
+      },
+      {
+        "path": "hooks/clawsec-advisory-guardian/lib/state.ts",
+        "required": true,
+        "description": "Advisory state persistence and loading"
+      },
+      {
+        "path": "hooks/clawsec-advisory-guardian/lib/matching.ts",
+        "required": true,
+        "description": "Advisory-to-skill matching and alert message generation"
+      },
+      {
+        "path": "scripts/setup_advisory_hook.mjs",
+        "required": true,
+        "description": "Installer script for enabling the advisory guardian hook"
+      },
+      {
+        "path": "scripts/setup_advisory_cron.mjs",
+        "required": true,
+        "description": "Installer script for optional periodic advisory scan cron"
+      },
+      {
+        "path": "scripts/guarded_skill_install.mjs",
+        "required": true,
+        "description": "Two-step confirmation installer with signature verification that blocks risky skill installs"
+      },
+      {
+        "path": "scripts/discover_skill_catalog.mjs",
+        "required": true,
+        "description": "Dynamic skill-catalog discovery with remote index fetch and suite-local fallback metadata"
+      },
+      {
+        "path": "scripts/local_file_io.mjs",
+        "required": true,
+        "description": "Script-local file access helpers used by catalog discovery"
+      },
+      {
+        "path": "scripts/sign_detached_ed25519.mjs",
+        "required": false,
+        "description": "Utility script for generating Ed25519 detached signatures"
+      },
+      {
+        "path": "scripts/verify_detached_ed25519.mjs",
+        "required": false,
+        "description": "Utility script for verifying Ed25519 detached signatures"
+      },
+      {
+        "path": "scripts/generate_checksums_json.mjs",
+        "required": false,
+        "description": "Utility script for generating SHA-256 checksum manifests"
+      }
+    ]
+  },
+  "embedded_components": {
+    "clawsec-feed": {
+      "source_skill": "clawsec-feed",
+      "source_version": "0.0.4",
+      "paths": [
+        "advisories/feed.json",
+        "advisories/feed.json.sig",
+        "advisories/checksums.json",
+        "advisories/checksums.json.sig",
+        "advisories/feed-signing-public.pem"
+      ],
+      "capabilities": [
+        "advisory-feed monitoring",
+        "new-advisory detection",
+        "affected-skill cross-reference",
+        "approval-gated malicious-skill removal recommendations",
+        "double-confirmation gating for risky skill installs",
+        "Ed25519 signature verification",
+        "checksum manifest verification"
+      ],
+      "standalone_available": true,
+      "deprecation_plan": "standalone skill may be retired after suite migration is verified"
+    }
+  },
+  "catalog": {
+    "description": "Available protections in the ClawSec suite",
+    "base_url": "https://clawsec.prompt.security/releases/download",
+    "skills": {
+      "clawsec-feed": {
+        "description": "Advisory monitoring is now embedded in clawsec-suite",
+        "integrated_in_suite": true,
+        "standalone_available": true,
+        "compatible": [
+          "openclaw",
+          "moltbot",
+          "other"
+        ]
+      },
+      "openclaw-audit-watchdog": {
+        "description": "Automated daily audits with DM delivery and optional email reporting",
+        "default_install": true,
+        "compatible": [
+          "openclaw",
+          "moltbot"
+        ],
+        "note": "Tailored for OpenClaw/MoltBot family"
+      },
+      "soul-guardian": {
+        "description": "Drift detection and file integrity guard",
+        "default_install": false,
+        "compatible": [
+          "openclaw",
+          "moltbot",
+          "other"
+        ]
+      },
+      "clawtributor": {
+        "description": "Community incident reporting (shares anonymized data)",
+        "default_install": false,
+        "requires_explicit_consent": true,
+        "compatible": [
+          "openclaw",
+          "moltbot",
+          "other"
+        ]
+      }
+    }
+  },
+  "openclaw": {
+    "emoji": "📦",
+    "category": "security",
+    "requires": {
+      "bins": [
+        "node",
+        "npx",
+        "openclaw",
+        "curl",
+        "jq",
+        "shasum",
+        "openssl",
+        "unzip"
+      ]
+    },
+    "runtime": {
+      "required_env": [],
+      "optional_env": [
+        "CLAWSEC_FEED_URL",
+        "CLAWSEC_FEED_SIG_URL",
+        "CLAWSEC_FEED_CHECKSUMS_URL",
+        "CLAWSEC_FEED_CHECKSUMS_SIG_URL",
+        "CLAWSEC_LOCAL_FEED",
+        "CLAWSEC_LOCAL_FEED_SIG",
+        "CLAWSEC_LOCAL_FEED_CHECKSUMS",
+        "CLAWSEC_LOCAL_FEED_CHECKSUMS_SIG",
+        "CLAWSEC_FEED_PUBLIC_KEY",
+        "CLAWSEC_ALLOW_UNSIGNED_FEED",
+        "CLAWSEC_VERIFY_CHECKSUM_MANIFEST",
+        "CLAWSEC_HOOK_INTERVAL_SECONDS",
+        "CLAWSEC_ADVISORY_CRON_NAME",
+        "CLAWSEC_ADVISORY_CRON_EVERY"
+      ]
+    },
+    "execution": {
+      "always": false,
+      "persistence": "Setup scripts install and enable an OpenClaw advisory hook, and can optionally create a recurring openclaw cron job.",
+      "network_egress": "Fetches signed advisory feed artifacts and uses npx/clawhub for guarded skill install flows."
+    },
+    "operator_review": [
+      "Review the advisory hook and optional cron setup before enabling them because they create persistent host-side automation.",
+      "The suite may recommend removal of risky skills, but destructive actions remain approval-gated.",
+      "Verify feed signing keys and any CLAWSEC_* URL overrides before relying on remote feed data."
+    ],
+    "triggers": [
+      "clawsec suite",
+      "security suite",
+      "security advisories",
+      "malicious skill alert",
+      "remove malicious skills",
+      "safe skill install",
+      "confirm skill install",
+      "check advisories",
+      "advisory feed",
+      "install security skills",
+      "verify skills",
+      "check skill integrity",
+      "update skills"
+    ]
+  }
+}

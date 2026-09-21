@@ -35,4 +35,6 @@ services:
       - HERMES_DASHBOARD_HOST=0.0.0.0
     ports:
       - "127.0.0.1:9119:9119"
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--insecure"]
+    command: ["dashboard", "--host", "127.0.0.1", "--port", "9119", "--no-open"]
+    # NOTE: --insecure removed for security. If auth is needed, use --auth-token
+    # or set DASHBOARD_AUTH_TOKEN env var instead of running without auth on 0.0.0.0.

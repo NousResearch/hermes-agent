@@ -1,0 +1,85 @@
+{
+  "phase": "phase-3",
+  "status": "GO",
+  "plan": "/home/kensei/delegate-task-phased-implementation-plan.md",
+  "base_sha": "8c8c737461871d0c47f99636d5bf0d46309b3e14",
+  "implementation_commit_sha": "5407a58d3464158e43501c52fa33c2bf87802efd",
+  "branch": "delegate-task-phase-3-routing",
+  "worktree": "/home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-3",
+  "changed_files": [
+    "agent/chat_completion_helpers.py",
+    "agent/turn_recovery.py",
+    "cli-config.yaml.example",
+    "docs/evidence/delegate-task/phase-3/audit.md",
+    "docs/evidence/delegate-task/phase-3/disposition.md",
+    "docs/evidence/delegate-task/phase-3/manifest.json",
+    "docs/evidence/delegate-task/phase-3/phase-3-phase3-collection.txt",
+    "docs/evidence/delegate-task/phase-3/phase-3-phase3-deferred-red.txt",
+    "docs/evidence/delegate-task/phase-3/phase-3-phase3-owned-green.txt",
+    "docs/evidence/delegate-task/phase-3/phase-3-routing-all.txt",
+    "docs/evidence/delegate-task/phase-3/post-collection.txt",
+    "docs/evidence/delegate-task/phase-3/post-deferred.txt",
+    "docs/evidence/delegate-task/phase-3/post-owned.txt",
+    "docs/evidence/delegate-task/phase-3/post-routing.txt",
+    "docs/evidence/delegate-task/phase-3/results.md",
+    "docs/evidence/delegate-task/phase-3/upstream-12871.patch",
+    "hermes_constants.py",
+    "tests/agent/test_per_model_provider_routing.py",
+    "website/docs/user-guide/features/provider-routing.md"
+  ],
+  "production_source_changes": [
+    "agent/chat_completion_helpers.py",
+    "agent/turn_recovery.py",
+    "hermes_constants.py"
+  ],
+  "documentation_changes": [
+    "cli-config.yaml.example",
+    "website/docs/user-guide/features/provider-routing.md"
+  ],
+  "test_changes": [
+    "tests/agent/test_per_model_provider_routing.py"
+  ],
+  "evidence_hashes": {
+    "agent/chat_completion_helpers.py": "776d6b0d5a4c831687c35f71fb36791f3587bedb04ca6bbea2fa75a7e04693e5",
+    "agent/turn_recovery.py": "b6cff1552b2726550dbd1fdf1d936eef80468c719096cbff2ace45958151129c",
+    "cli-config.yaml.example": "e36f6ea6b201e09223bbc1c67e823565a80906d2dff8247948f6f30a5ad40ad2",
+    "docs/evidence/delegate-task/phase-3/disposition.md": "3aa8590286fa73a1f61ae91e8d2b48afe923ba0c83d907de79473fc44743b0a2",
+    "docs/evidence/delegate-task/phase-3/phase-3-phase3-collection.txt": "8d9990f99875ad59b23d504e96c8e9f2cb8e44d9d8de712385a2282b75a73514",
+    "docs/evidence/delegate-task/phase-3/phase-3-phase3-deferred-red.txt": "380294a182c343f8c54575cebe34ff619320ea30b6b512d6a2540b108c057eb5",
+    "docs/evidence/delegate-task/phase-3/phase-3-phase3-owned-green.txt": "006dea59526ec9e9d95d9be888bb6ce30c745f90c02208e8632fe94f8c67f5e8",
+    "docs/evidence/delegate-task/phase-3/phase-3-routing-all.txt": "10d7974c36e92ff57da46c7d6f4a7972d4ee20328d6c179d5c59f94255be2c36",
+    "docs/evidence/delegate-task/phase-3/post-collection.txt": "a92bc78686ab503bceb4463f4cafbe82056316262f485b6b89d86df18be38bc2",
+    "docs/evidence/delegate-task/phase-3/post-deferred.txt": "194a579f6df4356129d12256b876f5682b883e87c139be4307a377ab8797ef48",
+    "docs/evidence/delegate-task/phase-3/post-owned.txt": "73a4b1946c90e7320800a2dd8306e7bf06a402ec85a1a1160d3ab118d88d9077",
+    "docs/evidence/delegate-task/phase-3/post-routing.txt": "aa0484f7bf0182564ee1f6b5442f8a9066312bd3014c3f973b992179b3913ef6",
+    "docs/evidence/delegate-task/phase-3/results.md": "3c56efb62eab3690541e81ab2a58c47c74fc025e9dd4af296fa58b384d6b7de1",
+    "docs/evidence/delegate-task/phase-3/upstream-12871.patch": "cbfacb7953641e153d10a4387166502cc81d8bfd3275d3c1fb2985d8106f641f",
+    "docs/evidence/delegate-task/phase-3/audit.md": "d39704177329e2bf9b8b5e73adfa45cdfb99d2f0ed8d56ffd71f6b6f4e955067",
+    "hermes_constants.py": "cc02957bf2ee6af1858a7bdf1e17b2eaa8d01f5e71b7a5f35d299cd5bf2bcce7",
+    "tests/agent/test_per_model_provider_routing.py": "d1b57e688ecd7b14e89cb675fcfa76ce62983efb52830fe6aa5572bef3afe214",
+    "website/docs/user-guide/features/provider-routing.md": "31d0a220ad303fb532f148f4c39f366ede06331dd9b907e0ee23ec693f86191e"
+  },
+  "upstream_patch": {
+    "commit": "12871bd01ede1c6eaf3bf456066d1e010034185f",
+    "path": "docs/evidence/delegate-task/phase-3/upstream-12871.patch",
+    "sha256": "cbfacb7953641e153d10a4387166502cc81d8bfd3275d3c1fb2985d8106f641f"
+  },
+  "test_results": {
+    "routing_provider": "44 passed",
+    "integrated_owned": "98 passed, 1 skipped, 3 deselected",
+    "collection": "66 collected",
+    "deferred_completion_fallback": "6 assertion failures, 2 passed, 8 deselected"
+  },
+  "deferred_contracts": [
+    "completion units/grouping",
+    "profile fallback chain"
+  ],
+  "out_of_scope": [
+    "OpenRouter endpoint-pin map absent from Kensei tree",
+    "merge",
+    "push",
+    "restart",
+    "activation",
+    "deployment"
+  ]
+}

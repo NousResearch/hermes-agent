@@ -151,7 +151,10 @@ Walk it in order:
 3. **Pixel, background.** After `effect:"suspected_noop"` or a structured
    refusal recommends `"px"` (or a `degraded` capture has no elements), click
    by `coordinate=[x,y]` instead of `element`.
-4. **Foreground.** After `effect:"suspected_noop"`,
+4. **Typed page.** When `escalation.recommended == "page"` and the exact
+   browser-page contract below is available, use the namespaced typed route
+   before native foreground. This is not the legacy `page` workflow.
+5. **Foreground.** After `effect:"suspected_noop"`,
    `code:"background_unavailable"`, or a verified pixel no-op,
    re-issue the SAME action with `delivery_mode="foreground"`. This briefly
    raises the window and restores focus after; pair with `bring_to_front=True`

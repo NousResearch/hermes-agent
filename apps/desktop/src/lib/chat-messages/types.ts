@@ -88,6 +88,7 @@ export type GatewayEventPayload = {
   duration_s?: number
   todos?: unknown
   revision?: number
+  generation?: number
   model?: string
   provider?: string
   reasoning_effort?: string
@@ -114,6 +115,7 @@ export type GatewayEventPayload = {
   // btw.complete / background.complete — id of the side/background task
   task_id?: string
   choices?: string[] | null
+  expires_at?: number
   multi_select?: boolean
   // clarify.request batch form: questions replaces question/choices, and
   // answers (qid → locked answer) rides along on reconnect replay only.

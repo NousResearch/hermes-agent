@@ -120,8 +120,18 @@ def _vnc_url_from_health(url: str, resp: Any) -> Optional[str]:
     return None
 
 
+def _is_camofox_health_shape(data) -> bool:
+    """KENSEI CUSTOM: True when *data* looks like a Camofox /health response.
+
+    A bare HTTP 200 is not enough: the same port may serve an unrelated HTML
+    endpoint (e.g. Netdata). Camofox /health returns a JSON object; anything
+    else is rejected so a lookalike page cannot masquerade as a live server.
+    """
+    return isinstance(data, dict)
+
+
 def check_camofox_available() -> bool:
-    """Verify the Camofox server is reachable (and cache its VNC URL once)."""
+    """Verify the Camofox server is reachable and is actually Camofox."""
     global _vnc_url, _vnc_url_checked
     url = get_camofox_url()
     if not url:
@@ -131,12 +141,17 @@ def check_camofox_available() -> bool:
     except Exception:
         return False
     if resp.status_code == 200:
+        try:
+            data = resp.json()
+        except ValueError:
+            return False  # non-JSON body: not Camofox (Netdata, etc.)
+        if not _is_camofox_health_shape(data):
+            return False
         if get_hermes_home_override() is not None:
             if url not in _vnc_url_by_camofox_url:
                 _vnc_url_by_camofox_url[url] = _vnc_url_from_health(url, resp)
         elif not _vnc_url_checked:
             _vnc_url = _vnc_url_from_health(url, resp) or _vnc_url
-            _vnc_url_checked = True
     return resp.status_code == 200
 
 
@@ -422,6 +437,8 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             f"Cannot connect to Camofox at {get_camofox_url()}. "
             "Is the server running? Start with: npm start (in camofox-browser dir) "
             "or: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")})
+    except ValueError:
+        return tool_error("Camofox returned a non-JSON response; this is not a valid Camofox endpoint.", success=False)
     except Exception as e:
         return tool_error(str(e), success=False)
 

@@ -18,13 +18,14 @@ import logging
 import math
 import os
 import re
+import shlex
 import struct
 import subprocess
 import tempfile
 import threading
 import time
 import traceback
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 from urllib.parse import quote, urljoin
@@ -253,7 +254,7 @@ def _is_discord_transport_error(exc: BaseException) -> bool:
 try:
     from .ffmpeg_utils import resolve_ffmpeg_executable
 except ImportError:
-    from ffmpeg_utils import resolve_ffmpeg_executable
+    from ffmpeg_utils import resolve_ffmpeg_executable  # type: ignore[no-redef]
 
 from gateway.config import Platform, PlatformConfig, discord_channel_id_from_link
 
@@ -277,8 +278,28 @@ from gateway.platforms._shared import (
     yaml_env_setter as _yaml_env_setter
 )
 
+# ── Kensei-voice bridge seam ─────────────────────────────────────────────
+# Misa-Misa's live voice path is owned by the kensei-voice package; the
+# approved integration seam is ``MisaMisaVoiceBridge`` (see
+# /home/kensei/repos/kensei-voice/src/kensei_voice/misa_misa_seam.py).
+# The bridge subscribes the Discord voice client, runs VAD + STT + brain
+# + TTS internally, and is mutually exclusive with the legacy
+# ``VoiceReceiver`` path.  When kensei-voice is importable we route the
+# live voice channel through the bridge; otherwise the legacy path runs.
+try:  # pragma: no cover - import guarded
+    from kensei_voice.misa_misa_seam import (
+        LiveLatencyLog,
+        MisaMisaVoiceBridge,
+    )
+    KENSEI_VOICE_BRIDGE_AVAILABLE = True
+except Exception:  # pragma: no cover - kensei-voice not installed
+    KENSEI_VOICE_BRIDGE_AVAILABLE = False
+    LiveLatencyLog = None  # type: ignore[assignment,misc]
+    MisaMisaVoiceBridge = None  # type: ignore[assignment,misc]
+
 # Every refusal (slash command, approval button, picker, prompt) says the same thing.
 _UNAUTHORIZED = unauthorized_action_notice(Platform.DISCORD)
+
 
 
 async def _read_url_image_with_redirect_guard(
@@ -653,7 +674,7 @@ class VoiceReceiver:
     """Captures voice audio from a Discord voice channel: hooks the VoiceClient socket, decrypts
     RTP (NaCl + DAVE E2EE), decodes Opus per user; a polling loop delivers utterances on silence."""
 
-    SILENCE_THRESHOLD = 1.5    # seconds of silence → end of utterance
+    SILENCE_THRESHOLD = 0.8    # seconds of silence → end of utterance
     MIN_SPEECH_DURATION = 0.5  # minimum seconds to process (skip noise)
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
@@ -667,8 +688,7 @@ class VoiceReceiver:
         self._bot_ssrc: int = 0
         self._ssrc_to_user: Dict[int, int] = {}
         self._lock = threading.Lock()
-        self._buffers: Dict[int, bytearray] = defaultdict(bytearray)
-        self._last_packet_time: Dict[int, float] = {}
+
         # Opus decoder per SSRC (each user needs own decoder state)
         self._decoders: Dict[int, object] = {}
         # Pause flag: don't capture while bot is playing TTS
@@ -676,7 +696,20 @@ class VoiceReceiver:
         # Debug logging counter (instance-level to avoid cross-instance races)
         self._packet_debug_count = 0
 
-    # --- Lifecycle ---
+        # Per-user audio buffers
+        self._buffers: Dict[int, bytearray] = defaultdict(bytearray)
+        self._last_packet_time: Dict[int, float] = {}
+        self._last_speech_time: Dict[int, float] = {}  # VAD-verified speech timestamp
+
+        # VAD (Silero) — per-SSRC so simultaneous speakers don't mix state
+        self._vad_enabled: bool = True
+        self._vad: Dict[int, Any] = {}             # SSRC -> SileroVAD instance
+        self._vad_buf: Dict[int, bytearray] = defaultdict(bytearray)  # 16kHz mono int16 accumulator
+        self._vad_speech_end_timeout: float = 0.25  # seconds of VAD grace after speech stops
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def start(self):
         """Start listening for voice packets."""
@@ -699,8 +732,11 @@ class VoiceReceiver:
         with self._lock:
             self._buffers.clear()
             self._last_packet_time.clear()
+            self._last_speech_time.clear()
             self._decoders.clear()
             self._ssrc_to_user.clear()
+            self._vad.clear()
+            self._vad_buf.clear()
         logger.info("VoiceReceiver stopped")
 
     def pause(self):
@@ -834,21 +870,95 @@ class VoiceReceiver:
                         if self._packet_debug_count <= 10:
                             logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
                         return
-            # Unknown SSRC (no SPEAKING yet): skip DAVE, try Opus directly; user_id arrives with SPEAKING.
+            # If SSRC unknown (no SPEAKING event yet), skip DAVE and try
+            # Opus decode directly — audio may be in passthrough mode.
+            # Buffer will get a user_id when SPEAKING event arrives later.
+
+        # --- Opus decode → PCM ---
         try:
             if ssrc not in self._decoders:
                 self._decoders[ssrc] = discord.opus.Decoder()
-            pcm = self._decoders[ssrc].decode(decrypted)
-            with self._lock:
-                self._buffers[ssrc].extend(pcm)
-                self._last_packet_time[ssrc] = time.monotonic()
+            pcm_bytes = self._decoders[ssrc].decode(decrypted)
         except Exception as e:
             with self._lock:
                 self._decoders.pop(ssrc, None)
             logger.debug("Opus decode error for SSRC %s; reset decoder: %s", ssrc, e)
             return
 
-    # --- Silence detection ---
+        # --- VAD gate: only buffer verified speech ---
+        if self._vad_enabled:
+            self._vad_gate(ssrc, pcm_bytes)
+        else:
+            with self._lock:
+                self._buffers[ssrc].extend(pcm_bytes)
+
+        with self._lock:
+            self._last_packet_time[ssrc] = time.monotonic()
+
+    # ------------------------------------------------------------------
+    # VAD gating (Silero) — only buffer verified speech
+    # ------------------------------------------------------------------
+
+    def _vad_gate(self, ssrc: int, pcm_bytes: bytes) -> None:
+        """Run decoded 48kHz stereo PCM through Silero VAD; only buffer speech segments."""
+        try:
+            import numpy as np
+        except ImportError:
+            # numpy missing — fall through to ungated buffering
+            with self._lock:
+                self._buffers[ssrc].extend(pcm_bytes)
+            return
+
+        # Lazily create VAD instance per SSRC on first packet
+        if ssrc not in self._vad:
+            try:
+                from .vad import SileroVAD
+                self._vad[ssrc] = SileroVAD()
+            except Exception:
+                logger.warning("Silero VAD init failed for ssrc=%d; disabling VAD", ssrc)
+                self._vad_enabled = False
+                with self._lock:
+                    self._buffers[ssrc].extend(pcm_bytes)
+                return
+
+        # Convert 48kHz stereo s16le -> 16kHz mono s16le
+        # pcm_bytes = 192000 bytes/sec at 48kHz stereo s16le
+        # Each frame: 4 bytes (2 ch × 2 bytes).
+        # Simple averaging of L+R, then decimate 3:1.
+        buf_np = np.frombuffer(pcm_bytes, dtype=np.int16).reshape(-1, 2)
+        mono = ((buf_np[:, 0].astype(np.int32) + buf_np[:, 1].astype(np.int32)) // 2).astype(np.int16)
+        # Decimate 48kHz -> 16kHz: take every 3rd sample
+        mono_16k = mono[::3]
+        if len(mono_16k) == 0:
+            return
+
+        vad = self._vad[ssrc]
+        now = time.monotonic()
+
+        # Feed to VAD in 30ms (480-sample) ONNX frames.
+        # Extract frames under lock to avoid racing with check_silence.
+        frames: list[bytes] = []
+        with self._lock:
+            self._vad_buf[ssrc].extend(mono_16k.tobytes())
+            while len(self._vad_buf[ssrc]) >= 960:  # 480 samples × 2 bytes
+                frames.append(bytes(self._vad_buf[ssrc][:960]))
+                del self._vad_buf[ssrc][:960]
+
+        for frame_bytes in frames:
+            frame = np.frombuffer(frame_bytes, dtype=np.int16)
+            speech = vad.feed(frame)
+            if speech:
+                with self._lock:
+                    self._last_speech_time[ssrc] = now
+
+        # If currently speech -> promote gated PCM into main buffer.
+        if vad.is_speech():
+            with self._lock:
+                self._buffers[ssrc].extend(pcm_bytes)
+
+    # ------------------------------------------------------------------
+    # Silence detection
+    # ------------------------------------------------------------------
 
     def _infer_user_for_ssrc(self, ssrc: int) -> int:
         """Infer user_id for an unmapped SSRC: after a bot rejoin Discord may not resend
@@ -872,20 +982,61 @@ class VoiceReceiver:
             pass
         return 0
 
+    def _cleanup_ssrc(self, ssrc: int, *, keep_buffer: bool = False, reset_vad: bool = False) -> None:
+        """Remove per-SSRC state. keep_buffer resets to empty instead of popping."""
+        if keep_buffer:
+            self._buffers[ssrc] = bytearray()
+        else:
+            self._buffers.pop(ssrc, None)
+        self._last_packet_time.pop(ssrc, None)
+        self._last_speech_time.pop(ssrc, None)
+        self._vad_buf.pop(ssrc, None)
+        vad_inst = self._vad.pop(ssrc, None)
+        if reset_vad and vad_inst is not None:
+            try:
+                vad_inst.reset()
+            except Exception:
+                pass
+
     def check_silence(self) -> list:
-        """Return list of (user_id, pcm_bytes) for completed utterances."""
+        """Return list of (user_id, pcm_bytes) for completed utterances.
+
+        Uses Silero VAD end-of-speech signal when available (VAD_SPEECH_END_TIMEOUT=0.25s
+        after the last positive speech detection), otherwise falls back to the
+        packet-level silence timer (SILENCE_THRESHOLD=0.8s).
+
+        This dual-path design means:
+          • VAD-positive utterances end quickly (0.25s after last speech).
+          • VAD-never-fired packets still fall back to the original timer.
+        """
         now = time.monotonic()
         completed = []
         with self._lock:
             ssrc_user_map = dict(self._ssrc_to_user)
             ssrc_list = list(self._buffers.keys())
             for ssrc in ssrc_list:
-                last_time = self._last_packet_time.get(ssrc, now)
-                silence_duration = now - last_time
                 buf = self._buffers[ssrc]
+                if not buf:
+                    continue
+
+                # --- Determine effective silence duration ---
+                # Priority 1: VAD-verified last speech timestamp (tight, accurate)
+                # Priority 2: last packet receive time (fallback, coarse)
+                last_speech = self._last_speech_time.get(ssrc)
+                if last_speech is not None:
+                    # VAD has fired for this utterance: tighten end-detection
+                    voice_end_timeout = self._vad_speech_end_timeout
+                    silence_duration = now - last_speech
+                else:
+                    # VAD never fired — fall back to packet-level timer
+                    last_time = self._last_packet_time.get(ssrc, now)
+                    silence_duration = now - last_time
+                    voice_end_timeout = self.SILENCE_THRESHOLD
+
                 # 48kHz, 16-bit, stereo = 192000 bytes/sec
                 buf_duration = len(buf) / (self.SAMPLE_RATE * self.CHANNELS * 2)
-                if silence_duration >= self.SILENCE_THRESHOLD and buf_duration >= self.MIN_SPEECH_DURATION:
+
+                if silence_duration >= voice_end_timeout and buf_duration >= self.MIN_SPEECH_DURATION:
                     user_id = ssrc_user_map.get(ssrc, 0)
                     if not user_id:
                         # SSRC unmapped (SPEAKING missing after rejoin) — infer from channel.
@@ -893,11 +1044,11 @@ class VoiceReceiver:
                     if user_id:
                         completed.append((user_id, bytes(buf)))
                     self._buffers[ssrc] = bytearray()
-                    self._last_packet_time.pop(ssrc, None)
+                    self._cleanup_ssrc(ssrc, keep_buffer=True, reset_vad=True)
                 elif silence_duration >= self.SILENCE_THRESHOLD * 2:
-                    # Stale buffer with no valid user — discard
-                    self._buffers.pop(ssrc, None)
-                    self._last_packet_time.pop(ssrc, None)
+                    # Stale buffer with no valid user or too short — discard
+                    self._cleanup_ssrc(ssrc)
+
         return completed
 
     def flush_pending(self) -> list:
@@ -914,8 +1065,8 @@ class VoiceReceiver:
                         user_id = self._infer_user_for_ssrc(ssrc)
                     if user_id:
                         completed.append((user_id, bytes(buf)))
-                self._buffers.pop(ssrc, None)
-                self._last_packet_time.pop(ssrc, None)
+                self._cleanup_ssrc(ssrc)
+
         return completed
 
     # --- PCM -> WAV conversion (for Whisper STT) ---
@@ -997,10 +1148,7 @@ def _read_discord_prompt_timeout() -> int:
     return seconds
 
 
-from plugins.platforms.discord.adapter_media import DiscordMediaMixin
-
-
-class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
+class DiscordAdapter(BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -1016,8 +1164,42 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # Voice auto-disconnect after N idle seconds (discord.voice_channel_inactivity_timeout_seconds; 0 off).
     VOICE_TIMEOUT = 300
     # Minimum wait for one voice playback; the effective limit scales with clip duration.
+    # KENSEI CUSTOM: configurable via discord.voice_playback_timeout_seconds (_load_playback_timeout); voice timeout via voice_channel_inactivity_timeout_seconds.
     PLAYBACK_TIMEOUT = 120
     PLAYBACK_TIMEOUT_PADDING = 30
+
+    # ------------------------------------------------------------------
+    # Config coercion helpers (must come before __init__)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _coerce_bool(value, default=False):
+        """Coerce a config-ish value to bool."""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        lowered = str(value).strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    @staticmethod
+    def _coerce_int(value, default=None):
+        """Coerce a config-ish value to a positive int, or None/invalid to default."""
+        if value is None or value == "":
+            return default
+        try:
+            result = int(str(value).strip())
+        except (ValueError, TypeError):
+            return default
+        return result if result > 0 else default
+
+    # ------------------------------------------------------------------
 
     def format_tool_preview(self, preview: ToolPreview) -> str:
         """Keep a truncated URL preview clickable in Discord markdown."""
@@ -1035,6 +1217,74 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # None until then; accessors fall back to live scope-aware reads (issue #72348).
         self._gate_env_snapshot: Optional[Dict[str, str]] = None
         self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
+        # Per-channel rolling log of author kind (bot vs human) for the
+        # bot-to-bot loop-guard. channel_id -> deque[bool].
+        self._channel_author_log: Dict[int, deque] = {}
+
+        # ── Auto-join / greeting config (driven by config.yaml discord.extra) ──
+        extra = getattr(config, "extra", None) or {}
+        self._auto_join_user_id: Optional[int] = self._coerce_int(extra.get("auto_join_user_id"))
+        self._auto_join_text_channel_id: Optional[int] = self._coerce_int(extra.get("auto_join_text_channel_id"))
+        # auto_join_channel_id: when set, only auto-join when the user enters
+        # THIS specific VC. Allows multi-agent bots to join one dedicated channel
+        # without also gate-crashing Misa-Misa's 1:1 sessions.
+        self._auto_join_channel_id: Optional[int] = self._coerce_int(extra.get("auto_join_channel_id"))
+        # auto_join_delay_seconds: how long to wait before joining/greeting.
+        self._auto_join_delay_seconds: float = float(
+            self._coerce_int(extra.get("auto_join_delay_seconds"), 0) or 0
+        )
+        self._auto_join_greeting_text: str = str(
+            extra.get("auto_join_greeting_text", "")
+            or "Hey! Ready when you are."
+        ).strip()
+        self._auto_join_send_text_greeting: bool = self._coerce_bool(
+            extra.get("auto_join_send_text_greeting"), True
+        )
+        self._auto_leave_on_user_exit: bool = self._coerce_bool(
+            extra.get("auto_leave_on_user_exit"), True
+        )
+        self._voice_log_only: bool = self._coerce_bool(
+            extra.get("voice_log_only"), False
+        )
+        self._voice_timeout_seconds = self._load_voice_timeout()
+        self._playback_timeout_seconds = self._load_playback_timeout()
+        # Preserve the Kensei legacy alias while preferring the documented key.
+        if "voice_channel_inactivity_timeout_seconds" in extra:
+            try:
+                self._voice_timeout_seconds = max(
+                    0, int(extra["voice_channel_inactivity_timeout_seconds"])
+                )
+            except (TypeError, ValueError):
+                pass
+        elif "voice_timeout_seconds" in extra:
+            try:
+                self._voice_timeout_seconds = max(0, int(extra["voice_timeout_seconds"]))
+            except (TypeError, ValueError):
+                pass
+        if "voice_playback_timeout_seconds" in extra:
+            try:
+                self._playback_timeout_seconds = max(
+                    1, int(extra["voice_playback_timeout_seconds"])
+                )
+            except (TypeError, ValueError):
+                pass
+
+        # ── Multi-agent voice floor (cross-process, filesystem-lock) ──
+        self._multi_agent_voice_channel_id: Optional[int] = self._coerce_int(
+            extra.get("multi_agent_voice_channel_id")
+        )
+        _floor_ttl_raw = extra.get("voice_floor_ttl_seconds")
+        self._voice_floor_ttl: float = float(
+            self._coerce_int(_floor_ttl_raw, 60) or 60
+        )
+        self._voice_floor_dir: Optional[str] = None  # set lazily
+
+        # Default init for tests: _multi_agent_voice_channel_id must exist
+        # even when extra config doesn't set it (prevents AttributeError in
+        # play_in_voice_channel when test fixtures create bare adapters).
+        if not hasattr(self, '_multi_agent_voice_channel_id'):
+            self._multi_agent_voice_channel_id = None
+        # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
@@ -1047,8 +1297,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
-        self._voice_timeout_seconds = self._load_voice_timeout()
-        self._playback_timeout_seconds = self._load_playback_timeout()
+        # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
@@ -1122,6 +1371,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Telegram #58563 fix.
         self._last_overflow_preview: Dict[tuple, str] = {}
         self._warned_fail_closed_default = False
+
+        # KENSEI CUSTOM: kensei-voice bridge state — join_voice_channel routes receive/STT/TTS
+        # through MisaMisaVoiceBridge when use_kensei_voice_bridge is true (default) and the
+        # package is importable; latency logs surface via voice_bridge_latency_report().
+        self._use_voice_bridge: bool = (
+            KENSEI_VOICE_BRIDGE_AVAILABLE
+            and self._coerce_bool(extra.get("use_kensei_voice_bridge"), True)
+        )
+        self._voice_bridges: Dict[int, Any] = {}  # guild_id -> MisaMisaVoiceBridge
+        self._voice_bridge_latency_logs: Dict[int, Any] = {}  # guild_id -> LiveLatencyLog
 
     def _config_value(self, key: str, default: Any, *, env_key: Optional[str] = None) -> Any:
         """Resolve a liveness value from profile config, legacy env, or default."""
@@ -1242,12 +1501,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self._allowed_role_ids = self._get_allowed_roles()
             # Intents: Server Members only when usernames must be resolved — an unenabled privileged
             # intent can keep the bot offline. ``"*"`` is the open-mode wildcard, not a username.
+            # KENSEI CUSTOM: voice auto-join / multi-agent voice floor additionally require the
+            # members intent — discord.py drops VOICE_STATE_UPDATE member objects without it
+            # (wired below via the or-terms on _needs_server_members_intent).
             intents = Intents.default()
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
             intents.members = _needs_server_members_intent(
                 self._allowed_user_ids, self._allowed_role_ids,
+            ) or (
+                # KENSEI CUSTOM: voice auto-join and the multi-agent voice floor need the
+                # members intent so VOICE_STATE_UPDATE events carry member objects.
+                bool(self._auto_join_user_id) or bool(self._multi_agent_voice_channel_id)
             )
             intents.voice_states = True
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
@@ -1294,6 +1560,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     adapter_self._ensure_missed_message_backfill_task()
 
             @self._client.event
+            async def on_interaction(interaction: discord.Interaction):
+                custom_id = ""
+                try:
+                    data = getattr(interaction, "data", None) or {}
+                    custom_id = str(data.get("custom_id") or "")
+                except Exception:
+                    custom_id = ""
+                if custom_id.startswith("blog_approval:"):
+                    await adapter_self._handle_blog_approval_component(interaction, custom_id)
+                if custom_id.startswith("ideabox_approval:"):
+                    await adapter_self._handle_ideabox_component(interaction, custom_id)
+
+            @self._client.event
             async def on_socket_event_type(event_type: str):
                 # Dispatch-side liveness stamp (#109521 incident 2): an ESTAB socket can keep
                 # ACKing heartbeats (op 11, no event type) while zero DISPATCH events are parsed,
@@ -1306,6 +1585,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # dispatch, so an ACKing-but-deaf socket leaves this stamp frozen while every
                 # transport-side check reads healthy.
                 adapter_self._last_dispatched_event_monotonic = time.perf_counter()
+
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -1330,6 +1610,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             @self._client.event
             async def on_voice_state_update(member, before, after):
                 """Track voice channel join/leave events."""
+                # ── Auto-join runs FIRST, before the bot-connected filter ──
+                # This must fire even when the bot isn't yet in a VC, otherwise
+                # the first auto-join event is silently dropped after every
+                # gateway restart (gate 2 of the voice event pipeline).
+                await adapter_self._handle_auto_join_voice_state(member, before, after)
+
+                # Only track/log channels where the bot is connected
                 bot_guild_ids = set(adapter_self._voice_clients.keys())
                 if not bot_guild_ids:
                     return
@@ -1517,6 +1804,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await asyncio.wait_for(self._ready_event.wait(), timeout=30.0)
             except asyncio.TimeoutError:
                 pass
+        # KENSEI CUSTOM (Idea Box): intercept messages from configured #idea-box channels /
+        # forum posts before the normal pipeline; True = consumed, skip dispatch.
+        if await self._dispatch_ideabox_intake(message):
+            return True
         admitted, role_authorized = self._discord_message_admission(message, claim=True)
         if not admitted:
             return False
@@ -2931,11 +3222,379 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await self._add_reaction(message, "✅")
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
+    # ── KENSEI CUSTOM — Idea Box intake + blog-approval interaction layer (ported) ──
+    _IDEABOX_CHANNELS_ENV = "DISCORD_IDEABOX_CHANNELS"
 
-    @staticmethod
-    def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
+    def _ideabox_intake_channels(self) -> set:
+        """Return the configured set of Idea Box intake channel IDs.
+
+        Reads from ``DISCORD_IDEABOX_CHANNELS`` (comma-separated). Returns
+        an empty set when the variable is unset, which disables the hook.
+        """
+        raw = os.getenv(self._IDEABOX_CHANNELS_ENV, "").strip()
+        if not raw:
+            return set()
+        return {item.strip() for item in raw.split(",") if item.strip()}
+
+    def _is_ideabox_intake_message(self, message: Any) -> bool:
+        """True when ``message`` is in a configured Idea Box intake channel.
+
+        Matches both the direct channel ID and the parent channel ID
+        (so messages inside a forum thread whose parent forum is in the
+        intake set are caught too).
+        """
+        intake = self._ideabox_intake_channels()
+        if not intake:
+            return False
+        channel = getattr(message, "channel", None)
+        if channel is None:
+            return False
+        channel_id = str(getattr(channel, "id", "") or "")
+        if not channel_id:
+            return False
+        if channel_id in intake:
+            return True
+        parent_id = self._get_parent_channel_id(channel)
+        return bool(parent_id and parent_id in intake)
+
+    async def _dispatch_ideabox_intake(self, message: Any) -> bool:
+        """Intercept messages from Idea Box intake channels.
+
+        Returns True when the message was consumed by the Idea Box
+        pipeline (so the caller should skip normal dispatch), False
+        otherwise. Never raises — all errors are caught and logged
+        with a user-friendly fallback message.
+        """
+        # Skip our own messages and non-text message types fast.
+        if not self._client:
+            return False
+        author = getattr(message, "author", None)
+        if author == self._client.user:
+            return False
+        msg_type = getattr(message, "type", None)
+        if msg_type is not None and msg_type not in {0, 19, 20}:
+            # 0=default, 19=reply, 20=thread_starter_message
+            return False
+        if not self._is_ideabox_intake_message(message):
+            return False
+
+        from .ideabox.handler import (
+            IdeaBoxApprovalView,
+            SourceSubmission,
+            handle_ideabox_submission,
+        )
+
+        channel = message.channel
+        is_forum = self._is_forum_parent(channel) or self._is_forum_parent(
+            getattr(channel, "parent", None),
+        )
+        # Forum posts (threads under a forum) report channel_type="forum".
+        # Text channels report "text".  Threads under a non-forum parent
+        # inherit the parent text-channel treatment.
+        if is_forum:
+            channel_type = "forum"
+        elif isinstance(channel, discord.Thread):
+            channel_type = "text"
+        else:
+            channel_type = "text"
+
+        guild = getattr(message, "guild", None)
+        submission = SourceSubmission(
+            raw_text=message.content or "",
+            author_id=str(getattr(author, "id", "")),
+            channel_id=str(getattr(channel, "id", "")),
+            message_id=str(getattr(message, "id", "")),
+            guild_id=str(getattr(guild, "id", "")) if guild else "",
+            channel_type=channel_type,
+            timestamp=int(time.time()),
+        )
+
+        try:
+            result = await handle_ideabox_submission(submission)
+        except Exception as exc:
+            logger.error(
+                "[%s] Idea Box intake failed: %s", self.name, exc, exc_info=True,
+            )
+            try:
+                await channel.send(
+                    "⚠️ Idea Box hit an unexpected error. The submission was not "
+                    "processed — please try again or notify an admin if it "
+                    "persists."
+                )
+            except Exception:
+                pass
+            return True  # consumed — don't double-process via agent pipeline
+
+        # Validation / dedup errors → friendly ephemeral-style reply.
+        if not result.get("success"):
+            errors = result.get("errors", ["Unknown error"])
+            embed = {
+                "title": "❌ Idea Box — Invalid Submission",
+                "description": "\n".join(f"• {e}" for e in errors),
+                "color": 0xED4245,
+                "footer": {"text": "Idea Box — fix the issues and try again"},
+            }
+            try:
+                await channel.send(embed=embed)
+            except Exception:
+                pass
+            return True
+
+        if result.get("is_duplicate"):
+            existing = (
+                result.get("existing_task_id")
+                or result.get("existing_triage_id")
+                or "unknown"
+            )
+            embed = {
+                "title": "🔁 Idea Box — Duplicate Source",
+                "description": (
+                    "This source has already been submitted.\n"
+                    f"Existing reference: `{existing}`"
+                ),
+                "color": 0xFEE75C,
+                "footer": {"text": "Idea Box — duplicate detected"},
+            }
+            try:
+                await channel.send(embed=embed)
+            except Exception:
+                pass
+            return True
+
+        embed = result.get("embed") or {}
+        triage_id_str = "unknown"
+        ts = result.get("triage_summary")
+        if ts is not None:
+            triage_id_str = getattr(ts, "triage_id", "unknown")
+
+        view = IdeaBoxApprovalView(
+            triage_id=triage_id_str,
+            allowed_user_ids=self._allowed_user_ids,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+        try:
+            await channel.send(embed=embed, view=view)
+        except Exception as exc:
+            logger.error(
+                "[%s] Idea Box intake send failed: %s", self.name, exc, exc_info=True,
+            )
+        return True
+
+    def _ideabox_view_from_content(self, content: str):
+        """Return an IdeaBoxApprovalView when a sent message is an Idea Box card."""
+        if not DISCORD_AVAILABLE or "Idea Box" not in str(content or ""):
+            return None
+        triage_match = re.search(r"Triage ID:\s*`?([a-zA-Z0-9_]+)`?", content)
+        if not triage_match:
+            return None
+        triage_id = triage_match.group(1).strip()
+        if not triage_id:
+            return None
+        try:
+            return IdeaBoxApprovalView(
+                triage_id=triage_id,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+        except NameError:
+            return None
+
+    async def _handle_ideabox_slash(
+        self, interaction, source: str,
+    ) -> None:
+        """Handle the /ideabox slash command."""
+        from .ideabox.handler import (
+            SourceSubmission,
+            handle_ideabox_submission,
+        )
+
+        await interaction.response.defer(ephemeral=False)
+
+        # Detect channel type so the source parser can tag provenance
+        # correctly. Slash commands can be invoked from any channel the
+        # bot can see, so we can't assume a forum vs text channel here.
+        channel = getattr(interaction, "channel", None)
+        channel_type = "text"
+        if channel is not None and self._is_forum_parent(channel):
+            channel_type = "forum"
+        elif isinstance(channel, discord.Thread) and self._is_forum_parent(
+            getattr(channel, "parent", None)
+        ):
+            channel_type = "forum"
+
+        submission = SourceSubmission(
+            raw_text=source,
+            author_id=str(interaction.user.id),
+            channel_id=str(interaction.channel_id or ""),
+            message_id=str(interaction.id),
+            guild_id=str(interaction.guild_id or ""),
+            channel_type=channel_type,
+            timestamp=int(time.time()),
+        )
+
+        result = await handle_ideabox_submission(submission)
+
+        if not result.get("success"):
+            errors = result.get("errors", ["Unknown error"])
+            embed = {
+                "title": "❌ Idea Box — Invalid Submission",
+                "description": "\n".join(f"• {e}" for e in errors),
+                "color": 0xED4245,
+                "footer": {"text": "Idea Box — fix the issues and try again"},
+            }
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        if result.get("is_duplicate"):
+            existing = result.get("existing_task_id") or result.get("existing_triage_id") or "unknown"
+            embed = {
+                "title": "🔁 Idea Box — Duplicate Source",
+                "description": (
+                    "This source has already been submitted.\n"
+                    f"Existing reference: `{existing}`"
+                ),
+                "color": 0xFEE75C,
+                "footer": {"text": "Idea Box — duplicate detected"},
+            }
+            await interaction.followup.send(embed=embed)
+            return
+
+        embed = result.get("embed", {})
+        triage_id = result.get("triage_summary", None)
+        triage_id_str = getattr(triage_id, "triage_id", "unknown") if triage_id else "unknown"
+
+        view = IdeaBoxApprovalView(
+            triage_id=triage_id_str,
+            allowed_user_ids=self._allowed_user_ids,
+            allowed_role_ids=self._allowed_role_ids,
+        )
+
+        # Send with buttons
+        try:
+            await interaction.followup.send(
+                embed=embed,
+                view=view,
+            )
+        except Exception as exc:
+            logger.error("Idea Box send failed: %s", exc, exc_info=True)
+            await interaction.followup.send(
+                "⚠️ Idea Box processed your submission but couldn't display the result. "
+                "Please try again.",
+                ephemeral=True,
+            )
+
+    async def _handle_ideabox_component(
+        self, interaction, custom_id: str,
+    ) -> None:
+        """Handle persistent raw Discord Idea Box components."""
+        from .ideabox.handler import handle_ideabox_component
+        await handle_ideabox_component(
+            interaction,
+            custom_id,
+            self._allowed_user_ids,
+            self._allowed_role_ids,
+        )
+
+    # ── Idea Box channel-level intake ─────────────────────────────────
+    # Configured via DISCORD_IDEABOX_CHANNELS env var (comma-separated
+    # list of channel IDs).  When a message lands in any of these
+    # channels — text or forum — the message is intercepted BEFORE the
+    # normal Hermes agent pipeline and run through the Idea Box
+    # triage → approval flow instead.  Returns True when the message
+    # was consumed by the Idea Box, False when the message is not
+    # part of an intake channel (and should fall through to the normal
+    # pipeline).
+
+    _IDEABOX_CHANNELS_ENV = "DISCORD_IDEABOX_CHANNELS"
+
+    def _resolve_blog_approval_action_blocking(slug: str, action: str) -> dict:
+        import sys
+        engine = _Path(os.getenv(
+            "BLOG_CONTENT_ENGINE_DIR",
+            "/home/kensei/repos/KenseiAgent/content_engine",
+        ))
+        if str(engine) not in sys.path:
+            sys.path.insert(0, str(engine))
+        from blog.blog_approval import handle_discord_command
+        return handle_discord_command(f"!{action} {slug}")
+
+    async def _handle_blog_approval_component(
+        self, interaction: discord.Interaction, custom_id: str,
+    ) -> None:
+        """Handle persistent raw Discord blog approval components from cron sends."""
+        parts = custom_id.split(":", 2)
+        if len(parts) != 3:
+            await interaction.response.send_message("Malformed blog approval action.", ephemeral=True)
+            return
+        _, action, slug = parts
+        if action not in {"approve", "amend", "reject"} or not slug:
+            await interaction.response.send_message("Unknown blog approval action.", ephemeral=True)
+            return
+        if not _component_check_auth(interaction, self._allowed_user_ids, self._allowed_role_ids):
+            await interaction.response.send_message(
+                "You're not authorised to answer this prompt~", ephemeral=True,
+            )
+            return
+
+        label = {"approve": "Approved", "amend": "Amend requested", "reject": "Rejected"}[action]
+        color = {
+            "approve": discord.Color.green(),
+            "amend": discord.Color.blue(),
+            "reject": discord.Color.red(),
+        }[action]
+        embed = interaction.message.embeds[0] if interaction.message and interaction.message.embeds else None
+        if embed:
+            embed.color = color
+            embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+        try:
+            await interaction.response.edit_message(embed=embed, view=None)
+        except Exception:
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception:
+                pass
+
+        try:
+            result = await asyncio.to_thread(
+                self._resolve_blog_approval_action_blocking, slug, action,
+            )
+        except Exception as exc:
+            logger.error("blog approval component failed: %s", exc, exc_info=True)
+            await interaction.followup.send(f"Blog approval `{action}` failed: {exc}", ephemeral=True)
+            return
+        await interaction.followup.send(result.get("message") or f"{label}: `{slug}`")
+
+    def _blog_approval_view_from_content(self, content: str):
+        """Return a BlogApprovalView when a sent message is a SahilBlog approval card."""
+        if not DISCORD_AVAILABLE or "[Blog Approval Request]" not in str(content or ""):
+            return None
+        slug_match = re.search(r"\*\*Slug:\*\*\s*`([^`]+)`", content)
+        if not slug_match:
+            return None
+        slug = slug_match.group(1).strip()
+        if not slug:
+            return None
+        try:
+            return BlogApprovalView(
+                slug=slug,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+        except NameError:
+            return None
+
+    # ── Idea Box handlers ──────────────────────────────────────────────
+
+    # ── END KENSEI CUSTOM ──
+
+    def _message_reference_from_ids(self, message_id, channel) -> "discord.MessageReference":
         """ids-built reply reference — no fetch_message round trip. fail_if_not_exists=False
         keeps sends to deleted targets degrading to the send-side 10008 retry."""
+        # KENSEI CUSTOM: the fork's blog-approval + IdeaBox interaction layer (_resolve_blog_approval_
+        # action_blocking, _handle_blog_approval_component, _blog_approval_view_from_content,
+        # ideabox slash/component handlers, intake channel helpers) lives in this class; the
+        # dispatcher seam at _dispatch_discord_message and the on_interaction component dispatch
+        # cover the wiring. NOT absorbed upstream — upstream never had this layer.
         return discord.MessageReference(
             message_id=int(message_id), channel_id=getattr(channel, "id", None),
             guild_id=getattr(getattr(channel, "guild", None), "id", None), fail_if_not_exists=False,
@@ -2995,6 +3654,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             result = SendResult(success=False, error="Refusing to send empty message")
             # Backfill replays from this table: record the dropped final reply as failed or it is lost.
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")), metadata)
+
+        # KENSEI CUSTOM: defence-in-depth — strip recalled <memory-context> blocks before any
+        # Discord delivery. The scheduler, stream_consumer, and CLI send path each strip
+        # upstream, but auxiliary adapter.send() callers (acks, notices, voice transcriptions,
+        # cron fallbacks) bypass those. This is the final chokepoint.
+        import re as _re
+        _MEM_LEAK_RE = _re.compile(r"<memory-context>.*?</memory-context>", _re.DOTALL | _re.IGNORECASE)
+        if isinstance(content, str) and _MEM_LEAK_RE.search(content):
+            content = _MEM_LEAK_RE.sub("", content).strip()
         try:
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -3017,6 +3685,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             chunks = self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             )
+            blog_approval_view = self._blog_approval_view_from_content(content)
+            ideabox_view = self._ideabox_view_from_content(content)
+
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
@@ -3024,8 +3695,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
+                view = blog_approval_view or ideabox_view if i == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    msg = await channel.send(
+                        content=chunk, reference=chunk_reference,
+                        # KENSEI CUSTOM: approval/picker views ride the chunk; mentions suppressed.
+                        view=view, allowed_mentions=discord.AllowedMentions.none() if view else None,
+                    )
+                    if view:
+                        view._message = msg
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -3033,7 +3711,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             self.name, reply_to,
                         )
                         reference = None
-                        msg = await channel.send(content=chunk, reference=None)
+                        msg = await channel.send(
+                            content=chunk, reference=None,
+                            # KENSEI CUSTOM: approval/picker views ride the chunk; mentions suppressed.
+                            view=view, allowed_mentions=discord.AllowedMentions.none() if view else None,
+                        )
+                        if view:
+                            view._message = msg
                     else:
                         raise
                 message_ids.append(str(msg.id))
@@ -3307,6 +3991,150 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids),
         )
 
+    async def _send_file_attachment(
+        self, chat_id: str, file_path: str, caption: Optional[str] = None,
+        file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a local file as a Discord attachment (forum channels get a new thread). Path-based
+        ``discord.File`` only: the open-handle form can race the multipart encoder after an image
+        batch and yield zero attachments — a silent drop for video/document MEDIA tags.
+
+        See #66797.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not os.path.isfile(file_path):
+            return SendResult(success=False, error=f"File not found: {file_path}")
+        channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
+        if not channel:
+            return SendResult(success=False, error=f"Channel {chat_id} not found")
+        filename = file_name or os.path.basename(file_path)
+        logger.info(
+            "[%s] Sending file attachment %s (%s) to %s", self.name, filename,
+            os.path.splitext(filename)[1].lower() or "no-ext", chat_id,
+        )
+        # Path-based File (discord.py owns open/close); ``files=[...]`` over deprecated ``file=``.
+        discord_file = discord.File(file_path, filename=filename)
+        if self._is_forum_parent(channel):
+            result = await self._forum_post_file(
+                channel, content=(caption or "").strip(), files=[discord_file],
+            )
+            return result
+        msg = await channel.send(content=caption if caption else None, files=[discord_file])
+        attachments = getattr(msg, "attachments", None) or []
+        if not attachments:
+            # Discord accepted the message but attached nothing: fail loud instead of a silent drop.
+            # Discord accepted the message but attached nothing — the failure mode reported in #66797 (MEDIA
+            # video stripped from text, no attachment, no prior log line).
+            logger.warning(
+                "[%s] Discord returned message %s with no attachments for %s", self.name,
+                getattr(msg, "id", "?"), filename,
+            )
+            return SendResult(
+                success=False,
+                error=f"Discord accepted the message but attached no files ({filename})",
+                message_id=str(getattr(msg, "id", "") or "") or None,
+            )
+        return SendResult(success=True, message_id=str(msg.id))
+
+    async def send_multiple_images(
+        self, chat_id: str, images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
+    ) -> None:
+        """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
+        inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
+        if not self._client:
+            return
+        if not images:
+            return
+        try:
+            import discord as _discord_mod
+            import io as _io
+            from urllib.parse import unquote as _unquote
+        except Exception:  # pragma: no cover
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+        try:
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
+            if not channel:
+                logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
+                return
+        except Exception as e:
+            logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+        CHUNK = 10
+        chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+        for chunk_idx, chunk in enumerate(chunks):
+            if human_delay > 0 and chunk_idx > 0:
+                await asyncio.sleep(human_delay)
+            files: List[Any] = []
+            captions: List[str] = []
+            aiohttp_session = None
+            try:
+                for image_url, alt_text in chunk:
+                    if alt_text:
+                        captions.append(alt_text)
+                    if image_url.startswith("file://"):
+                        local_path = _unquote(image_url[7:])
+                        if not os.path.exists(local_path):
+                            logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
+                            continue
+                        files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
+                    else:
+                        if not is_safe_url(image_url):
+                            logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
+                            continue
+                        # Download to BytesIO so it renders inline
+                        try:
+                            import aiohttp as _aiohttp
+                            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+                            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+                            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+                            if aiohttp_session is None:
+                                aiohttp_session = _aiohttp.ClientSession(**_sess_kw)
+                            status, data, headers = await _read_url_image_with_redirect_guard(
+                                aiohttp_session, image_url,
+                                timeout=_aiohttp.ClientTimeout(total=30), request_kwargs=_req_kw,
+                            )
+                            if status != 200:
+                                logger.warning(
+                                    "[%s] Failed to download image (HTTP %d) in batch: %s",
+                                    self.name, status, image_url[:80],
+                                )
+                                continue
+                            ext = _image_ext_from_content_type(headers.get("content-type", "image/png"))
+                            files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
+                        except Exception as dl_err:
+                            logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
+                            continue
+                if not files:
+                    continue
+                # Use the first caption if any (Discord only has one message body for the group)
+                content = captions[0] if captions else None
+                logger.info(
+                    "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
+                    self.name, len(files), chunk_idx + 1, len(chunks),
+                )
+                if self._is_forum_parent(channel):
+                    await self._forum_post_file(
+                        channel, content=(content or "").strip(), files=files,
+                    )
+                else:
+                    await channel.send(content=content, files=files)
+            except Exception as e:
+                logger.warning(
+                    "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
+                    self.name, chunk_idx + 1, len(chunks), e, exc_info=True,
+                )
+                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+            finally:
+                if aiohttp_session is not None:
+                    try:
+                        await aiohttp_session.close()
+                    except Exception:
+                        pass
+
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
         for gid, text_ch_id in self._voice_text_channels.items():
@@ -3316,6 +4144,78 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return SendResult(success=success)
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
 
+    async def send_voice(
+        self, chat_id: str, audio_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs,
+    ) -> SendResult:
+        """Send audio as a Discord file attachment."""
+        try:
+            import io
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
+            if not os.path.exists(audio_path):
+                return SendResult(success=False, error=f"Audio file not found: {audio_path}")
+            filename = os.path.basename(audio_path)
+            reference = self._reply_reference_for_send(reply_to, channel)
+            with open(audio_path, "rb") as f:
+                file_data = f.read()
+            # Forum channels reject POST /messages (native voice path too); create a thread post instead.
+            if self._is_forum_parent(channel):
+                forum_file = discord.File(io.BytesIO(file_data), filename=filename)
+                return await self._forum_post_file(
+                    channel, content=(caption or "").strip(), file=forum_file,
+                )
+            # Try sending as a native voice message via raw API (flags=8192).
+            try:
+                import base64
+                try:
+                    from mutagen.oggopus import OggOpus
+                    duration_secs = OggOpus(audio_path).info.length
+                except Exception:
+                    duration_secs = max(1.0, len(file_data) / 2000.0)
+
+                waveform_bytes = bytes([128] * 256)
+                waveform_b64 = base64.b64encode(waveform_bytes).decode()
+
+                import json as _json
+                payload_data = {
+                    "flags": 8192,
+                    "attachments": [{
+                        "id": "0", "filename": "voice-message.ogg", "duration_secs": round(duration_secs, 2),
+                        "waveform": base64.b64encode(bytes([128] * 256)).decode(),
+                    }],
+                }
+                # KENSEI CUSTOM: ride the reply reference on the voice upload when present
+                # (fail_if_not_exists=False keeps deleted targets degrading gracefully).
+                if reference is not None:
+                    payload_data["message_reference"] = {"message_id": str(reply_to), "fail_if_not_exists": False}
+                form = [
+                    {"name": "payload_json", "value": json.dumps(payload_data)},
+                    {
+                        "name": "files[0]", "value": file_data, "filename": "voice-message.ogg",
+                        "content_type": "audio/ogg",
+                    },
+                ]
+                msg_data = await self._client.http.request(
+                    discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=channel.id),
+                    form=form,
+                )
+                return SendResult(success=True, message_id=str(msg_data["id"]))
+            except Exception as voice_err:
+                logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
+                file = discord.File(io.BytesIO(file_data), filename=filename)
+                try:
+                    msg = await channel.send(file=file, reference=reference)
+                except Exception as send_err:
+                    if reference is not None and self._is_reply_reference_rejected(send_err):
+                        msg = await channel.send(file=file, reference=None)
+                    else:
+                        raise
+                return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:  # native upload failure must remain a failure
+            logger.error("[%s] Failed to send audio: %s", self.name, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
 
     # --- Voice channel methods (join / leave / play) ---
 
@@ -3410,7 +4310,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return None
 
     async def _playback_timeout_for_audio(self, audio_path: str) -> float:
-        """Return timeout for this clip: configured floor or duration+padding."""
+        """Return timeout for this clip: configured floor or duration plus padding."""
         floor = float(self._playback_timeout_limit())
         duration = await asyncio.to_thread(self._probe_audio_duration_seconds, audio_path)
         if not duration or duration <= 0:
@@ -3499,8 +4399,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if not pcm:
                 return False
             mixer.play_speech(
-                self._lead_silence_bytes() + pcm,
-                gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
+                pcm, gain=float(self._voice_fx_cfg.get("speech_gain", 1.0))
             )
             self._reset_voice_timeout(guild_id)
             return True
@@ -3535,33 +4434,193 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 await existing.move_to(channel)
                 self._reset_voice_timeout(guild_id)
                 return True
-            vc = await channel.connect()
+            # KENSEI CUSTOM: bridge path — connect with VoiceRecvClient so MisaMisaVoiceBridge can
+            # subscribe receive + drive playback; fall back to a plain VoiceClient when
+            # discord-ext-voice-recv is not importable in this environment.
+            if self._use_voice_bridge:
+                vc = await self._voice_connect_for_bridge(channel)
+                if vc is None:
+                    logger.warning(
+                        "kensei-voice bridge requested but VoiceRecvClient "
+                        "connect failed; falling back to legacy path"
+                    )
+                    vc = await channel.connect()
+            else:
+                vc = await channel.connect()
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
             if text_channel_id is not None:
                 self._voice_text_channels[guild_id] = text_channel_id
             if source is not None:
                 self._voice_sources[guild_id] = source
-            try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
-                receiver.start()
-                self._voice_receivers[guild_id] = receiver
-                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
-                    self._voice_listen_loop(guild_id)
-                )
-            except Exception as e:
-                logger.warning("Voice receiver failed to start: %s", e)
-            # Mixer is best-effort; failure falls back to one-shot FFmpegPCMAudio playback.
-            if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
+            if self._use_voice_bridge and getattr(vc, "listen", None) is not None:
+                # KENSEI CUSTOM: bridge owns receive + playback; do NOT start the legacy
+                # VoiceReceiver in parallel (two STT pipelines on the same mic is the
+                # classic two-bots-in-one-body failure).
+                bridge_started = await self._start_voice_bridge(guild_id, vc)
+                if not bridge_started:
+                    logger.warning(
+                        "MisaMisaVoiceBridge failed to start; falling back "
+                        "to legacy VoiceReceiver path for guild %d", guild_id
+                    )
+            else:
+                try:
+                    receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                    receiver.start()
+                    self._voice_receivers[guild_id] = receiver
+                    self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
+                        self._voice_listen_loop(guild_id)
+                    )
+                except Exception as e:
+                    logger.warning("Voice receiver failed to start: %s", e)
+            # KENSEI CUSTOM: continuous mixer (ambient bed + ducked speech) — legacy path only;
+            # the bridge has its own TTS/playback pipeline. Best-effort: failure falls back to
+            # one-shot FFmpegPCMAudio playback in play_in_voice_channel.
+            if not self._use_voice_bridge and getattr(self, "_voice_fx_cfg", {}).get("enabled"):
                 try:
                     await self._install_voice_mixer(guild_id, vc)
                 except Exception as e:
                     logger.warning("Voice mixer failed to start: %s", e)
             return True
 
+    async def _voice_connect_for_bridge(self, channel):
+        """Connect a VoiceRecvClient; return None on any failure.
+
+        Kept as a small method so the failure path is unit-testable
+        without dragging the full adapter in.
+        """
+        try:
+            from discord.ext import voice_recv as _voice_recv
+        except Exception as e:
+            logger.warning(
+                "discord-ext-voice-recv unavailable; cannot use bridge: %s", e
+            )
+            return None
+        try:
+            return await channel.connect(cls=_voice_recv.VoiceRecvClient)
+        except Exception as e:
+            logger.warning("VoiceRecvClient.connect failed: %s", e)
+            return None
+
+    async def _start_voice_bridge(self, guild_id: int, voice_client) -> bool:
+        """Construct + start the MisaMisaVoiceBridge for a guild.
+
+        Returns True if the bridge is running, False if construction or
+        start failed (the caller falls back to the legacy path).
+        """
+        if not KENSEI_VOICE_BRIDGE_AVAILABLE or MisaMisaVoiceBridge is None:
+            return False
+        # The bridge needs a brain; the production default is the
+        # booking brain (misa-misa's domain).  If the operator wants
+        # a different brain they can pass one in via discord.extra
+        # once the gateway runner wires that.  For now build_default_brain
+        # gives a working fakes-only pipeline that surfaces the seam;
+        # a real OPENAI_API_KEY makes the brain hit the LLM.
+        try:
+            from kensei_voice.brain import build_default_brain
+        except Exception as e:
+            logger.warning("kensei_voice.brain import failed: %s", e)
+            return False
+        brain = build_default_brain()
+        latency_log = LiveLatencyLog(
+            config_context=self._voice_bridge_config_context(guild_id)
+        )
+        bridge = MisaMisaVoiceBridge(
+            voice_client=voice_client,
+            brain=brain,
+            text_callback=self._make_voice_bridge_text_callback(guild_id),
+            latency_log=latency_log,
+        )
+        try:
+            await bridge.start()
+        except Exception as e:
+            logger.warning("MisaMisaVoiceBridge.start failed: %s", e)
+            return False
+        self._voice_bridges[guild_id] = bridge
+        self._voice_bridge_latency_logs[guild_id] = latency_log
+        logger.info(
+            "MisaMisaVoiceBridge active for guild %d (channel %s)",
+            guild_id,
+            getattr(voice_client, "channel", None),
+        )
+        return True
+
+    def _voice_bridge_config_context(self, guild_id: int) -> dict:
+        """Capture config/hardware context for the live latency log."""
+        import platform as _platform
+        import sys as _sys
+        return {
+            "guild_id": guild_id,
+            "voice_channel_id": getattr(
+                getattr(self._voice_clients.get(guild_id), "channel", None), "id", None
+            ),
+            "host": _platform.node(),
+            "python": _sys.version.split()[0],
+            "model": os.environ.get("KENSEI_VOICE_LIVE_MODEL", "default"),
+            "voice": os.environ.get("KENSEI_VOICE_LIVE_VOICE", "default"),
+        }
+
+    def _make_voice_bridge_text_callback(self, guild_id: int):
+        """Build the bridge's text-callback for one guild.
+
+        The bridge runs the brain in-process, so the gateway runner
+        never sees the user's utterance.  We mirror the brain's reply
+        to the linked text channel so the live conversation is
+        visible in chat exactly like the legacy voice path.
+        """
+        adapter_self = self
+
+        async def _callback(text: str, meta: dict) -> None:
+            chat_id = adapter_self._voice_text_channels.get(guild_id)
+            if not chat_id:
+                return
+            try:
+                await adapter_self.send(chat_id=str(chat_id), content=text)
+            except Exception as e:  # pragma: no cover - best effort
+                logger.warning(
+                    "Voice-bridge text callback post failed for guild %d: %s",
+                    guild_id,
+                    e,
+                )
+
+        return _callback
+
+    def voice_bridge_latency_report(self, guild_id: int) -> Optional[dict]:
+        """Return the live latency log for a guild, or None if not bridged.
+
+        Surfaced for ``scripts/measure_phase2a_live`` and operator
+        postmortem dumps.  Returns None when the bridge is not active
+        for the guild (e.g. legacy path or never joined).
+        """
+        log = self._voice_bridge_latency_logs.get(guild_id)
+        if log is None:
+            return None
+        return log.report()
+
+    def voice_bridge_active(self, guild_id: int) -> bool:
+        """True iff the MisaMisaVoiceBridge is currently active for guild_id."""
+        bridge = self._voice_bridges.get(guild_id)
+        return bool(bridge is not None and bridge.started)
+
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            # Stop the optional bridge first so its transport releases the
+            # voice client's sink + source before the adapter disconnects.
+            bridges = getattr(self, "_voice_bridges", None)
+            bridge = bridges.pop(guild_id, None) if bridges is not None else None
+            if bridge is not None:
+                try:
+                    await bridge.stop()
+                except Exception:  # pragma: no cover - best effort
+                    logger.debug("bridge.stop raised during leave", exc_info=True)
+            # Bridge is mutually exclusive with VoiceReceiver; clear the
+            # latency log only after stop completes.
+            latency_logs = getattr(self, "_voice_bridge_latency_logs", None)
+            if latency_logs is not None:
+                latency_logs.pop(guild_id, None)
+
+            # Drain recent speech before stopping the receiver or disconnecting.
             receiver = self._voice_receivers.pop(guild_id, None)
             pending_inputs = []
             if receiver:
@@ -3570,7 +4629,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             listen_task = self._voice_listen_tasks.pop(guild_id, None)
             if listen_task:
                 listen_task.cancel()
-            guild = self._client.get_guild(guild_id) if self._client is not None else None
+
+            client = getattr(self, "_client", None)
+            guild = client.get_guild(guild_id) if client is not None else None
             for user_id, pcm_data in pending_inputs:
                 if self._is_allowed_user(str(user_id), guild=guild, is_dm=False):
                     await self._process_voice_input(guild_id, user_id, pcm_data)
@@ -3599,10 +4660,34 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return False
         # Playback counts as activity: suspend the inactivity timer, re-arm in finally.
         self._cancel_voice_timeout(guild_id)
+        floor_acquired = False
+        vc_channel_id = getattr(getattr(vc, "channel", None), "id", None)
         try:
             playback_timeout = await self._playback_timeout_for_audio(audio_path)
-            # ── Mixer path (overlap + ducking) ──────────────────────────────
-            mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
+
+            # ── KENSEI CUSTOM: multi-agent voice floor ──
+            _multi = getattr(self, "_multi_agent_voice_channel_id", None)
+            is_multi_agent = _multi is not None and vc_channel_id == _multi
+            if is_multi_agent:
+                wait_start = time.monotonic()
+                while not self._acquire_voice_floor(int(vc_channel_id)):
+                    if time.monotonic() - wait_start > playback_timeout:
+                        logger.warning(
+                            "[%s] voice floor wait timeout in channel %s; playing anyway",
+                            self.name, vc_channel_id,
+                        )
+                        break
+                    await asyncio.sleep(0.2)
+                else:
+                    floor_acquired = True
+            # ── END KENSEI CUSTOM ──
+
+            # ── Mixer path (overlap + ducking) ──────────────────────────
+            mixer = (
+                getattr(self, "_voice_mixers", {}).get(guild_id)
+                if getattr(self, "_voice_mixers", None)
+                else None
+            )
             if mixer is not None:
                 decode_to_pcm = _voice_mixer_module().decode_to_pcm
                 pcm = await asyncio.to_thread(decode_to_pcm, audio_path)
@@ -3613,7 +4698,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     wait_start = time.monotonic()
                     while mixer.speech_active:
                         if time.monotonic() - wait_start > playback_timeout:
-                            logger.warning("Mixer speech playback timed out after %.1fs", playback_timeout)
+                            logger.warning(
+                                "Mixer speech playback timed out after %.1fs",
+                                playback_timeout,
+                            )
                             mixer.stop_speech()
                             break
                         await asyncio.sleep(0.05)
@@ -3624,6 +4712,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if receiver:
                 receiver.pause()
             try:
+                # Wait for current playback to finish (with timeout).
                 wait_start = time.monotonic()
                 while vc.is_playing():
                     if time.monotonic() - wait_start > playback_timeout:
@@ -3655,14 +4744,297 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 try:
                     await asyncio.wait_for(done.wait(), timeout=playback_timeout)
                 except asyncio.TimeoutError:
-                    logger.warning("Voice playback timed out after %.1fs", playback_timeout)
+                    logger.warning(
+                        "Voice playback timed out after %.1fs", playback_timeout
+                    )
                     vc.stop()
                 return True
             finally:
                 if receiver:
                     receiver.resume()
         finally:
+            if floor_acquired:
+                self._release_voice_floor(int(vc_channel_id))
             self._reset_voice_timeout(guild_id)
+
+    # ── KENSEI CUSTOM: per-channel bot loop guard ───────────────────────
+
+    def _note_channel_author(self, message) -> None:
+        """Record whether the latest channel message came from a bot.
+
+        Feeds the bot loop-guard from an in-process, per-channel log rather
+        than a Discord REST history fetch on every bot message. Each gateway
+        receives every message in channels it can see, so this log reflects the
+        true author sequence without a network round-trip or shared state.
+        Called once per accepted message (after the RESUME-dedup check) for
+        both humans and bots so a human turn always resets the chain.
+        """
+        channel_id = getattr(getattr(message, "channel", None), "id", None)
+        if channel_id is None:
+            return
+        log = self._channel_author_log.get(channel_id)
+        if log is None:
+            log = deque(maxlen=64)
+            self._channel_author_log[channel_id] = log
+        log.append(bool(getattr(message.author, "bot", False)))
+
+    # ── KENSEI CUSTOM: max bot hops guard ──
+    def _discord_max_bot_hops(self) -> int:
+        """Max consecutive bot messages allowed before this bot stops replying.
+
+        Guards against two bots @mentioning each other forever in a shared
+        channel. 0 disables the guard.
+        """
+        configured = self.config.extra.get("max_bot_hops")
+        if configured is None:
+            configured = os.getenv("DISCORD_MAX_BOT_HOPS")
+        if configured is None or configured == "":
+            return 6
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            logger.warning("[Discord] Invalid max_bot_hops value %r, falling back to 6", configured)
+            return 6
+        return max(0, value)
+
+    def _bot_loop_would_exceed(self, message) -> bool:
+        """True when this (already-recorded) bot message extends a bot-only chain past the cap."""
+        max_hops = self._discord_max_bot_hops()
+        if max_hops <= 0:
+            return False
+        channel_id = getattr(getattr(message, "channel", None), "id", None)
+        log = self._channel_author_log.get(channel_id)
+        if not log:
+            return False
+        consecutive = 0
+        for is_bot in reversed(log):
+            if not is_bot:
+                break
+            consecutive += 1
+            if consecutive > max_hops:
+                return True
+        return False
+
+    # ── KENSEI CUSTOM: auto-join voice infrastructure ───────────────────
+
+    async def _handle_auto_join_voice_state(self, member, before, after) -> None:
+        """Auto-join/leave voice when the configured user enters or exits VC.
+
+        If ``auto_join_channel_id`` is set this bot only joins that one specific
+        VC, so multi-agent participants don't crash Misa-Misa's 1:1 sessions.
+        When unset, the bot follows the user into any VC (Misa-Misa behaviour).
+        """
+        if not self._auto_join_user_id:
+            return
+        if int(getattr(member, "id", 0) or 0) != self._auto_join_user_id:
+            return
+
+        before_channel = getattr(before, "channel", None)
+        after_channel = getattr(after, "channel", None)
+        joined = before_channel is None and after_channel is not None
+        left = before_channel is not None and after_channel is None
+        switched = (
+            before_channel is not None
+            and after_channel is not None
+            and before_channel != after_channel
+        )
+
+        # Channel-specific filter: only react when the user entered/left
+        # the configured VC.
+        if self._auto_join_channel_id is not None:
+            target = self._auto_join_channel_id
+            after_id = getattr(after_channel, "id", None)
+            before_id = getattr(before_channel, "id", None)
+            if (joined or switched) and after_id != target:
+                return
+            if left and before_id != target:
+                return
+
+        guild = getattr(member, "guild", None)
+        guild_id = getattr(guild, "id", None)
+        if guild_id is None:
+            return
+
+        if joined or switched:
+            if self._auto_join_delay_seconds > 0:
+                await asyncio.sleep(self._auto_join_delay_seconds)
+            logger.info(
+                "Auto-join: configured user %s entered VC %s",
+                getattr(member, "display_name", member.id),
+                getattr(after_channel, "name", after_channel),
+            )
+            joined_ok = await self.join_voice_channel(after_channel)
+            if not joined_ok:
+                return
+            guild_obj = getattr(member, "guild", None)
+            if guild_obj and self._auto_join_text_channel_id:
+                self._voice_text_channels[int(guild_id)] = self._auto_join_text_channel_id
+                self._voice_sources[int(guild_id)] = {
+                    "platform": "discord",
+                    "chat_id": str(self._auto_join_text_channel_id),
+                    "user_id": str(int(member.id)),
+                    "user_name": getattr(member, "display_name", str(member.id)),
+                    "chat_type": "channel",
+                }
+            if self._auto_join_send_text_greeting:
+                await self._send_auto_join_text_greeting(member)
+            await self._play_auto_join_greeting(int(guild_id))
+        elif left and self._auto_leave_on_user_exit:
+            logger.info(
+                "Auto-leave: configured user %s left VC",
+                getattr(member, "display_name", member.id),
+            )
+            await self.leave_voice_channel(int(guild_id))
+
+    async def _send_auto_join_text_greeting(self, member) -> None:
+        """Send the configured greeting to the configured text channel."""
+        if not self._auto_join_greeting_text or not self._auto_join_text_channel_id:
+            return
+        guild = getattr(member, "guild", None)
+        get_channel = getattr(guild, "get_channel", None)
+        if not callable(get_channel):
+            return
+        text_channel = get_channel(self._auto_join_text_channel_id)
+        if text_channel is None:
+            logger.debug(
+                "Configured Discord auto-join text channel %s not found",
+                self._auto_join_text_channel_id,
+            )
+            return
+        send = getattr(text_channel, "send", None)
+        if not callable(send):
+            return
+        try:
+            await send(self._auto_join_greeting_text)
+        except Exception as exc:
+            logger.warning("Discord auto-join text greeting failed: %s", exc)
+
+    async def _play_auto_join_greeting(self, guild_id: int) -> None:
+        """Generate the configured greeting via Hermes TTS and play it in VC."""
+        if not self._auto_join_greeting_text:
+            return
+
+        tmp = tempfile.NamedTemporaryFile(prefix="discord_auto_join_", suffix=".mp3", delete=False)
+        output_path = tmp.name
+        tmp.close()
+        generated_path = output_path
+        try:
+            from tools.tts_tool import text_to_speech_tool
+
+            raw = await asyncio.to_thread(
+                text_to_speech_tool,
+                text=self._auto_join_greeting_text,
+                output_path=output_path,
+            )
+            import json as _json
+            result = _json.loads(raw)
+            if not result.get("success"):
+                logger.warning(
+                    "Discord auto-join TTS greeting failed: %s",
+                    result.get("error", "unknown error"),
+                )
+                return
+            generated_path = str(result.get("file_path") or output_path)
+            if not os.path.exists(generated_path) or os.path.getsize(generated_path) <= 0:
+                logger.warning("Discord auto-join TTS greeting produced no audio")
+                return
+            await self.play_in_voice_channel(guild_id, generated_path)
+        except Exception as exc:
+            logger.warning("Discord auto-join spoken greeting failed: %s", exc)
+        finally:
+            for p in {output_path, generated_path}:
+                try:
+                    if p and os.path.exists(p):
+                        os.unlink(p)
+                except Exception:
+                    pass
+
+    # ── KENSEI CUSTOM: multi-agent voice floor (cross-process filesystem lock) ──
+
+    def _floor_dir(self) -> Optional[Any]:
+        """Return the floor-lock directory Path, creating it if needed."""
+        if self._voice_floor_dir is None:
+            import pathlib
+            d = pathlib.Path.home() / ".hermes" / "voice-floor"
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                self._voice_floor_dir = str(d)
+            except Exception as exc:
+                logger.warning("voice-floor dir unavailable: %s", exc)
+                return None
+        import pathlib
+        return pathlib.Path(self._voice_floor_dir)
+
+    def _floor_lock_path(self, vc_channel_id: int) -> Optional[Any]:
+        d = self._floor_dir()
+        if d is None:
+            return None
+        return d / f"{vc_channel_id}.lock"
+
+    def _acquire_voice_floor(self, vc_channel_id: int) -> bool:
+        """Atomically acquire the voice floor for this bot (O_EXCL create)."""
+        lock_path = self._floor_lock_path(vc_channel_id)
+        if lock_path is None:
+            return True
+        import os as _os, json as _json
+        payload = _json.dumps({"bot_id": str(self._client.user.id)}).encode()
+        try:
+            fd = _os.open(str(lock_path), _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL, 0o600)
+            _os.write(fd, payload)
+            _os.close(fd)
+            return True
+        except FileExistsError:
+            pass
+        try:
+            age_seconds = time.time() - lock_path.stat().st_mtime
+            if age_seconds > self._voice_floor_ttl:
+                lock_path.unlink(missing_ok=True)
+                return self._acquire_voice_floor(vc_channel_id)
+        except Exception:
+            pass
+        return False
+
+    def _release_voice_floor(self, vc_channel_id: int) -> None:
+        """Release the voice floor by removing the lock file."""
+        lock_path = self._floor_lock_path(vc_channel_id)
+        if lock_path is None:
+            return
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.debug("voice floor release error: %s", exc)
+
+    def _voice_floor_held_by_other(self, vc_channel_id: int) -> bool:
+        """True when the floor lock file exists and belongs to another bot."""
+        lock_path = self._floor_lock_path(vc_channel_id)
+        if lock_path is None:
+            return False
+        try:
+            if not lock_path.exists():
+                return False
+            import json as _json
+            payload = _json.loads(lock_path.read_bytes())
+            holder = str(payload.get("bot_id", ""))
+            my_id = str(getattr(getattr(self._client, "user", None), "id", ""))
+            if holder == my_id:
+                return False
+            if time.time() - lock_path.stat().st_mtime > self._voice_floor_ttl:
+                lock_path.unlink(missing_ok=True)
+                return False
+            return True
+        except Exception:
+            return False
+
+    async def _pause_while_floor_held(self, vc_channel_id: int, guild_id: int) -> None:
+        """Pause the voice receiver while another bot holds the floor."""
+        receiver = self._voice_receivers.get(guild_id)
+        if not receiver:
+            return
+        while self._voice_floor_held_by_other(vc_channel_id):
+            receiver.pause()
+            await asyncio.sleep(0.2)
+        receiver.resume()
+
 
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
         """Return the voice channel the user is currently in, or None."""
@@ -3692,7 +5064,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             self._voice_timeout_handler(guild_id, timeout)
         )
 
-    async def _voice_timeout_handler(self, guild_id: int, timeout: Optional[int] = None) -> None:
+    async def _voice_timeout_handler(
+        self, guild_id: int, timeout: Optional[int] = None
+    ) -> None:
         """Auto-disconnect after the configured inactivity timeout."""
         timeout = self._voice_timeout_limit() if timeout is None else int(timeout)
         if timeout <= 0:
@@ -3712,14 +5086,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             except Exception:
                 pass
         await self.leave_voice_channel(guild_id)
-        # Notify the runner so it can clean up voice_mode state
-        if self._on_voice_disconnect and text_ch_id:
+        # Notify the runner so it can clean up voice_mode state.
+        disconnect_callback = getattr(self, "_on_voice_disconnect", None)
+        if disconnect_callback and text_ch_id:
             try:
-                self._on_voice_disconnect(str(text_ch_id))
+                disconnect_callback(str(text_ch_id))
             except Exception:
                 pass
-        if text_ch_id and self._client:
-            ch = self._client.get_channel(text_ch_id)
+        client = getattr(self, "_client", None)
+        if text_ch_id and client:
+            ch = client.get_channel(text_ch_id)
             if ch:
                 try:
                     await ch.send("Left voice channel (inactivity timeout).")
@@ -4165,11 +5541,196 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             except Exception as e:
                 logger.debug("[Discord] Admin notify via %s failed: %s", target, e)
 
+    async def _send_local_file(self, chat_id, path, caption, *, file_name=None, not_found: str, kind: str,
+                               fallback, metadata=None):
+        """Native attachment upload for a local file; missing file -> error, other failure -> base adapter.
 
+        KENSEI COMBINE (upstream #66797 media-target): the attachment posts into
+        ``metadata["thread_id"]`` when present, else ``chat_id`` — without losing the
+        direct-channel fallback for the non-media callers."""
+        try:
+            return await self._send_file_attachment(chat_id, path, caption, file_name=file_name, metadata=metadata)
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"{not_found}: {path}")
+        except Exception as e:  # native upload failure must remain a failure
+            logger.error("[%s] Failed to send %s: %s", self.name, kind, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"{not_found}: {path}")
+        except Exception as e:  # native upload failure must remain a failure
+            logger.error("[%s] Failed to send %s: %s", self.name, kind, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
 
+    async def send_image_file(
+        self, chat_id: str, image_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a local image file natively as a Discord file attachment."""
+        return await self._send_local_file(
+            chat_id, image_path, caption, not_found="Image file not found", kind="local image",
+            metadata=metadata,
+            fallback=lambda: super(DiscordAdapter, self).send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata),
+        )
 
+    async def _send_url_media(
+        self, chat_id: str, url: str, caption: Optional[str], *, kind: str,
+        filename_for, fallback, metadata: Optional[dict], error_metadata: Optional[dict],
+    ) -> SendResult:
+        """Download ``url`` and post it as a native attachment (Discord renders those inline).
+        ``fallback(metadata)`` is the base-adapter URL send (``error_metadata`` after download failure)."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not is_safe_url(url):
+            logger.warning("[%s] Blocked unsafe %s URL during Discord send_%s", self.name, kind, kind)
+            return await fallback(metadata)
+        try:
+            import aiohttp
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
+            if not channel:
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
+            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="DISCORD_PROXY"))
+            async with aiohttp.ClientSession(**_sess_kw) as session:
+                status, data, headers = await _read_url_image_with_redirect_guard(
+                    session, url, timeout=aiohttp.ClientTimeout(total=30), request_kwargs=_req_kw,
+                )
+                if status != 200:
+                    raise Exception(f"Failed to download {kind}: HTTP {status}")
+                import io
+                file = discord.File(io.BytesIO(data), filename=filename_for(headers))
+                if self._is_forum_parent(channel):
+                    return await self._forum_post_file(channel, content=(caption or "").strip(), file=file)
+                msg = await channel.send(content=caption if caption else None, file=file)
+                return SendResult(success=True, message_id=str(msg.id))
+        except ImportError:
+            logger.warning("[%s] aiohttp not installed, falling back to URL. Run: pip install aiohttp", self.name, exc_info=True)
+            return await fallback(error_metadata)
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to send %s attachment, falling back to URL: %s", self.name, kind, e, exc_info=True)
+            return await fallback(error_metadata)
 
+    async def send_image(
+        self, chat_id: str, image_url: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an image natively as a Discord file attachment."""
+        return await self._send_url_media(
+            chat_id, image_url, caption, kind="image",
+            filename_for=lambda h: f"image.{_image_ext_from_content_type(h.get('content-type', 'image/png'))}",
+            fallback=lambda md: super(DiscordAdapter, self).send_image(chat_id, image_url, caption, reply_to, metadata=md),
+            metadata=metadata, error_metadata=None,
+        )
 
+    async def send_animation(
+        self, chat_id: str, animation_url: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an animated GIF natively as a Discord file attachment."""
+        return await self._send_url_media(
+            chat_id, animation_url, caption, kind="animation", filename_for=lambda _h: "animation.gif",
+            fallback=lambda md: super(DiscordAdapter, self).send_animation(chat_id, animation_url, caption, reply_to, metadata=md),
+            metadata=metadata, error_metadata=metadata,
+        )
+
+    async def send_video(
+        self, chat_id: str, video_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a local video file natively as a Discord attachment."""
+        return await self._send_local_file(
+            chat_id, video_path, caption, not_found="Video file not found", kind="local video",
+            metadata=metadata,
+            fallback=lambda: super(DiscordAdapter, self).send_video(chat_id, video_path, caption, reply_to, metadata=metadata),
+        )
+
+    async def send_document(
+        self, chat_id: str, file_path: str, caption: Optional[str] = None,
+        file_name: Optional[str] = None, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an arbitrary file natively as a Discord attachment."""
+        return await self._send_local_file(
+            chat_id, file_path, caption, file_name=file_name, not_found="File not found", kind="document",
+            metadata=metadata,
+            fallback=lambda: super(DiscordAdapter, self).send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata),
+        )
+
+    async def send_multiple_documents(
+        self,
+        chat_id: str,
+        documents: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of documents as chunked Discord attachments. (KENSEI CUSTOM restored)
+
+        Discord permits up to 10 file attachments per message. Batches are
+        chunked accordingly. Forum channels use ``create_thread`` via
+        ``_forum_post_file``. On per-chunk failure the remaining files fall
+        back to per-document sends.
+        """
+        try:
+            channel = await self._client.fetch_channel(int(chat_id))
+        except (ValueError, TypeError):
+            return await super().send_multiple_documents(
+                chat_id, documents, metadata, human_delay)
+        except Exception as e:
+            logger.warning(
+                "[%s] Failed to resolve channel for multi-doc send: %s", self.name, e)
+            await super().send_multiple_documents(chat_id, documents, metadata, human_delay)
+            return
+
+        valid_docs: List[Tuple[str, str]] = []
+        for file_path, alt in documents:
+            if not os.path.exists(file_path):
+                logger.warning("[%s] Skipping missing document: %s", self.name, file_path)
+                continue
+            valid_docs.append((file_path, alt))
+
+        if not valid_docs:
+            return
+
+        if self._is_forum_parent(channel):
+            try:
+                await self._forum_post_file(
+                    channel,
+                    content="",
+                    files=[p for p, _a in valid_docs],
+                )
+            except Exception as e:
+                logger.warning(
+                    "[%s] Forum multi-doc send failed, per-file fallback: %s",
+                    self.name, e, exc_info=True)
+                for file_path, _alt in valid_docs:
+                    try:
+                        await self._send_file_attachment(chat_id, file_path)
+                    except Exception as per_file_err:
+                        logger.error(
+                            "[%s] Per-file fallback failed for %s: %s",
+                            self.name, file_path, per_file_err,
+                        )
+            return
+
+        # Chunk into 10-attachment messages.
+        chunks = [valid_docs[i:i + 10] for i in range(0, len(valid_docs), 10)]
+        for chunk_idx, chunk in enumerate(chunks):
+            try:
+                files = [discord.File(p, filename=os.path.basename(p)) for p, _a in chunk]
+                await channel.send(content=None, files=files)
+            except Exception as e:
+                logger.warning(
+                    "[%s] Multi-doc Discord send failed (chunk %d/%d), falling back to per-file: %s",
+                    self.name, chunk_idx + 1, len(chunks), e,
+                    exc_info=True,
+                )
+                for file_path, _alt in chunk:
+                    try:
+                        await self._send_file_attachment(chat_id, file_path)
+                    except Exception as per_file_err:
+                        logger.error(
+                            "[%s] Per-file fallback failed for %s: %s",
+                            self.name, file_path, per_file_err,
+                        )
 
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
@@ -4224,7 +5785,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not self._client:
             return {"name": "Unknown", "type": "dm"}
         try:
-            channel = await self._resolve_channel(chat_id)
+            channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 return {"name": str(chat_id), "type": "dm"}
             if isinstance(channel, discord.DMChannel):
@@ -4411,6 +5972,54 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             tree.command(name=name, description=description)(
                 self._slash_proxy(name, args, template, followup, strip=name != "insights")
             )
+        # ── KENSEI CUSTOM — explicit blog pipeline slash commands (ported) ──
+        # /blog-topic and /blog-idea drive the content engine's manual topic
+        # queue (content_engine/blog_topics/<stream>.jsonl); no upstream
+        # equivalent exists. /ideabox handlers ride the component intake path.
+        @tree.command(name="blog-topic", description="Capture a topic for the blog pipeline (next scheduled post or ad hoc)")
+        @discord.app_commands.describe(
+            topic="Free text topic, or leave empty to pull recent chat history",
+            stream="Target stream: ai, pm, or builder (default: ai)",
+        )
+        @discord.app_commands.choices(stream=[
+            discord.app_commands.Choice(name="ai", value="ai"),
+            discord.app_commands.Choice(name="pm", value="pm"),
+            discord.app_commands.Choice(name="builder", value="builder"),
+        ])
+        async def slash_blog_topic(
+            interaction: discord.Interaction,
+            topic: str = "",
+            stream: str = "ai",
+        ):
+            await self._handle_blog_topic_slash(interaction, topic, stream)
+
+        @tree.command(name="blog-idea", description="Queue a blog idea and trigger an immediate detached blog run")
+        @discord.app_commands.describe(
+            idea="Blog idea, source link, or prompt. Leave empty to pull recent chat history",
+            stream="Target stream: ai, pm, or builder (default: ai)",
+        )
+        @discord.app_commands.choices(stream=[
+            discord.app_commands.Choice(name="ai", value="ai"),
+            discord.app_commands.Choice(name="pm", value="pm"),
+            discord.app_commands.Choice(name="builder", value="builder"),
+        ])
+        async def slash_blog_idea(
+            interaction: discord.Interaction,
+            idea: str = "",
+            stream: str = "ai",
+        ):
+            await self._handle_blog_idea_slash(interaction, idea, stream)
+
+        @tree.command(name="ideabox", description="Submit a link, article, or GitHub repo to the Idea Box for triage")
+        @discord.app_commands.describe(
+            source="URL, article text, or GitHub repository link to submit",
+        )
+        async def slash_ideabox(
+            interaction: discord.Interaction,
+            source: str,
+        ):
+            await self._handle_ideabox_slash(interaction, source)
+        # ── END KENSEI CUSTOM ──
         # Auto-register COMMAND_REGISTRY + plugin commands not yet on the tree. Native
         # commands above always survive the 100-command cap; reserve one slot for /skill.
         already_registered: set[str] = set()
@@ -4663,6 +6272,223 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
 
     # --- Thread creation helpers ---
+    # KENSEI CUSTOM (Gate 3 correction): the fork's blog topic/idea capture layer
+    # (_write_blog_topic, _collect_channel_topic_text, _launch_blog_idea_run,
+    # _handle_blog_topic_slash, _handle_blog_idea_slash) was NOT absorbed
+    # upstream-side (no upstream blog queue exists). Ported verbatim below;
+    # slash registration follows in _register_slash_commands.
+
+
+    def _write_blog_topic(self, stream: str, topic: str, interaction: discord.Interaction, priority: int = 8) -> bool:
+        """Append a topic to the content engine's manual queue file.
+
+        Returns True on success, False on failure. The topic is written as a
+        JSONL line to content_engine/blog_topics/<stream>.jsonl, which the
+        blog_router reads on the next scheduled run.
+
+        Defensive guard: reject placeholder/empty titles (for example a UI
+        default like "New Concept") at write time so they never pollute the
+        queue files.
+        """
+        import json
+        import time
+        from pathlib import Path
+
+        # Resolve the content engine path relative to the repo root.
+        # The adapter lives in plugins/platforms/discord/; content_engine is
+        # at the repo root (three levels up from the plugin dir, then
+        # content_engine/).
+        adapter_dir = Path(__file__).resolve().parent
+        repo_root = adapter_dir.parents[2]  # discord/ -> platforms/ -> plugins/ -> root
+        topics_dir = repo_root / "content_engine" / "blog_topics"
+        queue_path = topics_dir / f"{stream}.jsonl"
+
+        try:
+            title_hint = topic.strip()[:200]
+            normalized = title_hint.strip().lower()
+            if normalized in {"", "new concept", "untitled", "tbd"}:
+                logger.info(
+                    "[Discord] rejected placeholder blog topic: stream=%s by=%s raw=%r",
+                    stream, interaction.user.display_name, topic,
+                )
+                return False
+
+            topics_dir.mkdir(parents=True, exist_ok=True)
+            topic_id = f"discord-{interaction.user.id}-{int(time.time())}"
+            obj = {
+                "topic_id": topic_id,
+                "title_hint": title_hint,
+                "tags": [],
+                "priority": int(priority),
+            }
+            with open(queue_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(obj) + "\n")
+            logger.info(
+                "[Discord] blog topic queued: stream=%s id=%s by=%s",
+                stream, topic_id, interaction.user.display_name,
+            )
+            return True
+        except Exception as e:
+            logger.warning("[Discord] failed to write blog topic: %s", e)
+            return False
+
+    # ------------------------------------------------------------------
+    # Thread creation helpers
+    # ------------------------------------------------------------------
+
+    async def _collect_channel_topic_text(self, interaction: discord.Interaction) -> str:
+        """Pull recent non-bot messages from the current channel as topic text."""
+        channel = interaction.channel
+        if channel is None:
+            return ""
+        try:
+            lines = []
+            async for msg in channel.history(limit=20, oldest_first=False):
+                if msg.author == self._client.user:
+                    continue
+                if msg.content and not msg.content.startswith("/"):
+                    lines.append(f"[{msg.author.display_name}] {msg.content}")
+                if len(lines) >= 10:
+                    break
+            lines.reverse()  # chronological order
+            return "\n".join(lines)
+        except Exception as e:
+            logger.debug("[Discord] channel history pull for blog-topic failed: %s", e)
+            return ""
+
+    def _launch_blog_idea_run(self, stream: str) -> dict:
+        """Start a detached one-stream blog pipeline run and return log info."""
+        from pathlib import Path
+        import subprocess
+        import time
+
+        root = Path(os.getenv(
+            "BLOG_CONTENT_ENGINE_DIR",
+            "/home/kensei/repos/KenseiAgent/content_engine",
+        ))
+        if stream not in {"ai", "pm", "builder"}:
+            stream = "ai"
+        log_dir = root / "output" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"blog-idea-{stream}-{time.strftime('%Y%m%d-%H%M%S')}.log"
+        cmd = (
+            "set -a; . ~/.hermes/.env 2>/dev/null || true; set +a; "
+            f"cd {shlex.quote(str(root))} && "
+            f"PYTHONPATH=. ../.venv/bin/python -m blog.blog_pipeline --stream {shlex.quote(stream)}"
+        )
+        try:
+            with open(log_path, "ab") as log_fh:
+                proc = subprocess.Popen(
+                    ["bash", "-lc", cmd],
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            return {"ok": True, "pid": proc.pid, "log": str(log_path)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "log": str(log_path)}
+
+    async def _handle_blog_topic_slash(
+        self,
+        interaction: discord.Interaction,
+        topic: str,
+        stream: str,
+    ) -> None:
+        """Handle /blog-topic: capture a topic for the blog pipeline.
+
+        Accepts free text or, when text is empty, pulls the last few messages
+        from the current channel as the topic content. Writes the topic to the
+        content engine's manual topic queue (blog_topics/<stream>.jsonl) so the
+        next scheduled blog pipeline run picks it up automatically.
+        """
+        if not await self._check_slash_authorization(interaction, "/blog-topic"):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # When no topic text is provided, pull recent channel history.
+            if not topic.strip():
+                topic = await self._collect_channel_topic_text(interaction)
+                if not topic:
+                    await interaction.edit_original_response(
+                        content="No topic text provided and no recent channel history found."
+                    )
+                    return
+
+            # Write to the content engine's topic queue file.
+            written = self._write_blog_topic(stream, topic, interaction)
+            if written:
+                await interaction.edit_original_response(
+                    content=f"Blog topic captured for stream '{stream}'. "
+                    f"The next scheduled blog run will pick it up.\n"
+                    f"```\n{topic[:200]}{'...' if len(topic) > 200 else ''}\n```"
+                )
+            else:
+                await interaction.edit_original_response(
+                    content=f"Failed to write topic to the {stream} queue. Check logs."
+                )
+        except Exception as e:
+            logger.warning("[Discord] /blog-topic handler error: %s", e, exc_info=True)
+            try:
+                await interaction.edit_original_response(
+                    content=f"Blog topic capture failed: {e}"
+                )
+            except Exception:
+                pass
+
+    async def _handle_blog_idea_slash(
+        self,
+        interaction: discord.Interaction,
+        idea: str,
+        stream: str,
+    ) -> None:
+        """Handle /blog-idea: queue an idea and launch one detached stream run."""
+        if not await self._check_slash_authorization(interaction, "/blog-idea"):
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            if not idea.strip():
+                idea = await self._collect_channel_topic_text(interaction)
+                if not idea:
+                    await interaction.edit_original_response(
+                        content="No idea provided and no recent channel history found."
+                    )
+                    return
+
+            written = self._write_blog_topic(stream, idea, interaction, priority=10)
+            if not written:
+                await interaction.edit_original_response(
+                    content=f"Failed to write idea to the {stream} queue. Check logs."
+                )
+                return
+
+            launch = self._launch_blog_idea_run(stream)
+            preview = idea[:200] + ("..." if len(idea) > 200 else "")
+            if launch.get("ok"):
+                await interaction.edit_original_response(
+                    content=(
+                        f"Blog idea queued for stream `{stream}` and generation started.\n"
+                        f"Log: `{launch.get('log')}`\n"
+                        f"```\n{preview}\n```"
+                    )
+                )
+            else:
+                await interaction.edit_original_response(
+                    content=(
+                        f"Blog idea queued for stream `{stream}`, but launch failed: "
+                        f"{launch.get('error')}\n```\n{preview}\n```"
+                    )
+                )
+        except Exception as e:
+            logger.warning("[Discord] /blog-idea handler error: %s", e, exc_info=True)
+            try:
+                await interaction.edit_original_response(
+                    content=f"Blog idea failed: {e}"
+                )
+            except Exception:
+                pass
 
     async def _handle_thread_create_slash(
         self, interaction: discord.Interaction, name: str, message: str = "",
@@ -5539,6 +7365,47 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             return {"content": content, "embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build)
+        # KENSEI CUSTOM: view._message is stored by the upstream _send_prompt seam so
+        # _HermesView.on_timeout can expire the embed; ProfileGateView is registered at
+        # _define_discord_view_classes.
+
+    async def send_profile_gate(
+        self, chat_id: str, approval: dict, board: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Post an Approve / Reject prompt for a profile lifecycle approval.
+
+        KENSEI CUSTOM (restored from fork commit 863c2bbecc; the method was
+        lost in the 20260904 watcher refactor while the watcher delivery loop
+        was being restructured). Delivered by the profile-gate watcher in
+        ``gateway/kanban_watchers.py``; resolution is kanban-side via
+        ``ProfileGateView`` (``profile_lifecycle_gate`` resolve).
+        """
+        op = str(approval.get("op") or "?").upper()
+        profile = approval.get("profile") or "?"
+
+        def _build(_channel):
+            embed = discord.Embed(
+                title=f"Profile {op} requested",
+                description=approval.get("blast_summary") or f"{op} {profile}",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="Profile", value=str(profile), inline=True)
+            embed.add_field(
+                name="Requested by",
+                value=str(approval.get("requested_by") or "?"), inline=True,
+            )
+            embed.add_field(
+                name="Approval id", value=str(approval.get("id")), inline=False,
+            )
+            view = ProfileGateView(
+                approval_id=str(approval.get("id")),
+                board=board,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            return {"embed": embed, "view": view}, view
+        return await self._send_prompt(chat_id, metadata, _build, fail_log="profile-gate prompt")
 
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
@@ -6216,6 +8083,7 @@ def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
     Called at module load and after a lazy install so the classes exist whenever DISCORD_AVAILABLE."""
     global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
+    global ProfileGateView, BlogApprovalView, IdeaBoxApprovalView
 
     class _HermesView(discord.ui.View):
         """Shared plumbing for Hermes component views: allowlist auth, single-use
@@ -6433,6 +8301,159 @@ def _define_discord_view_classes() -> None:
         @discord.ui.button(label="No", style=discord.ButtonStyle.red, emoji="✗")
         async def no_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
             await self._respond(interaction, "n", discord.Color.red(), "No")
+
+    # KENSEI CUSTOM (SahilBlog / ProfileGate views): the fork's BlogApprovalView and
+    # ProfileGateView were NOT absorbed upstream (upstream never had them); the 20260904
+    # merge dropped their definitions while keeping the global declarations and the
+    # send-path seam (_blog_approval_view_from_content) — restored from commit 4e8cf99e15
+    # so live sends and the blog_approval:approve/amend/reject persistent components work.
+
+    class BlogApprovalView(_HermesView):
+        """Approve / Amend / Reject buttons for SahilBlog approval cards."""
+
+        def __init__(
+            self,
+            slug: str,
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            # 24h so Sahil has time to review the draft preview.
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=86400)
+            self.slug = slug
+
+        @staticmethod
+        def _resolve_blocking(slug: str, action: str) -> dict:
+            import os
+            import sys
+            from pathlib import Path
+
+            engine = Path(os.getenv(
+                "BLOG_CONTENT_ENGINE_DIR",
+                "/home/kensei/repos/KenseiAgent/content_engine",
+            ))
+            if str(engine) not in sys.path:
+                sys.path.insert(0, str(engine))
+            from blog.blog_approval import handle_discord_command
+            return handle_discord_command(f"!{action} {slug}")
+
+        async def _resolve(self, interaction: discord.Interaction, action: str,
+                           color: discord.Color, label: str):
+            if not await self._gate(
+                interaction, resolved_msg="This blog approval has already been resolved~",
+                unauth_msg="You're not authorised to answer this prompt~",
+            ):
+                return
+            await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
+            try:
+                result = await asyncio.to_thread(self._resolve_blocking, self.slug, action)
+            except Exception as exc:
+                logger.error("blog approval button failed: %s", exc, exc_info=True)
+                await interaction.followup.send(f"Blog approval `{action}` failed: {exc}")
+                return
+            await interaction.followup.send(result.get("message") or f"{label}: `{self.slug}`")
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, emoji="✅")
+        async def approve(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "approve", discord.Color.green(), "Approved")
+
+        @discord.ui.button(label="Amend", style=discord.ButtonStyle.grey, emoji="✏️")
+        async def amend(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "amend", discord.Color.blue(), "Amend requested")
+
+        @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, emoji="❌")
+        async def reject(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "reject", discord.Color.red(), "Rejected")
+
+        async def on_timeout(self):
+            self.resolved = True
+            self._disable_all()
+            await self._expire_embed("⏱ Prompt expired; use !approve/!amend/!reject if still needed")
+
+    class ProfileGateView(_HermesView):
+        """Two-button Approve / Reject view for PROFILE-GATE.
+
+        Gates autonomous profile CREATE / DELETE. Clicking runs the
+        kanban-side resolver (``profile_lifecycle_gate`` resolve) in a
+        worker thread: on approve the op executes and the requester task
+        closes; on reject the op never runs. Only allowlisted users can
+        click. A long timeout keeps the buttons live; if it expires the
+        approval stays pending and the operator can resolve it via the
+        CLI fallback.
+        """
+
+        def __init__(
+            self,
+            approval_id: str,
+            board: Optional[str],
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            # 24h so Sahil has time; pending row survives expiry regardless.
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=86400)
+            self.approval_id = approval_id
+            self.board = board
+
+        @staticmethod
+        def _resolve_blocking(approval_id: str, board: Optional[str], decision: str, by: str) -> dict:
+            from contextlib import nullcontext
+            from hermes_cli import kanban_db as _kb
+            from hermes_cli import profile_lifecycle_gate as _gate
+            scope = _kb.scoped_current_board(board) if board else nullcontext()
+            with scope, _kb.connect() as conn:
+                if decision == "approve":
+                    return _gate.approve(conn, approval_id, resolved_by=by)
+                return _gate.reject(conn, approval_id, resolved_by=by)
+
+        async def _resolve(self, interaction: discord.Interaction, decision: str,
+                           color: discord.Color, label: str):
+            if not await self._gate(
+                interaction, resolved_msg="This approval has already been resolved~",
+                unauth_msg="You're not authorised to answer this prompt~",
+            ):
+                return
+            await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
+
+            by = f"discord:{interaction.user.display_name}"
+            try:
+                res = await asyncio.to_thread(
+                    self._resolve_blocking, self.approval_id, self.board, decision, by,
+                )
+            except Exception as exc:
+                logger.error("profile-gate resolve failed: %s", exc, exc_info=True)
+                await interaction.followup.send(f"Profile gate {decision} failed: {exc}")
+                return
+            if decision == "approve" and not res.get("ok"):
+                await interaction.followup.send(f"Approved but the op FAILED: {res.get('error')}")
+            else:
+                verb = "executed" if decision == "approve" else "rejected"
+                await interaction.followup.send(f"Profile {res.get('op')} {res.get('profile')} {verb}.")
+            logger.info(
+                "profile-gate %s for %s by %s",
+                decision, self.approval_id, interaction.user.display_name,
+            )
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, emoji="✅")
+        async def approve(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "approve", discord.Color.green(), "Approved")
+
+        @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, emoji="❌")
+        async def reject(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "reject", discord.Color.red(), "Rejected")
+
+        async def on_timeout(self):
+            self.resolved = True
+            self._disable_all()
+            await self._expire_embed("⏱ Gate expired; resolve via CLI fallback if still needed")
 
     class ModelPickerView(_HermesView):
         """Two-step select-menu model picker: provider dropdown → model dropdown,
@@ -6791,6 +8812,12 @@ if DISCORD_AVAILABLE:
 _DISCORD_CHANNEL_TYPE_PROBE_CACHE: Dict[str, bool] = {}
 _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES = 1 * 1024 * 1024
 _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES = 8 * 1024
+# Per-route 429s on the standalone text-send path are almost always sub-second
+# (Discord's own retry_after). Honouring it inline avoids losing the message to
+# cron's tick-based retry queue, which waits ~2min between attempts and burns
+# the fixed retry budget on a limit that would have cleared in well under a
+# second. Capped so a global/unexpected limit can't stall the send path.
+_DISCORD_STANDALONE_MAX_INLINE_RETRY_SECONDS = 3.0
 
 
 def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
@@ -6799,6 +8826,31 @@ def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
 
 def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
     return _DISCORD_CHANNEL_TYPE_PROBE_CACHE.get(str(chat_id))
+
+
+def _blog_approval_slug_from_message(message: str) -> Optional[str]:
+    if "[Blog Approval Request]" not in str(message or ""):
+        return None
+    m = re.search(r"\*\*Slug:\*\*\s*`([^`]+)`", message)
+    if not m:
+        return None
+    slug = m.group(1).strip()
+    return slug or None
+
+
+def _blog_approval_components_for_message(message: str) -> Optional[list]:
+    slug = _blog_approval_slug_from_message(message)
+    if not slug:
+        return None
+    safe_slug = slug[:80]
+    return [{
+        "type": 1,
+        "components": [
+            {"type": 2, "style": 3, "label": "Approve", "emoji": {"name": "✅"}, "custom_id": f"blog_approval:approve:{safe_slug}"},
+            {"type": 2, "style": 2, "label": "Amend", "emoji": {"name": "✏️"}, "custom_id": f"blog_approval:amend:{safe_slug}"},
+            {"type": 2, "style": 4, "label": "Reject", "emoji": {"name": "❌"}, "custom_id": f"blog_approval:reject:{safe_slug}"},
+        ],
+    }]
 
 
 def _derive_forum_thread_name(message: str) -> str:
@@ -6918,6 +8970,84 @@ async def _standalone_is_forum(aiohttp, chat_id: str, json_headers: dict, sess_k
     except Exception:
         logger.debug("Failed to probe channel type for %s", chat_id, exc_info=True)
     return is_forum
+# KENSEI CUSTOM: fork's _standalone_post_json_with_429_retry / _standalone_post_multipart_
+# with_429_retry / _standalone_close_handles inline-429-retry helpers are absorbed upstream-side
+# (defined adjacent above); the cron media-batch path below reuses the multipart retry helper.
+
+
+def _standalone_close_handles(handles):
+    """Best-effort close of file handles opened for a multipart form.
+
+    Called after every POST attempt (success, 429, error) so that no file
+    handle survives into the next retry form. Exceptions are logged but never
+    propagated — a failed close on a consumed stream must not mask the real
+    POST result.
+    """
+    for _fh in handles:
+        try:
+            _fh.close()
+        except Exception as _e:
+            logger.debug("failed to close multipart file handle: %s", _e)
+
+
+async def _standalone_post_multipart_with_429_retry(
+    session, url: str, *, headers: dict, form_factory, req_kw: dict, error_label: str,
+):
+    """POST multipart FormData to Discord, retrying once inline on a 429.
+
+    Mirrors ``_standalone_post_json_with_429_retry`` but for file-attachment
+    uploads. ``form_factory`` is a zero-arg callable returning a 2-tuple
+    ``(aiohttp.FormData, list_of_open_handles)`` — a *fresh* form backed by
+    freshly opened file handles for every invocation. Returning fresh
+    handles each call is required because file streams are consumed by the
+    first POST and cannot be reused on the retry; the helper owns and
+    deterministically closes the handles from each invocation after the
+    corresponding POST completes (success, 429, or error), before a fresh
+    retry form is built. Returns (data, error) with the same contract as the
+    JSON variant.
+    """
+    handles = []
+    try:
+        form, handles = form_factory()
+        async with session.post(url, headers=headers, data=form, **req_kw) as resp:
+            if resp.status == 429:
+                body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
+                retry_after = 1.0
+                try:
+                    retry_after = min(
+                        _DISCORD_STANDALONE_MAX_INLINE_RETRY_SECONDS,
+                        max(0.1, float(json.loads(body).get("retry_after", retry_after))),
+                    )
+                except Exception:
+                    pass
+                logger.warning(
+                    "%s rate-limited (429); retrying once in %.2fs", error_label, retry_after,
+                )
+                await asyncio.sleep(retry_after)
+            else:
+                if resp.status not in {200, 201}:
+                    body = await _standalone_read_text_limited(resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES)
+                    return None, f"{error_label} ({resp.status}): {body}"
+                data = await _standalone_read_json_limited(resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES)
+                return data, None
+    finally:
+        _standalone_close_handles(handles)
+
+    # 429 path only reaches here: close first-attempt handles then build a
+    # fresh retry form with its own fresh handles.
+    retry_handles = []
+    try:
+        retry_form, retry_handles = form_factory()
+        async with session.post(url, headers=headers, data=retry_form, **req_kw) as retry_resp:
+            if retry_resp.status not in {200, 201}:
+                retry_body = await _standalone_read_text_limited(
+                    retry_resp, _DISCORD_STANDALONE_ERROR_BODY_LIMIT_BYTES,
+                )
+                return None, f"{error_label} ({retry_resp.status}): {retry_body}"
+            data = await _standalone_read_json_limited(retry_resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES)
+            return data, None
+    finally:
+        _standalone_close_handles(retry_handles)
 
 
 async def _standalone_send(
@@ -6970,6 +9100,9 @@ async def _standalone_send(
                             for idx, path in enumerate(valid_media)
                         ]
                         starter_message = {"content": (caption or message), "attachments": attachments_meta}
+                        blog_components = _blog_approval_components_for_message(message)
+                        if blog_components:
+                            starter_message["components"] = blog_components
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
                         form = aiohttp.FormData()
                         form.add_field("payload_json", payload_json, content_type="application/json")
@@ -7014,6 +9147,12 @@ async def _standalone_send(
             # One multipart upload per file; a MEDIA:<path> caption rides as the attachment message's
             # content, and caption_pending makes a missing file fall back to a plain message.
             caption_pending = bool(caption)
+            # Batch media files: Discord permits <=10 attachments per message.
+            # Chunk the valid media into batches of 10 with a 1s inter-batch
+            # delay, using _standalone_post_multipart_with_429_retry so each
+            # batch retries once inline on a 429. Safe-path filtering and
+            # file-handle cleanup are preserved per batch.
+            valid_media_paths = []
             for media_path, _is_voice in media_files:
                 if not os.path.exists(media_path):
                     warnings.append(_standalone_warn_missing_media(media_path))
@@ -7030,27 +9169,63 @@ async def _standalone_send(
                         except Exception:
                             logger.warning("Discord caption-fallback send failed for missing media")
                     continue
-                try:
+                valid_media_paths.append(media_path)
+
+            _MEDIA_CHUNK = 10
+            _INTER_BATCH_DELAY = 1.0
+            for batch_idx in range(0, len(valid_media_paths), _MEDIA_CHUNK):
+                if batch_idx > 0:
+                    await asyncio.sleep(_INTER_BATCH_DELAY)
+                batch = valid_media_paths[batch_idx:batch_idx + _MEDIA_CHUNK]
+
+                # Snapshot the caption flag *outside* the closure: assigning
+                # caption_pending inside _build_form would make it a closure
+                # local and raise UnboundLocalError on read. If the batch
+                # POST fails, caption_pending stays True so the next batch
+                # (or the missing-media fallback) still delivers the caption.
+                _include_caption = caption_pending
+
+                def _build_form(_batch=batch, _include_caption=_include_caption):
+                    # Open a fresh file handle per attachment and pass the
+                    # *open* handle directly to add_field so aiohttp streams
+                    # the bytes instead of buffering them in memory. The
+                    # helper closes these handles after the POST. Each
+                    # invocation opens its own handles so a 429 retry never
+                    # reuses a consumed stream.
                     form = aiohttp.FormData()
-                    filename = os.path.basename(media_path)
-                    if caption_pending:
+                    handles = []
+                    if _include_caption:
                         form.add_field(
                             "payload_json", json.dumps({"content": caption}),
                             content_type="application/json",
                         )
-                        caption_pending = False
-                    with open(media_path, "rb") as f:
-                        form.add_field("files[0]", f, filename=filename)
-                        async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
-                            data, err = await _standalone_response_json_or_error(resp, "Discord API error")
-                            if err:
-                                warning = send_error(f"Failed to send media {media_path}: {err['error']}")["error"]
-                                logger.error(warning)
-                                warnings.append(warning)
-                                continue
-                            last_data = data
+                    for _idx, media_path in enumerate(_batch):
+                        f = open(media_path, "rb")
+                        handles.append(f)
+                        form.add_field(f"files[{_idx}]", f, filename=os.path.basename(media_path))
+                    return form, handles
+
+                try:
+                    def _form_factory():
+                        return _build_form(batch)
+                    data, err = await _standalone_post_multipart_with_429_retry(
+                        session, url,
+                        headers=auth_headers,
+                        form_factory=_form_factory,
+                        req_kw=_req_kw,
+                        error_label="Discord API error",
+                    )
+                    if err:
+                        warning = send_error(f"Failed to send media batch starting at {batch[0]}: {err['error']}")["error"]
+                        logger.error(warning)
+                        warnings.append(warning)
+                        continue
+                    last_data = data
+                    caption_pending = False
                 except Exception as e:
-                    warning = send_error(f"Failed to send media {media_path}: {e}")["error"]
+                    warning = send_error(
+                        f"Failed to send media batch starting at {batch[0]}: {e}"
+                    )["error"]
                     logger.error(warning)
                     warnings.append(warning)
         if last_data is None:
@@ -7286,8 +9461,22 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     # reply_to_mode: top-level preferred, falls back to extra; YAML 1.1 parses bare 'off' as False.
     _discord_extra = discord_cfg.get("extra") if isinstance(discord_cfg.get("extra"), dict) else {}
     _discord_rtm = discord_cfg["reply_to_mode"] if "reply_to_mode" in discord_cfg else _discord_extra.get("reply_to_mode")
-    if _discord_rtm is not None:
+    if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
+        # KENSEI CUSTOM: fork's env-guard (explicit env wins over YAML) on the reply-to bridge.
         _env_default("DISCORD_REPLY_TO_MODE", "off" if _discord_rtm is False else str(_discord_rtm).lower())
+    # KENSEI CUSTOM: voice auto-join keys — top-level discord.* or extra.* values seed the
+    # adapter's PlatformConfig.extra so auto-join, voice floor TTL, and voice logging survive
+    # multiplex profile isolation (process-global env is NOT written for these).
+    _voice_keys_to_bridge = (
+        "auto_join_user_id", "auto_join_text_channel_id", "auto_join_channel_id",
+        "auto_join_delay_seconds", "auto_join_greeting_text", "auto_join_send_text_greeting",
+        "auto_leave_on_user_exit", "voice_timeout_seconds", "multi_agent_voice_channel_id",
+        "voice_floor_ttl_seconds", "voice_log_only",
+    )
+    for k in _voice_keys_to_bridge:
+        v = discord_cfg.get(k) if k in discord_cfg else _discord_extra.get(k)
+        if v is not None:
+            seeded_extra[k] = v
     # Public config keys win over the generic ``extra`` form.
     _websocket_liveness_cfg = {**_discord_extra, **discord_cfg}
     # WebSocket health knobs (REST 200 is not Gateway health); legacy liveness_* aliases accepted.
@@ -7299,6 +9488,21 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             seeded_extra[primary_key] = value
             if env_key:
                 _env_default(env_key, str(value))
+    # allow_bots / max_bot_hops: bot-to-bot co-working. Top-level preferred,
+    # falls back to extra.* (mirrors reply_to_mode above).
+    allow_bots_cfg = (
+        discord_cfg["allow_bots"] if "allow_bots" in discord_cfg
+        else _discord_extra.get("allow_bots")
+    )
+    if allow_bots_cfg is not None and not os.getenv("DISCORD_ALLOW_BOTS"):
+        os.environ["DISCORD_ALLOW_BOTS"] = str(allow_bots_cfg).lower()
+    max_bot_hops_cfg = (
+        discord_cfg["max_bot_hops"] if "max_bot_hops" in discord_cfg
+        else _discord_extra.get("max_bot_hops")
+    )
+    if max_bot_hops_cfg is not None and not os.getenv("DISCORD_MAX_BOT_HOPS"):
+        os.environ["DISCORD_MAX_BOT_HOPS"] = str(max_bot_hops_cfg)
+
     return seeded_extra or None
 
 

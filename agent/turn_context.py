@@ -653,7 +653,15 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]])
     """Hydrate process-local state from persisted history on the first resumed turn."""
     if not conversation_history:
         return
-    if not agent._todo_store.has_items():
+    # KENSEI CUSTOM (restored): hydrate ONLY while the one-shot reconciliation
+    # gate is open (or when the store predates the gate — fallback default).
+    # A durable sidecar (gate closed) already holds the truth.
+    needs_todo_reconciliation = getattr(
+        agent._todo_store,
+        "needs_history_reconciliation",
+        not agent._todo_store.has_items(),
+    )
+    if bool(needs_todo_reconciliation):
         agent._hydrate_todo_store(conversation_history)
     # A live native checkpoint arms this latch while its response is captured.  A
     # restarted agent must recover the same one-response deferral before turn-start
@@ -1071,6 +1079,44 @@ def build_turn_context(
 
     _bind_interrupt_scope(agent, ra)
     ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+
+    # KENSEI CUSTOM (restored): a terminal user may update the authoritative task list
+    # without sending a chat message. Deliver that change once through the existing
+    # API-only user context sidecar so the transcript stays clean and future
+    # prompt-cache replay remains byte-identical. Codex app-server and MoA bypass this
+    # exact sidecar path, so leave their notice pending instead of consuming it unseen.
+    if not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
+        _consume_todo_notice = getattr(
+            agent._todo_store, "consume_user_change_notice", None
+        )
+        _raw_todo_notes = (
+            _consume_todo_notice() if callable(_consume_todo_notice) else ""
+        )
+        _todo_notes = _raw_todo_notes if isinstance(_raw_todo_notes, str) else ""
+        if _todo_notes:
+            _todo_turn_content = (
+                messages[current_turn_user_idx].get("content")
+                if 0 <= current_turn_user_idx < len(messages)
+                and isinstance(messages[current_turn_user_idx], dict)
+                else None
+            )
+            if isinstance(_todo_turn_content, list):
+                append_notes_to_multimodal_content(_todo_turn_content, _todo_notes)
+            else:
+                plugin_user_context = (
+                    plugin_user_context + "\n\n" + _todo_notes
+                    if plugin_user_context
+                    else _todo_notes
+                )
+    # KENSEI CUSTOM (restored): Session identity can rotate during compression/branch
+    # recovery without a task mutation. Re-publish the current snapshot after the live
+    # row exists so the sidecar follows the same lineage as the conversation.
+    try:
+        from agent.todo_state import persist_todo_store
+
+        persist_todo_store(agent)
+    except Exception:
+        logger.debug("turn-start todo sidecar persistence skipped", exc_info=True)
 
     # Sidecar skipped for codex_app_server/MoA.
     if (

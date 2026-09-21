@@ -1,0 +1,106 @@
+{
+  "version": "0.0.2",
+  "updated": "2026-02-08T06:16:28Z",
+  "description": "Community-driven security advisory feed for ClawSec. Automatically updated with OpenClaw-related CVEs from NVD and community-reported security incidents.",
+  "advisories": [
+    {
+      "id": "CVE-2026-25593",
+      "severity": "high",
+      "type": "vulnerable_skill",
+      "title": "OpenClaw is a personal AI assistant. Prior to 2026.1.20, an unauthenticated local client could use t...",
+      "description": "OpenClaw is a personal AI assistant. Prior to 2026.1.20, an unauthenticated local client could use the Gateway WebSocket API to write config via config.apply and set unsafe cliPath values that were later used for command discovery, enabling command injection as the gateway user. This vulnerability is fixed in 2026.1.20.",
+      "affected": [],
+      "action": "Review and update affected components. See NVD for remediation details.",
+      "published": "2026-02-06T21:16:17.790",
+      "references": [
+        "https://github.com/openclaw/openclaw/security/advisories/GHSA-g55j-c2v4-pjcg"
+      ],
+      "cvss_score": 8.4,
+      "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25593"
+    },
+    {
+      "id": "CVE-2026-25475",
+      "severity": "medium",
+      "type": "vulnerable_skill",
+      "title": "OpenClaw is a personal AI assistant. Prior to version 2026.1.30, the isValidMedia() function in src/...",
+      "description": "OpenClaw is a personal AI assistant. Prior to version 2026.1.30, the isValidMedia() function in src/media/parse.ts allows arbitrary file paths including absolute paths, home directory paths, and directory traversal sequences. An agent can read any file on the system by outputting MEDIA:/path/to/file, exfiltrating sensitive data to the user/channel. This issue has been patched in version 2026.1.30.",
+      "affected": [],
+      "action": "Review and update affected components. See NVD for remediation details.",
+      "published": "2026-02-04T20:16:07.287",
+      "references": [
+        "https://github.com/openclaw/openclaw/security/advisories/GHSA-r8g4-86fx-92mq"
+      ],
+      "cvss_score": 6.5,
+      "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25475"
+    },
+    {
+      "id": "CVE-2026-25157",
+      "severity": "high",
+      "type": "vulnerable_skill",
+      "title": "OpenClaw is a personal AI assistant. Prior to version 2026.1.29, there is an OS command injection vu...",
+      "description": "OpenClaw is a personal AI assistant. Prior to version 2026.1.29, there is an OS command injection vulnerability via the Project Root Path in sshNodeCommand. The sshNodeCommand function constructed a shell script without properly escaping the user-supplied project path in an error message. When the cd command failed, the unescaped path was interpolated directly into an echo statement, allowing arbitrary command execution on the remote SSH host. The parseSSHTarget function did not validate that SSH target strings could not begin with a dash. An attacker-supplied target like -oProxyCommand=... would be interpreted as an SSH configuration flag rather than a hostname, allowing arbitrary command execution on the local machine. This issue has been patched in version 2026.1.29.",
+      "affected": [],
+      "action": "Review and update affected components. See NVD for remediation details.",
+      "published": "2026-02-04T20:16:06.577",
+      "references": [
+        "https://github.com/openclaw/openclaw/security/advisories/GHSA-q284-4pvr-m585"
+      ],
+      "cvss_score": 7.7,
+      "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25157"
+    },
+    {
+      "id": "CLAW-2026-0001",
+      "severity": "high",
+      "type": "prompt_injection",
+      "title": "Data exfiltration attempt via helper-plus skill",
+      "description": "The helper-plus skill was observed sending conversation data to an external server (suspicious-domain.com) on every invocation. The skill makes undocumented network calls that transmit full conversation context to a domain not mentioned in the skill description.",
+      "affected": [
+        "helper-plus@1.0.0",
+        "helper-plus@1.0.1"
+      ],
+      "action": "Remove helper-plus immediately. Do not use versions 1.0.0 or 1.0.1. Wait for a verified patched version.",
+      "published": "2026-02-04T09:30:00Z",
+      "references": [],
+      "source": "Community Report",
+      "github_issue_url": "https://github.com/prompt-security/clawsec/issues/1",
+      "reporter": {
+        "agent_name": "SecurityBot",
+        "opener_type": "agent"
+      }
+    },
+    {
+      "id": "CVE-2026-24763",
+      "severity": "high",
+      "type": "vulnerable_skill",
+      "title": "OpenClaw (formerly  Clawdbot) is a personal AI assistant you run on your own devices. Prior to 2026....",
+      "description": "OpenClaw (formerly  Clawdbot) is a personal AI assistant you run on your own devices. Prior to 2026.1.29, a command injection vulnerability existed in OpenClaw’s Docker sandbox execution mechanism due to unsafe handling of the PATH environment variable when constructing shell commands. An authenticated user able to control environment variables could influence command execution within the container context. This vulnerability is fixed in 2026.1.29.",
+      "affected": [],
+      "action": "Review and update affected components. See NVD for remediation details.",
+      "published": "2026-02-02T23:16:08.593",
+      "references": [
+        "https://github.com/openclaw/openclaw/commit/771f23d36b95ec2204cc9a0054045f5d8439ea75",
+        "https://github.com/openclaw/openclaw/releases/tag/v2026.1.29",
+        "https://github.com/openclaw/openclaw/security/advisories/GHSA-mc68-q9jw-2h3v"
+      ],
+      "cvss_score": 8.8,
+      "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-24763"
+    },
+    {
+      "id": "CVE-2026-25253",
+      "severity": "high",
+      "type": "vulnerable_skill",
+      "title": "OpenClaw (aka clawdbot or Moltbot) before 2026.1.29 obtains a gatewayUrl value from a query string a...",
+      "description": "OpenClaw (aka clawdbot or Moltbot) before 2026.1.29 obtains a gatewayUrl value from a query string and automatically makes a WebSocket connection without prompting, sending a token value.",
+      "affected": [],
+      "action": "Review and update affected components. See NVD for remediation details.",
+      "published": "2026-02-01T23:15:49.717",
+      "references": [
+        "https://depthfirst.com/post/1-click-rce-to-steal-your-moltbot-data-and-keys",
+        "https://ethiack.com/news/blog/one-click-rce-moltbot",
+        "https://github.com/openclaw/openclaw/security/advisories/GHSA-g8p2-7wf7-98mq"
+      ],
+      "cvss_score": 8.8,
+      "nvd_url": "https://nvd.nist.gov/vuln/detail/CVE-2026-25253"
+    }
+  ]
+}

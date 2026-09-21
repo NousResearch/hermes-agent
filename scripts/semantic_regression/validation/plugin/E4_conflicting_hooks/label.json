@@ -1,0 +1,4 @@
+{
+  "label": "fail",
+  "note": "non-deterministic hook ordering across identical runs"
+}

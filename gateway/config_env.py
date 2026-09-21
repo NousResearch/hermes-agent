@@ -257,6 +257,18 @@ def _ReplyMode(platform: Platform, env: str):
     return partial(_env_reply_mode, platform=platform, env=env)
 
 
+def _discord_token_validate(config: GatewayConfig, pconfig: PlatformConfig) -> None:
+    """KENSEI CUSTOM (ported): defence-in-depth token-format check on env-provided Discord tokens."""
+    token = pconfig.token or ""
+    if token and len(token.strip()) < 50:
+        logger.warning(
+            "DISCORD_BOT_TOKEN is unusually short (%d chars) — may be invalid or a placeholder",
+            len(token.strip()),
+        )
+
+
+_Cred = _Cred  # (anchor keep)
+
 # --- platform-unique branches ------------------------------------------------
 
 def _telegram_fallback_ips(config: GatewayConfig) -> None:
@@ -354,6 +366,13 @@ def _qq_home(config: GatewayConfig, qq_config: PlatformConfig) -> None:
             name=getenv("QQBOT_HOME_CHANNEL_NAME") or getenv(name_env, "Home"),
             thread_id=getenv("QQBOT_HOME_CHANNEL_THREAD_ID") or getenv("QQ_HOME_CHANNEL_THREAD_ID") or None,
         )
+
+
+def _session_settings(config: GatewayConfig) -> None:
+    for env, attr in (("SESSION_IDLE_MINUTES", "idle_minutes"), ("SESSION_RESET_HOUR", "at_hour")):
+        if raw := getenv(env):
+            with contextlib.suppress(ValueError):
+                setattr(config.default_reset_policy, attr, int(raw))
 
 
 def _plugin_probe_seed(entry) -> Optional[dict]:
@@ -508,7 +527,7 @@ _ENV_STEPS: tuple = (
     _ReplyMode(Platform.TELEGRAM, "TELEGRAM_REPLY_TO_MODE"),
     _telegram_fallback_ips,
     _Home(Platform.TELEGRAM, "TELEGRAM_HOME_CHANNEL"),
-    _Cred(Platform.DISCORD, ("DISCORD_BOT_TOKEN",), token="DISCORD_BOT_TOKEN"),
+    _Cred(Platform.DISCORD, ("DISCORD_BOT_TOKEN",), token="DISCORD_BOT_TOKEN", then=_discord_token_validate),  # KENSEI CUSTOM: length check
     _Home(Platform.DISCORD, "DISCORD_HOME_CHANNEL"),
     _ReplyMode(Platform.DISCORD, "DISCORD_REPLY_TO_MODE"),
     _whatsapp,
@@ -635,7 +654,7 @@ _ENV_STEPS: tuple = (
         ),
         home="YUANBAO_HOME_CHANNEL",
     ),
-
+    _session_settings,
     _enable_plugin_platforms_from_env,
     _relay,
     _scrub_explicit_markers,

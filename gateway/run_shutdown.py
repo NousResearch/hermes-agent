@@ -1084,12 +1084,25 @@ class GatewayShutdownMixin:
                 return
         # Snapshot adapters: adapter.send() can hit a fatal path (_handle_fatal) that pops the adapter
         # from self.adapters -> ``RuntimeError: dictionary changed size during iteration``.
+        # ── KENSEI CUSTOM — Discord operator-channel allowlist (ported) ──
+        # Suppress shutdown broadcasts on Discord home channels that are not
+        # Sahil's operator channels (anti-spam on non-operator servers).
+        discord_operator_channels = {"1506021205797507265"}
+        # ── END KENSEI CUSTOM ──
         for platform, adapter in list(self.adapters.items()):
             home = self.config.get_home_channel(platform)
             if not home or not home.chat_id:
                 continue
             if not self._notice_allowed(platform, "home channel"):
                 continue
+            # ── KENSEI CUSTOM — operator-channel gate (ported) ──
+            if platform.value.lower() == "discord" and str(home.chat_id) not in discord_operator_channels:
+                logger.info(
+                    "Shutdown notification suppressed for Discord home channel %s; not an operator channel",
+                    home.chat_id,
+                )
+                continue
+            # ── END KENSEI CUSTOM ──
             dedup_key = _notice_target_key(platform.value, home.chat_id, home.thread_id)
             if dedup_key in notified:
                 continue

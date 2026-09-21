@@ -31,7 +31,18 @@ def _isolate_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("SECURITY_GUIDANCE_BLOCK", raising=False)
     monkeypatch.delenv("SECURITY_GUIDANCE_DISABLE", raising=False)
+    # KENSEI (test-isolation fix): this file purges hermes_plugins/hermes_cli.plugins
+    # to force fresh discovery. Snapshot and restore the whole namespace pair so a
+    # later test file never sees split module identity (the plugin hook registry
+    # diverges otherwise — proven against test_kanban_dispatch_tick_hook).
+    # Same pattern as upstream's own #61597 fix (tests/agent/test_vision_routing.py).
+    _saved_ns = {k: v for k, v in sys.modules.items()
+                 if k.startswith(("hermes_plugins", "hermes_cli.plugins"))}
     yield hermes_home
+    for k in list(sys.modules):
+        if k.startswith(("hermes_plugins", "hermes_cli.plugins")):
+            del sys.modules[k]
+    sys.modules.update(_saved_ns)
 
 
 # ---------------------------------------------------------------------------
@@ -270,11 +281,12 @@ class TestPluginDiscovery:
         config = {"plugins": {"enabled": ["security-guidance"]}}
         (_isolate_env / "config.yaml").write_text(yaml.safe_dump(config))
 
-        # Wipe any cached plugin state from earlier tests in this worker.
-        for k in list(sys.modules):
-            if k.startswith(("hermes_plugins", "hermes_cli.plugins")):
-                del sys.modules[k]
-
+        # KENSEI (test-isolation fix): the inline purge was removed. Deleting
+        # hermes_cli.plugins mid-test made the fixture's snapshot (taken before
+        # the test body) restore a DIFFERENT object than the one the rest of the
+        # session had bound — proving split module identity for every later file
+        # (tick_hook's hook registry diverged). force=True below already
+        # re-discovers plugins, so the purge bought nothing.
         from hermes_cli.plugins import _ensure_plugins_discovered
 
         mgr = _ensure_plugins_discovered(force=True)

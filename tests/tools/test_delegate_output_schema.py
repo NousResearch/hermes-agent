@@ -133,12 +133,13 @@ class TestToolSchemaSurface:
             "properties"
         ]["tasks"]["items"]["required"]
 
-    def test_output_schema_advertised_per_task_only(self):
-        """output_schema is advertised inside tasks[] items (the only spawn
-        shape); the legacy top-level param stays handler-accepted but out
-        of the schema."""
+    def test_output_schema_advertised_for_single_and_batch_forms(self):
+        """KENSEI keeps the single-goal route model-facing alongside batch.
+
+        Both forms must therefore advertise the same optional output contract.
+        """
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        assert "output_schema" not in props
+        assert props["output_schema"]["type"] == "object"
         task_props = props["tasks"]["items"]["properties"]
         assert task_props["output_schema"]["type"] == "object"
 

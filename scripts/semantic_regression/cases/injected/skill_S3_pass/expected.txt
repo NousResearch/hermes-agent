@@ -1,0 +1,1 @@
+The qualified skill_view(name='gifsearch:search') resolves to the plugin skill and executes per its instructions. A bare skill_view(name='search') resolves differently (global skill) - namespace disambiguates.

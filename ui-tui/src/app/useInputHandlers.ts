@@ -23,7 +23,7 @@ import {
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
-import { patchTurnState } from './turnStore.js'
+import { getTurnState, patchTurnState, toggleTodoCollapsed } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
@@ -60,6 +60,19 @@ export function handleIdleHotkeyExit(
   }
 
   return actions.die()
+}
+
+export function handleTodoToggleHotkey(
+  ch: string,
+  key: { ctrl: boolean },
+  hasTodos: boolean,
+  toggle: () => void
+): boolean {
+  if (!hasTodos || !isCtrl(key, ch, 't')) {
+    return false
+  }
+  toggle()
+  return true
 }
 
 export type CtrlCComposerAction = 'clear' | 'interrupt' | 'exit'
@@ -228,6 +241,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const cancelOverlayFromCtrlC = () => {
     if (overlay.clarify) {
       return actions.answerClarify('')
+    }
+
+    // KENSEI CUSTOM: multi-question batched prompt (agent-modes) — Ctrl+C/Esc
+    // cancels with an empty answer, matching the clarify cancel path.
+    if (overlay.askUserQuestions) {
+      const req = overlay.askUserQuestions
+      patchOverlayState({ askUserQuestions: null })
+      return actions.answerAskUserQuestions({}, req.requestId)
     }
 
     if (overlay.approval) {
@@ -415,7 +436,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // skip the prompt-overlay early-return for scroll keys so they fall
       // through to the wheel / PageUp / Shift+arrow handlers below.
       const promptOverlay =
-        overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.subscription
+        overlay.approval || overlay.askUserQuestions || overlay.billing || overlay.clarify || overlay.confirm || overlay.subscription
 
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
 
@@ -508,6 +529,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (!fallThroughForScroll) {
         return
       }
+    }
+
+    if (handleTodoToggleHotkey(ch, key, getTurnState().todos.length > 0, toggleTodoCollapsed)) {
+      return
     }
 
     if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {
@@ -658,6 +683,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isCtrl(key, ch, 'o')) {
       return patchOverlayState({ modelPicker: true })
+    }
+
+    // KENSEI CUSTOM: Ctrl+P toggles the Control Room overlay. Draft text is
+    // preserved by the composer store — opening an overlay never clears input
+    // (same contract as Ctrl+O/Ctrl+X). The overlay owns arrow/Enter/Esc once
+    // open, matching the plan's navigation contract.
+    if (isCtrl(key, ch, 'p')) {
+      return patchOverlayState({ controlRoom: !overlay.controlRoom })
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

@@ -609,6 +609,39 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     assert payload["active_provider"] == "openai-codex"
 
 
+def test_auth_add_codex_oauth_carries_id_token_and_account_id(tmp_path, monkeypatch):
+    """#114201: a fresh ``hermes auth add openai-codex`` login must persist id_token/account_id
+    onto the new pool entry, or the Codex CLI rejects the built auth file at parse time
+    ("missing field id_token") for every image-generation job that entry ever serves.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": _jwt_with_email("me@example.com"),
+                "refresh_token": "rt-1", "id_token": "fresh-id-token", "account_id": "acct-fresh",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-09-20T00:00:00Z",
+        },
+    )
+    from hermes_cli.auth_commands import auth_add_command
+    from agent.credential_pool import load_pool
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+    entry = load_pool("openai-codex").entries()[0]
+    assert entry.id_token == "fresh-id-token"
+    assert entry.account_id == "acct-fresh"
+
+
 def _codex_jwt(email: str, account_id: str, subject: str) -> str:
     header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
     claims = {"email": email, "sub": subject, "https://api.openai.com/auth": {"chatgpt_account_id": account_id}}

@@ -146,6 +146,36 @@ def _extract_timeout_seconds() -> float:
         return _DEFAULT_EXTRACT_TIMEOUT_S
 
 
+async def _registry_fallback_extract(provider, fetch_urls: List[str], format: Optional[str]) -> Optional[List[dict]]:
+    """KENSEI CUSTOM (ported): retry a failed extract batch via the next registry provider.
+
+    Returns the successful results list, or None when no alternate provider
+    exists or the alternate also failed (caller then proceeds to rescue).
+    Successful fetches are cached under the fallback provider's name.
+    """
+    try:
+        from agent.web_search_registry import get_fallback_extract_provider
+        _fb = get_fallback_extract_provider(exclude=provider.name)
+    except Exception:
+        return None
+    if _fb is None:
+        return None
+    try:
+        if inspect.iscoroutinefunction(_fb.extract):
+            _fb_results = await _fb.extract(fetch_urls, format=format)
+        else:
+            _fb_results = await asyncio.to_thread(_fb.extract, fetch_urls, format=format)
+    except Exception:
+        return None
+    if not _fb_results or all(r.get("error") for r in _fb_results):
+        return None
+    for url, fetched in zip(fetch_urls, _fb_results):
+        _content = fetched.get("raw_content", "") or fetched.get("content", "")
+        if _content and not fetched.get("error"):
+            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=_fb.name)
+    return _fb_results
+
+
 async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
     """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
 
@@ -173,10 +203,24 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
             return failed
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
     except Exception as exc:  # noqa: BLE001 — candidate for rescue
+        # ── KENSEI CUSTOM — registry fallback before keyless rescue (ported) ──
+        # A failed batch first retries via another configured extract-capable
+        # provider (registry order), preserving paid-first quality; only when
+        # no alternate exists does the keyless rescue ring engage.
+        _fb_results = await _registry_fallback_extract(provider, fetch_urls, format)
+        if _fb_results is not None:
+            return _fb_results
+        # ── END KENSEI CUSTOM ──
         if not _rescue_eligible(provider):
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
+    # ── KENSEI CUSTOM — registry fallback for full-batch provider errors ──
+    if results and all(r.get("error") for r in results):
+        _fb_results = await _registry_fallback_extract(provider, fetch_urls, format)
+        if _fb_results is not None:
+            return _fb_results
+    # ── END KENSEI CUSTOM ──
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 

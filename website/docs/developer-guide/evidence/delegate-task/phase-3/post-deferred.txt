@@ -1,0 +1,102 @@
+FFFF..FF                                                                 [100%]
+=================================== FAILURES ===================================
+______________ test_units_partition_ungrouped_tasks_independently ______________
+
+    def test_units_partition_ungrouped_tasks_independently():
+        batch = _batch(
+            [
+                {"goal": "fast one"},
+                {"goal": "slow two"},
+            ]
+        )
+        partitioner = cast(Any, getattr(dispatch, "_units_of", None))
+>       assert callable(partitioner)
+E       assert False
+E        +  where False = callable(None)
+
+tests/tools/test_delegate_completion_units.py:42: AssertionError
+_________ test_units_keep_same_group_together_but_not_unrelated_tasks __________
+
+    def test_units_keep_same_group_together_but_not_unrelated_tasks():
+        batch = _batch(
+            [
+                {"goal": "group one", "group": "research"},
+                {"goal": "independent"},
+                {"goal": "group two", "group": "research"},
+            ]
+        )
+        partitioner = cast(Any, getattr(dispatch, "_units_of", None))
+>       assert callable(partitioner)
+E       assert False
+E        +  where False = callable(None)
+
+tests/tools/test_delegate_completion_units.py:56: AssertionError
+_____________ test_grouping_controls_delivery_not_execution_order ______________
+
+    def test_grouping_controls_delivery_not_execution_order():
+        batch = _batch(
+            [
+                {"goal": "slow grouped", "group": "research"},
+                {"goal": "fast unrelated"},
+                {"goal": "fast grouped", "group": "research"},
+            ]
+        )
+        partitioner = cast(Any, getattr(dispatch, "_units_of", None))
+>       assert callable(partitioner)
+E       assert False
+E        +  where False = callable(None)
+
+tests/tools/test_delegate_completion_units.py:72: AssertionError
+______ test_each_unit_uses_one_shared_slot_key_and_preserves_task_indexes ______
+
+    def test_each_unit_uses_one_shared_slot_key_and_preserves_task_indexes():
+        dispatch_unit = cast(Any, getattr(dispatch, "_dispatch_unit", None))
+>       assert callable(dispatch_unit)
+E       assert False
+E        +  where False = callable(None)
+
+tests/tools/test_delegate_completion_units.py:80: AssertionError
+____ test_partial_child_persistence_and_failed_child_notice_are_first_class ____
+
+    def test_partial_child_persistence_and_failed_child_notice_are_first_class():
+>       assert callable(getattr(ad, "record_unit_child", None))
+E       AssertionError: assert False
+E        +  where False = callable(None)
+E        +    where None = getattr(ad, 'record_unit_child', None)
+
+tests/tools/test_delegate_completion_units.py:137: AssertionError
+___________ test_profile_fallback_chain_is_scoped_to_target_profile ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7dd7fbd24790>
+
+    def test_profile_fallback_chain_is_scoped_to_target_profile(monkeypatch):
+        kwargs, _ = _build(
+            monkeypatch,
+            {
+                "name": "target-profile",
+                "config": {
+                    "fallback_providers": [
+                        {"provider": "target-provider", "model": "target-fallback"}
+                    ]
+                },
+                "soul_md": None,
+                "skills": [],
+            },
+        )
+>       assert kwargs.get("override_fallback_providers") == [
+            {"provider": "target-provider", "model": "target-fallback"}
+        ]
+E       AssertionError: assert None == [{'provider': 'target-provider', 'model': 'target-fallback'}]
+E        +  where None = <built-in method get of dict object at 0x7dd7fbef9000>('override_fallback_providers')
+E        +    where <built-in method get of dict object at 0x7dd7fbef9000> = {'task_index': 0, 'goal': 'profile task', 'context': 'task context', 'toolsets': [], ...}.get
+
+tests/tools/test_delegate_profile.py:148: AssertionError
+=========================== short test summary info ============================
+FAILED tests/tools/test_delegate_completion_units.py::test_units_partition_ungrouped_tasks_independently
+FAILED tests/tools/test_delegate_completion_units.py::test_units_keep_same_group_together_but_not_unrelated_tasks
+FAILED tests/tools/test_delegate_completion_units.py::test_grouping_controls_delivery_not_execution_order
+FAILED tests/tools/test_delegate_completion_units.py::test_each_unit_uses_one_shared_slot_key_and_preserves_task_indexes
+FAILED tests/tools/test_delegate_completion_units.py::test_partial_child_persistence_and_failed_child_notice_are_first_class
+FAILED tests/tools/test_delegate_profile.py::test_profile_fallback_chain_is_scoped_to_target_profile
+6 failed, 2 passed, 8 deselected in 1.44s
+post-deferred_exit=1

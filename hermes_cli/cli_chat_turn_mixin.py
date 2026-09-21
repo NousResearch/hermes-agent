@@ -506,6 +506,12 @@ class CLIChatTurnMixin:
             self._write_terminal_breadcrumb()
             self._pending_title = None
 
+        # KENSEI CUSTOM (G7): turn boundary — drop the peer-presence summary cache
+        # so the next prompt pill reflects sessions that opened/closed during this
+        # turn instead of a stale count (see hermes_cli/peer_presence.py).
+        from hermes_cli import peer_presence as _peer_presence_mod
+        _peer_presence_mod.clear_peer_presence_cache()
+
     def _chat_render_turn(self, turn, agent_thread, interrupt_msg):
         """Post-turn display: errors, interrupt marker, reasoning/response panels, bell, re-queues.
 

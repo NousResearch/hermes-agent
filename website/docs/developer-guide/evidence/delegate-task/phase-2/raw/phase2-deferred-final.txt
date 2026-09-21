@@ -1,0 +1,190 @@
+FFFF...FFFF..F.......F.                                                  [100%]
+=================================== FAILURES ===================================
+_________ test_per_model_entry_overlays_flat_routing_for_current_model _________
+
+routing_cfg = {'provider_routing': {'sort': 'price', 'models': {'openai/gpt-6-astra': {'only': ['openai']}, 'anthropic/claude-fable-...r': {'ignore': ['slow-provider'], 'order': ['fast-provider'], 'require_parameters': True, 'data_collection': 'deny'}}}}
+
+    def test_per_model_entry_overlays_flat_routing_for_current_model(routing_cfg):
+>       assert cch._provider_preferences_for_agent(_agent("openai/gpt-6-astra")) == {
+            "only": ["openai"],
+            "sort": "price",
+        }
+E       AssertionError: assert {'sort': 'price'} == {'only': ['op...ort': 'price'}
+E         
+E         Omitting 1 identical items, use -vv to show
+E         Right contains 1 more item:
+E         {'only': ['openai']}
+E         Use -v to get more diff
+
+tests/agent/test_per_model_provider_routing.py:56: AssertionError
+______ test_per_model_overlay_is_partial_and_preserves_unset_flat_values _______
+
+routing_cfg = {'provider_routing': {'sort': 'price', 'models': {'openai/gpt-6-astra': {'only': ['openai']}, 'anthropic/claude-fable-...r': {'ignore': ['slow-provider'], 'order': ['fast-provider'], 'require_parameters': True, 'data_collection': 'deny'}}}}
+
+    def test_per_model_overlay_is_partial_and_preserves_unset_flat_values(routing_cfg):
+        agent = _agent(
+            "qwen/qwen3-coder",
+            providers_allowed=["flat-provider"],
+            providers_ignored=["flat-ignore"],
+            providers_order=["flat-order"],
+            provider_sort="latency",
+            provider_require_parameters=False,
+            provider_data_collection="allow",
+        )
+>       assert cch._provider_preferences_for_agent(agent) == {
+            "only": ["flat-provider"],
+            "ignore": ["slow-provider"],
+            "order": ["fast-provider"],
+            "sort": "latency",
+            "require_parameters": True,
+            "data_collection": "deny",
+        }
+E       AssertionError: assert {'only': ['fl...latency', ...} == {'only': ['fl...latency', ...}
+E         
+E         Omitting 2 identical items, use -vv to show
+E         Differing items:
+E         {'order': ['flat-order']} != {'order': ['fast-provider']}
+E         {'data_collection': 'allow'} != {'data_collection': 'deny'}
+E         {'ignore': ['flat-ignore']} != {'ignore': ['slow-provider']}
+E         Right contains 1 more item:
+E         {'require_parameters': True}
+E         Use -v to get more diff
+
+tests/agent/test_per_model_provider_routing.py:79: AssertionError
+____ test_model_matching_tolerates_openrouter_prefix_and_spelling_variants _____
+
+routing_cfg = {'provider_routing': {'sort': 'price', 'models': {'openai/gpt-6-astra': {'only': ['openai']}, 'anthropic/claude-fable-...r': {'ignore': ['slow-provider'], 'order': ['fast-provider'], 'require_parameters': True, 'data_collection': 'deny'}}}}
+
+    def test_model_matching_tolerates_openrouter_prefix_and_spelling_variants(routing_cfg):
+        agent = _agent("openrouter/openai/gpt-6-astra", providers_allowed=["parent-provider"])
+>       assert cch._provider_preferences_for_agent(agent)["only"] == ["openai"]
+E       AssertionError: assert ['parent-provider'] == ['openai']
+E         
+E         At index 0 diff: 'parent-provider' != 'openai'
+E         Use -v to get more diff
+
+tests/agent/test_per_model_provider_routing.py:91: AssertionError
+____ test_delegated_target_profile_routing_does_not_leak_parent_model_rules ____
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x738135705690>
+
+    def test_delegated_target_profile_routing_does_not_leak_parent_model_rules(monkeypatch):
+        import hermes_cli.config as config_mod
+    
+        monkeypatch.setattr(
+            config_mod,
+            "load_config_readonly",
+            lambda: {"provider_routing": {"models": {"shared/model": {"only": ["target"]}}}},
+        )
+        parent = _agent("shared/model", providers_allowed=["parent"])
+>       assert cch._provider_preferences_for_agent(parent)["only"] == ["target"]
+E       AssertionError: assert ['parent'] == ['target']
+E         
+E         At index 0 diff: 'parent' != 'target'
+E         Use -v to get more diff
+
+tests/agent/test_per_model_provider_routing.py:105: AssertionError
+______________ test_units_partition_ungrouped_tasks_independently ______________
+
+    def test_units_partition_ungrouped_tasks_independently():
+        batch = _batch(
+            [
+                {"goal": "fast one"},
+                {"goal": "slow two"},
+            ]
+        )
+        partitioner = cast(Any, getattr(dispatch, "_units_of", None))
+>       assert callable(partitioner)
+E       assert False
+E        +  where False = callable(None)
+
+tests/tools/test_delegate_completion_units.py:42: AssertionError
+_________ test_units_keep_same_group_together_but_not_unrelated_tasks __________
+
+    def test_units_keep_same_group_together_but_not_unrelated_tasks():
+        batch = _batch(
+            [
+                {"goal": "group one", "group": "research"},
+                {"goal": "independent"},
+                {"goal": "group two", "group": "research"},
+            ]
+        )
+        partitioner = cast(Any, getattr(dispatch, "_units_of", None))
+>       assert callable(partitioner)
+E       assert False
+E        +  where False = callable(None)
+
+tests/tools/test_delegate_completion_units.py:56: AssertionError
+_____________ test_grouping_controls_delivery_not_execution_order ______________
+
+    def test_grouping_controls_delivery_not_execution_order():
+        batch = _batch(
+            [
+                {"goal": "slow grouped", "group": "research"},
+                {"goal": "fast unrelated"},
+                {"goal": "fast grouped", "group": "research"},
+            ]
+        )
+        partitioner = cast(Any, getattr(dispatch, "_units_of", None))
+>       assert callable(partitioner)
+E       assert False
+E        +  where False = callable(None)
+
+tests/tools/test_delegate_completion_units.py:72: AssertionError
+______ test_each_unit_uses_one_shared_slot_key_and_preserves_task_indexes ______
+
+    def test_each_unit_uses_one_shared_slot_key_and_preserves_task_indexes():
+        dispatch_unit = cast(Any, getattr(dispatch, "_dispatch_unit", None))
+>       assert callable(dispatch_unit)
+E       assert False
+E        +  where False = callable(None)
+
+tests/tools/test_delegate_completion_units.py:80: AssertionError
+____ test_partial_child_persistence_and_failed_child_notice_are_first_class ____
+
+    def test_partial_child_persistence_and_failed_child_notice_are_first_class():
+>       assert callable(getattr(ad, "record_unit_child", None))
+E       AssertionError: assert False
+E        +  where False = callable(None)
+E        +    where None = getattr(ad, 'record_unit_child', None)
+
+tests/tools/test_delegate_completion_units.py:137: AssertionError
+___________ test_profile_fallback_chain_is_scoped_to_target_profile ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x738133976290>
+
+    def test_profile_fallback_chain_is_scoped_to_target_profile(monkeypatch):
+        kwargs, _ = _build(
+            monkeypatch,
+            {
+                "name": "target-profile",
+                "config": {
+                    "fallback_providers": [
+                        {"provider": "target-provider", "model": "target-fallback"}
+                    ]
+                },
+                "soul_md": None,
+                "skills": [],
+            },
+        )
+>       assert kwargs.get("override_fallback_providers") == [
+            {"provider": "target-provider", "model": "target-fallback"}
+        ]
+E       AssertionError: assert None == [{'provider': 'target-provider', 'model': 'target-fallback'}]
+E        +  where None = <built-in method get of dict object at 0x738133984dc0>('override_fallback_providers')
+E        +    where <built-in method get of dict object at 0x738133984dc0> = {'task_index': 0, 'goal': 'profile task', 'context': 'task context', 'toolsets': [], ...}.get
+
+tests/tools/test_delegate_profile.py:148: AssertionError
+=========================== short test summary info ============================
+FAILED tests/agent/test_per_model_provider_routing.py::test_per_model_entry_overlays_flat_routing_for_current_model
+FAILED tests/agent/test_per_model_provider_routing.py::test_per_model_overlay_is_partial_and_preserves_unset_flat_values
+FAILED tests/agent/test_per_model_provider_routing.py::test_model_matching_tolerates_openrouter_prefix_and_spelling_variants
+FAILED tests/agent/test_per_model_provider_routing.py::test_delegated_target_profile_routing_does_not_leak_parent_model_rules
+FAILED tests/tools/test_delegate_completion_units.py::test_units_partition_ungrouped_tasks_independently
+FAILED tests/tools/test_delegate_completion_units.py::test_units_keep_same_group_together_but_not_unrelated_tasks
+FAILED tests/tools/test_delegate_completion_units.py::test_grouping_controls_delivery_not_execution_order
+FAILED tests/tools/test_delegate_completion_units.py::test_each_unit_uses_one_shared_slot_key_and_preserves_task_indexes
+FAILED tests/tools/test_delegate_completion_units.py::test_partial_child_persistence_and_failed_child_notice_are_first_class
+FAILED tests/tools/test_delegate_profile.py::test_profile_fallback_chain_is_scoped_to_target_profile
+10 failed, 13 passed in 1.79s
+phase2-deferred-final_exit=1

@@ -29,6 +29,8 @@ import { LiveAgentsPanel } from './agentsPanel.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { ControlRoomAttentionBadge } from './controlRoomBadge.js'
+import { ControlRoomOverlay } from './controlRoomOverlay.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
@@ -292,8 +294,20 @@ const ComposerPane = memo(function ComposerPane({
     composer.cols
   )
 
-  const promptWidth = composerPromptWidth(promptText)
+  // ── KENSEI CUSTOM: mode badge in prompt prefix ──
+  // See skill `agent-modes` for full spec.  Must survive upstream merges.
+  // NOTE: 'gods_plan' is the internal AgentMode value; user-facing label is "UltraPlan".
+  const MODE_BADGE: Record<string, string> = {
+    plan: '📋 Plan ',
+    gods_plan: '👑 UltraPlan ',
+    recon: '🔍 Recon '
+  }
+
+  const modeBadge = MODE_BADGE[ui.agentMode] || ''
+  const displayPrompt = modeBadge + promptText
+  const promptWidth = composerPromptWidth(promptText) + (modeBadge ? 2 : 0) // badge emoji ≈ 2 chars
   const promptBlank = ' '.repeat(promptWidth)
+  // ── END KENSEI CUSTOM ──
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
@@ -393,7 +407,7 @@ const ComposerPane = memo(function ComposerPane({
               <Box key={i}>
                 <Box width={promptWidth}>
                   {i === 0 ? (
-                    <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
+                    <PromptPrefix color={ui.theme.color.muted} promptText={displayPrompt} width={promptWidth} />
                   ) : (
                     <Text color={ui.theme.color.muted}>{promptBlank}</Text>
                   )}
@@ -412,11 +426,11 @@ const ComposerPane = memo(function ComposerPane({
             >
               <Box width={promptWidth}>
                 {sh ? (
-                  <PromptPrefix color={ui.theme.color.shellDollar} promptText={promptText} width={promptWidth} />
+                  <PromptPrefix color={ui.theme.color.shellDollar} promptText={displayPrompt} width={promptWidth} />
                 ) : composer.inputBuf.length ? (
                   <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
                 ) : (
-                  <PromptPrefix bold color={ui.theme.color.prompt} promptText={promptText} width={promptWidth} />
+                  <PromptPrefix bold color={ui.theme.color.prompt} promptText={displayPrompt} width={promptWidth} />
                 )}
               </Box>
 
@@ -474,6 +488,20 @@ const AgentsOverlayPane = memo(function AgentsOverlayPane() {
   )
 })
 
+const ControlRoomOverlayPane = memo(function ControlRoomOverlayPane() {
+  const { gw } = useGateway()
+  const ui = useStore($uiState)
+
+  return <ControlRoomOverlay gw={gw} onClose={() => patchOverlayState({ controlRoom: false })} t={ui.theme} />
+})
+
+const ControlRoomAttentionBadgePane = memo(function ControlRoomAttentionBadgePane() {
+  const { gw } = useGateway()
+  const ui = useStore($uiState)
+
+  return <ControlRoomAttentionBadge gw={gw} t={ui.theme} />
+})
+
 const JourneyPane = memo(function JourneyPane() {
   const { gw } = useGateway()
   const ui = useStore($uiState)
@@ -495,6 +523,7 @@ const StatusRulePane = memo(function StatusRulePane({
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
+        agentMode={ui.agentMode}
         battery={ui.battery ? ui.batteryStatus : null}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
@@ -551,10 +580,14 @@ export const AppLayout = memo(function AppLayout({
     <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1} position="relative">
         <Box flexDirection="row" flexGrow={1}>
-          {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
+          {!overlay.agents && !overlay.journey && !overlay.controlRoom && <AmbientRail side="left" />}
           {overlay.agents ? (
             <PerfPane id="agents">
               <AgentsOverlayPane />
+            </PerfPane>
+          ) : overlay.controlRoom ? (
+            <PerfPane id="control-room">
+              <ControlRoomOverlayPane />
             </PerfPane>
           ) : overlay.journey ? (
             <PerfPane id="journey">
@@ -565,17 +598,21 @@ export const AppLayout = memo(function AppLayout({
               <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
             </PerfPane>
           )}
-          {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
+          {!overlay.agents && !overlay.journey && !overlay.controlRoom && <AmbientRail side="right" />}
         </Box>
 
-        {!overlay.agents && !overlay.journey && (
+        {!overlay.agents && !overlay.journey && !overlay.controlRoom && (
           <>
             <PerfPane id="prompt">
               <PromptZone
                 cols={composer.cols}
                 onApprovalChoice={actions.answerApproval}
+                onAskUserQuestionsAnswer={actions.answerAskUserQuestions}
                 onClarifyAnswer={actions.answerClarify}
+                onClarifyBatchCancel={actions.answerClarifyBatchCancel}
+                onClarifyBatchSubmit={actions.answerClarifyBatchSubmit}
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
+                onPromptOptimizationChoice={actions.answerPromptOptimization}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
                 onVaultUnlockSubmit={actions.answerVaultUnlock}
@@ -599,7 +636,13 @@ export const AppLayout = memo(function AppLayout({
           </>
         )}
 
-        {!overlay.agents && <PetPane />}
+        {!overlay.agents && !overlay.controlRoom && <PetPane />}
+
+        {!overlay.agents && !overlay.journey && !overlay.controlRoom && (
+          <Box paddingLeft={2}>
+            <ControlRoomAttentionBadgePane />
+          </Box>
+        )}
       </Box>
 
       <ActiveWidgetSlot />

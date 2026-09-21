@@ -1,0 +1,5 @@
+[12:00:01] tool skill_manage create name=scratchskill content=<SKILL.md>
+[12:00:02] tool skill_view name=scratchskill -> returns content (immediately viewable)
+[12:00:03] tool skill_manage patch old_string=missing -> error 'old_string not found'
+[12:00:04] tool skill_manage delete name=scratchskill
+[12:00:05] tool skill_view name=scratchskill -> missing

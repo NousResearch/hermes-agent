@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Article Preview: How I use Hermes to run an agentic PR pipeline across four indie apps</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #1a1a2e;
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+               Ubuntu, Cantarell, sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.preview-banner {
+  background: linear-gradient(90deg, #e94560, #0f3460);
+  padding: 10px 20px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 10000;
+  letter-spacing: 0.5px;
+}
+.preview-banner span {
+  background: rgba(0,0,0,0.4);
+  padding: 2px 10px;
+  margin-left: 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+}
+
+/* ── Short post card (Twitter / LinkedIn) ── */
+
+.post-card {
+  max-width: 600px;
+  margin: 40px auto;
+  background: #16213e;
+  border-radius: 12px;
+  padding: 24px;
+  border: 1px solid #1a1a3e;
+}
+
+/* Twitter mockup */
+.twitter-card .avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.twitter-card .avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e94560;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 20px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.twitter-card .name-row {
+  display: flex;
+  flex-direction: column;
+}
+.twitter-card .display-name {
+  font-weight: 700;
+  font-size: 15px;
+  color: #fff;
+}
+.twitter-card .handle {
+  font-size: 13px;
+  color: #8899a6;
+}
+.twitter-card .post-body {
+  font-size: 15px;
+  line-height: 1.5;
+  color: #e1e8ed;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.twitter-card .post-meta {
+  font-size: 13px;
+  color: #8899a6;
+  border-top: 1px solid #1a1a3e;
+  padding-top: 12px;
+  margin-top: 4px;
+}
+
+/* LinkedIn mockup */
+.linkedin-card .header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.linkedin-card .avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e94560;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 20px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.linkedin-card .name-details {
+  display: flex;
+  flex-direction: column;
+}
+.linkedin-card .display-name {
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff;
+}
+.linkedin-card .headline {
+  font-size: 12px;
+  color: #8899a6;
+}
+.linkedin-card .post-body {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e1e8ed;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.linkedin-card .post-meta {
+  font-size: 12px;
+  color: #8899a6;
+  border-top: 1px solid #1a1a3e;
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+/* ── Article preview ── */
+
+.article-container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+.article-header {
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #1a1a3e;
+}
+
+.article-title {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.3px;
+  margin-bottom: 12px;
+  color: #ffffff;
+}
+
+.article-lede {
+  font-size: 16px;
+  color: #a0a0b8;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.article-meta {
+  font-size: 13px;
+  color: #8899a6;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.article-meta .pillar-tag {
+  background: #0f3460;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #e94560;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Hero image */
+.hero-image {
+  width: 100%;
+  margin-bottom: 32px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #1a1a3e;
+  position: relative;
+}
+.hero-image img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.hero-image .hero-label {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(0,0,0,0.75);
+  color: #e94560;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* Article body sections */
+.article-body {
+  font-size: 15px;
+  color: #d0d0e0;
+  line-height: 1.7;
+}
+
+.article-body h2 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 32px 0 12px;
+  color: #ffffff;
+  padding-left: 14px;
+  border-left: 3px solid #e94560;
+}
+
+.article-body h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 24px 0 10px;
+  color: #ffffff;
+}
+
+.article-body p {
+  margin-bottom: 16px;
+}
+
+.article-body a {
+  color: #e94560;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.article-body a:hover {
+  border-bottom-color: #e94560;
+}
+
+.article-body strong {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.article-body em {
+  color: #a0a0b8;
+}
+
+.article-body code {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 13px;
+  background: #0f3460;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #e94560;
+}
+
+.article-body pre {
+  background: #0f3460;
+  border: 1px solid #1a1a3e;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 20px 0;
+  overflow-x: auto;
+}
+.article-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #d0d0e0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.article-body blockquote {
+  border-left: 3px solid #e94560;
+  padding: 12px 20px;
+  margin: 20px 0;
+  background: #0f3460;
+  border-radius: 0 8px 8px 0;
+  color: #a0a0b8;
+  font-style: italic;
+}
+
+.article-body ul, .article-body ol {
+  margin: 12px 0;
+  padding-left: 24px;
+}
+.article-body li {
+  margin-bottom: 6px;
+}
+.article-body ul li::marker {
+  color: #e94560;
+}
+
+.article-body hr {
+  border: none;
+  border-top: 1px solid #1a1a3e;
+  margin: 32px 0;
+}
+
+.article-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid #1a1a3e;
+  margin: 20px 0;
+}
+
+/* ── Approval action bar ── */
+
+.approval-bar {
+  position: sticky;
+  bottom: 0;
+  background: #16213e;
+  border-top: 1px solid #1a1a3e;
+  padding: 14px 24px;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  z-index: 9998;
+  flex-wrap: wrap;
+}
+.approval-bar .draft-id {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: #8899a6;
+  margin-right: auto;
+}
+.approval-bar .approval-commands {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: #a0a0b8;
+  display: flex;
+  gap: 16px;
+}
+.approval-bar .cmd {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.approval-bar .cmd.approve {
+  color: #2ecc71;
+  background: rgba(46, 204, 113, 0.1);
+}
+.approval-bar .cmd.reject {
+  color: #e74c3c;
+  background: rgba(231, 76, 60, 0.1);
+}
+.approval-bar .cmd.amend {
+  color: #f39c12;
+  background: rgba(243, 156, 18, 0.1);
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .article-title { font-size: 24px; }
+  .article-container { padding: 24px 16px 60px; }
+  .post-card { margin: 20px 12px; }
+  .approval-bar { flex-direction: column; }
+  .approval-bar .draft-id { margin-right: 0; }
+}
+</style>
+</head>
+<body>
+
+<div class="preview-banner">
+  📰 ARTICLE PREVIEW — not live · sahil
+  <span>2026-07-07-how-i-use-hermes</span>
+</div>
+
+<div class="article-container">
+
+  <div class="article-header">
+    <h1 class="article-title">How I use Hermes to run an agentic PR pipeline across four indie apps</h1>
+    <p class="article-lede">![How I use Hermes to run an agentic PR pipeline across four indie apps](imgs/01-infographic-how-i-use-hermes.png)</p>
+    <div class="article-meta">
+      <span class="pillar-tag">build_in_public</span>
+      <span>article</span>
+      <span>07 Jul 2026</span>
+    </div>
+  </div>
+
+  
+
+  
+<div style="background:#0f3460;border-radius:8px;padding:16px 20px;margin-bottom:24px;">
+  <div style="font-size:12px;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Sections</div>
+  <ol style="margin:0;padding-left:20px;color:#d0d0e0;font-size:14px;line-height:1.8;">
+    <li>The problem: agentic speed without review is just faster slop</li>
+    <li>What Hermes actually is in this workflow</li>
+    <li>The pipeline in practice: a worked example</li>
+    <li>The tmux setup that makes this runnable</li>
+    <li>Trade-offs and where this breaks</li>
+    <li>How to apply this</li>
+  </ol>
+</div>
+
+  <div class="article-body">
+    <h2>The problem: agentic speed without review is just faster slop</h2>
+<div class="section-image"><img src="imgs/02-infographic-the-problem-agentic.png" alt="The problem: agentic speed without review is just faster slop" loading="lazy"></div>
+<p>Claude Code on its own is fast. Point it at a feature, give it context, and it produces a diff. The issue is that a diff is not a ship. A diff is a proposal. When you're running multiple panes in tmux, one agent writing a feature on Plenishd's basket-fill logic, another writing tests for MatchdayMaestro's prediction engine, the changes land fast. But nobody has checked whether the Convex schema migration is backwards-compatible, whether the Expo navigation stack still resolves, or whether the sub-agent's test file actually tests the right thing.</p>
+<p>The trap is that agentic output feels done. It looks like shipped code. It has tests. It has comments. It compiles. But &quot;it compiles&quot; is the lowest bar in software, and an AI that writes code in 30 seconds can write a schema mismatch in 30 seconds too. I've spent hours debugging issues that an AI created in minutes because I skipped review in the name of velocity.</p>
+<p>The fix isn't slower coding. It's a review layer that moves at agentic speed but applies human-grade scrutiny. That's what Hermes does in my setup.</p>
+<h2>What Hermes actually is in this workflow</h2>
+<div class="section-image"><img src="imgs/03-infographic-what-hermes-actually.png" alt="What Hermes actually is in this workflow" loading="lazy"></div>
+<p>Hermes is my custom deployment for personal AI infrastructure. I run it as a local orchestrator on WSL Ubuntu. It's not a model. It's a routing and orchestration layer that sits between me and the Anthropic API, managing context, retries, sub-agent dispatch, and now, PR review.</p>
+<p>The key architectural decision: Hermes treats every code change as a pull request, even when I'm the only person on the repo. Every change goes through the same pipeline:</p>
+<ol>
+<li><strong>Diff generation</strong> — Claude Code produces the change in a feature branch</li>
+<li><strong>Static analysis</strong> — Hermes runs the diff through structured checks</li>
+<li><strong>Agentic review</strong> — a separate Claude Code instance reviews the diff as a PR, with no context about why the change was made, only what changed</li>
+<li><strong>Human gate</strong> — I read the review, approve or reject, merge or iterate</li>
+</ol>
+<p>The critical part is step 3. The reviewing agent has no context about the feature's intent. It only sees the diff, the existing code, and the test output. This is deliberate. The agent that wrote the code is biased toward its own solution. A fresh agent with no priors catches things the writer agent rationalises away.</p>
+<h2>The pipeline in practice: a worked example</h2>
+<div class="section-image"><img src="imgs/04-infographic-the-pipeline-in.png" alt="The pipeline in practice: a worked example" loading="lazy"></div>
+<p>Here's a real scenario from last week. I was working on Plenishd's multi-store split optimisation, the feature that compares basket prices across UK supermarkets. Claude Code generated the change in a feature branch. Here's what Hermes did with it.</p>
+<h3>Step 1: Diff capture</h3>
+<p>Hermes captures the git diff and writes it to a structured context file:</p>
+<pre><code class="lang-bash"># Hermes captures the diff and metadata
+git diff main...feature/multi-store-split &gt; /tmp/hermes/pr_diff.patch
+git log main..feature/multi-store-split --oneline &gt; /tmp/hermes/pr_commits.txt
+</code></pre>
+<p>The diff file becomes the primary context for the review agent. The commit log gives it a sense of how the change evolved, which matters because a single squashed diff can hide intermediate mistakes that a multi-commit history reveals.</p>
+<h3>Step 2: Static analysis pass</h3>
+<p>Before any agent touches the diff, Hermes runs deterministic checks. These are cheap, fast, and catch the obvious stuff:</p>
+<pre><code class="lang-python"># Hermes static analysis config
+checks = [
+    &quot;tsc --noEmit&quot;,           # TypeScript type check
+    &quot;eslint --max-warnings 0&quot;, # Lint with zero tolerance
+    &quot;convex dev --typecheck&quot;,  # Convex schema validation
+    &quot;expo export --dry-run&quot;,   # Expo build validation
+]
+</code></pre>
+<p>If any of these fail, Hermes halts the pipeline and returns the error to the writing agent. No review needed. The change isn't ready. This saves the review agent's context window for actual logic issues, not missing semicolons.</p>
+<h3>Step 3: Agentic review</h3>
+<p>This is where the pipeline earns its keep. Hermes dispatches a fresh Claude Code instance with a specific prompt structure:</p>
+<pre><code class="lang-">You are reviewing a pull request. You did not write this code.
+You have no context about the feature's intent beyond what
+the diff and tests tell you.
+
+Review for:
+1. Schema compatibility — will this Convex migration break
+   existing queries?
+2. Edge cases — what inputs break this function?
+3. Test coverage — do the tests actually test the change,
+   or do they test something adjacent?
+4. State management — does this introduce race conditions
+   in the React Native navigation stack?
+
+Be specific. Cite line numbers. If you flag an issue,
+explain why it matters, not just that it exists.
+</code></pre>
+<p>The prompt is intentionally narrow. A general &quot;review this code&quot; prompt produces vague feedback. A structured prompt with specific categories produces actionable findings.</p>
+<h3>Step 4: The human gate</h3>
+<p>Hermes returns the review as a structured report. I read it. If the review flags issues, I send them back to the writing agent with the specific feedback. If the review is clean, I merge.</p>
+<p>The human gate is non-negotiable. Hermes can run steps 1 through 3 autonomously, but step 4 is mine. Not because the AI can't make good judgements, but because the consequences of a bad merge land on my users, my app store reviews, and my weekend. The AI doesn't bear that cost. I do.</p>
+
+  </div>
+
+</div>
+
+<div class="approval-bar">
+  <span class="draft-id">2026-07-07-how-i-use-hermes</span>
+  <div class="approval-commands">
+    <span class="cmd approve">!approve 2026-07-07-how-i-use-hermes</span>
+    <span class="cmd reject">!reject 2026-07-07-how-i-use-hermes [reason]</span>
+    <span class="cmd amend">!amend 2026-07-07-how-i-use-hermes [notes]</span>
+  </div>
+</div>
+
+</body>
+</html>

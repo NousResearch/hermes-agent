@@ -30,6 +30,7 @@ class _FakeAgent:
         self.session_id = session_id
         self.session_start = session_start
         self.model = "anthropic/claude-opus-4.6"
+        self._model_explicitly_selected = False
         self._last_flushed_db_idx = 7
         self._todo_store = TodoStore()
         self._todo_store.write(
@@ -175,8 +176,15 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli.agent._invalidate_system_prompt.assert_called_once()
 
 
+def test_new_clears_explicit_model_lock_when_default_model_is_unchanged(tmp_path):
+    """A fresh session is default-routed even when no runtime swap is needed."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    assert cli.model == cli.agent.model  # configured default already active
+    cli.agent._model_explicitly_selected = True
 
+    cli.process_command("/new")
 
+    assert cli.agent._model_explicitly_selected is False
 
 
 def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
@@ -297,3 +305,16 @@ def test_new_session_with_title(capsys):
     assert "My Test Session" in captured.out
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    ``_make_cli`` reloads the ``cli`` module while prompt_toolkit is stubbed
+    with MagicMocks; without a follow-up reload, cli's globals stay bound to
+    mocks and every later test touching real prompt_toolkit behaviour fails.
+    Same pattern as ``test_cli_init._make_cli``.
+    """
+    yield
+    import cli as _cli_restore
+
+    importlib.reload(_cli_restore)

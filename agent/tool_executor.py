@@ -20,6 +20,19 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+_UNSET = object()
+
+# Tools that remain reachable through the scope fence so a scoped session can
+# discover or request additional capabilities instead of becoming stuck.
+# discover or request additional capabilities instead of becoming stuck.
+_SCOPE_FENCE_ESCAPE_HATCHES = frozenset({
+    "tool_search",
+    "skill_request",
+    "tool_request",
+    "skill_view",
+    "skills_list",
+})
+
 from agent.display import (
     KawaiiSpinner,
     build_tool_preview as _build_tool_preview,
@@ -378,7 +391,71 @@ def _tool_search_scoped_names(agent) -> frozenset:
     return names
 
 
-def _canonical_tool_name(function_name: str) -> str:
+def _allowed_tool_names_for_agent(agent) -> Optional[frozenset]:
+    """Resolve and cache the tool names allowed by the agent's toolset scope."""
+    enabled = getattr(agent, "enabled_toolsets", None)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    # Include the registry generation (bumped by mark_ambient / MCP refresh) so a
+    # toolset marked ambient after this agent was first used invalidates the
+    # cache, keeping the fence in step with the schemas. (KENSEI CUSTOM — ambient-toolset tier)
+    try:
+        from tools.registry import registry as _reg
+        _gen = getattr(_reg, "_generation", 0)
+    except Exception:
+        _gen = 0
+    key = (
+        tuple(enabled) if enabled is not None else None,
+        tuple(disabled) if disabled is not None else (),
+        bool(os.environ.get("HERMES_KANBAN_TASK")),
+        _gen,
+    )
+    cached = getattr(agent, "_allowed_tool_names", _UNSET)
+    cached_key = getattr(agent, "_allowed_tool_names_key", _UNSET)
+    if cached is not _UNSET and cached_key == key:
+        return cached if cached is None or isinstance(cached, frozenset) else None
+    try:
+        import model_tools
+        names = model_tools.resolve_allowed_tool_names(enabled_toolsets=enabled, disabled_toolsets=disabled)
+        allowed = frozenset(names) if names is not None else None
+    except Exception:
+        allowed = None
+    with contextlib.suppress(Exception):
+        agent._allowed_tool_names = allowed
+        agent._allowed_tool_names_key = key
+    return allowed
+
+
+def _tool_scope_decision(agent, function_name: str) -> Optional[str]:
+    """Return the active fence mode when a tool is outside the agent scope."""
+    if function_name in _SCOPE_FENCE_ESCAPE_HATCHES:
+        return None
+    try:
+        from tools import tool_search as _ts
+        if function_name == _ts.TOOL_CALL_NAME:
+            return None
+    except Exception:
+        pass
+    allowed = _allowed_tool_names_for_agent(agent)
+    if allowed is None or function_name in allowed or function_name in _tool_search_scoped_names(agent):
+        return None
+    try:
+        # Profile seam: canonical accessor (skills_tool._current_profile was
+        # dropped in a refactor; the grant path silently no-opped without it).
+        from hermes_cli.profiles import get_active_profile_name
+        from tools import tool_grants
+        if tool_grants.has_active_grant(get_active_profile_name(), function_name):
+            return None
+    except Exception:
+        pass
+    try:
+        from agent.skill_utils import get_tool_enforcement_mode
+        mode = get_tool_enforcement_mode()
+    except Exception:
+        mode = "shadow"
+    return None if mode == "off" else mode
+
+
+def _canonical_tool_name(function_name: str):
     """Map legacy tool-name aliases BEFORE agent-loop dispatch."""
     from model_tools import _LEGACY_TOOL_ALIASES as _lta
 

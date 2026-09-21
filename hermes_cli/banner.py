@@ -138,6 +138,10 @@ def get_available_skills() -> Dict[str, List[str]]:
 # so a flaky line can't turn every startup into a request (nor stay wrong for a day).
 _UPDATE_CHECK_CACHE_SECONDS = 24 * 3600
 _UPDATE_CHECK_FAILURE_CACHE_SECONDS = 3600
+# A fork's distance to upstream moves all day and its count comes from the API rather than a fetch,
+# so re-ask at boot instead of trusting a day-old number. The floor only keeps a fleet restart from
+# spending GitHub's unauthenticated 60-requests/hour budget in one minute.
+_FORK_CHECK_CACHE_SECONDS = 30 * 60
 # Upstream tip seen by the most recent check; recorded in the cache file for the changelog.
 _last_target_rev: Optional[str] = None
 
@@ -348,7 +352,14 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     (GitHub asked us to poll the API instead). Two tip SHAs are enough — the remote one from the
     API, the local one from ``rev-parse`` — and ``_tips_behind`` recovers the exact count through
     the compare API when they differ. ``git fetch`` happens only inside ``hermes update``.
+
+    A fork short-circuits that: the API is asked about a commit only the fork knows, so it 404s and
+    the check reported nothing, forever. The fork's own ``main`` is the wrong yardstick too (HEAD
+    sits above it by design) — see ``_fork_behind`` for the count that does work.
     """
+    remotes = _banner_remotes(repo_dir)
+    if remotes["is_fork"]:
+        return _fork_behind(remotes["official"], repo_dir)
     # Probe the origin URL under the config-isolated env: a global url.<https>.insteadOf rewrite
     # otherwise makes an SSH origin masquerade as HTTPS (#104591).
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir, network=True)
@@ -406,10 +417,13 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     now = time.time()
     repo_dir = None if embedded_rev else _resolve_repo_dir()
     head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
+    fork_checkout = bool(repo_dir is not None and _banner_remotes(repo_dir)["is_fork"])
     cached = _read_json(cache_file)
     if cached is not None and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION \
             and cached.get("head") == head_rev:
         ttl = _UPDATE_CHECK_CACHE_SECONDS if cached.get("behind") is not None else _UPDATE_CHECK_FAILURE_CACHE_SECONDS
+        if fork_checkout:
+            ttl = min(ttl, _FORK_CHECK_CACHE_SECONDS)
         if now - cached.get("ts", 0) < ttl:
             return cached.get("behind")
     if embedded_rev:
@@ -436,6 +450,64 @@ def _resolve_repo_dir() -> Optional[Path]:
     return repo_dir if (repo_dir / ".git").exists() else None
 
 
+def _banner_remotes(repo_dir: Path) -> dict:
+    """Classify this checkout's remotes: ``{"official": "<remote>/main" | None, "is_fork": bool}``.
+
+    A fork's ``origin`` is the fork itself, so comparing HEAD to ``origin/main`` can never say how
+    far behind NousResearch the checkout is — the banner called the fork "upstream" and the behind
+    count stayed empty while the real distance grew. The official remote wins wherever it is
+    configured; ``origin`` is probed first so a plain clone answers in one call.
+    """
+    # Both probes run under the fetch's config-isolated env: a global url.<https>.insteadOf rewrite
+    # otherwise reports a URL the real fetch will not dial (#104591).
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir, network=True)
+    official = None
+    if _canonical_github_remote(origin_url) == _OFFICIAL_REPO_CANONICAL:
+        official = "origin/main"
+    else:
+        upstream_url = _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir, network=True)
+        if _canonical_github_remote(upstream_url) == _OFFICIAL_REPO_CANONICAL:
+            official = "upstream/main"
+    return {"official": official, "is_fork": official == "upstream/main"}
+
+
+def _is_fork_checkout() -> bool:
+    """True when this checkout's ``origin`` is a fork and the official repo is another remote."""
+    def _check() -> bool:
+        repo_dir = _resolve_repo_dir()
+        return bool(repo_dir is not None and _banner_remotes(repo_dir)["is_fork"])
+    return bool(_quiet(_check, False))
+
+
+def _behind_official(ref: str, repo_dir: Path) -> Optional[int]:
+    """Commits on the official upstream missing from HEAD, counted from its local tracking ref.
+
+    The compare API cannot count a fork: HEAD is a commit the upstream repo has never seen, so
+    ``/compare`` 404s. ``rev-list`` across the local ``<official>/main`` ref answers offline — as
+    current as the last ``git fetch``, which is the currency ``hermes update`` acts on.
+    """
+    counted = _git_count(["rev-list", "--count", f"HEAD..{ref}"], cwd=repo_dir)
+    return None if counted is None else max(counted, 0)
+
+
+def _fork_behind(ref: str, repo_dir: Path) -> Optional[int]:
+    """Commits on the official upstream missing from HEAD, re-asked on every boot.
+
+    The compare API can't take HEAD as its base — a fork's HEAD is a commit upstream has never seen
+    (404). The *merge-base* is upstream's own commit, so ``compare(merge-base...tip)`` counts every
+    upstream commit this checkout lacks: exact, boot-fresh, and still no ``git fetch`` (a pack on
+    every start is what GitHub asked forks to stop doing). Offline, the last fetch of ``ref`` is the
+    only evidence there is.
+    """
+    base = _git_stdout(["merge-base", "HEAD", ref], cwd=repo_dir)
+    tip = _upstream_main_sha()
+    if base and tip:
+        counted = _github_compare_behind(base, tip)
+        if counted is not None:
+            return counted
+    return _behind_official(ref, repo_dir)
+
+
 def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     """Return upstream/local git hashes for the startup banner.
 
@@ -460,12 +532,22 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
-    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
+    remotes = _banner_remotes(repo_dir)
+    upstream_ref = remotes["official"] or "origin/main"
+    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in (upstream_ref, "HEAD"))
     if not upstream or not local:
         # Live-git lookup failed (e.g. shallow clone without origin/main).
         return _baked_banner_state()
     ahead = _git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
-    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+    state = {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+    if remotes["is_fork"]:
+        # origin/main is the fork, not the upstream: name it as such. The distance to upstream is
+        # the update check's line (it re-asks the API at boot), so the label doesn't carry a second,
+        # slower-moving copy of the same number.
+        fork = _git_stdout(["rev-parse", "--short=8", "origin/main"], cwd=repo_dir)
+        if fork:
+            state["fork"] = fork
+    return state
 
 
 _RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
@@ -491,6 +573,13 @@ def format_banner_version_label() -> str:
         return base
     upstream, local = state["upstream"], state["local"]
     ahead = int(state.get("ahead") or 0)
+    fork = state.get("fork")
+    if fork:
+        # A fork: "upstream" is NousResearch and "fork" is where origin/main actually points.
+        label = f"{base} · fork {fork}"
+        if ahead > 0 and local != fork:
+            label += f" · local {local} (+{ahead} carried {_plural(ahead, 'commit')})"
+        return label
     if ahead <= 0 or upstream == local:
         return f"{base} · upstream {upstream}"
     return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {_plural(ahead, 'commit')})"
@@ -577,6 +666,12 @@ def _format_update_notice(behind: int) -> str:
     """Render the update warning line for a non-zero ``behind`` result."""
     from hermes_cli.config import get_managed_update_command, recommended_update_command
     if behind > 0:
+        if _is_fork_checkout():
+            # The gap is to upstream main, which `hermes update` never merges (a fork's update pulls
+            # the fork), so pointing at it here would name a command that cannot close the gap.
+            return (
+                f"[bold yellow]⚠ {behind} {_plural(behind, 'commit')} behind upstream[/]"
+                f"[dim yellow] — merge [bold]upstream/main[/bold] to catch up[/]")
         return (
             f"[bold yellow]⚠ {behind} {_plural(behind, 'commit')} behind[/]"
             f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]")

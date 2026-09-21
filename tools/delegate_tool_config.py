@@ -32,6 +32,14 @@ def _cfg() -> dict:
     return _load_config()
 
 
+def _get_synthesis_enabled() -> bool:
+    return is_truthy_value(_cfg().get("synthesis_enabled", True))
+
+
+def _get_verify_enabled() -> bool:
+    return is_truthy_value(_cfg().get("verify_enabled", True))
+
+
 # ── Subagent approval callbacks ─────────────────────────────────────────────
 # Subagent worker threads don't inherit the CLI's threading.local approval
 # callback, so prompt_dangerous_approval() would fall back to input() and
@@ -556,7 +564,6 @@ def _resolve_child_runtime(
         # A generic process command does not imply the legacy ACP protocol.
         if profile is None or profile.auth_type != "external_process":
             effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
-
     # A named provider identity is endpoint-scoped. Preserve it only when the
     # child inherits the exact parent route; an override owns its final identity.
     effective_requested_provider = effective_provider
@@ -601,3 +608,120 @@ def _resolve_child_runtime(
     if isinstance(child_max_tokens, int):
         kwargs["max_tokens"] = child_max_tokens
     return kwargs
+
+
+# ── KENSEI CUSTOM — profile model config normaliser (ported) ──
+def _profile_model_cfg(profile_cfg: dict) -> dict:
+    """Normalise a profile's ``model`` config block to dict form.
+
+    Two conventions exist in the fleet: the canonical nested dict
+    (``model: {default: ..., provider: ...}``) and a legacy flat string
+    (``model: deepseek-v4-flash`` with top-level ``provider`` /
+    ``base_url``). Both delegation paths must tolerate the flat form —
+    ``str.get()`` would AttributeError and abort profile delegation
+    outright for the 33 sub-profiles that still use it.
+    """
+    raw = (profile_cfg or {}).get("model") or {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        flat = {"default": raw.strip()}
+        for key in ("provider", "base_url", "api_key"):
+            val = (profile_cfg or {}).get(key)
+            if isinstance(val, str) and val.strip():
+                flat[key] = val
+        return flat
+    return {}
+# ── END KENSEI CUSTOM ──
+
+
+# ── KENSEI CUSTOM — registry-backed delegation fallback chain (ported) ──
+# fails over exactly like its surface. Fail-closed: any load/validation
+# error returns None and the child keeps the previous (possibly empty)
+# chain — never a loud spawn failure, never a logged credential (chain
+# entries carry provider/model/base_url only, no keys).
+_REGISTRY_CHAIN_CACHE: dict = {"mtimes": None, "chains": {}}
+
+
+def _get_delegation_fallback_enabled() -> bool:
+    """Kill switch for registry-backed delegation fallback (default on).
+
+    Set delegation.fallback_enabled: false in config.yaml to restore the
+    previous inherit-only behavior without a code revert.
+
+    ``_load_config`` is resolved through the ``tools.delegate_tool`` facade at
+    call time (not the local name) so ``patch("tools.delegate_tool._load_config")``
+    keeps intercepting — the same seam every other delegation config reader uses.
+    """
+    try:
+        from tools.delegate_tool import _load_config as _facade_load_config
+        return is_truthy_value(_facade_load_config().get("fallback_enabled", True))
+    except Exception:
+        return True
+
+
+def _registry_surface_chain(profile_name: str | None) -> Any:
+    """Return the route-registry fallback chain for a profile surface.
+
+    Reuses route_registry.generator.build_chain (perm slots → tier-correct
+    Codex → local) so delegations rotate exactly like surfaces. Returns a
+    list of {provider, model, base_url} dicts, or None when unresolvable
+    (unknown profile, unreadable/invalid registry) — callers treat None
+    as "keep current chain". Typed Any: the value flows straight into
+    AIAgent's fallback_model slot, which accepts both list and dict forms.
+    """
+    if not profile_name or not _get_delegation_fallback_enabled():
+        return None
+    try:
+        import sys as _sys
+
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _rr_pkg_dir = os.path.join(_repo_root, "route-registry")
+        if _rr_pkg_dir not in _sys.path:
+            _sys.path.insert(0, _rr_pkg_dir)
+        from route_registry.generator import (
+            build_chain,
+            load_registry,
+            load_surfaces,
+            validate_registry,
+        )
+    except Exception as exc:
+        logger.debug("Delegation fallback: generator import failed: %s", exc)
+        return None
+    try:
+        _slots_path = os.path.join(_repo_root, "route-registry", "registry", "route-slots.yaml")
+        _surf_path = os.path.join(_repo_root, "route-registry", "registry", "surfaces.yaml")
+        _mtimes = (os.path.getmtime(_slots_path), os.path.getmtime(_surf_path))
+        _cached = _REGISTRY_CHAIN_CACHE
+        if _cached["mtimes"] != _mtimes:
+            _reg = load_registry(_slots_path)
+            _by_id = validate_registry(_reg)
+            _surfs = load_surfaces(_surf_path)
+            _chains: dict = {}
+            for _s in _surfs:
+                try:
+                    _entries = build_chain(_s, _by_id, _reg)
+                except Exception as exc:
+                    logger.debug(
+                        "Delegation fallback: chain build failed for surface %r: %s",
+                        _s.get("surface"), exc,
+                    )
+                    continue
+                _slim = [
+                    {
+                        "provider": str(_e.get("provider") or ""),
+                        "model": str(_e.get("model") or ""),
+                        "base_url": str(_e.get("base_url") or ""),
+                    }
+                    for _e in _entries
+                    if str(_e.get("provider") or "") and str(_e.get("model") or "")
+                ]
+                if _slim:
+                    _chains[str(_s.get("surface") or "").lower()] = _slim
+            _cached["chains"] = _chains
+            _cached["mtimes"] = _mtimes
+        return _cached["chains"].get(str(profile_name).lower())
+    except Exception as exc:
+        logger.debug("Delegation fallback: registry chain resolve failed: %s", exc)
+        return None
+# ── END KENSEI CUSTOM ──

@@ -18,9 +18,8 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
-
 import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
-import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
+import type { AgentMode, ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { turnController } from './turnController.js'
@@ -229,6 +228,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       writeActiveSessionFile(storedSid)
       patchUiState({
+        agentMode: (info?.agent_mode || 'auto') as AgentMode,
         info,
         sid: r.session_id,
         status: info?.version ? 'ready' : 'starting agent…',
@@ -359,10 +359,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        return gw
-          .request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+  return gw.request<SessionResumeResult & { info: SessionInfo }>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
-            const r = asRpcResult<SessionResumeResult>(raw)
+            const r = asRpcResult<SessionResumeResult & { info: SessionInfo }>(raw)
 
             if (!r) {
               sys('error: invalid response: session.resume')
@@ -383,6 +382,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
             writeActiveSessionFile(storedSid)
             patchUiState({
+              agentMode: (info?.agent_mode || 'auto') as AgentMode,
               busy: running,
               info,
               sid: r.session_id,

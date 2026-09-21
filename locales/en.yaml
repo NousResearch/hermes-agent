@@ -436,6 +436,7 @@ gateway:
     no_data:                  "No usage data available for this session."
     unknown_subcommand:       "Unknown /usage subcommand: `{args}`. Try `/usage` or `/usage reset [--force]`."
     reset_wrong_provider:     "Banked usage resets are only available on the openai-codex provider. Switch with `/model` first."
+    reset_no_credential:      "⚠️ Cannot redeem a reset credit without an active account credential. Send a message to establish the active account, then run `/usage reset`."
 
   credits:
     not_logged_in:            "Not logged into Nous Portal. Log in to see your credit balance and top up."

@@ -644,7 +644,14 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
 def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool = False) -> None:
     """Persist ``agent._cached_system_prompt`` to the session row; failures log at WARNING
     (with ``failure_message``) because the gateway path (fresh AIAgent per turn) reads
-    this row every turn, so a silent failure breaks prefix-cache reuse."""
+    this row every turn, so a silent failure breaks prefix-cache reuse.
+
+    KENSEI CUSTOM (ported): thundering-herd recovery. SessionDB._execute_write already
+    retries internally (15 attempts, 20-150ms jitter); under a genuine herd (several cron
+    sessions starting on the same tick) that budget can still be exhausted, so a
+    ``locked``/``busy`` failure re-enters the same 15-attempt call once more after a
+    longer pause (worst case ~5s total) rather than touching the shared _execute_write
+    path used by every other write in the system."""
     if not agent._session_db:
         return
     try:
@@ -653,7 +660,35 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
             from tools.mcp_tool_agent import persist_agent_tool_names
             persist_agent_tool_names(agent)
     except Exception as exc:
-        logger.warning(failure_message, agent.session_id, exc)
+        # ── KENSEI CUSTOM — thundering-herd retry (ported) ──
+        retried = False
+        retry_exc = None
+        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            import random
+
+            time.sleep(0.3 + random.uniform(0, 0.2))
+            try:
+                agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+                if persist_tools:
+                    from tools.mcp_tool_agent import persist_agent_tool_names
+                    persist_agent_tool_names(agent)
+                retried = True
+            except Exception as retry_err:
+                retry_exc = retry_err
+        # ── END KENSEI CUSTOM ──
+        if retried:
+            logger.debug(
+                "Session DB update_system_prompt recovered on retry for session %s "
+                "(original error: %s)",
+                agent.session_id, exc,
+            )
+        else:
+            logger.warning(failure_message, agent.session_id, exc)
+            if retry_exc is not None:
+                logger.debug(
+                    "Session DB update_system_prompt retry also failed for session %s: %s",
+                    agent.session_id, retry_exc,
+                )
 
 
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
@@ -862,6 +897,48 @@ _CODEX_INCOMPLETE_NUDGE = (
     "visible answer or tool call. Do not keep thinking. Produce your final answer as plain text "
     "now (or make the tool call you were planning).]"
 )
+
+# Providers that expose a reasoning-only chat-completions response (not a
+# replayable Responses reasoning item) need a changed next request. The
+# thinking-only assistant stub is deliberately dropped from the API copy for
+# strict OpenAI-compatible servers, so merely appending it reissues the same
+# user prompt and can deterministically exhaust retries before fallback.
+_THINKING_ONLY_VISIBLE_ANSWER_NUDGE = (
+    "[System: You have completed reasoning for the request above. Now produce "
+    "the visible answer or required tool call. Do not continue reasoning.]"
+)
+
+
+def _explicit_turbohaul_local_lock(agent) -> bool:
+    """Return whether empty-response fallback is locked to an explicit local pick."""
+    if not getattr(agent, "_model_explicitly_selected", False):
+        return False
+
+    def _slug(value) -> str:
+        text = str(value or "").strip().lower()
+        if text.startswith("custom:"):
+            text = text.split(":", 1)[1]
+        return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+
+    identities = {
+        _slug(getattr(agent, "provider", "")),
+        _slug(getattr(agent, "requested_provider", "")),
+    }
+    if "turbohaul-local" in identities:
+        return True
+
+    # Runtime resolution can collapse a named custom provider to ``custom``.
+    # Reverse-resolve the exact configured endpoint; never substring-match URLs.
+    try:
+        from hermes_cli.runtime_provider import canonical_custom_identity
+
+        canonical = canonical_custom_identity(
+            base_url=getattr(agent, "base_url", None),
+            model=getattr(agent, "model", None),
+        )
+    except Exception:
+        canonical = None
+    return _slug(canonical) == "turbohaul-local"
 
 
 # Re-prompt after an acknowledgment-only Codex/Responses reply.
@@ -1505,6 +1582,48 @@ def _run_conversation_turn(
     # for on_turn_complete() stays None on turns that never reach a response.
     agent._delivered_interim_texts = set()
     agent._incremental_persistence_failed = False
+    # Plugin hook: pre_user_message — fires on CLI/TUI surfaces before
+    # the message is appended to history. Mirrors pre_gateway_dispatch.
+    # First non-None action wins; rewrite replaces user_message and
+    # original_user_message; skip drops the turn with no LLM call.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _pre_results = _invoke_hook(
+            "pre_user_message",
+            message=user_message,
+            session_id=agent.session_id,
+            platform=getattr(agent, "platform", None) or "cli",
+            model=agent.model,
+        )
+        for _r in _pre_results:
+            if not isinstance(_r, dict):
+                continue
+            _action = _r.get("action")
+            if _action == "skip":
+                logger.info(
+                    "pre_user_message: turn skipped (%s)",
+                    _r.get("reason", "no reason given"),
+                )
+                return {
+                    "final_response": "",
+                    "messages": messages,
+                    "completed": True,
+                    "api_calls": 0,
+                    "skipped": True,
+                    "skip_reason": _r.get("reason", ""),
+                }
+            if _action == "rewrite":
+                _new_text = _r.get("text", "")
+                if isinstance(_new_text, str) and _new_text.strip():
+                    user_message = _new_text
+                    original_user_message = _new_text
+                    break
+    except Exception as exc:
+        logger.warning("pre_user_message hook failed: %s", exc)
+    # Cause of the most recent persistence failure this turn ('locked',
+    # 'disk', or 'unknown' — see hermes_state.classify_persistence_error).
+    # Reset alongside the failure flag so a lock-contention diagnosis from a
+    # previous turn can never leak into this turn's user-facing explanation.
     agent._last_persistence_error_cause = None
     agent._compression_adoption_failed = False
     agent._ephemeral_reasoning_off = False
@@ -1678,7 +1797,6 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
         agent._flush_messages_to_session_db(messages)
     except Exception:
         logger.debug("failed-turn boundary not written", exc_info=True)
-
 
 __all__ = ["run_conversation"]
 

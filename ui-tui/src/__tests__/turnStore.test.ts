@@ -35,7 +35,7 @@ describe('turnStore live progress helpers', () => {
     expect(getTurnState().todos).toEqual([])
   })
 
-  it('archives incomplete todos with an incomplete flag so the hint renders', () => {
+  it('archives incomplete todos but keeps the live anchor visible for continuation', () => {
     patchTurnState({
       todos: [
         { content: 'cook', id: 'cook', status: 'completed' },
@@ -48,7 +48,20 @@ describe('turnStore live progress helpers', () => {
     expect(archived).toHaveLength(1)
     expect(archived[0]!.todoIncomplete).toBe(true)
     expect(archived[0]!.todos?.map(t => t.id)).toEqual(['cook', 'serve', 'eat'])
-    expect(getTurnState().todos).toEqual([])
+    expect(getTurnState().todos.map(t => t.id)).toEqual(['cook', 'serve', 'eat'])
+  })
+
+  it('does not archive the same unfinished snapshot twice', () => {
+    patchTurnState({
+      todos: [
+        { content: 'serve', id: 'serve', status: 'in_progress' },
+        { content: 'eat', id: 'eat', status: 'pending' }
+      ]
+    })
+
+    expect(archiveTodosAtTurnEnd()).toHaveLength(1)
+    expect(archiveTodosAtTurnEnd()).toEqual([])
+    expect(getTurnState().todos).toHaveLength(2)
   })
 
   it('returns nothing when there are no todos at turn end', () => {

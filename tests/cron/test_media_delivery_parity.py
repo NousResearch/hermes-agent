@@ -171,10 +171,13 @@ class TestLiveAdapterMediaFailuresSurfaced:
         class FailingAdapter:
             platform = None
 
-            async def send_document(self, chat_id, file_path, metadata=None):
-                from types import SimpleNamespace
-
-                return SimpleNamespace(success=False, error="upload rejected")
+            # KENSEI fork routes documents through send_multiple_documents
+            # (doc batching), not per-file send_document. Raise here so the
+            # scheduler's batch path surfaces the failure to its caller.
+            async def send_multiple_documents(
+                self, chat_id, documents, metadata=None, human_delay=0.0
+            ):
+                raise RuntimeError("upload rejected")
 
         loop = asyncio.new_event_loop()
         try:

@@ -2,9 +2,28 @@ import { Box, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
 import { countPendingTodos } from '../lib/liveProgress.js'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { todoGlyph, todoTone, todoTree } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
 import type { TodoItem } from '../types.js'
+
+const MAX_VISIBLE_TODOS = 7
+const displayContent = (content: string) => stripAnsi(content).trim().replace(/\s+/g, ' ')
+
+const todoWindow = (todos: TodoItem[]) => {
+  if (todos.length <= MAX_VISIBLE_TODOS) {
+    return { hidden: 0, rows: todos }
+  }
+
+  const runningIndex = todos.findIndex(todo => todo.status === 'in_progress')
+  const pendingIndex = todos.findIndex(todo => todo.status === 'pending')
+  const anchor = Math.max(0, runningIndex >= 0 ? runningIndex : pendingIndex)
+  let start = Math.max(0, anchor - 1)
+  const end = Math.min(todos.length, start + MAX_VISIBLE_TODOS)
+  start = Math.max(0, end - MAX_VISIBLE_TODOS)
+
+  return { hidden: todos.length - (end - start), rows: todos.slice(start, end) }
+}
 
 const rowColor = (t: Theme, status: TodoItem['status']) => {
   const tone = todoTone(status)
@@ -50,20 +69,33 @@ export const TodoPanel = memo(function TodoPanel({
     return null
   }
 
-  const done = todos.filter(todo => todo.status === 'completed').length
+  const counted = todos.filter(todo => todo.status !== 'cancelled')
+  const done = counted.filter(todo => todo.status === 'completed').length
   const pending = countPendingTodos(todos)
+  const current =
+    todos.find(todo => todo.status === 'in_progress') ??
+    todos.find(todo => todo.status === 'pending') ??
+    todos.at(-1)
+  const window = todoWindow(todos)
 
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Box onClick={handleToggle}>
-        <Text color={t.color.muted}>
+        <Text color={t.color.muted} wrap="truncate-end">
           <Text color={t.color.accent}>{effectiveCollapsed ? '▸ ' : '▾ '}</Text>
           <Text bold color={t.color.text}>
             Todo
           </Text>{' '}
           <Text color={t.color.statusFg} dim>
-            ({done}/{todos.length})
+            ({done}/{counted.length})
           </Text>
+          {effectiveCollapsed && current && (
+            <Text color={rowColor(t, current.status)}>
+              {' · '}
+              {todoGlyph(current.status)} {displayContent(current.content)}
+              {onToggle ? ' · Ctrl+T' : ''}
+            </Text>
+          )}
           {incomplete && pending > 0 && (
             <Text color={t.color.muted} dim>
               {' '}
@@ -88,6 +120,11 @@ export const TodoPanel = memo(function TodoPanel({
               </Box>
             )
           })}
+          {window.hidden > 0 && (
+            <Text color={t.color.muted} dim>
+              … +{window.hidden} more
+            </Text>
+          )}
         </Box>
       )}
     </Box>

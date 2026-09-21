@@ -1,0 +1,65 @@
+model:
+  default: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+- provider: openrouter
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  base_url: https://openrouter.ai/api/v1
+toolsets:
+- hermes-cli
+- file
+- kanban
+agent:
+  max_turns: 35
+  reasoning_effort: low
+terminal:
+  backend: local
+  cwd: /home/kensei
+tts:
+  provider: kenseivoice
+  edge:
+    voice: en-US-AriaNeural
+  voice: pocket:azelma
+  speed: 1.3
+discord:
+  require_mention: true
+  free_response_channels: 1506022800190607370,1506021205797507265
+  allowed_channels: ''
+  auto_thread: true
+  reactions: true
+  channel_prompts: {}
+  extra:
+    allow_bots: mentions
+    gateway_restart_notification: false
+    auto_join_user_id: 797682085224513547
+    auto_join_text_channel_id: 1506022800190607370
+    auto_join_greeting_text: "Hey, it's Misa-Misa. What's up? How can I help?"
+    voice_log_only: true
+    auto_leave_on_user_exit: true
+    voice_timeout_seconds: 900
+  server_actions: ''
+checkpoints:
+  enabled: true
+  max_snapshots: 3
+kanban:
+  dispatch_in_gateway: false
+cron:
+  ticker_enabled: false
+plugins:
+  enabled:
+    - kenseivoice
+skills:
+  always_skills:
+  - kensei-intake
+  - kanban-worker
+  - kensei-todo-write
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - kensei-intake
+  - kanban-worker
+  enforcement_mode: enforce

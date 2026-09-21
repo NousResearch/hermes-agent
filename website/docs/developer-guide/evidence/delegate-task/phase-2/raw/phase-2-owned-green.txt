@@ -1,0 +1,3 @@
+...........                                                              [100%]
+11 passed, 1 deselected in 1.40s
+phase2_owned_green_exit=0

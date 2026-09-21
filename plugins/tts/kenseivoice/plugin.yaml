@@ -1,0 +1,3 @@
+name: kenseivoice
+version: 0.1.0
+description: Local CPU TTS for the mesh bots — per-persona voices via Kokoro (onnx) and Pocket TTS, selected as "engine:voice".

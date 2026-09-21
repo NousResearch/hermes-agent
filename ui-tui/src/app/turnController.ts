@@ -24,7 +24,7 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
-import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
+import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState, todoSignature } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const INTERRUPT_COOLDOWN_MS = 1500
@@ -461,7 +461,12 @@ class TurnController {
     const todos = parseTodos(value)
 
     if (todos !== null) {
-      patchTurnState({ todos })
+      const state = getTurnState()
+      const changed = todoSignature(state.todos) !== todoSignature(todos)
+      patchTurnState({
+        ...(changed ? { todoArchiveSignature: '' } : {}),
+        todos
+      })
     }
   }
 

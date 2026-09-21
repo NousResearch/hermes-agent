@@ -19,6 +19,7 @@ from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
+from tools.kanban_tools_schemas import _board_schema_prop, _DESC_TASK_ID_DEFAULT  # KENSEI CUSTOM: schema helper used by restored schemas
 from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
@@ -165,7 +166,7 @@ def _kanban_handler(tool_name: str) -> Callable:
 def _reject_delegated_child_mutation(tool_name: str) -> None:
     """A delegate_task child shares the parent's process, so inherited HERMES_KANBAN_*
     env is not proof of ownership: it may report findings but must not mutate."""
-    if _delegation_ctx("is_delegated_child_process_context", False):
+    if _is_delegated_child_context():
         raise _Reject(
             f"{tool_name} refused: delegate_task child agents are not Kanban run owners. "
             "Return findings to the parent agent; the dispatcher worker or an explicitly "
@@ -1081,11 +1082,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         except Exception:
             notifier_profile = "default"
     delivery_metadata: dict[str, Any] = {
-        k: v for k, v in (
-            ("thread_id", thread_id), ("chat_type", chat_type),
-            ("scope_id", env("HERMES_SESSION_SCOPE_ID", "")),
-            ("parent_chat_id", env("HERMES_SESSION_PARENT_CHAT_ID", "")),
-        ) if v}
+        k: v for k, v in (("thread_id", thread_id), ("chat_type", chat_type)) if v}
     if (platform.lower() == "telegram" and thread_id
             and (chat_type or "").lower() in {"dm", "direct", "private"}):
         delivery_metadata["telegram_dm_topic_reply_fallback"] = True
@@ -1143,7 +1140,30 @@ def _handle_unblock(args: dict, **kw) -> str:
     tid = str(tid)
     _enforce_worker_task_ownership(tid)
     with _board(args.get("board")) as (kb, conn):
-        _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
+        if not kb.unblock_task(conn, tid):
+            # ── KENSEI CUSTOM — decision-gated refusal diagnostics (ported) ──
+            # Distinguish decision-gated refusals from generic "not blocked"
+            # so operators get an actionable message.
+            gated_row = conn.execute(
+                "SELECT status, block_kind, escalation_target FROM tasks WHERE id = ?",
+                (tid,),
+            ).fetchone()
+            if gated_row is None:
+                return _err(f"could not unblock {tid} (not found)")
+            status = gated_row["status"]
+            block_kind = gated_row["block_kind"]
+            escalation = gated_row["escalation_target"]
+            if status == "decision-needed":
+                return _err(
+                    f"task {tid} is in 'decision-needed' state "
+                    f"(escalation_target={escalation!r}); a human decision is "
+                    f"required — use 'hermes kanban set-status' to advance it directly")
+            if status == "blocked" and block_kind in getattr(kb, "DECISION_BLOCK_KINDS", ()) and escalation:
+                return _err(
+                    f"task {tid} is decision-gated (block_kind={block_kind!r}, "
+                    f"escalation_target={escalation!r}); a human decision is required")
+            # ── END KENSEI CUSTOM ──
+            return _err(f"could not unblock {tid} (not blocked or unknown)")
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 
@@ -1188,3 +1208,943 @@ for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode
     registry.register(name=_name, toolset="kanban", schema=_sch, handler=_handler, emoji=_emoji,
                       check_fn=_gate)
+
+
+# ── KENSEI CUSTOM — fork kanban tools ported post-refactor (see merge run log) ──
+
+def _try_json_error(r) -> str:
+    try:
+        err = _json.loads(r.stdout)
+        return err.get("error", r.stderr or "unknown error")
+    except Exception:
+        return r.stderr or r.stdout or "unknown error"
+
+
+KANBAN_COMPLETE_PIPELINE_SCHEMA = {
+    "name": "kanban_complete_pipeline",
+    "description": (
+        "Complete a pipeline-stage task (research/prd/spec audit) and "
+        "return it to its originating stage so the gate can re-check on "
+        "the next dispatcher tick.  Use this when you have written the "
+        "stage artifact (research-brief.md, prd.md, spec.md) and want "
+        "the pipeline to advance.  Do NOT use kanban_complete — that "
+        "would mark the task done and break the pipeline."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": (
+                    "The task id.  Defaults to HERMES_KANBAN_TASK."
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "Human-readable summary of what was done (preferred "
+                    "over result for handoff context)."
+                ),
+            },
+            "result": {
+                "type": "string",
+                "description": (
+                    "The raw result / output produced by this stage."
+                ),
+            },
+            "board": {
+                "type": "string",
+                "description": "Board slug (e.g. apps, research). Auto-detected if omitted.",
+            },
+        },
+    },
+}
+
+
+def _handle_complete_pipeline(args: dict, **kw) -> str:
+    """Return a pipeline worker to its originating stage after writing the artifact."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    summary = args.get("summary")
+    result = args.get("result")
+    if not (summary or result):
+        return tool_error(
+            "provide at least one of: summary (preferred), result"
+        )
+    board = args.get("board")
+    try:
+        kb_mod, conn = _connect(board=board)
+        try:
+            ok = kb_mod.complete_pipeline_task(
+                conn, tid,
+                result=result, summary=summary,
+            )
+            if not ok:
+                return tool_error(
+                    f"could not complete pipeline task {tid} (not running or not a pipeline task)"
+                )
+            run = kb_mod.latest_run(conn, tid)
+            return _ok(task_id=tid, run_id=run.id if run else None)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_complete_pipeline: {e}")
+    except Exception as e:
+        logger.exception("kanban_complete_pipeline failed")
+        return tool_error(f"kanban_complete_pipeline: {e}")
+
+
+registry.register(
+    name="kanban_complete_pipeline",
+    toolset="kanban",
+    schema=KANBAN_COMPLETE_PIPELINE_SCHEMA,
+    handler=_handle_complete_pipeline,
+    check_fn=_check_kanban_mode,
+    emoji="🔁",
+)
+
+
+KANBAN_APPROVE_SCHEMA = {
+    "name": "kanban_approve",
+    "description": (
+        "Reviewer tool: terminate a review with one of three outcomes. "
+        "`terminal` (-> done; optional follow_up_spec lands a child in "
+        "backlog). `chained` (stays in review, reassigned to "
+        "next_reviewer). `conditional` (-> todo, assignee pinned to the "
+        "original worker for a small fix). Approver guard rejects "
+        "self-approval: first-pass approver cannot equal the most "
+        "recent worker; chained approver cannot equal the previous "
+        "reviewer. Chain capped at kanban.max_review_passes."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id in the review column.",
+            },
+            "outcome": {
+                "type": "string",
+                "enum": ["terminal", "chained", "conditional"],
+                "description": (
+                    "Approval mode. `terminal` completes the task. "
+                    "`chained` hands off to next_reviewer. "
+                    "`conditional` returns to todo with the original "
+                    "worker pinned."
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": "Signoff note recorded on the run + event.",
+            },
+            "follow_up_spec": {
+                "type": "object",
+                "description": (
+                    "Only valid with outcome='terminal'. Creates a new "
+                    "task in the `backlog` column linked under the "
+                    "approved task. Required fields: title, assignee. "
+                    "Optional: body, theme, sub_goals (list)."
+                ),
+                "properties": {
+                    "title": {"type": "string"},
+                    "assignee": {"type": "string"},
+                    "body": {"type": "string"},
+                    "theme": {"type": "string"},
+                    "sub_goals": {"type": "array", "items": {"type": "string"}},
+                },
+            },
+            "next_reviewer": {
+                "type": "string",
+                "description": (
+                    "Required for outcome='chained'. Profile name of "
+                    "the next reviewer; must not equal the current "
+                    "approver."
+                ),
+            },
+            "comment": {
+                "type": "string",
+                "description": (
+                    "Optional for outcome='conditional'. Appended to "
+                    "the task as a comment so the pinned worker reads "
+                    "the requested change on their next claim."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "outcome"],
+    },
+}
+
+
+def _approver_profile_from_env() -> Optional[str]:
+    raw = os.environ.get("HERMES_PROFILE")
+    if not raw:
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
+def _handle_approve(args: dict, **kw) -> str:
+    """Reviewer tool: three-outcome approval."""
+    guard = _require_orchestrator_tool("kanban_approve")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    outcome = args.get("outcome")
+    if outcome not in {"terminal", "chained", "conditional"}:
+        return tool_error(
+            "outcome must be one of terminal | chained | conditional"
+        )
+    approver = _approver_profile_from_env()
+    if not approver:
+        return tool_error(
+            "kanban_approve requires HERMES_PROFILE in env to record the "
+            "approver"
+        )
+    follow_up_spec = args.get("follow_up_spec")
+    if follow_up_spec is not None and not isinstance(follow_up_spec, dict):
+        return tool_error("follow_up_spec must be an object")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            res = kb.approve_review_task(
+                conn, str(tid),
+                outcome=outcome,
+                approver_profile=approver,
+                summary=args.get("summary"),
+                follow_up_spec=follow_up_spec,
+                next_reviewer=args.get("next_reviewer"),
+                comment=args.get("comment"),
+            )
+            return json.dumps({"ok": True, "task_id": str(tid), **{k: v for k, v in res.items() if k != "ok"}})
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_approve: {e}")
+    except Exception as e:
+        logger.exception("kanban_approve failed")
+        return tool_error(f"kanban_approve: {e}")
+
+
+registry.register(
+    name="kanban_approve",
+    toolset="kanban",
+    schema=KANBAN_APPROVE_SCHEMA,
+    handler=_handle_approve,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✅",
+)
+
+
+KANBAN_REJECT_SCHEMA = {
+    "name": "kanban_reject",
+    "description": (
+        "Reviewer tool: send the current review task to `blocked` with "
+        "structured `findings`. The rejecting reviewer's profile is "
+        "recorded so the sticky-reviewer logic routes the next review "
+        "pass back to the same reviewer who has context on the "
+        "original findings."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id in the review column (claimed).",
+            },
+            "findings": {
+                "type": "object",
+                "description": (
+                    "Structured rejection payload. Recommended keys: "
+                    "`reasons` (list[str]) and `requested_changes` "
+                    "(list[str])."
+                ),
+                "properties": {
+                    "reasons": {"type": "array", "items": {"type": "string"}},
+                    "requested_changes": {
+                        "type": "array", "items": {"type": "string"}
+                    },
+                },
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "findings"],
+    },
+}
+
+
+def _handle_reject(args: dict, **kw) -> str:
+    """Reviewer tool: send task to blocked with structured findings."""
+    guard = _require_orchestrator_tool("kanban_reject")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    findings = args.get("findings")
+    if not findings or not isinstance(findings, dict):
+        return tool_error("findings is required and must be an object")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.reject_review_task(
+                conn, str(tid),
+                findings=findings,
+                reviewer_profile=_approver_profile_from_env() or "orchestrator",
+            )
+            if not ok:
+                return tool_error(
+                    f"could not reject review for {tid} (not in review or "
+                    "reviewer profile mismatch)"
+                )
+            return _ok(task_id=str(tid), status="blocked")
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_reject: {e}")
+    except Exception as e:
+        logger.exception("kanban_reject failed")
+        return tool_error(f"kanban_reject: {e}")
+
+
+registry.register(
+    name="kanban_reject",
+    toolset="kanban",
+    schema=KANBAN_REJECT_SCHEMA,
+    handler=_handle_reject,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🚫",
+)
+
+
+KANBAN_REASSIGN_SCHEMA = {
+    "name": "kanban_reassign",
+    "description": (
+        "Orchestrator tool: change a task's assignee with an optional "
+        "handoff note. Capped at kanban.max_reassigns per task; the "
+        "Nth+1 attempt errors so chains stop thrashing. Useful for "
+        "access escalation (worker hands off to a lead, lead grants "
+        "skills via kanban_edit, then reassigns back)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Task id."},
+            "new_assignee": {
+                "type": "string",
+                "description": "New profile name.",
+            },
+            "handoff_note": {
+                "type": "string",
+                "description": (
+                    "Optional rationale; appended as a comment so the "
+                    "new assignee reads it via build_worker_context."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "new_assignee"],
+    },
+}
+
+
+def _handle_reassign(args: dict, **kw) -> str:
+    """Orchestrator tool: change assignee with handoff note."""
+    guard = _require_orchestrator_tool("kanban_reassign")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    new_assignee = args.get("new_assignee")
+    if not new_assignee or not str(new_assignee).strip():
+        return tool_error("new_assignee is required")
+    handoff_note = args.get("handoff_note")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            current = kb.reassign_count(conn, str(tid))
+            ok = kb.reassign_task_with_note(
+                conn, str(tid), str(new_assignee).strip(),
+                handoff_note=handoff_note,
+                author=_approver_profile_from_env() or "orchestrator",
+            )
+            if not ok:
+                return tool_error(
+                    f"could not reassign {tid} (unknown or refused)"
+                )
+            return _ok(
+                task_id=str(tid),
+                new_assignee=str(new_assignee).strip(),
+                reassign_count=current + 1,
+            )
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_reassign: {e}")
+    except Exception as e:
+        logger.exception("kanban_reassign failed")
+        return tool_error(f"kanban_reassign: {e}")
+
+
+registry.register(
+    name="kanban_reassign",
+    toolset="kanban",
+    schema=KANBAN_REASSIGN_SCHEMA,
+    handler=_handle_reassign,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="↔️",
+)
+
+
+KANBAN_EDIT_SCHEMA = {
+    "name": "kanban_edit",
+    "description": (
+        "Orchestrator tool: replace a task's `skills` list (full list, "
+        "not a delta). Scope-locked to `skills` only; other fields "
+        "(assignee, priority, max_runtime_seconds) stay CLI-only. "
+        "Rejected on terminal status. On a running task the row "
+        "updates but the live worker keeps its already-loaded skill "
+        "set; the response carries applies_on_next_spawn=true so the "
+        "caller knows whether to reassign or wait for natural respawn."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {"type": "string", "description": "Task id."},
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Full desired skills list. Pass the complete list, "
+                    "not a delta; an empty list explicitly clears skills."
+                ),
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "skills"],
+    },
+}
+
+
+def _handle_edit(args: dict, **kw) -> str:
+    """Orchestrator tool: replace the skills list. Scope-locked."""
+    guard = _require_orchestrator_tool("kanban_edit")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    skills = args.get("skills")
+    if skills is None or not isinstance(skills, (list, tuple)):
+        return tool_error("skills must be a list of skill names (use [] to clear)")
+    # Refuse any other mutation field even though the schema doesn't list
+    # them; defends against a caller that hand-rolls extra args.
+    forbidden = {"assignee", "priority", "max_runtime_seconds", "tenant", "theme"}
+    leaked = forbidden & set(args.keys())
+    if leaked:
+        return tool_error(
+            f"kanban_edit is scope-locked to `skills`; refused fields: "
+            f"{sorted(leaked)}. Use CLI for these mutations."
+        )
+    author = _approver_profile_from_env() or "orchestrator"
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            res = kb.edit_task_skills(
+                conn, str(tid), skills=skills, author=author,
+            )
+            return json.dumps({"ok": True, "task_id": str(tid), **{k: v for k, v in res.items() if k != "ok"}})
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_edit: {e}")
+    except Exception as e:
+        logger.exception("kanban_edit failed")
+        return tool_error(f"kanban_edit: {e}")
+
+
+registry.register(
+    name="kanban_edit",
+    toolset="kanban",
+    schema=KANBAN_EDIT_SCHEMA,
+    handler=_handle_edit,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="✏️",
+)
+
+
+KANBAN_COLLATE_CHILDREN_SCHEMA = {
+    "name": "kanban_collate_children",
+    "description": (
+        "Read the results of all done child tasks linked to this task. "
+        "Returns a list of {id, title, result, assignee} dicts, ordered "
+        "by completion time. Use this as an integrator/parent task to "
+        "produce a rolled-up summary from completed child work before "
+        "calling kanban_complete."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "board": {
+                "type": "string",
+                "description": "Board slug — uses default when omitted",
+            },
+        },
+        "required": [],
+    },
+}
+
+
+def _handle_collate_children(args: dict, **kw) -> str:
+    """Return done child task results for a parent/integrator task."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error("task_id is required")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        children = kb.collate_children(conn, tid)
+        return json.dumps({"children": children, "count": len(children)}, indent=2, default=str)
+    except Exception as exc:
+        return tool_error(f"collate_children failed: {exc}")
+
+
+registry.register(
+    name="kanban_collate_children",
+    toolset="kanban",
+    schema=KANBAN_COLLATE_CHILDREN_SCHEMA,
+    handler=_handle_collate_children,
+    check_fn=_check_kanban_mode,
+    emoji="📊",
+)
+
+
+KANBAN_REQUEST_HUMAN_APPROVAL_SCHEMA = {
+    "name": "kanban_request_human_approval",
+    "description": (
+        "Block this task and request explicit human approval before it can "
+        "proceed. Use for full-tier go/no-go decisions — the task will be "
+        "blocked with reason 'needs_human_approval: <detail>' and must be "
+        "explicitly unblocked by a human. The Discord approval handler cron "
+        "surfaces these in #governance."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "detail": {
+                "type": "string",
+                "description": "What the human needs to decide, in a sentence",
+            },
+            "board": {
+                "type": "string",
+                "description": "Board slug — uses default when omitted",
+            },
+        },
+        "required": ["detail"],
+    },
+}
+
+
+def _handle_request_human_approval(args: dict, **kw) -> str:
+    """Block a full-tier task awaiting explicit human go/no-go."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error("task_id is required")
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    detail = args.get("detail")
+    if not detail or not str(detail).strip():
+        return tool_error("detail is required")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            ok = kb.request_human_approval(
+                conn, tid, detail=str(detail).strip(),
+                expected_run_id=_worker_run_id(tid),
+            )
+            if not ok:
+                return tool_error(f"could not request approval for {tid}")
+            run = kb.latest_run(conn, tid)
+            return _ok(task_id=tid, run_id=run.id if run else None)
+        finally:
+            conn.close()
+    except Exception as exc:
+        return tool_error(f"request_human_approval failed: {exc}")
+
+
+registry.register(
+    name="kanban_request_human_approval",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_HUMAN_APPROVAL_SCHEMA,
+    handler=_handle_request_human_approval,
+    check_fn=_check_kanban_mode,
+    emoji="🛑",
+)
+
+
+KANBAN_PROFILE_EDIT_SCHEMA = {
+    "name": "kanban_profile_edit",
+    "description": (
+        "Edit a profile's config.yaml, SOUL.md, or USER.md with git-backed "
+        "version control. Every edit is committed to the profiles git repo "
+        "and logged to the profile-change-ledger.md. Supports rollback via "
+        "kanban_profile_rollback. RESTRICTED: governance profiles only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "profile": {
+                "type": "string",
+                "description": "Profile name (e.g. 'octacon', 'wesker')",
+            },
+            "file": {
+                "type": "string",
+                "enum": ["config.yaml", "SOUL.md", "USER.md"],
+                "description": "Which file to edit",
+            },
+            "key_path": {
+                "type": "string",
+                "description": "Dot-separated YAML key path for config.yaml "
+                               "(e.g. 'agent.reasoning_effort'). Ignored for .md files.",
+            },
+            "new_value": {
+                "type": "string",
+                "description": "New value to set",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this change is needed (logged to ledger)",
+            },
+        },
+        "required": ["profile", "file", "new_value", "reason"],
+    },
+}
+
+
+def _handle_profile_edit(args: dict, **kw) -> str:
+    """Edit a profile file with git-backed version control.
+
+    Gated by blast-radius (P2-3) for autonomous edits: edit caps,
+    fleet-health tripwire, and canary validation.
+    """
+    profile = args.get("profile")
+    file = args.get("file")
+    key_path = args.get("key_path") or ""
+    new_value = args.get("new_value")
+    reason = args.get("reason")
+
+    if not all([profile, file, new_value, reason]):
+        return tool_error("profile, file, new_value, and reason are required")
+
+    # ── Blast-radius gate (P2-3) ──
+    guard = None
+    canary_edit_id = None
+    try:
+        from hermes_cli.blast_radius import EditGuard, eval_domain_for
+        # Fail CLOSED: refuse an autonomous edit to a profile with no
+        # governance.eval_domains mapping. Without a mapping the canary
+        # observe loop can never evaluate or revert the edit, so it would
+        # persist unchecked. Require evaluability up front.
+        if not eval_domain_for(profile):
+            return tool_error(
+                f"Profile '{profile}' has no governance.eval_domains mapping; "
+                f"refusing autonomous edit (fail-closed). Map it to a domain "
+                f"that has a golden task set before editing."
+            )
+        guard = EditGuard()
+        result = guard.try_edit(
+            profile=profile,
+            patch=f"{file}:{key_path}={new_value}",
+            patch_summary=reason,
+        )
+        if not result.allowed:
+            return tool_error(
+                f"Blast-radius guard blocked profile edit: {result.reason}. "
+                f"{'Deferred until ' + result.defer_until if result.defer_until else ''}"
+            )
+        # Apply to canary — records the edit for observation
+        if result.canary:
+            guard.apply_canary(result.canary)
+            canary_edit_id = result.canary.edit_id
+    except ImportError:
+        # Fail CLOSED: profile mutation is the most dangerous path in the
+        # fork. If the blast-radius guard cannot load we refuse the edit
+        # rather than proceeding unprotected. Matches the fail-closed
+        # posture used everywhere else (e.g. skill_grants).
+        return tool_error(
+            "Blast-radius guard unavailable; refusing profile edit "
+            "(fail-closed). Restore hermes_cli.blast_radius before editing "
+            "profiles."
+        )
+    except Exception as exc:
+        return tool_error(f"Blast-radius guard error: {exc}")
+
+    script = str(Path(os.environ.get(
+        "HERMES_HOME", "/home/kensei/.hermes"
+    )) / "scripts" / "profile_editor.py")
+
+    cmd = [
+        sys.executable, script,
+        str(profile), str(file), str(key_path), str(new_value), str(reason),
+    ]
+    try:
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return tool_error(f"profile_edit failed: {_try_json_error(r)}")
+        result = _json.loads(r.stdout)
+        # Record the commit on the canary so the observe loop can revert
+        # this exact edit if it later regresses (P2-3 close-the-loop).
+        if guard is not None and canary_edit_id and result.get("commit"):
+            try:
+                guard.attach_commit(canary_edit_id, str(result["commit"]))
+            except Exception:
+                logger.warning("could not attach commit to canary %s", canary_edit_id)
+        return _json.dumps(result, indent=2)
+    except Exception as exc:
+        return tool_error(f"profile_edit error: {exc}")
+
+
+registry.register(
+    name="kanban_profile_edit",
+    toolset="kanban",
+    schema=KANBAN_PROFILE_EDIT_SCHEMA,
+    handler=_handle_profile_edit,
+    check_fn=_check_kanban_mode,
+    emoji="✏️",
+)
+
+
+KANBAN_PROFILE_ROLLBACK_SCHEMA = {
+    "name": "kanban_profile_rollback",
+    "description": (
+        "Revert a previous profile edit by commit hash. Only the most recent "
+        "commits can be rolled back. RESTRICTED: governance profiles only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "commit_hash": {
+                "type": "string",
+                "description": "The git commit hash to revert (from kanban_profile_edit output)",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why the rollback is needed (required — rollbacks are audited and blast-radius gated)",
+            },
+            "profile": {
+                "type": "string",
+                "description": "Optional profile the rollback targets, for blast-radius scoping (defaults to fleet-wide)",
+            },
+        },
+        "required": ["commit_hash", "reason"],
+    },
+}
+
+
+def _handle_profile_rollback(args: dict, **kw) -> str:
+    """Revert a profile edit by commit hash.
+
+    Gated by the same blast-radius guard as profile_edit: a rollback is a
+    profile mutation and an agent could otherwise silently revert a
+    security-hardening edit. A reason is required for the audit trail.
+    Sahil retains the manual git/script path if the guard is down.
+    """
+    commit_hash = args.get("commit_hash")
+    if not commit_hash:
+        return tool_error("commit_hash is required")
+    reason = args.get("reason")
+    if not reason or not str(reason).strip():
+        return tool_error("reason is required (rollbacks are audited)")
+
+    # ── Blast-radius gate (mirror of profile_edit, fail-closed) ──
+    try:
+        from hermes_cli.blast_radius import EditGuard
+        guard = EditGuard()
+        result = guard.try_edit(
+            profile=str(args.get("profile") or "fleet"),
+            patch=f"rollback:{commit_hash}",
+            patch_summary=str(reason).strip(),
+        )
+        if not result.allowed:
+            return tool_error(
+                f"Blast-radius guard blocked profile rollback: {result.reason}. "
+                f"{'Deferred until ' + result.defer_until if result.defer_until else ''}"
+            )
+    except ImportError:
+        return tool_error(
+            "Blast-radius guard unavailable; refusing profile rollback "
+            "(fail-closed). Restore hermes_cli.blast_radius, or roll back "
+            "manually via git."
+        )
+    except Exception as exc:
+        return tool_error(f"Blast-radius guard error: {exc}")
+
+    script = str(Path(os.environ.get(
+        "HERMES_HOME", "/home/kensei/.hermes"
+    )) / "scripts" / "profile_editor.py")
+
+    cmd = [sys.executable, script, "--rollback", str(commit_hash)]
+    try:
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return tool_error(f"profile_rollback failed: {_try_json_error(r)}")
+        result = _json.loads(r.stdout)
+        return _json.dumps(result, indent=2)
+    except Exception as exc:
+        return tool_error(f"profile_rollback error: {exc}")
+
+
+registry.register(
+    name="kanban_profile_rollback",
+    toolset="kanban",
+    schema=KANBAN_PROFILE_ROLLBACK_SCHEMA,
+    handler=_handle_profile_rollback,
+    check_fn=_check_kanban_mode,
+    emoji="↩️",
+)
+
+
+KANBAN_REQUEST_SUBPROFILE_SCHEMA = {
+    "name": "kanban_request_subprofile",
+    "description": (
+        "Request creation of a new sub-profile. This does NOT create the "
+        "profile directly: it blocks the task and records a pending "
+        "PROFILE-GATE approval, which Sahil must explicitly approve or "
+        "reject via Discord. The task stays blocked until that decision "
+        "is made. Use this when a lead determines it needs a new "
+        "specialist sub-profile (optionally cloned from an existing one)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "profile": {
+                "type": "string",
+                "description": "Name of the new sub-profile to create (e.g. 'remii-deep')",
+            },
+            "clone_from": {
+                "type": "string",
+                "description": "Optional existing profile to clone config/skills from",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why this sub-profile is needed, for the Discord approval prompt",
+            },
+            "board": {
+                "type": "string",
+                "description": "Board slug; uses default when omitted",
+            },
+        },
+        "required": ["profile", "reason"],
+    },
+}
+
+
+def _handle_request_subprofile(args: dict, **kw) -> str:
+    """Request creation of a new sub-profile via the PROFILE-GATE.
+
+    Blocks the task and records a pending profile_lifecycle_approval with
+    op="create"; Sahil approves or rejects on Discord. The lead has no
+    direct path to create profiles, only this request channel.
+    """
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error("task_id is required")
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+
+    profile = args.get("profile")
+    if not profile or not str(profile).strip():
+        return tool_error("profile is required")
+    profile = str(profile).strip()
+
+    reason = args.get("reason")
+    if not reason or not str(reason).strip():
+        return tool_error("reason is required")
+    reason = str(reason).strip()
+
+    clone_from = args.get("clone_from")
+    if clone_from is not None:
+        clone_from = str(clone_from).strip() or None
+
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception as exc:
+        return tool_error(f"could not load hermes_cli.profiles: {exc}")
+
+    if profile_exists(profile):
+        return tool_error(f"profile '{profile}' already exists; refusing to request a duplicate")
+    if clone_from and not profile_exists(clone_from):
+        return tool_error(f"clone_from profile '{clone_from}' does not exist")
+
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            from hermes_cli.profile_lifecycle_gate import submit_lifecycle_request
+            from tools.skills_tool import _current_profile
+
+            lifecycle_args = {"clone_from": clone_from} if clone_from else None
+            approval_id = submit_lifecycle_request(
+                conn, tid,
+                op="create", profile=profile, args=lifecycle_args,
+                requested_by=_current_profile(),
+                expected_run_id=_worker_run_id(tid),
+            )
+            return _ok(
+                task_id=tid,
+                approval_id=approval_id,
+                status="pending_human_approval",
+                message=(
+                    "Sub-profile creation requested; awaiting Sahil's "
+                    "approval via Discord. The task is blocked until then."
+                ),
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        return tool_error(f"request_subprofile failed: {exc}")
+
+
+# WS-7: profile_editor handlers — call the profile_editor.py script
+import subprocess as _sp
+import json as _json
+
+
+registry.register(
+    name="kanban_request_subprofile",
+    toolset="kanban",
+    schema=KANBAN_REQUEST_SUBPROFILE_SCHEMA,
+    handler=_handle_request_subprofile,
+    check_fn=_check_kanban_mode,
+    emoji="🐣",
+)
+
+

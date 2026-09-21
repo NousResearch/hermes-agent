@@ -25,7 +25,25 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+# KENSEI CUSTOM (fork re-anchor): datetime (daily spawn counter), hashlib
+# (deterministic review sampling), and module logger for re-anchored machinery.
+from datetime import datetime  # noqa: E402
+import hashlib  # noqa: E402
+import json  # noqa: E402
+import logging  # noqa: E402
+import random  # noqa: E402
+
+_log = logging.getLogger(__name__)
+
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+
+# KENSEI CUSTOM (fork re-anchor): best-effort activity-ledger import — the
+# ledger must never break dispatch.
+try:
+    from hermes_cli.profile_activity_ledger import record_event_if_enabled
+except Exception:  # pragma: no cover
+    def record_event_if_enabled(**_kw):
+        return None
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -34,6 +52,9 @@ if TYPE_CHECKING:
 # After this many consecutive non-success attempts on a task/profile the
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
+
+# KENSEI CUSTOM (fork re-anchor): fork's alias name for the same breaker default.
+DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
@@ -125,10 +146,25 @@ class DispatchResult:
     Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
     on multi-lane setups, NOT operator-actionable; tracked apart so health
     telemetry can tell "stuck" from "correctly idle"."""
+    skipped_review_nonspawnable: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, unresolvable_reviewer)`` pairs: review-column tasks whose
+    reviewer is not a spawnable profile (e.g. the ``sdlc-review`` skill name
+    passed as ``reviewer``). Operator-actionable — unlike the ready lane,
+    nothing ever pulls a review task, so it starves silently without this
+    signal."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    # KENSEI CUSTOM (fork re-anchor): ``(task_id, from_stage, to_stage)`` triples for
+    # tasks that advanced through the feature pipeline (gate passed).
+    pipeline_advanced: list[tuple[str, str, str]] = field(default_factory=list)
+    # KENSEI CUSTOM (fork re-anchor): task ids rejected before claim/spawn because
+    # dispatcher-visible invariants failed (e.g. forced skills missing).
+    dispatcher_rejected: list[str] = field(default_factory=list)
+    # KENSEI CUSTOM (fork re-anchor): True when the daily spawn budget was exhausted
+    # this tick (cost-governance hard stop, P2-1).
+    budget_exhausted: bool = False
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -607,6 +643,74 @@ def _defer_reclaim_for_live_worker(
         _kb._append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
 
 
+def _reap_done_workers(conn: sqlite3.Connection) -> list[int]:
+    """Kill workers whose tasks reached a terminal status but whose PID is still alive.
+
+    When a worker completes its task (kanban_complete → done/archived) and calls
+    sys.exit(), atexit cleanup can deadlock on shared resources (state.db WAL,
+    kanban.db lock files, log FDs) under concurrent access — the worker stays
+    alive indefinitely in futex_wait_queue, holding swap pages but doing zero
+    work.  The dispatcher's zombie reaper only handles PID-is-dead (true zombie)
+    cases and never sees these.
+
+    This function finds tasks in 'done' / 'archived' status whose ``worker_pid``
+    is still alive on this host and sends SIGKILL.  Once dead, the normal zombie
+    reaper handles the waitpid on the next tick.  The ``worker_pid`` column is
+    cleared so ``detect_crashed_workers`` doesn't try to reclaim an already-done
+    task on a subsequent tick.
+    """
+    reaped: list[int] = []
+    import signal
+    try:
+        rows = conn.execute(
+            "SELECT id, worker_pid FROM tasks "
+            "WHERE status IN ('done', 'archived') AND worker_pid IS NOT NULL"
+        ).fetchall()
+    except Exception:
+        return reaped
+
+    for row in rows:
+        pid = row["worker_pid"]
+        if not pid or pid <= 0:
+            continue
+        if not _pid_alive(pid):
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+            reaped.append(pid)
+        except (ProcessLookupError, PermissionError):
+            pass  # already gone or no permission
+        try:
+            conn.execute(
+                "UPDATE tasks SET worker_pid = NULL WHERE id = ?", (row["id"],)
+            )
+        except Exception:
+            pass
+    return reaped
+
+
+def _clear_stale_ready_claims(conn: sqlite3.Connection) -> int:
+    """Clear orphaned claim_lock / worker_pid fields from ready tasks.
+
+    When a task is manually reset from running→ready (e.g. after DB
+    recovery, operator intervention, or a kill -9 on stuck workers),
+    the claim_lock and worker_pid columns retain their old values.
+    The dispatcher interprets a non-NULL claim_lock as an active claim
+    and skips the task — it stays stuck in 'ready' forever.
+
+    This runs at the start of every dispatch tick so the board self-
+    heals without operator intervention.  Returns the number of tasks
+    cleaned.
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, started_at = NULL "
+            "WHERE status = 'ready' AND claim_lock IS NOT NULL"
+        )
+        return cur.rowcount
+
+
 def heartbeat_worker(
     conn: sqlite3.Connection,
     task_id: str,
@@ -724,6 +828,14 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     error=error, metadata=payload,
                 )
                 _kb._append_event(conn, tid, "timed_out", payload, run_id=run_id)
+                # KENSEI CUSTOM (fork re-anchor): loop-diagnostics for the
+                # terminal timeout failure (run already closed above).
+                _attach_loop_diagnosis(
+                    conn, tid,
+                    run_id=run_id,
+                    outcome="timed_out",
+                    error=f"elapsed {int(elapsed)}s > limit {limit}s",
+                )
                 timed_out.append(tid)
         # Outside the write_txn above because ``_record_task_failure`` opens its
         # own. If the breaker trips this flips the task to ``blocked`` and emits
@@ -840,6 +952,220 @@ def detect_stale_running(
             reclaimed.append(tid)
 
     return reclaimed
+
+
+def claim_pipeline_task(
+    conn,
+    task_id,
+    *,
+    ttl_seconds=None,
+    claimer=None,
+):
+    """Atomically transition a pipeline-stage task to ``running``.
+
+    Pipeline tasks live in stage-specific statuses (``research``,
+    ``prd``, ``spec``, ``council``) rather than ``ready``.  A worker
+    spawned on a gate-failure needs to move the task to ``running``
+    so it can work on the artifact, then return it to its original
+    stage on completion.
+
+    Returns the claimed ``Task`` on success, ``None`` if the task was
+    already claimed or is not in a pipeline stage.
+
+    Stores the originating stage in the claim event payload so
+    ``complete_pipeline_task`` knows which status to restore.
+    """
+    import time
+    from hermes_cli.feature_pipeline import PIPELINE_STAGES
+    # All helpers are module-level in this file — no circular import.
+
+    now = int(time.time())
+    lock = claimer or _claimer_id()
+    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+
+    _pipeline_statuses = tuple(PIPELINE_STAGES)
+
+    # Read the current pipeline stage BEFORE the CAS, so we can
+    # record it in the claim event.  The status column will be
+    # `running` after the CAS — we want the originating stage.
+    origin_row = conn.execute(
+        "SELECT status, pipeline_stage FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    origin_stage = (
+        origin_row["pipeline_stage"] if origin_row else None
+    ) or (origin_row["status"] if origin_row else None)
+
+    with write_txn(conn):
+        cur = conn.execute(
+            f"""\
+            UPDATE tasks
+               SET status        = 'running',
+                   claim_lock    = ?,
+                   claim_expires = ?,
+                   started_at    = COALESCE(started_at, ?)
+             WHERE id = ?
+               AND status IN ({','.join('?' * len(_pipeline_statuses))})
+               AND claim_lock IS NULL
+            """,
+            (lock, expires, now, task_id, *_pipeline_statuses),
+        )
+        if cur.rowcount != 1:
+            return None
+
+        trow = conn.execute(
+            "SELECT assignee, max_runtime_seconds, current_step_key "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        run_cur = conn.execute(
+            """\
+            INSERT INTO task_runs (
+                task_id, profile, step_key, status,
+                claim_lock, claim_expires, max_runtime_seconds,
+                started_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                trow["assignee"] if trow else None,
+                trow["current_step_key"] if trow else None,
+                lock,
+                expires,
+                trow["max_runtime_seconds"] if trow else None,
+                now,
+            ),
+        )
+        run_id = run_cur.lastrowid
+        conn.execute(
+            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
+            (run_id, task_id),
+        )
+        _append_event(
+            conn, task_id, "claimed",
+            {"lock": lock, "expires": expires, "run_id": run_id,
+             "source_status": "pipeline",
+             "pipeline_stage": origin_stage},
+            run_id=run_id,
+        )
+        return get_task(conn, task_id)
+
+
+def complete_pipeline_task(
+    conn,
+    task_id,
+    *,
+    result=None,
+    summary=None,
+    metadata=None,
+):
+    """Return a pipeline-stage worker to its original stage.
+
+    After a pipeline worker finishes writing its artifact (e.g.
+    research-brief.md), the task MUST go back to its pipeline stage
+    — NOT ``done`` — so the gate re-checks on the next dispatcher
+    tick and advances naturally.
+
+    Reads the originating ``pipeline_stage`` from the most recent
+    ``claimed`` event whose ``source_status`` = ``"pipeline"``.
+    Falls back to the current ``tasks.pipeline_stage`` column.
+    """
+    import time
+
+    now = int(time.time())
+    row = conn.execute(
+        "SELECT id, pipeline_stage FROM tasks WHERE id = ? AND status = 'running'",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return False
+
+    # Recover the originating stage from the latest pipeline claim event.
+    origin = conn.execute(
+        """SELECT json_extract(payload, '$.pipeline_stage')
+             FROM task_events
+            WHERE task_id = ?
+              AND kind = 'claimed'
+              AND json_extract(payload, '$.source_status') = 'pipeline'
+            ORDER BY id DESC LIMIT 1""",
+        (task_id,),
+    ).fetchone()
+    origin_stage = origin[0] if origin else None
+
+    # Belt-and-braces: fall back to the column if the event is missing.
+    stage = origin_stage or row["pipeline_stage"]
+    if not stage:
+        stage = "research"
+
+    with write_txn(conn):
+        conn.execute(
+            """UPDATE tasks
+                 SET status        = ?,
+                     pipeline_stage = ?,
+                     claim_lock    = NULL,
+                     claim_expires = NULL,
+                     worker_pid    = NULL,
+                     result        = ?,
+                     completed_at  = ?
+               WHERE id = ?
+                 AND status = 'running'""",
+            (stage, stage, result, now, task_id),
+        )
+        _append_event(
+            conn, task_id, "completed",
+            {"result_len": len(result) if result else 0,
+             "summary": summary or None,
+             "source_status": "pipeline",
+             "returned_to_stage": stage,
+             "pipeline_stage": stage},
+        )
+    return True
+
+
+def clear_stale_pipeline_claims(conn: sqlite3.Connection) -> int:
+    """Clear stale claim locks on pipeline-stage tasks.
+
+    ``release_stale_claims`` only looks at ``status='running'``, but
+    pipeline tasks sit in stage statuses (research, prd, spec, etc.)
+    with ``claim_lock`` still set after a worker crash.  The pipeline
+    dispatch query at line ~7684 requires ``claim_lock IS NULL``, so
+    those tasks become permanently invisible to the dispatcher.
+
+    This function targets pipeline-stage tasks whose claim has expired
+    and clears the lock fields so they re-enter the gate-check loop.
+    """
+    try:
+        from hermes_cli.feature_pipeline import PIPELINE_STAGES
+    except ImportError:
+        return 0
+    _pipeline_statuses = tuple(PIPELINE_STAGES)
+    if not _pipeline_statuses:
+        return 0
+    now = int(time.time())
+    _placeholders = ",".join("?" * len(_pipeline_statuses))
+    rows = conn.execute(
+        f"SELECT id FROM tasks "
+        f"WHERE status IN ({_placeholders}) "
+        f"  AND claim_lock IS NOT NULL "
+        f"  AND claim_expires IS NOT NULL "
+        f"  AND claim_expires < ?",
+        (*_pipeline_statuses, now),
+    ).fetchall()
+    if not rows:
+        return 0
+    cleared = 0
+    with write_txn(conn):
+        for r in rows:
+            conn.execute(
+                "UPDATE tasks SET claim_lock = NULL, claim_expires = NULL, "
+                "worker_pid = NULL WHERE id = ?",
+                (r["id"],),
+            )
+            _append_event(
+                conn, r["id"], "claim_stale_cleared",
+                {"reason": "pipeline claim expired, clearing for gate re-entry"},
+            )
+            cleared += 1
+    return cleared
 
 
 def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
@@ -1129,6 +1455,10 @@ class _CrashSweep:
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
+    # KENSEI: ``(task_id, run_id, outcome, error_text)`` for reclaimed crashes. Attached
+    # after the reclaim txn commits: the diagnosis integration emits its own
+    # event and opens its own write txn, so it must not run inside this one.
+    diagnosis_requests: list[tuple[str, Optional[int], str, str]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
@@ -1201,6 +1531,12 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
+                # KENSEI loop-diagnostics: this run was closed two statements above, so
+                # pass its run_id explicitly. Queued for after the txn — the
+                # integration emits an event and opens its own write txn.
+                sweep.diagnosis_requests.append(
+                    (row["id"], run_id, dead.run_outcome, dead.error_text)
+                )
     return sweep
 
 
@@ -1295,6 +1631,17 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn, board=board)
+    # Loop-diagnostics for reclaimed crashes. Runs here, not inside the reclaim
+    # txn: the integration emits a ``diagnosis`` event and opens its own write
+    # txn, and it must never mask the crash. The reaper closed each run before
+    # returning, so the run_id is passed explicitly.
+    for _tid, _rid, _outcome, _err in sweep.diagnosis_requests:
+        _attach_loop_diagnosis(
+            conn, _tid,
+            run_id=_rid,
+            outcome=_outcome,
+            error=_err,
+        )
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
@@ -1346,17 +1693,50 @@ def _record_task_failure(
     event_payload_extra: Optional[dict] = None,
     infrastructure: bool = False,
 ) -> bool:
-    """Record a non-success outcome and maybe trip the circuit breaker; every
-    non-success path funnels through here so ``consecutive_failures`` stays
-    consistent. Returns True when the task was auto-blocked.
+    """Record a non-success outcome (spawn_failed / crashed / timed_out)
+    and maybe trip the circuit breaker.
 
-    ``release_claim=True, end_run=True``: spawn-failure path (task still
-    running with an open run — restore source phase or ``blocked``, release
-    claim, close run). Both False: timeout/crash path (caller already restored
-    the phase and closed the run; only the counter moves, a trip flips to
-    ``blocked`` + ``gave_up``). Threshold: per-task ``max_retries`` >
-    ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips
-    unconditionally (caller applied its own bounded-retry policy).
+    Unified replacement for the old spawn-only ``_record_spawn_failure``.
+    Every path that ends a task with a non-success outcome funnels
+    through here so the ``consecutive_failures`` counter and the
+    auto-block threshold stay consistent.
+
+    Returns True when the task was auto-blocked (counter reached
+    ``failure_limit``), False when it was just updated in place.
+
+    Modes:
+
+    * ``release_claim=True, end_run=True`` — spawn-failure path.
+      Caller has a running task with an open run; this transitions
+      it back to its source phase (or ``blocked`` when the breaker trips),
+      releases the claim, and closes the run with ``outcome=<outcome>``.
+
+    * ``release_claim=False, end_run=False`` — timeout/crash path.
+      Caller has ALREADY restored the task's source phase and closed the
+      run with the appropriate outcome. This just increments the
+      counter; if the breaker trips, the task is re-transitioned
+      into ``blocked`` and a ``gave_up`` event is emitted.
+
+    ``event_payload_extra`` merges into the ``gave_up`` event payload
+    when the breaker trips, so callers can include outcome-specific
+    context (e.g. pid on crash, elapsed on timeout).
+
+    Resolution order for the effective threshold:
+      1. per-task ``max_retries`` if set (nothing else overrides)
+      2. caller-supplied ``failure_limit`` (gateway passes the config
+         value from ``kanban.failure_limit``; tests pass fixed values)
+      3. ``DEFAULT_FAILURE_LIMIT``
+
+    ``force_trip=True`` trips the breaker unconditionally, skipping the
+    counter-vs-threshold comparison (the resolution order above is then
+    only reported in the ``gave_up`` payload, not re-evaluated). Callers
+    use it when they have already applied their own bounded-retry policy
+    — e.g. the clean-exit protocol-violation streak in
+    ``detect_crashed_workers``, which resolves the per-task
+    ``max_retries`` override against the violation streak itself. The
+    failure is still counted into ``consecutive_failures`` and the
+    ``gave_up`` payload is stamped sticky so ``recompute_ready`` cannot
+    promote the card in the same tick.
 
     ``infrastructure=True``: the host refused the spawn (no restart-safe scope,
     #114720) — nothing about the card ran, so the run and event are recorded
@@ -1367,6 +1747,7 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     error = error[:500]
+    blocked = False
     with _kb.write_txn(conn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries, current_run_id "
@@ -1381,31 +1762,55 @@ def _record_task_failure(
         )
         failures = int(row["consecutive_failures"]) + (0 if infrastructure else 1)
 
-        # Per-task override wins over caller-supplied and default thresholds.
-        task_override = _kb._row_get(row, "max_retries")
+        # Per-task override wins over both caller-supplied and default
+        # thresholds. None (the common case) falls through.
+        task_override = (
+            row["max_retries"] if "max_retries" in row.keys() else None
+        )
         if task_override is not None:
-            effective_limit, limit_source = int(task_override), "task"
+            effective_limit = int(task_override)
+            limit_source = "task"
         else:
-            effective_limit, limit_source = int(failure_limit), "dispatcher"
+            effective_limit = int(failure_limit)
+            limit_source = "dispatcher"
 
         if infrastructure or not (force_trip or failures >= effective_limit):
+            # Below threshold — or an infrastructure refusal that must never
+            # trip the breaker (nothing about the card ran; #114720).
             if release_claim:
-                # Spawn path: restore the claimed source phase + clear claim.
-                conn.execute(
-                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (retry_status, failures, error, task_id),
-                )
+                # Spawn path: transition running → ready + clear claim.
+                # For pipeline tasks, return to the pipeline stage so the
+                # next dispatcher tick re-checks the gate — the worker may
+                # have produced the artifact before timing out.
+                _pipeline_stage = _kb._task_pipeline_stage(conn, task_id)
+                if _pipeline_stage:
+                    conn.execute(
+                        "UPDATE tasks SET status = ?, pipeline_stage = ?, "
+                        "claim_lock = NULL, claim_expires = NULL, "
+                        "worker_pid = NULL, "
+                        "consecutive_failures = ?, last_failure_error = ? "
+                        "WHERE id = ? AND status = 'running'",
+                        (_pipeline_stage, _pipeline_stage,
+                         failures, error, task_id),
+                    )
+                else:
+                    # Restore the claimed source phase + clear claim (upstream).
+                    conn.execute(
+                        "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                        "claim_expires = NULL, worker_pid = NULL, "
+                        "consecutive_failures = ?, last_failure_error = ? "
+                        "WHERE id = ? AND status = 'running'",
+                        (retry_status, failures, error, task_id),
+                    )
             else:
+                # Timeout/crash path: caller already restored the source phase.
                 conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
                     "last_failure_error = ? WHERE id = ?",
                     (failures, error, task_id),
                 )
-            # Timeout/crash path's caller already emitted its own event.
             if end_run:
+                # Spawn path: close the open run with outcome.
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
@@ -1413,31 +1818,47 @@ def _record_task_failure(
                     conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
                 )
                 _kb._append_event(conn, task_id, outcome, {"error": error, **detail}, run_id=run_id)
+                # Loop-diagnostics: attach the failure report for this
+                # terminal attempt failure (run closed above).
+                if run_id is not None:
+                    _attach_loop_diagnosis(
+                        conn, task_id,
+                        run_id=run_id,
+                        outcome=outcome,
+                        error=error,
+                    )
+            # Timeout/crash path: the run was closed by the reaper before this
+            # call, so the diagnosis is attached by the reaper itself (see
+            # ``detect_crashed_workers``) — never here, where it would re-open
+            # an already-closed run.
             return False
 
-        # Spawn path (release_claim) is still running and also clears claim
-        # state; the timeout/crash path already did.
-        conn.execute(
-            "UPDATE tasks SET status = 'blocked', "
-            + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
-               if release_claim else "")
-            + "consecutive_failures = ?, last_failure_error = ? "
-            "WHERE id = ? AND status IN ('running', 'ready', 'review')",
-            (failures, error, task_id),
-        )
-        payload = {
-            "failures": failures,
-            "effective_limit": effective_limit,
-            "limit_source": limit_source,
-            "error": error,
-            "trigger_outcome": outcome,
-            "retry_status": retry_status,
-        }
+        # Trip the breaker.
+        if release_claim:
+            # Spawn path: still running, also clear claim state.
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+                "consecutive_failures = ?, last_failure_error = ? "
+                "WHERE id = ? AND status IN ('running', 'ready', 'triage', 'review')",
+                (failures, error, task_id),
+            )
+        else:
+            # Timeout/crash path: source phase already restored with claim
+            # cleared; just flip to blocked + update counter fields.
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', "
+                "consecutive_failures = ?, last_failure_error = ? "
+                "WHERE id = ? AND status IN ('ready', 'review', 'running')",
+                (failures, error, task_id),
+            )
         run_id = None
         if end_run:
             # Only the spawn path has an open run to close.
             run_id = _kb._end_run(
-                conn, task_id, outcome="gave_up", status="gave_up", error=error,
+                conn, task_id,
+                outcome="gave_up", status="gave_up",
+                error=error,
                 metadata={
                     "failures": failures,
                     "trigger_outcome": outcome,
@@ -1446,14 +1867,102 @@ def _record_task_failure(
                     "retry_status": retry_status,
                 },
             )
+        payload = {
+            "failures": failures,
+            "effective_limit": effective_limit,
+            "limit_source": limit_source,
+            "error": error,
+            "trigger_outcome": outcome,
+            "retry_status": retry_status,
+        }
         if force_trip:
             # The caller applied its own bounded policy, so the counter cannot
             # judge this block: ``recompute_ready`` holds it for an operator.
             payload["sticky"] = True
         if event_payload_extra:
             payload.update(event_payload_extra)
-        _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
-        return True
+        _kb._append_event(
+            conn, task_id, "gave_up", payload, run_id=run_id,
+        )
+        # Loop-diagnostics: the run was closed above (spawn path). The
+        # gave_up event carries the final outcome; attach the failure
+        # report so the block reason / operator view has the root cause.
+        if end_run:
+            _attach_loop_diagnosis(
+                conn, task_id,
+                run_id=run_id,
+                outcome="gave_up",
+                error=error,
+            )
+        blocked = True
+    return blocked
+
+
+def _record_spawn_failure(
+    conn: sqlite3.Connection,
+    task_id: str,
+    error: str,
+    *,
+    failure_limit: int = None,
+) -> bool:
+    return _record_task_failure(
+        conn, task_id, error,
+        outcome="spawn_failed",
+        failure_limit=failure_limit,
+        release_claim=True,
+        end_run=True,
+    )
+
+
+def _attach_loop_diagnosis(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+    outcome: Optional[str] = None,
+    error: Optional[str] = None,
+    failed_action_id: Optional[str] = None,
+    board: Optional[str] = None,
+    force: bool = False,
+) -> None:
+    """Best-effort loop-diagnostics attachment on a terminal attempt failure.
+
+    Delegates to ``loop_diagnostics_integration.attach_failure_diagnosis``
+    with a guard so a diagnosis failure can NEVER mask the worker error or
+    break the failure path. The integration module itself never raises, but
+    this wrapper also catches import errors (e.g. the observability module
+    being pruned) so the failure lifecycle is byte-identical to today when
+    the feature is unavailable.
+
+    When ``run_id`` is omitted it is resolved from the task's active run
+    before the run is closed (the caller should pass it explicitly when the
+    run has already been closed — e.g. the crash/timeout reaper paths which
+    close the run before accounting).
+    """
+    if not task_id:
+        return
+    try:
+        from hermes_cli.observability.loop_diagnostics_integration import (
+            attach_failure_diagnosis,
+        )
+
+        if run_id is None:
+            run_id = _current_run_id(conn, task_id)
+        attach_failure_diagnosis(
+            conn,
+            task_id,
+            run_id=run_id,
+            outcome=outcome,
+            error=error,
+            failed_action_id=failed_action_id,
+            board=board,
+            force=force,
+        )
+    except Exception as exc:
+        _log.debug(
+            "loop-diagnostics: attach failed for %s run %s (%s)",
+            task_id, run_id, exc,
+        )
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
@@ -1578,7 +2087,9 @@ def check_respawn_guard(
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            # KENSEI CUSTOM (fork re-anchor): 'operator_repair' also counts as a
+            # deliberate re-queue request.
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed', 'operator_repair') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
@@ -1743,18 +2254,51 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
-    """True iff a ready+assigned+unclaimed task maps to a real Hermes profile.
+    """Return True iff there is at least one ready+assigned+unclaimed task
+    whose assignee maps to a real Hermes profile.
 
-    Lets health telemetry tell "stuck" (``0 spawned`` with spawnable work) from
-    "correctly idle" (only control-plane lanes waiting on ``claim_task``). Falls
-    back to "any assigned" when ``profile_exists`` is unimportable.
+    Used by the gateway- and CLI-embedded dispatchers' health telemetry to
+    decide whether ``0 spawned`` is a "stuck" condition (real spawnable
+    work waiting) or a "correctly idle" condition (only control-plane
+    lanes like ``orion-cc`` / ``orion-research`` waiting on terminals
+    that pull tasks via ``claim_task`` directly).
+
+    Falls back to "any ready+assigned" if ``profile_exists`` is not
+    importable (e.g. partial install) — preserves the old behavior so
+    the warning still fires in degraded environments.
     """
-    return _has_spawnable(conn, "ready")
+    rows = conn.execute(
+        "SELECT DISTINCT assignee FROM tasks "
+        "WHERE status = 'ready' AND assignee IS NOT NULL "
+        "    AND claim_lock IS NULL"
+    ).fetchall()
+    if not rows:
+        return False
+    for row in rows:
+        if _is_profile_spawnable(row["assignee"]):
+            return True
+    return False
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
-    """:func:`has_spawnable_ready` for the review column."""
-    return _has_spawnable(conn, "review")
+    """Return True iff there is at least one review+assigned+unclaimed task
+    whose assignee maps to a real Hermes profile.
+
+    Mirror of :func:`has_spawnable_ready` for the review column —
+    used by the health telemetry to decide whether the dispatcher
+    should have spawned a review agent.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT assignee FROM tasks "
+        "WHERE status = 'review' AND assignee IS NOT NULL "
+        "    AND claim_lock IS NULL"
+    ).fetchall()
+    if not rows:
+        return False
+    for row in rows:
+        if _is_profile_spawnable(row["assignee"]):
+            return True
+    return False
 
 
 def review_dispatch_enabled() -> bool:
@@ -1924,23 +2468,37 @@ def dispatch_once(
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
     max_in_progress: Optional[int] = None,
-    failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_spawn_per_tick: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
-    Wraps :func:`_dispatch_once_locked` in the non-blocking :func:`_dispatch_tick_lock`
-    so two dispatchers on one ``kanban.db`` never race a write tick on WAL
-    frames. The loser returns an empty ``DispatchResult`` with
-    ``skipped_locked=True`` and writes nothing; the lock is keyed on the
-    resolved DB path so unrelated boards tick in parallel.
+    Thin wrapper around :func:`_dispatch_once_locked`. It acquires a
+    non-blocking, board-scoped dispatch lock (issue #35240) so that two
+    dispatchers pointed at the same ``kanban.db`` — e.g. the service-
+    managed gateway and a shell-spawned orphan that escaped the service
+    cgroup — can never run a reclaim/spawn/write tick concurrently and
+    race on WAL frames. The losing dispatcher returns an empty
+    ``DispatchResult`` with ``skipped_locked=True`` and does no DB writes;
+    the holder is already making progress on the same board.
+
+    The lock is keyed off the board's resolved DB path, so unrelated
+    boards tick in parallel. See :func:`_dispatch_tick_lock` for the
+    cross-process / cross-platform mechanics.
     """
-    def _locked_tick() -> DispatchResult:
-        return _dispatch_once_locked(
+    try:
+        db_path = _kb.kanban_db_path(board=board)
+    except Exception:
+        # Path resolution should never fail, but if it somehow does we
+        # must not lose the tick — fall through to an unguarded dispatch
+        # rather than dropping work.
+
+        result = _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
             ttl_seconds=ttl_seconds,
@@ -1952,26 +2510,39 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_spawn_per_tick=max_spawn_per_tick,
             reconcile_orphans=reconcile_orphans,
         )
-
-    try:
-        db_path = _kb.kanban_db_path(board=board)
-    except Exception:
-        # Must not lose the tick — fall through to an unguarded dispatch.
-        result = _locked_tick()
-        _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+        _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
     with _kbc._dispatch_tick_lock(db_path) as held:
         if not held:
             result = DispatchResult(skipped_locked=True)
         else:
-            result = _locked_tick()
-            # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
+            result = _dispatch_once_locked(
+                conn,
+                spawn_fn=spawn_fn,
+                ttl_seconds=ttl_seconds,
+                dry_run=dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=failure_limit,
+                stale_timeout_seconds=stale_timeout_seconds,
+                board=board,
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+                max_spawn_per_tick=max_spawn_per_tick,
+                reconcile_orphans=reconcile_orphans,
+            )
+            # Still under the dispatch lock: run the periodic PASSIVE WAL
+            # checkpoint (see _maybe_checkpoint_wal; the -wal file size is
+            # bounded by journal_size_limit on the writer's natural reset).
             _kbc._maybe_checkpoint_wal(conn, db_path)
-    # Lock released. Fire the tick observer strictly OUTSIDE the critical
-    # section: a slow subscriber must never stall a sibling dispatcher's tick.
-    _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+    # The dispatch lock has been released here. Fire the tick observer
+    # strictly OUTSIDE the single-writer critical section (#56066 sweeper
+    # finding / #64231 disposition): a slow subscriber must never extend
+    # the lock hold and stall a sibling dispatcher's tick.
+    _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
     return result
 
 
@@ -2286,11 +2857,12 @@ def _dispatch_once_locked(
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
     max_in_progress: Optional[int] = None,
-    failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_spawn_per_tick: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -2313,73 +2885,1848 @@ def _dispatch_once_locked(
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
     review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
-    # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
-    # skipped_unassigned — "busy, retry later" differs from "needs routing".
-    # Resolved BEFORE the review reservation so the reservation can see which
-    # review rows the lane loop would refuse this tick.
-    per_profile_cap = max_in_progress_per_profile if (
-        # Per-profile concurrency cap (#21582): when set, track how many workers each assignee already has
-        # in flight, and refuse to spawn when this would push that assignee past the cap. Prevents fan-out
-        # workloads from melting a single profile's local model / API quota / browser pool while leaving
-        # other profiles idle.
+    # Per-profile concurrency cap (#21582): when set, track how many workers
+    # each assignee already has in flight, and refuse to spawn when this
+    # would push that assignee past the cap. Prevents fan-out workloads from
+    # melting a single profile's local model / API quota / browser pool while
+    # leaving other profiles idle. Tasks blocked this way go to
+    # skipped_per_profile_capped (not skipped_unassigned — the
+    # operator-actionable signal is different: "this profile is busy, try
+    # again later" not "this needs routing"). Resolved BEFORE the review
+    # reservation so the reservation can see which review rows the lane loop
+    # would refuse this tick.
+    _per_profile_cap = max_in_progress_per_profile if (
         isinstance(max_in_progress_per_profile, int)
         and max_in_progress_per_profile > 0
     ) else None
-    per_profile_running: dict[str, int] = {}
-    if per_profile_cap is not None:
+    _per_profile_running: dict[str, int] = {}
+    if _per_profile_cap is not None:
         for prow in conn.execute(
             "SELECT assignee, COUNT(*) AS n FROM tasks "
             "WHERE status = 'running' AND assignee IS NOT NULL "
             "GROUP BY assignee"
         ):
-            per_profile_running[prow["assignee"]] = int(prow["n"])
+            _per_profile_running[prow["assignee"]] = int(prow["n"])
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
-    # one slot back.
+    # one slot back. The review rows are checked against the same gates the
+    # review lane would apply this tick (per-profile cap, respawn guard), so a
+    # review row that cannot spawn does not pin ready_budget to 0.
     ready_budget = spawn_budget
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
         conn, review_rows,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        per_profile_cap=_per_profile_cap, per_profile_running=_per_profile_running,
     ):
         ready_budget = max(spawn_budget - 1, 0)
-    lane_kwargs: dict[str, Any] = dict(
-        dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
-        failure_limit=failure_limit, spawn_fn=spawn_fn,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
-    )
-    default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
+    # Per-tick spawn budget (kanban.max_spawn_per_tick): caps the number of
+    # NEW starts made during this single dispatch tick, across the ready,
+    # review, and pipeline lanes. Distinct from max_spawn (live concurrency)
+    # and max_in_progress (concurrency ceiling). ``_tick_started`` counts every
+    # start committed this tick — in BOTH dry_run and real paths — so a
+    # --dry-run report matches a real dispatch. Non-positive / non-int values
+    # coerce to None (no per-tick cap), preserving legacy behaviour.
+    _per_tick_cap = (
+        max_spawn_per_tick
+        if isinstance(max_spawn_per_tick, int)
+        and not isinstance(max_spawn_per_tick, bool)
+        and max_spawn_per_tick > 0
+        else None
+    )
+    _tick_started = 0
+    # Normalize default_assignee once: empty/whitespace string → None so the
+    # rest of the loop can use ``if default_assignee:`` as a single check.
+    # We also resolve profile_exists once here for the same reason.
+    _default_assignee = (default_assignee or "").strip() or None
+    _default_assignee_resolved = False
+    if _default_assignee:
+        try:
+            from hermes_cli.profiles import profile_exists as _pe
+            _default_assignee_resolved = bool(_pe(_default_assignee))
+        except Exception:
+            # Profiles module not importable (test stubs, exotic envs).
+            # Trust the operator's config and try the assignment; the
+            # downstream profile_exists check on the assigned row will
+            # bucket it as nonspawnable if the profile genuinely isn't
+            # there, with the existing diagnostic.
+            _default_assignee_resolved = True
+    # OOM-aware spawn backpressure: skip new spawns when system free RAM
+    # drops below the configured threshold. The threshold defaults to
+    # 512 MB if not set in config (kanban.min_free_ram_mb). This prevents
+    # the dispatcher from compounding memory pressure when the VPS is
+    # already under memory stress (#Audit-H4a).
+    try:
+        from hermes_cli.config import get_kanban_config
+        _kanban_cfg = get_kanban_config()
+    except Exception:
+        _kanban_cfg = {}
+    try:
+        from gateway.memory_monitor import get_system_free_ram_mb
+        _min_free_ram_mb = _kanban_cfg.get("min_free_ram_mb", 512)
+        if _min_free_ram_mb and _min_free_ram_mb > 0:
+            _free_mb = get_system_free_ram_mb()
+            if _free_mb is not None and _free_mb < _min_free_ram_mb:
+                _log.warning(
+                    "dispatch_once: free RAM %dMB below threshold %dMB — "
+                    "skipping spawns this tick",
+                    _free_mb, _min_free_ram_mb,
+                )
+                return result
+    except Exception:
+        _log.debug(
+            "dispatch_once: OOM backpressure probe failed — "
+            "skipping check (fails open)",
+            exc_info=True,
+        )
+    # Daily spawn budget (P2-1 cost governance): skip further spawns when
+    # today's cumulative agent spawns have reached the configured ceiling.
+    # The counter is global (all boards) and resets at UTC midnight. Set
+    # ``kanban.daily_spawn_budget`` to 0 to disable (unlimited).
+    _daily_budget = int(_kanban_cfg.get("daily_spawn_budget", 0) or 0)
+    if _daily_budget > 0:
+        _daily_count = _get_daily_spawn_count(conn)
+        _daily_remaining = _daily_budget - _daily_count
+        if _daily_remaining <= 0:
+            _log.warning(
+                "dispatch_once: daily spawn budget exhausted (%d/%d) — "
+                "skipping all spawns this tick",
+                _daily_count, _daily_budget,
+            )
+            result.budget_exhausted = True
+            return result
+    else:
+        _daily_remaining = -1  # unlimited
+
+    # Same-profile stagger: when consecutive ready tasks share an assignee,
+    # add 1-5s random delay between spawns to prevent PID race conditions on
+    # shared profile state (temp files, lock files, state.db). (#t_b3aa7761)
+    _last_stagger_assignee: Optional[str] = None
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
+        if _per_tick_cap is not None and _tick_started >= _per_tick_cap:
+            break
         row_assignee = row["assignee"]
         if not row_assignee:
-            # Honour kanban.default_assignee so an unassigned task doesn't
-            # park in 'ready' forever.
-            if not default_assignee or not _apply_default_assignee(
-                conn, row["id"], default_assignee, dry_run=dry_run,
-            ):
+            # Honour kanban.default_assignee: when the dispatcher hits an
+            # unassigned ready task and an operator-configured fallback
+            # exists, persist the assignment and proceed. This removes the
+            # dashboard footgun where a task created without an assignee
+            # parks in 'ready' forever even though the operator's intent
+            # ("default") was perfectly clear (#27145). Mutating the row
+            # (not just the in-memory view) keeps diagnostics and the
+            # board state consistent: the task is now legitimately owned
+            # by ``kanban.default_assignee``, not "unassigned but secretly
+            # routed".
+            if _default_assignee and _default_assignee_resolved:
+                # Dry-run: show what WOULD happen (auto-assign + spawn) without
+                # mutating the DB. Real run: mutate the row + emit the
+                # 'assigned' event so the board state matches what just happened.
+                if not dry_run:
+                    try:
+                        with _kb.write_txn(conn):
+                            conn.execute(
+                                "UPDATE tasks SET assignee = ? WHERE id = ? "
+                                "AND (assignee IS NULL OR assignee = '')",
+                                (_default_assignee, row["id"]),
+                            )
+                            _kb._append_event(
+                                conn, row["id"], "assigned",
+                                {
+                                    "assignee": _default_assignee,
+                                    "source": "kanban.default_assignee",
+                                },
+                            )
+                    except Exception:
+                        _log.debug(
+                            "kanban dispatch: failed to apply default_assignee=%r "
+                            "to task %s",
+                            _default_assignee, row["id"], exc_info=True,
+                        )
+                        result.skipped_unassigned.append(row["id"])
+                        continue
+                row_assignee = _default_assignee
+                result.auto_assigned_default.append(row["id"])
+            else:
                 result.skipped_unassigned.append(row["id"])
                 continue
-            row_assignee = default_assignee
-            result.auto_assigned_default.append(row["id"])
-        if _dispatch_lane_task(conn, row, row_assignee, result, lane="ready", **lane_kwargs):
+        # Skip ready tasks whose assignee is not a real Hermes profile.
+        # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
+        # with "Profile 'X' does not exist" when the assignee names a
+        # control-plane lane (e.g. an interactive Claude Code terminal
+        # like ``orion-cc`` / ``orion-research``) rather than a Hermes
+        # profile. Those task lanes are pulled by terminals via
+        # ``claim_task`` directly and should NEVER auto-spawn — the
+        # subprocess would crash on startup, get reaped as a zombie,
+        # the task would loop back to ``ready`` on next tick, and we'd
+        # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
+        if not _is_profile_spawnable(row_assignee):
+            # Bucket separately from skipped_unassigned: the operator
+            # cannot fix this by assigning a profile (the assignee IS the
+            # intended owner — a lead or a terminal lane). Health telemetry
+            # uses this distinction to suppress spurious "stuck" warnings on
+            # multi-lane setups where the ready queue is steadily full
+            # of human-pulled work.
+            result.skipped_nonspawnable.append(row["id"])
+            continue
+        # Pre-spawn gate: forced-skills visibility check.
+        # A task that requires skills the assignee profile cannot see
+        # will fail at startup — reject it now rather than wasting a
+        # worker spawn cycle and hitting the failure breaker.
+        #
+        # SKILL REQUEST FALLBACK: Before blocking, attempt to grant each
+        # missing skill via the skill broker (task-scoped grant). This
+        # implements the design pattern where profiles have a defined skill
+        # list and borrow skills on-demand from the library. The grant is
+        # logged in the profile activity ledger for Denji review.
+        ready_task = _kb.get_task(conn, row["id"])
+        forced_skills = list(ready_task.skills or []) if ready_task else []
+        missing_forced_skills = _missing_worker_forced_skills(
+            row["assignee"], forced_skills,
+        )
+        if missing_forced_skills:
+            # Attempt skill grants before blocking
+            still_missing = []
+            for skill_name in missing_forced_skills:
+                try:
+                    from tools.skill_grants import grant_skill
+                    grant_result = grant_skill(
+                        profile=row["assignee"],
+                        skill=skill_name,
+                        task_id=row["id"],
+                        reason=f"Auto-grant for forced skill on task {row['id']}",
+                    )
+                    if grant_result.get("granted"):
+                        _log.info(
+                            "dispatch_once: auto-granted skill '%s' to profile '%s' for task %s",
+                            skill_name, row["assignee"], row["id"],
+                        )
+                    else:
+                        still_missing.append(skill_name)
+                        _log.warning(
+                            "dispatch_once: skill grant denied for '%s' on profile '%s': %s",
+                            skill_name, row["assignee"], grant_result.get("reason", "unknown"),
+                        )
+                except Exception as exc:
+                    still_missing.append(skill_name)
+                    _log.warning(
+                        "dispatch_once: skill grant failed for '%s' on profile '%s': %s",
+                        skill_name, row["assignee"], exc,
+                    )
+            if still_missing:
+                result.dispatcher_rejected.append(row["id"])
+                if not dry_run:
+                    if _block_missing_forced_skills(
+                        conn, row["id"], row["assignee"], still_missing,
+                        forced_skills=forced_skills,
+                    ):
+                        result.auto_blocked.append(row["id"])
+                continue
+        # Per-profile concurrency cap (#21582): even if there's global
+        # headroom, refuse to spawn for an assignee that's already at
+        # its in-flight cap. Prevents one profile's local model / API
+        # quota / browser pool from being overwhelmed by a fan-out
+        # while the global max_in_progress / max_spawn caps still allow
+        # work on OTHER profiles.
+        if _per_profile_cap is not None:
+            current = _per_profile_running.get(row_assignee, 0)
+            if current >= _per_profile_cap:
+                result.skipped_per_profile_capped.append(
+                    (row["id"], row_assignee, current)
+                )
+                continue
+        # Respawn guard: refuse to re-spawn when useful work is already
+        # in-flight/recent, or when the last failure is a deterministic
+        # blocker (quota / auth). The guard defers the spawn this tick so
+        # the task gets a chance to clear (rate limits often reset in
+        # seconds-to-minutes); the existing consecutive_failures counter
+        # still trips the auto-block circuit breaker after failure_limit
+        # consecutive failures, so a persistent auth error eventually
+        # blocks via the normal path rather than on first occurrence.
+        guard_reason = check_respawn_guard(conn, row["id"])
+        if guard_reason is not None:
+            result.respawn_guarded.append((row["id"], guard_reason))
+            # Emit an event so operators can see why the task was
+            # skipped when reading `hermes kanban tail` — without
+            # this the task appears stuck in ready with no diagnosis.
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "respawn_guarded",
+                        {"reason": guard_reason},
+                    )
+            continue
+        if not dry_run:
+            task_for_skills = _kb.get_task(conn, row["id"])
+            missing_skills = _missing_worker_forced_skills(
+                row["assignee"], task_for_skills.skills if task_for_skills else None
+            )
+            if missing_skills:
+                if _block_missing_forced_skills(
+                    conn, row["id"], row["assignee"], missing_skills,
+                    forced_skills=task_for_skills.skills if task_for_skills else None,
+                ):
+                    result.auto_blocked.append(row["id"])
+                continue
+        if dry_run:
+            result.spawned.append((row["id"], row_assignee, ""))
+            _tick_started += 1
             spawned += 1
+            # Increment per-profile counter even in dry_run so the cap
+            # check sees the would-be spawn on subsequent iterations.
+            # Without this, dry_run reports every task as spawnable and
+            # under-reports the capped subset (#21582).
+            if _per_profile_cap is not None and row_assignee:
+                _per_profile_running[row_assignee] = (
+                    _per_profile_running.get(row_assignee, 0) + 1
+                )
+            continue
+        claimed = _kb.claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        if claimed is None:
+            continue
+        try:
+            resolved_branch_name = None
+            if claimed.workspace_kind == "worktree":
+                workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
+            else:
+                workspace = _kbw.resolve_workspace(claimed, board=board)
+        except Exception as exc:
+            auto = _record_spawn_failure(
+                conn, claimed.id, f"workspace: {exc}",
+                failure_limit=failure_limit,
+            )
+            if auto:
+                result.auto_blocked.append(claimed.id)
+            continue
+        # Persist the resolved workspace path so the worker can cd there.
+        _kb.set_workspace_path(conn, claimed.id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            _kb.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        _kb._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        try:
+            pid = _spawn_with_board(_spawn, claimed, str(workspace), board=board)
+            if pid:
+                _set_worker_pid(conn, claimed.id, int(pid))
+            # Worker-lifecycle observer (RFC #58548): fires AFTER spawn_fn
+            # returned and the PID (when reported) is durably persisted,
+            # per the RFC timing contract. Best-effort — can never break
+            # the dispatch loop.
+            _fire_worker_spawned_hook(
+                conn, claimed, str(workspace), pid, board=board,
+            )
+            # NOTE: we intentionally do NOT reset consecutive_failures
+            # here. A successful spawn proves the worker can start but
+            # doesn't prove the run will succeed. Under unified
+            # failure counting, resetting on spawn would let a task
+            # that keeps timing out after spawn loop forever. The
+            # counter is cleared only on successful completion (see
+            # complete_task).
+            result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+            spawned += 1
+            _tick_started += 1
+            if _daily_budget > 0:
+                _consume_daily_spawn(conn)
 
-    # A review agent (sdlc-review) approves (→ done) or requests changes
-    # (→ ready/todo). Review spawns share max_spawn with ready tasks. The loop
-    # checks the FULL shared ``spawn_budget`` — the reservation above caps the
-    # ready lane, it grants no extra capacity here.
+            # Same-profile stagger: if this task's assignee matches the
+            # previous spawn's assignee, sleep 1-5s to spread profile state
+            # access across the tick. Prevents race conditions when two
+            # workers share temp files, lock files, and state.db. (#t_b3aa7761)
+            if _last_stagger_assignee is not None and claimed.assignee == _last_stagger_assignee:
+                delay = random.uniform(1.0, 5.0)
+                _log.debug(
+                    "kanban dispatch: staggering %s by %.1fs (same profile %s)",
+                    claimed.id, delay, claimed.assignee,
+                )
+                time.sleep(delay)
+            _last_stagger_assignee = claimed.assignee
+            # Track the new in-flight count for this profile so later
+            # iterations in this same tick respect the per-profile cap
+            # (#21582). Subsequent ticks re-query from the DB.
+            if _per_profile_cap is not None and claimed.assignee:
+                _per_profile_running[claimed.assignee] = (
+                    _per_profile_running.get(claimed.assignee, 0) + 1
+                )
+        except Exception as exc:
+            from tools.process_registry import RestartSafeScopeUnavailable
+
+            # The host refused the spawn (no restart-safe scope): nothing about
+            # the card ran, so it must not spend the card's retry budget (#114720).
+            infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+            if infrastructure:
+                _log.warning(
+                    "kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s",
+                    claimed.id, exc,
+                )
+            auto = _record_task_failure(
+                conn, claimed.id, str(exc),
+                outcome="spawn_failed", failure_limit=failure_limit,
+                release_claim=True, end_run=True,
+                infrastructure=infrastructure,
+            )
+            if auto:
+                result.auto_blocked.append(claimed.id)
+
+    # ---- review column dispatch ----
+    # Review tasks are tasks that a worker moved to 'review' after
+    # creating a PR.  The dispatcher spawns a review agent (loading
+    # sdlc-review skill) that verifies the candidate and either approves
+    # (→ done) or requests changes (→ ready/todo for the implementer).
+    #
+    # Same concurrency model as ready dispatch: review spawns count
+    # against max_spawn alongside ready tasks, so the total number of
+    # running workers stays bounded.
+    # Auto-dispatch is enabled by default because Hermes bundles the
+    # ``sdlc-review`` skill and reviewer workers can now approve, request
+    # changes without block-loop accounting, or escalate a genuine blocker.
+    # Human-only boards can disable it with ``kanban.review_dispatch``.
+    #
+    # ``review_rows`` was enumerated before the ready loop; when it is
+    # non-empty the ready loop ran against ``ready_budget`` (one slot held
+    # back) so this lane cannot be permanently starved by a sustained
+    # ready backlog. The review loop itself still checks the FULL shared
+    # ``spawn_budget`` — the reservation caps the ready lane, it does not
+    # grant the review lane extra capacity.
+    #
+    # KENSEI CUSTOM — reviewer concurrency lane: review spawns are ALSO
+    # governed by a separate ``max_review_spawn`` cap (default:
+    # max(1, max_spawn // 2)) so review cannot starve work and vice versa.
+    # The total fleet concurrency is ``max_spawn + max_review_spawn`` — a
+    # conscious trade-off for pipeline safety. See Phase 2 P2-1.
+    #
+    # KENSEI CUSTOM — sticky-reviewer pin: tasks that re-enter review after
+    # a rejection get their assignee swapped to the rejecting reviewer's
+    # profile so the same reviewer (with context) picks up the follow-up
+    # pass. No-op for tasks without a prior review_rejected.
+    _pin_sticky_reviewers(conn)
+    _review_spawned = 0
+    _max_review_spawn = max(1, (max_spawn or 4) // 2)
     for row in review_rows:
         if spawn_budget is not None and spawned >= spawn_budget:
+            break
+        if _review_spawned >= _max_review_spawn:
+            break
+        if _per_tick_cap is not None and _tick_started >= _per_tick_cap:
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
+        if not _is_profile_spawnable(row["assignee"]):
+            # Operator-actionable starvation (unlike the ready lane): nothing
+            # ever pulls a review task, so an unresolvable reviewer name (e.g.
+            # the ``sdlc-review`` skill passed as ``reviewer``) would sit here
+            # forever with no signal. Surface it every tick so the dispatch
+            # diagnostics/log output carries the task id and the unresolvable
+            # profile name; routing the fix (reassign to a real reviewer) is
+            # left to the operator — auto-reassignment was explicitly rejected
+            # (Sahil, 2026-09-20) because silently swapping the reviewer
+            # changes who signs off on the work.
+            _log.warning(
+                "REVIEW TASK STARVED: review task %s has reviewer '%s' which "
+                "is not a spawnable profile (not a profile dir, in "
+                "kanban.nonspawnable_profiles, or tier 3). It cannot be "
+                "dispatched and nothing else pulls review tasks. Reassign it "
+                "to a real reviewer profile.",
+                row["id"], row["assignee"],
+            )
+            result.skipped_review_nonspawnable.append((row["id"], row["assignee"]))
+            continue
+        # Per-profile concurrency cap — mirrors the ready-lane check so a
+        # fan-out of review tasks for the same reviewer profile is bounded.
+        row_assignee = row["assignee"]
+        if _per_profile_cap is not None:
+            current = _per_profile_running.get(row_assignee, 0)
+            if current >= _per_profile_cap:
+                result.skipped_per_profile_capped.append(
+                    (row["id"], row_assignee, current)
+                )
+                continue
+        # Respawn guard (lane="review"): rate-limit cooldown and auth-blocker
+        # still apply; recent_success and active_pr are skipped (upstream
+        # commit a235d1917e — these are the *inputs* to a review handoff).
+        guard_reason = check_respawn_guard(conn, row["id"], lane="review")
+        if guard_reason is not None:
+            result.respawn_guarded.append((row["id"], guard_reason))
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "respawn_guarded",
+                        {"reason": guard_reason, "lane": "review"},
+                    )
+            continue
+        if dry_run:
+            result.spawned.append((row["id"], row["assignee"] or "", ""))
+            _tick_started += 1
             spawned += 1
+            _review_spawned += 1
+            # Increment per-profile counter even in dry_run so the cap
+            # check sees the would-be spawn on subsequent iterations.
+            if _per_profile_cap is not None and row["assignee"]:
+                _per_profile_running[row["assignee"]] = (
+                    _per_profile_running.get(row["assignee"], 0) + 1
+                )
+            if _daily_budget > 0:
+                _consume_daily_spawn(conn)
+            continue
+        claimed = _kb.claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        if claimed is None:
+            continue
+        try:
+            resolved_branch_name = None
+            if claimed.workspace_kind == "worktree":
+                workspace, resolved_branch_name = _kbw._resolve_worktree_workspace(claimed, board=board)
+            else:
+                workspace = _kbw.resolve_workspace(claimed, board=board)
+        except Exception as exc:
+            auto = _record_spawn_failure(
+                conn, claimed.id, f"workspace: {exc}",
+                failure_limit=failure_limit,
+            )
+            if auto:
+                result.auto_blocked.append(claimed.id)
+            continue
+        # Persist the resolved workspace path so the worker can cd there.
+        _kb.set_workspace_path(conn, claimed.id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            _kb.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+        _kb._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        # Force-load the sdlc-review skill for review agents — it carries
+        # the review logic (AC verification, merge, etc.). The mandatory
+        # kanban lifecycle is already injected into every worker's system
+        # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
+        # review agent needs.
+        claimed.skills = list(
+            dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
+        )
+        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        try:
+            pid = _spawn_with_board(_spawn, claimed, str(workspace), board=board)
+            if pid:
+                _set_worker_pid(conn, claimed.id, int(pid))
+            # Worker-lifecycle observer (RFC #58548): same contract as the
+            # ready-lane fire above — after spawn + PID persistence.
+            _fire_worker_spawned_hook(
+                conn, claimed, str(workspace), pid, board=board,
+            )
+            result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+            spawned += 1
+            _review_spawned += 1
+            _tick_started += 1
+            if _daily_budget > 0:
+                _consume_daily_spawn(conn)
+
+            if _per_profile_cap is not None and claimed.assignee:
+                _per_profile_running[claimed.assignee] = (
+                    _per_profile_running.get(claimed.assignee, 0) + 1
+                )
+        except Exception as exc:
+            from tools.process_registry import RestartSafeScopeUnavailable
+
+            # Host refused the spawn (no restart-safe scope): #114720 — never
+            # charges the card's retry budget.
+            infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+            if infrastructure:
+                _log.warning(
+                    "kanban dispatcher: review spawn of %s deferred, host cannot place the worker: %s",
+                    claimed.id, exc,
+                )
+            auto = _record_task_failure(
+                conn, claimed.id, str(exc),
+                outcome="spawn_failed", failure_limit=failure_limit,
+                release_claim=True, end_run=True,
+                infrastructure=infrastructure,
+            )
+            if auto:
+                result.auto_blocked.append(claimed.id)
+
+    # ---- feature pipeline dispatch ----
+    # Pipeline tasks (research, prd, spec, council) follow a gated progression:
+    #   triage → research → prd → spec → council (LLM deliberation)
+    # Each stage has a gate function that validates the artifact before
+    # promotion.  When the gate fails, the task stays in its current
+    # status and the assigned lead continues working on the artifact.
+    # Exception: council REVISE bounces back to spec (capped at max_revise_loops).
+    # When the gate passes, the task advances to the next stage.
+    #
+    # Pipeline tasks are NOT dispatched to workers like ready tasks.
+    # Instead, the gate check runs each tick.  If the gate fails and
+    # the task has an assignee, we spawn the lead to continue working.
+    # If the gate passes, we promote to the next stage.
+    from hermes_cli.feature_pipeline import (
+        PIPELINE_STAGES,
+        GATE_FUNCTIONS,
+        HUMAN_GATE_STAGES,
+        get_next_stage,
+        get_pipeline_mode,
+        check_human_approved,
+        time_in_stage_hours,
+    )
+    # Read the full pipeline stage list dynamically so the dispatcher stays
+    # in sync with feature_pipeline.PIPELINE_STAGES (design doc §3).
+    _PIPELINE_STATUSES = tuple(PIPELINE_STAGES)
+    # Build a placeholder list for the IN (...) clause; the dispatcher loops
+    # over rows but filters in Python where the IN list is large.
+    _placeholders = ",".join("?" * len(_PIPELINE_STATUSES))
+    # Clear stale claim locks on pipeline tasks so they re-enter the
+    # gate-check loop.  release_stale_claims only looks at status='running',
+    # but pipeline tasks sit in stage statuses with claim_lock still set
+    # after a worker crash — making them permanently invisible to the
+    # pipeline dispatch query below (which requires claim_lock IS NULL).
+    clear_stale_pipeline_claims(conn)
+    pipeline_rows = conn.execute(
+        f"SELECT id, assignee, skills, pipeline_stage, pipeline_mode "
+        f"FROM tasks WHERE status IN ({_placeholders}) "
+        f"AND claim_lock IS NULL "
+        f"ORDER BY priority DESC, created_at ASC",
+        _PIPELINE_STATUSES,
+    ).fetchall()
+    for row in pipeline_rows:
+        # Gate checks, council launches, and human-gate handling are
+        # near-zero-cost (file stat + regex).  Only the spawn-on-failure
+        # path respects spawn pool capacity — the gate check itself fires
+        # unconditionally.  This prevents pipeline tasks from stalling
+        # silently when the ready-task pool is saturated.
+        stage = row["pipeline_stage"]
+        mode = get_pipeline_mode(dict(row))
+        if stage not in GATE_FUNCTIONS and stage not in HUMAN_GATE_STAGES:
+            # Pass-through stages (execute, pr+qa) — auto-advance when the
+            # next stage is ready. Lead-driven; no artifact gate.
+            next_stage = get_next_stage(stage, mode)
+            if next_stage is None:
+                # End of pipeline
+                if not dry_run:
+                    with _kb.write_txn(conn):
+                        conn.execute(
+                            "UPDATE tasks SET pipeline_stage = ?, status = ? WHERE id = ?",
+                            (stage, "todo", row["id"]),
+                        )
+                        _append_event(
+                            conn, row["id"], "pipeline_complete",
+                            {"stage": stage, "mode": mode},
+                        )
+                result.pipeline_advanced.append((row["id"], stage, "todo"))
+                continue
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    conn.execute(
+                        "UPDATE tasks SET pipeline_stage = ?, status = ? WHERE id = ?",
+                        (next_stage, next_stage, row["id"]),
+                    )
+                    _append_event(
+                        conn, row["id"], "pipeline_advanced",
+                        {"from_stage": stage, "to_stage": next_stage, "mode": mode},
+                    )
+            result.pipeline_advanced.append((row["id"], stage, next_stage))
+            continue
+        if stage in HUMAN_GATE_STAGES:
+            # Human gate (sign_off, final_sign_off) — check events table.
+            # Gate passes when Sahil approves via CLI/Discord. No lead spawn;
+            # tasks wait passively. Stale-nudge after configurable idle hours
+            # (throttled to once per stale window so a stuck gate cannot spam).
+            approved = check_human_approved(conn, row["id"], stage)
+            if approved:
+                next_stage = get_next_stage(stage, mode)
+                if not dry_run:
+                    with _kb.write_txn(conn):
+                        if next_stage:
+                            conn.execute(
+                                "UPDATE tasks SET pipeline_stage = ?, status = ? WHERE id = ?",
+                                (next_stage, next_stage, row["id"]),
+                            )
+                            _append_event(
+                                conn, row["id"], "pipeline_advanced",
+                                {"from_stage": stage, "to_stage": next_stage,
+                                 "approved_by": "human", "mode": mode},
+                            )
+                        else:
+                            conn.execute(
+                                "UPDATE tasks SET pipeline_stage = ?, status = ? WHERE id = ?",
+                                (stage, "todo", row["id"]),
+                            )
+                            _append_event(
+                                conn, row["id"], "pipeline_complete",
+                                {"stage": stage, "approved_by": "human", "mode": mode},
+                            )
+                result.pipeline_advanced.append((row["id"], stage, next_stage or "todo"))
+            else:
+                hours = time_in_stage_hours(conn, row["id"], stage)
+                stale_hours = _get_sign_off_timeout_hours()
+                if hours > stale_hours and not dry_run:
+                    last_nudge = _hours_since_last_event(
+                        conn, row["id"], "human_gate_stale_nudge", stage
+                    )
+                    if last_nudge is None or last_nudge >= stale_hours:
+                        with _kb.write_txn(conn):
+                            _append_event(
+                                conn, row["id"], "human_gate_stale_nudge",
+                                {"stage": stage, "hours_idle": round(hours, 1)},
+                            )
+                _log.debug("Human gate %s waiting for approval: %s (%.1f hrs)",
+                             stage, row["id"], hours)
+            continue
+        if stage not in GATE_FUNCTIONS:
+            # Unknown stage — skip
+            continue
+        gate_fn = GATE_FUNCTIONS[stage]
+        # Council deliberation is expensive (multi-LLM). Run it in the
+        # background, never inside the dispatcher tick: when the verdict is
+        # missing the gate returns COUNCIL_PENDING and we launch/await the
+        # background run here instead of blocking.
+        if stage == "council":
+            if _maybe_launch_council(conn, row["id"], dry_run=dry_run):
+                continue
+        # Determine artifact directory.
+        # FIX 2026-08-13 (t_9df6f54b): the previous code used
+        # ``os.environ["HERMES_HOME"]`` here. When the dispatcher runs
+        # embedded in a PROFILE gateway (e.g. sirvir,
+        # HERMES_HOME=~/.hermes/profiles/sirvir) it looked for artifacts
+        # under the profile home, while pipeline workers write them to the
+        # SHARED root (~/.hermes/feature-artifacts/). Result: the gate
+        # failed on every tick ("Missing research-brief.md") even though
+        # the artifact existed — infinite re-claim loop on research.
+        # kanban_home() resolves the shared root across profile HERMES_HOME
+        # exactly like the kanban board paths do.
+        artifact_base = os.path.join(
+            str(_kb.kanban_home()),
+            "feature-artifacts",
+        )
+        artifact_dir = os.path.join(artifact_base, row["id"])
+        gate_result = gate_fn(artifact_dir)
+        runtime_result = _validate_pipeline_runtime_state(
+            conn, row["id"], stage, artifact_dir,
+        )
+        if runtime_result:
+            # Canonical task state outranks a self-authored artifact.  While
+            # children are still running, wait passively instead of spawning
+            # a parent worker every dispatcher tick.
+            if runtime_result.startswith("Waiting for child tasks:"):
+                gate_result = runtime_result
+            elif gate_result is None:
+                gate_result = runtime_result
+        if gate_result is None:
+            # Gate passed — promote to next stage.
+            # Audit is special: PASS/CONDITIONAL passes the gate, but
+            # CONDITIONAL also auto-creates a follow-up task so the issues
+            # are tracked (design doc §3 [11]).
+            if stage == "audit":
+                try:
+                    from hermes_cli.feature_pipeline import get_audit_verdict
+                    audit_verdict = get_audit_verdict(artifact_dir)
+                except Exception:
+                    audit_verdict = None
+                if audit_verdict == "CONDITIONAL" and not dry_run:
+                    new_id = _create_audit_followup_task(
+                        conn, row["id"], "CONDITIONAL",
+                        summary="(see audit-report.md)",
+                    )
+                    if new_id:
+                        _append_event(
+                            conn, row["id"], "audit_followup_created",
+                            {"followup_id": new_id},
+                        )
+                    _record_denji_review_signal(
+                        conn, row["id"], signal_type="audit_conditional",
+                        followup_id=new_id,
+                    )
+            elif stage == "decompose" and not dry_run:
+                try:
+                    _create_decompose_child_tasks(
+                        conn, row["id"], artifact_dir,
+                    )
+                except Exception as exc:
+                    with _kb.write_txn(conn):
+                        _append_event(
+                            conn,
+                            row["id"],
+                            "gate_failed",
+                            {
+                                "stage": stage,
+                                "reason": f"Child task materialisation failed: {exc}",
+                            },
+                        )
+                    _log.exception(
+                        "Decomposition materialisation failed for %s", row["id"]
+                    )
+                    continue
+            next_stage = get_next_stage(stage, mode)
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    if next_stage:
+                        conn.execute(
+                            "UPDATE tasks SET pipeline_stage = ?, status = ? WHERE id = ?",
+                            (next_stage, next_stage, row["id"]),
+                        )
+                        _append_event(
+                            conn, row["id"], "pipeline_advanced",
+                            {"from_stage": stage, "to_stage": next_stage, "mode": mode},
+                        )
+                        if stage == "audit":
+                            _record_denji_review_signal(
+                                conn, row["id"],
+                                signal_type="audit_passed",
+                                verdict=get_audit_verdict(artifact_dir) or "PASS",
+                            )
+                    else:
+                        # End of pipeline — gate passed, task completes
+                        conn.execute(
+                            "UPDATE tasks SET pipeline_stage = ?, status = ? WHERE id = ?",
+                            (stage, "todo", row["id"]),
+                        )
+                        _append_event(
+                            conn, row["id"], "pipeline_complete",
+                            {"stage": stage, "mode": mode},
+                        )
+            result.pipeline_advanced.append((row["id"], stage, next_stage or "todo"))
+        elif stage == "council":
+            # Council REVISE — bounce back to spec with loop tracking.
+            # Don't spawn a lead; the spec author continues working.
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    revise_count = _get_council_revise_count(conn, row["id"], "council")
+                    max_loops = _get_max_revise_loops()
+                    if revise_count >= max_loops:
+                        conn.execute(
+                            "UPDATE tasks SET status = ?, pipeline_stage = ? WHERE id = ?",
+                            ("blocked", "council", row["id"]),
+                        )
+                        _append_event(
+                            conn, row["id"], "gate_failed",
+                            {"stage": stage, "reason": gate_result,
+                             "escalated": True,
+                             "revise_count": revise_count,
+                             "max_loops": max_loops},
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE tasks SET status = ?, pipeline_stage = ? WHERE id = ?",
+                            ("spec", "spec", row["id"]),
+                        )
+                        _append_event(
+                            conn, row["id"], "gate_failed",
+                            {"stage": stage, "reason": gate_result,
+                             "bounced_to": "spec",
+                             "revise_count": revise_count + 1},
+                        )
+                        _record_council_revise(conn, row["id"], "council")
+                        # Delete the stale council verdict so a fresh
+                        # deliberation runs when the task re-enters council
+                        # after the spec is revised.  Without this, re-entry
+                        # reads the old REVISE verdict and bounces immediately
+                        # without re-deliberating.
+                        _clear_council_verdict(artifact_dir, row["id"])
+            result.pipeline_advanced.append((row["id"], stage, "spec"))
+        elif stage == "audit":
+            # Audit BLOCKED — bounce to spec (capped). Same loop cap policy
+            # as council REVISE — the spec author fixes the blockers, and at
+            # max_revise_loops we escalate to operator.
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    revise_count = _get_council_revise_count(conn, row["id"], "audit")
+                    max_loops = _get_max_revise_loops()
+                    if revise_count >= max_loops:
+                        conn.execute(
+                            "UPDATE tasks SET status = ?, pipeline_stage = ? WHERE id = ?",
+                            ("blocked", "audit", row["id"]),
+                        )
+                        _append_event(
+                            conn, row["id"], "gate_failed",
+                            {"stage": stage, "reason": gate_result,
+                             "escalated": True,
+                             "revise_count": revise_count,
+                             "max_loops": max_loops},
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE tasks SET status = ?, pipeline_stage = ? WHERE id = ?",
+                            ("spec", "spec", row["id"]),
+                        )
+                        _append_event(
+                            conn, row["id"], "gate_failed",
+                            {"stage": stage, "reason": gate_result,
+                             "bounced_to": "spec",
+                             "revise_count": revise_count + 1},
+                        )
+                        _record_council_revise(conn, row["id"], "audit")
+            result.pipeline_advanced.append((row["id"], stage, "spec"))
+        else:
+            # Gate failed — record event then dispatch lead to continue working
+            if not dry_run:
+                with _kb.write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "gate_failed",
+                        {"stage": stage, "reason": gate_result},
+                    )
+            if gate_result.startswith("Waiting for child tasks:"):
+                continue
+            if not row["assignee"]:
+                result.skipped_unassigned.append(row["id"])
+                continue
+            assignee = row["assignee"]
+            _stage_owner = _get_stage_owner(stage)
+            # Always reassign to the configured stage owner for this stage
+            # when the current assignee doesn't match.  The old assignee from
+            # a previous stage may still be spawnable (e.g. kensei-review
+            # carried over from the prd stage) but is the wrong profile for
+            # the current stage's artifact (e.g. spec → octacon-frontend).
+            if _stage_owner and _stage_owner != assignee:
+                if not dry_run:
+                    conn.execute(
+                        "UPDATE tasks SET assignee = ? WHERE id = ?",
+                        (_stage_owner, row["id"]),
+                    )
+                    _append_event(
+                        conn, row["id"], "assigned",
+                        {"assignee": _stage_owner,
+                         "reason": f"stage owner ({_stage_owner}) for stage '{stage}'"},
+                    )
+                assignee = _stage_owner
+            if not _is_profile_spawnable(assignee):
+                # Stage owner is also nonspawnable — this is a config error.
+                # Surface loudly: a misconfigured stage_owners value silently
+                # starves every task at this pipeline stage (no alert before).
+                _log.error(
+                    "PIPELINE DISPATCH BLOCKED: task %s stage '%s' owner "
+                    "'%s' is not spawnable (in kanban.nonspawnable_profiles "
+                    "or no profile dir). Fix pipeline.stage_owners in "
+                    "config.yaml. Task will not progress until corrected.",
+                    row["id"], stage, assignee,
+                )
+                result.skipped_nonspawnable.append(row["id"])
+                continue
+            # Per-tick spawn budget: skip this pipeline spawn (not the whole
+            # loop — cheap gate checks/advances for other rows still run) when
+            # the tick's start budget is exhausted. The gate_failed event above
+            # already persisted, so the task is retried on the next tick.
+            if _per_tick_cap is not None and _tick_started >= _per_tick_cap:
+                continue
+            if dry_run:
+                result.spawned.append((row["id"], row["assignee"], ""))
+                _tick_started += 1
+                continue
+            claimed = claim_pipeline_task(conn, row["id"], ttl_seconds=ttl_seconds)
+            if claimed is None:
+                continue
+            try:
+                workspace = _kbw.resolve_workspace(claimed, board=board)
+            except Exception as exc:
+                auto = _record_spawn_failure(
+                    conn, claimed.id, f"workspace: {exc}",
+                    failure_limit=failure_limit,
+                )
+                if auto:
+                    result.auto_blocked.append(claimed.id)
+                continue
+            _kb.set_workspace_path(conn, claimed.id, str(workspace))
+            _kb._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+            _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+            try:
+                pid = _spawn_with_board(_spawn, claimed, str(workspace), board=board)
+                if pid:
+                    _set_worker_pid(conn, claimed.id, int(pid))
+                # Record pipeline spawn for Denji's frequency tracking
+                _record_pipeline_spawn(
+                    conn, claimed.id, stage=stage, assignee=claimed.assignee or "",
+                )
+                result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+                spawned += 1
+                _tick_started += 1
+                if _daily_budget > 0:
+                    _consume_daily_spawn(conn)
+
+            except Exception as exc:
+                from tools.process_registry import RestartSafeScopeUnavailable
+
+                # Host refused the spawn (no restart-safe scope): #114720.
+                infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+                if infrastructure:
+                    _log.warning(
+                        "kanban dispatcher: pipeline spawn of %s deferred, host cannot place the worker: %s",
+                        claimed.id, exc,
+                    )
+                auto = _record_task_failure(
+                    conn, claimed.id, str(exc),
+                    outcome="spawn_failed", failure_limit=failure_limit,
+                    release_claim=True, end_run=True,
+                    infrastructure=infrastructure,
+                )
+                if auto:
+                    result.auto_blocked.append(claimed.id)
+
     return result
+
+
+_MAX_REVISE_LOOPS_HARD_CAP = 4
+
+
+def _get_max_revise_loops() -> int:
+    """Return max_revise_loops, preferring council.* then legacy pipeline.*.
+
+    Hard-clamped to ``_MAX_REVISE_LOOPS_HARD_CAP`` (4): a configured value
+    above 4 is ignored so no task can exceed the maximum council revision
+    cycles.  Valid lower configured values are respected.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        loops = cfg.get("council", {}).get("max_revise_loops")
+        if loops is None:
+            loops = cfg.get("pipeline", {}).get("max_revise_loops", 4)
+        value = int(loops) if loops is not None else 4
+    except Exception:
+        value = 4
+    return min(value, _MAX_REVISE_LOOPS_HARD_CAP)
+
+
+def _get_stage_owner(stage: str) -> str | None:
+    """Return the configured stage owner for *stage* from config.yaml.
+
+    Reads ``pipeline.stage_owners`` map (e.g. ``research: remii``,
+    ``spec: octacon``).  Returns None when no owner is configured for the
+    stage or the config is unreadable.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        owners = cfg.get("pipeline", {}).get("stage_owners", {})
+        return owners.get(stage)
+    except Exception:
+        return None
+
+
+def _is_profile_spawnable(name: str) -> bool:
+    """Return True if *name* is eligible for kanban worker spawn.
+
+    A profile must BOTH: (a) have a directory on disk, AND (b) NOT be
+    listed in ``kanban.nonspawnable_profiles``.  This blocks lead profiles
+    (remii, octacon, quan, etc.) from being spawned while allowing their
+    specialist sub-profiles (remii-deep, quan-code, etc.).
+
+    Orchestrator-only names (no profile directory) are blocked by
+    ``profile_exists()`` already — this function adds the second layer
+    for profiles that DO have directories but are not workers.
+
+    Fails CLOSED: if spawnability cannot be determined (profiles import
+    failure, or config load failure), the profile is treated as
+    non-spawnable. A task that cannot be assigned simply waits in
+    ``ready`` (recoverable), which is safer than dispatching to a
+    profile whose spawnability could not be verified.
+    """
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception as exc:
+        _log.error(
+            "_is_profile_spawnable(%s): could not import hermes_cli.profiles "
+            "(%s); treating as non-spawnable (fail-closed)", name, exc,
+        )
+        return False
+    if not profile_exists(name):
+        return False
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        blocked = cfg.get("kanban", {}).get("nonspawnable_profiles", [])
+        if name in blocked:
+            return False
+    except Exception as exc:
+        _log.error(
+            "_is_profile_spawnable(%s): could not load config (%s); "
+            "treating as non-spawnable (fail-closed)", name, exc,
+        )
+        return False
+    # Tier gate: Tier-3 (dormant/specialized) profiles are never spawnable.
+    # They require explicit Sahil approval and runtime proof before activation.
+    # Fails open for profile-level config reads (tier is advisory);
+    # fails closed for the root nonspawnable list above.
+    try:
+        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.profiles import get_profile_dir
+        _profile_dir = get_profile_dir(name)
+        _config_path = _profile_dir / "config.yaml"
+        if _config_path.is_file():
+            _profile_cfg = read_user_config_raw(_config_path)
+            _tier = _profile_cfg.get("tier")
+            if _tier is not None:
+                try:
+                    if int(_tier) == 3:
+                        _log.info(
+                            "_is_profile_spawnable(%s): tier 3 profile — "
+                            "not spawnable", name,
+                        )
+                        return False
+                except (ValueError, TypeError):
+                    pass
+    except Exception as exc:
+        _log.warning(
+            "_is_profile_spawnable(%s): tier check skipped (%s)", name, exc,
+        )
+    return True
+
+
+def _hours_since_last_event(
+    conn: sqlite3.Connection, task_id: str, kind: str, stage: str,
+) -> Optional[float]:
+    """Hours since the most recent event of ``kind`` for ``stage``.
+
+    Returns None if no such event exists. Used to throttle repeat nudges.
+    """
+    row = conn.execute(
+        "SELECT created_at FROM task_events "
+        "WHERE task_id = ? AND kind = ? "
+        "AND json_extract(payload, '$.stage') = ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (task_id, kind, stage),
+    ).fetchone()
+    if not row or row[0] is None:
+        return None
+    # created_at is an epoch-seconds integer (see _append_event).
+    try:
+        created = int(row[0])
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, (time.time() - created) / 3600.0)
+
+
+def _get_sign_off_timeout_hours() -> int:
+    """Return the sign-off stale timeout from config, default 48 hours."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        return int(cfg.get("pipeline", {}).get("sign_off_timeout_hours", 48))
+    except Exception:
+        return 48
+
+
+def _revise_event_kind(loop_kind: str) -> str:
+    """Event kind used to track a given revise loop.
+
+    Council REVISE and audit BLOCKED have independent caps (design doc §3),
+    so each gets its own event kind and counter.
+    """
+    return "audit_revise" if loop_kind == "audit" else "council_revise"
+
+
+def _get_council_revise_count(
+    conn: sqlite3.Connection, task_id: str, loop_kind: str = "council"
+) -> int:
+    """Count revise loops of ``loop_kind`` ("council" or "audit") for a task."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, _revise_event_kind(loop_kind)),
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def _record_council_revise(
+    conn: sqlite3.Connection, task_id: str, loop_kind: str = "council"
+) -> None:
+    """Record a revise event for loop tracking (epoch created_at via _append_event)."""
+    kind = _revise_event_kind(loop_kind)
+    _append_event(conn, task_id, kind, {"stage": loop_kind})
+
+
+def _council_artifact_dir(task_id: str) -> str:
+    # FIX 2026-08-13 (t_9df6f54b): anchored to the SHARED kanban root via
+    # kanban_home(), not the dispatcher gateway's HERMES_HOME — a profile
+    # gateway (sirvir) would otherwise write/read the council verdict in
+    # its own profile home and never see the pipeline's verdict.
+    base = os.path.join(
+        str(kanban_home()),
+        "feature-artifacts",
+    )
+    return os.path.join(base, task_id)
+
+
+def _write_fallback_council_verdict(artifact_dir: str, task_id: str, error: str) -> None:
+    """Write a REVISE verdict when the council fails irrecoverably.
+
+    Keeps a failed deliberation bounded: the gate bounces the task to spec
+    (capped by max_revise_loops) instead of relaunching the council forever.
+    """
+    try:
+        os.makedirs(artifact_dir, exist_ok=True)
+        md_path = os.path.join(artifact_dir, "council-verdict.md")
+        json_path = os.path.join(artifact_dir, "council-verdict.json")
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(
+                f"# Council Verdict — {task_id}\n\n"
+                f"**Verdict: REVISE**\n\n"
+                f"## Issues\n\n"
+                f"- **[CRITICAL]** Council deliberation failed: {error}\n\n"
+                f"## Chairman Rationale\n\n"
+                f"Deliberation could not complete; manual review required.\n"
+            )
+        import json as _json
+        with open(json_path, "w", encoding="utf-8") as f:
+            _json.dump({
+                "verdict": "REVISE",
+                "issues": [{"severity": "critical",
+                            "description": f"Council deliberation failed: {error}"}],
+                "dissents": [],
+                "chairman_rationale": "Deliberation could not complete; manual review required.",
+                "tokens_used": 0,
+                "elapsed_seconds": 0.0,
+                "critique_count": 0,
+                "critique_verdicts": [],
+            }, f, indent=2)
+    except OSError:
+        _log.exception("Could not write fallback council verdict for %s", task_id)
+
+
+def _maybe_launch_council(
+    conn: sqlite3.Connection, task_id: str, *, dry_run: bool = False
+) -> bool:
+    """Launch (or await) the council deliberation off the dispatcher thread.
+
+    Returns True if the dispatcher should skip this task this tick (verdict
+    not ready yet), False if a verdict exists and the gate should evaluate it.
+
+    Independently enforces the council revision cap before launching: if the
+    task's ``council_revise`` count has already reached the effective cap, the
+    council is NOT relaunched (even after a manual state reset or stale
+    ``council_running`` marker deletion).  The task is atomically blocked at
+    council and a single idempotent ``council_revision_cap_reached`` event is
+    appended.
+    """
+    artifact_dir = _council_artifact_dir(task_id)
+    if os.path.exists(os.path.join(artifact_dir, "council-verdict.md")):
+        return False  # verdict ready — let the gate parse it
+
+    # Independent revision-cap guard: a task that has already exhausted its
+    # council revisions must never relaunch, regardless of verdict/marker
+    # state.  This closes the manual-reset / stale-marker bypass.
+    revise_count = _get_council_revise_count(conn, task_id, "council")
+    cap = _get_max_revise_loops()
+    if revise_count >= cap:
+        if not dry_run:
+            with write_txn(conn):
+                # Always restore the canonical blocked state, even when an
+                # operator manually resets the task after the cap event was
+                # first recorded.  Event emission itself remains idempotent.
+                conn.execute(
+                    "UPDATE tasks SET status = ?, pipeline_stage = ? "
+                    "WHERE id = ?",
+                    ("blocked", "council", task_id),
+                )
+                already = conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id = ? "
+                    "AND kind = 'council_revision_cap_reached' LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if not already:
+                    _append_event(
+                        conn, task_id, "council_revision_cap_reached",
+                        {
+                            "count": revise_count,
+                            "cap": cap,
+                            "reason": (
+                                "council revision cap reached; refusing to "
+                                "relaunch council"
+                            ),
+                        },
+                    )
+        return True
+
+    if dry_run:
+        return True
+
+    # Resolve the deliberation timeout so a crashed run can be relaunched.
+    try:
+        from hermes_cli.config import get_council_config
+        timeout_s = int(get_council_config().timeout_seconds)
+    except Exception:
+        timeout_s = 600
+    relaunch_after_h = (timeout_s / 3600.0) + 0.25  # timeout + 15min buffer
+
+    last_run = _hours_since_last_event(conn, task_id, "council_running", "council")
+    if last_run is not None and last_run < relaunch_after_h:
+        return True  # already deliberating
+
+    with write_txn(conn):
+        _append_event(conn, task_id, "council_running", {"stage": "council"})
+
+    import threading
+
+    def _worker() -> None:
+        try:
+            from hermes_cli.council import deliberate
+            deliberate(task_id, artifact_dir)
+        except Exception as exc:  # noqa: BLE001 — bound the failure to a verdict
+            _log.exception("Council deliberation failed for %s", task_id)
+            _write_fallback_council_verdict(artifact_dir, task_id, str(exc)[:300])
+
+    threading.Thread(target=_worker, name=f"council-{task_id}", daemon=True).start()
+    _log.info("Council deliberation launched (background) for %s", task_id)
+    return True
+
+
+def _clear_council_verdict(artifact_dir: str, task_id: str) -> None:
+    """Delete the council verdict file so a fresh deliberation runs on re-entry."""
+    verdict_path = os.path.join(artifact_dir, "council-verdict.md")
+    try:
+        os.remove(verdict_path)
+        _log.info("Council verdict cleared for %s (bouncing to spec)", task_id)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        _log.warning("Could not clear council verdict for %s: %s", task_id, exc)
+
+
+def _record_pipeline_spawn(
+    conn: sqlite3.Connection, task_id: str, *, stage: str, assignee: str
+) -> None:
+    """Record a pipeline_spawn event for Denji's spawn-frequency tracking.
+
+    Fires each time the dispatcher claims a task in a pipeline stage and
+    spawns the lead to continue working. Denji's review-cycle scripts
+    group on ``assignee`` and surface recurring spawn patterns to be
+    promoted to persistent profiles (D6 in the design doc).
+    """
+    _append_event(conn, task_id, "pipeline_spawn",
+                  {"stage": stage, "assignee": assignee or ""})
+
+
+def _record_denji_review_signal(
+    conn: sqlite3.Connection, task_id: str, *, signal_type: str, **details
+) -> None:
+    """Emit a denji_review_signal event.
+
+    This is the consumer wiring for the existing ``denji_review_signal: True``
+    flag on completion events. Denji's review-cycle scripts scan for these
+    events to generate audit follow-up reviews (Phase D, #15 in the design).
+    """
+    _append_event(conn, task_id, "denji_review_signal",
+                  {"signal_type": signal_type, **details})
+
+
+def _get_spawn_frequency_threshold() -> int:
+    """Return the spawn-frequency threshold for Denji promotion proposals.
+
+    When a single (assignee, stage) pair accumulates this many pipeline_spawn
+    events in the rolling 7-day window, Denji surfaces a promotion proposal.
+    Default 8 — about once per workday.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        n = cfg.get("pipeline", {}).get("spawn_frequency_threshold", 8)
+        return int(n) if n is not None else 8
+    except Exception:
+        return 8
+
+
+def get_spawn_frequency(
+    conn: sqlite3.Connection, *, days: int = 7
+) -> list[dict]:
+    """Aggregate pipeline_spawn events by (assignee, stage) for Denji.
+
+    Returns a list of dicts:
+        [{"assignee": str, "stage": str, "spawn_count": int, "tasks": [str,...]}]
+
+    Sorted by spawn_count desc. A row hitting the configured threshold
+    (default 8) is the trigger for Denji to file a promotion proposal.
+    """
+    import json as _json
+    # created_at is epoch-seconds (int); compare against an epoch cutoff.
+    cutoff = int(time.time()) - int(days) * 86400
+    rows = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE kind = 'pipeline_spawn' AND created_at >= ?",
+        (cutoff,),
+    ).fetchall()
+    agg: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        try:
+            data = _json.loads(row[0])
+        except (TypeError, ValueError):
+            continue
+        assignee = data.get("assignee", "")
+        stage = data.get("stage", "")
+        key = (assignee, stage)
+        entry = agg.setdefault(key, {
+            "assignee": assignee, "stage": stage,
+            "spawn_count": 0, "tasks": set(),
+        })
+        entry["spawn_count"] += 1
+        task_id = data.get("task_id", "")
+        if task_id:
+            entry["tasks"].add(task_id)
+    # Materialise the sets for JSON-friendly output and sort by count desc
+    out = []
+    for entry in agg.values():
+        out.append({
+            "assignee": entry["assignee"],
+            "stage": entry["stage"],
+            "spawn_count": entry["spawn_count"],
+            "tasks": sorted(entry["tasks"]),
+        })
+    out.sort(key=lambda r: (-r["spawn_count"], r["assignee"], r["stage"]))
+    return out
+
+
+def build_denji_report(conn: sqlite3.Connection, *, days: int = 7) -> dict:
+    """Consume the pipeline governance signals into one report for Denji.
+
+    This is the consumer side of the Denji wiring (design doc build #15):
+    spawn-frequency promotion proposals, audit review signals, and express
+    bypass-records over the rolling window. Denji's review-cycle cron calls
+    this (via ``hermes feature denji-report``) instead of the signals sitting
+    unread in the events table.
+    """
+    import json as _json
+    cutoff = int(time.time()) - int(days) * 86400
+
+    spawn = get_spawn_frequency(conn, days=days)
+    threshold = _get_spawn_frequency_threshold()
+    promotion_proposals = [
+        {**r, "threshold": threshold}
+        for r in spawn if r["spawn_count"] >= threshold
+    ]
+
+    def _load(kind: str) -> list[dict]:
+        rows = conn.execute(
+            "SELECT task_id, payload, created_at FROM task_events "
+            "WHERE kind = ? AND created_at >= ? ORDER BY created_at DESC",
+            (kind, cutoff),
+        ).fetchall()
+        items = []
+        for r in rows:
+            try:
+                data = _json.loads(r[1]) if r[1] else {}
+            except (TypeError, ValueError):
+                data = {}
+            items.append({"task_id": r[0], "created_at": r[2], **data})
+        return items
+
+    review_signals = _load("denji_review_signal")
+    signal_counts: dict[str, int] = {}
+    for s in review_signals:
+        signal_counts[s.get("signal_type", "unknown")] = (
+            signal_counts.get(s.get("signal_type", "unknown"), 0) + 1
+        )
+    bypasses = _load("bypass_record")
+
+    return {
+        "window_days": days,
+        "spawn_frequency": spawn,
+        "promotion_proposals": promotion_proposals,
+        "review_signals": review_signals,
+        "review_signal_counts": signal_counts,
+        "bypass_records": bypasses,
+        "bypass_count": len(bypasses),
+    }
+
+
+def _create_audit_followup_task(
+    conn: sqlite3.Connection, parent_id: str, audit_verdict: str,
+    *, summary: str = "",
+) -> Optional[str]:
+    """Create a follow-up task tracking audit CONDITIONAL issues.
+
+    Only used when the audit gate returns CONDITIONAL — the gate still
+    passes, but the conditional issues are tracked as a child task so
+    they're not lost. Returns the new task id, or None on failure.
+    """
+    try:
+        # Read parent for context
+        parent = conn.execute(
+            "SELECT id, title FROM tasks WHERE id = ?", (parent_id,)
+        ).fetchone()
+        if not parent:
+            return None
+        title = f"[audit-followup] {parent[1]}"
+        body_lines = [
+            "## Problem",
+            f"Audit returned CONDITIONAL for parent task {parent_id}.",
+            "Track and resolve the conditional issues surfaced by the audit.",
+            "",
+            "## Success Criteria",
+            "- All CONDITIONAL issues from audit-report.md are addressed",
+            "- Tests still pass after the fixes",
+            "- New commit / PR linked back to the parent task",
+            "",
+            "## Audit Summary",
+            summary or "(see audit-report.md in parent artifacts)",
+            "",
+            "## Verdict",
+            f"**{audit_verdict}**",
+        ]
+        body = "\n".join(body_lines)
+        # The follow-up is written on the same connection as the parent, so
+        # it lands on the parent's board automatically (boards are separate
+        # DB files). board=None resolves the current board's default_workdir.
+        new_id = create_task(
+            conn,
+            title=title,
+            body=body,
+            assignee="octacon",
+            tier="fast",
+            board=None,
+        )
+        # Link the follow-up to the parent
+        conn.execute(
+            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (parent_id, new_id),
+        )
+        return new_id
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Failed to create audit follow-up task for %s: %s", parent_id, exc
+        )
+        return None
+
+
+def _decompose_children_event(
+    conn: sqlite3.Connection, parent_id: str,
+) -> list[dict[str, str]]:
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'decompose_children_created' ORDER BY id DESC LIMIT 1",
+        (parent_id,),
+    ).fetchone()
+    if not row:
+        return []
+    try:
+        payload = json.loads(row[0])
+        children = payload.get("children", [])
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(children, list):
+        return []
+    return [child for child in children if isinstance(child, dict)]
+
+
+def _create_decompose_child_tasks(
+    conn: sqlite3.Connection, parent_id: str, artifact_dir: str,
+) -> list[dict[str, str]]:
+    """Materialise the validated decomposition manifest as one task DAG.
+
+    The operation is idempotent and all task/link rows are written under one
+    transaction.  Markdown is never parsed into executable state.
+    """
+    existing = _decompose_children_event(conn, parent_id)
+    if existing:
+        missing = [
+            child.get("task_id", "") for child in existing
+            if not child.get("task_id") or get_task(conn, child["task_id"]) is None
+        ]
+        if missing:
+            raise RuntimeError(
+                "decomposition event references missing task rows: "
+                + ", ".join(missing)
+            )
+        return existing
+
+    raw_parent = conn.execute(
+        "SELECT id, title, tier, project_id FROM tasks WHERE id = ?", (parent_id,)
+    ).fetchone()
+    if not raw_parent:
+        raise ValueError(f"unknown parent task {parent_id}")
+
+    from hermes_cli.feature_pipeline import (
+        _validate_decompose_manifest,
+        load_decompose_manifest,
+    )
+
+    manifest = load_decompose_manifest(artifact_dir)
+    validation_error = _validate_decompose_manifest(manifest)
+    if validation_error:
+        raise ValueError(validation_error)
+    if manifest["parent_task_id"] != parent_id:
+        raise ValueError(
+            "decompose-tasks.json parent_task_id does not match the pipeline task"
+        )
+
+    parent_title = raw_parent[1]
+    parent_tier = raw_parent[2]
+    parent_project_id = raw_parent[3]
+    pending = {task["key"]: task for task in manifest["tasks"]}
+    ids_by_key: dict[str, str] = {}
+    children: list[dict[str, str]] = []
+
+    with write_txn(conn, allow_nested=True):
+        while pending:
+            progressed = False
+            for key, task in list(pending.items()):
+                dependencies = task["dependencies"]
+                if any(dep not in ids_by_key for dep in dependencies):
+                    continue
+                body = task["body"].rstrip() + (
+                    f"\n\n## Pipeline Context\nParent feature: {parent_id} "
+                    f"({parent_title}).\nTask key: {key}.\n"
+                    f"Shared artifacts: {artifact_dir}.\n"
+                )
+                owner = task["owner"].strip()
+                if not _is_profile_spawnable(owner):
+                    raise ValueError(
+                        f"decompose task {key} owner is not spawnable: {owner}"
+                    )
+                task_id = create_task(
+                    conn,
+                    title=task["title"],
+                    body=body,
+                    assignee=owner,
+                    created_by="feature-pipeline",
+                    workspace_kind=task.get("workspace_kind", "scratch"),
+                    tier=parent_tier,
+                    project_id=(
+                        parent_project_id
+                        if task.get("workspace_kind", "scratch") == "worktree"
+                        else None
+                    ),
+                    project_source_task_id=(
+                        parent_id
+                        if task.get("workspace_kind", "scratch") == "worktree"
+                        else None
+                    ),
+                    parents=[ids_by_key[dep] for dep in dependencies],
+                    idempotency_key=f"decompose:{parent_id}:{key}",
+                    skills=task.get("skills"),
+                )
+                ids_by_key[key] = task_id
+                children.append(
+                    {"key": key, "task_id": task_id, "role": task["role"]}
+                )
+                del pending[key]
+                progressed = True
+            if not progressed:
+                raise RuntimeError("decomposition dependency graph could not be resolved")
+        _append_event(
+            conn,
+            parent_id,
+            "decompose_children_created",
+            {"schema_version": 1, "children": children},
+        )
+    return children
+
+
+def _validate_pipeline_runtime_state(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    stage: str,
+    artifact_dir: str,
+) -> Optional[str]:
+    """Cross-check file evidence against canonical child-task state."""
+    if stage not in {"execute", "pr+qa", "audit"}:
+        return None
+    children = _decompose_children_event(conn, parent_id)
+    if not children:
+        return "Missing materialised decomposition child graph"
+    role = {"execute": "implementation", "pr+qa": "qa", "audit": "audit"}[stage]
+    expected = [child for child in children if child.get("role") == role]
+    if not expected:
+        return f"Materialised decomposition has no {role} tasks"
+    rows = {
+        row["id"]: row["status"]
+        for row in conn.execute(
+            f"SELECT id, status FROM tasks WHERE id IN ({','.join('?' for _ in expected)})",
+            [child["task_id"] for child in expected],
+        ).fetchall()
+    }
+    waiting = [
+        child["key"] for child in expected
+        if rows.get(child["task_id"]) != "done"
+    ]
+    if waiting:
+        return "Waiting for child tasks: " + ", ".join(waiting)
+
+    if stage == "execute":
+        path = os.path.join(artifact_dir, "execution-evidence.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                evidence = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None  # artifact gate reports the precise file error
+        if evidence.get("parent_task_id") != parent_id:
+            return "execution-evidence.json parent_task_id does not match task"
+        actual = {
+            (item.get("key"), item.get("task_id"))
+            for item in evidence.get("children", [])
+            if isinstance(item, dict)
+        }
+        wanted = {(item["key"], item["task_id"]) for item in expected}
+        if actual != wanted:
+            return "execution-evidence.json does not exactly cover implementation children"
+    elif stage == "pr+qa":
+        path = os.path.join(artifact_dir, "pr-qa-evidence.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                evidence = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None  # artifact gate reports the precise file error
+        if evidence.get("parent_task_id") != parent_id:
+            return "pr-qa-evidence.json parent_task_id does not match task"
+    return None
+
+
+def _record_bypass_record(
+    conn: sqlite3.Connection, task_id: str, *,
+    skipped_stages: list[str], launched_by: str, mode: str,
+) -> None:
+    """Record an express-path bypass-record event for Denji review.
+
+    Express launches skip PRD, Council, and Tech Review. Each launch
+    writes a ``bypass_record`` event with the skipped stages, the
+    launcher, and the timestamp. Denji samples these for governance
+    review (design doc §4a).
+    """
+    _append_event(conn, task_id, "bypass_record", {
+        "skipped_stages": skipped_stages,
+        "launched_by": launched_by,
+        "mode": mode,
+    })
+
+
+def _get_daily_spawn_count(conn: sqlite3.Connection) -> int:
+    """Return cumulative agent spawns for today (UTC). 0 if no row yet."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    row = conn.execute(
+        "SELECT count FROM daily_spawn_counter WHERE date_utc = ?", (today,),
+    ).fetchone()
+    return int(row["count"]) if row else 0
+
+
+def _consume_daily_spawn(conn: sqlite3.Connection) -> None:
+    """Increment today's spawn counter. Creates the row if it does not exist.
+
+    Uses INSERT … ON CONFLICT so the row is auto-created on first spawn
+    of the day.  Called after a successful worker spawn so the budget is
+    only consumed by real spawns, not dry-runs or skipped tasks.
+    """
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO daily_spawn_counter (date_utc, count, last_tick) "
+        "VALUES (?, 1, ?) "
+        "ON CONFLICT(date_utc) DO UPDATE SET count = count + 1, last_tick = ?",
+        (today, now, now),
+    )
+    conn.commit()
+
+
+def _count_events(conn: sqlite3.Connection, task_id: str, kind: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM task_events WHERE task_id = ? AND kind = ?",
+        (task_id, kind),
+    ).fetchone()
+    return int(row["n"]) if row else 0
+
+
+def _should_review(
+    conn: sqlite3.Connection,
+    task_tier: str,
+    task_id: str,
+    *,
+    kanban_cfg: Optional[dict] = None,
+) -> bool:
+    """Decide whether a completed task should enter review based on its tier.
+
+    When ``kanban.tiered_review`` is enabled:
+      * ``full`` tier → always review (mandatory).
+      * ``fast`` tier → sampled review (1 in N + all failures).
+      * Unclassified / NULL tier → no review (system automation).
+
+    When ``tiered_review`` is disabled (or unset), the legacy WS-4
+    "review everything" behaviour applies: all ``full`` and ``fast``
+    tier tasks go to review.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import get_kanban_config
+            kanban_cfg = get_kanban_config()
+        except Exception:
+            kanban_cfg = {}
+
+    tiered_enabled = bool(kanban_cfg.get("tiered_review", False))
+    tier = (task_tier or "").lower().strip()
+
+    if tier not in ("full", "fast"):
+        return False
+
+    if tier == "full":
+        return True  # mandatory review
+
+    # Fast tier — sampled review.
+    # Always review tasks whose last run failed (non-completed).
+    last_outcome_row = conn.execute(
+        "SELECT outcome FROM task_runs WHERE task_id = ? "
+        "ORDER BY started_at DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    last_failed = (
+        last_outcome_row is not None
+        and last_outcome_row["outcome"] != "completed"
+    )
+    if last_failed:
+        return True
+
+    if not tiered_enabled:
+        # Legacy WS-4: review everything (fast tier just gets sampled by default)
+        return True
+
+    # Sample 1 in N fast-tier tasks.
+    sample_rate = max(1, int(kanban_cfg.get("review_sample_rate", 5) or 5))
+    # Deterministic sampling by task_id so the same task always gets the same
+    # decision across dispatcher ticks AND across gateway restarts. Built-in
+    # hash() is per-process salted (PYTHONHASHSEED), so it would flip the
+    # decision after a restart; sha256 is stable.
+    digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+    sample_bucket = int(digest, 16) % sample_rate
+    return sample_bucket == 0
+
+
+def _kanban_setting(name: str, default: int) -> int:
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config().get("kanban", {})
+    except Exception:
+        return default
+    value = cfg.get(name, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _pin_sticky_reviewers(conn: sqlite3.Connection) -> int:
+    """Reassign unclaimed review-column tasks to their preferred reviewer.
+
+    Called from ``dispatch_once`` right before the review-row sweep.
+    Bounded scan: at most one UPDATE per review task with a recorded
+    rejection. Tasks without a prior rejection are no-ops.
+
+    R-2: only pin when the preferred reviewer is spawnable; otherwise the
+    task would sit in review with a non-spawnable assignee and the
+    dispatcher would skip it forever.
+    """
+    rows = conn.execute(
+        "SELECT id, assignee FROM tasks "
+        "WHERE status = 'review' AND claim_lock IS NULL"
+    ).fetchall()
+    pinned = 0
+    for row in rows:
+        preferred = preferred_reviewer_profile(conn, row["id"])
+        if not preferred:
+            continue
+        if not _is_profile_spawnable(preferred):
+            # Sticky reviewer is not spawnable; don't pin to avoid strand
+            continue
+        if row["assignee"] == preferred:
+            continue
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET assignee = ? "
+                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                (preferred, row["id"]),
+            )
+            if cur.rowcount == 1:
+                _append_event(
+                    conn, row["id"], "assigned",
+                    {"profile": preferred, "via": "sticky_reviewer"},
+                )
+                pinned += 1
+    return pinned
 
 
 def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
@@ -2542,6 +4889,413 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
+def validate_forced_skills_visible(forced_skills: list[str], profile_home: str) -> list[str]:
+    """Public API: return forced skill names not visible under a profile home.
+
+    Mirrors the visibility check used by the dispatcher pre-spawn gate.
+    Used by SDK consumers and tests; does not resolve profile env vars.
+    """
+    roots = [Path(profile_home) / "skills"]
+    roots.extend(_profile_external_skill_dirs(Path(profile_home)))
+
+    missing: list[str] = []
+    seen: set[str] = set()
+    for raw in forced_skills:
+        skill_name = str(raw or "").strip()
+        if not skill_name or skill_name in seen:
+            continue
+        seen.add(skill_name)
+        if not _skill_visible_in_search_dirs(skill_name, roots):
+            missing.append(skill_name)
+    return missing
+
+
+def _worker_skill_visible_in_home(skill_name: str, profile_home: Path) -> bool:
+    search_dirs: list[Path] = []
+    local_skills = profile_home / "skills"
+    if local_skills.is_dir():
+        search_dirs.append(local_skills)
+    search_dirs.extend(_profile_external_skill_dirs(profile_home))
+    return _skill_visible_in_search_dirs(skill_name, search_dirs)
+
+
+def _worker_skill_enabled_in_home(skill_name: str, profile_home: Path) -> bool:
+    """True if ``skill_name`` is in the profile's ``skills.enabled_skills``
+    allowlist (or ``always_skills``, which is implicitly enabled).
+
+    Mirrors the child CLI's allowlist gate (``tools.skills_tool`` →
+    ``agent.skill_utils.get_enabled_skill_names``). When the profile has NO
+    ``enabled_skills`` key configured, access is unrestricted (back-compat),
+    so the skill is considered enabled. A configured-but-empty allowlist
+    denies everything except ``always_skills``. Fails OPEN on config-read
+    errors (the visibility check still guards the hard-fail path).
+    """
+    config_path = profile_home / "config.yaml"
+    if not config_path.exists():
+        return True
+    try:
+        from agent.skill_utils import yaml_load
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(parsed, dict):
+        return True
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return True
+    if "enabled_skills" not in skills_cfg:
+        return True  # no allowlist configured → unrestricted
+    enabled = set()
+    for key in ("enabled_skills", "always_skills"):
+        raw = skills_cfg.get(key)
+        if isinstance(raw, str):
+            enabled.add(raw.strip())
+        elif isinstance(raw, list):
+            enabled.update(str(x).strip() for x in raw if str(x).strip())
+    return skill_name in enabled
+
+
+def _missing_worker_forced_skills(profile_name: str, skills: Optional[Iterable[Any]]) -> list[str]:
+    """Return forced skills that would make the child CLI abort at startup.
+
+    A forced skill is "missing" if it is either (a) not visible under the
+    profile's skills tree (the child cannot find it at all) or (b) visible
+    but NOT in the profile's ``enabled_skills`` allowlist (the child's
+    allowlist gate blocks the load, which hard-fails the worker when every
+    requested skill is blocked). Both conditions make the child CLI abort
+    with ``ValueError: Unknown skill(s)`` — the pre-spawn gate must reject
+    them so the task is blocked with a ``forced_skill_rejected`` event the
+    skill-reroute cron can catch, instead of silently crash-looping.
+    """
+    requested: list[str] = []
+    seen: set[str] = set()
+    for raw in skills or []:
+        name = str(raw or "").strip()
+        if not name or name == "kanban-worker" or name in seen:
+            continue
+        seen.add(name)
+        requested.append(name)
+    if not requested:
+        return []
+
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+        profile_arg = normalize_profile_name(profile_name)
+        profile_home = Path(resolve_profile_env(profile_arg))
+    except Exception:
+        return []
+
+    return [
+        name for name in requested
+        if not _worker_skill_visible_in_home(name, profile_home)
+        or not _worker_skill_enabled_in_home(name, profile_home)
+    ]
+
+
+def _block_missing_forced_skills(
+    conn: sqlite3.Connection,
+    task_id: str,
+    assignee: str,
+    missing: list[str],
+    forced_skills: Optional[list[str]] = None,
+) -> bool:
+    missing_display = ", ".join(missing)
+    reason = (
+        f"forced skill(s) not visible to assignee profile '{assignee}': "
+        f"{missing_display}. Install/copy the skill into that profile or "
+        "remove it from task.skills before dispatch."
+    )
+    blocked = block_task(conn, task_id, reason=reason)
+    if blocked:
+        with write_txn(conn):
+            _append_event(
+                conn,
+                task_id,
+                "forced_skill_rejected",
+                {
+                    "reason": "missing_forced_skills",
+                    "assignee": assignee,
+                    "missing_skills": list(missing),
+                    "forced_skills": list(forced_skills) if forced_skills else None,
+                },
+            )
+    return blocked
+
+
+def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
+    """True if the bundled ``kanban-worker`` skill resolves for the home the
+    spawned worker will run under.
+
+    The dispatcher injects ``--skills kanban-worker`` into every worker. When
+    the worker activates a profile (``hermes -p <name>``), its ``SKILLS_DIR``
+    becomes ``<profile_home>/skills`` — which on many profiles does NOT contain
+    the bundled skill (it ships in the *default* root home, not every
+    profile-scoped skills dir). Preloading a missing skill is fatal at CLI
+    startup (``ValueError: Unknown skill(s): kanban-worker``), aborting the
+    worker before the agent loop runs.
+
+    For profiles that have ``kanban-worker`` in their ``always_skills`` config,
+    we skip the ``--skills`` flag entirely — the profile loads it naturally.
+    This avoids the ``--skills`` resolution bug on sub-profile workers.
+    """
+    base = Path(hermes_home) if hermes_home else (Path.home() / ".hermes")
+    # If profile has kanban-worker in always_skills, skip the flag
+    # -- always_skills resolution works where --skills flag fails.
+    config_path = base / "config.yaml"
+    if config_path.exists():
+        try:
+            from agent.skill_utils import yaml_load
+            cfg = yaml_load(config_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict):
+                always = cfg.get("skills", {}).get("always_skills", [])
+                if isinstance(always, list) and "kanban-worker" in always:
+                    return False  # profile loads it, no --skills needed
+        except Exception:
+            pass
+    return _worker_skill_visible_in_home("kanban-worker", base)
+
+
+def _profile_external_skill_dirs(profile_home: Path) -> list[Path]:
+    """Return ``skills.external_dirs`` as the child profile will resolve them."""
+    config_path = profile_home / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        from agent.skill_utils import yaml_load
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+    raw_dirs = skills_cfg.get("external_dirs")
+    if not raw_dirs:
+        return []
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if not isinstance(raw_dirs, list):
+        return []
+
+    local_skills = (profile_home / "skills").resolve()
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for entry in raw_dirs:
+        entry_s = str(entry or "").strip()
+        if not entry_s:
+            continue
+        expanded = os.path.expandvars(entry_s.replace("~", str(Path.home()), 1))
+        candidate = Path(expanded)
+        if not candidate.is_absolute():
+            candidate = profile_home / candidate
+        try:
+            candidate = candidate.resolve()
+        except OSError:
+            continue
+        if candidate == local_skills or candidate in seen or not candidate.is_dir():
+            continue
+        seen.add(candidate)
+        result.append(candidate)
+    return result
+
+
+def _skill_visible_in_search_dirs(skill_name: str, search_dirs: Iterable[Path]) -> bool:
+    """Mirror the local-skill lookup strategies used by ``skill_view``."""
+    name = (skill_name or "").strip()
+    if not name:
+        return True
+
+    local_category_name: Optional[str] = None
+    if ":" in name:
+        namespace, _, bare = name.partition(":")
+        if namespace and bare:
+            local_category_name = f"{namespace}/{bare}"
+
+    try:
+        from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    except Exception:
+        is_excluded_skill_path = lambda path: False  # type: ignore[assignment]
+        iter_skill_index_files = None  # type: ignore[assignment]
+
+    for search_dir in search_dirs:
+        if not search_dir.is_dir():
+            continue
+        direct_path = search_dir / name
+        if direct_path.is_dir() and (direct_path / "SKILL.md").is_file():
+            return True
+        if direct_path.with_suffix(".md").is_file():
+            return True
+        if local_category_name:
+            categorized_path = search_dir / local_category_name
+            if categorized_path.is_dir() and (categorized_path / "SKILL.md").is_file():
+                return True
+            if categorized_path.with_suffix(".md").is_file():
+                return True
+        try:
+            skill_files = (
+                iter_skill_index_files(search_dir, "SKILL.md")
+                if iter_skill_index_files is not None
+                else search_dir.rglob("SKILL.md")
+            )
+            for skill_md in skill_files:
+                if is_excluded_skill_path(skill_md):
+                    continue
+                if skill_md.parent.name == name and skill_md.is_file():
+                    return True
+            for found_md in search_dir.rglob(f"{name}.md"):
+                if is_excluded_skill_path(found_md):
+                    continue
+                if found_md.name != "SKILL.md" and found_md.is_file():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _profile_external_skill_dirs(profile_home: Path) -> list[Path]:
+    """Return ``skills.external_dirs`` as the child profile will resolve them."""
+    config_path = profile_home / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        from agent.skill_utils import yaml_load
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+    raw_dirs = skills_cfg.get("external_dirs")
+    if not raw_dirs:
+        return []
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if not isinstance(raw_dirs, list):
+        return []
+
+    local_skills = (profile_home / "skills").resolve()
+    seen: set[Path] = set()
+    result: list[Path] = []
+    for entry in raw_dirs:
+        entry_s = str(entry or "").strip()
+        if not entry_s:
+            continue
+        expanded = os.path.expandvars(entry_s.replace("~", str(Path.home()), 1))
+        candidate = Path(expanded)
+        if not candidate.is_absolute():
+            candidate = profile_home / candidate
+        try:
+            candidate = candidate.resolve()
+        except OSError:
+            continue
+        if candidate == local_skills or candidate in seen or not candidate.is_dir():
+            continue
+        seen.add(candidate)
+        result.append(candidate)
+    return result
+
+
+def _skill_visible_in_search_dirs(skill_name: str, search_dirs: Iterable[Path]) -> bool:
+    """Mirror the local-skill lookup strategies used by ``skill_view``."""
+    name = (skill_name or "").strip()
+    if not name:
+        return True
+
+    local_category_name: Optional[str] = None
+    if ":" in name:
+        namespace, _, bare = name.partition(":")
+        if namespace and bare:
+            local_category_name = f"{namespace}/{bare}"
+
+    try:
+        from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    except Exception:
+        is_excluded_skill_path = lambda path: False  # type: ignore[assignment]
+        iter_skill_index_files = None  # type: ignore[assignment]
+
+    for search_dir in search_dirs:
+        if not search_dir.is_dir():
+            continue
+        direct_path = search_dir / name
+        if direct_path.is_dir() and (direct_path / "SKILL.md").is_file():
+            return True
+        if direct_path.with_suffix(".md").is_file():
+            return True
+        if local_category_name:
+            categorized_path = search_dir / local_category_name
+            if categorized_path.is_dir() and (categorized_path / "SKILL.md").is_file():
+                return True
+            if categorized_path.with_suffix(".md").is_file():
+                return True
+        try:
+            skill_files = (
+                iter_skill_index_files(search_dir, "SKILL.md")
+                if iter_skill_index_files is not None
+                else search_dir.rglob("SKILL.md")
+            )
+            for skill_md in skill_files:
+                if is_excluded_skill_path(skill_md):
+                    continue
+                if skill_md.parent.name == name and skill_md.is_file():
+                    return True
+            for found_md in search_dir.rglob(f"{name}.md"):
+                if is_excluded_skill_path(found_md):
+                    continue
+                if found_md.name != "SKILL.md" and found_md.is_file():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _worker_skill_visible_in_home(skill_name: str, profile_home: Path) -> bool:
+    search_dirs: list[Path] = []
+    local_skills = profile_home / "skills"
+    if local_skills.is_dir():
+        search_dirs.append(local_skills)
+    search_dirs.extend(_profile_external_skill_dirs(profile_home))
+    return _skill_visible_in_search_dirs(skill_name, search_dirs)
+
+
+def _worker_skill_enabled_in_home(skill_name: str, profile_home: Path) -> bool:
+    """True if ``skill_name`` is in the profile's ``skills.enabled_skills``
+    allowlist (or ``always_skills``, which is implicitly enabled).
+
+    Mirrors the child CLI's allowlist gate (``tools.skills_tool`` →
+    ``agent.skill_utils.get_enabled_skill_names``). When the profile has NO
+    ``enabled_skills`` key configured, access is unrestricted (back-compat),
+    so the skill is considered enabled. A configured-but-empty allowlist
+    denies everything except ``always_skills``. Fails OPEN on config-read
+    errors (the visibility check still guards the hard-fail path).
+    """
+    config_path = profile_home / "config.yaml"
+    if not config_path.exists():
+        return True
+    try:
+        from agent.skill_utils import yaml_load
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(parsed, dict):
+        return True
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return True
+    if "enabled_skills" not in skills_cfg:
+        return True  # no allowlist configured → unrestricted
+    enabled = set()
+    for key in ("enabled_skills", "always_skills"):
+        raw = skills_cfg.get(key)
+        if isinstance(raw, str):
+            enabled.add(raw.strip())
+        elif isinstance(raw, list):
+            enabled.update(str(x).strip() for x in raw if str(x).strip())
+    return skill_name in enabled
+
+
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],
@@ -2670,6 +5424,33 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+_spawn_board_cache: dict[int, tuple[bool, object]] = {}
+
+
+def _spawn_with_board(
+    spawn_fn, task, workspace: str, *, board: Optional[str] = None
+) -> Optional[int]:
+    """Call ``spawn_fn(task, workspace, board=board)`` if the callable
+    accepts ``board``, else ``spawn_fn(task, workspace)``.
+
+    Introspects the signature once and caches the result per callable so the
+    three dispatch sites don't each pay ``inspect.signature`` on every spawn.
+    """
+    fn_id = id(spawn_fn)
+    cached = _spawn_board_cache.get(fn_id)
+    if cached is not None:
+        return spawn_fn(task, workspace, board=board) if cached[0] else spawn_fn(task, workspace)
+    import inspect
+    try:
+        accepts_board = "board" in inspect.signature(spawn_fn).parameters
+    except (TypeError, ValueError):
+        accepts_board = False
+    _spawn_board_cache[fn_id] = (accepts_board, spawn_fn)
+    if accepts_board:
+        return spawn_fn(task, workspace, board=board)
+    return spawn_fn(task, workspace)
+
+
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
     """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
     cmd = [
@@ -2774,6 +5555,20 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
 
     profile_arg = normalize_profile_name(task.assignee)
 
+    # KENSEI CUSTOM (fork re-anchor): defense-in-depth forced-skills check before
+    # spawning. The primary gate is the pre-spawn check in dispatch_once; this
+    # catches direct _default_spawn callers (review spawns, stubs, manual paths).
+    all_forced_skills = list(task.skills or []) + (
+        ["kanban-worker"] if _kanban_worker_skill_available(None) else []
+    )
+    _missing = _missing_worker_forced_skills(profile_arg, all_forced_skills)
+    if _missing:
+        raise RuntimeError(
+            f"Forced skill(s) not visible under profile '{profile_arg}': "
+            f"{', '.join(_missing)}. The pre-spawn gate in dispatch_once "
+            f"should have blocked this task before reaching _default_spawn."
+        )
+
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
 
@@ -2784,6 +5579,15 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # HERMES_PROFILE (set below) instead.
         profile_home = None
 
+    # KENSEI COMBINE: the orchestrator's own HERMES_KANBAN_TASK (a worker spawning
+    # sub-workers) must not make the dispatcher child look like a delegate
+    # descendant — delegated_child_subprocess_env scrubs on env-TASK presence.
+    # Strip dispatcher identity from the base so the scrub never fires here; the
+    # child's scope is granted explicitly below.
+    import os as _os
+    _base_env = {k: v for k, v in _os.environ.items() if k not in (
+        "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
+        "HERMES_KANBAN_WORKSPACE", "HERMES_DELEGATED_CHILD_CONTEXT")}
     # Scrub for a ROUTED home, not only under multiplex: the authority test is "does this worker act
     # for another profile", exactly as served_profile_child_env decides it (tools/environments/local.py).
     # Gating on the gateway-wide flag left B's worker inheriting the dispatcher's own OPENAI_API_KEY and
@@ -2795,9 +5599,15 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     with (_worker_profile_scope(profile_home, bind_home=False) if profile_home
           else contextlib.nullcontext()):
         env = build_subprocess_env(
+            base=_base_env,
             scrub_secrets=is_multiplex_active() or routed,
             inherit_profile_home=True,
         )
+    # delegated_child_subprocess_env consults the spawner's os.environ; with a
+    # worker-parent that carries HERMES_KANBAN_TASK it mislabels this dispatcher
+    # child as a delegate descendant and injects the marker. Undo it: the
+    # dispatcher child's scope is granted explicitly below.
+    env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP
@@ -2860,9 +5670,6 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # kanban_comment reads HERMES_PROFILE for its default author; `-p` alone
     # doesn't set the env var.
     env["HERMES_PROFILE"] = profile_arg
-    # This is the grant boundary: the dispatcher assigned this new worker's task.
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
-    env.pop(DELEGATED_CHILD_ENV_MARKER, None)
     # `--cli` is the highest-precedence TUI override; dropping HERMES_TUI covers
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
@@ -2872,8 +5679,6 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
     cmd = _restart_safe_worker_argv(task, cmd)
-    from tools.process_registry import systemd_user_bus_env
-    env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
@@ -2896,6 +5701,25 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # the OS-level FD stays open in the child until it exits.
     if _kb._IS_WINDOWS:
         _live_worker_procs[proc.pid] = proc
+    # KENSEI CUSTOM (fork re-anchor): activity-ledger record for the dispatch.
+    record_event_if_enabled(
+        source="kanban.dispatcher",
+        actor_profile=os.environ.get("HERMES_PROFILE") or "dispatcher",
+        target_profile=profile_arg,
+        event_type="kanban.worker.dispatched",
+        object_type="kanban_task",
+        object_id=task.id,
+        board=board,
+        status_from=task.status,
+        status_to="running",
+        summary=f"Dispatched kanban task {task.id} to {profile_arg}",
+        payload={
+            "pid": proc.pid,
+            "run_id": task.current_run_id,
+            "skills": task.skills or [],
+            "workspace": workspace,
+        },
+    )
     return proc.pid
 
 
@@ -2963,3 +5787,43 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb  # noqa: E402
 from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
 from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402
+
+# KENSEI CUSTOM (fork re-anchor): best-effort activity-ledger import — the
+# ledger must never break dispatch.
+try:
+    from hermes_cli.profile_activity_ledger import record_event_if_enabled
+except Exception:  # pragma: no cover
+    def record_event_if_enabled(**_kw):
+        return None
+
+# ---------------------------------------------------------------------------
+# KENSEI CUSTOM (fork re-anchor): late-bound aliases so the re-anchored
+# council/pipeline/forced-skill machinery can use the fork's original bare
+# names (they resolve at call time via this namespace binding).
+# ---------------------------------------------------------------------------
+_append_event = _kb._append_event
+_fire_dispatch_tick_hook = _kb._fire_dispatch_tick_hook
+_fire_kanban_lifecycle_hook = _kb._fire_kanban_lifecycle_hook
+_fire_worker_spawned_hook = _kb._fire_worker_spawned_hook
+_kanban_observer_consumed = _kb._kanban_observer_consumed
+_resolve_rate_limit_cooldown_seconds = _kb._resolve_rate_limit_cooldown_seconds
+_resolve_crash_grace_seconds = _kb._resolve_crash_grace_seconds
+_retry_status_for_run = _kb._retry_status_for_run
+_end_run = _kb._end_run
+_current_run_id = _kb._current_run_id
+release_stale_claims = _kb.release_stale_claims
+recompute_ready = _kb.recompute_ready
+get_current_board = _kb.get_current_board
+count_running_tasks_other_boards = count_running_tasks_other_boards  # local
+kanban_db_path = _kb.kanban_db_path
+Task = _kb.Task
+kanban_home = _kb.kanban_home
+preferred_reviewer_profile = _kb.preferred_reviewer_profile
+DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT  # fork alias name (KENSEI CUSTOM re-anchor)
+_claimer_id = _kb._claimer_id
+_resolve_claim_ttl_seconds = _kb._resolve_claim_ttl_seconds
+block_task = _kb.block_task
+create_task = _kb.create_task
+get_task = _kb.get_task
+write_txn = _kb.write_txn
+_parents_satisfied = _kb._parents_satisfied

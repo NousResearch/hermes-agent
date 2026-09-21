@@ -408,3 +408,110 @@ def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=No
     task = {"goal": goal}
     _finalize_child_results([result], [{"goal": ""} for _ in range(task_index)] + [task], [(task_index, task, child)], parent_agent)
     return result
+
+# ── KENSEI CUSTOM — receipt detection for delegation summaries (restored) ──
+_RECEIPT_PATH_RE = None  # compiled lazily to keep import cost flat
+_RECEIPT_DIFF_RE = None
+_RECEIPT_HASH_RE = None
+
+def _receipt_res() -> tuple:
+    """Compile (once) the receipt-signal regexes."""
+    import re as _re
+
+    global _RECEIPT_PATH_RE, _RECEIPT_DIFF_RE, _RECEIPT_HASH_RE
+    if _RECEIPT_PATH_RE is None:
+        _RECEIPT_PATH_RE = _re.compile(r"(?:/home/|/tmp/|[\w.\-]+/[\w.\-/]+(?:\.[\w]+)?)")
+        _RECEIPT_DIFF_RE = _re.compile(r"\d+\s+insertions?\(\+\)|\d+\s+files?\s+changed|diff\s+--git")
+        _RECEIPT_HASH_RE = _re.compile(r"\b[0-9a-f]{40}\b|\b[0-9a-f]{7,12}\b(?=\s+(?:on|main|commit)|\s*$)")
+    return _RECEIPT_PATH_RE, _RECEIPT_DIFF_RE, _RECEIPT_HASH_RE
+
+def _has_receipts(text: str | None) -> bool:
+    """True when a summary carries verifiable handles (heuristic)."""
+    if not text or not isinstance(text, str):
+        return False
+    _lower = text.lower()
+    if "no files" in _lower and ("change" in _lower or "modified" in _lower or "touched" in _lower):
+        return True
+    _path_re, _diff_re, _hash_re = _receipt_res()
+    if _diff_re.search(text):
+        return True
+    if _hash_re.search(text):
+        return True
+    for _m in _path_re.finditer(text):
+        _hit = _m.group(0)
+        if "/" in _hit and ("." in _hit or _hit.startswith("/")):
+            return True
+    return False
+# ── END KENSEI CUSTOM ──
+
+def _extract_finding(summary: str) -> str:
+    """Extract the core finding from a producer summary, stripping reasoning.
+
+    Tries multiple strategies in order:
+    1. JSON block with named key (finding / answer / conclusion / claim)
+    2. Any JSON block — serialise whole block as the finding
+    3. Markdown heading '## Finding' or '## Conclusion'
+
+    Returns the extracted finding string, or empty string on failure.
+    When empty, verification is skipped and a warning is logged.
+    """
+    if not summary or not summary.strip():
+        return ""
+
+    text = summary.strip()
+
+    # Cap scanned text to prevent pathological regex behaviour on unusually
+    # large producer summaries (bounded polynomial, not catastrophic, but
+    # this box has two documented regex-freeze incidents).
+    if len(text) > 20000:
+        text = text[-20000:]
+    import re as _re
+
+    # --- Strategy 1: JSON extraction via shared parser ---
+
+    # 1a: Try the shared parser on the whole text first
+    from hermes_cli.llm_json import parse_llm_json
+    parsed = parse_llm_json(text, raise_on_failure=False)
+    if parsed is not None:
+        for key in ("finding", "answer", "conclusion", "claim"):
+            if key in parsed and isinstance(parsed[key], str) and parsed[key]:
+                return str(parsed[key])
+        # No named key; serialise the whole dict as the finding
+        return json.dumps(parsed, indent=2)
+
+    # 1b: Scan for inline JSON blocks with named keys (the shared parser
+    #     expects a clean JSON document; inline blocks need regex extraction).
+    #     NOTE: regex handles ONE nesting level only; deeper nested JSON
+    #     falls through to the heading strategy below (DG-2, acceptable
+    #     degradation; nested findings are rare in practice).
+    key_pats = "finding|answer|conclusion|claim"
+    named_blocks = _re.findall(
+        r'\{[^{}]*"(?:' + key_pats + r')"[^{}]*\}',
+        text, _re.DOTALL,
+    )
+    for block in reversed(named_blocks):
+        try:
+            parsed = json.loads(block)
+            for key in ("finding", "answer", "conclusion", "claim"):
+                if key in parsed and parsed[key]:
+                    return str(parsed[key])
+        except (json.JSONDecodeError, TypeError, KeyError):
+            continue
+
+    # --- Strategy 2: Markdown heading ---
+    for heading in ("Finding", "Conclusion", "Claim", "Result"):
+        m = _re.search(
+            rf"^##\s+{heading}\s*\n(.+?)(?:\n##|\Z)",
+            text, _re.DOTALL | _re.MULTILINE | _re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).strip()
+
+    # Structured extraction failed.
+    return ""
+
+
+_RECEIPT_PATH_RE = None  # compiled lazily to keep import cost flat
+_RECEIPT_DIFF_RE = None
+_RECEIPT_HASH_RE = None
+

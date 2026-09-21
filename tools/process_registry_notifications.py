@@ -51,6 +51,32 @@ def group_process_notifications(notifications):
         yield tuple(batch)
 
 
+def _process_accounting_lines(r: dict) -> list:
+    """Render runtime-truth notices for processes accounted for by a child."""
+    lines = []
+    for h in r.get("handed_off_processes") or []:
+        lines.append(
+            f"Handed off to you: {h.get('session_id')} ({h.get('command', '')[:120]}) — {h.get('note', '')}. "
+            "You own it now; its completion notice will arrive here."
+        )
+    orphans = r.get("orphaned_processes") or []
+    if orphans:
+        lines.append(
+            f"Child left {len(orphans)} background process(es) running that were TERMINATED with it "
+            "(subagent process notices never reach you): "
+            + "; ".join(
+                f"{o.get('session_id')} `{o.get('command', '')[:100]}` ({o.get('runtime_seconds')}s)"
+                for o in orphans
+            )
+            + ". Re-launch in this session anything you still need."
+        )
+    for u in r.get("unread_completions") or []:
+        lines.append(
+            f"Child's process {u.get('session_id')} `{u.get('command', '')[:100]}` finished (exit code "
+            f"{u.get('exit_code')}) but the child never read its result; output tail:\n{u.get('output_tail', '')}"
+        )
+    return lines
+
 
 def _format_age(seconds: float) -> str:
     """Human-friendly elapsed string ('18m', '2h3m', '45s')."""
@@ -203,9 +229,8 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         evt,
         f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
         f"A background fan-out unit you dispatched earlier — {unit} — has finished; its consolidated results are "
-        "below. Any other units from the same delegate_task call report separately as they finish. You may have "
-        "moved on since dispatching — act on these or re-dispatch if things have changed. If you are still waiting "
-        "on siblings, end your turn after acting on this one.",
+        "below. Other units from the same delegate_task call (other groups / ungrouped tasks) report separately as "
+        "they finish. You may have moved on since dispatching — act on these or re-dispatch if things have changed.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     lines += _recovery_lines(evt)
@@ -237,27 +262,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
-        lines += _process_accounting_lines(r)
     return "\n".join(lines)
-
-
-def _process_accounting_lines(r: dict) -> list:
-    """Runtime-truth lines about a child's background processes: what it handed to you (you own it now, its
-    completion lands here) and what it left running (terminated at teardown — never trust a child's "watcher running")."""
-    lines = []
-    for h in r.get("handed_off_processes") or []:
-        lines.append(f"Handed off to you: {h.get('session_id')} ({h.get('command', '')[:120]}) — {h.get('note', '')}. "
-                     "You own it now; its completion notice will arrive here.")
-    orphans = r.get("orphaned_processes") or []
-    if orphans:
-        lines.append(f"Child left {len(orphans)} background process(es) running that were TERMINATED with it "
-                     "(subagent process notices never reach you): "
-                     + "; ".join(f"{o.get('session_id')} `{o.get('command', '')[:100]}` ({o.get('runtime_seconds')}s)" for o in orphans)
-                     + ". Re-launch in this session anything you still need.")
-    for u in r.get("unread_completions") or []:
-        lines.append(f"Child's process {u.get('session_id')} `{u.get('command', '')[:100]}` finished (exit code "
-                     f"{u.get('exit_code')}) but the child never read its result; output tail:\n{u.get('output_tail', '')}")
-    return lines
 
 
 def _format_async_delegation(evt: dict) -> str:

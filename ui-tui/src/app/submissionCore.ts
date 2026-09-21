@@ -1,7 +1,9 @@
 import type { GatewayClient } from '../gatewayClient.js'
-import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTypes.js'
+import type { InputDetectDropResponse, PromptOptimizePreviewResponse, PromptSubmitResponse } from '../gatewayTypes.js'
 import type { Msg } from '../types.js'
 
+import type { SubmissionOptions } from './interfaces.js'
+import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -41,7 +43,6 @@ export function markSubmitting(): void {
 // Submit a ready prompt (already resolved to be neither a slash command nor a
 // shell escape, with a live session). Pulled out of useSubmission so the
 // synchronous-busy invariant above is unit-testable without React test infra.
-//
 // `displayOverride` is what the transcript shows when it differs from what the
 // agent receives — a `/skill` invocation expands into the whole skill body, and
 // that scaffolding is model-facing only.
@@ -50,8 +51,14 @@ export function submitPrompt(
   deps: SubmitPromptDeps,
   showUserMessage = true,
   displayOverride?: string,
-  opts: { skipDetectDrop?: boolean } = {}
+  options: SubmissionOptions | boolean = {}
 ): void {
+  // Boolean is retained for compatibility with the original prompt-optimizer
+  // call shape; new callers pass a named options object.
+  const opts: SubmissionOptions =
+    typeof options === 'boolean' ? { skipOptimization: options } : options
+
+  const skipOptimization = opts.skipOptimization ?? false
   const sid = getUiState().sid
 
   if (!sid) {
@@ -106,6 +113,15 @@ export function submitPrompt(
       })
   }
 
+  // Skip both the file-drop check and the optimisation preview when
+  // re-submitting a prompt that has just come back from the overlay —
+  // otherwise the rewritten text gets re-optimised in a loop.
+  if (skipOptimization) {
+    startSubmit(text, deps.expand(text), showUserMessage)
+
+    return
+  }
+
   // Always ask the backend whether this looks like a file drop. The backend's
   // _detect_file_drop handles paths with spaces, quotes, Windows drive letters,
   // and escaped characters correctly. Literal submissions (startup -q queries)
@@ -123,7 +139,34 @@ export function submitPrompt(
     .request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
     .then(r => {
       if (!r?.matched) {
-        return startSubmit(text, deps.expand(text), showUserMessage)
+        patchUiState({ busy: true, status: 'optimising…' })
+
+        return deps.gw
+          .request<PromptOptimizePreviewResponse>('prompt.optimize.preview', {
+            session_id: sid,
+            text: deps.expand(text)
+          })
+          .then(preview => {
+            patchUiState({ busy: false, status: 'ready' })
+
+            if (preview?.status === 'preview' && preview.preview) {
+              patchOverlayState({
+                promptOptimization: {
+                  preview: preview.preview,
+                  reason: preview.reason,
+                  status: 'preview'
+                }
+              })
+
+              return
+            }
+
+            startSubmit(text, deps.expand(text), showUserMessage)
+          })
+          .catch(() => {
+            patchUiState({ busy: false, status: 'ready' })
+            startSubmit(text, deps.expand(text), showUserMessage)
+          })
       }
 
       startSubmit(r.text || text, deps.expand(r.text || text), showUserMessage)

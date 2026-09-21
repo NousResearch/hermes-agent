@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS projects (
     color         TEXT,
     board_slug    TEXT,
     primary_path  TEXT,
+    provisioning_key TEXT UNIQUE,
     created_at    INTEGER NOT NULL,
     archived      INTEGER NOT NULL DEFAULT 0
 );
@@ -63,6 +64,17 @@ CREATE TABLE IF NOT EXISTS discovered_repos (
     root          TEXT PRIMARY KEY,
     label         TEXT,
     last_seen     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_provisioning_journal (
+    idempotency_key TEXT PRIMARY KEY,
+    request_digest  TEXT NOT NULL,
+    status          TEXT NOT NULL CHECK(status IN ('pending', 'complete')),
+    project_id      TEXT,
+    project_slug    TEXT NOT NULL UNIQUE,
+    board_slug      TEXT NOT NULL UNIQUE,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
 );
 """
 
@@ -204,6 +216,109 @@ def _primary_path_key(path: str) -> str:
     return os.path.normcase(_normalize_path(path))
 
 
+# ── KENSEI CUSTOM (ported) — project provisioning journal ──
+
+
+def get_project_provisioning(
+    conn: sqlite3.Connection,
+    idempotency_key: str,
+) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT idempotency_key, request_digest, status, project_id, "
+        "project_slug, board_slug, created_at, updated_at "
+        "FROM project_provisioning_journal WHERE idempotency_key = ?",
+        (idempotency_key,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def get_project_provisioning_by_board(
+    conn: sqlite3.Connection,
+    board_slug: str,
+) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT idempotency_key, request_digest, status, project_id, "
+        "project_slug, board_slug, created_at, updated_at "
+        "FROM project_provisioning_journal WHERE board_slug = ?",
+        (board_slug,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def begin_project_provisioning(
+    conn: sqlite3.Connection,
+    *,
+    idempotency_key: str,
+    request_digest: str,
+    project_slug: str,
+    board_slug: str,
+) -> dict:
+    existing = get_project_provisioning(conn, idempotency_key)
+    if existing is not None:
+        return existing
+    now = _now()
+    with write_txn(conn):
+        conn.execute(
+            "INSERT INTO project_provisioning_journal "
+            "(idempotency_key, request_digest, status, project_id, "
+            "project_slug, board_slug, created_at, updated_at) "
+            "VALUES (?, ?, 'pending', NULL, ?, ?, ?, ?)",
+            (
+                idempotency_key,
+                request_digest,
+                project_slug,
+                board_slug,
+                now,
+                now,
+            ),
+        )
+    return get_project_provisioning(conn, idempotency_key) or {}
+
+
+def bind_project_provisioning(
+    conn: sqlite3.Connection,
+    idempotency_key: str,
+    project_id: str,
+) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE project_provisioning_journal "
+            "SET project_id = ?, updated_at = ? "
+            "WHERE idempotency_key = ? AND status = 'pending'",
+            (project_id, _now(), idempotency_key),
+        )
+    return cur.rowcount == 1
+
+
+def complete_project_provisioning(
+    conn: sqlite3.Connection,
+    idempotency_key: str,
+    project_id: str,
+) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE project_provisioning_journal "
+            "SET status = 'complete', project_id = ?, updated_at = ? "
+            "WHERE idempotency_key = ? AND status = 'pending'",
+            (project_id, _now(), idempotency_key),
+        )
+    return cur.rowcount == 1
+
+
+def find_project_by_provisioning_key(
+    conn: sqlite3.Connection,
+    idempotency_key: str,
+) -> Optional[Project]:
+    row = conn.execute(
+        "SELECT * FROM projects WHERE provisioning_key = ?",
+        (idempotency_key,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _attach_folders(conn, _project_from_row(row))
+# ── END KENSEI CUSTOM ──
+
+
 def find_by_primary_path(conn: sqlite3.Connection, path: str, *, include_archived: bool = False) -> Optional[Project]:
     """The first (oldest) project whose primary path matches ``path`` (separator/case normalized so
     equivalent Windows spellings don't slip past the dedup check), else None."""
@@ -221,7 +336,9 @@ def create_project(
     conn: sqlite3.Connection, *, name: str, slug: Optional[str] = None, folders: Optional[Iterable[str]] = None,
     primary_path: Optional[str] = None, description: Optional[str] = None, icon: Optional[str] = None,
     color: Optional[str] = None, board_slug: Optional[str] = None, allow_duplicate_path: bool = False,
+    provisioning_key: Optional[str] = None,
 ) -> str:
+    # (KENSEI CUSTOM — ported: provisioning_key param)
     """Create a project and return its id. ``folders`` are normalized to absolute paths; ``primary_path``
     is added to the folder set (if absent) and marked primary, else the first folder becomes primary."""
     name = str(name or "").strip()
@@ -244,10 +361,10 @@ def create_project(
         )
     with write_txn(conn):
         conn.execute(
-            "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, created_at, archived) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            "INSERT INTO projects (id, slug, name, description, icon, color, board_slug,  primary_path, provisioning_key, created_at, archived) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             (pid, _unique_slug(conn, slug_candidate), name, description, icon, color,
-             normalize_slug(board_slug) if board_slug else None, primary, now),
+             normalize_slug(board_slug) if board_slug else None, primary, provisioning_key, now),
         )
         conn.executemany(
             "INSERT INTO project_folders (project_id, path, label, is_primary, added_at) VALUES (?, ?, ?, ?, ?)",
@@ -257,15 +374,34 @@ def create_project(
 
 
 def list_projects(conn: sqlite3.Connection, *, include_archived: bool = False) -> List[Project]:
-    sql = "SELECT * FROM projects" + ("" if include_archived else " WHERE archived = 0") + " ORDER BY created_at ASC"
+    # KENSEI CUSTOM (ported): provisioning-visibility filter (pending journal rows hidden).
+    sql = (
+        "SELECT * FROM projects WHERE "
+        "(provisioning_key IS NULL OR EXISTS ("
+        "SELECT 1 FROM project_provisioning_journal j "
+        "WHERE j.idempotency_key = projects.provisioning_key "
+        "AND j.status = 'complete'))"
+    )
+    if not include_archived:
+        sql += " AND archived = 0"
+    sql += " ORDER BY created_at ASC"
     return [_load_project(conn, r) for r in conn.execute(sql).fetchall()]
 
 
 def get_project(conn: sqlite3.Connection, id_or_slug: str) -> Optional[Project]:
-    """Look up a project by id first, then by slug."""
+    """Look up a project by id first, then by slug.
+
+    KENSEI CUSTOM (ported): provisioning-visibility filter — projects bound to a
+    pending provisioning-journal row are hidden until provisioning completes."""
+    visible = (
+        "(provisioning_key IS NULL OR EXISTS ("
+        "SELECT 1 FROM project_provisioning_journal j "
+        "WHERE j.idempotency_key = projects.provisioning_key "
+        "AND j.status = 'complete'))"
+    )
     row = (
-        conn.execute("SELECT * FROM projects WHERE id = ?", (id_or_slug,)).fetchone()
-        or conn.execute("SELECT * FROM projects WHERE slug = ?", (str(id_or_slug).lower(),)).fetchone()
+        conn.execute(f"SELECT * FROM projects WHERE id = ? AND {visible}", (id_or_slug,)).fetchone()
+        or conn.execute(f"SELECT * FROM projects WHERE slug = ? AND {visible}", (str(id_or_slug).lower(),)).fetchone()
     )
     return None if row is None else _load_project(conn, row)
 

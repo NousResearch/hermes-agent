@@ -863,13 +863,17 @@ def _record_stall_interrupted_backoff(
     return True
 
 
-def resolve_compression_fallback_route() -> Optional[dict]:
+def resolve_compression_fallback_route(
+    selected_label: str = "", selected_client: Any = None, selected_model: str = "",
+) -> Optional[dict]:
     """Return the first usable ``auxiliary.compression.fallback_chain`` entry.
     The aux client applies the chain only from its exception handler, so a silent stall never reaches it; this
     pins the route onto one bounded retry instead. Only the first complete entry: if it errors, the aux
     client's own exception path walks the rest. ``None`` when none is usable (skip compression)."""
     try:
-        from agent.auxiliary_client import _fallback_entry_api_key, _get_auxiliary_task_config
+        from agent.auxiliary_client import (
+            _fallback_destination, _fallback_entry_api_key, _get_auxiliary_task_config,
+        )
         chain = _get_auxiliary_task_config("compression").get("fallback_chain")
     except Exception:
         logger.debug("compression fallback_chain lookup failed", exc_info=True)
@@ -885,6 +889,9 @@ def resolve_compression_fallback_route() -> Optional[dict]:
         # the same rule when the aux client walks this chain itself.
         if not provider or not model:
             continue
+        label = f"fallback_chain[{index}]({provider})"
+        if selected_label and label != selected_label:
+            continue
         try:
             api_key = _fallback_entry_api_key(entry)
         except Exception:
@@ -892,13 +899,22 @@ def resolve_compression_fallback_route() -> Optional[dict]:
             api_key = None
         from agent.auxiliary_client import _coerce_positive_timeout
         timeout = _coerce_positive_timeout(entry.get("timeout"))
+        destination = (
+            _fallback_destination("compression", selected_client, selected_model or model, label)
+            if selected_client is not None else None
+        )
+        client_api_key = getattr(selected_client, "api_key", None)
+        resolved_api_key = client_api_key if isinstance(client_api_key, str) else api_key
         return {
-            "label": f"fallback_chain[{index}]({provider})",
-            "provider": provider,
-            "model": model,
-            "base_url": str(entry.get("base_url") or "").strip() or None,
-            "api_key": api_key or None,
-            "api_mode": str(entry.get("api_mode") or entry.get("transport") or "").strip() or None,
+            "label": label,
+            "provider": destination.provider if destination else provider,
+            "model": destination.model if destination else model,
+            "base_url": destination.base_url if destination else str(entry.get("base_url") or "").strip() or None,
+            "api_key": resolved_api_key or None,
+            "api_mode": (
+                destination.api_mode if destination else
+                str(entry.get("api_mode") or entry.get("transport") or "").strip() or None
+            ),
             "timeout": timeout,
         }
     return None
@@ -2050,6 +2066,7 @@ def check_compression_model_feasibility(agent: Any) -> None:
     later, so ``replay_compression_warning`` resends it."""
     if not agent.compression_enabled:
         return
+    agent.context_compressor._feasibility_summary_route = None
     try:
         from agent.auxiliary_client import (
             _resolve_task_provider_model, _try_configured_fallback_for_unavailable_client,
@@ -2069,6 +2086,9 @@ def check_compression_model_feasibility(agent: Any) -> None:
             )
             if fb_client is not None and fb_model:
                 client, aux_model = fb_client, fb_model
+                agent.context_compressor._feasibility_summary_route = resolve_compression_fallback_route(
+                    fb_label, fb_client, fb_model,
+                )
                 if "(" in fb_label and fb_label.endswith(")"):
                     _aux_cfg_provider = fb_label.rsplit("(", 1)[1][:-1]
         if client is None or not aux_model:

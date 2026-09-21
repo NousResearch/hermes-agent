@@ -284,6 +284,50 @@ class CLITuiMixin:
         # RMS 0-32767 → index 0-7; typical speech is 500-5000, display caps at ~8000.
         return " ▁▂▃▄▅▆▇"[min(rec.current_rms, 8000) * 7 // 8000]
 
+    # ── KENSEI CUSTOM (restored): peer-presence line UNDER the input textbox (G7) ──
+    def _get_peer_presence_fragments(self):
+        """Peer-presence line rendered UNDER the input textbox (G7).
+
+        Three-state ambient indicator: ``● N Live`` (green) · ``○ M Idle``
+        (grey) · ``× K Offline`` (red). Rendered only when >= 2 live sessions
+        are open (single session = you only = no signal). Live = OPEN
+        interactive sessions (probe-live, cli/tui/desktop) regardless of
+        mid-turn state — a session you have open counts as live.
+        """
+        try:
+            from hermes_cli.peer_presence import peer_presence_summary
+
+            peer = peer_presence_summary()
+            if peer is None:
+                return []
+            live = int(peer.get("live_count") or 0)
+            if live < 2:
+                return []
+            active = int(peer.get("active_count") or 0)
+            idle = int(peer.get("idle_count") or 0)
+            offline = int(peer.get("offline_count") or 0)
+            frags = [("class:peer-presence-label", " peers ")]
+            frags.append(("class:peer-presence-live", f"● {live} Live"))
+            if active and active < live:
+                frags.append(("class:peer-presence-working", f" ({active} working)"))
+            if idle:
+                frags.append(("class:peer-presence-idle", f" ○ {idle} Idle"))
+            if offline:
+                frags.append(("class:peer-presence-off", f" × {offline} Offline"))
+            # Profile badge: show the ACTIVE profile so the session identity
+            # is unambiguous (issue 3).
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+
+                profile = get_active_profile_name()
+                if profile and profile != "default":
+                    frags.append(("class:peer-presence-profile", f" [{profile}]"))
+            except Exception:
+                pass
+            return frags
+        except Exception:
+            return []
+
     def _get_tui_prompt_fragments(self):
         """prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
@@ -321,6 +365,18 @@ class CLITuiMixin:
             return _state_fragment("class:prompt-working", "☤")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
+        # ── KENSEI CUSTOM: Walkie-Talkie ambient ●N pill (G7) ──
+        # Show live peer count in the prompt when the peer plugin is active.
+        # Defensive: empty when the plugin is absent — never breaks the prompt.
+        try:
+            from hermes_cli.peer_presence import peer_presence_pill
+
+            pill = peer_presence_pill()
+            if pill:
+                return [("class:peer-presence", pill + " ")] + [("class:prompt", symbol)]
+        except Exception:
+            pass
+        # ── END KENSEI CUSTOM ──
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
@@ -368,6 +424,194 @@ class CLITuiMixin:
         """Extension hook: wrapper CLIs return widgets inserted between the spacer and status bar."""
         return []
 
+    # ── KENSEI CUSTOM (restored): todo inspector panel + interaction-state gates ──
+
+    def _todo_items(self) -> list[dict[str, str]]:
+        """Return the live session task snapshot, or an empty list safely."""
+        try:
+            store = getattr(getattr(self, "agent", None), "_todo_store", None)
+            return store.read() if store is not None else []
+        except Exception:
+            return []
+
+    def _todo_panel_visible(self) -> bool:
+        # KENSEI CUSTOM: the tray shows only while work remains (any pending or
+        # in_progress task). Completed-only history hides the tray — the stored
+        # items stay intact and Ctrl+T can still reopen them for inspection.
+        items = self._todo_items()
+        visible = any(
+            row.get("status") in ("pending", "in_progress") for row in items
+        )
+        if not visible and self._todo_panel_state.expanded:
+            self._todo_panel_state.close()
+        return visible
+
+    def _todo_panel_open(self) -> bool:
+        return bool(self._todo_panel_state.expanded and self._todo_panel_visible())
+
+    def _toggle_todo_panel(self) -> bool:
+        items = self._todo_items()
+        if not self._todo_panel_state.toggle(items):
+            return False
+        self._invalidate(min_interval=0.0)
+        return True
+
+    def _render_todo_panel(self):
+        from hermes_cli.todo_progress import format_todo_panel_fragments
+
+        return format_todo_panel_fragments(
+            self._todo_items(),
+            self._todo_panel_state,
+            width=self._get_tui_terminal_width(),
+            max_rows=self._todo_panel_max_rows(),
+        )
+
+    def _todo_panel_height(self) -> int:
+        fragments = self._render_todo_panel()
+        if not fragments:
+            return 0
+        return "".join(text for _style, text in fragments).count("\n") + 1
+
+    def _todo_panel_max_rows(self) -> int:
+        try:
+            rows = shutil.get_terminal_size((80, 24)).lines
+        except Exception:
+            rows = 24
+        return max(4, min(8, rows // 4))
+
+    def _close_todo_panel(self) -> None:
+        self._todo_panel_state.close()
+        self._invalidate(min_interval=0.0)
+
+    def _is_normal_input_active(self) -> bool:
+        """True only when no input-blocking or foreground overlay is active.
+
+        Gates the generic history up/down filter (``_normal_input``) so it
+        stays disabled while *any* overlay — including ``_auq_state`` — is
+        showing, preventing the generic history handlers from overlapping
+        the overlay's own arrow/number handlers.
+        """
+        return not (
+            self._clarify_state
+            or self._approval_state
+            or self._slash_confirm_state
+            or self._sudo_state
+            or self._secret_state
+            or self._model_picker_state
+            or getattr(self, "_command_palette_state", None)
+            or (self._todo_panel_open() if getattr(self, "_todo_panel_state", None) is not None else False)
+            or self._auq_state  # KENSEI CUSTOM
+        )
+
+    def _has_interruptible_overlay(self) -> bool:
+        """True when an agent-blocking overlay that Ctrl+C / Ctrl+Q must clear
+        is active: approval, clarify, AUQ, sudo, or secret.
+
+        Foreground-only UI (slash-confirm, model-picker) is handled earlier
+        in the Ctrl+C / Ctrl+Q handlers and is NOT included here — those
+        don't block a worker thread on a ``response_queue.get()``.
+        """
+        return bool(
+            self._sudo_state
+            or self._secret_state
+            or self._approval_state
+            or self._clarify_state
+            or self._auq_state  # KENSEI CUSTOM
+        )
+
+    def _stash_panel_open(self) -> bool:
+        stash = getattr(self, "_prompt_stash", None)
+        return bool(stash is not None and stash.panel_open and len(stash))
+
+    def _register_todo_tui_keybindings(self, kb) -> None:
+        """Register the focused Ctrl+T task inspector bindings."""
+        todo_toggle_filter = Condition(
+            lambda: (
+                self._todo_panel_visible() and not self._stash_panel_open()
+            )
+            and not self._clarify_state
+            and not self._auq_state
+            and not self._approval_state
+            and not self._sudo_state
+            and not self._secret_state
+            and not self._slash_confirm_state
+            and not self._model_picker_state
+            and not self._command_palette_state
+        )
+        todo_panel_filter = Condition(
+            lambda: self._todo_panel_open()
+        )
+
+        @kb.add('c-t', filter=todo_toggle_filter, eager=True)
+        def handle_todo_toggle(event):
+            self._toggle_todo_panel()
+            event.app.invalidate()
+
+        # ── KENSEI CUSTOM (dropped during merge 2efaa643, restored): the bundled
+        # Ctrl+P Control Room binding stays REMOVED so Ctrl+P remains
+        # command-palette-only. Only the todo panel bindings below are registered.
+
+        @kb.add('up', filter=todo_panel_filter, eager=True)
+        @kb.add('k', filter=todo_panel_filter, eager=True)
+        def handle_todo_up(event):
+            self._todo_panel_state.move(self._todo_items(), -1)
+            event.app.invalidate()
+
+        @kb.add('down', filter=todo_panel_filter, eager=True)
+        @kb.add('j', filter=todo_panel_filter, eager=True)
+        def handle_todo_down(event):
+            self._todo_panel_state.move(self._todo_items(), 1)
+            event.app.invalidate()
+
+        @kb.add('m', filter=todo_panel_filter, eager=True)
+        def handle_todo_mark_done(event):
+            store = getattr(getattr(self, 'agent', None), '_todo_store', None)
+            if store is not None:
+                self._todo_panel_state.request_status(
+                    store.read(),
+                    'completed',
+                    expected_revision=store.revision,
+                )
+            event.app.invalidate()
+
+        @kb.add('u', filter=todo_panel_filter, eager=True)
+        def handle_todo_reopen(event):
+            store = getattr(getattr(self, 'agent', None), '_todo_store', None)
+            if store is not None:
+                self._todo_panel_state.request_status(
+                    store.read(),
+                    'pending',
+                    expected_revision=store.revision,
+                )
+            event.app.invalidate()
+
+        @kb.add('c', filter=todo_panel_filter, eager=True)
+        def handle_todo_completed_visibility(event):
+            self._todo_panel_state.toggle_completed(self._todo_items())
+            event.app.invalidate()
+
+        @kb.add('enter', filter=todo_panel_filter, eager=True)
+        def handle_todo_confirm(event):
+            store = getattr(getattr(self, 'agent', None), '_todo_store', None)
+            if store is not None:
+                self._todo_panel_state.confirm(store)
+            event.app.invalidate()
+
+        @kb.add('?', filter=todo_panel_filter, eager=True)
+        def handle_todo_help(event):
+            self._todo_panel_state.notice = (
+                '↑↓ select · m mark done · u reopen · c hide/show done · Esc close'
+            )
+            event.app.invalidate()
+
+        @kb.add('escape', filter=todo_panel_filter, eager=True)
+        def handle_todo_close(event):
+            if self._todo_panel_state.cancel_confirmation():
+                event.app.invalidate()
+                return
+            self._close_todo_panel()
+            event.app.invalidate()
+
     def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
         """Extension hook: wrapper CLIs add bindings to ``kb`` (``input_area`` is the main TextArea)."""
 
@@ -376,10 +620,12 @@ class CLITuiMixin:
         *,
         sudo_widget,
         secret_widget,
-        connection_widget=None,
+    free_text_widget=None,  # KENSEI CUSTOM: optional free-text banner widget
+    connection_widget=None,
         approval_widget,
         slash_confirm_widget=None,
         clarify_widget,
+        auq_widget=None,  # KENSEI CUSTOM
         model_picker_widget=None,
         command_palette_widget=None,
         spinner_widget=None,
@@ -389,6 +635,7 @@ class CLITuiMixin:
         image_bar,
         input_area,
         input_rule_bot,
+        peer_presence_bar=None,  # KENSEI CUSTOM
         voice_status_bar,
         completions_menu) -> list:
         """Ordered children of the root ``HSplit``; override only for full control over ordering
@@ -397,10 +644,12 @@ class CLITuiMixin:
             Window(height=0),
             sudo_widget,
             secret_widget,
-            connection_widget,
+    free_text_widget,  # KENSEI CUSTOM
+    connection_widget,
             approval_widget,
             slash_confirm_widget,
             clarify_widget,
+            auq_widget,  # KENSEI CUSTOM
             model_picker_widget,
             command_palette_widget,
             spinner_widget,
@@ -409,11 +658,13 @@ class CLITuiMixin:
             getattr(self, "_pet_widget", None),
             getattr(self, "_stash_panel_widget", None),
             getattr(self, "_subagent_dock_widget", None),
+            getattr(self, "_todo_panel_widget", None),  # KENSEI CUSTOM
             status_bar,
             input_rule_top,
             image_bar,
             input_area,
             input_rule_bot,
+            peer_presence_bar,  # KENSEI CUSTOM (G7): under the input textbox
             voice_status_bar,
             completions_menu]
         return [item for item in ordered if item is not None]
@@ -436,79 +687,8 @@ class CLITuiMixin:
                 time.sleep(0.2)
 
     def _get_clarify_batch_display_fragments(self, state):
-        """Batch (multi-question) clarify panel: "N questions" header, one status line per question
-        (✓ answered → answer / ▸ active / · pending), and the active question's numbered choices
-        (+ Other) expanded beneath its status line."""
-        from cli import _panel_box_width, _wrap_panel_text
-        questions_list = state.get("questions") or []
-        answers = state.get("answers") or {}
-        answer_meta = state.get("answer_meta") or {}
-        active = state.get("active", 0)
-        choices = state.get("choices") or []
-        selected = state.get("selected", 0)
-        multi_select = state.get("multi_select", False)
-        selected_indices = state.get("selected_indices", set()) if multi_select else set()
-        freetext = self._clarify_freetext
-        title = "Hermes needs your input"
-        header = f"{len(questions_list)} questions"
-
-        def _status_rows(width):
-            rows = []
-            for idx, entry in enumerate(questions_list):
-                answered = entry["qid"] in answers
-                marker = "✓" if answered else ("▸" if idx == active else "·")
-                row_style = 'class:clarify-selected' if idx == active else 'class:clarify-choice'
-                for wrapped in _wrap_panel_text(f"{marker} {entry['question']}", width, subsequent_indent="  "):
-                    rows.append((row_style, wrapped))
-                if answered:
-                    # Locked answer on its own line/color so it stays readable while Tab-walking.
-                    answer = f"    {answers[entry['qid']]}"
-                    for wrapped in _wrap_panel_text(answer, width, subsequent_indent="    "):
-                        rows.append(('class:clarify-answer', wrapped))
-                if idx != active:
-                    continue
-                for i, choice in enumerate(choices):
-                    cursor = "❯" if i == selected and not freetext else " "
-                    cb = ("[x] " if i in selected_indices else "[ ] ") if multi_select else ""
-                    style = 'class:clarify-selected' if i == selected and not freetext else 'class:clarify-choice'
-                    label = f"  {cursor} {cb}{_num_prefix(i)}. {choice}"
-                    for wrapped in _wrap_panel_text(label, width, subsequent_indent="      "):
-                        rows.append((style, wrapped))
-                if choices:
-                    other_idx = len(choices)
-                    mid = _num_prefix(other_idx)
-                    if multi_select:
-                        mid = f"{'[x]' if other_idx in selected_indices else '[ ]'} {mid}"
-                    # An earlier typed answer stays visible next to Other; Enter on it edits
-                    # (the composer is prefilled).
-                    other_text = (answer_meta.get(entry["qid"]) or {}).get("other_text") or ""
-                    other_suffix = f"Other: {other_text}" if other_text else None
-                    if freetext:
-                        other_label = f"  ❯ {mid}. " + (other_suffix or "Other (type below)")
-                        other_style = 'class:clarify-active-other'
-                    elif selected == other_idx:
-                        other_label = f"  ❯ {mid}. " + (other_suffix or "Other (type your answer)")
-                        other_style = 'class:clarify-selected'
-                    else:
-                        other_label = f"    {mid}. " + (other_suffix or "Other (type your answer)")
-                        other_style = 'class:clarify-choice'
-                    for wrapped in _wrap_panel_text(other_label, width, subsequent_indent="      "):
-                        rows.append((other_style, wrapped))
-                elif freetext:
-                    guidance = "  Type your answer in the prompt below, then press Enter."
-                    for wrapped in _wrap_panel_text(guidance, width):
-                        rows.append(('class:clarify-active-other', wrapped))
-            return rows
-
-        preview_rows = _status_rows(60)
-        box_width = _panel_box_width(title, [header] + [text for _, text in preview_rows])
-        rows = _status_rows(max(8, box_width - 2))
-
-        panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
-        panel.row('class:clarify-question', header)
-        for style, text in rows:
-            panel.row(style, text)
-        return panel.close()
+        from hermes_cli.cli_clarify_panel import render_batch
+        return render_batch(self, state)
 
     def _get_clarify_display_fragments(self):
         """Clarify question/choices panel.
@@ -540,9 +720,12 @@ class CLITuiMixin:
         choice_labels = [_label(i, c) for i, c in enumerate(choices)]
         other_label = _label(other_idx, "Other (type below)" if freetext else "Other (type your answer)")
 
-        preview_lines = wrap(question, 60)
-        preview_lines.extend(w for _i, w in _wrap_rows(wrap, choice_labels + [other_label], 60, "    "))
-        box_width = _panel_box_width(title, preview_lines)
+        # On roomy terminals widen the panel so long questions wrap to fewer
+        # rows and are less likely to hit the truncation budget below.
+        preview_width = max(60, min(100, shutil.get_terminal_size((100, 20)).columns - 8))
+        preview_lines = wrap(question, preview_width)
+        preview_lines.extend(w for _i, w in _wrap_rows(wrap, choice_labels + [other_label], preview_width, "    "))
+        box_width = _panel_box_width(title, preview_lines, max_width=preview_width + 4)
         inner_text_width = max(8, box_width - 2)
 
         # Mandatory rows: choices + Other (or the freetext guidance line when there are no choices).
@@ -612,7 +795,7 @@ class CLITuiMixin:
         the terminal rows or the bottom border and trailing items get clipped on long lists
         (e.g. Ollama Cloud's 36+ models). ``state["_scroll_offset"]`` is updated in place.
         """
-        from cli import HermesCLI, _panel_box_width, _wrap_panel_text
+        from cli import HermesCLI, _panel_box_width
         box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
         # ``_Panel.row`` pads every row to ``box_width - 2``, so that is the real
         # body width. Keep the wrap budget in sync with it and reserve the
@@ -628,13 +811,36 @@ class CLITuiMixin:
             term_rows = _term_rows()
         scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
             selected, state.get("_scroll_offset", 0), len(labels), term_rows)
+        from cli import _wrap_panel_text
+        hint_lines = _wrap_panel_text(hint, inner_text_width) or ['']
+        # Same prefix-after-wrap rule the render loop uses, so the scroll budget
+        # counts the physical rows that actually render.
+        wrapped_labels = [
+            _prefix_wrapped_rows(
+                _wrap_panel_text, label, label_width,
+                '❯ ' if i == selected else '  ', indent,
+            )
+            for i, label in enumerate(labels)
+        ]
+        budget = max(1, term_rows - _PANEL_RESERVED_BELOW - 5 - len(hint_lines))
+        # Count physical rows, not items: metadata labels wrap on narrow terminals.
+        while scroll_offset < selected and sum(len(lines) for lines in wrapped_labels[scroll_offset:selected + 1]) > budget:
+            scroll_offset += 1
+        end, used = scroll_offset, 0
+        while end < min(scroll_offset + visible, len(labels)):
+            cost = len(wrapped_labels[end])
+            if used and used + cost > budget:
+                break
+            used += cost
+            end += 1
         state["_scroll_offset"] = scroll_offset
 
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
         panel.blank()
-        panel.row('class:clarify-hint', hint)
+        for line in hint_lines:
+            panel.row('class:clarify-hint', line)
         panel.blank()
-        for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
+        for idx in range(scroll_offset, end):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
             # The cursor cell is always two columns wide, so unselected rows get two spaces
             # regardless of ``indent`` (the palette's continuation indent is four) — otherwise
@@ -662,7 +868,10 @@ class CLITuiMixin:
                     label += "  ← current"
                 choices.append(label)
             choices.append("Cancel")
-            hint = (
+            from hermes_cli.picker_presentation import route_fields
+            current = next((p for p in state.get('providers', []) if p.get('is_current')), {})
+            fields = route_fields(current, state.get('current_model', 'unknown'))
+            hint = ('Provider: ' + fields[0] + ' · Model: ' + fields[1] + ' · ' + fields[2]) if fields else (
                 f"Current: {state.get('current_model', 'unknown')} "
                 f"on {state.get('current_provider', 'unknown')}")
         elif state.get("stage") == "reasoning":
@@ -684,9 +893,12 @@ class CLITuiMixin:
             # Fuzzy filter narrows the concrete list; selection still resolves to a real entry via
             # the filtered_pairs index mapping, so this never makes model resolution ambiguous.
             _query = state.get("filter", "") or ""
-            filtered_pairs = self._filter_model_picker_entries(model_list, _query)
+            from hermes_cli.picker_presentation import model_label
+            display_labels = [model_label(provider_data, model) for model in model_list]
+            display_pairs = self._filter_model_picker_entries(display_labels, _query)
+            filtered_pairs = [(i, model_list[i]) for i, _label in display_pairs]
             state["_filtered_pairs"] = filtered_pairs
-            model_labels = [e for (_i, e) in filtered_pairs]
+            model_labels = [label for _i, label in display_pairs]
             choices = list(model_labels) + ["← Back", "Cancel"]
             if _query:
                 hint = (
@@ -838,7 +1050,9 @@ class CLITuiMixin:
             if self._clarify_freetext:
                 hint = '  type your answer and press Enter'
             elif self._clarify_state.get("questions"):
-                hint = '  ↑/↓ to select, Enter to lock, Tab next question'
+                hint = ('  Enter to submit all · Tab / Shift-Tab to edit'
+                        if self._clarify_state.get("reviewing")
+                        else '  ↑/↓ select · Enter save · Tab / Shift-Tab switch')
             else:
                 hint = '  ↑/↓ to select, Enter to confirm'
             return [('class:hint', hint), ('class:clarify-countdown', countdown)]
@@ -1053,7 +1267,7 @@ class CLITuiMixin:
     def _tui_make_clarify_number_handler(self, idx):
         def handler(event):
             state = self._clarify_state
-            if not state or self._clarify_freetext:
+            if not state or self._clarify_freetext or state.get("reviewing"):
                 return
             choices = state.get("choices") or []
             if idx > len(choices):
@@ -1064,12 +1278,13 @@ class CLITuiMixin:
                 indices.symmetric_difference_update({idx})
                 event.app.invalidate()
                 return
+            if state.get("questions"):
+                state["selected"] = idx
+                self._tui_enter_clarify_choice(event)
+                return
             if idx == len(choices):
                 # "Other" → freetext
                 self._clarify_freetext = True
-            elif state.get("questions"):
-                # Batch mode: lock the numbered choice for the active question only.
-                self._clarify_batch_lock(state, choices[idx])
             else:
                 state["response_queue"].put(choices[idx])
                 self._clarify_state = None
@@ -1395,7 +1610,10 @@ class CLITuiMixin:
     def _tui_clarify_batch_step(self, event, delta: int):
         state = self._clarify_state
         if state and state.get("questions"):
+            from hermes_cli.cli_clarify_panel import save_draft, fill_composer
+            save_draft(self, state, event.app.current_buffer)
             self._clarify_batch_set_active(state, (state["active"] + delta) % len(state["questions"]))
+            fill_composer(self, event.app.current_buffer)
             event.app.invalidate()
 
     def _tui_clarify_batch_tab(self, event):
@@ -1700,6 +1918,7 @@ class CLITuiMixin:
         state = self._clarify_state
         base = getattr(self, '_clarify_multi_base', None)
         if state.get("questions"):
+            state.get("drafts", {}).pop(state["active"], None)
             # Batch mode: lock the typed answer for the active question. Multi-select "Other"
             # appends the typed answer to the checked labels as a JSON array string.
             if base is not None:
@@ -1720,14 +1939,21 @@ class CLITuiMixin:
             state["response_queue"].put(text)
             self._clarify_state = None
             self._clarify_freetext = False
-        buf.reset()
+        from hermes_cli.cli_clarify_panel import fill_composer
+        fill_composer(self, buf)
         event.app.invalidate()
 
     def _tui_enter_clarify_choice(self, event) -> None:
         """Clarify choice mode: confirm the highlighted selection."""
         state = self._clarify_state
         if state.get("questions"):
-            # Batch mode: lock the active question's answer and advance to the next unanswered.
+            if state.get("reviewing"):
+                self._clarify_batch_submit(state)
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+            # Discard the draft being committed, not drafts on other tabs.
+            state.get("drafts", {}).pop(state["active"], None)
             self._clarify_batch_enter(state)
             # Editing an earlier "Other" answer: prefill the composer with the previous text.
             if self._clarify_freetext and self._clarify_prefill:
@@ -2028,6 +2254,11 @@ class CLITuiMixin:
             kb.add('c-j')(self._tui_insert_newline)
 
         self._tui_bind_editor_and_stash(kb)
+        # ── KENSEI CUSTOM (restored, lost in merge 2efaa643): Ctrl+T task
+        # inspector toggle + panel navigation. Registration order matches the
+        # pre-merge layout (before the generic Tab binding). Never adopt the
+        # upstream subagent-monitor Ctrl+T binding (b2aa855).
+        self._register_todo_tui_keybindings(kb)
         self._tui_bind_overlay_navigation(kb)
 
         # History: the TextArea is multiline so Up/Down alone only move the cursor;
@@ -2055,10 +2286,12 @@ class CLITuiMixin:
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
+        # KENSEI CUSTOM: c-t stays the todo inspector toggle (registered via
+        # _register_todo_tui_keybindings); never adopt the upstream
+        # subagent-monitor Ctrl+T binding (b2aa855) — f6 opens the monitor.
         from hermes_cli.cli_subagent_monitor import modal_prompt_active, open_monitor, toggle_dock
-        for key in ('c-t', 'f6'):
-            kb.add(key, filter=Condition(lambda: not modal_prompt_active(self)))(
-                lambda event: open_monitor(self))
+        kb.add('f6', filter=Condition(lambda: not modal_prompt_active(self)))(
+            lambda event: open_monitor(self))
         kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
             lambda event: toggle_dock(self))
         return kb
@@ -2093,8 +2326,7 @@ class CLITuiMixin:
         """Clarify / approval / slash-confirm / model picker / command palette navigation keys."""
         _clarify_nav = Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext)
         _clarify_batch = Condition(
-            lambda: bool(self._clarify_state) and bool(self._clarify_state.get("questions"))
-            and not self._clarify_freetext)
+            lambda: bool(self._clarify_state) and bool(self._clarify_state.get("questions")))
         kb.add('up', filter=_clarify_nav)(self._tui_clarify_up)
         kb.add('down', filter=_clarify_nav)(self._tui_clarify_down)
         _connection_nav = Condition(lambda: bool(self._connection_state))
@@ -2268,11 +2500,40 @@ class CLITuiMixin:
             filter=Condition(
                 lambda: cli_ref._status_bar_visible
                 and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)))
+        # ── KENSEI CUSTOM (restored): peer-presence line UNDER the input textbox (G7) ──
+        # A dedicated 1-line ambient indicator below the input, separate from
+        # the status bar. Renders only when >= 2 sessions are known (the
+        # fragment method returns [] otherwise, so the window collapses).
+        peer_presence_bar = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(lambda: cli_ref._get_peer_presence_fragments()),
+                height=1,
+                wrap_lines=False,
+            ),
+            filter=Condition(
+                lambda: cli_ref._status_bar_visible
+                and not getattr(cli_ref, "_status_bar_suppressed_after_resize", False)
+            ),
+        )
+        # ── END KENSEI CUSTOM ──
+
         # Stash browse panel — just above the status bar, Ctrl+S on an empty composer with 2+ drafts.
         self._stash_panel_widget = ConditionalContainer(
             Window(FormattedTextControl(self._get_stash_panel_display_fragments), wrap_lines=False),
             filter=Condition(lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))),
         )
+        # ── KENSEI CUSTOM (restored): session task progress panel ──
+        # Inline above the composer. Compact mode is a single current-task row;
+        # Ctrl+T expands the same canonical list.
+        self._todo_panel_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: cli_ref._render_todo_panel()),
+                height=lambda: cli_ref._todo_panel_height(),
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: cli_ref._todo_panel_visible()),
+        )
+        # ── END KENSEI CUSTOM ──
         self._register_extra_tui_keybindings(kb, input_area=input_area)
         layout = Layout(FooterSplit(self._build_tui_layout_children(
             sudo_widget=sudo_widget,
@@ -2291,6 +2552,7 @@ class CLITuiMixin:
             input_area=input_area,
             input_rule_bot=input_rule_bot,
             voice_status_bar=voice_status_bar,
+            peer_presence_bar=peer_presence_bar,  # KENSEI CUSTOM (G7)
             completions_menu=CompletionsMenu(max_height=12, scroll_offset=1))))
         self._tui_set_base_style()
         return layout, PTStyle.from_dict(self._build_tui_style_dict())

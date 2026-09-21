@@ -698,13 +698,21 @@ def _print_job_details(job_data: Dict[str, Any]) -> None:
 def cron_create(args):
     # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].
+    # KENSEI CUSTOM: --disabled creates the job paused until explicitly resumed (paired with the
+    # --disabled flag in hermes_cli/subcommands/cron.py). Upstream --paused/--paused-reason is the
+    # native path; --disabled maps onto it (upstream create_job takes paused=/paused_reason=).
+    _kensei_disabled = bool(getattr(args, "disabled", False))
+    _paused = _kensei_disabled or getattr(args, "paused", False)
+    _paused_reason = getattr(args, "paused_reason", None)
+    if _kensei_disabled and _paused_reason is None:
+        _paused_reason = "created_disabled"
     result = _cron_api(
         action="create", schedule=args.schedule, prompt=args.prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         no_agent=getattr(args, "no_agent", False) or None,
-        **({"paused": args.paused, "paused_reason": getattr(args, "paused_reason", None)}
-           if getattr(args, "paused", False) or getattr(args, "paused_reason", None) is not None else {}),
+        **({"paused": _paused, "paused_reason": _paused_reason}
+           if _paused or _paused_reason is not None else {}),
         **_job_api_kwargs(args))
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))

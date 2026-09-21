@@ -879,6 +879,8 @@ class GatewayBusySessionMixin:
         "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
         "loop", "refine", "review", "voice",
+        # ── KENSEI CUSTOM — content-engine + mode flows (ported) ──
+        "generate-image", "localgen", "mode",
     )
 
     def _command_handler_table(self, names) -> Dict[str, Any]:

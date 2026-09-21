@@ -66,6 +66,23 @@ def test_messaging_card_for_a_served_profile_reads_connected_not_restart_needed(
     assert payload["ingress_url"] == "http://127.0.0.1:45719/p/alpha/v1"
 
 
+def test_mirror_lazy_import_survives_a_stale_pre_update_module_cache(served_root, monkeypatch):
+    """KENSEI CUSTOM regression: cron delivery / status flows can run inside long-lived processes
+    that hold a ``gateway.config`` module cached from before an editable-install update introduced
+    the multiplex-era names. The lazy import must reload the module once instead of failing the
+    caller (observed: manual cron runs failing with ``cannot import name
+    'SHARED_LISTENER_MIRROR_PLATFORMS'`` while scheduled gateway deliveries passed)."""
+    import gateway.config as gw_config
+
+    from gateway.status import shared_listener_mirror_platforms
+
+    for name in ("SHARED_LISTENER_MIRROR_PATHS", "SHARED_LISTENER_MIRROR_PLATFORMS"):
+        monkeypatch.delattr(gw_config, name)  # exactly what a pre-update cache looks like
+
+    runtime = {"platforms": {"api_server": {"state": "connected",
+                                            "listener_base": "http://127.0.0.1:45719"}}}
+    mirrored = shared_listener_mirror_platforms(runtime, "alpha")
+    assert mirrored["api_server"]["ingress_url"] == "http://127.0.0.1:45719/p/alpha/v1"
 def test_messaging_card_ignores_a_served_profiles_stale_own_runtime_record(served_root, monkeypatch):
     """A served profile writes no live ``gateway_state.json`` of its own, but one left behind by a
     pre-multiplex or standalone run (``stopped``, empty platforms) used to shadow the multiplexer's

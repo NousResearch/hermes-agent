@@ -87,9 +87,35 @@ def _module_name(provider_dir: Path, name: str) -> str:
     return f"{_USER_NAMESPACE}.{name}__source_{digest}"
 
 
+# ── KENSEI CUSTOM (ported) — root-shared user plugins dir ──
+def _get_shared_user_plugins_dir() -> Optional[Path]:
+    """Return the root Hermes plugin directory for a named profile.
+
+    A profile is intentionally isolated for its configuration and mutable
+    state, but an administrator-installed provider plugin at
+    ``<root>/plugins`` is executable code shared by every profile.  This
+    fallback prevents operators from copying a plugin into every profile while
+    preserving precedence: bundled providers win, then profile-local plugins,
+    then this root-shared directory.  The default home is already the root, so
+    it is never returned twice.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+
+        local = get_hermes_home() / "plugins"
+        shared = get_default_hermes_root() / "plugins"
+        if shared.resolve() == local.resolve():
+            return None
+        return shared if shared.is_dir() else None
+    except Exception:
+        return None
+# ── END KENSEI CUSTOM ──
+
+
 def _external_source_dirs() -> List[Path]:
-    """User then project plugin roots that exist (precedence order)."""
-    return [d for d in (_get_user_plugins_dir(), _get_project_plugins_dir()) if d]
+    """User, then root-shared, then project plugin roots that exist (precedence order)."""
+    # ── KENSEI CUSTOM (ported) — include root-shared dir between user and project ──
+    return [d for d in (_get_user_plugins_dir(), _get_shared_user_plugins_dir(), _get_project_plugins_dir()) if d]
 
 
 def _iter_provider_dirs() -> List[Tuple[str, Path]]:

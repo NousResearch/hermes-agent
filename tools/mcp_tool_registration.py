@@ -258,6 +258,10 @@ def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[
             continue
         _schema._scan_mcp_description(name, t.name, t.description or "")
         schema = _schema._convert_mcp_schema(name, t)
+        # KENSEI CUSTOM — sanitize_tool_metadata plugin hook (quarantine/rewrite)
+        schema = _apply_sanitize_hook(name, schema, fallback=schema)
+        if schema is None:
+            continue
         handler = _handlers._make_tool_handler(name, t.name, tool_timeout)
         out.append(_Candidate(schema["name"], f"tool {t.name!r}", schema, handler))
     return out
@@ -538,3 +542,68 @@ def _register_from_cache_sync(name: str, config: dict, entry: dict) -> List[str]
             _core._lazy_server_tool_names[key] = list(registered)
         logger.info("MCP server '%s' (lazy): registered %d tool(s) from schema cache", name, len(registered))
     return registered
+
+
+# ── KENSEI CUSTOM — sanitize_tool_metadata plugin hook (ported) ──
+
+def _apply_sanitize_hook(
+    server_name: str,
+    tool: dict,
+    fallback: dict,
+) -> Optional[dict]:
+    """Run the ``sanitize_tool_metadata`` plugin hook over one MCP tool.
+
+    Invoked at the tool-metadata pipeline immediately after the ``tools/list``
+    handshake (and on schema-cache registration), before the tool is exposed to
+    approval dialogs or model context. ``tool`` is a dict shaped like an MCP
+    ``tools/list`` entry: ``{"name", "description", "inputSchema"}``.
+
+    ``fallback`` is the original tool dict. If a plugin sanitizes it, the
+    sanitized version is returned; if every plugin quarantines it, the tool is
+    dropped from the pipeline (caller must handle a ``None`` return). If no
+    plugin handles the tool (or one raises), the original is returned.
+
+    Returns ``None`` when the tool must be quarantined (never registered).
+    """
+    from hermes_cli.plugins import invoke_hook, has_hook
+
+    if not has_hook("sanitize_tool_metadata"):
+        return fallback
+
+    try:
+        results = invoke_hook("sanitize_tool_metadata", tool=tool, server_name=server_name)
+    except Exception as exc:
+        # Fail-safe: a broken hook must not block discovery. The shipping
+        # plugin already fails closed internally, so reaching here is an
+        # unexpected core/plugin defect — fall back to the original tool and
+        # let the existing description scan / core checks still apply.
+        logger.warning(
+            "MCP server '%s': sanitize_tool_metadata hook raised: %s; "
+            "delivering tool unchanged",
+            server_name, exc,
+        )
+        return fallback
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if "quarantine" in result:
+            reason = result.get("quarantine") or "unspecified"
+            logger.warning(
+                "MCP server '%s': quarantining tool '%s' (%s)",
+                server_name, tool.get("name"), reason,
+            )
+            return None
+        if "tool" in result and isinstance(result.get("tool"), dict):
+            return result["tool"]
+    return fallback
+
+
+
+# Safety cap on nextCursor pagination loops so a misbehaving server that
+# returns a cursor forever cannot spin discovery indefinitely. 50 pages at
+# the common 50-100 items/page covers thousands of tools/resources/prompts.
+_MCP_LIST_MAX_PAGES = 50
+
+
+# ── END KENSEI CUSTOM ──

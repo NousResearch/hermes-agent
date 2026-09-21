@@ -116,13 +116,17 @@ export interface ConfirmReq {
 
 export interface ClarifyBatchQuestion {
   choices: string[] | null
+  header?: string
   multiSelect?: boolean
+  options?: AskUserQuestionOption[]
   qid: string
   question: string
 }
 
 export interface ClarifyReq {
   choices: string[] | null
+  /** Absolute Unix seconds when this prompt expires; absent means unlimited. */
+  expiresAt?: number
   question: string
   requestId: string
   /** Batch (multi-question) clarify: present instead of question/choices. */
@@ -130,6 +134,28 @@ export interface ClarifyReq {
   /** Answers already locked server-side (qid → answer): seeded from the
    *  reconnect replay, updated as the user locks each question. */
   answers?: Record<string, string>
+}
+
+// ── KENSEI CUSTOM: AskUserQuestionsTool overlay types ────────────────
+// Per spec (2026-06-04): the new mode system (plan / UltraPlan / recon)
+// uses a multi-question batched prompt instead of single ClarifyPrompt.
+// Mirrors Claude Code's AskUserQuestion tool.  Must survive upstream merges.
+export interface AskUserQuestionOption {
+  description?: string
+  label: string
+  recommended?: boolean
+}
+
+export interface AskUserQuestion {
+  header?: string
+  multiSelect?: boolean
+  options: AskUserQuestionOption[]
+  question: string
+}
+
+export interface AskUserQuestionsReq {
+  questions: AskUserQuestion[]
+  requestId: string
 }
 
 export interface Msg {
@@ -183,7 +209,8 @@ export interface McpServerStatus {
 }
 
 /** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
-export type SessionInfo = SessionLiveInfo
+// KENSEI CUSTOM: agent_mode is fork-only (agent-modes skill); intersect onto the generated shape.
+export type SessionInfo = SessionLiveInfo & { agent_mode?: string }
 export type { ProjectInfo }
 
 export interface SudoReq {
@@ -194,6 +221,23 @@ export interface SecretReq {
   envVar: string
   prompt: string
   requestId: string
+}
+
+export interface PromptOptimizationPreview {
+  session_key: string
+  original: string
+  rewritten: string
+  quality_before: number
+  quality_after: number
+  token_delta_pct: number
+  model_profile: string
+  template_name?: string | null
+}
+
+export interface PromptOptimizationReq {
+  preview: PromptOptimizationPreview
+  reason?: string
+  status: 'bypass' | 'preview'
 }
 
 /** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */

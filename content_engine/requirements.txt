@@ -1,0 +1,5 @@
+# KENSEI Content Engine dependencies
+Pillow>=10.0
+requests>=2.32
+psycopg2-binary>=2.9
+pytesseract>=0.3.13  # OCR text-integrity gate (needs the `tesseract` binary on PATH)

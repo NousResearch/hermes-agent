@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Article Preview: How I Use Hermes to Ship AI Features Faster</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #1a1a2e;
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+               Ubuntu, Cantarell, sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.preview-banner {
+  background: linear-gradient(90deg, #e94560, #0f3460);
+  padding: 10px 20px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 10000;
+  letter-spacing: 0.5px;
+}
+.preview-banner span {
+  background: rgba(0,0,0,0.4);
+  padding: 2px 10px;
+  margin-left: 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+}
+
+/* ── Short post card (Twitter / LinkedIn) ── */
+
+.post-card {
+  max-width: 600px;
+  margin: 40px auto;
+  background: #16213e;
+  border-radius: 12px;
+  padding: 24px;
+  border: 1px solid #1a1a3e;
+}
+
+/* Twitter mockup */
+.twitter-card .avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.twitter-card .avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e94560;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 20px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.twitter-card .name-row {
+  display: flex;
+  flex-direction: column;
+}
+.twitter-card .display-name {
+  font-weight: 700;
+  font-size: 15px;
+  color: #fff;
+}
+.twitter-card .handle {
+  font-size: 13px;
+  color: #8899a6;
+}
+.twitter-card .post-body {
+  font-size: 15px;
+  line-height: 1.5;
+  color: #e1e8ed;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.twitter-card .post-meta {
+  font-size: 13px;
+  color: #8899a6;
+  border-top: 1px solid #1a1a3e;
+  padding-top: 12px;
+  margin-top: 4px;
+}
+
+/* LinkedIn mockup */
+.linkedin-card .header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.linkedin-card .avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e94560;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 20px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.linkedin-card .name-details {
+  display: flex;
+  flex-direction: column;
+}
+.linkedin-card .display-name {
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff;
+}
+.linkedin-card .headline {
+  font-size: 12px;
+  color: #8899a6;
+}
+.linkedin-card .post-body {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e1e8ed;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.linkedin-card .post-meta {
+  font-size: 12px;
+  color: #8899a6;
+  border-top: 1px solid #1a1a3e;
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+/* ── Article preview ── */
+
+.article-container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+.article-header {
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #1a1a3e;
+}
+
+.article-title {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.3px;
+  margin-bottom: 12px;
+  color: #ffffff;
+}
+
+.article-lede {
+  font-size: 16px;
+  color: #a0a0b8;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.article-meta {
+  font-size: 13px;
+  color: #8899a6;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.article-meta .pillar-tag {
+  background: #0f3460;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #e94560;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Hero image */
+.hero-image {
+  width: 100%;
+  margin-bottom: 32px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #1a1a3e;
+  position: relative;
+}
+.hero-image img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.hero-image .hero-label {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(0,0,0,0.75);
+  color: #e94560;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* Article body sections */
+.article-body {
+  font-size: 15px;
+  color: #d0d0e0;
+  line-height: 1.7;
+}
+
+.article-body h2 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 32px 0 12px;
+  color: #ffffff;
+  padding-left: 14px;
+  border-left: 3px solid #e94560;
+}
+
+.article-body h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 24px 0 10px;
+  color: #ffffff;
+}
+
+.article-body p {
+  margin-bottom: 16px;
+}
+
+.article-body a {
+  color: #e94560;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.article-body a:hover {
+  border-bottom-color: #e94560;
+}
+
+.article-body strong {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.article-body em {
+  color: #a0a0b8;
+}
+
+.article-body code {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 13px;
+  background: #0f3460;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #e94560;
+}
+
+.article-body pre {
+  background: #0f3460;
+  border: 1px solid #1a1a3e;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 20px 0;
+  overflow-x: auto;
+}
+.article-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #d0d0e0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.article-body blockquote {
+  border-left: 3px solid #e94560;
+  padding: 12px 20px;
+  margin: 20px 0;
+  background: #0f3460;
+  border-radius: 0 8px 8px 0;
+  color: #a0a0b8;
+  font-style: italic;
+}
+
+.article-body ul, .article-body ol {
+  margin: 12px 0;
+  padding-left: 24px;
+}
+.article-body li {
+  margin-bottom: 6px;
+}
+.article-body ul li::marker {
+  color: #e94560;
+}
+
+.article-body hr {
+  border: none;
+  border-top: 1px solid #1a1a3e;
+  margin: 32px 0;
+}
+
+.article-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid #1a1a3e;
+  margin: 20px 0;
+}
+
+/* ── Approval action bar ── */
+
+.approval-bar {
+  position: sticky;
+  bottom: 0;
+  background: #16213e;
+  border-top: 1px solid #1a1a3e;
+  padding: 14px 24px;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  z-index: 9998;
+  flex-wrap: wrap;
+}
+.approval-bar .draft-id {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: #8899a6;
+  margin-right: auto;
+}
+.approval-bar .approval-commands {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: #a0a0b8;
+  display: flex;
+  gap: 16px;
+}
+.approval-bar .cmd {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.approval-bar .cmd.approve {
+  color: #2ecc71;
+  background: rgba(46, 204, 113, 0.1);
+}
+.approval-bar .cmd.reject {
+  color: #e74c3c;
+  background: rgba(231, 76, 60, 0.1);
+}
+.approval-bar .cmd.amend {
+  color: #f39c12;
+  background: rgba(243, 156, 18, 0.1);
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .article-title { font-size: 24px; }
+  .article-container { padding: 24px 16px 60px; }
+  .post-card { margin: 20px 12px; }
+  .approval-bar { flex-direction: column; }
+  .approval-bar .draft-id { margin-right: 0; }
+}
+</style>
+</head>
+<body>
+
+<div class="preview-banner">
+  📰 ARTICLE PREVIEW — not live · sahil
+  <span>how-i-use-hermes</span>
+</div>
+
+<div class="article-container">
+
+  <div class="article-header">
+    <h1 class="article-title">How I Use Hermes to Ship AI Features Faster</h1>
+    <p class="article-lede">![How I Use Hermes to Ship AI Features Faster (and What I Learn Building in Public)](imgs/01-infographic-how-i-use-hermes.png)</p>
+    <div class="article-meta">
+      <span class="pillar-tag">building-in-public</span>
+      <span>article</span>
+      <span>03 Jul 2026</span>
+    </div>
+  </div>
+
+  
+
+  
+<div style="background:#0f3460;border-radius:8px;padding:16px 20px;margin-bottom:24px;">
+  <div style="font-size:12px;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Sections</div>
+  <ol style="margin:0;padding-left:20px;color:#d0d0e0;font-size:14px;line-height:1.8;">
+    <li>The Problem: Why AI Workflows Are Harder Than They Look</li>
+    <li>What Hermes Does (and Doesn’t Do)</li>
+    <li>A Worked Example: Plenishd’s Recipe Search</li>
+    <li>The Trade-Offs: Speed vs. Control</li>
+    <li>How Building in Public Changes the Feedback Loop</li>
+    <li>The Real Lesson: Context Engineering Still Wins</li>
+  </ol>
+</div>
+
+  <div class="article-body">
+    <h2>The Problem: Why AI Workflows Are Harder Than They Look</h2>
+<div class="section-image"><img src="imgs/02-infographic-the-problem-why.png" alt="The Problem: Why AI Workflows Are Harder Than They Look" loading="lazy"></div>
+<p>Every AI feature I’ve shipped follows the same pattern. The model integration takes a week. Everything around it — data prep, context engineering, error handling, monitoring — takes months. The model is the engine. The context is the entire vehicle.</p>
+<p>The real bottleneck isn’t model capability. It’s orchestration. You need to chain multiple calls: retrieve context, format it, call the model, parse the output, validate it, fall back if it fails, log everything. Do that once and it’s fine. Do it across three features in two apps and you’re drowning in boilerplate.</p>
+<p>I hit this wall building Plenishd’s recipe search. The idea was simple: let users describe what they have in the fridge and get a recipe. The first prototype took an afternoon. The production version took three months. The difference was everything that happens <em>before</em> and <em>after</em> the model call — ingredient normalisation, dietary filters, response formatting, latency budgets, hallucination guardrails.</p>
+<p>That’s where Hermes came in.</p>
+<hr>
+<h2>What Hermes Does (and Doesn’t Do)</h2>
+<div class="section-image"><img src="imgs/03-infographic-what-hermes-does.png" alt="What Hermes Does (and Doesn’t Do)" loading="lazy"></div>
+<p>Hermes is an open-source tool for building and running AI agents. It’s not a model provider. It’s not a vector database. It’s an orchestration layer that lets you define workflows as code — chains of LLM calls, tool use, conditional logic, and observability.</p>
+<p>What I like about it: it doesn’t abstract away the complexity. You still write the prompts. You still define the context. You still handle errors. But you do it in a structured way that’s testable, versionable, and reusable across projects.</p>
+<p>What it doesn’t do: it won’t fix bad data. It won’t write your system prompts. It won’t tell you when your retrieval strategy is wrong. It’s a tool for the 80% of work that isn’t the model — and that’s exactly where most AI features fail.</p>
+<p>Here’s a simplified example of what a Hermes workflow looks like for a recipe search:</p>
+<pre><code class="lang-python">from hermes import Workflow, step, tool
+
+@step
+def parse_user_input(input_text: str) -&gt; dict:
+    # Extract ingredients, dietary preferences, meal type
+    return {&quot;ingredients&quot;: [&quot;chicken&quot;, &quot;broccoli&quot;, &quot;rice&quot;], &quot;diet&quot;: &quot;gluten-free&quot;}
+
+@step
+def retrieve_recipes(parsed: dict) -&gt; list:
+    # Query vector DB with ingredient embeddings
+    return vector_db.search(parsed[&quot;ingredients&quot;], top_k=5)
+
+@step
+def filter_by_diet(recipes: list, diet: str) -&gt; list:
+    return [r for r in recipes if diet in r[&quot;tags&quot;]]
+
+@step
+def generate_response(recipes: list) -&gt; str:
+    prompt = f&quot;Given these recipes: {recipes}, write a friendly response...&quot;
+    return llm.call(prompt)
+
+workflow = Workflow(steps=[parse_user_input, retrieve_recipes, filter_by_diet, generate_response])
+result = workflow.run(&quot;I have chicken and broccoli, need gluten-free&quot;)
+</code></pre>
+<p>This is deliberately simple. The real value comes when you add error handling, retries, logging, and monitoring — all built into Hermes’ runtime.</p>
+<hr>
+<h2>A Worked Example: Plenishd’s Recipe Search</h2>
+<div class="section-image"><img src="imgs/04-infographic-a-worked-example.png" alt="A Worked Example: Plenishd’s Recipe Search" loading="lazy"></div>
+<p>Let me walk through the actual pipeline I built for Plenishd. The goal: take a user’s voice input (“I’ve got chicken, broccoli, and some rice — what can I make?”) and return a recipe card with ingredients, steps, and dietary notes.</p>
+<p><strong>Step 1: Input parsing.</strong> Hermes calls a small LLM (Claude Haiku) to extract structured data from the free-text input. I use a system prompt that defines the schema: ingredients list, dietary flags, meal type. This step costs pennies and runs in under a second.</p>
+<p><strong>Step 2: Ingredient normalisation.</strong> Raw ingredient names are messy. “Chicken breast” vs. “chicken” vs. “boneless skinless chicken breast”. I use a lightweight embedding lookup to map to a canonical set. This is a tool call in Hermes — a function that queries a local SQLite database of ingredient synonyms.</p>
+<p><strong>Step 3: Vector search.</strong> The normalised ingredients become a query vector. I search a Pinecone index of 10,000 recipes. Hermes handles the API call and returns the top 5 results.</p>
+<p><strong>Step 4: Dietary filter.</strong> A simple rule-based step — no LLM needed. Hermes supports conditional branching: if the user said “gluten-free”, filter out recipes with wheat. This step is a pure Python function.</p>
+<p><strong>Step 5: Response generation.</strong> The filtered recipes are passed to a larger model (Claude Sonnet) with a prompt that includes the user’s original input, the matched recipes, and formatting instructions. The output is a structured JSON that the frontend renders.</p>
+<p><strong>Step 6: Validation.</strong> Before returning to the user, Hermes runs a validation step that checks for hallucinated ingredients, missing steps, and response length. If validation fails, it retries with a stricter prompt.</p>
+<p>The entire workflow is defined in a single Python file, version-controlled, and deployed as a serverless function. When I change one step — say, switch from Pinecone to Supabase vector search — I only change that step’s implementation. The rest of the pipeline stays the same.</p>
+<hr>
+
+  </div>
+
+</div>
+
+<div class="approval-bar">
+  <span class="draft-id">how-i-use-hermes</span>
+  <div class="approval-commands">
+    <span class="cmd approve">!approve how-i-use-hermes</span>
+    <span class="cmd reject">!reject how-i-use-hermes [reason]</span>
+    <span class="cmd amend">!amend how-i-use-hermes [notes]</span>
+  </div>
+</div>
+
+</body>
+</html>

@@ -38,8 +38,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home, hermes_home_key
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
+
 from hermes_cli.config import (
-    load_config, load_config_readonly)
+    _expand_env_vars,
+    load_config,
+    load_config_readonly)
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
@@ -1714,7 +1717,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         }
         if job.get("base_url"):
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
-        return resolve_runtime_provider(**runtime_kwargs), model
+        return requested, resolve_runtime_provider(**runtime_kwargs), model
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
         # OAuth refresh); anything else re-raises.
@@ -1749,13 +1752,14 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                 logger.info(
                     "Job '%s': fallback resolved to %s model %s",
                     job_id, runtime.get("provider"), fb_model)
-                # Delivered with the job output (#74349): a cron agent has no status rail, so the
-                # switch would otherwise stay in the scheduler log only. run_job pops it.
+                # KENSEI MERGE: upstream's pre-agent fallback notice (#74349) rides with the job
+                # output (a cron agent has no status rail); run_job pops it. We keep our 3-tuple
+                # return — the requested provider feeds drift judgement.
                 from hermes_cli.fallback_config import pre_agent_fallback_notice
                 runtime["_fallback_notice"] = pre_agent_fallback_notice(
                     requested or (jc.model_cfg.get("provider") if isinstance(jc.model_cfg, dict) else ""),
                     model, runtime.get("provider"), fb_model)
-                return runtime, fb_model
+                return requested, runtime, fb_model
             except Exception as fb_exc:
                 logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
         raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
@@ -2361,11 +2365,16 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     if setup.blocked is not None:
         return setup
 
-    setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
+    _primary_model_for_drift = setup.model
+    _requested_provider_for_drift, setup.runtime, setup.model = _resolve_job_runtime(job, job_id, jc)
     setup.fallback_notice = setup.runtime.pop("_fallback_notice", None)
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
+    # KENSEI NOTE (superseded): the fork's fail-closed drift guard (#44585 snapshot-as-pin)
+    # was retired with upstream 0469740ab3 — jobs follow the main agent model at fire time
+    # and `pinned` locks the assignment. Legacy provider_snapshot/model_snapshot fields are
+    # inert; no drift skip is raised any more.
     setup.fallback_model = get_fallback_chain(_cfg) or None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
@@ -2465,6 +2474,14 @@ def run_job(
     early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
     if early is not None:
         return early
+    # KENSEI CUSTOM — reserve this run's delivery artifact BEFORE the model call so
+    # the prompt can point the agent at an execution-scoped path (never a reusable
+    # date-only path). Requires the caller-supplied execution_id; manual fires
+    # without one skip artifact handling entirely.
+    if execution_id:
+        _artifact_path, artifact_prompt = _prepare_delivery_artifact(job, execution_id)
+        if artifact_prompt:
+            prompt = f"{prompt}\n\n{artifact_prompt}"
     from run_agent import AIAgent
 
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
@@ -2502,10 +2519,54 @@ def run_job(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
         final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        # KENSEI CUSTOM — strip verification leakage from the delivered text.
+        stripped = _strip_verification_leak(final_response)
+        if stripped != final_response:
+            logger.info("Job '%s': verification leakage stripped from final response", job_name)
+            final_response = stripped
+            # KENSEI CUSTOM — verify-on-stop continuation recovery (2026-09-15 sweep):
+            # when the strip empties the response, the real deliverable (summary + MEDIA: /
+            # [SILENT] / prose report) is an earlier assistant message the verification nudge
+            # superseded. Recover it rather than failing the run closed on an empty response;
+            # an empty fallback preserves fail-closed behaviour for genuinely empty runs.
+            if not final_response.strip():
+                _recovered = _recover_pre_narration_deliverable(result.get("messages") or [])
+                if _recovered:
+                    logger.info(
+                        "Job '%s': recovered deliverable from pre-narration message", job_name)
+                    final_response = _recovered
+        # KENSEI CUSTOM — run-scoped artifact contract. When this fire reserved a
+        # delivery artifact, the reserved file is the deliverable: a valid artifact
+        # replaces the model's final response with a compact scheduler-generated
+        # summary + MEDIA path (the model's prose may be verification narration), and
+        # a missing/empty artifact fails the run closed instead of delivering the
+        # model's self-reported "done" text.
+        if job.get("_active_delivery_artifact"):
+            artifact_delivery = _recover_run_scoped_artifact_delivery(job, final_response)
+            if artifact_delivery:
+                logger.info(
+                    "Job '%s': delivering run-scoped artifact %s",
+                    job_name, job["_active_delivery_artifact"])
+                final_response = artifact_delivery
+            else:
+                _missing = job.pop("_active_delivery_artifact", None)
+                logger.error(
+                    "Job '%s': run-scoped artifact missing or invalid: %s",
+                    job_name, _missing)
+                _audit.write({}, "Run-scoped delivery artifact missing or invalid")
+                output = (
+                    _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt or "")
+                    + f"Run-scoped delivery artifact was not written: {_missing}\n"
+                )
+                return False, output, "", (
+                    "Run-scoped delivery artifact missing or invalid: "
+                    f"{_missing}")
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the
             # agent-declared failure marker keep their first-line/whole-response contract.
+            # KENSEI MERGE: applied AFTER our strip/recovery so a recovered deliverable still
+            # carries the notice but an emptied one does not.
             final_response = f"{setup.fallback_notice}\n\n{final_response}"
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
@@ -2543,6 +2604,10 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
+        # KENSEI CUSTOM — the artifact reservation must never leak into the next
+        # fire of the same job dict (a stale reservation would let a later run
+        # "recover" an artifact from a different execution).
+        job.pop("_active_delivery_artifact", None)
         from cron.scheduler_detached_worker import defer_teardown_to_running_worker
         _worker_teardown_deferred = defer_teardown_to_running_worker(
             _worker_state.get("future"), _session_db, agent, job_id, job_name, _cron_session_id)
@@ -2676,6 +2741,315 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         heartbeat_thread.join(timeout=1.0)
 
 
+_VERIFICATION_LEAK_PATTERNS = [
+    re.compile(r'^\*{0,2}[Aa]d-hoc verification\b', re.MULTILINE),
+    re.compile(r'hermes-verify-\S+', re.MULTILINE),
+    re.compile(r'\b\d+/\d+ PASS\b', re.MULTILINE),
+    re.compile(r'\b\d+ checks? passed\b', re.MULTILINE),
+    re.compile(r'all structural checks passed\b', re.MULTILINE),
+    re.compile(r'HTML report is well-formed\b', re.MULTILINE),
+    re.compile(r'dark-mode compliant\b', re.MULTILINE),
+    re.compile(r'no legacy Telegram tags\b', re.MULTILINE),
+    re.compile(r'verification complete.*0 errors\b', re.MULTILINE),
+    re.compile(r'Queue is valid.*pending is empty\b', re.MULTILINE),
+    re.compile(r'^##\s*[Aa]d-hoc verification\b', re.MULTILINE),
+    re.compile(r'^\*{0,2}[Aa]d-hoc verification\s+passed\b', re.MULTILINE),
+    # 2026-07-07 — broader patterns observed in live cron output from
+    # deepseek-v4-flash, glm-5.1, kimi-k2.6.  These LLMs run ad-hoc
+    # verification after producing their HTML file but then emit the
+    # verification results as their ENTIRE final response (no MEDIA tag,
+    # no summary).  The patterns below catch the common phrasings.
+    re.compile(r'HTML (validates?|is) (clean|well-formed)', re.IGNORECASE),
+    re.compile(r'cron-output-lint\.py\b.*\b(passes?|no issues?|clean)', re.IGNORECASE),
+    re.compile(r'(No |no )?(new )?issues? introduced\b', re.IGNORECASE),
+    re.compile(r'(The |the )?(HTML |html )?(report|file) is (a )?(creative|visual|static)', re.IGNORECASE),
+    re.compile(r'(The |the )?test suite runs?\b', re.IGNORECASE),
+    re.compile(r'(No |no )(applicable |new )?test(s)? exist(s)?\b', re.IGNORECASE),
+    re.compile(r'(The |the )?(changed )?file is (a )?static HTML', re.IGNORECASE),
+    re.compile(r'(Verification|verification) (complete|results?)\b', re.IGNORECASE),
+    re.compile(r'(pre-existing|unrelated) (issue|lint)\b', re.IGNORECASE),
+    re.compile(r'(is )?already (verified|in|on) (the )?(MEDIA_DELIVERY|safe)', re.IGNORECASE),
+    re.compile(r'\b\d+[, ]?\d* (bytes?|KB|MB) (readable|exists?|written)\b', re.IGNORECASE),
+    re.compile(r'(dark-mode|color-scheme) (CSS )?(compliant|correct)', re.IGNORECASE),
+    re.compile(r'(The )?(only )?lint issue\b.*\b(pre-existing|unrelated)\b', re.IGNORECASE),
+    re.compile(r'(temp|debug) (script|file)s? (in|under) /tmp\b', re.IGNORECASE),
+    re.compile(r'(is )?(creative|visual) (work|artifact)', re.IGNORECASE),
+    re.compile(r'linters? (are |is )?held off\b', re.IGNORECASE),
+    re.compile(r'(user )?review or commit time\b', re.IGNORECASE),
+    re.compile(r'(no |No )?raw HTML (tags )?in (the )?Discord', re.IGNORECASE),
+    re.compile(r'(My |my )?(mailbox-cleaner|output|cron) (output )?(has|have) no lint', re.IGNORECASE),
+    re.compile(r'\b\d+ tags?, 0 errors\b', re.IGNORECASE),
+    re.compile(r'HTML parsed cleanly\b', re.IGNORECASE),
+    re.compile(r'(static HTML|cron HTML) (report|artifact|output|deliver)', re.IGNORECASE),
+    re.compile(r'(No |no )?(test in this suite|applicable test|test exists)\b', re.IGNORECASE),
+    re.compile(r'(concrete )?blocker (is |for )?(automated )?verification\b', re.IGNORECASE),
+    re.compile(r'No (new )?code (was )?added to (the )?production\b', re.IGNORECASE),
+    re.compile(r'(is )?(already )?clean(ed)? up\b.*harmless', re.IGNORECASE),
+    re.compile(r'(deletion )?pending approval\b', re.IGNORECASE),
+    re.compile(r'(already )?documented in\b.*brain\b', re.IGNORECASE),
+    re.compile(r'\\b\\d+ (pre-existing|old|earlier) (errors|issues)\\b', re.IGNORECASE),
+    re.compile(r'(none )?introduced by this run\\b', re.IGNORECASE),
+    # 2026-07-07 v2 — caught in live cron output AFTER the v1 patterns.
+    # These cover phrasings that the existing adjacency patterns miss:
+    #   - "Holding off on verification per the creative/visual work rule"
+    #   - "linters" (was only matching "linters held off" before)
+    #   - "waiting for your feedback" (model defers to user)
+    #   - "Concrete blocker for automated verification"
+    #   - "creative/visual" (with slash between words)
+    re.compile(r'[Hh]olding off on verification', re.MULTILINE),
+    re.compile(r'\blinters?\b', re.IGNORECASE),
+    re.compile(r'waiting for your feedback', re.IGNORECASE),
+    re.compile(r'[Cc]oncrete [Bb]locker', re.IGNORECASE),
+    re.compile(r'(creative|visual)\s*/\s*(work|artifact|rule)', re.IGNORECASE),
+    # Catch-all: if the entire response is one paragraph that mentions
+    # "verification" and mentions "report"/"HTML"/"file" without any
+    # emoji, bullet, or MEDIA tag — it's almost certainly leakage.
+    re.compile(r'^[^\\n]{30,}(verification).*(report|HTML|artifact|file|lint)', re.IGNORECASE | re.MULTILINE),
+]
+
+
+_SILENT_RE = re.compile(r'^\[SILENT\]\s*$', re.MULTILINE | re.IGNORECASE)
+
+_MEDIA_TAG_RE = re.compile(r'^MEDIA:/\S+', re.MULTILINE)
+def _strip_verification_leak(text: str) -> str:
+    """Remove verification-text leakage from LLM cron final_response.
+
+    Strategy (order matters):
+    1. If the text contains [SILENT], return [SILENT] only — anything after
+       is leaked verification noise.
+    2. If the text contains a MEDIA: tag, truncate to the end of that line —
+       the summary + MEDIA tag is the intended delivery, anything after is
+       verification noise.
+    3. If neither marker is present, strip individual lines matching known
+       verification-leak patterns.  This catches cases where the LLM runs
+       verification but never produces a MEDIA tag or [SILENT].
+    """
+    if not text or not text.strip():
+        return text
+
+    # 1 — [SILENT] truncation
+    # Truncate at the [SILENT] line, keeping the prefix + [SILENT] marker.
+    # This preserves any legitimate summary before [SILENT] and lets the
+    # downstream _is_cron_silence_response() handle the silence decision.
+    # We only strip verification noise that may appear AFTER [SILENT].
+    silent_match = _SILENT_RE.search(text)
+    if silent_match:
+        # Include the [SILENT] line itself in the truncated output
+        line_end = text.find("\n", silent_match.end())
+        if line_end == -1:
+            prefix = text[:silent_match.end()].rstrip()
+        else:
+            prefix = text[:line_end].rstrip()
+        return _strip_inline_verification(prefix) if prefix else "[SILENT]"
+
+    # 2 — MEDIA: tag truncation
+    media_match = _MEDIA_TAG_RE.search(text)
+    if media_match:
+        # Keep everything from the start through the end of the MEDIA: line,
+        # then strip any verification lines that appeared before the tag.
+        line_end = text.find("\n", media_match.end())
+        if line_end == -1:
+            # MEDIA: tag is the last line — strip inline from the prefix
+            prefix = text[:media_match.end()].rstrip()
+        else:
+            prefix = text[:line_end].rstrip()
+        return _strip_inline_verification(prefix)
+
+    # 3 — No marker: strip individual verification lines, then apply a
+    # heuristic to catch free-form narration that doesn't match any known
+    # pattern.  When the LLM produces ONLY verification prose (no [SILENT],
+    # no MEDIA:, no Discord-summary structure), the output is noise even
+    # if individual lines don't match a known pattern.  We detect this by
+    # checking whether any remaining line looks like a legitimate Discord
+    # summary line (starts with an emoji, a bullet, a heading, or contains
+    # a link).  If none do, suppress the entire output.
+    stripped = _strip_inline_verification(text)
+    if not stripped:
+        # All lines matched verification patterns — pure noise.
+        return ""
+    # Heuristic: check if ANY remaining line looks like a LEGITIMATE Discord
+    # summary.  We need to distinguish real summary bullets from verification-
+    # evidence bullets (which look like: `- ls -la /path/...` or
+    # `- Path is under ...`).
+    # Real summary lines: emoji headers, bullets with actual content (not
+    # commands/paths), markdown headings, MEDIA: tag, URLs, or short factual
+    # headlines.
+    _SUMMARY_LINE_RE = re.compile(
+        r'^(👉|📡|🔍|🧠|🔀|✍|📋|🛑|⚠|🔴|🟢|📊|🤖|💡|🚀|📝|✅|❌|#\s|>\s|MEDIA:)',
+        re.MULTILINE,
+    )
+    # A bullet line is a summary if it's NOT a shell command / file path /
+    # verification evidence line.
+    _BULLET_RE = re.compile(r'^(\*|•|-)\s+', re.MULTILINE)
+    _VERIF_BULLET_RE = re.compile(
+        r'^(?:\*|•|-)\s+'
+        r'(?:`|ls |cat |grep |test |find |Path |File |Verified|No raw|'
+        r'dark-mode|MEDIA_DELIVERY|cron-output|HTML |The )',
+        re.MULTILINE,
+    )
+    _URL_RE = re.compile(r'https?://\S+', re.MULTILINE)
+    # 2026-08-16 incident (nous-archive-digest): deepseek-v4-flash emitted
+    # verification narration that slipped past _VERIF_BULLET_RE because the
+    # evidence lines used bold-markdown / different phrasing than the
+    # line-start prefixes (`- **`run_tests.sh`** — exit 0 ...`,
+    # `- Size: 20K bytes`, `- Content verified: ...`). A bullet only counts
+    # as legitimate summary if it ALSO contains none of the evidence
+    # vocabulary — otherwise a wall of verification evidence can masquerade
+    # as a "summary" and get delivered.
+    _VERIF_CONTENT_RE = re.compile(
+        r'(?:run_tests|test suite|exit \d+|well-formed|parsed cleanly|'
+        r'html\.parser|html validity|lint|cron-output|verified|verification|'
+        r'director(?:y|ies)|file exists|path:|size:|no test files|no new issues|'
+        r'pre-existing|unrelated|no issues needed|repair|deliverable is|'
+        r'media path|dark-mode|media_delivery|safe root|'
+        # 2026-09-11 research-paper-synthesis leak class: process-narration
+        # bullets that describe artifact writes/confirmations rather than the
+        # run's subject matter.
+        r'confirmed|on disk|orphaned|provenance|written to|appended to|'
+        r'persisted|updated\b)'
+        r'|\b(?:bytes?|kb|mb)\b',
+        re.IGNORECASE,
+    )
+    # First-person process narration anywhere in the text is itself evidence the
+    # run delivered verification prose instead of a summary (2026-09-11 leak:
+    # "the provenance lint, which I already ran — it passed cleanly (exit 0...)").
+    _FIRST_PERSON_NARRATION_RE = re.compile(
+        r'\bI\s+(?:already\s+)?(?:ran|verified|checked|executed|confirmed)\b',
+        re.IGNORECASE,
+    )
+
+    has_summary = bool(_SUMMARY_LINE_RE.search(stripped) or _URL_RE.search(stripped))
+    if not has_summary and _FIRST_PERSON_NARRATION_RE.search(stripped):
+        logger.info(
+            "cron: suppressing first-person verification narration: %s",
+            stripped[:200],
+        )
+        return ""
+    if not has_summary:
+        # Check for non-verification bullet lines
+        for line in stripped.split("\n"):
+            if _BULLET_RE.match(line) and not _VERIF_BULLET_RE.match(line) \
+                    and not _VERIF_CONTENT_RE.search(line):
+                has_summary = True
+                break
+    if has_summary:
+        return stripped
+    # No summary-like structure and no URL — this is likely pure narration.
+    # Only suppress if the text reads like verification/meta-commentary
+    # (mentions lint, test, HTML, verification, cron, output, etc.).
+    _NARRATION_KEYWORDS = re.compile(
+        r'\b(lint|test|verification|HTML report|cron output|Discord|'
+        r'safe root|deliver|media|artifact|static|creative|visual|'
+        r'pre-existing|unrelated|no issues|pipeline|byte|KB|MB|'
+        r'tags?, 0 errors|parsed cleanly|well-formed|compliant)\b',
+        re.IGNORECASE,
+    )
+    if _NARRATION_KEYWORDS.search(stripped):
+        logger.info(
+            "cron: suppressing verification narration "
+            "(no [SILENT], no MEDIA:, no summary structure): %s",
+            stripped[:200],
+        )
+        return ""
+    return stripped
+
+
+
+def _strip_inline_verification(text: str) -> str:
+    """Remove individual lines that match known verification-leak patterns."""
+    if not text:
+        return text
+    lines = text.split("\n")
+    cleaned = [
+        line
+        for line in lines
+        if not any(pat.search(line.strip()) for pat in _VERIFICATION_LEAK_PATTERNS)
+    ]
+    # If ALL lines were stripped, the output was pure verification noise.
+    # Return empty string so the delivery layer suppresses it (should_deliver
+    # check + soft-failure marking handle the rest).
+    return "\n".join(cleaned).rstrip()
+
+def _recover_pre_narration_deliverable(messages: list, *, scan_limit: int = 12) -> str:
+    """KENSEI CUSTOM — recover the deliverable from before a verify-on-stop continuation.
+
+    The verify-on-stop gate (agent.turn_stop_gates) can end a cron turn on narration
+    (interim answers marked ``finish_reason="verification_required"``), leaving the final
+    assistant message as pure verification commentary. When leak-stripping empties that
+    response, walk the run's messages backwards and collect assistant messages whose
+    stripped form still has content. Prefer explicit deliverable markers (``MEDIA:`` /
+    ``[SILENT]``); otherwise return the newest surviving candidate. Returns "" when
+    nothing survives so callers keep failing closed.
+    """
+    candidates: list[str] = []
+    scanned = 0
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue  # tool-call-only rows and empty interim flushes
+        scanned += 1
+        if scanned > scan_limit:
+            break
+        candidate = _strip_verification_leak(content)
+        if candidate.strip():
+            candidates.append(candidate)
+    for cand in candidates:
+        if "MEDIA:" in cand or _is_cron_silence_response(cand):
+            return cand
+    return candidates[0] if candidates else ""
+
+def _prepare_delivery_artifact(job: dict, execution_id: str) -> tuple[Optional[Path], Optional[str]]:
+    """Reserve a unique report path and tell the current run to write it."""
+    template = str(job.get("delivery_artifact_template") or "").strip()
+    if not template or "{execution_id}" not in template:
+        return None, None
+    try:
+        path = Path(template.format(execution_id=execution_id)).expanduser()
+    except (KeyError, ValueError):
+        logger.warning("Job '%s': invalid delivery_artifact_template", job.get("id"))
+        return None, None
+    if not path.is_absolute() or path.exists():
+        return None, None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    job["_active_delivery_artifact"] = str(path)
+    return path, (
+        "## Run-scoped delivery artifact (mandatory)\n"
+        f"Write this run's final HTML report exactly to: {path}\n"
+        "Do not reuse a date-only path or another run's artifact."
+    )
+
+
+
+def _recover_run_scoped_artifact_delivery(job: dict, _response: str) -> Optional[str]:
+    """Deliver only the artifact reserved for this exact scheduler execution."""
+    raw_path = str(job.get("_active_delivery_artifact") or "").strip()
+    artifact = Path(raw_path) if raw_path else None
+    if artifact is None or not artifact.is_file() or artifact.stat().st_size == 0:
+        return None
+    # KENSEI CUSTOM — type gate: jobs declaring an HTML artifact template must
+    # deliver HTML. An agent that wrote the model's narration (or any other
+    # non-HTML file) to the reserved path must not be delivered as a report.
+    template = str(job.get("delivery_artifact_template") or "").strip()
+    if template.lower().endswith((".html", ".htm")):
+        head = artifact.read_bytes()[:1024].lower()
+        if b"<html" not in head and b"<!doctype html" not in head and b"<!doctype html>" not in head:
+            logger.warning(
+                "Job '%s': artifact %s is not HTML (declared via template suffix)",
+                job.get("id"), artifact)
+            return None
+    template_summary = str(job.get("delivery_artifact_summary") or "📄 {name} — {date}\nReport attached.")
+    try:
+        summary = template_summary.format(
+            name=job.get("name") or job.get("id", "Cron report"),
+            date=datetime.now().astimezone().strftime("%d/%m/%Y"),
+        )
+    except (KeyError, ValueError):
+        logger.warning("Job '%s': invalid delivery_artifact_summary", job.get("id"))
+        return None
+    return f"{summary.strip()}\nMEDIA:{artifact}"
+
 def run_one_job(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None, cancel_event: Optional[_CancelEventLike] = None,
@@ -2800,6 +3174,8 @@ def _compose_run_delivery(
     # Failed jobs always deliver, except blocked-config runs, which alert exactly ONCE.
     blocked_config_silent = BLOCKED_CONFIG_SILENT_MARKER in err
     blocked_config = blocked_config_silent or BLOCKED_CONFIG_MARKER in err
+    drift_skip_silent = DRIFT_SKIP_SILENT_MARKER in err
+    drift_skip = drift_skip_silent or DRIFT_SKIP_MARKER in err
     incident_acked = False
     failure_incident_id = None
     if blocked_config and not success:
@@ -2817,7 +3193,7 @@ def _compose_run_delivery(
         incident_acked, failure_incident_id = _upsert_incident_for_failure(
             job, error or "", output_file=output_file
         )
-        if incident_acked:
+        if incident_acked and not drift_skip:
             deliver_content = ""
         elif agent_declared:
             # The agent already diagnosed the failure in prose; the summarizer's substring
@@ -2834,7 +3210,14 @@ def _compose_run_delivery(
                 # The one alert on entering a provider-window hold says so (#89376).
                 + hold_notice(job, job.get("_quota_hold_seconds"))
             )
-    return deliver_content, blocked_config, blocked_config_silent, incident_acked, failure_incident_id
+        if drift_skip:
+            # Deliver the guard's message intact (summarizer truncation would eat the remediation
+            # command). NOT gated on incident ack: acks silence failure pings, not drift alerts.
+            _drift_text = re.sub(r"\[drift_skip[^\]]*\]\s*", "", err).strip()
+            deliver_content = f"⚠️ Cron '{job.get('name') or job['id']}' skipped: {_drift_text}"
+    return (
+        deliver_content, blocked_config, blocked_config_silent or drift_skip_silent,
+        incident_acked, failure_incident_id)
 
 
 class _FireClaimLostDuringSideEffect(Exception):
@@ -3938,6 +4321,19 @@ def _maybe_reap_dead_owners() -> None:
                 _reclaimed)
     except Exception as _reap_exc:
         logger.debug("Dead-owner execution reclaim failed: %s", _reap_exc)
+    # KENSEI CUSTOM — bounded shutdown replay. Jobs whose latest execution is a
+    # fresh, provably shutdown-caused interruption get exactly one replay fire
+    # (tombstoned by source execution ID in cron/replay-tombstones.db).
+    try:
+        from cron.replay import replay_sweep
+
+        _replayed = replay_sweep()
+        if _replayed:
+            logger.warning(
+                "Replayed %d cron job(s) interrupted by a recent shutdown: %s",
+                len(_replayed), ", ".join(_replayed))
+    except Exception as _replay_exc:
+        logger.debug("Shutdown replay sweep failed: %s", _replay_exc)
 
 
 def _sweep_stale_inflight_for_tick(due_jobs: list) -> None:
@@ -4126,6 +4522,7 @@ from cron.scheduler_tick import tick  # noqa: E402
 from cron.scheduler_delivery import (  # noqa: E402
     _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
     _resolve_delivery_targets,
+    _send_media_via_adapter,  # KENSEI CUSTOM: re-export for legacy import path (tests)
 )
 from cron.scheduler_script import (  # noqa: E402
     _get_session_db_timeout, _run_job_script_with_claim_heartbeat, _start_heartbeat_thread,
@@ -4134,7 +4531,8 @@ from cron.scheduler_prompt import (  # noqa: E402
     _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil, _parse_wake_gate,
 )
 from cron.scheduler_preflight import (  # noqa: E402
-    BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
+    BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, DRIFT_SKIP_MARKER,
+    DRIFT_SKIP_SILENT_MARKER, _cron_preflight_enabled,
     _empty_requested_mcp_toolsets, _is_transient_provider_resolve_error, _preflight_job_config,
 )
 

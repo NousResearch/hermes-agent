@@ -130,6 +130,16 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
 
   // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a
   // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
+  // than raw brackets that read like an ANSI escape ("Sonnet 5[1m]"). (KENSEI CUSTOM)
+  const contextWindow = base.match(/\[(\d+[mk])\]$/i)
+
+  if (contextWindow) {
+    tag = tag ? `${tag} ${contextWindow[1].toUpperCase()}` : contextWindow[1].toUpperCase()
+    base = base.slice(0, -contextWindow[0].length)
+  }
+
+  // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a
+  // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
   // than raw brackets that read like an ANSI escape ("Sonnet 5[1m]").
   const contextWindow = base.match(/\[(\d+[mk])\]$/i)
 

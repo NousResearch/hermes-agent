@@ -1,0 +1,1 @@
+web_extract(urls=[URL]) is dispatched. For a page larger than char_limit the tool returns a head+tail window with a footer pointing to the saved full-text file path and a read_file instruction. The agent must follow the footer and read the middle.

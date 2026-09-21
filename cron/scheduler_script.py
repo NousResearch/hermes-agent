@@ -370,6 +370,9 @@ def _run_job_script(
         # process env itself — no raw copy at the spawn site (test_subprocess_env_guard).
         env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
+        # KENSEI CUSTOM (restored): give wrappers a stable runtime-root contract.
+        if workdir:
+            env.setdefault("HERMES_AGENT_ROOT", workdir)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
@@ -478,8 +481,4 @@ def _run_job_script_with_claim_heartbeat(
         stop.set()
         # Bounded join: the heartbeat may be blocked on another process's jobs-file lock.
         heartbeat_thread.join(timeout=1.0)
-
-
-# Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
-# populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched  # noqa: E402

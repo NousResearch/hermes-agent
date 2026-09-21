@@ -11,6 +11,23 @@ from rich.markup import escape as _escape
 from utils import base_url_host_matches
 
 
+def propagate_explicit_model_selection(cli, agent, *, runtime: dict | None = None) -> None:
+    """Copy CLI ``-m/--model`` intent and its resumable runtime identity."""
+    explicit = bool(getattr(cli, "_explicit_model_override", False))
+    agent._model_explicitly_selected = explicit
+    if not explicit or not runtime:
+        return
+    route = {
+        "provider": runtime.get("requested_provider") or runtime.get("provider"),
+        "base_url": runtime.get("base_url"),
+        "api_mode": runtime.get("api_mode"),
+    }
+    agent._session_init_model_config = dict(
+        getattr(agent, "_session_init_model_config", None) or {}
+    )
+    agent._session_init_model_config["gateway_runtime"] = route
+
+
 def _single_query_clarify_callback(question: str, choices=None, multi_select=False) -> str:
     """Headless clarify answer for ``hermes chat -q``.
 
@@ -296,6 +313,18 @@ class CLIAgentSetupMixin:
         self.provider, self.api_mode, self.acp_command, self.acp_args = resolved_routing
         self._credential_pool = runtime.get("credential_pool")
         self._provider_source = runtime.get("source")
+        # ── KENSEI CUSTOM: durable provider display for status bar ──
+        # A pool-resolved custom runtime reports routing provider "custom"; keep the durable
+        # custom:<name> identity (or entry name) for display so the status bar shows the real
+        # provider instead of the generic transport label after a call.
+        provider_display = runtime.get("provider_name") or resolved_provider
+        if isinstance(provider_display, str) and provider_display.strip():
+            self.provider_display = provider_display.strip()
+            if self.agent is not None and getattr(self.agent, "provider_display", None) != provider_display:
+                setattr(self.agent, "provider_display", provider_display)
+        else:
+            self.provider_display = resolved_provider
+        # ── END KENSEI CUSTOM ──
         self.api_key = api_key
         self.base_url = base_url
 
@@ -678,7 +707,9 @@ class CLIAgentSetupMixin:
                 provider_data_collection=self._provider_data_collection,
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
-                clarify_callback=clarify_callback, connection_callback=connection_callback,
+    clarify_callback=clarify_callback,
+    ask_user_questions_callback=self._ask_user_questions_callback,
+    connection_callback=connection_callback,
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
@@ -699,6 +730,11 @@ class CLIAgentSetupMixin:
             # When this code lived in cli.py a bare ``global _active_agent_ref`` worked; after the god-file
             # extraction into this mixin a ``global`` here would bind *this module's* namespace, leaving
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
+            # ``-m/--model`` is an explicit user selection just like the
+            # interactive model picker. Preserve that intent on the runtime
+            # agent so turbohaul-local exhaustion cannot silently route it to
+            # a cloud fallback.
+            propagate_explicit_model_selection(self, self.agent, runtime=runtime)
             import cli as _cli
             _cli._active_agent_ref = self.agent
             # Seed the agent's once-per-lifecycle auto_load cache with the bytes the preload

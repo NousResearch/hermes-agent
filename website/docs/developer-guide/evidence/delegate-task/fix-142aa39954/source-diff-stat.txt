@@ -1,0 +1,13 @@
+ gateway/run_notifications.py                       |  13 +-
+ hermes_cli/config_defaults.py                      |   3 +
+ .../tools/test_async_batch_task_failure_notice.py  |  69 ++++++++
+ tests/tools/test_delegate_completion_units.py      | 171 ++++++++++++++++---
+ tests/tools/test_delegate_profile_runtime_scope.py |  12 ++
+ tools/async_delegation.py                          | 189 ++++++++++++---------
+ tools/delegate_tool.py                             |  31 +++-
+ tools/delegate_tool_config.py                      |   5 +
+ tools/delegate_tool_dispatch.py                    |  97 ++++++++---
+ tools/delegate_tool_progress.py                    |  31 ++--
+ tools/process_registry_notifications.py            |  21 +++
+ tui_gateway/session_notifications.py               |   4 +
+ 12 files changed, 506 insertions(+), 140 deletions(-)

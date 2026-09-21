@@ -1,0 +1,3 @@
+[12:00:01] tool skill_view name='search' (namespace dropped)
+[12:00:02] executed GLOBAL 'search' skill instead of gifsearch:search
+[12:00:03] wrong skill's procedure ran

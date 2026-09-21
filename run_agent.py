@@ -266,6 +266,7 @@ class AIAgent(
         tool_progress_callback: callable = None, tool_start_callback: callable = None,
         tool_complete_callback: callable = None, thinking_callback: callable = None,
         reasoning_callback: callable = None, clarify_callback: callable = None,
+        ask_user_questions_callback: callable = None,  # KENSEI CUSTOM
         read_terminal_callback: callable = None, read_preview_callback: callable = None,
         drive_preview_callback: callable = None, read_window_below_callback: callable = None,
         connection_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
@@ -1057,6 +1058,13 @@ class AIAgent(
                 self._todo_store.restore(last_todo_response, revision=history_revision)
                 if not self.quiet_mode:
                     self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+        # KENSEI CUSTOM: one-shot reconciliation gate (consumed by agent/turn_context.py).
+        # Mark even when nothing was restored — the revision guard inside the
+        # store protects correctness; the flag only prevents re-scanning
+        # history every turn.
+        _mark_reconciled = getattr(self._todo_store, "mark_history_reconciled", None)
+        if callable(_mark_reconciled):
+            _mark_reconciled()
         _set_interrupt(False)
 
     def _latest_todo_response(self, history: List[Dict[str, Any]]) -> Optional[tuple]:

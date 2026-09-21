@@ -105,6 +105,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<question>", busy_policy="dispatch"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",), busy_policy="dispatch"),
+    CommandDef("control", "Open Control Room (home, needs-you, agents, tasks, messages, system)",
+               "Session", args_hint="[home|needs-you|agents|tasks|messages|system]",
+               subcommands=("home", "needs-you", "agents", "tasks", "messages", "system"),
+               busy_policy="dispatch"),
     CommandDef("journey", "Open the learning journey timeline",
                "Session", aliases=("learning", "memory-graph"), cli_only=True,
                args_hint="[list|delete <id>|edit <id>]", subcommands=("list", "delete", "edit")),
@@ -115,7 +119,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("steer", "Inject a message after the next tool call without interrupting", "Session",
                args_hint="<prompt>", busy_policy="dispatch", busy_handler="steer"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
-               args_hint="[text | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
+               args_hint="[text | draft <text> | route [text] | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
                argument_mode="mixed", busy_policy="dispatch", busy_handler="goal"),
     CommandDef("heartbeat", "Set a recurring prompt that re-enters this session when idle", "Session",
                aliases=("hb",), args_hint="[every <interval> <prompt> | status | pause | resume | clear]",
@@ -134,6 +138,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>", busy_policy="reject", busy_handler="moa"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
+               aliases=("sub-goal", "subgoals", "sub-goals"),
                args_hint="[text | remove N | clear]", busy_policy="dispatch"),
     CommandDef("status", "Show session, model, token, and context info", "Session",
                busy_policy="dispatch"),
@@ -184,6 +189,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch", desktop="terminal"),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration", busy_policy="dispatch"),
+    CommandDef("mode", "Agent execution mode: plan, UltraPlan, recon, auto",
+               "Configuration", args_hint="[auto|plan|gods_plan|recon]",
+               subcommands=("auto", "plan", "gods_plan", "recon"), busy_policy="dispatch"),
     CommandDef("approvals", "Show or set the persistent dangerous-command approval mode",
                "Configuration", args_hint="[manual|smart|off]",
                subcommands=("manual", "smart", "off")),
@@ -251,6 +259,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("init", "boards", "create", "list", "ls", "show", "assign",
                             "reclaim", "reassign", "diagnostics", "diag", "link", "unlink",
                             "claim", "comment", "complete", "edit", "block", "unblock",
+                            "promote", "promote-backlog",
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",
                             "heartbeat", "assignees", "context", "specify", "gc"),
@@ -296,6 +305,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, desktop="terminal"),
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>", desktop="terminal"),
+    CommandDef("generate-image", "Generate one private native-Codex image via the content engine", "Tools & Skills",
+               args_hint="[prompt|style|backend|stage-root|job-id|aspect-ratio]"),
+    CommandDef("localgen", "Generate video locally via ComfyUI (Wan2.2) — separate from /generate-image", "Tools & Skills",
+               args_hint="[model|prompt|image|seed|length]"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                busy_policy="dispatch", desktop="terminal"),
     CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",),
@@ -351,6 +364,18 @@ def desktop_surface_registry() -> dict[str, str | None]:
 _COMMAND_LOOKUP: dict[str, CommandDef] = {
     key: cmd for cmd in COMMAND_REGISTRY for key in (cmd.name, *cmd.aliases)}
 
+
+def _build_command_lookup() -> dict[str, CommandDef]:
+    """Map every name and alias to its CommandDef."""
+    lookup: dict[str, CommandDef] = {}
+    for cmd in COMMAND_REGISTRY:
+        lookup[cmd.name] = cmd
+        for alias in cmd.aliases:
+            lookup[alias] = cmd
+    return lookup
+
+
+_COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()
 
 def resolve_command(name: str) -> CommandDef | None:
     """Resolve a command name or alias (leading slash optional) to its CommandDef."""

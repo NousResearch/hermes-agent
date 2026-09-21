@@ -1,0 +1,9 @@
+{
+  "last_report_path": "/home/kensei/.hermes/profiles/octacon/logs/curator/20260522-181521",
+  "last_run_at": "2026-05-22T18:15:21.986198+00:00",
+  "last_run_duration_seconds": 0.779553,
+  "last_run_summary": "auto: no changes; llm: skipped (no candidates)",
+  "last_run_summary_shown_at": null,
+  "paused": false,
+  "run_count": 2
+}

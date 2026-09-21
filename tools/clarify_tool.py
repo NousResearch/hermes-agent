@@ -136,46 +136,92 @@ def _normalize_questions(questions) -> tuple:
     return normalized, None
 
 
-def _batch_result(normalized: List[dict], answers: dict, timed_out: bool, notice: Optional[str] = None) -> str:
-    """Batch result JSON; unanswered -> "". The top-level ``timed_out`` flag (present only when
-    true) tells the agent whether blanks are deliberate skips or the user walking away; ``notice``
-    (surface-supplied, only beside ``timed_out``) says WHY the wait ended, so an undeliverable
-    prompt never reads as user inactivity."""
+def _batch_result(normalized: List[dict], answers: dict, timed_out: bool,
+                  cancelled: bool = False, notice: Optional[str] = None) -> str:
+    """Assemble batch result JSON with an explicit status per question.
+
+    Answers locked before a timeout or cancellation are preserved. Missing
+    answers are labelled ``timed_out`` or ``cancelled`` instead of being
+    conflated with a deliberate empty-answer skip. The top-level
+    ``timed_out``/``cancelled`` flags (present only when true) tell the agent
+    whether blanks are deliberate skips, the user walking away, or a
+    cancel-all from a batch-capable surface. ``notice`` (surface-supplied,
+    only beside ``timed_out``) says WHY the wait ended, so an undeliverable
+    prompt never reads as user inactivity.
+    """
     responses = []
     for entry in normalized:
+        present = entry["qid"] in answers
         raw = answers.get(entry["qid"])
-        responses.append({
+        row = {
             **({"id": entry["id"]} if entry["id"] else {}),
             "question": entry["question"], "choices_offered": entry["choices_offered"],
-            "user_response": _clean_answer(raw, entry["multi_select"]) if raw else ""})
+            "user_response": _clean_answer(raw, entry["multi_select"]) if raw else ""}
+        if present:
+            row["status"] = "answered" if raw else "skipped"
+        elif timed_out:
+            row["status"] = "timed_out"
+        elif cancelled:
+            row["status"] = "cancelled"
+        else:
+            row["status"] = "skipped"
+        responses.append(row)
     result: Dict[str, object] = {"responses": responses}
     if timed_out:
         result["timed_out"] = True
+    if timed_out:
         if notice:
             result["notice"] = str(notice)
+    if cancelled:
+        result["cancelled"] = True
     return json.dumps(result, ensure_ascii=False)
 
 
-def _run_batch(normalized: List[dict], callback, question: str) -> str:
-    """Dispatch a validated batch. Batch-capable callbacks (``questions`` kwarg) get the
-    whole list once and reply ``{"answers": {qid: raw}, "timed_out"?}`` as a dict or JSON
-    string (the tui_gateway bridge only carries strings); any other falsy/unparseable reply
-    is a cancel-all (mirrors the single-question skip). Legacy callbacks are looped per
-    question: an empty answer is a skip, a timeout (``None`` or the sentinel) means the user
-    walked away so the loop aborts instead of pestering them; earlier answers are kept."""
-    answers: dict = {}
-    timed_out = False
-    notice = None
+def run_question_batch(normalized: List[dict], callback, question: str = "") -> str:
+    """Dispatch a validated batch to the platform callback.
+
+    Batch-capable callbacks (a ``questions`` kwarg, detected by signature)
+    get the whole list once and reply with ``{"answers": {qid: raw}}`` plus
+    optional ``timed_out``/``cancelled``/``notice`` fields — as a dict or a
+    JSON string (the tui_gateway ``_block`` bridge can only carry strings).
+
+    Legacy callbacks are looped one question at a time (messaging adapters,
+    older plugins). An explicit empty answer is a skip and the loop
+    continues; a timeout (``None`` or the ``TIMEOUT_RESPONSE`` sentinel)
+    means the user walked away, so the loop aborts instead of pestering
+    them with the remaining questions. Answers collected before the abort
+    are kept either way.
+    """
     if _accepts_kwarg(callback, "questions"):
         raw = callback(question, None, questions=normalized)
-        timed_out = _is_timeout(raw)
-        if isinstance(raw, str):
-            raw = _json_as(raw, dict)  # the sentinel is not JSON -> None, timed_out stays True
-        if isinstance(raw, dict):
+
+        answers: dict = {}
+        timed_out = False
+        cancelled = False
+        notice = None
+        if _is_timeout(raw):
+            timed_out = True
+        elif isinstance(raw, dict):
             answers = dict(raw.get("answers") or {})
             timed_out = bool(raw.get("timed_out"))
+            cancelled = bool(raw.get("cancelled"))
             notice = raw.get("notice")
-        return _batch_result(normalized, answers, timed_out, notice)
+        elif isinstance(raw, str) and raw.strip():
+            parsed = _json_as(raw, dict)
+            if isinstance(parsed, dict):
+                answers = dict(parsed.get("answers") or {})
+                timed_out = bool(parsed.get("timed_out"))
+                cancelled = bool(parsed.get("cancelled"))
+                notice = parsed.get("notice")
+            else:
+                cancelled = True
+        else:
+            # A batch-capable surface uses an empty response for cancel-all.
+            cancelled = True
+        return _batch_result(normalized, answers, timed_out, cancelled, notice)
+
+    answers = {}
+    timed_out = False
     for entry in normalized:
         raw = _invoke_callback(callback, entry["question"], entry["choices"], entry["multi_select"])
         if _is_timeout(raw):
@@ -210,7 +256,7 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
             if callback is None:
                 return tool_error(_UNAVAILABLE)
             try:
-                return _run_batch(normalized, callback, str(question or "").strip())
+                return run_question_batch(normalized, callback, str(question or "").strip())
             except Exception as exc:
                 return tool_error(f"Failed to get user input: {exc}")
         # Empty questions array → fall through to the single-question path.

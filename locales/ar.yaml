@@ -425,6 +425,7 @@ gateway:
     no_data:                  "لا تتوفّر بيانات استخدام لهذه الجلسة."
     unknown_subcommand:       "أمر فرعي غير معروف لـ /usage: `{args}`. جرّب `/usage` أو `/usage reset [--force]`."
     reset_wrong_provider:     "إعادة تعيين الاستخدام المُدّخر متاحة فقط على مزوّد openai-codex. بدّل عبر `/model` أولًا."
+    reset_no_credential:      "⚠️ لا يمكن استرداد رصيد إعادة التعيين بدون بيانات اعتماد حساب نشطة. أرسل رسالة لإنشاء الحساب النشط، ثم شغّل `/usage reset`."
 
   credits:
     not_logged_in:            "لم تُسجّل الدخول إلى Nous Portal. سجّل الدخول لرؤية رصيد أرصدتك وإعادة الشحن."

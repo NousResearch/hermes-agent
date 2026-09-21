@@ -1,0 +1,26 @@
+[Unit]
+Description=Hermes Gateway – sirvir (Model fleet manager, turbofit, GPU watcher)
+After=network-online.target hermes-gateway.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=/home/kensei/.hermes/scripts/gateway-exec-start-pre.sh
+User=kensei
+Group=kensei
+Environment="HOME=/home/kensei"
+Environment="USER=kensei"
+Environment="LOGNAME=kensei"
+Environment="HERMES_HOME=/home/kensei/.hermes/profiles/sirvir"
+Environment="HERMES_CRON_TICKER_DISABLED=1"
+Environment="PATH=/home/kensei/repos/KenseiAgent/.venv/bin:/home/kensei/.hermes/hermes-agent/node_modules/.bin:/home/kensei/.hermes/node/bin:/home/kensei/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="VIRTUAL_ENV=/home/kensei/repos/KenseiAgent/.venv"
+ExecStart=/home/kensei/repos/KenseiAgent/.venv/bin/python -m hermes_cli.main gateway run --replace
+WorkingDirectory=/home/kensei/repos/KenseiAgent
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,12 @@
+{
+  "name": "kensei-overview",
+  "label": "Overview",
+  "description": "KENSEI Console home: live status, today's metrics, recent activity, quick links.",
+  "icon": "LayoutDashboard",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/kensei-overview",
+    "position": "before:chat"
+  },
+  "entry": "dist/index.js"
+}

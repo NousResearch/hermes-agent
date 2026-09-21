@@ -131,6 +131,13 @@ def _sync_codex_pool_entries(
     if not access_token:
         return
     refresh_token = tokens.get("refresh_token")
+    # Same identity claims _refresh_codex_auth_tokens surfaces onto the singleton (id_token,
+    # account_id): the CLI rejects an auth file without id_token ("missing field id_token"), so
+    # a pool alias left without it is a dead credential for every Codex-CLI-backed image
+    # pipeline the moment the singleton rotates past it (#114201 — sync dropped these two claims
+    # while copying access_token/refresh_token/last_refresh, so pool rows never rehydrated).
+    id_token = tokens.get("id_token")
+    account_id = tokens.get("account_id")
     entries = _pool_entries(auth_store, "openai-codex")
     if entries is None:
         return
@@ -145,6 +152,10 @@ def _sync_codex_pool_entries(
         entry["access_token"] = access_token
         if refresh_token:
             entry["refresh_token"] = refresh_token
+        if id_token:
+            entry["id_token"] = id_token
+        if account_id:
+            entry["account_id"] = account_id
         if last_refresh:
             entry["last_refresh"] = last_refresh
         _clear_pool_entry_status(entry)
@@ -477,6 +488,22 @@ def refresh_codex_oauth_pure(
     next_refresh = refresh_payload.get("refresh_token")
     if _nonempty_str(next_refresh):
         updated["refresh_token"] = next_refresh.strip()
+    # Surface the fresh identity claims: consumers that materialise a standalone
+    # Codex CLI auth file need ``id_token`` (the CLI requires it at parse) and
+    # ``account_id``. Both ride on the refresh response but were previously
+    # dropped here, which broke every CLI-backed image pipeline.
+    # (Restored: fork commit ed29100180 lost this hunk in the 2026-09-19
+    # auth_codex.py conflict resolutions; the illustrator half survived, the
+    # surfacing half did not — re-added verbatim 2026-09-20.)
+    next_id_token = refresh_payload.get("id_token")
+    if _nonempty_str(next_id_token):
+        updated["id_token"] = str(next_id_token).strip()
+    next_account = refresh_payload.get("account_id")
+    if not _nonempty_str(next_account):
+        account = refresh_payload.get("account")
+        next_account = account.get("id") if isinstance(account, dict) else None
+    if _nonempty_str(next_account):
+        updated["account_id"] = str(next_account).strip()
     return updated
 
 
@@ -495,9 +522,37 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
         stored = (state or {}).get("tokens")
         stored = stored if isinstance(stored, dict) else {}
         stored_at, stored_rt = _stripped(stored.get("access_token")), _stripped(stored.get("refresh_token"))
-        if stored_at and stored_rt and stored_rt != _stripped(tokens.get("refresh_token")):
+        # Peer-adopt is only valid WITHIN one account family: the stored singleton pair must
+        # belong to the same ChatGPT principal as the tokens being refreshed. An independent
+        # manual:device_code entry (a second OpenAI account) must NEVER adopt the singleton's
+        # pair — that silently returns the other account's tokens for this entry's request
+        # (wrong identity, and its own live grant sits unused). Compare principals before adopting.
+        adopt_allowed = True
+        if stored_at and _stripped(tokens.get("access_token")):
+            try:
+                from agent.credential_pool import _codex_principal_identity as _cpi
+                stored_principal = _cpi(stored_at)
+                caller_principal = _cpi(_stripped(tokens.get("access_token")))
+                adopt_allowed = (
+                    stored_principal is None or caller_principal is None
+                    or stored_principal == caller_principal)
+            except Exception:
+                adopt_allowed = True  # identity unavailable → legacy behaviour
+        if (stored_at and stored_rt and stored_rt != _stripped(tokens.get("refresh_token"))
+                and adopt_allowed):
             logger.info("Codex refresh token already rotated by a peer — adopting the stored pair.")
-            return {**tokens, "access_token": stored_at, "refresh_token": stored_rt}
+            adopted = {**tokens, "access_token": stored_at, "refresh_token": stored_rt}
+            # The adopted pair is the SAME principal's current grant, so its identity claims
+            # apply too — dropping them here reproduces the exact "missing field id_token"
+            # failure this whole path exists to prevent (#114201): every pool entry whose
+            # refresh_token has already been superseded by the singleton (the common case once
+            # the singleton has refreshed even once) hits this branch, so skipping id_token/
+            # account_id here silently starved every Codex-CLI image job of them.
+            for claim in ("id_token", "account_id"):
+                value = stored.get(claim)
+                if isinstance(value, str) and value.strip():
+                    adopted[claim] = value.strip()
+            return adopted
         try:
             refreshed = refresh_codex_oauth_pure(
                 str(tokens.get("access_token", "") or ""), str(tokens.get("refresh_token", "") or ""),
@@ -520,6 +575,10 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
         updated_tokens = {
             **tokens, "access_token": refreshed["access_token"],
             "refresh_token": refreshed["refresh_token"]}
+        for claim in ("id_token", "account_id"):
+            value = refreshed.get(claim)
+            if isinstance(value, str) and value.strip():
+                updated_tokens[claim] = value.strip()
         # Nested transaction: the per-path lock is reentrant, and it re-reads under the held locks.
         _save_codex_tokens(updated_tokens, write_through=True)
     return updated_tokens
@@ -1078,9 +1137,24 @@ def _codex_device_code_login() -> Dict[str, Any]:
         poll_interval=device_data["interval"])
     tokens = _codex_exchange_authorization_code(issuer, client_id, code_resp)
     # Return tokens for the caller to persist (never writes to ~/.codex/)
+    fresh_tokens = {
+        "access_token": tokens.get("access_token", ""),
+        "refresh_token": tokens.get("refresh_token", "")}
+    # A brand-new OAuth exchange (unlike a refresh) reliably carries id_token — the Codex CLI
+    # rejects an auth file lacking it ("missing field id_token"), so dropping it here (#114201,
+    # the third instance of the same class after the pool-sync and peer-adopt drops) meant every
+    # fresh `hermes auth add openai-codex` login was already broken for CLI-backed image jobs the
+    # moment it landed, with no refresh cycle involved at all.
+    id_token = tokens.get("id_token")
+    if isinstance(id_token, str) and id_token.strip():
+        fresh_tokens["id_token"] = id_token.strip()
+    account_id = tokens.get("account_id")
+    if not (isinstance(account_id, str) and account_id.strip()):
+        account = tokens.get("account")
+        account_id = account.get("id") if isinstance(account, dict) else None
+    if isinstance(account_id, str) and account_id.strip():
+        fresh_tokens["account_id"] = account_id.strip()
     return {
-        "tokens": {
-            "access_token": tokens.get("access_token", ""),
-            "refresh_token": tokens.get("refresh_token", "")},
+        "tokens": fresh_tokens,
         "base_url": _codex_base_url(), "last_refresh": _utc_now_z(), "auth_mode": "chatgpt",
         "source": "device-code"}

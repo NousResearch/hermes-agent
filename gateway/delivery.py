@@ -108,12 +108,12 @@ class DeliveryTarget:
     # Raw target string when the platform name is unknown. The platform falls
     # back to LOCAL for routing, but the original name is preserved so
     # deliver() can report {success: False, error: unknown_platform} instead
-    # of silently misrouting to local files.
+    # of silently misrouting to local files. (COMBINE: upstream contract.)
     unknown_platform: Optional[str] = None
 
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
-        """Parse "origin" | "local" | "<platform>" | "<platform>:<chat_id>[:<thread_id>]"."""
+        """Parse "origin" | "local" | "<platform>" | "<platform>:<chat_id>[:<thread_id>"."""
         target = target.strip()
         if target.lower() == "origin":
             return (cls(platform=origin.platform, chat_id=origin.chat_id, thread_id=origin.thread_id, is_origin=True)
@@ -167,6 +167,7 @@ class DeliveryRouter:
         """Deliver content to all targets; returns per-target results keyed by target string."""
         results = {}
         for target in targets:
+            # Unknown platform names: report instead of silently misrouting to local.
             if target.unknown_platform is not None:
                 results[target.to_string()] = {
                     "success": False, "error": f"unknown_platform: {target.unknown_platform}"}
@@ -196,7 +197,53 @@ class DeliveryRouter:
                     self.dead_targets.mark_dead(target.platform.value, target.chat_id,
                                                 reason=f"{dead_kind}: {str(e)[:120]}")
                 results[target.to_string()] = {"success": False, "error": str(e)}
+            # KENSEI CUSTOM: Profile Activity Ledger hook — best-effort per-target delivery
+            # telemetry (delivery_ok / delivery_error with job_id correlation). Fork feature
+            # retained alongside upstream's dead-target classification. Fork's inline dead-target
+            # block (pre-classify_dead_error, LOCAL-exempt) and restyled _deliver_local def were
+            # absorbed upstream; only the activity-hook layer is re-anchored.
+            self._record_delivery_activity(target, True, job_id, job_name, metadata)
         return results
+
+    # KENSEI CUSTOM: Profile Activity Ledger hook (see comment above).
+    def _record_delivery_activity(
+        self,
+        target: DeliveryTarget,
+        success: bool,
+        job_id: Optional[str],
+        job_name: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        *,
+        error: Optional[str] = None,
+    ) -> None:
+        """Best-effort Profile Activity Ledger hook for gateway delivery."""
+        try:
+            from hermes_cli.profile_activity_ledger import record_event_if_enabled
+            from hermes_cli.profiles import get_active_profile_name
+
+            severity = "info" if success else "error"
+            correlation_id = job_id
+            record_event_if_enabled(
+                source="gateway-dispatcher",
+                actor_profile=get_active_profile_name(),
+                event_type="delivery_ok" if success else "delivery_error",
+                event_id=None,
+                summary=f"gateway delivery {'ok' if success else 'error'} to {target.to_string()}",
+                payload={
+                    "target": target.to_string(),
+                    "platform": target.platform.value,
+                    "is_origin": target.is_origin,
+                    "is_explicit": target.is_explicit,
+                    "job_id": job_id,
+                    "job_name": job_name,
+                    "metadata": metadata or {},
+                    "error": error,
+                    "severity": severity,
+                    "correlation_id": correlation_id,
+                },
+            )
+        except Exception:
+            pass
 
     def _deliver_local(self, content: str, job_id: Optional[str], job_name: Optional[str],
                        metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:

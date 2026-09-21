@@ -18,8 +18,7 @@ import re
 import time
 from contextlib import suppress
 from gateway.config import Platform
-from gateway.platforms.base import EphemeralReply
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.run_common import _UNSET
 from gateway.run_inbound_unauthorized import (
     PAIRING_RATE_LIMITED_REPLY, UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg,
@@ -655,9 +654,12 @@ class GatewayInboundMixin:
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         _can_redirect = getattr(running_agent, "_supports_active_turn_redirect", False) is True
         if self._hm_text_only(event) and _can_redirect and hasattr(running_agent, "redirect"):
-            if self._redirect_active_turn(running_agent, (event.text or "").strip(), _quick_key, event):
-                logger.debug("PRIORITY redirect for session %s", _quick_key)
-                return
+            try:
+                if self._redirect_active_turn(running_agent, self._steer_text_with_origin((event.text or "").strip(), event), _quick_key, event):
+                    logger.debug("PRIORITY redirect for session %s", _quick_key)
+                    return
+            except Exception as exc:
+                logger.warning("PRIORITY redirect failed for session %s: %s", _quick_key, exc)
         logger.debug("PRIORITY interrupt for session %s", _quick_key)
         _interrupt_text = event.text
         if self._pending_event_audio_paths(event):
@@ -1202,7 +1204,59 @@ class GatewayInboundMixin:
             _reply = await self._hm_clarify_reply(event, source, _quick_key)
         if _reply is None:
             _reply = await self._hm_slash_confirm_reply(event, _quick_key)
+        if _reply is None:
+            # ── KENSEI CUSTOM — /gi pending wizard + image-lab + X-inbox (ported) ──
+            _reply = await self._hm_kensei_content_intercepts(event, _quick_key)
+            # ── END KENSEI CUSTOM ──
         return _reply
+
+    async def _hm_kensei_content_intercepts(self, event: "MessageEvent", _quick_key: str) -> Optional[str]:
+        """Fork content-engine intercepts, in the fork's dispatch order:
+
+        1. Pending /generate-image multi-step replies (state machine in
+           ``tools.generate_image_interaction``); slash replies clear it.
+        2. Image-lab channel plain-text "img …" trigger → the full
+           /generate-image pipeline.
+        3. X-inbox capture ("/x <note>" in the X manager channel) — store +
+           ack, never draft/post.
+        """
+        # 1. pending /generate-image wizard
+        try:
+            from tools import generate_image_interaction as _gi_mod
+            _pending_gi = _gi_mod.get_pending(_quick_key)
+        except Exception:
+            _pending_gi = None
+        if _pending_gi is not None:
+            _gi_reply = (event.text or "").strip()
+            if _gi_reply and not _gi_reply.startswith("/"):
+                _gi_stale = _gi_mod.clear_if_stale(_quick_key)
+                if not _gi_stale:
+                    _gi_result = await self._gi_resolve_step(event)
+                    # A successful interactive step commonly returns None:
+                    # the handler already sent the next prompt. Consume it
+                    # either way; it must never fall through to agent dispatch.
+                    return _gi_result or ""
+            else:
+                _gi_mod.clear(_quick_key)
+
+        # 2. image-lab channel trigger
+        try:
+            if await self._is_image_lab_message(event):
+                _img_prompt = (event.text or "").strip()
+                if _img_prompt and not _img_prompt.startswith("/"):
+                    _img_synthetic = self._image_lab_event(event, _img_prompt)
+                    _img_result = await self._handle_generate_image_command(_img_synthetic)
+                    return _img_result or ""
+        except Exception as _img_exc:  # noqa: BLE001 — never break normal dispatch
+            logger.warning("image-lab trigger failed: %s", _img_exc)
+
+        # 3. X-inbox capture
+        try:
+            if self._is_x_inbox_message(event):
+                return await self._handle_x_inbox_capture(event)
+        except Exception as _xin_exc:  # noqa: BLE001 — never break normal dispatch
+            logger.warning("x-inbox trigger failed: %s", _xin_exc)
+        return None
 
     async def _hm_dispatch_idle_commands(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
@@ -1256,6 +1310,29 @@ class GatewayInboundMixin:
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
 
+    def _hm_record_activity(self, event: "MessageEvent", event_type: str, outcome: str | None = None) -> None:
+        """KENSEI CUSTOM (ported): record gateway message lifecycle into the Profile Activity Ledger."""
+        try:
+            from hermes_cli.profile_activity_ledger import record_event_if_enabled
+
+            source = getattr(event, "source", None)
+            record_event_if_enabled(
+                source="gateway.dispatcher",
+                actor_profile=os.environ.get("HERMES_PROFILE") or "gateway",
+                target_profile=os.environ.get("HERMES_PROFILE"),
+                event_type=event_type,
+                object_type="gateway_message",
+                object_id=str(getattr(event, "message_id", "") or ""),
+                status_to=outcome,
+                summary=f"Gateway message {event_type}",
+                payload={
+                    "platform": str(getattr(source, "platform", "") or ""),
+                    "chat_id": str(getattr(source, "chat_id", "") or ""),
+                },
+            )
+        except Exception:
+            pass
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
@@ -1264,14 +1341,13 @@ class GatewayInboundMixin:
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
-        # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
-        # not on the adapter's raw inbound: profile routing, the ignored-channel
-        # guard, plugin hooks and user authorization all reject events above,
-        # and a rejected event must not be able to clear a refusal belonging to
-        # an active turn. This is also the single entry point every lane shares
-        # — Discord interaction passthrough builds its own MessageEvent and
-        # calls handle_message directly, so a teardown on the relay's inbound
-        # handler left those turns muted.
+
+        # ── KENSEI CUSTOM — Profile Activity Ledger: message received (ported) ──
+        try:
+            self._hm_record_activity(event, "gateway.message.received")
+        except Exception:
+            pass
+        # ── END KENSEI CUSTOM ──
 
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:
@@ -1411,6 +1487,12 @@ class GatewayInboundMixin:
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
+        # ── KENSEI CUSTOM — Profile Activity Ledger: message completed (ported) ──
+        try:
+            self._hm_record_activity(event, "gateway.message.completed", outcome="success")
+        except Exception:
+            pass
+        # ── END KENSEI CUSTOM ──
         return message_text
 
     @staticmethod

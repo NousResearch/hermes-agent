@@ -1,0 +1,4 @@
+model:
+  default: anthropic/claude-sonnet-4.6
+  provider: anthropic
+  base_url: https://api.anthropic.com

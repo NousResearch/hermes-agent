@@ -24,6 +24,7 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
+from collections import OrderedDict
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
@@ -31,7 +32,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Uni
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
-from hermes_cli.config import load_config_readonly
+from hermes_cli.config import cfg_get, load_config_readonly  # KENSEI CUSTOM: cfg_get for manager-scoped injection permission
 from hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import plugin_capability_granted
 from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
@@ -106,6 +107,12 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
 _install_plugin_debug_handler()
 
 VALID_HOOKS: Set[str] = {
+    # ── KENSEI CUSTOM — pre_user_message (ported) ──
+    # Fires on CLI/TUI surfaces before the agent sees the message
+    # (agent/conversation_loop.py). Consumed by the prompt-optimizer plugin
+    # for message rewrites; the gateway path uses pre_gateway_dispatch.
+    "pre_user_message",
+    # ── END KENSEI CUSTOM ──
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
@@ -124,6 +131,7 @@ VALID_HOOKS: Set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
+    "on_session_open",
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
@@ -604,46 +612,156 @@ class PluginContext:
     # Fail-closed by construction: any failure to read consent state inside plugin_capability_granted
     # returns False. The profile-scoped config is passed through so a multi-profile process consults THIS
     # manager's home, never the active profile's (#65593 constraint).
+        # ── KENSEI CUSTOM (restored): mode/target_session injection seam for hermes-peer ──
     def inject_message(
-        self, content: str, role: str = "user", *, session_key: str | None = None,
-    ) -> bool:
-        """Inject a message into a CLI or gateway conversation (new turn if idle, interrupt if running).
-        Gateway injection needs an existing ``session_key`` plus
-        ``plugins.entries.<plugin_id>.allow_gateway_injection``; ``True`` means the gateway accepted the
-        request for async dispatch, not that delivery completed."""
-        cli = self._manager._cli_ref
-        msg = content if role == "user" else f"[{role}] {content}"
-        if cli is not None:
-            queue_ = cli._interrupt_queue if getattr(cli, "_agent_running", False) else cli._pending_input
-            queue_.put(msg)
-            return True
-        if not session_key:
-            logger.warning("inject_message: gateway mode requires an existing session_key")
-            return False
-        if not self._gateway_injection_allowed():
-            logger.warning("inject_message: gateway injection denied for plugin %s; set "
-                           "plugins.entries.%s.allow_gateway_injection: true to allow it",
-                           self.plugin_id, self.plugin_id)
-            return False
-        if not self._manager.has_gateway_message_injector:
-            logger.warning("inject_message: no live gateway is available")
-            return False
-        try:
-            return bool(self._manager.inject_gateway_message(
-                session_key=session_key, content=msg, plugin_id=self.plugin_id,
-            ))
-        except Exception:
-            logger.warning("inject_message: gateway scheduling failed for plugin %s", self.plugin_id,
-                           exc_info=True)
-            return False
+            self,
+            content: str,
+            role: str = "user",
+            *,
+            mode: str = "queue",
+            target_session=None,
+            session_key: str | None = None,
+        ) -> bool:
+            """Inject a message into a live conversation (public plugin seam).
 
+            The message is delivered through host-owned queues only: the plugin
+            never reaches into private CLI/gateway/TUI fields.
+
+            - ``mode="queue"`` (default): idle target starts a new turn; a busy
+              target queues at the safe boundary and its active tool is never
+              interrupted.
+            - ``mode="steer"``: explicit mid-turn steering where the host
+              supports it.
+            - ``mode="interrupt"``: legacy hard-interrupt behaviour, retained
+              for compatibility.
+
+            ``target_session`` is an opaque exact-session token captured from the
+            host lifecycle; ``None`` means the caller's own session. Unknown,
+            closed, rotated or unauthorised targets fail closed (``False``).
+
+            Gateway injection is disabled per plugin unless
+            ``plugins.entries.<plugin_id>.allow_gateway_injection: true`` is set
+            in config.yaml.
+
+            Injected text is conversational input only: it cannot invoke slash
+            commands, approve tools or answer protected confirmation prompts.
+
+            Returns ``True`` when the host accepted the message.
+            """
+            if mode not in ("queue", "steer", "interrupt"):
+                return False
+
+            # Walkie persists an opaque host target as ``surface:token`` so a
+            # recipient process can select the owning router without inspecting
+            # plugin-private state (ADR-0002).  The host APIs themselves consume
+            # the raw exact-session token.  Accept both forms for compatibility,
+            # but only route a surface-qualified target to that exact surface.
+            effective_target = (
+                target_session if target_session is not None else session_key
+            )
+            target_surface = None
+            if isinstance(effective_target, str):
+                prefix, separator, raw_target = effective_target.partition(":")
+                if separator and prefix in {"cli", "tui", "gateway"} and raw_target:
+                    target_surface = prefix
+                    effective_target = raw_target
+
+            cli = self._manager._cli_ref
+            if cli is not None:
+                if target_surface not in (None, "cli"):
+                    return False
+                try:
+                    return bool(
+                        cli.inject_message(
+                            content,
+                            role=role,
+                            mode=mode,
+                            target_session=effective_target,
+                        )
+                    )
+                except Exception:
+                    return False
+
+            # Preserve the manager-owned gateway seam for isolated plugin managers
+            # and older gateway hosts.  It is deliberately queue-only: steering and
+            # hard interrupts require a surface router that owns the live turn.
+            if (
+                self._manager.has_gateway_message_injector
+                and target_surface in (None, "gateway")
+            ):
+                if (
+                    not effective_target
+                    or mode != "queue"
+                    or not self._gateway_injection_allowed()
+                ):
+                    return False
+                plugin_id = self.manifest.key or self.manifest.name
+                msg = content if role == "user" else f"[{role}] {content}"
+                try:
+                    return bool(
+                        self._manager.inject_gateway_message(
+                            session_key=effective_target,
+                            content=msg,
+                            plugin_id=plugin_id,
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "inject_message: gateway scheduling failed for plugin %s",
+                        plugin_id,
+                        exc_info=True,
+                    )
+                    return False
+
+            # No CLI attached (gateway, TUI/dashboard, headless serve): route via
+            # the host-owned routers registered by each surface. Dashboard takes
+            # precedence in serving processes, then the gateway.
+            for surface in ("tui", "gateway"):
+                if target_surface is not None and surface != target_surface:
+                    continue
+                router = _INJECTION_ROUTERS.get(surface)
+                if router is None:
+                    continue
+                try:
+                    plugin_id = self.manifest.key or self.manifest.name
+                    if router(
+                        content,
+                        role=role,
+                        mode=mode,
+                        # session_key is the caller-facing exact-session token;
+                        # the router contract calls it target_session.  Forward
+                        # either so callers using the public keyword work.
+                        target_session=effective_target,
+                        plugin_id=plugin_id,
+                    ):
+                        return True
+                except Exception:
+                    return False
+            return False
+    # ── END KENSEI CUSTOM ──
+
+    # KENSEI CUSTOM (restored): manager-home-scoped permission check — a multi-profile
+    # process must consult the OWNING manager's home config, not the active profile's.
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns."""
         try:
-            cfg = load_config_readonly() or {}
+            with _plugin_home_scope(self._manager.home_path):
+                cfg = load_config_readonly() or {}
         except Exception:
             return False
-        return (_plugin_settings_entry(cfg, self.plugin_id) or {}).get("allow_gateway_injection") is True
+
+        plugin_id = self.manifest.key or self.manifest.name
+        return (
+            cfg_get(
+                cfg,
+                "plugins",
+                "entries",
+                plugin_id,
+                "allow_gateway_injection",
+                default=False,
+            )
+            is True
+        )
 
     @_serialized_replacement
     def register_cli_command(
@@ -1708,12 +1826,60 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     ``discover_plugins()`` (gateway platform events, TUI slash workers, query mode, cron) still fire
     callbacks registered by user plugins (tracking #64178).
     """
-    return _delivery_manager().invoke_hook(hook_name, **kwargs)
+    try:
+        return _delivery_manager().invoke_hook(hook_name, **kwargs)
+    finally:
+        # ── KENSEI CUSTOM — session-open idempotence release (ported) ──
+        # Host-open idempotence is scoped to an ACTIVE lifecycle, not the
+        # process lifetime. Finalize/reset callbacks must observe the session
+        # before its key is released so the same durable ID can later resume.
+        if hook_name == "on_session_finalize":
+            _release_session_open(kwargs.get("session_id"))
+        elif hook_name == "on_session_reset":
+            _release_session_open(kwargs.get("old_session_id"))
+        # ── END KENSEI CUSTOM ──
+
+
+def _release_session_open(session_id: object) -> bool:
+    """KENSEI CUSTOM (ported): release every host-surface key for one closed durable session."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    with _session_open_lock:
+        keys = [key for key in _session_open_seen if key[1] == sid]
+        for key in keys:
+            _session_open_seen.pop(key, None)
+    return bool(keys)
 
 
 def render_system_prompt_sections(session_info: Mapping[str, Any]) -> List[RenderedPluginSystemPromptSection]:
     """Render plugin prompt sections after idempotent plugin discovery."""
     return _ensure_plugins_discovered().render_system_prompt_sections(session_info)
+
+
+# ── KENSEI CUSTOM (restored): host-owned injection router registry ──
+_INJECTION_ROUTERS: Dict[str, Callable] = {}
+
+
+def register_injection_router(surface: str, router: Callable) -> None:
+    """Register a host-owned injection router for one surface.
+
+    ``surface`` is a short host name (``"tui"`` or ``"gateway"``).  The
+    router must be a plain sync callable with signature
+    ``(content, role, *, mode, target_session, plugin_id) -> bool`` and must
+    fail closed (return ``False``) for unknown or unauthorised targets.
+    """
+    if not surface or not callable(router):
+        logger.warning("register_injection_router: invalid surface/router ignored")
+        return
+    _INJECTION_ROUTERS[surface] = router
+    logger.debug("Registered injection router for surface %r", surface)
+
+
+def clear_injection_routers() -> None:
+    """Remove all registered injection routers (test isolation helper)."""
+    _INJECTION_ROUTERS.clear()
+# ── END KENSEI CUSTOM ──
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
@@ -2149,3 +2315,38 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+
+# ── KENSEI CUSTOM — on_session_open lifecycle hook (ported) ──
+_SESSION_OPEN_LIMIT = 4096
+_session_open_lock = threading.RLock()
+_session_open_seen: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
+
+
+def notify_session_open(session_id: object, platform: object) -> bool:
+    """Fire ``on_session_open`` once per active addressable-session lifecycle.
+
+    Returns ``True`` only for the call that emitted the hook. Empty IDs fail
+    closed and repeated active ``(platform, session_id)`` boundaries are
+    no-ops. Finalize/reset releases the old ID so it can later resume.
+    """
+    sid = str(session_id or "").strip()
+    surface = str(platform or "unknown").strip() or "unknown"
+    if not sid:
+        logger.warning("Refusing on_session_open for an empty session id")
+        return False
+    key = (surface, sid)
+    with _session_open_lock:
+        if key in _session_open_seen:
+            _session_open_seen.move_to_end(key)
+            return False
+        _session_open_seen[key] = None
+        while len(_session_open_seen) > _SESSION_OPEN_LIMIT:
+            _session_open_seen.popitem(last=False)
+    try:
+        invoke_hook("on_session_open", session_id=sid, platform=surface)
+    except Exception:
+        with _session_open_lock:
+            _session_open_seen.pop(key, None)
+        raise
+    return True

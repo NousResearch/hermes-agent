@@ -1101,15 +1101,19 @@ class TurnRunner:
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
                            reasoning_config, pr, skip_context_files):
-        from gateway.run import _checkpoint_agent_kwargs
+        from gateway.run import _checkpoint_agent_kwargs, _construct_agent_with_session_open
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
-        return ctx.AIAgent(
-            model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
-            max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
-            enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
-            ephemeral_system_prompt=combined_ephemeral or None,
+        # Host-open lifecycle (REM-304/306): the addressable-session boundary
+        # fires through the shared gateway seam BEFORE the constructor, so
+        # plugins can register a peer before the first model turn.
+        return _construct_agent_with_session_open(
+            lambda: ctx.AIAgent(
+                model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
+                max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
+                enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
+                ephemeral_system_prompt=combined_ephemeral or None,
             prefill_messages=runner._prefill_messages or None,
             reasoning_config=reasoning_config, service_tier=runner._service_tier,
             request_overrides=turn_route.get("request_overrides"),
@@ -1127,6 +1131,9 @@ class TurnRunner:
             skip_context_files=skip_context_files,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
+            ),
+            session_id=ctx.session_id,
+            platform=platform_key,
         )
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
@@ -1852,6 +1859,28 @@ class TurnRunner:
         ):
             if extra:
                 combined = (combined + "\n\n" + extra).strip()
+
+        # ── KENSEI CUSTOM: compose the session-scoped agent mode prompt ──
+        # (plan/gods_plan/recon) into the ephemeral prompt. Signature-safe:
+        # combined_ephemeral participates in _agent_config_signature, so a
+        # mode change busts the cache and rebuilds the agent. auto returns
+        # None (no overlay) so combined_ephemeral is unchanged. See skill
+        # `agent-modes`. Must survive upstream merges.
+        _session_store = getattr(self._runner, "session_store", None)
+        _get_agent_mode = getattr(_session_store, "get_agent_mode", None)
+        _session_agent_mode = (
+            _get_agent_mode(ctx.session_key)
+            if callable(_get_agent_mode)
+            else "auto"
+        )
+        if _session_agent_mode and _session_agent_mode != "auto":
+            from hermes_cli.mode_prompts import get_mode_prompt as _gmp
+            _mode_prompt = _gmp(_session_agent_mode)
+            if _mode_prompt:
+                combined = (
+                    combined + "\n\n" + _mode_prompt
+                ).strip()
+        # ── END KENSEI CUSTOM ──
         return combined
 
     def _append_auto_media_tags(self, final_response: str, result, agent_history, history_media_paths) -> str:

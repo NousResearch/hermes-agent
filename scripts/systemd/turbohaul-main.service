@@ -1,0 +1,34 @@
+[Unit]
+Description=Turbohaul Main — Darwin 28B (Sirvir primary)
+# P12 memory policy: weights are GPU0-only, never offloaded; huge-context
+# CPU/system-RAM offload is opt-in only (see docs/adr/0012-p12-256k-memory-policy.md).
+# P12 performance rule: the main model must feel fast for ordinary daily work;
+# 256K context is a required capability, but occasional near-256K jobs may run
+# slower. Fast path (default, ctx <= 128K): GPU-resident KV, no offload.
+# Slow path (rare, explicit darwin-28b-256k route, ctx 128K-256K): host-RAM KV.
+# Canonical rule page: ~/brain/conventions/performance-rules.md (P12, promoted 2026-08-09).
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=kensei
+# P12 launch seam: route the spawn through scripts/p12_launch_main.py so the
+# GPU0-only weight enforcement and the KV-tier decision run at the real
+# launch point. The wrapper emits the final llama-server argv (fast path by
+# default: --split-mode none --main-gpu 0 appended, stray offload flags
+# neutralized). The long-context route (darwin-28b-256k) is NOT used here —
+# this is the daily fast-path service.
+ExecStart=/bin/bash -c 'exec $(/home/kensei/repos/KenseiAgent/scripts/p12_launch_main.py --ctx-size 65536 /home/sahil/ai/turbohaul-manager/vendor/turboquant-bin/llama-server \
+    -m /home/sahil/ai/models/llm/Darwin-28B-REASON.Q5_K_M.gguf \
+    --host 127.0.0.1 --port 11500 \
+    -ngl 99 --ctx-size 65536 \
+    --threads 8 --threads-batch 8 \
+    --mlock --no-mmap)'
+Restart=on-failure
+RestartSec=5
+Environment=OMP_NUM_THREADS=8
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target

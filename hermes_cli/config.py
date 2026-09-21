@@ -2058,6 +2058,54 @@ def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
     return child
 
 
+def get_pipeline_config() -> Dict[str, Any]:
+    """Return the ``pipeline`` section from config, merged with defaults.
+
+    The pipeline config lives under ``pipeline:`` in config.yaml and controls
+    gated progression of full-pipeline tasks. ``stage_owners`` is merged
+    separately so one user override does not discard owners for other stages.
+    """
+    cfg = load_config_readonly()
+    pipeline_cfg = cfg.get("pipeline", {})
+    if not isinstance(pipeline_cfg, dict):
+        pipeline_cfg = {}
+    defaults = DEFAULT_CONFIG.get("pipeline", {})
+    merged = dict(defaults)
+    merged.update(pipeline_cfg)
+
+    if isinstance(defaults.get("stage_owners"), dict):
+        owner_defaults = dict(defaults["stage_owners"])
+        configured_owners = pipeline_cfg.get("stage_owners", {})
+        if isinstance(configured_owners, dict):
+            owner_defaults.update(configured_owners)
+        merged["stage_owners"] = owner_defaults
+    return merged
+
+
+def get_council_config() -> "CouncilConfig":
+    """Return the ``council`` section from config, merged with defaults.
+
+    Returns a CouncilConfig dataclass with panel members, chairman, token cap,
+    and timeout settings. Panel lists and chairman routes are atomic user
+    choices, so configured values replace their defaults rather than being
+    merged item-by-item.
+    """
+    from hermes_cli.council import CouncilConfig
+
+    cfg = load_config_readonly()
+    council_cfg = cfg.get("council", {})
+    if not isinstance(council_cfg, dict):
+        council_cfg = {}
+    defaults = DEFAULT_CONFIG.get("council", {})
+    merged = dict(defaults)
+    merged.update(council_cfg)
+    if "panel" in council_cfg:
+        merged["panel"] = council_cfg["panel"]
+    if "chairman" in council_cfg:
+        merged["chairman"] = council_cfg["chairman"]
+    return CouncilConfig.from_config(merged)
+
+
 def write_platform_config_field(
     platform_key: str, field_key: str, value: Any, *, raw: bool = False) -> None:
     """Persist one scalar field under ``platforms.<platform_key>``.
@@ -3973,3 +4021,28 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+
+def _cron_section(config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return the ``cron`` mapping of *config* (loading the merged config when None), else None."""
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return None
+    cron_config = config.get("cron") if isinstance(config, dict) else None
+    return cron_config if isinstance(cron_config, dict) else None
+
+
+def cron_model_drift_guard_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether cron must fail closed on unpinned inference drift.
+    Only the literal YAML boolean ``false`` disables this spend-safety guard; missing, malformed,
+    or non-boolean values stay fail-closed. With *config* omitted the merged config is loaded so
+    CLI warnings honor the same user/managed setting as the scheduler."""
+    cron_config = _cron_section(config)
+    return cron_config is None or cron_config.get("model_drift_guard", True) is not False
+
+
+_CRON_MODEL_IMPACT_JOB_LIMIT = 50
+_CRON_MODEL_IMPACT_ID_LIMIT = 256
+_CRON_MODEL_IMPACT_NAME_LIMIT = 120

@@ -79,6 +79,9 @@ class TestClarifyBatchPanel:
         state["selected"] = 1
         cli._clarify_batch_enter(state)
 
+        assert state["reviewing"]
+        assert state["response_queue"].empty()
+        cli._clarify_batch_submit(state)
         thread.join(timeout=2)
         assert result["value"] == {"answers": {"q0": "red", "q1": "large"}}
         assert cli._clarify_state is None
@@ -108,6 +111,9 @@ class TestClarifyBatchPanel:
 
         cli._clarify_batch_enter(state)  # lock q1 = "c"
 
+        assert state["reviewing"]
+        assert state["response_queue"].empty()
+        cli._clarify_batch_submit(state)
         thread.join(timeout=2)
         assert result["value"] == {
             "answers": {"q0": "b", "q1": "c", "q2": "e"}
@@ -136,6 +142,9 @@ class TestClarifyBatchPanel:
 
         cli._clarify_batch_enter(state)  # lock q1 = "narrow"
 
+        assert state["reviewing"]
+        assert state["response_queue"].empty()
+        cli._clarify_batch_submit(state)
         thread.join(timeout=2)
         assert result["value"] == {
             "answers": {"q0": "thorough", "q1": "narrow"}
@@ -171,6 +180,9 @@ class TestClarifyBatchPanel:
         state["selected_indices"].update({0, 2})
         cli._clarify_batch_enter(state)
 
+        assert state["reviewing"]
+        assert state["response_queue"].empty()
+        cli._clarify_batch_submit(state)
         thread.join(timeout=2)
         answer = result["value"]["answers"]["q0"]
         assert isinstance(answer, str)
@@ -194,6 +206,9 @@ class TestClarifyBatchPanel:
 
         cli._clarify_batch_enter(state)
 
+        assert state["reviewing"]
+        assert state["response_queue"].empty()
+        cli._clarify_batch_submit(state)
         thread.join(timeout=2)
         assert result["value"] == {
             "answers": {"q0": "custom words", "q1": "a"}
@@ -385,6 +400,9 @@ class TestClarifyBatchNavigation:
         # Finish q1 so the batch resolves with the overwritten answer.
         cli._clarify_batch_set_active(state, 1)
         cli._clarify_batch_enter(state)
+        assert state["reviewing"]
+        assert state["response_queue"].empty()
+        cli._clarify_batch_submit(state)
         thread.join(timeout=2)
         assert result["value"] == {"answers": {"q0": "red", "q1": "small"}}
 

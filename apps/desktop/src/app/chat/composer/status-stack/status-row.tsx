@@ -1,15 +1,17 @@
 import { Fragment, memo, type ReactNode } from 'react'
 
 import { openAgentTerminal } from '@/app/right-sidebar/terminal/terminals'
-import { StatusPendingIcon } from '@/components/chat/status-pending-icon'
 import { StatusRow } from '@/components/chat/status-row'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { capitalize } from '@/lib/text'
 import type { TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
 import type { ComposerStatusItem } from '@/store/composer-status'
+import { humanTodoTarget } from '@/store/todo-mutation'
 
 const toolLabel = (name: string) => name.split('_').filter(Boolean).map(capitalize).join(' ') || name
 
@@ -43,7 +45,12 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
   }
 
   if (item.todoStatus === 'pending') {
-    return <StatusPendingIcon />
+    return (
+      <span
+        aria-hidden
+        className="box-border size-[0.7rem] rounded-full border border-dashed border-muted-foreground/60"
+      />
+    )
   }
 
   if (item.todoStatus && item.todoStatus !== 'in_progress') {
@@ -79,6 +86,10 @@ interface StatusItemRowProps {
   onOpen?: () => void
   /** Cancel a running background task. */
   onStop?: (id: string) => void
+  onTodoAction?: (item: ComposerStatusItem, origin: HTMLButtonElement) => void
+  todoMutationEnabled?: boolean
+  todoMutationPending?: boolean
+  todoMutationUnavailableLabel?: string
 }
 
 /**
@@ -86,7 +97,16 @@ interface StatusItemRowProps {
  * Memoised + keyed by id so parent re-renders never remount it (the spinner
  * keeps ticking instead of resetting).
  */
-export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOpen, onStop }: StatusItemRowProps) {
+export const StatusItemRow = memo(function StatusItemRow({
+  item,
+  onDismiss,
+  onOpen,
+  onStop,
+  onTodoAction,
+  todoMutationEnabled = false,
+  todoMutationPending = false,
+  todoMutationUnavailableLabel
+}: StatusItemRowProps) {
   const { t } = useI18n()
   const s = t.statusStack
   const failed = item.state === 'failed'
@@ -101,6 +121,43 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
 
   const canOpen = item.type === 'subagent' && !!onOpen
 
+  const todoTarget = item.todoStatus ? humanTodoTarget(item.todoStatus) : null
+  const todoLabel = todoTarget === 'completed' ? s.markDone : s.reopen
+  const todoAria = todoTarget === 'completed' ? s.markDoneAria(item.title) : s.reopenAria(item.title)
+
+  const todoStatusText = item.todoStatus
+    ? {
+        cancelled: s.statusCancelled,
+        completed: s.statusCompleted,
+        in_progress: s.statusInProgress,
+        pending: s.statusPending
+      }[item.todoStatus]
+    : null
+
+  const todoAction =
+    item.type === 'todo' && todoTarget ? (
+      <Tip label={todoMutationEnabled ? todoLabel : (todoMutationUnavailableLabel ?? s.syncingTask)}>
+        <Button
+          aria-label={todoMutationEnabled ? todoAria : (todoMutationUnavailableLabel ?? s.syncingTask)}
+          className="-my-1 shrink-0"
+          disabled={!todoMutationEnabled || todoMutationPending}
+          onClick={event => {
+            event.stopPropagation()
+            onTodoAction?.(item, event.currentTarget)
+          }}
+          size="icon-sm"
+          type="button"
+          variant="ghost"
+        >
+          {todoMutationPending ? (
+            <GlyphSpinner ariaLabel={todoLabel} spinner="braille" />
+          ) : (
+            <Codicon name={todoTarget === 'completed' ? 'check' : 'debug-restart'} size="0.8rem" />
+          )}
+        </Button>
+      </Tip>
+    ) : null
+
   // Background rows link to their read-only terminal tab; subagents open their session.
   const onActivate =
     item.type === 'background' ? () => openAgentTerminal(item.id, item.title) : canOpen ? onOpen : undefined
@@ -108,15 +165,24 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
   return (
     <Fragment>
       <StatusRow
-        depth={Math.min(item.depth ?? 0, 4)}
         dismiss={action ? { label: action.label, onDismiss: action.onClick } : undefined}
-        leading={leadingGlyph(item, s)}
+        leading={
+          item.depth ? (
+            <span className="flex items-center" style={{ paddingLeft: `${Math.min(item.depth, 4) * 0.8}rem` }}>
+              {leadingGlyph(item, s)}
+            </span>
+          ) : (
+            leadingGlyph(item, s)
+          )
+        }
         onActivate={onActivate}
         trailing={
-          canOpen ? (
+          todoAction ??
+          (canOpen ? (
             <Codicon aria-hidden className="text-muted-foreground/55" name="link-external" size="0.85rem" />
-          ) : undefined
+          ) : undefined)
         }
+        trailingVisible={Boolean(todoAction)}
       >
         <span
           className={cn(
@@ -128,6 +194,7 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
                 : 'text-foreground/92'
           )}
         >
+          {todoStatusText && <span className="sr-only">{todoStatusText}: </span>}
           {item.title}
         </span>
         {item.type === 'subagent' && item.currentTool && (

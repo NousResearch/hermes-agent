@@ -8,8 +8,10 @@ const buildOverlayState = (): OverlayState => ({
   agentsInitialHistoryIndex: 0,
   approval: null,
   billing: null,
+  askUserQuestions: null,
   clarify: null,
   confirm: null,
+  controlRoom: false,
   connection: null,
   ambient: [],
   widget: null,
@@ -18,6 +20,7 @@ const buildOverlayState = (): OverlayState => ({
   pager: null,
   petPicker: false,
   pluginsHub: false,
+  promptOptimization: null,
   secret: null,
   vaultUnlock: null,
   sessions: false,
@@ -33,15 +36,18 @@ export const $isBlocked = computed(
   ({
     agents,
     approval,
+    askUserQuestions, // KENSEI CUSTOM: multi-question batched prompt (agent-modes)
     billing,
     clarify,
     confirm,
-    connection,
+  controlRoom,
+  connection,
     journey,
     modelPicker,
     pager,
     petPicker,
     pluginsHub,
+    promptOptimization,
     secret,
     sessions,
     skillsHub,
@@ -53,15 +59,18 @@ export const $isBlocked = computed(
     Boolean(
       agents ||
       approval ||
+      askUserQuestions || // KENSEI CUSTOM: multi-question batched prompt (agent-modes)
       billing ||
       clarify ||
       confirm ||
-      connection ||
+  controlRoom ||
+  connection ||
       journey ||
       modelPicker ||
       pager ||
       petPicker ||
       pluginsHub ||
+      promptOptimization ||
       secret ||
       sessions ||
       skillsHub ||

@@ -14,6 +14,7 @@ tool calls or reasoning.
 import logging
 import time
 import weakref
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
@@ -25,16 +26,22 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
     _ChildRun, _attach_child, _build_child_goal_message, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
+    _apply_truncation_auto_continue, _get_continue_on_truncation_enabled,  # KENSEI CUSTOM: auto-continue
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
-    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
+    _inherit_parent_capabilities, _load_config, _merge_request_overrides, _profile_model_cfg,  # KENSEI CUSTOM
+    _registry_surface_chain,  # KENSEI CUSTOM: delegation fallback chain
+    _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
-from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
+from tools.delegate_tool_dispatch import (  # noqa: F401
+    _Batch, _announce_batch, _capture_origin, _run_batch,
+    _split_child_budget,  # KENSEI CUSTOM: batch budget split (tests + facade callers)
+)
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
@@ -47,13 +54,15 @@ from tools.delegate_tool_registry import (  # noqa: F401
     steer_subagent,
 )
 from tools.delegate_tool_tasks import (  # noqa: F401
-    _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
+    _MAX_TASK_IMAGES, _NESTED_DEFAULT_SCHEMA, _coerce_task_images, _coerce_task_schemas,  # KENSEI CUSTOM
+    _normalize_task_images, _normalize_task_list,
 )
 from tools.delegate_tool_toolsets import (  # noqa: F401
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
 from tools.delegate_tool_results import (  # noqa: F401
-    _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
+    _apply_summary_budget, _build_child_preserving_parent_tools, _has_receipts,  # KENSEI CUSTOM: _has_receipts
+    _run_child_lifecycle, _summarize_tool_arguments,
 )
 
 _ROLES = frozenset({"leaf", "orchestrator"})
@@ -80,6 +89,59 @@ _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
+
+
+# ── KENSEI CUSTOM — profile home/scope helpers (ported) ──
+def _profile_home_for_content(profile: Optional[str], profile_content: Optional[Dict[str, Any]]) -> Optional[Path]:
+    """Resolve a target profile home without falling back to the parent's home silently."""
+    if not profile:
+        return None
+    content = profile_content if isinstance(profile_content, dict) else {}
+    explicit_home = content.get("hermes_home") or content.get("home")
+    if explicit_home:
+        return Path(explicit_home)
+    try:
+        from hermes_constants import get_hermes_home
+        candidate = get_hermes_home() / "profiles" / str(profile)
+        return candidate if candidate.is_dir() else None
+    except Exception:
+        return None
+
+
+def _profile_scope_or_null(profile: Optional[str], profile_content: Optional[Dict[str, Any]]):
+    """Return the shared profile scope for a real target profile, else a no-op for pre-resolved test fixtures."""
+    from contextlib import nullcontext
+
+    home = _profile_home_for_content(profile, profile_content)
+    if not home:
+        return nullcontext()
+    from agent.profile_runtime_scope import profile_runtime_scope
+    return profile_runtime_scope(home)
+
+
+def _child_profile_scope(child):
+    """Re-enter a child's target scope for its complete run, including cleanup.
+
+    Test doubles (MagicMock/SimpleNamespace without a real profile home) fall
+    through to a no-op: a MagicMock attribute is truthy but ``Path()`` of it
+    would point at a ``MagicMock/...`` relative path and ``ensure_hermes_home``
+    would scaffold profile dirs under the repo. Only real directory homes
+    enter the scope.
+    """
+    from contextlib import nullcontext
+    from pathlib import Path
+
+    home = getattr(child, "_delegate_profile_home", None)
+    if not home:
+        return nullcontext()
+    try:
+        if not Path(home).is_dir():
+            return nullcontext()
+    except Exception:
+        return nullcontext()
+    from agent.profile_runtime_scope import profile_runtime_scope
+    return profile_runtime_scope(home)
+# ── END KENSEI CUSTOM ──
 
 
 def _open_child_session_db(parent_agent) -> Any:
@@ -178,6 +240,10 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    # ── KENSEI CUSTOM — profile scoping (ported) ──
+    profile: Optional[str] = None,
+    profile_content: Optional[Dict[str, Any]] = None,
+    isolate_profile_credentials: bool = False,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -263,6 +329,11 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    # ── KENSEI CUSTOM — stamp target profile for scope re-entry (ported) ──
+    if profile:
+        setattr(child, "_delegate_profile_name", profile)
+        setattr(child, "_delegate_profile_home", _profile_home_for_content(profile, profile_content))
+    # ── END KENSEI CUSTOM ──
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
@@ -299,7 +370,8 @@ def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
     owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
 ) -> Dict[str, Any]:
-    """Run a pre-built child agent (called from a worker thread) and return its result entry.
+    """Run a pre-built child agent (called from a worker thread) inside its
+    target profile runtime scope (KENSEI CUSTOM) and return its result entry.
 
     Contract, derived from the child's structured completion fields:
       status      ∈ {completed, interrupted, failed} — a structured failure
@@ -312,6 +384,19 @@ def _run_single_child(
 
     * ``"completed"``       — normal finish. See #97655.
     """
+    with _child_profile_scope(child):
+        return _run_single_child_impl(
+            task_index=task_index, goal=goal, child=child, parent_agent=parent_agent,
+            owner_session_id=owner_session_id, owner_transport=owner_transport,
+            owner_session_record=owner_session_record, **_kwargs,
+        )
+
+
+def _run_single_child_impl(
+    task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
+    owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
+) -> Dict[str, Any]:
+    """Impl of ``_run_single_child`` — runs the full child lifecycle."""
     child_progress_cb = getattr(child, "tool_progress_callback", None)
     child_pool, leased_cred_id = _lease_child_credential(child)
     # Heartbeat keeps the parent's _last_activity_ts moving so the gateway inactivity timeout doesn't fire while the
@@ -335,6 +420,12 @@ def _run_single_child(
         if failure_entry is not None:
             return failure_entry
 
+        # KENSEI CUSTOM: one bounded continuation turn for a budget-cut child, before
+        # schema validation so a continuation that completes the shape can satisfy it.
+        _continued, _continuation_text = _apply_truncation_auto_continue(
+            child, result, task_index, run.child_task_id, run.relay_text,
+            _get_continue_on_truncation_enabled(),
+        )
         schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
         _merge_late_steer(result, _subagent_id, child)
         # Flush any remaining batched progress to gateway
@@ -343,7 +434,8 @@ def _run_single_child(
                 child_progress_cb._flush()
 
         duration = run.elapsed()
-        entry = _build_result_entry(child, result, task_index, duration, schema)
+        entry = _build_result_entry(child, result, task_index, duration, schema,
+                                    continued=_continued, continuation=_continuation_text)
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
@@ -363,13 +455,78 @@ def _run_single_child(
 
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
-    top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
-    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    top_role: str, max_iterations: int, parent_agent, routing_cfg: Optional[Dict[str, Any]] = None,
+    live_deleg_id: Optional[str], live_writers: list,
+    task_images: Optional[List[Optional[List[str]]]] = None,
+    # ── KENSEI CUSTOM — profile flow (ported) ──
+    profile: Optional[str] = None, profile_content: Optional[Dict[str, Any]] = None,
+    profile_explicit_pin: bool = False,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
+
+    # ── KENSEI CUSTOM — profile-based child config (ported) ──
+    # Resolve the child profile ONCE per batch: config.yaml + SOUL.md from
+    # ~/.hermes/profiles/<profile>/ (profile_content pre-resolved by the
+    # caller wins — avoids re-parsing YAML per task).
+    loaded_profile_cfg = profile_content
+    if loaded_profile_cfg is None and profile:
+        import yaml as _yaml
+        import os as _os
+        from hermes_constants import get_hermes_home
+        _pdir = _os.fspath(get_hermes_home() / "profiles" / profile)
+        _config_path = _os.path.join(_pdir, "config.yaml")
+        _soul_path = _os.path.join(_pdir, "SOUL.md")
+        if not _os.path.isdir(_pdir):
+            return [], f"Profile '{profile}' not found at {_pdir}"
+        loaded_profile_cfg = {"name": profile, "config": {}, "soul_md": None, "skills": [], "home": _pdir}
+        try:
+            with open(_config_path, encoding="utf-8") as _f:
+                loaded_profile_cfg["config"] = _yaml.safe_load(_f) or {}
+        except FileNotFoundError:
+            logger.warning("Profile '%s' has no config.yaml", profile)
+        if _os.path.isfile(_soul_path):
+            with open(_soul_path, encoding="utf-8") as _f:
+                loaded_profile_cfg["soul_md"] = _f.read()
+
+    # Tier gate: Tier-3 profiles are dormant/specialized — they cannot be
+    # delegated to without explicit Sahil approval and runtime proof.
+    if loaded_profile_cfg:
+        _pcfg = loaded_profile_cfg.get("config") or {}
+        _tier = _pcfg.get("tier")
+        if _tier is not None:
+            try:
+                _tier_int = int(_tier)
+            except (ValueError, TypeError):
+                pass  # Non-integer tier — let it pass
+            else:
+                if _tier_int == 3:
+                    _pname = loaded_profile_cfg.get("name") or profile or "unknown"
+                    return [], (
+                        f"Profile '{_pname}' is tier 3 (dormant/specialized). "
+                        "Tier 3 profiles require explicit Sahil approval and "
+                        "runtime proof before delegation."
+                    )
+    # ── END KENSEI CUSTOM ──
+
+    _profile_cfg = (loaded_profile_cfg or {}).get("config") or {}
+    _profile_model_values = _profile_model_cfg(_profile_cfg)
+    _profile_credentials = _profile_cfg.get("credentials")
+    if not isinstance(_profile_credentials, dict):
+        _profile_credentials = {}
+    _profile_provider = _profile_cfg.get("provider") or _profile_model_values.get("provider") or _profile_credentials.get("provider")
+    _profile_base_url = _profile_cfg.get("base_url") or _profile_model_values.get("base_url") or _profile_credentials.get("base_url")
+    _profile_api_key = _profile_cfg.get("api_key") or _profile_model_values.get("api_key") or _profile_credentials.get("api_key")
+    _profile_api_mode = _profile_cfg.get("api_mode") or _profile_credentials.get("api_mode")
+    _profile_request_overrides = _profile_cfg.get("request_overrides")
+    _profile_fallback_providers = _profile_cfg.get("fallback_providers")
+    _profile_toolsets = (
+        _profile_cfg.get("toolsets")
+        or (loaded_profile_cfg or {}).get("toolsets")
+        or (loaded_profile_cfg or {}).get("skills")
+    )
     overrides = {
         "override_provider": creds["provider"], "override_base_url": creds["base_url"],
         "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
@@ -378,21 +535,67 @@ def _build_children(
         "override_acp_args": creds.get("args"),
         "routing_cfg": routing_cfg,
     }
+    if loaded_profile_cfg and not profile_explicit_pin:
+        if _profile_provider:
+            overrides["override_provider"] = _profile_provider
+        if _profile_base_url is not None:
+            overrides["override_base_url"] = _profile_base_url
+        if _profile_api_key is not None:
+            overrides["override_api_key"] = _profile_api_key
+        if _profile_api_mode is not None:
+            overrides["override_api_mode"] = _profile_api_mode
+        if isinstance(_profile_request_overrides, dict):
+            overrides["override_request_overrides"] = dict(_profile_request_overrides)
+        if isinstance(_profile_fallback_providers, (list, dict)):
+            overrides["override_fallback_providers"] = _profile_fallback_providers
+    _profile_home = _profile_home_for_content(profile, loaded_profile_cfg)
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        # ── KENSEI CUSTOM — per-child profile application (ported) ──
+        _child_model = creds["model"]
+        _child_prompt_extra = None
+        if loaded_profile_cfg:
+            _pcfg = loaded_profile_cfg.get("config", {}) or {}
+            _pmodel = _profile_model_cfg(_pcfg)
+            # Profile model/provider/base_url apply as DEFAULTS only — explicit wins.
+            if not _child_model and _pmodel.get("default"):
+                _child_model = _pmodel["default"]
+            # Inject profile SOUL.md into the child system prompt via context
+            _soul = (loaded_profile_cfg.get("soul_md") or "").strip()
+            if _soul:
+                _child_prompt_extra = (
+                    f"# Profile: {loaded_profile_cfg['name']}\n\n"
+                    f"--- BEGIN PROFILE IDENTITY ---\n"
+                    f"{_soul}\n"
+                    f"--- END PROFILE IDENTITY ---\n\n"
+                    f"--- DELEGATED TASK ---\n"
+                    f"{_child_context or ''}"
+                )
+        _effective_context = _child_prompt_extra if _child_prompt_extra is not None else _child_context
+        # ── END KENSEI CUSTOM ──
         try:
-            child = _build_child_preserving_parent_tools(
-                task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
-            )
+            with _profile_scope_or_null(profile, loaded_profile_cfg):
+                child = _build_child_preserving_parent_tools(
+                    task_index=i, goal=t["goal"], context=_effective_context,
+                    toolsets=_profile_toolsets if loaded_profile_cfg else None,  # KENSEI: profile-scoped toolsets
+                    model=_child_model, max_iterations=max_iterations, task_count=len(task_list),
+                    parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                    profile=profile, profile_content=loaded_profile_cfg,
+                    isolate_profile_credentials=bool(profile and loaded_profile_cfg and not profile_explicit_pin),
+                    **overrides,
+                )
         except ValueError as exc:
             return [], str(exc)
+        # ── KENSEI CUSTOM — stamp profile name for cycle detection ──
+        if profile:
+            setattr(child, "_delegate_profile_name", (loaded_profile_cfg or {}).get("name") or profile)
+            if _profile_home is not None:
+                setattr(child, "_delegate_profile_home", _profile_home)
+        # ── END KENSEI CUSTOM ──
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema
@@ -442,6 +645,10 @@ def delegate_task(
     output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
+    # ── KENSEI CUSTOM — verify/synthesis primitives ──
+    verify: bool = False, verify_rubric: Optional[str] = None,
+    synthesize: bool = False, synthesis_prompt: Optional[str] = None,
+    profile: Optional[str] = None, profile_content: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -499,7 +706,10 @@ def delegate_task(
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
-        task_schemas, err = _coerce_task_schemas(task_list, output_schema)
+        # KENSEI CUSTOM: nested spawns without a contract get the minimal
+        # default schema so validate + one-retry always enforces a shape.
+        _nested_default = _NESTED_DEFAULT_SCHEMA if depth >= 1 else None
+        task_schemas, err = _coerce_task_schemas(task_list, output_schema, _nested_default)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
     if err:
@@ -507,6 +717,28 @@ def delegate_task(
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
         return tool_error(err)
+
+    # ── KENSEI CUSTOM — child budget split (ported) ──
+    # _split_child_budget divides effective_max_iter across the batch
+    # (configurable via delegation.max_iterations, default 50). Single-child
+    # batches keep the full cap; multi-child batches split it so total
+    # iterations across parent + subagents stay bounded by design, with a
+    # floor of 1 per child.
+    from tools.delegate_tool_dispatch import _split_child_budget
+    default_max_iter = _split_child_budget(default_max_iter, len(task_list))
+    # ── END KENSEI CUSTOM ──
+
+    # ── KENSEI CUSTOM — profile validation (ported) ──
+    # Profile validation must precede transcript creation and ancestry validation.
+    # Explicit profile_content is already pre-resolved and bypasses filesystem validation.
+    if profile and profile_content is None:
+        from hermes_constants import get_hermes_home
+        _profile_dir = get_hermes_home() / "profiles" / profile
+        if not _profile_dir.is_dir():
+            return tool_error(f"Profile '{profile}' not found at {_profile_dir}")
+        _profile_config = _profile_dir / "config.yaml"
+        if not _profile_config.is_file():
+            return tool_error(f"Profile '{profile}' has no config.yaml at {_profile_config}")
 
     overall_start = time.monotonic()
     # Live transcripts: cache/delegation/live/<id>/task-<n>.log per task, a side channel with zero effect on message
@@ -518,6 +750,15 @@ def delegate_task(
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
+    # ── KENSEI CUSTOM — delegation cycle guard (ported) ──
+    # Reject a spawn that would recurse into its own ancestor profile.
+    try:
+        from tools.delegate_tool_dispatch import _check_delegation_cycle
+        _check_delegation_cycle(parent_agent, profile)
+    except ValueError as _cycle_err:
+        return tool_error(str(_cycle_err))
+    # ── END KENSEI CUSTOM ──
+
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
@@ -527,6 +768,10 @@ def delegate_task(
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        # ── KENSEI CUSTOM — verify/synthesis primitive inputs ──
+        verify=bool(verify), verify_rubric=verify_rubric,
+        synthesize=bool(synthesize), synthesis_prompt=synthesis_prompt,
+        profile=profile, profile_content=profile_content,
     )
     return _run_batch(batch, background)
 
@@ -642,10 +887,27 @@ DELEGATE_TASK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            # The handler also accepts the legacy single-goal shape (top-level `goal`/`context`/`output_schema`),
-            # wrapped into a one-entry batch at dispatch, and a per-task `role` (legacy, ignored: capability is
-            # depth-derived). Both unadvertised on purpose (old transcripts only); do not re-add. No maxItems — the
-            # runtime limit (delegation.max_concurrent_children) is enforced with a clear error in delegate_task().
+            # KENSEI CUSTOM (restored): the explicit single-goal surface is the
+            # lead-routing contract's primary form. Upstream's tasks-only batch
+            # interface sits alongside it for fan-out work. A per-task `role`
+            # stays unadvertised (legacy, ignored: capability is depth-derived).
+            "goal": _p(
+                "string",
+                "What the subagent should accomplish. Be specific and self-contained — it knows nothing "
+                "about your conversation history.",
+            ),
+            "context": _p(
+                "string",
+                "Background THIS child needs: file paths, error messages, constraints. Each child sees only "
+                "its own context — repeat shared background in every task that needs it.",
+            ),
+            "output_schema": _p(
+                "object",
+                "Optional JSON Schema this child's final answer must validate against (told to the child up "
+                "front; parent validates with one bounded correction retry; result gains schema_valid, plus "
+                "schema_errors on failure — the child's raw text is still returned as summary, never discarded). "
+                "Keep it forgiving — require only fields you will read.",
+            ),
             "tasks": {
                 "type": "array",
                 "minItems": 1,
@@ -689,6 +951,46 @@ DELEGATE_TASK_SCHEMA = {
                 },
                 "description": "(rebuilt at get_definitions() time)",
             },
+            # ── KENSEI CUSTOM — profile routing + verify/synthesis primitive params ──
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Profile name to load config, SOUL.md, and always_skills "
+                    "from for the subagent. When set, the subagent uses the "
+                    "profile's model, provider, toolsets, and identity instead "
+                    "of inheriting the parent's. The profile must exist under "
+                    "~/.hermes/profiles/<name>."
+                ),
+            },
+            "synthesize": {
+                "type": "boolean",
+                "description": (
+                    "KENSEI CUSTOM. After all children complete in batch mode, "
+                    "spawn a synthesis agent to merge results. Only active when "
+                    "delegation.synthesis_enabled=true and n_tasks > 1."
+                ),
+            },
+            "synthesis_prompt": {
+                "type": "string",
+                "description": (
+                    "Custom prompt for the synthesis agent when synthesize=true."
+                ),
+            },
+            "verify": {
+                "type": "boolean",
+                "description": (
+                    "KENSEI CUSTOM. After single-task child produces a finding, "
+                    "spawn skeptic in CLEAN context to refute. Only active when "
+                    "delegation.verify_enabled=true and n_tasks == 1."
+                ),
+            },
+            "verify_rubric": {
+                "type": "string",
+                "description": (
+                    "Custom rubric for the skeptic when verify=true."
+                ),
+            },
+            # ── END KENSEI CUSTOM ──
             # `background` (bool) is also accepted — DEPRECATED, ignored: top-level
             # delegations always run in the background. Unadvertised; do not re-add.
             "action": _p(
@@ -742,6 +1044,13 @@ registry.register(
         max_iterations=args.get("max_iterations"), role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
         images=args.get("images"), action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        # ── KENSEI CUSTOM — profile routing + verify/synthesis primitives ──
+        synthesize=args.get("synthesize"),
+        synthesis_prompt=args.get("synthesis_prompt"),
+        verify=args.get("verify"),
+        verify_rubric=args.get("verify_rubric"),
+        profile=args.get("profile"),
+        # ── END KENSEI CUSTOM ──
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
@@ -786,3 +1095,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+from agent.memory_manager import sanitize_context  # noqa: F401 — facade compatibility seam
+from tools.delegate_tool_dispatch import _check_delegation_cycle  # noqa: F401 — facade compatibility seam
+from tools.delegate_tool_results import _extract_finding  # noqa: F401 — facade compatibility seam
+from tools.delegate_tool_config import _get_synthesis_enabled, _get_verify_enabled  # noqa: F401 — facade compatibility seam

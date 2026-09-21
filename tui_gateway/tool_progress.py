@@ -114,6 +114,7 @@ def _normalize_todo_state(value: object) -> dict | None:
     if not isinstance(value, dict) or not isinstance(value.get("todos"), list):
         return None
     try:
+        generation = max(0, int(value.get("generation") or 0))
         revision = max(0, int(value.get("revision") or 0))
     except (TypeError, ValueError):
         return None
@@ -122,7 +123,10 @@ def _normalize_todo_state(value: object) -> dict | None:
     # watermark and blocks unversioned tool.start merges. Empty at revision >= 1 is a real clear.
     if not todos and revision == 0:
         return None
-    return {"todos": todos, "revision": revision}
+    out = {"todos": todos, "revision": revision}
+    if "generation" in value:
+        out["generation"] = generation
+    return out
 
 
 def _cache_todo_state(session: dict, state: dict | None) -> None:

@@ -54,6 +54,14 @@ class _DummyCLI:
         self.session_id = "session-123"
         self.system_prompt = "base prompt"
         self.preloaded_skills = []
+        # finalize_preloaded_skills() reaches _record_forced_skill_rejected()
+        # on the all-unknown hard-fail path (the fail-loud contract that records
+        # a kanban event before raising). The real method is best-effort and
+        # no-ops unless HERMES_KANBAN_TASK is set, so a no-op stub preserves the
+        # contract under test (the ValueError) without side effects.
+        self._preload_skills_finalized = False
+        self._preload_skills_result = None
+        self._preload_skills_error = None
 
     def show_banner(self):
         return None
@@ -65,6 +73,9 @@ class _DummyCLI:
         return None
 
     def run(self):
+        return None
+
+    def _record_forced_skill_rejected(self, missing_skills):
         return None
 
 
@@ -153,3 +164,18 @@ def test_show_banner_does_not_print_skills():
     startup_lines = [line for line in print_calls if "Activated skills:" in line]
     assert len(startup_lines) == 0
     assert mock_banner.call_count == 1
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_clean_cli_module():
+    """Reload ``cli`` cleanly after this module.
+
+    The stubbed-prompt_toolkit ``importlib.reload(cli)`` in this module
+    permanently rebinds cli's globals to MagicMocks; without a follow-up
+    clean reload, later tests touching real prompt_toolkit behaviour fail.
+    Same pattern as ``test_cli_init._make_cli``.
+    """
+    yield
+    import cli as _cli_restore
+
+    importlib.reload(_cli_restore)

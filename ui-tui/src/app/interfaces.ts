@@ -20,11 +20,13 @@ import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
 import type {
   ApprovalReq,
+  AskUserQuestionsReq,
   ClarifyReq,
   ConfirmReq,
   DetailsMode,
   Msg,
   PanelSection,
+  PromptOptimizationReq,
   SecretReq,
   SectionVisibility,
   SessionInfo,
@@ -38,6 +40,9 @@ export interface StateSetter<T> {
 }
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
+
+export const AGENT_MODES = ['auto', 'plan', 'gods_plan', 'recon'] as const
+export type AgentMode = (typeof AGENT_MODES)[number]
 
 export type BatteryCategory = 'bad' | 'critical' | 'dim' | 'good' | 'warn'
 
@@ -290,8 +295,11 @@ export interface OverlayState {
   agentsInitialHistoryIndex: number
   approval: ApprovalReq | null
   billing: BillingOverlayState | null
+  askUserQuestions: AskUserQuestionsReq | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  /** KENSEI CUSTOM: Control Room overlay (Ctrl+P). */
+  controlRoom: boolean
   connection: ConnectionOverlayState | null
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
@@ -302,6 +310,7 @@ export interface OverlayState {
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean
+  promptOptimization: PromptOptimizationReq | null
   secret: null | SecretReq
   vaultUnlock: null | VaultUnlockReq
   sessions: boolean
@@ -323,6 +332,7 @@ export interface TranscriptRow {
 }
 
 export interface UiState {
+  agentMode: AgentMode
   battery: boolean
   batteryStatus: BatteryInfo | null
   bgTasks: Set<string>
@@ -409,12 +419,25 @@ export interface ComposerActions {
   syncTokens: (value: string) => void
 }
 
+/**
+ * Options that ride along with a submission from the composer / overlay call
+ * site down through submit -> dispatchSubmission -> send -> submitPrompt. Named
+ * (not positional booleans) so the "skip re-optimisation" intent of an accepted
+ * prompt-optimisation preview cannot be silently dropped somewhere in the chain.
+ */
+export interface SubmissionOptions {
+  showUserMessage?: boolean
+  skipOptimization?: boolean
+  skipDetectDrop?: boolean
+  displayText?: string
+}
+
 export interface ComposerRefs {
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>
   queueRef: MutableRefObject<QueueItem[]>
-  submitRef: MutableRefObject<(value: string) => void>
+  submitRef: MutableRefObject<(value: string, options?: SubmissionOptions) => void>
   tokensRef: MutableRefObject<ComposerToken[]>
 }
 
@@ -432,7 +455,7 @@ export interface ComposerState {
 
 export interface UseComposerStateOptions {
   gw: GatewayClient
-  submitRef: MutableRefObject<(value: string) => void>
+  submitRef: MutableRefObject<(value: string, options?: SubmissionOptions) => void>
   sys: (text: string) => void
 }
 
@@ -443,6 +466,7 @@ export interface UseComposerStateResult {
 }
 
 export interface InputHandlerActions {
+  answerAskUserQuestions: (answers: Record<number, string>, requestId: string) => void
   answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
   die: () => void
@@ -503,7 +527,7 @@ export interface GatewayEventHandlerContext {
      *  Used for `-q` startup queries, which are arbitrary launcher-provided
      *  text (parity with one-shot's literal prompt handling). */
     submitLiteralRef: MutableRefObject<(value: string) => void>
-    submitRef: MutableRefObject<(value: string) => void>
+    submitRef: MutableRefObject<(value: string, options?: SubmissionOptions) => void>
   }
   system: {
     bellOnComplete: boolean
@@ -572,7 +596,11 @@ export interface SlashHandlerContext {
 
 export interface AppLayoutActions {
   answerApproval: (choice: string) => void
+  answerAskUserQuestions: (answers: Record<number, string>, requestId: string) => void
   answerClarify: (answer: string) => void
+  answerClarifyBatchCancel: (answers: Record<string, string>) => Promise<void>
+  answerClarifyBatchSubmit: (answers: Record<string, string>) => Promise<void>
+  answerPromptOptimization: (choice: string) => void
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
@@ -641,7 +669,11 @@ export interface AppOverlaysProps {
   compIdx: number
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
+  onAskUserQuestionsAnswer: (answers: Record<number, string>, requestId: string) => void
   onClarifyAnswer: (value: string) => void
+  onClarifyBatchCancel: (answers: Record<string, string>) => void
+  onClarifyBatchSubmit: (answers: Record<string, string>) => void
+  onPromptOptimizationChoice: (choice: string) => void
   onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>

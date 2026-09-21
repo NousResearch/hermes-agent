@@ -755,6 +755,9 @@ class SessionDB(
             # Unknown -> reads queue on the writer lock (slow but correct) instead of racing SQLITE_BUSY
             # on a file that may really be in rollback-journal mode.
             self._wal_active = mode == "wal" and _on_disk_journal_mode(conn) == "wal"
+            # KENSEI CUSTOM: retain the small-WAL default; explicit database.wal_autocheckpoint
+            # config is applied immediately after this and therefore remains authoritative.
+            conn.execute("PRAGMA wal_autocheckpoint=100")
             # Existing WAL/SHM files may predate the main-file hardening;
             # normalize any sidecars that became visible during WAL setup.
             _secure_state_db_files(self.db_path)

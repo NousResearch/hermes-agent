@@ -1,0 +1,3 @@
+[12:00:01] tool terminal command='build'
+[12:00:02] tool dispatch error returning stack trace:
+[12:00:03] Segmentation fault (core dumped), exit_code 139

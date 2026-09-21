@@ -1,0 +1,16 @@
+[Unit]
+Description=Sirvir Turbohaul Policy Observer (observe-only)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=kensei
+ExecStart=/home/kensei/repos/KenseiAgent/.venv/bin/python /home/kensei/repos/KenseiAgent/scripts/sirvir_turbohaul_observer.py --interval 30
+Restart=always
+RestartSec=10
+Environment="HOME=/home/kensei"
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

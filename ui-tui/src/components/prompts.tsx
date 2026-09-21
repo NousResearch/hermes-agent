@@ -1,8 +1,8 @@
 import { Box, Text, useInput, wrapAnsi } from '@hermes/ink'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { isMac } from '../lib/platform.js'
-import { clarifyBatchRevisitState } from '../lib/text.js'
+import { clarifyBatchRevisitState, displayClarifyAnswer, parseClarifyMultiAnswer } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
@@ -143,27 +143,72 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   )
 }
 
-export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer, req, t }: ClarifyPromptProps) {
+export function ClarifyPrompt({
+  cols = 80,
+  onAnswer,
+  onBatchCancel,
+  onBatchSubmit,
+  onCancel,
+  onQuestionAnswer,
+  req,
+  t
+}: ClarifyPromptProps) {
   const [sel, setSel] = useState(0)
   const [custom, setCustom] = useState('')
   const [typing, setTyping] = useState(false)
   const choices = req.choices ?? []
-  const batch = req.questions ?? []
+  const batch = useMemo(() => req.questions ?? [], [req.questions])
   const isBatch = batch.length > 0
 
-  // ── Batch (A-compact) state: status list + one expanded active question.
-  // `active` walks the QUESTION list (Tab/Shift-Tab cycle it, any order);
-  // `sel` is reused as the cursor within the active question's choice rows.
-  const answers = req.answers ?? {}
-  const firstUnanswered = batch.findIndex(q => answers[q.qid] === undefined)
+  // Compact batch state: one expanded question, locally staged answers, and
+  // one explicit final confirmation. Nothing reaches the server before submit.
+  const seededAnswers = req.answers ?? {}
+  const firstUnanswered = batch.findIndex(q => seededAnswers[q.qid] === undefined)
   const [active, setActive] = useState(Math.max(0, firstUnanswered))
+  const [answers, setAnswers] = useState<Record<string, string>>(() => ({ ...seededAnswers }))
+
+  const [multiPicks, setMultiPicks] = useState<Record<string, string[]>>(() =>
+    Object.fromEntries(
+      batch
+        .filter(question => question.multiSelect)
+        .map(question => [question.qid, parseClarifyMultiAnswer(seededAnswers[question.qid])])
+    )
+  )
+
+  const [reviewing, setReviewing] = useState(false)
+  const [submitted, setSubmitted] = useState(false)
+  const [nowSeconds, setNowSeconds] = useState(() => Date.now() / 1000)
+
+  useEffect(() => {
+    if (!req.answers) {
+      return
+    }
+
+    setAnswers(current => ({ ...req.answers, ...current }))
+    setMultiPicks(current => {
+      const replayed = Object.fromEntries(
+        batch
+          .filter(question => question.multiSelect && req.answers?.[question.qid] !== undefined)
+          .map(question => [question.qid, parseClarifyMultiAnswer(req.answers?.[question.qid])])
+      )
+
+      return { ...replayed, ...current }
+    })
+  }, [batch, req.answers])
+
+  useEffect(() => {
+    if (!req.expiresAt) {
+      return
+    }
+
+    const timer = setInterval(() => setNowSeconds(Date.now() / 1000), 1000)
+
+    return () => clearInterval(timer)
+  }, [req.expiresAt])
 
   const moveActive = (delta: number) => {
     const next = (active + delta + batch.length) % batch.length
     const question = batch[next]
-    // Re-visit restore, same model as the CLI panel: a choice answer puts
-    // the cursor back on its row; a typed answer lands on Other with the
-    // text staged so Enter edits it instead of retyping.
     const restored = clarifyBatchRevisitState(question?.choices ?? [], question ? answers[question.qid] : undefined)
 
     setActive(next)
@@ -171,30 +216,6 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
     setCustom(restored.custom)
     setTyping(false)
   }
-
-  // After a lock the overlay is re-patched with the new answers map — jump
-  // the cursor to the next unanswered question (stay put when editing).
-  useEffect(() => {
-    if (!isBatch) {
-      return
-    }
-
-    const current = batch[active]
-
-    if (current && answers[current.qid] === undefined) {
-      return
-    }
-
-    const next = batch.findIndex(q => answers[q.qid] === undefined)
-
-    if (next >= 0) {
-      setActive(next)
-      setSel(0)
-      setCustom('')
-      setTyping(false)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by the answers map only
-  }, [req.answers])
 
   const heading = (
     <Text bold>
@@ -206,18 +227,83 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   const activeQuestion = isBatch ? batch[active] : undefined
   const activeChoices = activeQuestion ? (activeQuestion.choices ?? []) : choices
   const answeredCount = isBatch ? batch.filter(q => answers[q.qid] !== undefined).length : 0
-  const remainingCount = isBatch ? batch.length - answeredCount : 0
+  const expiresIn = req.expiresAt ? Math.max(0, Math.ceil(req.expiresAt - nowSeconds)) : null
 
   const lockActive = (value: string) => {
-    if (activeQuestion) {
-      onQuestionAnswer?.(activeQuestion.qid, value)
-      setSel(0)
-      setCustom('')
-      setTyping(false)
+    if (!activeQuestion) {
+      return
+    }
+
+    const nextAnswers = { ...answers, [activeQuestion.qid]: value }
+    const nextUnanswered = batch.findIndex(question => nextAnswers[question.qid] === undefined)
+
+    setAnswers(nextAnswers)
+    setSel(0)
+    setCustom('')
+    setTyping(false)
+
+    if (nextUnanswered < 0) {
+      setReviewing(true)
+    } else {
+      setActive(nextUnanswered)
+    }
+  }
+
+  const submitCustom = (value: string) => {
+    if (!activeQuestion) {
+      return
+    }
+
+    const trimmed = value.trim()
+
+    if (!trimmed) {
+      return
+    }
+
+    if (activeQuestion.multiSelect) {
+      lockActive(JSON.stringify([...(multiPicks[activeQuestion.qid] ?? []), trimmed]))
+    } else {
+      lockActive(trimmed)
+    }
+  }
+
+  const submitBatch = async () => {
+    if (submitted) {
+      return
+    }
+
+    setSubmitted(true)
+
+    try {
+      if (onBatchSubmit) {
+        await onBatchSubmit({ ...answers })
+      } else {
+        for (const question of batch) {
+          onQuestionAnswer?.(question.qid, answers[question.qid] ?? '')
+        }
+      }
+    } catch {
+      // Keep the staged form live so Enter can retry after a transient RPC error.
+      setSubmitted(false)
     }
   }
 
   useInput((ch, key) => {
+    if (reviewing) {
+      if (key.escape) {
+        setReviewing(false)
+        setSubmitted(false)
+
+        return
+      }
+
+      if (key.return) {
+        void submitBatch()
+      }
+
+      return
+    }
+
     if (key.escape) {
       if (typing) {
         setTyping(false)
@@ -225,7 +311,11 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         return
       }
 
-      onCancel()
+      if (isBatch && onBatchCancel) {
+        void Promise.resolve(onBatchCancel({ ...answers })).catch(() => {})
+      } else {
+        onCancel()
+      }
 
       return
     }
@@ -235,8 +325,6 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
     }
 
     if (isBatch) {
-      // Tab / Shift-Tab cycle the active question (with wrap) — the
-      // selected question is always the expanded one, like the CLI panel.
       if (key.tab) {
         moveActive(key.shift ? -1 : 1)
 
@@ -248,7 +336,6 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
       }
 
       if (activeChoices.length === 0) {
-        // Open-ended question: any keypress starts typing (TextInput below).
         setTyping(true)
 
         return
@@ -262,9 +349,27 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         setSel(s => s + 1)
       }
 
+      if (ch === ' ' && activeQuestion.multiSelect && sel < activeChoices.length) {
+        const choice = activeChoices[sel]!
+        setMultiPicks(current => {
+          const picked = current[activeQuestion.qid] ?? []
+          const next = picked.includes(choice) ? picked.filter(value => value !== choice) : [...picked, choice]
+
+          return { ...current, [activeQuestion.qid]: next }
+        })
+
+        return
+      }
+
       if (key.return) {
         if (sel === activeChoices.length) {
           setTyping(true)
+        } else if (activeQuestion.multiSelect) {
+          const picked = multiPicks[activeQuestion.qid] ?? []
+
+          if (picked.length > 0) {
+            lockActive(JSON.stringify(picked))
+          }
         } else if (activeChoices[sel]) {
           lockActive(activeChoices[sel]!)
         }
@@ -272,10 +377,11 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         return
       }
 
-      const n = parseInt(ch)
+      const n = parseInt(ch, 10)
 
-      if (n >= 1 && n <= activeChoices.length) {
-        lockActive(activeChoices[n - 1]!)
+      if (n >= 1 && n <= activeChoices.length + 1) {
+        // Quick keys move the cursor only. Enter is the explicit commit.
+        setSel(n - 1)
       }
 
       return
@@ -304,10 +410,33 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
     }
   })
 
+  if (isBatch && reviewing) {
+    return (
+      <Box flexDirection="column">
+        <Text bold color={t.color.accent}>
+          Review answers
+        </Text>
+        {batch.map((question, index) => (
+          <Text key={question.qid}>
+            <Text color={t.color.muted}>
+              {index + 1}. {question.question} →{' '}
+            </Text>
+            <Text color={t.color.ok}>{displayClarifyAnswer(answers[question.qid], question.multiSelect)}</Text>
+          </Text>
+        ))}
+        <Text color={t.color.muted}>
+          Enter submit all · Esc edit{expiresIn !== null ? ` · expires in ${expiresIn}s` : ''}
+        </Text>
+      </Box>
+    )
+  }
+
   if (isBatch) {
     const hint = typing
-      ? `Enter ${remainingCount === 1 ? 'confirm and continue' : 'lock answer'} · Esc back`
-      : `↑/↓ select · Enter ${remainingCount === 1 ? 'confirm and continue' : 'lock answer'} · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel`
+      ? `Enter stage answer · Esc back`
+      : `↑/↓ or number select · ${activeQuestion?.multiSelect ? 'Space toggle · ' : ''}Enter stage · Tab/Shift+Tab switch · Esc cancel`
+
+    const deadline = expiresIn !== null ? ` · expires in ${expiresIn}s` : ''
 
     return (
       <Box flexDirection="column">
@@ -322,7 +451,8 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
             <Box flexDirection="column" key={q.qid}>
               <Text>
                 <Text bold={isActive} color={isActive ? t.color.text : t.color.muted}>
-                  {marker} {q.question}
+                  {marker} {q.header ? `${q.header.toUpperCase()} · ` : ''}
+                  {q.question}
                 </Text>
               </Text>
 
@@ -331,7 +461,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
                 // current answers stay readable while Tab walks the list.
                 <Box paddingLeft={2}>
                   <Text color={answer ? t.color.ok : t.color.muted} italic={!answer}>
-                    {answer || '(skipped)'}
+                    {displayClarifyAnswer(answer, q.multiSelect)}
                   </Text>
                 </Box>
               ) : null}
@@ -344,20 +474,29 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
                       color={t.color.text}
                       columns={Math.max(20, cols - 8)}
                       onChange={setCustom}
-                      onSubmit={lockActive}
+                      onSubmit={submitCustom}
                       value={custom}
                     />
                   </Box>
                 ) : (
                   <Box flexDirection="column" paddingLeft={2}>
-                    {[...activeChoices, 'Other (type your answer)'].map((c, ci) => (
-                      <Text key={ci}>
-                        <Text color={t.color.muted} {...chipRowProps(t, sel === ci)}>
-                          {sel === ci ? '▸ ' : '  '}
-                          {ci + 1}. {c}
+                    {[...activeChoices, 'Other (type your answer)'].map((c, ci) => {
+                      const checked =
+                        q.multiSelect && ci < activeChoices.length && (multiPicks[q.qid] ?? []).includes(c)
+
+                      return (
+                        <Text key={ci}>
+                          <Text color={t.color.muted} {...chipRowProps(t, sel === ci)}>
+                            {sel === ci ? '▸ ' : '  '}
+                            {ci + 1}. {q.multiSelect && ci < activeChoices.length ? `[${checked ? 'x' : ' '}] ` : ''}
+                            {c}
+                            {ci < activeChoices.length && q.options?.[ci]?.description
+                              ? ` — ${q.options[ci]!.description}`
+                              : ''}
+                          </Text>
                         </Text>
-                      </Text>
-                    ))}
+                      )
+                    })}
                   </Box>
                 )
               ) : null}
@@ -366,7 +505,8 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         })}
 
         <Text color={t.color.muted}>
-          {answeredCount}/{batch.length} answered · {hint}
+          {answeredCount}/{batch.length} staged · {hint}
+          {deadline}
         </Text>
       </Box>
     )
@@ -486,8 +626,10 @@ interface ApprovalPromptProps {
 interface ClarifyPromptProps {
   cols?: number
   onAnswer: (s: string) => void
+  onBatchCancel?: (answers: Record<string, string>) => Promise<void> | void
+  onBatchSubmit?: (answers: Record<string, string>) => Promise<void> | void
   onCancel: () => void
-  /** Batch mode: lock one question's answer (clarify.respond + question_id). */
+  /** Compatibility lane for clients that still lock answers incrementally. */
   onQuestionAnswer?: (qid: string, s: string) => void
   req: ClarifyReq
   t: Theme

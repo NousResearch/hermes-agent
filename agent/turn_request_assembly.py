@@ -14,6 +14,8 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import _sanitize_messages_surrogates
+# KENSEI CUSTOM: anchored_context_tokens re-homed to agent.usage_anchor by upstream ead7e91d
+# (fork's model_metadata copy still carries the def, but the merged tree's canonical home is usage_anchor).
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
@@ -57,7 +59,7 @@ def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original
             aggregator=moa_config.get("aggregator") or {},
             temperature=_preset_temperature(moa_config, "reference_temperature"),
             aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
-
+            reference_max_tokens=moa_config.get("reference_max_tokens"),
             # None = no per-preset override; inherit auxiliary.moa_reference.timeout.
             reference_timeout=(
                 float(moa_config["reference_timeout"])
@@ -250,6 +252,8 @@ def assemble_api_request(
     # Usage-anchored override: real prompt_tokens (incl. system + tool schemas) +
     # delta estimate replaces the whole-history heuristic when the anchor is fresh.
     _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    # KENSEI CUSTOM: flag whether the pressure figure came from the real usage anchor —
+    # read by turn_preflight_gate.py / turn_context_compaction.py to skip preflight deferral.
     agent._request_pressure_anchored = _anchored_pressure is not None
     if _anchored_pressure is not None:
         request_pressure_tokens = _anchored_pressure
@@ -260,6 +264,21 @@ def assemble_api_request(
         request_pressure_tokens = _pressure_with_real_floor(
             agent.context_compressor, request_pressure_tokens
         )
+    # Stash the rough estimate so update_from_response() can pair it with the real
+    # count (should_defer_preflight_to_real_usage). getattr: test doubles lack it.
+    _note_rough = getattr(agent.context_compressor, "note_request_rough_estimate", None)
+    if callable(_note_rough):
+        _note_rough(request_pressure_tokens)
+    # ── KENSEI CUSTOM — headroom compression hook (ported) ──
+    # Compress api_messages once before the retry loop (gated on headroom.enabled).
+    # On error, returns original messages unchanged (never drops context).
+    try:
+        from agent.headroom_hook import compress_messages as _hr_compress
+        _ctx_limit = agent.context_compressor.context_length if agent.context_compressor else None
+        api_messages = _hr_compress(api_messages, model=agent.model, model_limit=_ctx_limit)
+    except Exception:
+        pass  # headroom_hook not available or compression failed — no-op
+    # ── END KENSEI CUSTOM ──
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,

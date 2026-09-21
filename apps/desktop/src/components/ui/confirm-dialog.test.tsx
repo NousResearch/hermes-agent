@@ -34,17 +34,65 @@ describe('ConfirmDialog secondary action', () => {
     expect(onConfirm).not.toHaveBeenCalled()
   })
 
-  it('still opens focused on Confirm, so Enter confirms rather than picking the secondary', async () => {
+  it('opens focused on Confirm without overriding another focused action', async () => {
     const { onConfirm, onSecondary } = renderWithSecondary()
 
-    const dialog = await screen.findByRole('dialog')
+    const confirm = await screen.findByRole('button', { name: 'Confirm' })
 
     // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
-    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
-    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
-    fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
+    await waitFor(() => expect(document.activeElement).toBe(confirm))
+    fireEvent.click(confirm)
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1))
     expect(onSecondary).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['Cancel', ' '],
+    ['Remove from sidebar', 'Enter']
+  ])('does not turn %s keyboard activation into confirmation', async (label, key) => {
+    const { onConfirm } = renderWithSecondary()
+    const action = await screen.findByRole('button', { name: label })
+
+    action.focus()
+    fireEvent.keyDown(action, { key })
+
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
+})
+
+describe('ConfirmDialog async announcements', () => {
+  it('announces a rejected confirmation as an alert', async () => {
+    render(
+      <ConfirmDialog
+        onClose={vi.fn()}
+        onConfirm={() => Promise.reject(new Error('Task changed'))}
+        open
+        title="Update task?"
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Task changed')
+  })
+
+  it('announces pending and completed labels through the confirm action', async () => {
+    render(
+      <ConfirmDialog
+        busyLabel="Updating task"
+        doneLabel="Task updated"
+        onClose={vi.fn()}
+        onConfirm={() => Promise.resolve()}
+        open
+        title="Update task?"
+      />
+    )
+
+    const confirm = await screen.findByRole('button', { name: 'Confirm' })
+    expect(confirm.getAttribute('aria-live')).toBe('polite')
+    fireEvent.click(confirm)
+
+    await waitFor(() => expect(confirm.textContent).toContain('Task updated'))
   })
 })

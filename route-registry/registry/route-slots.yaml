@@ -1,0 +1,755 @@
+slots:
+- slot: slot-mini-m3free-1
+  model_id: minimax/minimax-m3-free
+  provider_account: xkiro/free
+  class: perm
+  status: retired
+  approved_at: '2026-09-02T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:xkiro-free
+    model: minimax/minimax-m3:free
+    base_url: https://api.xkiro.com/v1
+    reasoning_effort: medium
+  retire_reason: 'capability violation: xkiro does not carry minimax; the free variant
+    is no longer offered by any provider (verified 2026-09-02)'
+- slot: slot-mini-m3free-2
+  model_id: minimax/minimax-m3-free
+  provider_account: nous/free
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: nous
+    model: minimax/minimax-m3-free
+    base_url: https://inference-api.nousresearch.com/v1
+    reasoning_effort: medium
+- slot: slot-mini-m3free-3
+  model_id: minimax/minimax-m3-free
+  provider_account: commandcode/1
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:commandcode
+    model: minimax/minimax-m3-free
+    base_url: https://api.commandcode.ai/provider/v1
+    reasoning_effort: high
+- slot: slot-mini-m3-1
+  model_id: minimax-m3
+  provider_account: xkiro/free
+  class: gated
+  status: candidate
+  approved_at: '2026-09-02T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:xkiro-free
+    model: minimax/minimax-m3
+    base_url: https://api.xkiro.com/v1
+    reasoning_effort: medium
+  retire_reason: '2026-09-02 probe said absent; superseded 2026-09-04 by owner
+    dashboard evidence showing minimax/minimax-m3 and minimax/minimax-m3:free live;
+    stays candidate/disabled pending live re-probe before promotion'
+- slot: slot-mini-m3-2
+  model_id: minimax-m3
+  provider_account: nous/free
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: nous
+    model: minimax-m3
+    base_url: https://inference-api.nousresearch.com/v1
+    reasoning_effort: medium
+- slot: slot-mini-m3-3
+  model_id: minimax-m3
+  provider_account: commandcode/1
+  class: needs_classification
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:commandcode
+    model: minimax-m3
+    base_url: https://api.commandcode.ai/provider/v1
+    reasoning_effort: high
+- slot: slot-mini-m3-4
+  model_id: minimax-m3
+  provider_account: b-ai/2
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:bai
+    model: minimax-m3
+    base_url: https://api.b.ai/v1
+    reasoning_effort: medium
+- slot: slot-step37free-1
+  model_id: stepfun/step-3.7-flash:free
+  provider_account: nous/free
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: nous
+    model: stepfun/step-3.7-flash:free
+    base_url: https://inference-api.nousresearch.com/v1
+    reasoning_effort: medium
+- slot: slot-step37free-3
+  model_id: stepfun/step-3.7-flash:free
+  provider_account: commandcode/1
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:commandcode
+    model: stepfun/step-3.7-flash:free
+    base_url: https://api.commandcode.ai/provider/v1
+    reasoning_effort: high
+- slot: slot-glm53flash-1
+  model_id: glm-5.3-flash
+  provider_account: ollama-cloud/1
+  class: perm
+  status: approved
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: ollama-cloud
+    model: glm-5.3-flash
+    base_url: https://ollama.com/v1
+    reasoning_effort: high
+- slot: slot-glm53flash-2
+  model_id: glm-5.3-flash
+  provider_account: ollama-cloud/2
+  class: perm
+  status: approved
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: ollama-cloud
+    model: glm-5.3-flash
+    base_url: https://ollama.com/v1
+    reasoning_effort: high
+- slot: slot-glm53flash-3
+  model_id: glm-5.3-flash
+  provider_account: b-ai/3
+  class: perm
+  status: approved
+  approved_at: '2026-09-02T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: custom:bai
+    model: glm-5.3-flash
+    base_url: https://api.b.ai/v1
+    reasoning_effort: medium
+- slot: slot-glm53flash-4
+  model_id: glm-5.3-flash
+  provider_account: b-ai/4
+  class: perm
+  status: approved
+  approved_at: '2026-09-02T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: custom:bai
+    model: glm-5.3-flash
+    base_url: https://api.b.ai/v1
+    reasoning_effort: medium
+- slot: slot-glm53-1
+  model_id: glm-5.3
+  provider_account: ollama-cloud/1
+  class: perm
+  status: approved
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: ollama-cloud
+    model: glm-5.3
+    base_url: https://ollama.com/v1
+    reasoning_effort: high
+- slot: slot-glm53-2
+  model_id: glm-5.3
+  provider_account: ollama-cloud/2
+  class: perm
+  status: approved
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: ollama-cloud
+    model: glm-5.3
+    base_url: https://ollama.com/v1
+    reasoning_effort: high
+- slot: slot-dsflash-1
+  model_id: deepseek-v4-flash
+  provider_account: xkiro/free
+  class: perm
+  status: approved
+  approved_at: '2026-09-02T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: custom:xkiro-free
+    model: deepseek/deepseek-v4-flash
+    base_url: https://api.xkiro.com/v1
+    reasoning_effort: medium
+- slot: slot-dsflash-2
+  model_id: deepseek-v4-flash
+  provider_account: b-ai/1
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:bai
+    model: deepseek-v4-flash
+    base_url: https://api.b.ai/v1
+    reasoning_effort: medium
+- slot: slot-dsflash-3
+  model_id: deepseek-v4-flash
+  provider_account: b-ai/2
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:bai
+    model: deepseek-v4-flash
+    base_url: https://api.b.ai/v1
+    reasoning_effort: medium
+- slot: slot-dsflash-4
+  model_id: deepseek-v4-flash
+  provider_account: ollama-cloud/1
+  class: perm
+  status: approved
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: ollama-cloud
+    model: deepseek-v4-flash
+    base_url: https://ollama.com/v1
+    reasoning_effort: medium
+- slot: slot-dsflash-5
+  model_id: deepseek-v4-flash
+  provider_account: ollama-cloud/2
+  class: perm
+  status: approved
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: ollama-cloud
+    model: deepseek-v4-flash
+    base_url: https://ollama.com/v1
+    reasoning_effort: medium
+- slot: slot-dspro-1
+  model_id: deepseek-v4-pro
+  provider_account: xkiro/pro-plus
+  class: perm
+  status: approved
+  approved_at: '2026-09-02T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: custom:xkiro-pro
+    model: deepseek/deepseek-v4-pro
+    base_url: https://api.xkiro.com/v1
+    reasoning_effort: high
+- slot: slot-dspro-2
+  model_id: deepseek-v4-pro
+  provider_account: b-ai/1
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:bai
+    model: deepseek-v4-pro
+    base_url: https://api.b.ai/v1
+    reasoning_effort: high
+- slot: slot-dspro-3
+  model_id: deepseek-v4-pro
+  provider_account: commandcode/1
+  class: needs_classification
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:commandcode
+    model: deepseek-v4-pro
+    base_url: https://api.commandcode.ai/provider/v1
+    reasoning_effort: medium
+- slot: slot-dspro-4
+  model_id: deepseek-v4-pro
+  provider_account: ollama-cloud/1
+  class: perm
+  status: approved
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: ollama-cloud
+    model: deepseek-v4-pro
+    base_url: https://ollama.com/v1
+    reasoning_effort: high
+- slot: slot-dspro-5
+  model_id: deepseek-v4-pro
+  provider_account: ollama-cloud/2
+  class: perm
+  status: approved
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: ollama-cloud
+    model: deepseek-v4-pro
+    base_url: https://ollama.com/v1
+    reasoning_effort: medium
+- slot: slot-kimik3-1
+  model_id: kimi-k3
+  provider_account: b-ai/4
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:bai
+    model: kimi-k3
+    base_url: https://api.b.ai/v1
+    reasoning_effort: medium
+- slot: slot-kimik3-2
+  model_id: kimi-k3
+  provider_account: commandcode/2
+  class: needs_classification
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:commandcode
+    model: kimi-k3
+    base_url: https://api.commandcode.ai/provider/v1
+    reasoning_effort: high
+- slot: slot-kimik3-3
+  model_id: kimi-k3
+  provider_account: ollama-cloud/1
+  class: perm
+  status: approved
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: ollama-cloud
+    model: kimi-k3
+    base_url: https://ollama.com/v1
+    reasoning_effort: high
+- slot: slot-qwen27b-1
+  model_id: qwen3.8-27b
+  provider_account: ollama-cloud/2
+  class: perm
+  status: retired
+  approved_at: '2026-08-30T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: slot-qwen27b-3
+  disabled: true
+  hermes:
+    provider: ollama-cloud
+    model: qwen3.8-27b
+    base_url: https://ollama.com/v1
+    reasoning_effort: medium
+  retire_reason: 'capability violation: provider does not carry this model (verified
+    2026-09-02 via live provider probes)'
+- slot: slot-qwen27b-2
+  model_id: qwen3.8-27b
+  provider_account: commandcode/2
+  class: needs_classification
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:commandcode
+    model: qwen3.8-27b
+    base_url: https://api.commandcode.ai/provider/v1
+    reasoning_effort: medium
+- slot: slot-qwen27b-3
+  model_id: qwen3.8-27b
+  provider_account: b-ai/4
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: custom:bai
+    model: qwen3.8-27b
+    base_url: https://api.b.ai/v1
+    reasoning_effort: medium
+- slot: slot-nous-emergency-credit
+  model_id: null
+  provider_account: nous/credit-20-usd
+  class: emergency_reserve
+  status: paused
+  approved_at: null
+  expires_at: null
+  usage_limit: one-time $20 — human-initiated use only
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes: null
+- slot: slot-mimo-v25-main
+  model_id: mimo-v2.5
+  provider_account: opencode-go/1
+  class: perm
+  status: approved
+  approved_at: '2026-09-03T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: opencode-go
+    model: mimo-v2.5
+    base_url: https://opencode.ai/go/v1
+    reasoning_effort: high
+- slot: slot-mimo-v25-1
+  model_id: mimo-v2.5
+  provider_account: opencode-go/2
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: opencode-go
+    model: mimo-v2.5
+    base_url: https://opencode.ai/go/v1
+    reasoning_effort: high
+- slot: slot-mimo-v25-2
+  model_id: mimo-v2.5
+  provider_account: opencode-go/3
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: opencode-go
+    model: mimo-v2.5
+    base_url: https://opencode.ai/go/v1
+    reasoning_effort: high
+- slot: slot-mimo-v25-3
+  model_id: mimo-v2.5
+  provider_account: opencode-go/4
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: opencode-go
+    model: mimo-v2.5
+    base_url: https://opencode.ai/go/v1
+    reasoning_effort: high
+- slot: slot-mini-m3-5
+  model_id: minimax-m3
+  provider_account: ollama-cloud/2
+  class: gated
+  status: candidate
+  approved_at: null
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: true
+  hermes:
+    provider: ollama-cloud
+    model: minimax-m3
+    base_url: https://ollama.com/v1
+    reasoning_effort: medium
+- slot: slot-qwenflash-1
+  model_id: qwen3.8-flash
+  provider_account: b-ai/4
+  class: perm
+  status: approved
+  approved_at: '2026-09-04T00:00:00Z'
+  expires_at: null
+  usage_limit: null
+  allowed_profiles: null
+  replacement_slot: null
+  disabled: false
+  hermes:
+    provider: custom:bai
+    model: qwen3.8-flash
+    base_url: https://api.b.ai/v1
+    reasoning_effort: medium
+codex_fallback:
+  sol:
+    provider: openai-codex
+    model: gpt-5.6-sol
+    base_url: https://chatgpt.com/backend-api/codex
+    reasoning_effort: xhigh
+  luna:
+    provider: openai-codex
+    model: gpt-5.6-luna
+    base_url: https://chatgpt.com/backend-api/codex
+    reasoning_effort: xhigh
+local_final:
+  provider: custom:turbofit-local
+  model: active:main
+  base_url: http://127.0.0.1:8091/v1
+  reasoning_effort: medium
+  timeout: 1800
+local_transition:
+  old:
+    provider: custom:turbohaul-local
+    provider_name: turbohaul-local
+    base_url: http://127.0.0.1:11410/v1
+  new:
+    provider: custom:turbofit-local
+    provider_name: turbofit-local
+    base_url: http://127.0.0.1:8091/v1
+    request_timeout_seconds: 1800
+  models:
+    qwen3.8-27b: active:main
+    carwin-moe: active:aux
+limits:
+  max_same_model_routes_per_surface: 5
+  nim_request_limit: 60
+  nim_window_verified: false
+  rotation_policy: paid_free_alternate
+  retry_policy:
+    max_tries: 3
+    advance_on_429: instant
+    advance_on_4xx: instant
+    note: 429/4xx burns one try and advances; do not re-queue same slot.
+  codex_scope: sol,luna
+  codex_note: SOL and LUNA tier surfaces ONLY. No other tier may use openai-codex.
+pool_requirements:
+  ollama-cloud:
+    strategy: fill_first
+    accounts:
+    - ollama-cloud/1
+    - ollama-cloud/2
+  custom:bai:
+    strategy: fill_first
+    accounts:
+    # 2026-09-04: b-ai/1 and b-ai/2 removed, both live-proven at zero
+    # balance failing even free models. Re-add on top-up.
+    - b-ai/3
+    - b-ai/4
+  custom:xkiro-free:
+    strategy: fill_first
+    accounts:
+    - xkiro/free
+  custom:xkiro-pro:
+    strategy: fill_first
+    accounts:
+    - xkiro/pro-plus
+env_bypass:
+  ollama-cloud:
+  - OLLAMA_API_KEY
+model_capability_matrix:
+  _comment: Verified 2026-09-02 via live provider probes (ollama /api/tags, xkiro
+    & b.ai /models, codex backend). The generator HARD-ERRORS on any slot whose hermes.model
+    is not listed for its hermes.provider. Update only with fresh probe evidence.
+    2026-09-04 note - qwen3.8-flash added under custom bai on one Sept-03 probe 200 plus
+    owner dashboard free-limited sighting; slot stays candidate/disabled pending verification.
+  custom:xkiro-free:
+  - deepseek/deepseek-v4-flash
+  - deepseek/deepseek-v4-pro
+  - z-ai/glm-5.3
+  - z-ai/glm-5.3-flash
+  - moonshotai/kimi-k3
+  - minimax/minimax-m3
+  - minimax/minimax-m3:free
+  custom:xkiro-pro:
+  - deepseek/deepseek-v4-flash
+  - deepseek/deepseek-v4-pro
+  - z-ai/glm-5.3
+  - z-ai/glm-5.3-flash
+  - moonshotai/kimi-k3
+  - minimax/minimax-m3
+  - minimax/minimax-m3:free
+  custom:bai:
+  - deepseek-v4-flash
+  - deepseek-v4-pro
+  - glm-5.3
+  - glm-5.3-flash
+  - kimi-k3
+  - minimax-m3
+  - qwen3.8-27b
+  - qwen3.8-flash
+  openai-codex:
+  - gpt-5.6-sol
+  - gpt-5.6-luna
+  custom:turbofit-local:
+  - active:main
+  - active:aux
+  ollama-cloud:
+  - deepseek-v4-flash
+  - deepseek-v4-pro
+  - glm-5.3-flash
+  - glm-5.3
+  - glm-5.2
+  - minimax-m3
+  - kimi-k3
+  - kimi-k2.6
+  - kimi-k2.7-code
+  - gemma4:31b
+  - nemotron-3-ultra
+  - nemotron-3-super
+  - qwen3.5:397b
+  - gpt-oss:20b
+  - gpt-oss:120b
+  - minimax-m2.7
+  - mistral-large-3:675b
+  nous: []
+  nvidia:
+  - nvidia/nemotron-3-super-120b-a12b
+  gemini:
+  - gemini-2.5-flash
+  opencode-zen: []
+  opencode-go:
+  - mimo-v2.5
+  - kimi-k3
+  - kimi-k2.7-code
+  - deepseek-v4-flash
+  - deepseek-v4-pro
+  - glm-5.3
+  - glm-5.3-flash
+  - minimax-m3
+model_routing_constraints:
+  codex_isolation:
+    rule: gpt-5.6-* models may ONLY be served by provider openai-codex. No other provider
+      may ever carry a gpt-5.6 slot, gated or perm. Sahil's standing directive 2026-09-02.
+    model_pattern: gpt-5.6-*
+    allowed_providers:
+    - openai-codex

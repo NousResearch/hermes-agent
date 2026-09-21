@@ -1360,9 +1360,12 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
 
 
 def resolve_per_model_provider_routing(model: str, models: dict | None) -> dict:
-    """``provider_routing.models.<id>`` entry for *model*, spelling-tolerant like
-    ``reasoning_overrides``; ``{}`` when none matches. Only the keys a user sets per model
-    are returned so unset ones fall through to the flat ``provider_routing`` values."""
+    """Return the sparse ``provider_routing.models.<id>`` entry for *model*.
+
+    Matching follows the same spelling-tolerant variants as reasoning overrides;
+    only explicitly supplied keys are returned so flat routing values remain the
+    fallback for every unset field.
+    """
     if not model or not isinstance(models, dict):
         return {}
     for variant in _canonical_model_variants(model):
@@ -1485,13 +1488,28 @@ def _detect_container() -> bool:
     # the root ("/") mount line. A host that merely *runs* containers exposes every container's
     # overlay lowerdir (``lowerdir=/var/lib/containerd/...``) at non-root mount points, which a
     # whole-file scan misread as "inside a container" and flipped subprocess HOME (#58135).
-    return _root_mount_has_marker("/proc/self/mountinfo", ("kubepods", "containerd", "crio"))
+    # KENSEI CUSTOM: retain generic Docker/Podman detection when the root filesystem is overlay
+    # even if no runtime name appears in cgroup or mount options.
+    return _root_mount_has_marker(
+        "/proc/self/mountinfo", ("kubepods", "containerd", "crio"), ("overlay", "overlayfs")
+    )
 
 
-def _root_mount_has_marker(path: str, markers: tuple[str, ...]) -> bool:
-    """mountinfo field 5 (index 4) is the mount point; only the root ("/") line is the process's own rootfs."""
+def _root_mount_has_marker(
+    path: str,
+    markers: tuple[str, ...],
+    fs_types: tuple[str, ...] = (),
+) -> bool:
+    """Match runtime markers or filesystem types only on the process root mount."""
     root_lines = [line for line in _read_proc(path).splitlines() if len(f := line.split()) >= 5 and f[4] == "/"]
-    return any(marker in line for line in root_lines for marker in markers)
+    for line in root_lines:
+        if any(marker in line for marker in markers):
+            return True
+        fields = line.split(" - ", 1)
+        if len(fields) == 2 and fields[1].split() and fields[1].split()[0] in fs_types:
+            return True
+    return False
+
 
 
 def get_config_path() -> Path:

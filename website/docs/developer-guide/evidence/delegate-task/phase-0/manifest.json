@@ -1,0 +1,101 @@
+{
+  "phase": "phase-0",
+  "status": "GO-phase-0",
+  "plan": "/home/kensei/delegate-task-phased-implementation-plan.md",
+  "plan_sha256_at_phase_start": "b3070313595a122adcabd7a59b18d834da938f2d2cac6f792ff7d7b2a50dc528",
+  "canonical_worktree": "/home/kensei/repos/KenseiAgent",
+  "branch": "main",
+  "frozen_baseline_sha": "98a4aa453c1c576798a4461d5b2902d805eef71d",
+  "phase_start_sha": "98a4aa453c1c576798a4461d5b2902d805eef71d",
+  "phase_end_sha": "98a4aa453c1c576798a4461d5b2902d805eef71d",
+  "origin_main_sha": "98a4aa453c1c576798a4461d5b2902d805eef71d",
+  "upstream_reference_sha": "e9bccc90a5e314ddf6dd4bd3772d50cb40027275",
+  "rollback_commit": "98a4aa453c1c576798a4461d5b2902d805eef71d",
+  "production_source_changed": false,
+  "services_restarted": false,
+  "remote_push": false,
+  "deployment": false,
+  "changed_files": [
+    "docs/ADR.md",
+    "docs/evidence/delegate-task/phase-0/test-contract.md",
+    "docs/evidence/delegate-task/phase-0/source-map.md",
+    "docs/evidence/delegate-task/phase-0/handover.md",
+    "docs/evidence/delegate-task/phase-0/audit.md",
+    "docs/evidence/delegate-task/phase-0/manifest.json",
+    "docs/evidence/delegate-task/phase-0/raw/baseline-verification.log",
+    "docs/evidence/delegate-task/phase-0/raw/focused-tests.log",
+    "docs/evidence/delegate-task/phase-0/raw/test-collection.log",
+    "docs/evidence/delegate-task/phase-0/raw/upstream-provenance.log",
+    "docs/evidence/delegate-task/phase-0/raw/upstream-source-diff.patch"
+  ],
+  "changed_symbols": [],
+  "upstream_consulted": {
+    "completion_units": [
+      "028fe2c4c857710ab335a8455f5cbbcc52cbf795",
+      "c5594ec4b34097cafbe24deb6dfd9ac4b21d411d",
+      "6767c06d347e5aac97dd64b5dfd8a534fb92d895",
+      "70214e9ab8eef74234e168f6d92c678f2c369ec4",
+      "0cb996d977187b7e82e2d7126a0018dc6d9d5ae9",
+      "72719c7c1b6a609ead4e5c3420411d044bc017bf",
+      "a688e7d5ff9aeaaa9c97d28c316467f89ab8c943",
+      "14c3101256f11d3e27cd41251cf1e0f6689f879d"
+    ],
+    "per_model_routing": [
+      "12871bd01ede1c6eaf3bf456066d1e010034185f",
+      "0a195aa4636494812a52ab7068a5ab822d050abf"
+    ],
+    "branch_only_or_superseded": ["a7c0d307d7fea45be40772a9b0663ec096779398"]
+  },
+  "disposition_summary": {
+    "ADAPT": [
+      "028fe2c4c857710ab335a8455f5cbbcc52cbf795",
+      "c5594ec4b34097cafbe24deb6dfd9ac4b21d411d",
+      "6767c06d347e5aac97dd64b5dfd8a534fb92d895",
+      "70214e9ab8eef74234e168f6d92c678f2c369ec4",
+      "0cb996d977187b7e82e2d7126a0018dc6d9d5ae9",
+      "72719c7c1b6a609ead4e5c3420411d044bc017bf",
+      "14c3101256f11d3e27cd41251cf1e0f6689f879d",
+      "12871bd01ede1c6eaf3bf456066d1e010034185f"
+    ],
+    "ADOPT_CONTRACT_ADAPT_DOCS": ["a688e7d5ff9aeaaa9c97d28c316467f89ab8c943", "0a195aa4636494812a52ab7068a5ab822d050abf"],
+    "SUPERSEDED": ["a7c0d307d7fea45be40772a9b0663ec096779398"]
+  },
+  "baseline_tests": {
+    "collection": {
+      "paths": [
+        "tests/tools/test_async_delegation.py",
+        "tests/tools/test_delegate_profile.py",
+        "tests/hermes_cli/test_model_switch_configured_provider_routing.py",
+        "tests/run_agent/test_provider_fallback.py"
+      ],
+      "collected": 69,
+      "exit": 0,
+      "raw_log": "raw/test-collection.log",
+      "raw_log_sha256": "0923de41a910a6515d2d3691167e08841801526841cbc8a66f2a33f425e947a7"
+    },
+    "focused_execution": {
+      "passed": 61,
+      "skipped": 1,
+      "failed": 7,
+      "exit": 1,
+      "classification": "expected Phase 1 RED profile-contract failures; all seven are test_delegate_profile failures caused by missing baseline profile argument/schema",
+      "raw_log": "raw/focused-tests.log",
+      "raw_log_sha256": "dba2dd0e92f707dbdbc2afb4020944a3730aaed3b77809dfacba29c2b93006f8"
+    }
+  },
+  "evidence_hashes": {
+    "raw/baseline-verification.log": "140af76d1059a54f914fbaa54713de6e85cee566fa115342ab087070d318467f",
+    "raw/upstream-provenance.log": "9eaa5b99ee98ecadc6e3d09a110805e611670209737999d2d33d83f8560e7a28",
+    "raw/upstream-source-diff.patch": "a70ea4a05de6aeadce55d42c7f6deef1c809eee66c619bee3455bad16da0ca2c",
+    "test-contract.md": "0f640fccd4f7b2c10879973f583773f6350372a115e62955f10de3c7ab9d6179",
+    "source-map.md": "9e31ac219786f1c0536ae4ad2fdda33326368fe3fa0c38beacacd9fac5cdcffc",
+    "handover.md": "66d82f779de349c19296eb50e291ac427c1738de78a989044a90ee816ac8df9d",
+    "docs/ADR.md": "debd7e4ccee6ca1a60650eda96f884321c42ae3f7d2818db601969c11a240ffa",
+    "audit.md": "eb7ce9c93a28d85959464ea6e446fdeb311b9c9e1145a62133e74b4473fea3f6"
+  },
+  "audit": {
+    "required_verdict": "GO | REVISE | STOP",
+    "verdict": "GO",
+    "audit_artifact": "audit.md"
+  }
+}

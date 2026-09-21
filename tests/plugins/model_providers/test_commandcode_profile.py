@@ -212,6 +212,11 @@ class TestCommandCodeModelFiltering:
         """If we mock a response with mixed models, anthropic profile
         should only return claude-* models.
         """
+        # The hermetic fixture evicts plugins.model_providers.* each test;
+        # re-run provider discovery so the plugin module is importable again
+        # before importing it directly.
+        import providers as _providers
+        assert _providers.get_provider_profile("commandcode-chat") is not None
         from plugins.model_providers.commandcode import CommandCodeAnthropicProfile
 
         profile = CommandCodeAnthropicProfile(

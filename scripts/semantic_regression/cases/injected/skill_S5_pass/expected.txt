@@ -1,0 +1,1 @@
+skill_manage create a scratch skill, skill_view it, patch it, delete it. Created skill is immediately viewable. A patch with a non-existent old_string returns an explicit 'not found' error (no silent no-op). delete removes it so skill_view reports missing.

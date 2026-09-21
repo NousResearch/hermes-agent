@@ -141,9 +141,16 @@ def _source_files() -> list[Path]:
                 d for d in dirnames
                 if d not in _EXEMPT_DIRS and not _is_packaging_copy(d)
             ]
+        # KENSEI CUSTOM: profile-scoped skills moved under agents/<profile>/skills
+        # during the fleet refactor. They remain standalone user-invoked skill
+        # scripts, with the same runtime-resolution exemption as top-level skills/.
         for fname in filenames:
-            if fname.endswith(".py"):
-                files.append(Path(dirpath) / fname)
+            if not fname.endswith(".py"):
+                continue
+            rel = Path(dirpath).relative_to(REPO_ROOT)
+            if rel.parts and ("skills" in rel.parts or "optional-skills" in rel.parts):
+                continue
+            files.append(Path(dirpath) / fname)
     return files
 
 

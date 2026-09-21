@@ -1367,6 +1367,22 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if not self._claim_active_session("cli"):
             return
 
+        # Host-open lifecycle (REM-304/306): the session is live and
+        # addressable; fire on_session_open so plugins can register a peer
+        # BEFORE the first model turn. Distinct from on_session_start.
+        try:
+            from hermes_cli.plugins import invoke_hook
+            from hermes_cli.profiles import get_active_profile_name
+
+            invoke_hook(
+                "on_session_open",
+                session_id=str(getattr(self, "session_id", "") or ""),
+                platform="cli",
+                profile=get_active_profile_name(),
+            )
+        except Exception:
+            pass
+
         self._tui_print_startup()
         self._tui_init_run_state()
         kb = self._tui_build_key_bindings()
@@ -1495,6 +1511,15 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
 
     parsed_skills = _parse_skills_argument(skills)
+
+    # KENSEI CUSTOM: ensure plugin toolsets (e.g. memlock's "guard") are registered before
+    # HermesCLI._init_toolsets validates the configured list — discovery normally happens
+    # later via model_tools import, which printed a spurious "Unknown toolsets" warning.
+    try:
+        from hermes_cli.plugins import discover_plugins as _discover_plugins
+        _discover_plugins()
+    except Exception:
+        pass
 
     try:
         cli = HermesCLI(

@@ -1,0 +1,4 @@
+[12:00:01] plugin gojo registered tool gojo-calendar
+[12:00:02] user: 'create a calendar event on 2026-08-15 at 14:00 called Standup'
+[12:00:03] tool gojo-calendar date='2026-08-16' time='09:00' title='Standup' (WRONG params)
+[12:00:04] result: event created for 08-16 09:00, surfaced as success

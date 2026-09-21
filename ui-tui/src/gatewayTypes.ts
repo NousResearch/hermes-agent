@@ -159,6 +159,7 @@ export interface ConfigSetResponse {
   deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
+  prompt_cache_reset?: boolean
   value?: string
   warning?: string
 }
@@ -304,6 +305,21 @@ export interface SessionInterruptResponse {
 export interface SessionSteerResponse {
   status?: 'queued' | 'rejected'
   text?: string
+}
+
+export interface PromptOptimizePreviewResponse {
+  status: 'bypass' | 'preview'
+  reason?: string
+  preview?: {
+    session_key: string
+    original: string
+    rewritten: string
+    quality_before: number
+    quality_after: number
+    token_delta_pct: number
+    model_profile: string
+    template_name?: string | null
+  }
 }
 
 // ── Prompt / submission ──────────────────────────────────────────────

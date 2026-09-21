@@ -1,0 +1,3 @@
+[12:00:01] skills_list on Linux host -> [macos-only, xlsx, ...] (macos-only LISTED and suggested)
+[12:00:02] agent attempted macos-only skill -> failed at runtime
+[12:00:03] vision disabled but needs-vision auto-suggested too

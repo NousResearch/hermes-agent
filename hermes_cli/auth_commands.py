@@ -254,10 +254,18 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         login=_codex_login,
         token=lambda creds: creds["tokens"]["access_token"],
         source=_codex_pool_source,
+        # KENSEI CUSTOM (from #114201): id_token/account_id ride creds["tokens"] — the Codex CLI
+        # rejects an auth file lacking id_token ("missing field id_token"). The refresh path in
+        # auth_codex.py re-persists these claims on every refresh; do not drop them on the way
+        # into the new pool entry's ``extra`` dict.
         fields=lambda creds, provider: {
             "refresh_token": creds["tokens"].get("refresh_token"),
             "base_url": creds.get("base_url"),
-            "last_refresh": creds.get("last_refresh")},
+            "last_refresh": creds.get("last_refresh"),
+            "extra": {
+                k: v for k in ("id_token", "account_id")
+                if (v := creds["tokens"].get(k))},
+        },
         activate_first=True),
     "xai-oauth": _OAuthAddSpec(
         login=lambda args: auth_mod._xai_oauth_device_code_login(

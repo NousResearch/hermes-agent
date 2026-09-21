@@ -219,3 +219,57 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Idea Box coverage gate (t_fefd8933). Runs the entire Idea Box test suite
+  # (root idea_box/ unit tests + ideabox plugin unit/integration tests + the
+  # Discord intake hook + the end-to-end canaries) under coverage and fails the
+  # build if either source tree falls below the 80% acceptance threshold. This
+  # is the self-validation deliverable for the test-suite task: it proves the
+  # suite runs headless in CI with no manual steps and enforces the coverage
+  # acceptance criterion.
+  # ─────────────────────────────────────────────────────────────────────
+  ideabox-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
+
+      - name: Minimize uv cache
+        run: uv cache prune --ci
+
+      - name: Run Idea Box suite with coverage gate (>=80%)
+        run: |
+          source .venv/bin/activate
+          python -m coverage run \
+            --source=idea_box,plugins/platforms/discord/ideabox \
+            -m pytest \
+            tests/idea_box/ \
+            tests/ideabox/test_ideabox.py \
+            tests/ideabox/test_ideabox_acceptance.py \
+            tests/gateway/test_discord_ideabox_intake.py \
+            tests/e2e/test_ideabox_canaries.py \
+            -q
+          python -m coverage report -m --fail-under=80
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""

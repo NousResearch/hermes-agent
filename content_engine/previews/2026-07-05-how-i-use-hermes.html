@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Article Preview: How I use Hermes to review PRs on four solo-dev apps without losing the plot</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #1a1a2e;
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+               Ubuntu, Cantarell, sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.preview-banner {
+  background: linear-gradient(90deg, #e94560, #0f3460);
+  padding: 10px 20px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 10000;
+  letter-spacing: 0.5px;
+}
+.preview-banner span {
+  background: rgba(0,0,0,0.4);
+  padding: 2px 10px;
+  margin-left: 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+}
+
+/* ── Short post card (Twitter / LinkedIn) ── */
+
+.post-card {
+  max-width: 600px;
+  margin: 40px auto;
+  background: #16213e;
+  border-radius: 12px;
+  padding: 24px;
+  border: 1px solid #1a1a3e;
+}
+
+/* Twitter mockup */
+.twitter-card .avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.twitter-card .avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e94560;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 20px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.twitter-card .name-row {
+  display: flex;
+  flex-direction: column;
+}
+.twitter-card .display-name {
+  font-weight: 700;
+  font-size: 15px;
+  color: #fff;
+}
+.twitter-card .handle {
+  font-size: 13px;
+  color: #8899a6;
+}
+.twitter-card .post-body {
+  font-size: 15px;
+  line-height: 1.5;
+  color: #e1e8ed;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.twitter-card .post-meta {
+  font-size: 13px;
+  color: #8899a6;
+  border-top: 1px solid #1a1a3e;
+  padding-top: 12px;
+  margin-top: 4px;
+}
+
+/* LinkedIn mockup */
+.linkedin-card .header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.linkedin-card .avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #e94560;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 20px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.linkedin-card .name-details {
+  display: flex;
+  flex-direction: column;
+}
+.linkedin-card .display-name {
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff;
+}
+.linkedin-card .headline {
+  font-size: 12px;
+  color: #8899a6;
+}
+.linkedin-card .post-body {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #e1e8ed;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.linkedin-card .post-meta {
+  font-size: 12px;
+  color: #8899a6;
+  border-top: 1px solid #1a1a3e;
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+/* ── Article preview ── */
+
+.article-container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+.article-header {
+  margin-bottom: 32px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #1a1a3e;
+}
+
+.article-title {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.3px;
+  margin-bottom: 12px;
+  color: #ffffff;
+}
+
+.article-lede {
+  font-size: 16px;
+  color: #a0a0b8;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+
+.article-meta {
+  font-size: 13px;
+  color: #8899a6;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.article-meta .pillar-tag {
+  background: #0f3460;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #e94560;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Hero image */
+.hero-image {
+  width: 100%;
+  margin-bottom: 32px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #1a1a3e;
+  position: relative;
+}
+.hero-image img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.hero-image .hero-label {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: rgba(0,0,0,0.75);
+  color: #e94560;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* Article body sections */
+.article-body {
+  font-size: 15px;
+  color: #d0d0e0;
+  line-height: 1.7;
+}
+
+.article-body h2 {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 32px 0 12px;
+  color: #ffffff;
+  padding-left: 14px;
+  border-left: 3px solid #e94560;
+}
+
+.article-body h3 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 24px 0 10px;
+  color: #ffffff;
+}
+
+.article-body p {
+  margin-bottom: 16px;
+}
+
+.article-body a {
+  color: #e94560;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.article-body a:hover {
+  border-bottom-color: #e94560;
+}
+
+.article-body strong {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.article-body em {
+  color: #a0a0b8;
+}
+
+.article-body code {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 13px;
+  background: #0f3460;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #e94560;
+}
+
+.article-body pre {
+  background: #0f3460;
+  border: 1px solid #1a1a3e;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 20px 0;
+  overflow-x: auto;
+}
+.article-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #d0d0e0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.article-body blockquote {
+  border-left: 3px solid #e94560;
+  padding: 12px 20px;
+  margin: 20px 0;
+  background: #0f3460;
+  border-radius: 0 8px 8px 0;
+  color: #a0a0b8;
+  font-style: italic;
+}
+
+.article-body ul, .article-body ol {
+  margin: 12px 0;
+  padding-left: 24px;
+}
+.article-body li {
+  margin-bottom: 6px;
+}
+.article-body ul li::marker {
+  color: #e94560;
+}
+
+.article-body hr {
+  border: none;
+  border-top: 1px solid #1a1a3e;
+  margin: 32px 0;
+}
+
+.article-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid #1a1a3e;
+  margin: 20px 0;
+}
+
+/* ── Approval action bar ── */
+
+.approval-bar {
+  position: sticky;
+  bottom: 0;
+  background: #16213e;
+  border-top: 1px solid #1a1a3e;
+  padding: 14px 24px;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  align-items: center;
+  z-index: 9998;
+  flex-wrap: wrap;
+}
+.approval-bar .draft-id {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: #8899a6;
+  margin-right: auto;
+}
+.approval-bar .approval-commands {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: #a0a0b8;
+  display: flex;
+  gap: 16px;
+}
+.approval-bar .cmd {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.approval-bar .cmd.approve {
+  color: #2ecc71;
+  background: rgba(46, 204, 113, 0.1);
+}
+.approval-bar .cmd.reject {
+  color: #e74c3c;
+  background: rgba(231, 76, 60, 0.1);
+}
+.approval-bar .cmd.amend {
+  color: #f39c12;
+  background: rgba(243, 156, 18, 0.1);
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .article-title { font-size: 24px; }
+  .article-container { padding: 24px 16px 60px; }
+  .post-card { margin: 20px 12px; }
+  .approval-bar { flex-direction: column; }
+  .approval-bar .draft-id { margin-right: 0; }
+}
+</style>
+</head>
+<body>
+
+<div class="preview-banner">
+  📰 ARTICLE PREVIEW — not live · sahil
+  <span>2026-07-05-how-i-use-hermes</span>
+</div>
+
+<div class="article-container">
+
+  <div class="article-header">
+    <h1 class="article-title">How I use Hermes to review PRs on four solo-dev apps without losing the plot</h1>
+    <p class="article-lede">![How I use Hermes to review PRs on four solo-dev apps without losing the plot](imgs/01-infographic-how-i-use-hermes.png)</p>
+    <div class="article-meta">
+      <span class="pillar-tag">build_in_public</span>
+      <span>article</span>
+      <span>05 Jul 2026</span>
+    </div>
+  </div>
+
+  
+
+  
+<div style="background:#0f3460;border-radius:8px;padding:16px 20px;margin-bottom:24px;">
+  <div style="font-size:12px;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Sections</div>
+  <ol style="margin:0;padding-left:20px;color:#d0d0e0;font-size:14px;line-height:1.8;">
+    <li>The problem with AI-generated PRs on a solo portfolio</li>
+    <li>How the Hermes PR review loop works</li>
+    <li>The prompt skeleton, and why each line is there</li>
+    <li>A worked example: the multi-store split bug it caught</li>
+    <li>Trade-offs and the three failure modes that made me rebuild it</li>
+    <li>How to apply this in your own system</li>
+  </ol>
+</div>
+
+  <div class="article-body">
+    <h2>The problem with AI-generated PRs on a solo portfolio</h2>
+<div class="section-image"><img src="imgs/02-infographic-the-problem-with.png" alt="The problem with AI-generated PRs on a solo portfolio" loading="lazy"></div>
+<p>When Claude Code is writing 70 percent of your diffs, the bottleneck stops being generation and starts being review. A solo dev with four repos hits a wall that a team never sees: there is no second pair of eyes. You wrote the prompt. The agent wrote the code. You are now the reviewer of your own instructions, which is a famously bad arrangement.</p>
+<p>The first version of my workflow was &quot;read the diff, hope I notice the schema drift.&quot; That worked for two weeks. Then I shipped a Convex schema mismatch that the agent introduced in 30 seconds and I spent two hours debugging. The issue was not that the model was careless. The issue was that review needs different context than generation. The generating agent had the feature in its head. The reviewing agent, if it existed, needed the repo's conventions, the test suite, and the specific places this app breaks when you touch them.</p>
+<p>So I built a Hermes sub-agent that does PR review as a separate pass. Hermes is my personal AI infrastructure, the orchestrator I run locally on WSL Ubuntu. It already manages the agentic loops I use for feature work. The PR review loop is just another sub-agent with a different system prompt, different tools, and a strictly read-only posture.</p>
+<p>The point of this article is the mechanism, not the hype. I will show you the config, the prompt skeleton, and the three failure modes that made me rebuild it twice.</p>
+<h2>How the Hermes PR review loop works</h2>
+<div class="section-image"><img src="imgs/03-infographic-how-the-hermes.png" alt="How the Hermes PR review loop works" loading="lazy"></div>
+<p>The core idea is separation of context. The agent that writes the feature should not be the agent that reviews the PR. They share the repo but not the conversation.</p>
+<p>Hermes runs the review as a three-stage loop:</p>
+<ol>
+<li><strong>Gather.</strong> A read-only sub-agent diffs the current branch against <code>main</code>, loads the repo's <code>CONTEXT.md</code> file, and pulls the relevant test files.</li>
+<li><strong>Evaluate.</strong> The same sub-agent runs the test suite, checks the diff against the conventions in <code>CONTEXT.md</code>, and looks for the three failure classes I have learned to care about: schema drift, silent type changes, and unhandled async edges.</li>
+<li><strong>Report.</strong> The sub-agent posts a structured review back to the terminal and optionally writes a <code>REVIEW.md</code> file in the repo root. It never edits code. It never commits. Read-only is enforced at the tool level, not the prompt level.</li>
+</ol>
+<p>The enforcement matters. Early on I tried to do review with the same agent that wrote the feature, just by asking it to &quot;review your own work.&quot; That is like asking a student to grade their own exam. The model will find the bugs it already knew about and miss the ones it introduced. A separate sub-agent with no memory of the writing session catches different things.</p>
+<p>Here is the Hermes config that wires this up. I keep one per repo because each app has different conventions.</p>
+<pre><code class="lang-yaml"># hermes.review.yml — Plenishd
+agent:
+  name: plenishd-reviewer
+  model: claude-sonnet-4-6
+  read_only: true
+  tools:
+    - git_diff
+    - git_log
+    - read_file
+    - run_tests
+    - search_code
+  forbidden:
+    - write_file
+    - git_commit
+    - git_push
+
+context:
+  conventions: ./CONTEXT.md
+  test_command: npx convex dev --once &amp;&amp; npm test
+  hotspots:
+    - convex/schema.ts
+    - convex/baskets.ts
+    - app/supermarket/tesco.ts
+    - app/supermarket/aldi.ts
+    - app/supermarket/sainsburys.ts
+
+review_checks:
+  - schema_drift
+  - silent_type_change
+  - unhandled_async_edge
+  - convention_violation
+  - test_coverage_gap
+</code></pre>
+<p>The <code>hotspots</code> list is the bit I wish someone had told me to add on day one. These are the files where, historically, this specific app breaks. For Plenishd it is the supermarket adapter files, because each UK supermarket has different basket-fill quirks. For MatchdayMaestro it is the prediction engine. The review agent reads these files in full even if the diff does not touch them, because a change in one file can break a contract another file depends on.</p>
+<h2>The prompt skeleton, and why each line is there</h2>
+<div class="section-image"><img src="imgs/04-infographic-the-prompt-skeleton.png" alt="The prompt skeleton, and why each line is there" loading="lazy"></div>
+<p>The system prompt is short on purpose. Long review prompts make the model chatty and vague. Short prompts with explicit structure make it specific.</p>
+<pre><code class="lang-">You are a read-only PR reviewer for {repo_name}.
+
+You will be given a git diff and the repo's CONTEXT.md.
+Your job is to find problems the author would miss.
+
+Do not rewrite code. Do not suggest style changes.
+Report only:
+
+1. SCHEMA DRIFT — does this change the shape of data in a way
+   that breaks existing callers? Cite the file and line.
+2. SILENT TYPE CHANGES — has a function signature changed
+   return type or argument shape without updating callers?
+3. UNHANDLED ASYNC EDGES — is there a promise that can reject
+   with no catch, or a race between two writes?
+4. CONVENTION VIOLATION — does this break a rule in CONTEXT.md?
+   Quote the rule and quote the violation.
+5. TEST COVERAGE GAP — is there a new code path with no test?
+
+For each finding, output:
+  SEVERITY: blocker | warning | nit
+  FILE: path:line
+  EVIDENCE: the specific code or contract that is broken
+  SUGGESTION: one sentence, not a rewrite
+
+If you find nothing, say &quot;CLEAN&quot; and stop.
+Do not pad the report.
+</code></pre>
+<p>The &quot;do not rewrite code&quot; line is load-bearing. Without it, the reviewer drifts into rewriting the diff, which defeats the point. I want findings, not patches. Patches come from the feature agent in a second pass, after I have read the review and decided what to fix.</p>
+<p>The &quot;if you find nothing, say CLEAN and stop&quot; line is the one that saved me from the worst failure mode: the model inventing problems to seem useful. A reviewer that always finds something is a reviewer that is lying some of the time. Giving it permission to say clean makes the non-clean findings more trustworthy.</p>
+
+  </div>
+
+</div>
+
+<div class="approval-bar">
+  <span class="draft-id">2026-07-05-how-i-use-hermes</span>
+  <div class="approval-commands">
+    <span class="cmd approve">!approve 2026-07-05-how-i-use-hermes</span>
+    <span class="cmd reject">!reject 2026-07-05-how-i-use-hermes [reason]</span>
+    <span class="cmd amend">!amend 2026-07-05-how-i-use-hermes [notes]</span>
+  </div>
+</div>
+
+</body>
+</html>

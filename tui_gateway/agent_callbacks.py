@@ -548,3 +548,19 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
+
+
+def _normalise_auq_callback_result(questions: list, result: object) -> dict:
+    """Normalise the return value of ``ask_user_questions_callback``.
+
+    The TUI renderer responds with a ``{index: label}`` dict on success.
+    On timeout or interruption, ``_block`` returns an empty string (or
+    ``None``); translate that into a per-question skipped dict so the tool
+    layer receives a well-formed dict instead of erroring on a non-dict.
+
+    KENSEI CUSTOM — see skill ``agent-modes``.  Must survive upstream merges.
+    """
+    if isinstance(result, dict):
+        return result
+    return {i: "__skipped__" for i in range(len(questions))}
+

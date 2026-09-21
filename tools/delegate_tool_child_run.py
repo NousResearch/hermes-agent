@@ -19,7 +19,7 @@ from tools.delegate_tool_registry import (
     _capture_gateway_steer_authority, _close_subagent_steering, _register_subagent, _unregister_subagent,
 )
 from tools.delegate_tool_results import (
-    _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
+    _extract_output_tail, _has_receipts, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
 )
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
@@ -469,6 +469,11 @@ def _merge_late_steer(result: Dict[str, Any], subagent_id: Optional[str], child:
         result["pending_steer"] = f"{existing}\n{late}" if isinstance(existing, str) and existing else late
 
 
+# KENSEI CUSTOM (restored): bound on the established-output quote carried into the
+# single auto-continue turn, so a long truncated summary cannot blow the child's window.
+_CONTINUATION_QUOTE_CAP = 4000
+
+
 @dataclass
 class _SchemaOutcome:
     schema: Optional[Dict[str, Any]]
@@ -518,6 +523,77 @@ def _validate_child_output_schema(
         _schema_valid, _schema_errors = validate_output(_retry_text, _output_schema)
     return _SchemaOutcome(_output_schema, _schema_valid, _schema_errors, 1)
 
+
+def _apply_truncation_auto_continue(
+    child: Any, result: Dict[str, Any], task_index: int, child_task_id: str, relay_child_text: Any,
+    enabled: bool,
+) -> tuple[bool, str]:
+    """KENSEI CUSTOM (restored): one bounded continuation turn for a child cut by
+    its iteration budget.
+
+    A child that exhausted its budget (completed=False, no failure, real output)
+    gets a single extra turn carrying forward what it already established,
+    instead of silently dropping the unfinished remainder. Mirrors the schema
+    retry's shape: same channel, same accumulation. The original exit fields are
+    preserved so ``truncated`` stays truthful and the extra text rides separately
+    as ``continuation``. Returns ``(continued, continuation_text)``.
+    """
+    if not enabled or child is None:
+        return False, ""
+    if (result.get("interrupted", False) or result.get("failed") or result.get("error")
+            or result.get("completed", False)):
+        return False, ""
+    _prior_out = (result.get("final_response") or "").strip()
+    if not _prior_out or _prior_out == "(empty)":
+        return False, ""
+    if len(_prior_out) > _CONTINUATION_QUOTE_CAP:
+        _quote = _prior_out[:3000] + "\n...[middle cut for budget]...\n" + _prior_out[-1000:]
+    else:
+        _quote = _prior_out
+    try:
+        _cont_result = child.run_conversation(
+            user_message=(
+                "You were cut off by your iteration budget before finishing. "
+                "Already established — do NOT redo any of this, only continue what "
+                f"is unfinished:\n{_quote}\nReply with ONLY the unfinished "
+                "remainder, ending with your RECEIPTS."
+            ),
+            task_id=child_task_id,
+            stream_callback=relay_child_text,
+        )
+    except Exception as _cont_exc:
+        logger.warning("Subagent %d continuation turn failed: %s", task_index, _cont_exc)
+        return False, ""
+    if not isinstance(_cont_result, dict):
+        return False, ""
+    _cont_text = _cont_result.get("final_response") or ""
+    if not _cont_text.strip():
+        return False, ""
+    try:
+        result["api_calls"] = int(result.get("api_calls", 0) or 0) + int(_cont_result.get("api_calls", 0) or 0)
+    except (TypeError, ValueError):
+        pass
+    _cont_messages = _cont_result.get("messages")
+    if isinstance(_cont_messages, list) and isinstance(result.get("messages"), list):
+        result["messages"] = result["messages"] + _cont_messages
+    return True, _cont_text
+
+def _get_continue_on_truncation_enabled() -> bool:
+    """KENSEI CUSTOM (restored): kill switch for truncation auto-continue (default on).
+
+    Set delegation.continue_on_truncation: false in config.yaml to keep
+    cut-but-summarized results as-is without the extra turn.
+    """
+    try:
+        # Resolve through the facade (not the defining module) so
+        # patch("tools.delegate_tool._load_config") keeps intercepting at call time.
+        from tools.delegate_tool import _load_config
+        from utils import is_truthy_value
+        return is_truthy_value(_load_config().get("continue_on_truncation", True))
+    except Exception:
+        return True
+
+
 def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
     """Tool trace from the child's conversation messages, pairing parallel
     tool calls with their results by tool_call_id."""
@@ -552,6 +628,7 @@ def _build_tool_trace(messages: Any) -> list[Dict[str, Any]]:
 
 def _build_result_entry(
     child: Any, result: Dict[str, Any], task_index: int, duration: float, schema: _SchemaOutcome,
+    continued: bool = False, continuation: str = "",
 ) -> Dict[str, Any]:
     """Parent-visible result entry (status, exit_reason, tool trace, tokens, cost).
     ``status``/``exit_reason``/``truncated`` follow the ``_run_single_child`` contract; a structured failure always
@@ -600,6 +677,12 @@ def _build_result_entry(
         # A budget-exhausted child still returns a summary (status stays
         # "completed"), so the parent needs this explicit flag.
         "truncated": exit_reason == "max_iterations",
+        # KENSEI fidelity flags: receipts_present is heuristic evidence detection
+        # over summary + continuation; continued marks the one bounded
+        # auto-continue turn whose text rides separately in ``continuation``.
+        "receipts_present": _has_receipts((summary or "") + "\n" + (continuation or "")),
+        "continued": bool(continued),
+        "continuation": (continuation or None),
         "tokens": {
             "input": _num(getattr(child, "session_prompt_tokens", 0)),
             "output": _num(getattr(child, "session_completion_tokens", 0)),

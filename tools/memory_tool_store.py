@@ -212,6 +212,136 @@ class MemoryStore:
     def _char_limit(self, target: str) -> int:
         return self.user_char_limit if target == "user" else self.memory_char_limit
 
+    # ---- KENSEI CUSTOM (MemRefine) — ported from fork tools/memory_tool.py
+    # _auto_compact/_llm_merge_entries (fork L414-L577, pre-split file).
+    # save_to_disk() calls became _write_file(_path_for(target), _entries_for(target))
+    # because the split store persists via _write_file under the caller's lock.
+    def _auto_compact(self, target: str, new_content: str) -> Dict[str, Any]:
+        """MemRefine auto-compaction: merge entries to fit new content.
+
+        Strategy:
+        1. Try LLM-judge merge via the auxiliary compression model
+           (ollama-cloud/gemma4:31b via config). The LLM decides which entries
+           to merge, summarise, or preserve to fit the budget.
+        2. If LLM unavailable, fall back to deterministic subsumption merge:
+           combine entries where one is a substring of another, merge short
+           entries, and if still over budget return error (no silent eviction).
+
+        All merges are logged at INFO. Nothing is silently dropped.
+        Returns success dict if compaction made room, or error if not.
+        """
+        entries = self._entries_for(target)
+        limit = self._char_limit(target)
+
+        if not entries:
+            return {"success": False, "error": "No entries to compact."}
+
+        # Step 1: LLM-judge merge
+        compacted = self._llm_merge_entries(entries, limit, new_content)
+        if compacted is not None:
+            test_total = len(ENTRY_DELIMITER.join(compacted + [new_content]))
+            if test_total <= limit:
+                logger.info(
+                    "MemRefine auto-compact %s: LLM merged %d entries into %d (target=%d chars)",
+                    target, len(entries), len(compacted), test_total,
+                )
+                self._set_entries(target, compacted)
+                self._write_file(self._path_for(target), self._entries_for(target))
+                return {"success": True, "message": f"LLM-merged {len(entries)} entries into {len(compacted)}"}
+
+        # Step 2: deterministic fallback -- remove entries subsumed by longer ones
+        to_remove = set()
+        for i, entry in enumerate(entries):
+            if i in to_remove:
+                continue
+            for j, other in enumerate(entries):
+                if i != j and j not in to_remove:
+                    if entry in other and len(entry) < len(other):
+                        to_remove.add(i)
+                        break
+        if to_remove:
+            entries = [e for idx, e in enumerate(entries) if idx not in to_remove]
+
+        test_total = len(ENTRY_DELIMITER.join(entries + [new_content]))
+        if test_total <= limit:
+            logger.info("Auto-compact %s: removed %d superseded entries", target, len(to_remove))
+            self._set_entries(target, entries)
+            self._write_file(self._path_for(target), self._entries_for(target))
+            return {"success": True, "message": f"Removed {len(to_remove)} superseded entries."}
+
+        # Step 3: final deterministic merge -- combine short neighbouring entries
+        merged = []
+        buffer = []
+        for entry in entries:
+            if len(entry) < 80:
+                buffer.append(entry)
+            else:
+                if buffer:
+                    merged.append(ENTRY_DELIMITER.join(buffer))
+                    buffer = []
+                merged.append(entry)
+        if buffer:
+            merged.append(ENTRY_DELIMITER.join(buffer))
+
+        test_total = len(ENTRY_DELIMITER.join(merged + [new_content]))
+        if test_total <= limit:
+            logger.info("Auto-compact %s: merged %d short entries into %d", target, len(entries), len(merged))
+            self._set_entries(target, merged)
+            self._write_file(self._path_for(target), self._entries_for(target))
+            return {"success": True, "message": f"Merged short entries."}
+
+        return {
+            "success": False,
+            "error": (
+                f"Cannot compact enough to fit new entry. "
+                f"Current: {self._char_count(target):,}/{limit:,} chars. "
+                f"New entry: {len(new_content)} chars. "
+                f"Merge/summarise manually with memory(action=replace)."
+            ),
+        }
+
+    @staticmethod
+    def _llm_merge_entries(entries: List[str], limit: int, new_content: str) -> Optional[List[str]]:
+        """Try LLM-judge merge of memory entries. Returns compacted entries or None."""
+        try:
+            from agent.auxiliary_client import call_llm
+        except ImportError:
+            return None
+
+        try:
+            sep_display = ENTRY_DELIMITER.replace("\n", "\\n")
+            entries_text = ENTRY_DELIMITER.join(entries)
+            budget_for_existing = limit - len(new_content) - len(ENTRY_DELIMITER)
+            prompt = (
+                "You are a memory consolidation system for a personal AI agent. "
+                "Compact the following memory entries into fewer, shorter entries "
+                "that preserve ALL unique factual information. Merge related facts "
+                "into single compound entries, remove redundancy and superseded info. "
+                "Do NOT invent facts.\n\n"
+                f"Current entries (each separated by {sep_display!r}):\n"
+                f"{entries_text}\n\n"
+                f"New entry to add:\n{new_content}\n\n"
+                f"Character budget for the compacted entries (excluding new entry): {budget_for_existing}\n\n"
+                "Output ONLY the compacted entries separated by the same separator, "
+                "with no extra text, headers, or commentary."
+            )
+            response = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2000,
+                timeout=30,
+            )
+            text = response.choices[0].message.content.strip()
+            compacted = [e.strip() for e in text.split(ENTRY_DELIMITER) if e.strip()]
+            if compacted:
+                test_total = len(ENTRY_DELIMITER.join(compacted))
+                logger.debug("MemRefine LLM returned %d entries totalling %d chars", len(compacted), test_total)
+                return compacted
+        except Exception as exc:
+            logger.debug("MemRefine LLM merge failed: %s", exc)
+        return None
+    # ---- END KENSEI CUSTOM (MemRefine)
+
     def _usage(self, target: str) -> str:
         return f"{self._char_count(target):,}/{self._char_limit(target):,}"
 
@@ -272,11 +402,24 @@ class MemoryStore:
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
+                # KENSEI CUSTOM (MemRefine): fork fork-main add() overflow branch —
+                # try _auto_compact before rejecting; on success the compacted
+                # entries are already persisted, so append and commit.
+                compact_result = self._auto_compact(target, content)
+                if compact_result.get("success"):
+                    compacted_entries = self._entries_for(target)
+                    if content not in compacted_entries and \
+                            len(ENTRY_DELIMITER.join(compacted_entries + [content])) <= limit:
+                        compacted_entries.append(content)
+                        return compacted_entries, f"Entry added after compaction: {compact_result['message']}"
+                # KENSEI CUSTOM end — compaction failed or still no room: fall
+                # through to upstream's reject behaviour.
                 return self._failure_with_entries(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars. Adding this entry "
-                    f"({len(content)} chars) would exceed the limit. Consolidate now: use 'replace' to merge "
-                    f"overlapping entries into shorter ones or 'remove' stale or less important entries (see "
-                    f"current_entries below), then retry this add — all in this turn."))
+                    f"({len(content)} chars) would exceed the limit even after auto-compaction "
+                    f"(MemRefine). Consolidate now: use 'replace' to merge overlapping entries into "
+                    f"shorter ones or 'remove' stale or less important entries (see current_entries "
+                    f"below), then retry this add — all in this turn."))
             return entries + [content], "Entry added."
         # Append-only: skip the drift guard (appending never clobbers foreign
         # content) but still refuse a failed read — add rewrites the WHOLE file.

@@ -3075,6 +3075,85 @@ class BasePlatformAdapter(ABC):
         return await self._send_media_fallback_notice(
             "send_document", "file", file_path, chat_id, caption, reply_to, metadata, file_name=file_name)
 
+    async def send_multiple_documents(
+        self,
+        chat_id: str,
+        documents: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of documents (files) as native platform attachments.  # KENSEI CUSTOM (restored)
+
+        Default implementation sends each document individually through
+        ``send_document``, skipping missing files with a warning.  Override
+        in subclasses to bundle into native multi-attachment API calls
+        (e.g. Discord's 10-attachment-per-message limit).
+
+        ``documents`` is a list of ``(file_path, caption_or_alt)`` tuples —
+        the same shape used by ``send_multiple_images``.
+        """
+        for file_path, _alt in documents:
+            if not os.path.exists(file_path):
+                logger.warning("[%s] Skipping missing document: %s", self.name, file_path)
+                continue
+            if human_delay > 0:
+                await asyncio.sleep(human_delay)
+            try:
+                result = await self.send_document(
+                    chat_id=chat_id,
+                    file_path=file_path,
+                    metadata=metadata,
+                )
+                if not result.success:
+                    logger.error("[%s] Failed to send document: %s", self.name, result.error)
+            except Exception as doc_err:
+                logger.error("[%s] Error sending document: %s", self.name, doc_err, exc_info=True)
+
+
+    async def _notify_media_delivery_failure(
+        self, chat_id: str, media_path: str, *, is_voice: bool = False,
+        metadata: Optional[Dict[str, Any]] = None) -> None:
+        """User-visible notice when a MEDIA attachment upload failed: the tag was
+        already stripped from the text, so silence would be a silent drop.
+
+        The non-streaming dispatch loop strips ``MEDIA:`` tags before sending attachments. When the
+        subsequent upload returns ``success=False`` (for example Discord accepted the message but attached
+        nothing), the user must see a failure notice instead of a silent drop (#66797).
+        """
+        ext = Path(media_path).suffix.lower()
+        if is_voice or should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
+            text = _media_failure_text("audio")
+        elif ext in _VIDEO_EXTS:
+            text = _media_failure_text("video")
+        else:
+            text = _media_failure_text("file", os.path.basename(media_path))
+        try:
+            notice = await self.send(chat_id=chat_id, content=text, metadata=metadata)
+            problem = None if notice.success else notice.error
+        except Exception as notify_err:
+            problem = notify_err
+        if problem is not None:
+            logger.debug("[%s] Could not send media-delivery-failure notice: %s", self.name, problem)
+
+    async def send_image_file(
+        self, chat_id: str, image_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
+        """Send a local image file natively (send_image takes a URL). Default: friendly notice."""
+        return await self._send_media_fallback_notice(
+            "send_image_file", "image", image_path, chat_id, caption, reply_to, metadata)
+
+    @staticmethod
+    def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
+        """Return a resolved path if it is safe for native attachment upload."""
+        return validate_media_delivery_path(path, session_key=session_key)
+
+    @staticmethod
+    def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths."""
+        return [
+            (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
+            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path"))]
+
     async def _notify_media_delivery_failure(
         self, chat_id: str, media_path: str, *, is_voice: bool = False,
         metadata: Optional[Dict[str, Any]] = None) -> None:

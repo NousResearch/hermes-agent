@@ -42,6 +42,8 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    # KENSEI CUSTOM (restored): fork's per-tick spawn cap (Gate 1 port).
+    max_spawn_per_tick: Optional[int] = None
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -102,6 +104,15 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         logger.info("kanban dispatcher: default_assignee=%r (unassigned ready tasks "
                     "will route to this profile)", default_assignee)
 
+    # KENSEI CUSTOM — per-tick spawn budget: strict int parse (bool/non-positive rejected),
+    # non-positive/non-int coerce to None (no per-tick budget), matching dispatch-side rules.
+    _raw_mspt = kanban_cfg.get("max_spawn_per_tick")
+    if isinstance(_raw_mspt, bool):
+        logger.warning("kanban dispatcher: invalid kanban.max_spawn_per_tick=%r; ignoring", _raw_mspt)
+        max_spawn_per_tick = None
+    else:
+        max_spawn_per_tick = _positive_int_setting(kanban_cfg, "max_spawn_per_tick")
+
     return _DispatcherSettings(
         interval=interval,
         max_spawn=max_spawn,
@@ -115,6 +126,7 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        max_spawn_per_tick=max_spawn_per_tick,
     )
 
 

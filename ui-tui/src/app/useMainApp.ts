@@ -39,6 +39,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import {
   buildToolTrailLine,
+  displayClarifyAnswer,
   formatAbandonedClarify,
   formatAbandonedClarifyBatch,
   sameToolTrailGroup,
@@ -46,7 +47,7 @@ import {
 } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
-import type { Msg, PanelSection, SlashCatalog } from '../types.js'
+import type { Msg, PanelSection, PromptOptimizationPreview, SlashCatalog } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
@@ -54,7 +55,7 @@ import { createServerRequestHandler } from './createServerRequestHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
-import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
+import { type GatewayRpc, type StateSetter, type SubmissionOptions, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
@@ -98,6 +99,39 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
   }
 
   return t.muted
+}
+
+export interface PromptOptimizationChoiceDeps {
+  setInput: (value: string) => void
+  submit: (value: string, options?: SubmissionOptions) => void
+  sys: (text: string) => void
+}
+
+/**
+ * Resolve a prompt-optimisation overlay choice into a concrete action.
+ *
+ * accept -> submit the rewritten text; reject (any non-edit/accept choice) ->
+ * submit the original text. BOTH submit with skipOptimization=true so the
+ * already-decided text is not fed back into the optimiser (which would pop a
+ * second preview and loop). edit -> load the rewritten text into the composer
+ * without submitting. Extracted from the hook so the flag contract is unit-
+ * testable without React infra (mirrors startPromptLiveSession).
+ */
+export function resolvePromptOptimizationChoice(
+  choice: string,
+  preview: PromptOptimizationPreview,
+  deps: PromptOptimizationChoiceDeps
+): void {
+  if (choice === 'edit') {
+    deps.setInput(preview.rewritten)
+    deps.sys('optimised prompt loaded for editing')
+
+    return
+  }
+
+  const text = choice === 'accept' ? preview.rewritten : preview.original
+
+  deps.submit(text, { showUserMessage: true, skipOptimization: true })
 }
 
 export interface PromptLiveSessionOptions {
@@ -247,7 +281,7 @@ export function useMainApp(gw: GatewayClient) {
   const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
   const onServerRequestRef = useRef<(request: ServerRequest) => boolean>(() => false)
   const sysRef = useRef<(text: string) => void>(() => {})
-  const submitRef = useRef<(value: string) => void>(() => {})
+  const submitRef = useRef<(value: string, options?: SubmissionOptions) => void>(() => {})
   const submitLiteralRef = useRef<(value: string) => void>(() => {})
   const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
@@ -773,6 +807,69 @@ export function useMainApp(gw: GatewayClient) {
     [appendMessage, overlay.clarify]
   )
 
+  const resolveClarifyBatch = useCallback(
+    (answers: Record<string, string>, cancelled: boolean) => {
+      const clarify = overlay.clarify
+
+      if (!clarify?.questions?.length) {
+        return Promise.resolve()
+      }
+
+      const questions = clarify.questions
+
+      // KENSEI CUSTOM re-anchor (2026-09-16 merge): upstream replaced the clarify.respond
+      // RPC with JSON-RPC response frames; a full-answers frame resolves the batch request.
+      // respondToServerRequest is synchronous (boolean: resolved or already-expired) —
+      // mirror the old .then(r => { if (r) … }) shape inline.
+      const answered = respondToServerRequest(clarify.requestId, cancelled ? {} : { answers })
+      if (answered) {
+        {
+          if (cancelled) {
+            appendMessage({
+              role: 'system',
+              text: formatAbandonedClarifyBatch(questions, answers, 'cancelled')
+            })
+          } else {
+            const label = toolTrailLabel('clarify')
+
+            turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+            patchTurnState({ turnTrail: turnController.turnTools })
+            turnController.persistedToolLabels.add(label)
+            appendMessage({
+              kind: 'trail',
+              role: 'system',
+              text: '',
+              tools: [buildToolTrailLine('clarify', `${questions.length} questions`)]
+            })
+            appendMessage({
+              role: 'user',
+              text: questions
+                .map(q => `${q.question} → ${displayClarifyAnswer(answers[q.qid], q.multiSelect)}`)
+                .join('\n')
+            })
+            patchUiState({ status: 'running…' })
+          }
+
+          patchOverlayState({ clarify: null })
+        }
+      }
+
+      return Promise.resolve()
+    },
+    [appendMessage, overlay.clarify, sys]
+  )
+
+  const answerClarifyBatchSubmit = useCallback(
+    (answers: Record<string, string>) => resolveClarifyBatch(answers, false),
+    [resolveClarifyBatch]
+  )
+
+  const answerClarifyBatchCancel = useCallback(
+    (answers: Record<string, string>) => resolveClarifyBatch(answers, true),
+    [resolveClarifyBatch]
+  )
+
+  // Compatibility path for older renderers that lock one answer at a time.
   // Lock one answer of a batch clarify (`clarify.lock` RPC). The overlay stays
   // up until the server reports no remaining questions — the final lock
   // resolves the server request and the turn continues.
@@ -833,6 +930,74 @@ export function useMainApp(gw: GatewayClient) {
     [appendMessage, overlay.clarify, rpc]
   )
 
+  // ── KENSEI CUSTOM: AskUserQuestionsTool answer handler ─────────────
+  // Per spec (2026-06-04): new mode system uses multi-question batched
+  // prompt.  Sends answers back to the gateway via a dedicated RPC.
+  // See skill `agent-modes`.  Must survive upstream merges.
+  const answerAskUserQuestions = useCallback(
+    (answers: Record<number, string>, requestId: string) => {
+      const req = overlay.askUserQuestions
+
+      if (!req || !req.requestId) {
+        return
+      }
+
+      const label = toolTrailLabel('ask_user_questions')
+      turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+      patchTurnState({ turnTrail: turnController.turnTools })
+
+      void requestId
+      const hasAnswers = Object.keys(answers).length > 0
+
+      if (hasAnswers) {
+        // Render each question/answer as a user-style trail so the transcript
+        // shows what was selected, even before the agent sees the response.
+        const lines = req.questions
+          .map((q, i) => {
+            const answer = answers[i]
+
+            if (answer === undefined) {
+              return null
+            }
+
+            return `Q${i + 1}: ${q.question}\n   → ${answer}`
+          })
+          .filter(Boolean)
+          .join('\n')
+
+        turnController.persistedToolLabels.add(label)
+        appendMessage({
+          kind: 'trail',
+          role: 'system',
+          text: '',
+          tools: [
+            buildToolTrailLine(
+              'ask_user_questions',
+              `${req.questions.length} question${req.questions.length === 1 ? '' : 's'}`
+            )
+          ]
+        })
+        appendMessage({ role: 'user', text: lines })
+        patchUiState({ status: 'running…' })
+      } else {
+        sys('AskUserQuestions cancelled')
+      }
+
+      // Clear overlay immediately for snappy UX
+      patchOverlayState({ askUserQuestions: null })
+
+      // Forward to the gateway so the agent tool thread unblocks
+      // (matches the clarify.respond pattern).
+      rpc('ask_user_questions.respond', {
+        answers,
+        request_id: req.requestId
+      }).catch(() => {
+        // Best-effort — the trail message above already updated the user-visible state.
+      })
+    },
+    [appendMessage, overlay.askUserQuestions, rpc, sys]
+  )
+
   sysRef.current = sys
 
   const { dispatchSubmission, send, sendQueued, submit, submitLiteral } = useSubmission({
@@ -874,6 +1039,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const { pagerPageSize } = useInputHandlers({
     actions: {
+      answerAskUserQuestions,
       answerClarify,
       appendMessage,
       die,
@@ -1167,6 +1333,25 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.secret, respondWith]
   )
 
+  const answerPromptOptimization = useCallback(
+    (choice: string) => {
+      const opt = overlay.promptOptimization
+
+      if (!opt) {
+        return
+      }
+
+      patchOverlayState({ promptOptimization: null })
+
+      resolvePromptOptimizationChoice(choice, opt.preview, {
+        setInput: composerActions.setInput,
+        submit: (value, options) => submitRef.current(value, options),
+        sys
+      })
+    },
+    [composerActions, overlay.promptOptimization, sys]
+  )
+
   const answerVaultUnlock = useCallback(
     (password: string) => {
       if (!overlay.vaultUnlock) {
@@ -1293,8 +1478,12 @@ export function useMainApp(gw: GatewayClient) {
       activateLiveSession: session.activateLiveSession,
       closeLiveSession,
       answerApproval,
+      answerAskUserQuestions,
       answerClarify,
+      answerClarifyBatchCancel,
+      answerClarifyBatchSubmit,
       answerClarifyQuestion,
+      answerPromptOptimization,
       answerSecret,
       answerSudo,
       answerVaultUnlock,
@@ -1317,8 +1506,12 @@ export function useMainApp(gw: GatewayClient) {
     }),
     [
       answerApproval,
+      answerAskUserQuestions,
       answerClarify,
+      answerClarifyBatchCancel,
+      answerClarifyBatchSubmit,
       answerClarifyQuestion,
+      answerPromptOptimization,
       answerSecret,
       answerSudo,
       answerVaultUnlock,

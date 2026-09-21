@@ -19,8 +19,7 @@ from types import SimpleNamespace
 from typing import Dict, List, Optional
 
 from gateway.config import Platform
-from gateway.platforms.base import build_auto_tts_output_path
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, build_auto_tts_output_path
 from gateway.session import SessionSource
 
 logger = logging.getLogger("gateway.run")  # log-record parity with the origin module
@@ -203,6 +202,88 @@ class GatewayVoiceMixin:
         key = self._voice_key(Platform.DISCORD, chat_id,
                               profile=getattr(adapter, "_owner_profile", None))
         self._apply_voice_mode(adapter, key, chat_id, "off")
+        # ── KENSEI CUSTOM — end-of-session summary handoff (ported) ──
+        # Fire-and-forget so the timeout handler returns quickly.
+        import asyncio as _asyncio
+        try:
+            loop = _asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self._trigger_voice_session_summary(chat_id))
+        except Exception as exc:
+            logger.debug("Could not schedule voice session summary: %s", exc)
+        # ── END KENSEI CUSTOM ──
+
+    # ── KENSEI CUSTOM — voice-session summary handoff (ported) ──
+    async def _trigger_voice_session_summary(self, chat_id: str) -> None:
+        """Generate an end-of-session summary and hand off to KENSEI.
+
+        Called when a Misa-Misa voice session ends (timeout or user leave).
+        Reads the session's accumulated intake log, asks the agent to produce a
+        structured summary, posts it to the linked text channel, and pings
+        KENSEI so it can review and create a kanban task or ask clarifying
+        questions. KENSEI is the only gateway that writes to the kanban DB.
+        """
+        from pathlib import Path as _Path
+
+        adapter = self.adapters.get(Platform.DISCORD)
+        text_ch_id = chat_id
+        if adapter is None:
+            return
+
+        # Locate the session intake log (per-session, keyed by chat_id).
+        intake_dir = _Path("/home/kensei/.hermes/governance/logboard/intake")
+        session_log = intake_dir / f"session-{chat_id}.md"
+        if not session_log.exists():
+            logger.debug("No intake log found for session %s; skipping summary", chat_id)
+            return
+
+        raw_notes = session_log.read_text(encoding="utf-8")
+        if not raw_notes.strip():
+            return
+
+        # Build a synthetic prompt requesting a structured summary from the agent.
+        summary_prompt = (
+            "The voice session has ended. Based on the transcript below, produce a "
+            "concise structured summary with these sections: **Overview** (1-2 sentences), "
+            "**Key ideas** (bullet list), **Open questions** (bullet list), "
+            "**Proposed actions** (bullet list). After the summary, mention that "
+            "@KENSEI should review and create tasks or ask any clarifying questions.\n\n"
+            f"---\n{raw_notes[:6000]}"
+        )
+
+        try:
+            channel = adapter._client.get_channel(int(text_ch_id))
+        except Exception:
+            channel = None
+
+        if channel is None:
+            logger.warning("_trigger_voice_session_summary: text channel %s not found", text_ch_id)
+            return
+
+        try:
+            # Use the standard pipeline: build a MessageEvent and let the agent
+            # produce the summary naturally, then post its response to the channel.
+            from types import SimpleNamespace
+            source = SessionSource(
+                platform=Platform.DISCORD,
+                chat_id=str(text_ch_id),
+                user_id="system",
+                user_name="session-end",
+                chat_type="channel",
+            )
+            event = MessageEvent(
+                source=source,
+                text=summary_prompt,
+                message_type=MessageType.TEXT,
+                raw_message=SimpleNamespace(guild_id=None, guild=None),
+            )
+            await adapter.handle_message(event)
+            # Mark session log processed so a restart doesn't re-trigger.
+            processed = session_log.with_suffix(".md.done")
+            session_log.rename(processed)
+        except Exception as exc:
+            logger.warning("_trigger_voice_session_summary: failed: %s", exc)
+    # ── END KENSEI CUSTOM ──
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for one recent utterance (voice capture can emit it twice a

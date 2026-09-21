@@ -114,6 +114,12 @@ def main():
             return 0
 
         if "id" in msg and msg.get("method") == "initialize":
+            if script == "no_initialize":
+                # Accept the request but never answer — models a hung server.
+                # The client must time out and retire the process cleanly.
+                while read_message() is not None:
+                    pass
+                return 0
             if script == "init_error":
                 # A conformant JSON-RPC error to `initialize`, then exit: the client must
                 # surface it as an LSPRequestError carrying the exit details.

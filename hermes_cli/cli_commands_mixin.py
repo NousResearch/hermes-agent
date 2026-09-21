@@ -29,6 +29,8 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
+import re  # KENSEI: image-gen slash flows
+from gateway.platforms.base import EphemeralReply  # KENSEI: ephemeral replies
 from hermes_state_ids import new_session_id as mint_session_id
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
@@ -2701,6 +2703,2294 @@ class CLICommandsMixin:
             print("  🟡 /update cancelled.")
             return False
         _say_block("  ☤ Launching update...")
+        # run() execs this on the main thread after prompt_toolkit restores terminal modes;
+        # relaunching from this daemon thread would skip cleanup (POSIX) / only end the thread (Windows).
+        self._pending_relaunch = ["update"]
+        return True
+
+    def _handle_voice_command(self, command: str):
+        """Handle /voice [on|off|tts|status] command."""
+        subcommand = _command_arg(command, lower=True) or ("off" if self._voice_mode else "on")
+        actions = {"on": self._enable_voice_mode, "off": self._disable_voice_mode,
+                   "tts": self._toggle_voice_tts, "status": self._show_voice_status}
+        if subcommand in actions:
+            actions[subcommand]()
+        else:
+            _cp(f"Unknown voice subcommand: {subcommand}", "Usage: /voice [on|off|tts|status]")
+
+    def _handle_wake_command(self, command: str):
+        """Handle /wake [on|off|status] — the 'Hey Hermes' hotword listener. The toggle IS the
+        config: on/off also writes ``wake_word.enabled`` so the choice persists; startup
+        auto-arm only reads it."""
+        subcommand = _command_arg(command, lower=True) or (
+            "off" if getattr(self, "_wake_word_active", False) else "on")  # bare /wake toggles
+        if subcommand == "on":
+            if self._start_wake_word_listener(announce=True):
+                self._persist_wake_word_enabled(True)
+        elif subcommand == "off":
+            self._stop_wake_word_listener(announce=True)
+            self._persist_wake_word_enabled(False)
+        elif subcommand == "status":
+            self._show_wake_word_status()
+        else:
+            _cp(f"Unknown wake subcommand: {subcommand}", "Usage: /wake [on|off|status]")
+
+    def _persist_wake_word_enabled(self, enabled: bool):
+        """Save ``wake_word.enabled`` so the /wake toggle sticks for future sessions."""
+        persisted = _probe("tools.wake_word", "load_wake_word_config", None)
+        if isinstance(persisted, dict) and bool(persisted.get("enabled")) == enabled:
+            return  # already persisted — don't rewrite config or re-announce
+        if _save("wake_word.enabled", enabled):
+            _cp(_dim(f"Wake word {'enabled' if enabled else 'disabled'} in config "
+                     f"(wake_word.enabled: {str(enabled).lower()})."))
+
+    # ── KENSEI CUSTOM — image-gen slash constants (ported from fork) ──
+    _STYLE_CHOICES: tuple[str, ...] = (
+        "data-atlas",
+        "mythic-tech-codex",
+        "signal-hud",
+        "technical-diorama",
+        "typographic-poster-design",
+        "vintage-print-atelier",
+        "photographic-realism",
+        "cosmic-postcard",
+        "ink-ember-studio",
+        "saga-noir",
+        "pixel-art",
+    )
+    _ASPECT_CHOICES: tuple[str, ...] = ("landscape", "square", "portrait")
+    _JOB_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+    _MODEL_CHOICES: tuple[str, ...] = ("fast-video", "animate")
+
+    def _handle_generate_image_command(self, cmd: str):
+        """Handle /generate-image — generate one private native-Codex image job.
+
+        Runs an interactive question flow collecting prompt, style, backend
+        (default codex), repeatable references, private stage root, safe job
+        id, and aspect ratio. Style and aspect-ratio are presented as numbered
+        text menus that also accept a typed value for custom entry. Displays
+        the final config and exact command, then requires confirmation before
+        executing. Invokes the shared in-process runner
+        (``tools.generate_image_runner.run_generate_image``) which drives the
+        existing content-engine image execution service directly — never
+        shells out and never duplicates generation logic.
+        """
+        import re as _re
+        from cli import _DIM, _RST, _cprint
+
+        # Canonical style ids offered in the numbered menu.  Sourced from the
+        # content engine's STYLE_LIBRARY so the picker stays in sync without a
+        # hard import (the CLI must not depend on content_engine at import
+        # time).  The user may always type a custom style id instead.
+        _STYLE_CHOICES: tuple[str, ...] = (
+            "data-atlas",
+            "mythic-tech-codex",
+            "ninth-observatory",
+            "chromatic-institute",
+            "signal-hud",
+            "technical-diorama",
+            "typographic-poster-design",
+            "vintage-print-atelier",
+            "photographic-realism",
+            "cosmic-postcard",
+            "ink-ember-studio",
+            "saga-noir",
+            "pixel-art",
+        )
+        _ASPECT_CHOICES: tuple[str, ...] = ("landscape", "square", "portrait")
+        # Mirrors content_engine.image_reference_staging._JOB_ID_RE — validated
+        # locally before spawning so a bad id is rejected without a subprocess.
+        _JOB_ID_RE = _re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+
+        # Parse inline args if provided: key=value pairs separated by '|'.
+        # This lets users pre-fill any field: /generate-image prompt=...|style=...
+        inline: dict[str, str] = {}
+        raw_args = (cmd.split(None, 1)[1].strip() if " " in cmd else "")
+        if raw_args:
+            for pair in raw_args.split("|"):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    inline[k.strip().lower().replace("-", "_")] = v.strip()
+
+        def _ask(field: str, label: str, default: str = "") -> str:
+            if field in inline:
+                return inline[field]
+            hint = f" [{default}]" if default else ""
+            try:
+                value = input(f"{label}{hint}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return ""
+            return value or default
+
+        def _menu(field: str, label: str, choices: tuple[str, ...], default: str = "") -> str:
+            """Numbered menu that also accepts a typed value (custom entry).
+
+            Accepts a number (1-based index) selecting one of *choices*, an
+            exact choice label, or any other text as a custom value.  An empty
+            reply returns *default*.  Inline pre-filled values bypass the menu.
+            """
+            if field in inline:
+                return inline[field]
+            _cprint(f"  {_DIM}{label}:{_RST}")
+            for idx, choice in enumerate(choices, start=1):
+                marker = " (default)" if choice == default and default else ""
+                _cprint(f"    {_DIM}{idx}.{_RST} {choice}{marker}")
+            _cprint(f"    {_DIM}(or type a custom value){_RST}")
+            try:
+                raw = input(f"  Choice [1-{len(choices)} / custom]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return ""
+            if not raw:
+                return default
+            # Numeric selection.
+            if raw.isdigit():
+                idx = int(raw)
+                if 1 <= idx <= len(choices):
+                    return choices[idx - 1]
+            # Exact label match (case-insensitive).
+            for choice in choices:
+                if raw.casefold() == choice.casefold():
+                    return choice
+            # Custom entry.
+            return raw
+
+        # 1. Prompt (required)
+        prompt = _ask("prompt", "Prompt")
+        if not prompt:
+            _cprint("  {_DIM}(._.) A prompt is required. Cancelled.{_RST}")
+            return
+
+        # 2. Style (required) — numbered menu + custom entry
+        style = _menu("style", "Style", _STYLE_CHOICES)
+        if not style:
+            _cprint("  {_DIM}(._.) A style is required. Cancelled.{_RST}")
+            return
+
+        # 3. Backend — default codex
+        backend = _ask("backend", "Backend (codex|local)", default="codex")
+        if backend not in ("codex", "local"):
+            _cprint(f"  {_DIM}(._.) Invalid backend '{backend}'. Must be codex or local. Cancelled.{_RST}")
+            return
+
+        # 4. References — repeatable, comma-separated URLs
+        refs_raw = _ask("references", "Reference URLs (comma-separated, or empty for none)")
+        references: list[str] = []
+        if refs_raw:
+            references = [r.strip() for r in refs_raw.split(",") if r.strip()]
+
+        # 5. Stage root (required)
+        stage_root = _ask("stage_root", "Private stage root (absolute path)")
+        if not stage_root:
+            _cprint("  {_DIM}(._.) A stage root is required. Cancelled.{_RST}")
+            return
+
+        # 6. Job ID (required) — validated locally before spawning
+        job_id = _ask("job_id", "Safe job ID (e.g. gen-20260101-abc)")
+        if not job_id:
+            _cprint("  {_DIM}(._.) A job ID is required. Cancelled.{_RST}")
+            return
+        if not _JOB_ID_RE.fullmatch(job_id):
+            _cprint(
+                f"  {_DIM}(._.) Invalid job ID '{job_id}'. "
+                f"Must be 1-64 chars, start with a letter/digit, and contain "
+                f"only letters, digits, underscores or hyphens. Cancelled.{_RST}"
+            )
+            return
+
+        # 7. Aspect ratio — numbered menu + custom entry, default landscape
+        aspect_ratio = _menu(
+            "aspect_ratio", "Aspect ratio", _ASPECT_CHOICES, default="landscape",
+        )
+        if aspect_ratio not in ("landscape", "square", "portrait"):
+            _cprint(f"  {_DIM}(._.) Invalid aspect ratio '{aspect_ratio}'. Cancelled.{_RST}")
+            return
+
+        # Display final config, require confirmation.
+        _cprint("")
+        _cprint(f"  {_DIM}── generate-image config ──{_RST}")
+        _cprint(f"  {_DIM}prompt:{_RST}       {prompt}")
+        _cprint(f"  {_DIM}style:{_RST}        {style}")
+        _cprint(f"  {_DIM}backend:{_RST}      {backend}")
+        _cprint(f"  {_DIM}references:{_RST}   {', '.join(references) if references else '(none)'}")
+        _cprint(f"  {_DIM}stage-root:{_RST}   {stage_root}")
+        _cprint(f"  {_DIM}job-id:{_RST}       {job_id}")
+        _cprint(f"  {_DIM}aspect-ratio:{_RST} {aspect_ratio}")
+
+        # Render the exact canonical content_engine.py generate-image command
+        # so the user can verify what will actually run before approving.
+        from tools.generate_image_runner import render_generate_image_command
+
+        exact_cmd = render_generate_image_command(
+            prompt=prompt,
+            style=style,
+            backend=backend,
+            references=references,
+            stage_root=stage_root,
+            job_id=job_id,
+            aspect_ratio=aspect_ratio,
+        )
+        _cprint(f"  {_DIM}── exact command ──{_RST}")
+        _cprint(f"  {exact_cmd}")
+        _cprint("")
+
+        try:
+            confirm = input("Execute this command? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            confirm = ""
+
+        if confirm != "y":
+            _cprint(f"  {_DIM}🟡 Cancelled. No image generated.{_RST}")
+            return
+
+        _cprint(f"  {_DIM}Generating…{_RST}")
+        from tools.generate_image_runner import run_generate_image
+
+        try:
+            payload = run_generate_image(
+                prompt=prompt,
+                style=style,
+                backend=backend,
+                references=references,
+                stage_root=stage_root,
+                job_id=job_id,
+                aspect_ratio=aspect_ratio,
+            )
+        except Exception as exc:
+            _cprint(f"  {_DIM}(x_x) Image generation failed: {exc}{_RST}")
+            return
+
+        _cprint(f"  ✅ Image generated successfully.")
+        _cprint(f"  {_DIM}backend:{_RST}       {payload.get('backend', {})}")
+        _cprint(f"  {_DIM}job-id:{_RST}       {payload.get('job_id', '')}")
+        _cprint(f"  {_DIM}output-path:{_RST}  {payload.get('output_path', '')}")
+        _cprint(f"  {_DIM}sha256:{_RST}       {payload.get('sha256', '')}")
+
+    # /localgen — local video generation via ComfyUI (Wan2.2)
+    # ------------------------------------------------------------------
+
+    def _handle_localgen_command(self, cmd: str):
+        """Handle /localgen — generate video locally via ComfyUI (Wan2.2).
+
+        A simpler, single-shot flow than /generate-image: the only required
+        fields are a model and a prompt; ``animate`` additionally needs a
+        reference image. We deliberately do NOT offer a guided multi-step
+        interaction (unlike /generate-image) because the surface is small and
+        the user is a ComfyUI novice — one line, plain words, done.
+
+        Inline args use the same ``key=value|key=value`` grammar as
+        /generate-image. Unknown models and missing-images are surfaced as
+        plain-English errors, never masked by a VRAM message.
+
+        The backend (``tools/localgen_runner``) shells out to the Sirvir
+        fleet's ``localgen.py`` and parses its JSON — it does not import
+        ComfyUI machinery into the CLI process.
+        """
+        import re as _re
+        from cli import _DIM, _RST, _cprint
+
+        # Offered model ids. Sourced from localgen.py's MODELS keys; kept
+        # inline so the CLI never imports the backend at module load time.
+        _MODEL_CHOICES: tuple[str, ...] = ("fast-video", "animate")
+
+        # Parse inline args: key=value pairs separated by '|'.
+        inline: dict[str, str] = {}
+        raw_args = (cmd.split(None, 1)[1].strip() if " " in cmd else "")
+        if raw_args:
+            for pair in raw_args.split("|"):
+                pair = pair.strip()
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    inline[k.strip().lower().replace("-", "_")] = v.strip()
+
+        def _ask(field: str, label: str, default: str = "") -> str:
+            if field in inline:
+                return inline[field]
+            hint = f" [{default}]" if default else ""
+            try:
+                value = input(f"{label}{hint}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return ""
+            return value or default
+
+        def _menu(field: str, label: str, choices: tuple[str, ...], default: str = "") -> str:
+            if field in inline:
+                return inline[field]
+            _cprint(f"  {_DIM}{label}:{_RST}")
+            for idx, choice in enumerate(choices, start=1):
+                marker = " (default)" if choice == default and default else ""
+                _cprint(f"    {_DIM}{idx}.{_RST} {choice}{marker}")
+            try:
+                raw = input("  Choice [1/2 or press Enter for default]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return default
+            if not raw:
+                return default
+            if raw.isdigit():
+                idx = int(raw)
+                if 1 <= idx <= len(choices):
+                    return choices[idx - 1]
+            for choice in choices:
+                if raw.casefold() == choice.casefold():
+                    return choice
+            return raw
+
+        # 1. Model (required) — numbered menu + custom entry
+        model = _menu("model", "Model", _MODEL_CHOICES, default="fast-video")
+        if model not in _MODEL_CHOICES:
+            _cprint(f"  {_DIM}(._.) Unknown model '{model}'. Use fast-video or animate. Cancelled.{_RST}")
+            return
+
+        # 2. Prompt (required)
+        prompt = _ask("prompt", "Prompt")
+        if not prompt:
+            _cprint("  {_DIM}(._.) A prompt is required. Cancelled.{_RST}")
+            return
+
+        # 3. Image — only needed for animate
+        image: str | None = None
+        if model == "animate":
+            image = _ask("image", "Reference image (path or URL)")
+            if not image:
+                _cprint("  {_DIM}(._.) 'animate' needs a reference image. Cancelled.{_RST}")
+                return
+
+        # 4. Optional knobs
+        seed_raw = _ask("seed", "Seed (empty for random)")
+        seed = int(seed_raw) if seed_raw.isdigit() else None
+        length_raw = _ask("length", "Clip length in frames (empty for default 49)")
+        length = int(length_raw) if length_raw.isdigit() else None
+        output_dir_raw = _ask("output_dir", "Output directory (empty for ~/localgen-output)").strip()
+        output_dir = output_dir_raw or None
+
+        # Display final config, require confirmation.
+        _cprint("")
+        _cprint(f"  {_DIM}── localgen config ──{_RST}")
+        _cprint(f"  {_DIM}model:{_RST}        {model}")
+        _cprint(f"  {_DIM}prompt:{_RST}       {prompt}")
+        _cprint(f"  {_DIM}image:{_RST}        {image or '(none)'}")
+        _cprint(f"  {_DIM}seed:{_RST}         {seed if seed is not None else '(random)'}")
+        _cprint(f"  {_DIM}length:{_RST}       {length if length is not None else 49} frames")
+
+        from tools.localgen_runner import render_localgen_command
+
+        exact_cmd = render_localgen_command(
+            model=model, prompt=prompt, image=image, seed=seed,
+            length=length, output_dir=output_dir,
+        )
+        _cprint(f"  {_DIM}── exact command ──{_RST}")
+        _cprint(f"  {exact_cmd}")
+        _cprint("")
+
+        try:
+            confirm = input("Generate this video? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            confirm = ""
+
+        if confirm != "y":
+            _cprint(f"  {_DIM}🟡 Cancelled. No video generated.{_RST}")
+            return
+
+        _cprint(f"  {_DIM}Generating… (this takes a few minutes){_RST}")
+        from tools.localgen_runner import run_localgen, LOCALGEN_ERROR_MESSAGES, LocalGenError
+
+        try:
+            payload = run_localgen(
+                model=model, prompt=prompt, image=image, seed=seed,
+                length=length, output_dir=output_dir,
+            )
+        except LocalGenError as exc:
+            msg = LOCALGEN_ERROR_MESSAGES.get(exc.error_code, str(exc.detail))
+            _cprint(f"  {_DIM}(x_x) {msg}{_RST}")
+            return
+
+        if payload.get("status") != "success":
+            code = payload.get("error_code", "unknown")
+            _cprint(f"  {_DIM}(x_x) {LOCALGEN_ERROR_MESSAGES.get(code, payload.get('error', 'Generation failed.'))}{_RST}")
+            return
+
+        _cprint("  ✅ Video generated successfully.")
+        _cprint(f"  {_DIM}model:{_RST}        {payload.get('model', '')}")
+        _cprint(f"  {_DIM}elapsed:{_RST}      {payload.get('elapsed_seconds', '')}s")
+        for out in payload.get("outputs", []):
+            _cprint(f"  {_DIM}output:{_RST}       {out.get('file', '')}")
+
+    # ── KENSEI CUSTOM — /control (Control Room read model) (ported) ──
+    def _get_control_room_profile(self) -> str:
+        """Return the profile label for this CLI session (default unless
+        explicitly overridden)."""
+        return str(getattr(self, "profile", "") or "default")
+
+    def _handle_control_command(self, cmd_original: str) -> None:
+        """Handle /control — open the Control Room read model in plain text.
+
+        Builds a profile-scoped snapshot through the Control Room service and
+        renders the requested section (home by default). Pure read: no
+        mutation, no overlay — safe over SSH and in non-interactive shells.
+        """
+        from cli import _cprint
+        from control_room.service import ControlRoomService
+        from control_room.text import normalize_section, render_section
+
+        parts = cmd_original.split(None, 1)
+        section = normalize_section(parts[1].strip() if len(parts) > 1 else "home")
+
+        # Live CLI context feeds the agents provider; everything else uses the
+        # real authoritative readers through the default providers.
+        context = {}
+        running = getattr(self, "_running_agents", None)
+        if isinstance(running, dict) and running:
+            context["running_agents"] = running
+        running_ts = getattr(self, "_running_agents_ts", None)
+        if isinstance(running_ts, dict):
+            context["running_agents_ts"] = running_ts
+
+        service = ControlRoomService()
+        snapshot = service.build_snapshot(profile=self._get_control_room_profile(), context=context)
+        _cprint(render_section(section, snapshot))
+    # ── END KENSEI CUSTOM ──
+
+    # ── KENSEI CUSTOM: /mode command (plan / gods_plan / recon / auto) ──
+    def _handle_mode_command(self, cmd: str):
+        """Handle /mode — set agent execution mode.
+
+        Prompts live in hermes_cli/mode_prompts.py (single source of
+        truth — cli.py and tui_gateway/server.py both import from
+        there).  See skill `agent-modes`.  Must survive upstream merges.
+        """
+        # ── KENSEI CUSTOM: shared mode prompts (plan/UltraPlan/recon/auto) ──
+        from hermes_cli.mode_prompts import (                    # KENSEI CUSTOM
+            get_mode_prompt, mode_label,                         # KENSEI CUSTOM
+            validate_mode,                                        # KENSEI CUSTOM
+        )
+        from cli import _cprint, _DIM, _RST                                                        # KENSEI CUSTOM
+        # ── END KENSEI CUSTOM ──
+
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if not arg or arg == "status":
+            mode = getattr(self.agent, "agent_mode", "auto") or "auto"
+            _cprint(f"  mode: {mode_label(mode)}")
+            if mode != "auto":
+                _cprint(f"  {_DIM}/mode auto to reset{_RST}")
+            return
+
+        # Validate via the shared contract (case-insensitive).  The
+        # user-visible error text is preserved exactly — we catch
+        # ValueError and re-emit the original messages rather than
+        # surfacing validate_mode()'s own wording.
+        try:
+            mode = validate_mode(arg)
+        except ValueError:
+            _cprint(f"  \033[1;31mUnknown mode: {arg}{_RST}")
+            _cprint(f"  Valid modes: auto, plan, gods_plan, recon")
+            return
+
+        prompt = get_mode_prompt(mode)
+        previous_mode = "auto"
+        if hasattr(self, "agent") and self.agent:
+            previous_mode = getattr(self.agent, "agent_mode", "auto") or "auto"
+            self.agent.agent_mode = mode
+            self.agent.ephemeral_system_prompt = prompt
+        _cprint(f"  mode → {mode_label(mode)}")
+        if previous_mode != mode:
+            _cprint(f"  {_DIM}Note: changing mode resets the model prompt cache on the next request.{_RST}")
+        if mode != "auto":
+            _cprint(f"  {_DIM}/mode auto to reset{_RST}")
+
+    # ── KENSEI CUSTOM: detect current mode for status bar ──
+
+    def _handle_image_command(self, cmd_original: str):
+        """Handle /image <path> — attach a local image file for the next prompt."""
+        from cli import (
+            _IMAGE_EXTENSIONS, _resolve_attachment_path, _split_path_input, _termux_example_image_path)
+        raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
+        if not raw_args:
+            hint = _termux_example_image_path() if _is_termux_environment() else "/path/to/image.png"
+            return _cp(_dim_line(f'Usage: /image <path>  e.g. /image {hint}'))
+        path_token, _remainder = _split_path_input(raw_args)
+        image_path = _resolve_attachment_path(path_token)
+        if image_path is None:
+            return _cp(_dim_line(f'(>_<) File not found: {path_token}'))
+        if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
+            return _cp(_dim_line(f'(._.) Not a supported image file: {image_path.name}'))
+        self._attached_images.append(image_path)
+        _cp(f"  📎 Attached image: {image_path.name}")
+        if _remainder:
+            _cp(_dim_line(f'Now type your prompt (or use --image in single-query mode): {_remainder}'))
+        elif _is_termux_environment():
+            example = _termux_example_image_path(image_path.name)
+            tip = f'Tip: type your next message, or run hermes chat -q --image {example} "What do you see?"'
+            _cp(_dim_line(tip))
+
+    # ---- /tools, /profile -----------------------------------------------------------------
+    def _handle_tools_command(self, cmd: str):
+        """Handle /tools [list|disable|enable]. Bare shows the tool list; ``list`` shows per-toolset
+        status; disable/enable save to config and reset the session so the new tool set takes
+        effect cleanly (no prompt-cache breakage mid-conversation)."""
+        parts = _shlex_args(cmd)
+        subcommand = parts[0] if parts else ""
+        if subcommand not in {"list", "disable", "enable"}:
+            return self.show_tools()
+        if subcommand == "list":
+            return self._run_tools_config(tools_action="list", platform="cli")
+        names = parts[1:]
+        if not names:
+            return _pr(f"(._.) Usage: /tools {subcommand} <name> [name ...]",
+                       f"  Built-in toolset:  /tools {subcommand} web",
+                       f"  MCP tool:          /tools {subcommand} github:create_issue")
+        # Typing the command is consent. Do NOT use input() — it hangs in prompt_toolkit's loop.
+        verb = "Disabling" if subcommand == "disable" else "Enabling"
+        _cp(_accent(f"{verb} {', '.join(names)}..."))
+        self._run_tools_config(tools_action=subcommand, names=names, platform="cli")
+        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.config import load_config
+        self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
+        self.new_session()
+        _cp(_dim("Session reset. New tool configuration is active."))
+
+    def _run_tools_config(self, **ns) -> None:
+        """Run ``tools_disable_enable_command``. Inside the interactive TUI its ANSI print() output
+        is captured (isatty=True so colors still render) and re-emitted through _cprint so
+        patch_stdout's StdoutProxy doesn't garble the escapes; standalone/tests call straight through."""
+        from argparse import Namespace
+        from hermes_cli.tools_config import tools_disable_enable_command
+        if getattr(self, "_app", None) is None:
+            return tools_disable_enable_command(Namespace(**ns))
+        buf = _TTYBuf()
+        with redirect_stdout(buf):
+            tools_disable_enable_command(Namespace(**ns))
+        _cp(*buf.getvalue().splitlines())
+
+    def _handle_profile_command(self):
+        """Display active profile name and home directory."""
+        from hermes_cli.slash_exec import CommandContext, execute_command
+        reply = execute_command("profile", CommandContext(surface="cli"))
+        _say_block(f"  Profile: {reply.data['profile']}", f"  Home:    {reply.data['home']}")
+
+    # ---- /handoff -------------------------------------------------------------------------
+
+    _HANDOFF_PENDING_TIMEOUT = 60.0
+    _HANDOFF_RUNNING_TIMEOUT = 900.0  # full synthetic agent turn + delivery
+    _HANDOFF_HEARTBEAT_EVERY = 30.0
+
+    @staticmethod
+    def _handoff_keep(*lines: str) -> bool:
+        """Print ``lines`` and keep the CLI session (the True verdict of /handoff)."""
+        _cp(*lines)
+        return True
+
+    def _handle_handoff_command(self, cmd_original: str) -> bool:
+        """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
+
+        Validate target → prepare session row → mark pending → block-poll (see ``_handoff_wait``).
+        Returns False only on ``completed`` (caller exits like /quit); True keeps the session."""
+        platform_name = _command_arg(cmd_original).lower()
+        if not platform_name:
+            return self._handoff_keep(
+                "  Usage: /handoff <platform>",
+                "  Hands the current session off to that platform's home channel.",
+                "  The CLI session ends here; resume it later with /resume.")
+        home = self._handoff_validate_target(platform_name)
+        if home is None:
+            return True
+        session_title = self._handoff_prepare_session()
+        if session_title is None:
+            return True
+        if not self._session_db.request_handoff(self.session_id, platform_name):
+            return self._handoff_keep(
+                "  Session is already in flight for handoff. Wait for it to settle, then retry.")
+        _cp(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).",
+            "  Waiting for the gateway to pick it up...")
+        return self._handoff_wait(platform_name, session_title)
+
+    def _handoff_validate_target(self, platform_name: str):
+        """Resolve the destination home channel via the live gateway config; None (after printing
+        the reason) when the platform is unknown, disabled, or has no home channel."""
+        try:
+            from gateway.config import load_gateway_config, Platform
+        except Exception as exc:  # pragma: no cover — gateway pkg always shipped
+            return _cp(f"  Could not load gateway config: {exc}")
+        try:
+            platform = Platform(platform_name)
+        except (ValueError, KeyError):
+            return _cp(f"  Unknown platform '{platform_name}'.")
+        try:
+            gw_config = load_gateway_config()
+        except Exception as exc:
+            return _cp(f"  Could not load gateway config: {exc}")
+        pcfg = gw_config.platforms.get(platform)
+        if not pcfg or not pcfg.enabled:
+            # Relay aliasing: a relay-fronted gateway has only a RELAY block yet /handoff discord
+            # is deliverable. UX pre-check only — the gateway watcher re-checks before dispatch.
+            relay_fronts = False
+            with suppress(Exception):
+                from gateway.relay import relay_platform_identities
+                relay_cfg = gw_config.platforms.get(Platform.RELAY)
+                if relay_cfg and relay_cfg.enabled:
+                    relay_fronts = platform_name in {p for p, _ in relay_platform_identities()}
+            if not relay_fronts:
+                return _cp(f"  Platform '{platform_name}' is not configured/enabled in the "
+                           "gateway.")
+        home = gw_config.get_home_channel(platform)
+        if not home or not home.chat_id:
+            return _cp(f"  No home channel configured for {platform_name}.",
+                       "  Set one with /sethome on the destination chat first.")
+        return home
+
+    def _handoff_prepare_session(self):
+        """Refuse mid-turn, make sure a SessionDB handle + session row exist, and return the
+        display title (None after printing why the handoff cannot start)."""
+        # An in-flight agent run would race the gateway's switch_session and the synthetic turn.
+        if getattr(self, "_agent_running", False):
+            return _cp("  Agent is busy. Wait for the current turn to finish, then retry /handoff.")
+        if not self._session_db:
+            with suppress(Exception):
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+        if not self._session_db:
+            return _cp(_db_unavailable_line())
+        # Ensure the session row exists (an empty session has flushed nothing yet): the gateway
+        # needs a row to switch_session onto; set_session_title's INSERT OR IGNORE creates it.
+        try:
+            if not self._session_db.get_session(self.session_id):
+                self._session_db.set_session_title(self.session_id, f"handoff-{self.session_id[:8]}")
+        except Exception as exc:
+            return _cp(f"  Could not ensure session row in state.db: {exc}")
+        session_title = ""
+        with suppress(Exception):
+            session_title = (self._session_db.get_session(self.session_id) or {}).get("title") or ""
+        return session_title or self.session_id[:8]
+
+    def _handoff_wait(self, platform_name: str, session_title: str) -> bool:
+        """Two-phase 0.5s poll. PENDING (unclaimed): 60s, then CAS-fail the row so the user can
+        retry (a claim racing this instant wins). RUNNING (claimed): the gateway replays the
+        transcript via a synthetic turn (routinely >60s) — wait 15 min with heartbeats and on
+        timeout do NOT touch the row; failing it here was the split-brain bug."""
+        pending_deadline = time.time() + self._HANDOFF_PENDING_TIMEOUT
+        running_deadline = None
+        next_heartbeat = None
+        last_state = "pending"
+        while True:
+            try:
+                state_row = self._session_db.get_handoff_state(self.session_id)
+            except Exception:
+                state_row = None
+            current = (state_row or {}).get("state") or "pending"
+            if current != last_state:
+                if current == "running":
+                    _cp("  Gateway picked it up; transferring...")
+                    running_deadline = time.time() + self._HANDOFF_RUNNING_TIMEOUT
+                    next_heartbeat = time.time() + self._HANDOFF_HEARTBEAT_EVERY
+                last_state = current
+            if current == "completed":
+                _cp("", f"  ↻ Handoff complete. The session is now active on {platform_name}.",
+                    f"  Resume it on this CLI later with: /resume {session_title}", "")
+                # _run_cleanup must NOT finalize the row on exit: the gateway owns it now, and an
+                # end_reason set under it would drop the handoff leg from session history/search.
+                # See #88234.
+                from cli import _handed_off_session_ids
+                _handed_off_session_ids.add(self.session_id)
+                self._should_exit = True  # same exit semantics as /quit
+                return False
+            if current == "failed":
+                err = (state_row or {}).get("error") or "unknown error"
+                return self._handoff_keep(
+                    f"  Handoff failed: {err}",
+                    "  Your CLI session is intact. Try /handoff again, or /resume on the platform manually.")
+            now = time.time()
+            if current == "pending":
+                if now >= pending_deadline:
+                    break
+            else:  # running
+                if next_heartbeat is not None and now >= next_heartbeat:
+                    _cp("  Still transferring (the agent is replaying your session on the destination)...")
+                    next_heartbeat = now + self._HANDOFF_HEARTBEAT_EVERY
+                if running_deadline is not None and now >= running_deadline:
+                    # Do NOT fail the row: the gateway owns it (split-brain bug otherwise).
+                    return self._handoff_keep(
+                        "  The gateway is taking unusually long to finish the transfer.",
+                        f"  Check {platform_name} — the session may still arrive there.",
+                        "  This CLI is no longer waiting. Avoid continuing this session here;",
+                        "  if nothing arrives, retry /handoff once the state settles.")
+            time.sleep(0.5)
+        try:  # pending timed out: CAS-clear so the user can retry
+            self._session_db.fail_handoff(
+                self.session_id, "timed out waiting for gateway", only_states=("pending",))
+        except TypeError:
+            # Older SessionDB without only_states (mixed installs): legacy unconditional fail.
+            with suppress(Exception):
+                self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
+        except Exception:
+            pass
+        return self._handoff_keep(
+            "  Timed out waiting for the gateway. Is `hermes gateway` running?",
+            "  Your CLI session is intact.")
+
+    # ---- /resume, /sessions, /branch ------------------------------------------------------
+    def _handle_resume_command(self, cmd_original: str) -> None:
+        """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
+        from cli import _sync_process_session_id
+        target = _command_arg(cmd_original)
+        # Users copy the help text's placeholder brackets/quotes verbatim (``/resume <abc123>``).
+        if len(target) >= 2 and target[0] + target[-1] in {"<>", "[]", '""', "''"}:
+            target = target[1:-1].strip()
+        if not target:
+            _cp("  Usage: /resume <number|session_id_or_title>")
+            if self._show_recent_sessions(reason="resume"):
+                # Arm a one-shot bare-number selection; must be the same list the table showed
+                # and the numbered branch resolves (all use _list_recent_sessions(limit=10)).
+                # Arm a one-shot pending-resume selection so the user can type just the number (`3`) on the
+                # next line instead of having to retype `/resume 3`. The list here must match the one shown
+                # by _show_recent_sessions and used for index resolution below — all three go through
+                # _list_recent_sessions(limit=10). See #34584.
+                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+                return
+            return _cp("  Tip:   Use /history or `hermes sessions list` to find sessions.")
+        # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
+        self._pending_resume_sessions = None
+        if not self._session_db:
+            return _cp(_db_unavailable_line())
+        resolved = self._resolve_resume_target(target)
+        if resolved is None:
+            return
+        target_id, session_meta = resolved
+        if target_id == self.session_id:
+            return _cp("  Already on that session.")
+        old_session_id = self.session_id
+        _end_current_session(self, "resumed_other")
+        self.session_id, self._resumed, self._pending_title = target_id, True, None
+        _sync_process_session_id(target_id)
+        # One lineage SELECT, two projections: model_history is alternation-repaired for live
+        # replay (heals a durable user;user once); display_history is verbatim (as startup --resume).
+        model_history, display_history = self._session_db.get_resume_conversations(target_id)
+        self.conversation_history = _without_session_meta(model_history)
+        self._resume_display_history = _without_session_meta(display_history)
+        with suppress(Exception):  # re-open the target session so it's not marked as ended
+            self._session_db.reopen_session(target_id)
+        _sync_agent_to_session(self, target_id, parent_session_id=old_session_id, reason="resume")
+        title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
+        from agent.context_compressor import is_user_originated_turn
+        # Count only user-originated turns: legacy compaction handoffs are durable role=user rows
+        # without display_kind.
+        msg_count = len([m for m in self._resume_display_history if is_user_originated_turn(m)])
+        if self.conversation_history:
+            _cp(f"  ↻ Resumed session {target_id}{title_part}"
+                f" ({_plural(msg_count, 'user message')}, {len(self.conversation_history)} total)")
+            self._display_resumed_history()
+        else:
+            _cp(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
+        # Same contract as startup --resume: retarget the tool cwd, restore the persisted YOLO
+        # bypass (approval session key changed) and the model/provider (else config default).
+        # Retarget the process + tool cwd to where the session was started, so a mid-chat /resume (and
+        # /sessions <id>, which delegates here) lands in the same directory as a startup `hermes
+        # -c`/`--resume`. The startup resume paths already call this; without it, the terminal/code-exec
+        # tools and relative-path resolution keep operating in the wrong repo. Idempotent and a no-op when
+        # the session recorded no cwd. See #38562.
+        self._restore_session_cwd(session_meta)
+        self._restore_session_yolo(session_meta)
+        self._restore_session_model(session_meta)
+
+    def _resolve_resume_target(self, target: str):
+        """``(session_id, meta)`` for a numbered selection, title, or id; None after printing why
+        it could not be resolved. An empty compression-chain head redirects to the descendant
+        that actually holds the transcript."""
+        if target.isdigit():
+            sessions = self._list_recent_sessions(limit=10)
+            index = int(target)
+            if index < 1 or index > len(sessions):
+                return _cp(f"  Resume index {index} is out of range.",
+                           "  Use /resume with no arguments to see available sessions.")
+            target_id = sessions[index - 1]["id"]
+        else:
+            from hermes_cli.main import _resolve_session_by_name_or_id
+            target_id = _resolve_session_by_name_or_id(target) or target
+        session_meta = self._session_db.get_session(target_id)
+        if not session_meta:
+            return _cp(f"  Session not found: {target}",
+                       "  Use /sessions or `hermes sessions list` to see available sessions.")
+        try:
+            # If the target is the empty head of a compression chain, redirect to the descendant that
+            # actually holds the transcript. See #15000.
+            resolved_id = self._session_db.resolve_resume_session_id(target_id)
+        except Exception:
+            resolved_id = target_id
+        if resolved_id and resolved_id != target_id:
+            _cp(f"  Session {target_id} was compressed into {resolved_id}; "
+                f"resuming the descendant with your transcript.")
+            target_id = resolved_id
+            session_meta = self._session_db.get_session(target_id) or session_meta
+        return target_id, session_meta
+
+    def _handle_sessions_command(self, cmd_original: str) -> None:
+        """Handle /sessions [list|<id_or_title>] — bare/``list`` prints the recent-sessions table;
+        an explicit target delegates to /resume so both spellings behave identically."""
+        arg = _command_arg(cmd_original)
+        if arg and arg.lower() not in {"list", "ls", "browse"}:
+            self._handle_resume_command(f"/resume {arg}")
+        elif not self._session_db:
+            _cp(_db_unavailable_line())
+        elif not self._show_recent_sessions(reason="sessions"):
+            _cp("  (._.) No previous sessions yet.")
+
+    def _handle_branch_command(self, cmd_original: str) -> None:
+        """Handle /branch [name] — fork the current session into a new independent copy.
+
+        Copies the full conversation history to a new session so the user can
+        explore a different approach without losing the original session state.
+        Inspired by Claude Code's /branch command.
+        """
+        from cli import _cprint, _sync_process_session_id
+        if not self.conversation_history:
+            _cprint("  No conversation to branch — send a message first.")
+            return
+
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
+            return
+
+        parts = cmd_original.split(None, 1)
+        branch_name = parts[1].strip() if len(parts) > 1 else ""
+
+        # Generate the new session ID
+        now = datetime.now()
+        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+        short_uuid = uuid.uuid4().hex[:6]
+        new_session_id = f"{timestamp_str}_{short_uuid}"
+
+        # Determine branch title
+        if branch_name:
+            branch_title = branch_name
+        else:
+            # Auto-generate from the current session title
+            current_title = None
+            if self._session_db:
+                current_title = self._session_db.get_session_title(self.session_id)
+            base = current_title or "branch"
+            branch_title = self._session_db.get_next_title_in_lineage(base)
+
+        # Save the current session's state before branching
+        parent_session_id = self.session_id
+
+        # Flush un-persisted messages before ending the old session (#47202).
+        if self.agent:
+            try:
+                self.agent._flush_messages_to_session_db(
+                    self.conversation_history,
+                    conversation_history=self.conversation_history,
+                )
+            except Exception:
+                pass
+
+        # End the old session
+        try:
+            self._session_db.end_session(self.session_id, "branched")
+        except Exception:
+            pass
+
+        # Create the new session with parent link.
+        # Persist a stable ``_branched_from`` marker in model_config so
+        # list_sessions_rich() can keep the branch visible in /resume and
+        # /sessions even after the parent is reopened and re-ended with a
+        # different end_reason (e.g. tui_shutdown overwriting 'branched').
+        try:
+            self._session_db.create_session(
+                session_id=new_session_id,
+                source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                model=self.model,
+                model_config={
+                    "max_iterations": self.max_turns,
+                    "reasoning_config": self.reasoning_config,
+                    "_branched_from": parent_session_id,
+                },
+                parent_session_id=parent_session_id,
+            )
+        except Exception as e:
+            _cprint(f"  Failed to create branch session: {e}")
+            return
+
+        # Copy conversation history to the new session in bounded-chunk
+        # transactions (see #23254) instead of one txn per row. Best-effort
+        # like the old loop — a failed copy still yields a usable branch.
+        try:
+            self._session_db.append_messages_batch(
+                new_session_id,
+                [
+                    {
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content"),
+                        "tool_name": msg.get("tool_name") or msg.get("name"),
+                        "tool_calls": msg.get("tool_calls"),
+                        "tool_call_id": msg.get("tool_call_id"),
+                        "reasoning": msg.get("reasoning"),
+                        "reasoning_details": msg.get("reasoning_details"),
+                        "codex_reasoning_items": msg.get("codex_reasoning_items"),
+                        "codex_message_items": msg.get("codex_message_items"),
+                        # Keep the api_content sidecar so the branch's first turn
+                        # replays the parent's exact wire bytes (warm provider
+                        # prompt cache) instead of a full cold prefill.
+                        "api_content": extract_api_content_sidecar(msg),
+                        "timestamp": msg.get("timestamp"),
+                    }
+                    for msg in self.conversation_history
+                ],
+                chunk_rows=500,
+            )
+        except Exception:
+            pass  # Best-effort copy
+
+        # Set title on the branch
+        try:
+            self._session_db.set_session_title(new_session_id, branch_title)
+        except Exception:
+            pass
+
+        # Switch to the new session
+        self._transfer_session_yolo(self.session_id, new_session_id)
+        self.session_id = new_session_id
+        self.session_start = now
+        self._pending_title = None
+        self._resumed = True  # Prevents auto-title generation
+        _sync_process_session_id(new_session_id)
+
+        # Sync the agent
+        if self.agent:
+            previous_todo_store = getattr(self.agent, "_todo_store", None)
+            previous_todo_state = (
+                previous_todo_store.snapshot_state()
+                if previous_todo_store is not None
+                and hasattr(previous_todo_store, "snapshot_state")
+                else None
+            )
+            self.agent.session_id = new_session_id
+            self.agent.session_start = now
+            self.agent.reset_session_state()
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                self.agent._last_flushed_db_idx = len(self.conversation_history)
+            if hasattr(self.agent, "_todo_store"):
+                try:
+                    from agent.todo_state import build_todo_store
+                    self.agent._todo_store = build_todo_store(
+                        self.agent, fallback_state=previous_todo_state
+                    )
+                    todo_panel_state = getattr(self, "_todo_panel_state", None)
+                    if todo_panel_state is not None:
+                        todo_panel_state.close()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+
+            # Notify memory providers that session_id forked to a new branch.
+            # reset=False — the branched session carries the transcript
+            # forward, so provider state tracks the lineage. parent_session_id
+            # links the branch back to the original. See #6672.
+            try:
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None:
+                    _mm.on_session_switch(
+                        new_session_id,
+                        parent_session_id=parent_session_id or "",
+                        reset=False,
+                        reason="branch",
+                    )
+            except Exception:
+                pass
+
+        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        _cprint(
+            f"  ⑂ Branched session \"{branch_title}\""
+            f" ({msg_count} user message{'s' if msg_count != 1 else ''})"
+        )
+        _cprint(f"  Original session: {parent_session_id}")
+        _cprint(f"  Branch session:   {new_session_id}")
+    def _handle_worktree_command(self, cmd_original: str) -> None:
+        """Handle /worktree [new [name]|list|prune [--dry-run]] — isolated git worktrees.
+        ``new`` moves this session into the tree (as ``hermes -w``: kept on exit only with
+        unpushed commits); ``prune`` never deletes tracked changes, unique commits, or in-use trees."""
+        import cli as _cli
+        parts = cmd_original.split(None, 2)
+        sub = parts[1].lower() if len(parts) > 1 else ""
+        rest = parts[2].strip() if len(parts) > 2 else ""
+        repo_root = _cli._git_repo_root()
+        if not sub or sub in {"status", "show"}:
+            active = _cli._active_worktree
+            if active:
+                _pr(f"  Active worktree: {active['path']}", f"  Branch: {active['branch']}")
+            else:
+                print("  No active worktree for this session.")
+            if repo_root:
+                _pr("  /worktree new [name] — create one and move this session into it",
+                    "  /worktree prune      — reclaim stale trees and merged branches")
+            else:
+                print("  (not inside a git repository)")
+            return
+        handler = _WORKTREE_SUBCOMMANDS.get(sub)
+        if handler is None:
+            return _pr(f"  Unknown /worktree subcommand: {sub}",
+                       "  Usage: /worktree [new [name] | list]")
+        if not repo_root:
+            print("  ❌ /worktree new requires being inside a git repository."
+                  if handler == "_worktree_new" else "  Not inside a git repository.")
+            return
+        getattr(self, handler)(repo_root, rest)
+
+    def _worktree_prune(self, repo_root: str, rest: str) -> None:
+        import cli as _cli
+        from hermes_cli import worktree_gc
+        rest = rest.lower()
+        dry_run = "--dry-run" in rest or "-n" in rest.split()
+        active = _cli._active_worktree
+        tree_records = worktree_gc.audit_worktrees(repo_root, with_sizes=False)
+        if active:
+            # Never reap the tree this session is sitting in, even if judged clean+merged.
+            active_path = str(active.get("path") or "")
+            tree_records = [record for record in tree_records if record.path != active_path]
+        actions = worktree_gc.reclaim_worktrees(repo_root, dry_run=dry_run, records=tree_records)
+        actions += worktree_gc.reclaim_branches(repo_root, dry_run=dry_run)
+        if actions:
+            _pr(*(f"  {line}" for line in actions),
+                f"  {len(actions)} action(s) {'planned' if dry_run else 'done'}.")
+        else:
+            print("  Nothing to reclaim — remaining trees/branches carry real work.")
+        kept = [r for r in tree_records
+                if r.verdict == "keep" and "kanban" not in r.reason and "in use" not in r.reason]
+        if kept:
+            _pr(f"  Preserved {len(kept)} tree(s) with real work:",
+                *(f"    {record.name}: {record.reason}" for record in kept))
+
+    def _worktree_list(self, repo_root: str, rest: str) -> None:
+        try:
+            result = subprocess.run(
+                ["git", "worktree", "list"], capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=10, cwd=repo_root)
+            out = result.stdout.strip() if result.returncode == 0 else ""
+        except Exception:
+            out = ""
+        _pr(*(f"  {line}" for line in out.splitlines()) if out else ("  Could not list worktrees.",))
+
+    def _worktree_new(self, repo_root: str, rest: str) -> None:
+        import cli as _cli
+        from hermes_cli.config import load_config
+        try:
+            sync_base = bool(load_config().get("worktree_sync", True))
+        except Exception:
+            sync_base = True
+        wt_info = _cli._setup_worktree(repo_root=repo_root, sync_base=sync_base, name=rest or None)
+        if not wt_info:
+            return  # _setup_worktree already printed the failure
+        # Retarget the session's terminal/file tools at the new tree (as `hermes -w` does).
+        try:
+            os.chdir(wt_info["path"])
+        except OSError as e:
+            print(f"  ⚠ Created worktree but could not enter it: {e}")
+        os.environ["TERMINAL_CWD"] = wt_info["path"]
+        # Same keep-if-unpushed cleanup as `hermes -w`. Only one tree is "active" per process;
+        # an earlier one keeps its own atexit registration (explicit info arg).
+        _cli._active_worktree = wt_info
+        atexit.register(_cli._cleanup_worktree, wt_info)
+        _pr(f"  ✅ Worktree ready: {wt_info['path']}", f"  Branch: {wt_info['branch']}",
+            "  Terminal and file tools now operate in the worktree.")
+
+    # ---- /personality, /pet, /hatch -------------------------------------------------------
+    def _handle_personality_command(self, cmd: str):
+        """Handle /personality [name] — list or set a predefined personality. All resolution and
+        persistence goes through hermes_cli.personality, the single owner of personality state."""
+        from hermes_cli.personality import (
+            describe_personality, normalize_personality_name, persist_personality, prompt_text,
+            resolve_personality)
+        personality_name = _command_arg(cmd)
+        if not personality_name:
+            try:
+                from hermes_cli.config import read_raw_config
+                current = normalize_personality_name(
+                    (read_raw_config().get("display") or {}).get("personality", ""))
+            except Exception:
+                current = ""
+            _pr("", "+" + "-" * 50 + "+", "|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|",
+                "+" + "-" * 50 + "+", "",
+                f" {' *' if not current else '  '}{'none':<12} - (no personality overlay)")
+            for name, prompt in self.personalities.items():
+                marker = " *" if name == current else "  "
+                print(f" {marker}{name:<12} - {describe_personality(prompt)}")
+            return _pr("", "  Usage: /personality <name>   (* = active)", "")
+        try:
+            name, personality_prompt = resolve_personality(personality_name, getattr(self, "config", None))
+        except ValueError:
+            print(f"(._.) Unknown personality: {personality_name.lower()}")
+            return print(f"  Available: none, {', '.join(self.personalities.keys())}")
+        saved = persist_personality(name)
+        scope = "(saved to config)" if saved else "(session only)"
+        face = "(^_^)b" if saved else "(^_^)"
+        if not name:
+            # Neutral reset — fall back to the user-owned manual prompt.
+            try:
+                from hermes_cli.config import cfg_get, read_raw_config
+                self.system_prompt = prompt_text(
+                    cfg_get(read_raw_config(), "agent", "system_prompt", default=""))
+            except Exception:
+                self.system_prompt = ""
+            self.agent = None  # Force re-init
+            _pr(f"{face} Personality cleared {scope}",
+                "  No personality overlay — using base agent behavior.")
+        else:
+            self.system_prompt = personality_prompt
+            self.agent = None  # Force re-init
+            _pr(f"{face} Personality set to '{name}' {scope}",
+                f"  \"{_ellipsize(personality_prompt, 60)}\"")
+
+    def _handle_pet_command(self, cmd: str):
+        """Handle /pet [toggle|list|scale <n>|off|<slug>] — the petdex mascot. Writes
+        ``display.pet.*`` to config; pet surfaces pick it up on their next poll."""
+        from agent.pet import store
+        from agent.pet.manifest import ManifestError
+        from hermes_cli.pets import (
+            _set_active, _set_enabled, print_pet_gallery, set_pet_scale, toggle_pet_display)
+        arg = _command_arg(cmd)
+        low = arg.lower()
+        if not arg or low == "toggle":
+            enabled, name, err = toggle_pet_display()
+            print(f"(x_x) {err}" if err else f"(^_^)b {name} is out — it'll pop in shortly." if enabled
+                  else f"(-_-)zzZ {name} put away." if name else "(-_-)zzZ Pet put away.")
+        elif low in ("list", "gallery", "browse", "all"):
+            print_pet_gallery()
+        elif low == "scale" or low.startswith("scale "):
+            value = arg[len("scale"):].strip()
+            if not value:
+                return print("(o_o) Usage: /pet scale <factor>  (e.g. /pet scale 0.5)")
+            scale, err = set_pet_scale(value)
+            print(f"(x_x) {err}" if err else f"(^_^) Pet scale → {scale:g}.")
+        elif low == "off":
+            _set_enabled(False)
+            print("(-_-)zzZ Pet put away.")
+        else:
+            print(f"(o_o) Fetching '{arg}' from petdex…")
+            try:
+                pet = store.install_pet(arg)
+            except (store.PetStoreError, ManifestError) as exc:
+                return print(f"(x_x) Couldn't adopt '{arg}': {exc}")
+            _set_active(arg)
+            print(f"(^_^)b {pet.display_name} is out — it'll pop in shortly.")
+
+    def _handle_hatch_command(self, cmd: str):
+        """Generate ("hatch") a new petdex pet from a description: base look, one animation row
+        per state, spritesheet, then adopt. Progress streams inline (~a minute of image calls).
+        The desktop app opens a richer overlay for this command instead."""
+        from agent.pet import store
+        from agent.pet.generate import orchestrate
+        from agent.pet.generate.imagegen import GenerationError
+        from hermes_cli.pets import _set_active
+        concept = _command_arg(cmd)
+        if not concept:
+            # prompt_toolkit owns stdin on this daemon thread — raw input() never renders and eats
+            # keystrokes; prefer the thread-aware helper (None when prompting isn't safe).
+            # Bare /hatch is dispatched from the process_loop daemon thread while prompt_toolkit owns stdin
+            # — a raw input() here types into a prompt that never renders and swallows the next keystrokes
+            # (same class as #23185; found in the Aug 2026 full-surface CLI QA sweep: bare /hatch left the
+            # session eating input until Ctrl+C). Route through the thread-aware prompt helper, which uses
+            # run_in_terminal on the main thread and cancels cleanly (None) when prompting isn't safe.
+            prompt_helper = getattr(self, "_prompt_text_input", None)
+            try:
+                concept = ((prompt_helper or input)("(o_o) Describe your pet: ") or "").strip()
+            except (EOFError, KeyboardInterrupt):
+                return print()
+        if not concept:
+            return print("(o_o) Usage: /hatch <description>  (e.g. /hatch a tiny cyber fox)")
+        # A short, friendly display name from the first few words of the concept.
+        display_name = " ".join(w.capitalize() for w in concept.split()[:3])[:28].strip() or "Pet"
+        slug = store.slugify(display_name) or store.slugify(concept) or "pet"
+        print(f"(o_o) Designing '{concept}'… (a minute of image-model calls)")
+        try:
+            drafts = orchestrate.generate_base_drafts(concept, n=1)
+        except GenerationError as exc:
+            return print(f"(x_x) Couldn't generate a base look: {exc}")
+        if not drafts:
+            return print("(x_x) No base draft came back — try again.")
+
+        def _progress(event: str, detail: str) -> None:
+            if event == "row":  # detail is "<state>:<done>:<total>"; show the state name.
+                print(f"  ┊ drawing {detail.split(':', 1)[0]}…")
+            elif event in _HATCH_PROGRESS:
+                print(_HATCH_PROGRESS[event])
+
+        try:
+            result = orchestrate.hatch_pet(
+                base_image=drafts[0], slug=slug, display_name=display_name, concept=concept,
+                on_progress=_progress)
+        except GenerationError as exc:
+            return print(f"(x_x) Hatch failed: {exc}")
+        _set_active(result.slug)
+        print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
+
+    # ---- /cron ----------------------------------------------------------------------------
+    def _handle_cron_command(self, cmd: str):
+        """Handle the /cron command to manage scheduled tasks."""
+        tokens = shlex.split(cmd)
+        if len(tokens) == 1:
+            return self._cron_overview()
+        subcommand = tokens[1].lower()
+        opts = _parse_cron_flags(tokens[2:])
+        if opts is None:
+            return
+        handler = _CRON_SUBCOMMANDS.get(subcommand)
+        if handler is None:
+            return _pr(f"(._.) Unknown cron command: {subcommand}",
+                       "  Available: list, add, edit, pause, resume, run, remove")
+        getattr(self, handler)(subcommand, opts)
+
+    def _cron_overview(self) -> None:
+        _pr("", "+" + "-" * 68 + "+", "|" + " " * 22 + "(^_^) Scheduled Tasks" + " " * 23 + "|",
+            "+" + "-" * 68 + "+", "", "  Commands:", "    /cron list",
+            '    /cron add "every 2h" "Check server status" [--skill blogwatcher]',
+            '    /cron edit <job_id> --schedule "every 4h" --prompt "New task"',
+            "    /cron edit <job_id> --skill blogwatcher --skill maps",
+            "    /cron edit <job_id> --remove-skill blogwatcher",
+            "    /cron edit <job_id> --clear-skills", "    /cron pause <job_id>",
+            "    /cron resume <job_id>", "    /cron run <job_id>", "    /cron remove <job_id>", "")
+        result = _cron_api(action="list")
+        jobs = result.get("jobs", []) if result.get("success") else []
+        if jobs:
+            _pr("  Current Jobs:", "  " + "-" * 63)
+            for job in jobs:
+                print(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {job.get('repeat', '?'):<8}")
+                if job.get("skills"):
+                    print(f"      Skills: {', '.join(job['skills'])}")
+                print(f"      {job.get('prompt_preview', '')}")
+                if job.get("next_run_at"):
+                    print(f"      Next: {job['next_run_at']}")
+                print()
+        else:
+            print("  No scheduled jobs. Use '/cron add' to create one.")
+        print()
+
+    def _cron_add(self, subcommand: str, opts: dict) -> None:
+        positionals = opts["positionals"]
+        if not positionals:
+            return print("(._.) Usage: /cron add <schedule> <prompt>")
+        schedule = opts["schedule"] or positionals[0]
+        prompt = opts["prompt"] or " ".join(positionals[1:])
+        skills = _normalize_skills(opts["skills"])
+        if not prompt and not skills:
+            return print("(._.) Please provide a prompt or at least one skill")
+        result = _cron_api(
+            action="create", schedule=schedule, prompt=prompt or None, name=opts["name"],
+            deliver=opts["deliver"], repeat=opts["repeat"], skills=skills or None)
+        if not result.get("success"):
+            return print(f"(x_x) Failed to create job: {result.get('error')}")
+        _pr(f"(^_^)b Created job: {result['job_id']}", f"  Schedule: {result['schedule']}")
+        if result.get("skills"):
+            print(f"  Skills: {', '.join(result['skills'])}")
+        print(f"  Next run: {result['next_run_at']}")
+
+    def _cron_edit(self, subcommand: str, opts: dict) -> None:
+        from cron import get_job
+        positionals = opts["positionals"]
+        if not positionals:
+            return print("(._.) Usage: /cron edit <job_id> "
+                         "[--schedule ...] [--prompt ...] [--skill ...]")
+        job_id = positionals[0]
+        existing = get_job(job_id)
+        if not existing:
+            return print(f"(._.) Job not found: {job_id}")
+        # Skill edit precedence: --clear-skills > --skill (replace) > --add/--remove (merge) > untouched.
+        final_skills = None
+        replacement_skills = _normalize_skills(opts["skills"])
+        add_skills = _normalize_skills(opts["add_skills"])
+        remove_skills = set(_normalize_skills(opts["remove_skills"]))
+        if opts["clear_skills"]:
+            final_skills = []
+        elif replacement_skills:
+            final_skills = replacement_skills
+        elif add_skills or remove_skills:
+            existing_skills = list(
+                existing.get("skills") or ([existing["skill"]] if existing.get("skill") else []))
+            final_skills = [skill for skill in existing_skills if skill not in remove_skills]
+            final_skills += [skill for skill in add_skills if skill not in final_skills]
+        result = _cron_api(
+            action="update", job_id=job_id, schedule=opts["schedule"], prompt=opts["prompt"],
+            name=opts["name"], deliver=opts["deliver"], repeat=opts["repeat"], skills=final_skills)
+        if not result.get("success"):
+            return print(f"(x_x) Failed to update job: {result.get('error')}")
+        job = result["job"]
+        _pr(f"(^_^)b Updated job: {job['job_id']}", f"  Schedule: {job['schedule']}",
+            f"  Skills: {', '.join(job['skills'])}" if job.get("skills") else "  Skills: none")
+
+    def _cron_job_action(self, subcommand: str, opts: dict) -> None:
+        """pause / resume / run / remove (aliases rm, delete) on one job id."""
+        positionals = opts["positionals"]
+        if not positionals:
+            return print(f"(._.) Usage: /cron {subcommand} <job_id>")
+        job_id = positionals[0]
+        action = "remove" if subcommand in {"remove", "rm", "delete"} else subcommand
+        result = _cron_api(action=action, job_id=job_id,
+                           reason="paused from /cron" if action == "pause" else None)
+        if not result.get("success"):
+            return print(f"(x_x) Failed to {action} job: {result.get('error')}")
+        if action == "remove":
+            removed = result.get("removed_job", {})
+            return print(f"(^_^)b Removed job: {removed.get('name', job_id)} ({job_id})")
+        verb = {"pause": "Paused", "resume": "Resumed", "run": "Triggered"}[action]
+        print(f"(^_^)b {verb} job: {result['job']['name']} ({job_id})")
+        if action == "resume":
+            print(f"  Next run: {result['job'].get('next_run_at')}")
+        elif action == "run":
+            print("  It will run on the next scheduler tick.")
+
+    # ---- delegating handlers: /suggestions, /blueprint, /curator, /kanban, /skills, /memory --
+    def _handle_suggestions_command(self, cmd: str):
+        """Handle /suggestions — review/accept/dismiss suggested automations via the shared handler.
+        CLI origin is the local platform so an accepted job's "origin" delivery resolves to a home channel."""
+        args = " ".join(_shlex_args(cmd))
+        try:
+            from hermes_cli.suggestions_cmd import handle_suggestions_command
+            output = handle_suggestions_command(args)
+        except Exception as e:
+            output = f"Suggestions command failed: {e}"
+        self._console_print(output)
+
+    def _handle_blueprint_command(self, cmd: str):
+        """Handle /blueprint — set up an automation from a blueprint template (shared handler).
+        Bare lists the catalog; ``<name>`` seeds the agent to ask for each value conversationally
+        (``agent_seed``, run as the next turn); ``<name> slot=val …`` creates the job directly."""
+        args = " ".join(shlex.quote(t) for t in _shlex_args(cmd))
+        try:
+            from hermes_cli.blueprint_cmd import handle_blueprint_command
+            result = handle_blueprint_command(args)
+        except Exception as e:
+            self._console_print(f"Cron blueprint command failed: {e}")
+            return
+        self._console_print(result.text)
+        seed = getattr(result, "agent_seed", None)
+        if seed:
+            # One-shot: the interactive loop picks this up right after the slash command
+            # returns and runs it as a normal agent turn.
+            self._pending_agent_seed = seed
+
+    def _handle_curator_command(self, cmd: str):
+        """Handle /curator — delegates to hermes_cli.curator so the CLI and the `hermes curator`
+        subcommand share the same handler set."""
+        tokens = shlex.split(cmd)[1:] if cmd else []
+        try:
+            from hermes_cli.curator import cli_main
+            cli_main(tokens or ["status"])
+        except SystemExit:
+            pass  # argparse exits on --help/errors; don't kill the interactive session
+        except Exception as exc:
+            print(f"(._.) curator: {exc}")
+
+    def _handle_kanban_command(self, cmd: str):
+        """Handle /kanban — strip the leading ``/kanban`` and hand the rest to ``kanban.run_slash``."""
+        from hermes_cli.kanban import run_slash
+        rest = cmd.strip().lstrip("/")
+        if rest.startswith("kanban"):
+            rest = rest[len("kanban"):].lstrip()
+        try:
+            output = run_slash(rest)
+        except Exception as exc:  # pragma: no cover - defensive
+            output = f"(._.) kanban error: {exc}"
+        if output:
+            print(output)
+
+    def _handle_skills_command(self, cmd: str):
+        """Handle /skills slash command — delegates to hermes_cli.skills_hub, after intercepting the
+        write-approval review subcommands (pending/approve/reject/diff/mode)."""
+        from cli import ChatConsole
+        args = cmd.strip().split()[1:]
+        review_words = {"pending", "approve", "apply", "reject", "deny", "drop", "diff", "approval", "mode"}
+        if args and args[0].lower() in review_words:
+            from hermes_cli.write_approval_commands import handle_pending_subcommand
+            from tools import write_approval as wa
+            out = handle_pending_subcommand(
+                wa.SKILLS, args, set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
+            )
+            if out is not None:
+                return print(out)
+        from hermes_cli.skills_hub import handle_skills_slash
+        handle_skills_slash(cmd, ChatConsole())
+
+    def _handle_memory_command(self, cmd: str):
+        """Handle /memory slash command — pending review + approval-gate toggle."""
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+        args = cmd.strip().split()[1:]
+        store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
+        if store is None:
+            # No live agent store (e.g. Desktop GUI): use a fresh on-disk store, as the gateway
+            # does — same MEMORY/USER.md, same configured char limits.
+            # Apply against a freshly loaded on-disk store, mirroring the gateway path
+            # (gateway/slash_commands.py): it persists to the same MEMORY/USER.md and creates MEMORY.md on
+            # the first approved write. Without this the shared handler returns "memory store unavailable".
+            # See #46783.
+            from tools.memory_tool import load_on_disk_store
+            store = load_on_disk_store()
+        out = handle_pending_subcommand(
+            wa.MEMORY, args, memory_store=store,
+            set_mode_fn=lambda enabled: self._save_write_approval("memory", enabled))
+        print(out if out is not None else
+              "Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>.")
+
+    def _save_write_approval(self, subsystem: str, enabled: bool):
+        """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
+        _save(f"{subsystem}.write_approval", bool(enabled))
+
+    # ---- prompt-queueing handlers: /learn, /plan, /init -----------------------------------
+    def _queue_prompt_turn(self, msg: str, command: str) -> None:
+        """Inject ``msg`` onto the agent's input queue as the next normal user turn (the
+        /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe)."""
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print(f"  {command} needs an active chat session to run.")
+
+    def _handle_learn_command(self, cmd: str):
+        """Handle /learn — distill a reusable skill from anything the user describes (a directory,
+        a URL, "what we just did", pasted notes). The live agent gathers the material with the
+        tools it already has and authors the skill via ``skill_manage``."""
+        from agent.learn_prompt import build_learn_prompt
+        user_request = _command_arg(cmd)
+        print("\n⚡ Learning a skill from what you described..." if user_request
+              else "\n⚡ Learning a skill from this conversation...")
+        self._queue_prompt_turn(build_learn_prompt(user_request), "/learn")
+
+    def _handle_plan_command(self, cmd: str):
+        """Handle /plan — write a markdown implementation plan, no execution. The live agent
+        inspects the workspace read-only and saves the plan under ``.hermes/plans/``."""
+        from agent.plan_prompt import build_plan_prompt
+        task = _command_arg(cmd)  # optional — empty infers the task from conversation context
+        print(f"\n📋 Planning: {_ellipsize(task, 80)}" if task
+              else "\n📋 Planning from this conversation's context...")
+        self._queue_prompt_turn(build_plan_prompt(task), "/plan")
+
+    def _handle_init_command(self, cmd: str):
+        """Handle /init — generate or update AGENTS.md from a project scan performed by the
+        live agent with its own read-only tools."""
+        from hermes_cli.init_command import build_init_prompt_for_cwd
+        msg = build_init_prompt_for_cwd(extra=_command_arg(cmd))  # optional user emphasis
+        verb = "Updating" if "UPDATE the existing AGENTS.md" in msg else "Generating"
+        print(f"\n⚡ {verb} AGENTS.md from a project scan...")
+        self._queue_prompt_turn(msg, "/init")
+
+    # ---- side-session handlers: /bg, /btw -------------------------------------------------
+    def _handle_background_command(self, cmd: str):
+        """Handle /bg <prompt> — run a prompt in a separate background session (its own AIAgent
+        on a thread); the result prints here without touching the active history."""
+        from cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from run_agent import AIAgent
+        prompt = _command_arg(cmd)
+        if not prompt:
+            return _cp("  Usage: /bg <prompt>", "  Example: /bg Summarize the top HN stories today",
+                       "  (For a side question about this conversation, use /btw <question>.)",
+                       "  The task runs in a separate session and results display here when done.")
+        self._background_task_counter += 1
+        task_num = self._background_task_counter
+        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        if not self._ensure_runtime_credentials():
+            return _cp("  (>_<) Cannot start background task: no valid credentials.")
+        preview = _ellipsize(prompt, 60)
+        _cp(f"  🔄 Background task #{task_num} started: \"{preview}\"", f"  Task ID: {task_id}",
+            "  You can continue chatting — results will appear when done.\n")
+        turn_route = self._resolve_turn_agent_config(prompt)
+        runtime = turn_route["runtime"]
+
+        def produce():
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            with suppress(Exception):
+                set_secret_capture_callback(self._secret_capture_callback)
+            try:
+                bg_agent = AIAgent(
+                    model=turn_route["model"], acp_command=runtime.get("command"),
+                    acp_args=runtime.get("args"), max_iterations=self.max_turns,
+                    **{k: runtime.get(k) for k in ("api_key", "base_url", "provider", "api_mode",
+                                                   "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
+                    quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
+                    session_db=self._session_db, reasoning_config=self.reasoning_config,
+                    service_tier=self.service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    **{kw: getattr(self, attr) for kw, attr in _BG_PROVIDER_KWARGS.items()})
+                # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
+                bg_agent._print_fn = lambda *_a, **_kw: None
+
+                def _bg_thinking(text: str) -> None:
+                    # Concurrent bg tasks may race on _spinner_text; acceptable for best-effort UI.
+                    if not self._agent_running:
+                        self._spinner_text = text
+                        if self._app:
+                            # Display result in the CLI (thread-safe via patch_stdout). Force a TUI refresh
+                            # first so spinner/status bar don't overlap with the output (fixes #2718).
+                            # Same TUI refresh pattern as success path (#2718)
+                            self._app.invalidate()
+
+                bg_agent.thinking_callback = _bg_thinking
+                result = bg_agent.run_conversation(user_message=prompt, task_id=task_id)
+                response = result.get("final_response", "") if result else ""
+                if not response and result and result.get("error"):
+                    response = f"Error: {result['error']}"
+                return response
+            finally:
+                with suppress(Exception):
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_secret_capture_callback(None)
+
+        def done():
+            self._background_tasks.pop(task_id, None)
+            if not self._agent_running:  # clear spinner only if no foreground agent owns it
+                self._spinner_text = ""
+
+        thread = self._side_worker(
+            produce, name=f"bg-task-{task_id}", fail_label=f"Background task #{task_num}",
+            header_lines=[f"  ✅ Background task #{task_num} complete", f"  Prompt: \"{preview}\""],
+            title_suffix=f"(background #{task_num})", empty_note="  (No response generated)",
+            bell=True, on_done=done)
+        self._background_tasks[task_id] = thread
+        thread.start()
+
+    def _handle_btw_command(self, cmd: str):
+        """Handle /btw <question> — answer a side question about this conversation from a
+        history snapshot via a one-shot auxiliary call. The live session is never touched
+        (no history mutation, no role-alternation risk, no cache invalidation)."""
+        question = _command_arg(cmd)
+        if not question:
+            return _cp("  Usage: /btw <question>", "  Example: /btw which file was that error in?",
+                       "  Answers a quick question about this conversation without interrupting it.",
+                       "  (For an independent background task, use /bg <prompt>.)")
+        if not self._ensure_runtime_credentials():
+            return _cp("  (>_<) Cannot answer side question: no valid credentials.")
+        # Snapshot NOW, on the UI thread — the foreground turn keeps appending to
+        # conversation_history while the worker runs.
+        history_snapshot = list(self.conversation_history or [])
+        # Live agent → cache-parity fork (full context, warm cache reads).
+        parent_agent = self.agent
+        turn_route = self._resolve_turn_agent_config(question)
+        runtime = turn_route["runtime"]
+        main_runtime = {
+            "model": turn_route["model"],
+            **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")}}
+        preview = _ellipsize(question, 60)
+        _cp(f"  💬 Side question: \"{preview}\"",
+            "  Answering from a snapshot of this conversation — the current work continues.\n")
+
+        def produce():
+            from agent.side_question import answer_side_question
+            return answer_side_question(
+                question, history_snapshot, parent_agent=parent_agent, main_runtime=main_runtime)
+
+        self._side_worker(produce, name="btw-side-question", fail_label="/btw",
+                          header_lines=[f"  💬 /btw: \"{preview}\""], title_suffix="(btw)",
+                          empty_note="  (No answer generated)").start()
+
+    # ---- /bundles, /browser ---------------------------------------------------------------
+    def _handle_bundles_command(self, cmd: str) -> None:
+        """In-session ``/bundles`` — show installed skill bundles (``hermes bundles list`` rendered
+        inside the running CLI). Bundles are loaded via ``/<bundle-name>``."""
+        from cli import ChatConsole, _BOLD, _RST, _accent_hex
+        from hermes_cli.slash_exec import CommandContext, execute_command
+        reply = execute_command("bundles", CommandContext(surface="cli"))
+        if "error" in reply.data:
+            return _cp(f"\033[1;31mBundle subsystem unavailable: {reply.data['error']}{_RST}")
+        bundles = reply.data["bundles"]
+        if not bundles:
+            return _cp("  No skill bundles installed.",
+                       _dim_line('Create one with: hermes bundles create <name> --skill <s1> --skill <s2>'),
+                       _dim_line(f"Directory: {reply.data['dir']}"))
+        _cp(f"\n  ▣ {_BOLD}Skill Bundles{_RST} ({len(bundles)} installed):")
+        for info in bundles:
+            skill_count = len(info.get("skills", []))
+            desc = info.get("description") or f"Load {skill_count} skills"
+            ChatConsole().print(
+                f"    [bold {_accent_hex()}]/{info['slug']:<20}[/] "
+                f"[dim]-[/] {_escape(desc)} [dim]({skill_count} skills)[/]")
+            for s in info.get("skills", []):
+                ChatConsole().print(f"        [dim]· {_escape(s)}[/]")
+        _cp("\n" + _dim_line("Invoke a bundle with /<slug>. Manage with `hermes bundles`."))
+
+    def _handle_browser_command(self, cmd: str):
+        """Handle /browser connect|disconnect|status|use — manage the live Chromium-family CDP connection."""
+        sub = _command_arg(cmd).lower() or "status"
+        if sub == "use" or sub.startswith("use "):
+            _browser_use(self, sub.split(None, 1)[1].strip() if " " in sub else "on")
+        elif sub.startswith("connect"):
+            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
+            url = connect_parts[2].strip() if len(connect_parts) > 2 else DEFAULT_BROWSER_CDP_URL
+            _browser_connect(self, url)
+        elif sub == "disconnect":
+            _browser_disconnect(self)
+        elif sub == "status":
+            _browser_status()
+        else:
+            _say_block(
+                "Usage: /browser connect|disconnect|status|use", "",
+                "   connect      Connect browser tools to your live Chromium-family browser session",
+                "   disconnect   Revert to default browser backend",
+                "   status       Show current browser mode",
+                "   use [off]    Switch to Browser Use mode (CLI 3.0) / back to built-in tools")
+
+    # ---- /heartbeat, /refine, /review -----------------------------------------------------
+    def _session_manager(self, getter, label: str):
+        """The session-scoped manager from ``getter()``, or None after the standard dim
+        "<label> unavailable (no active session)." line."""
+        mgr = getter()
+        if mgr is None:
+            _cp(_dim_line(f"{label} unavailable (no active session)."))
+        return mgr
+
+    def _handle_heartbeat_command(self, cmd: str) -> None:
+        """Dispatch /heartbeat: set / status / pause / resume / clear. ``/heartbeat every 10m <prompt>``
+        sets the session's one recurring instruction, injected as a normal user turn when due.
+        Session-scoped and in-process — use `hermes cron` for durable schedules."""
+        from hermes_cli.heartbeat import format_interval
+        arg = _command_arg(cmd)
+        lower = arg.lower()
+        mgr = self._session_manager(self._get_heartbeat_manager, "Heartbeats")
+        if mgr is None:
+            return
+        if not arg or lower == "status":
+            _cp(f"  {mgr.status_line()}")
+        elif lower == "pause":
+            state = mgr.pause()
+            _cp(f"  ⏸ Heartbeat paused: {state.prompt}" if state else _dim_line('No heartbeat set.'))
+        elif lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                _cp(_dim_line('No heartbeat to resume.'))
+            else:
+                self._start_heartbeat_watchdog()
+                _cp(f"  ▶ Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}")
+        elif lower in {"clear", "stop", "off"}:
+            _cp("  ✓ Heartbeat cleared." if mgr.clear() else _dim_line('No heartbeat set.'))
+        else:
+            self._heartbeat_set(mgr, arg)
+
+    def _heartbeat_set(self, mgr, arg: str) -> None:
+        """Set: ``/heartbeat every 10m <prompt>`` (also accepts ``10m <prompt>``)."""
+        from hermes_cli.heartbeat import parse_interval, format_interval
+        tokens = arg.split(None, 2)
+        interval = None
+        prompt = ""
+        if tokens and tokens[0].lower() == "every" and len(tokens) >= 2:
+            interval = parse_interval(f"every {tokens[1]}")
+            prompt = tokens[2] if len(tokens) > 2 else ""
+        elif tokens:
+            interval = parse_interval(tokens[0])
+            prompt = arg[len(tokens[0]):].strip() if interval and interval > 0 else ""
+        if interval is None:
+            return _cp(
+                "  Usage: /heartbeat every <interval> <prompt>   (e.g. /heartbeat every 10m Check CI)",
+                       _dim_line('Also: /heartbeat status | pause | resume | clear'))
+        if interval < 0:
+            from hermes_cli.heartbeat import MIN_INTERVAL_SECONDS
+            return _cp(f"  Interval too small — minimum is {MIN_INTERVAL_SECONDS}s.")
+        if not prompt.strip():
+            return _cp("  Usage: /heartbeat every <interval> <prompt> — the prompt is required.")
+        state = _attempt("Invalid heartbeat", ValueError, mgr.set, prompt, interval)
+        if state is _FAILED:
+            return
+        self._start_heartbeat_watchdog()
+        _cp(f"  ♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}",
+            _dim_line("Fires as a normal turn whenever the session is idle and the interval has "
+                      "elapsed. /heartbeat pause | resume | clear to manage; lives only while this "
+                      "Hermes process runs — use `hermes cron` for durable schedules."))
+
+    def _handle_refine_command(self, cmd: str) -> None:
+        """Dispatch /refine — run the memory/skill review fork on demand (same machinery as the
+        automatic post-turn ``_spawn_background_review``), with optional focus text. Background
+        fork; the live conversation and prompt cache are never touched."""
+        focus = _command_arg(cmd)
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return _cp(_dim_line('Nothing to refine yet — send a message first.'))
+        snapshot = list(getattr(self, "conversation_history", None) or [])
+        if not snapshot:
+            return _cp(_dim_line('Nothing to refine yet — the conversation is empty.'))
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=snapshot, review_memory=True,
+                review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()),
+                focus=focus or None, explicit=True)
+        except Exception as exc:
+            return _cp(f"  /refine failed to start: {exc}")
+        tail = f" (focus: {focus})" if focus else ""
+        _cp(f"  ⚗ Reviewing this conversation in the background{tail} — "
+            f"any memory/skill updates will be reported when done.")
+
+    def _handle_review_command(self, cmd: str) -> None:
+        """Dispatch /review — snapshot the last N messages (+ argument text as instructions) and
+        spawn an independent reviewer subagent via async delegation; the review re-enters this
+        session as a normal delegation completion."""
+        prompt = _command_arg(cmd)
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return _cp(_dim_line('Nothing to review yet — send a message first.'))
+        snapshot = list(getattr(self, "conversation_history", None) or [])
+        try:
+            from agent.review_engine import format_dispatch_note, start_review
+            result = start_review(agent, snapshot, prompt)
+        except ValueError as exc:
+            return _cp(_dim_line(str(exc)))
+        except Exception as exc:
+            return _cp(f"  /review failed to start: {exc}")
+        _cp(f"  {format_dispatch_note(result, prompt)}")
+
+    # ---- /goal, /loop, /subgoal -----------------------------------------------------------
+    def _handle_goal_command(self, cmd: str) -> None:
+        """Dispatch /goal subcommands: set / draft / show / gate / wait / status / pause / resume / clear."""
+        arg = _command_arg(cmd)
+        mgr = self._session_manager(self._get_goal_manager, "Goals")
+        if mgr is None:
+            return
+        lower = arg.lower()
+        verb, _, rest = arg.partition(" ")
+        verb = verb.lower()
+        rest = rest.strip()
+        if not arg or lower == "status":
+            _cp(f"  {mgr.status_line()}")
+        elif lower == "show":
+            _cp(f"  {mgr.status_line()}")
+            _cp(f"  {mgr.render_contract()}")
+        elif lower.startswith("draft"):
+            # Expand plain text into a structured completion contract so "done" is evidence-based
+            # instead of a vibe check.
+            objective = arg[len("draft"):].strip()
+            if not objective:
+                return _cp("  Usage: /goal draft <objective in plain language>")
+            self._handle_goal_draft(objective)
+        elif lower == "pause":
+            state = mgr.pause(reason="user-paused")
+            _cp(f"  ⏸ Goal paused: {state.goal}" if state else _dim_line('No goal set.'))
+        elif lower == "resume":
+            self._goal_resume(mgr)
+        elif lower in {"clear", "stop", "done"}:
+            had = mgr.has_goal()
+            mgr.clear()
+            _cp("  ✓ Goal cleared." if had else _dim_line('No active goal.'))
+        elif verb == "wait":
+            self._goal_wait(mgr, rest)
+        elif lower == "unwait":
+            _cp("  ▶ Wait barrier cleared — goal loop resumes." if mgr.stop_waiting()
+                else _dim_line('No wait barrier set.'))
+        elif verb == "gate":
+            self._goal_gate(mgr, rest)
+        else:
+            self._goal_set(mgr, arg)
+
+    def _kick_goal(self, prompt: str) -> bool:
+        """Queue ``prompt`` as the next turn so the loop starts without a separate message."""
+        try:
+            self._pending_input.put(prompt)
+            return True
+        except Exception:
+            return False
+
+    def _goal_resume(self, mgr) -> None:
+        state = mgr.resume()
+        if state is None:
+            return _cp(_dim_line('No goal to resume.'))
+        _cp(f"  ▶ Goal resumed: {state.goal}")
+        # Resume must restart work, not just flip state: queue the continuation prompt the same
+        # way /goal <text> queues its kickoff.
+        # Resume must restart work, not just flip persisted state (#75362): enqueue the canonical
+        # continuation through the adapter FIFO — the same path the post-turn judge uses — so the next turn
+        # fires as soon as this reply is delivered. A real user message already queued still preempts
+        # naturally, and pause/clear's stale-continuation cleanup recognizes it.
+        # See #75362.
+        # An `exec` result is display-only — nothing would re-enter the conversation loop until the user
+        # typed another message. Return a `send` dispatch carrying the canonical continuation prompt so the
+        # client fires the next turn immediately; `display` keeps the transcript showing the concise
+        # invocation instead of the model-facing scaffolding. See #75362.
+        prompt = mgr.next_continuation_prompt()
+        if prompt and self._kick_goal(prompt):
+            _cp(_dim_line('Continuing now — taking the next step.'))
+        else:
+            _cp(_dim_line('Send any message to kick off the next step.'))
+
+    def _goal_wait(self, mgr, wait_arg: str) -> None:
+        """/goal wait <pid> [reason] — park the loop on a background process (CI / build);
+        the barrier auto-clears when the PID exits."""
+        if not wait_arg:
+            return _cp("  Usage: /goal wait <pid> [reason]")
+        wtokens = wait_arg.split(None, 1)
+        try:
+            pid = int(wtokens[0])
+        except ValueError:
+            return _cp("  /goal wait: <pid> must be an integer process id.")
+        reason = wtokens[1].strip() if len(wtokens) > 1 else ""
+        if _attempt("/goal wait", (RuntimeError, ValueError), mgr.wait_on, pid, reason=reason) is _FAILED:
+            return
+        rtxt = f" ({reason})" if reason else ""
+        _cp(f"  ⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits.")
+
+    def _goal_gate(self, mgr, gate_arg: str) -> None:
+        """/goal gate [list | add <command> | remove <N> | clear] — shell commands that must pass
+        before the judge may declare the goal done; a failing gate's output becomes the
+        continuation prompt."""
+        gate_lower = gate_arg.lower()
+        if not gate_arg or gate_lower == "list":
+            for line in mgr.render_gates().splitlines():
+                _cp(f"  {line}")
+        elif gate_lower.startswith("add "):
+            gate = _attempt("/goal gate add", (RuntimeError, ValueError),
+                            mgr.add_gate, gate_arg[len("add"):].strip())
+            if gate is not _FAILED:
+                _cp(f"  ⚿ Gate added: $ {gate.command} "
+                    f"({gate.max_retries} retries, {gate.timeout_seconds}s timeout). "
+                    f"It must pass before the goal can complete.")
+        elif gate_lower.startswith("remove ") or gate_lower.startswith("rm "):
+            removed = _attempt("/goal gate remove", (RuntimeError, ValueError, IndexError),
+                               lambda: mgr.remove_gate(int(gate_arg.split(None, 1)[1].strip())))
+            if removed is not _FAILED:
+                _cp(f"  ✓ Gate removed: $ {removed}")
+        elif gate_lower == "clear":
+            prev = _attempt("/goal gate clear", RuntimeError, mgr.clear_gates)
+            if prev is not _FAILED:
+                _cp(f"  ✓ Cleared {_plural(prev, 'gate')}.")
+        else:
+            _cp("  Usage: /goal gate [list | add <command> | remove <N> | clear]")
+
+    def _goal_set(self, mgr, arg: str) -> None:
+        """Set the goal from free text; inline `verify:`/`constraints:`/`boundaries:`/`stop when:`
+        lines become a completion contract, the remaining prose the headline. Kicks the loop off."""
+        from hermes_cli.goals import parse_contract
+        headline, contract = parse_contract(arg)
+        state = _attempt("Invalid goal", ValueError, mgr.set, headline or arg,
+                         contract=contract if not contract.is_empty() else None)
+        if state is _FAILED:
+            return
+        self._print_goal_set(state, "Completion contract:")
+        against = " against the contract above" if state.has_contract() else ""
+        _cp(_dim_line(f"After each turn, a judge model checks if the goal is done{against}. "
+                      "Hermes keeps working until it is, you pause/clear it, or the budget is "
+                      "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear."))
+        self._kick_goal(state.goal)
+
+    def _print_goal_set(self, state, contract_label: str) -> None:
+        _cp(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+        if state.has_contract():
+            _cp(_dim_line(contract_label))
+            for line in state.contract.render_block().splitlines():
+                _cp(f"    {line}")
+
+    def _handle_goal_draft(self, objective: str) -> None:
+        """Draft a structured completion contract from a plain objective and set it as the active
+        goal. Falls back to a bare goal if the aux model can't produce a contract."""
+        from hermes_cli.goals import draft_contract
+        mgr = self._session_manager(self._get_goal_manager, "Goals")
+        if mgr is None:
+            return
+        _cp(_dim_line('Drafting completion contract…'))
+        try:
+            contract = draft_contract(objective)
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug("goal draft failed: %s", exc)
+            contract = None
+        state = _attempt("Invalid goal", ValueError, mgr.set, objective, contract=contract)
+        if state is _FAILED:
+            return
+        self._print_goal_set(state, "Drafted completion contract:")
+        if state.has_contract():
+            _cp(_dim_line("Tighten any field by re-setting the goal with inline lines "
+                          "(e.g. verify: <command>), then /goal resume. Use /goal show to review."))
+        else:
+            _cp(_dim_line("Couldn't draft a contract (aux model unavailable) — running as a "
+                          "free-form goal. The per-turn judge still applies."))
+        self._kick_goal(state.goal)
+
+    def _handle_loop_command(self, cmd: str) -> None:
+        """Dispatch /loop — recurring in-session wakeups: ``/loop [interval] <prompt> [--times N]
+        [--until <cond>]`` starts one; ``status | pause | resume | stop`` control it."""
+        arg = _command_arg(cmd)
+        mgr = self._session_manager(self._get_loop_manager, "Loops")
+        if mgr is None:
+            return
+        from hermes_cli.loops import dispatch_loop_command
+        result = dispatch_loop_command(mgr, arg)
+        for line in (result.get("output") or "").splitlines():
+            _cp(f"  {line}")
+        if result.get("created"):
+            with suppress(Exception):
+                from hermes_cli.loops import goal_blocks_loop_tick
+                if goal_blocks_loop_tick(mgr.session_id):
+                    _cp(_dim_line("Note: an active /goal is driving this session — loop wakeups "
+                                  "defer until the goal finishes, pauses, or parks."))
+
+    def _handle_subgoal_command(self, cmd: str) -> None:
+        """Dispatch /subgoal: bare → show, ``<text>`` → append, ``remove <n>`` (1-based), ``clear``.
+        Subgoals join the judge + continuation prompts at the next turn boundary (no kick)."""
+        parts = (cmd or "").strip().split(None, 2)
+        arg = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+        mgr = self._session_manager(self._get_goal_manager, "Goals")
+        if mgr is None:
+            return
+        if not mgr.has_goal():
+            return _cp(_dim_line('No active goal. Set one with /goal <text>.'))
+        if not arg:  # list current subgoals
+            _cp(f"  {mgr.status_line()}")
+            return _cp(f"  {mgr.render_subgoals()}")
+        tokens = arg.split(None, 1)
+        verb = tokens[0].lower()
+        rest = tokens[1].strip() if len(tokens) > 1 else ""
+        if verb == "remove":
+            if not rest:
+                return _cp("  Usage: /subgoal remove <n>")
+            try:
+                idx = int(rest.split()[0])
+            except ValueError:
+                return _cp("  /subgoal remove: <n> must be an integer (1-based index).")
+            removed = _attempt("/subgoal remove", (IndexError, RuntimeError), mgr.remove_subgoal, idx)
+            if removed is not _FAILED:
+                _cp(f"  ✓ Removed subgoal {idx}: {removed}")
+        elif verb == "clear":
+            prev = _attempt("/subgoal clear", RuntimeError, mgr.clear_subgoals)
+            if prev is not _FAILED:
+                _cp(f"  ✓ Cleared {_plural(prev, 'subgoal')}." if prev
+                    else _dim_line('No subgoals to clear.'))
+        else:  # append the whole arg as a new subgoal
+            text = _attempt("/subgoal", (ValueError, RuntimeError), mgr.add_subgoal, arg)
+            if text is not _FAILED:
+                idx = len(mgr.state.subgoals) if mgr.state else 0
+                _cp(f"  ✓ Added subgoal {idx}: {text}")
+
+    # ---- /skin, /prompt -------------------------------------------------------------------
+    def _handle_skin_command(self, cmd: str):
+        """Handle /skin [name] — show or change the display skin."""
+        from cli import _ACCENT
+        try:
+            from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
+        except ImportError:
+            return print("Skin engine not available.")
+        new_skin = _command_arg(cmd).lower()
+        if not new_skin:  # show current skin and list available
+            current = get_active_skin_name()
+            _pr(f"\n  Current skin: {current}", "  Available skins:")
+            for s in list_skins():
+                marker = " ●" if s["name"] == current else "  "
+                source = f" ({s['source']})" if s["source"] == "user" else ""
+                print(f"   {marker} {s['name']}{source} — {s['description']}")
+            return _pr("\n  Usage: /skin <name>",
+                       f"  Custom skins: drop a YAML file in {display_hermes_home()}/skins/\n")
+        available = {s["name"] for s in list_skins()}
+        if new_skin not in available:
+            return _pr(f"  Unknown skin: {new_skin}",
+                       f"  Available: {', '.join(sorted(available))}")
+        set_active_skin(new_skin)
+        _ACCENT.reset()  # re-resolve ANSI color for the new skin (_DIM is a fixed escape)
+        saved = " (saved)" if _save("display.skin", new_skin) else ""
+        _pr(f"  Skin set to: {new_skin}{saved}",
+            "  Note: banner colors will update on next session start.")
+        if self._apply_tui_skin_style():
+            print("  Prompt + TUI colors updated.")
+
+    def _compose_in_editor(self, initial_text: str = "") -> str:
+        """Open ``$VISUAL``/``$EDITOR`` on a temp markdown file and return the saved buffer with
+        ``#!`` comment lines stripped; "" if the editor failed or the buffer was left empty.
+        Factored out so the read-back/strip logic is unit-testable."""
+        editor = (os.environ.get("VISUAL") or os.environ.get("EDITOR")
+                  or ("notepad" if os.name == "nt" else "nano"))
+        fd, path = tempfile.mkstemp(suffix=".md", prefix="hermes_prompt_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write("#! Compose your prompt below. Lines starting with '#!' are ignored.\n"
+                         "#! Save and quit to send; leave empty to cancel.\n\n")
+                if initial_text:
+                    fh.write(initial_text)
+            try:
+                subprocess.call([*shlex.split(editor), path])
+            except Exception:
+                # Fall back to a bare invocation (editor value may not be argv-splittable everywhere).
+                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+            with open(path, "r", encoding="utf-8") as fh:
+                raw = fh.read()
+        finally:
+            with suppress(OSError):
+                os.unlink(path)
+        return "\n".join(ln for ln in raw.splitlines() if not ln.startswith("#!")).strip()
+
+    def _handle_prompt_compose_command(self, cmd_original: str) -> None:
+        """Handle /prompt — compose the next prompt in $EDITOR (optionally seeded with the argument)
+        and queue it as the next agent turn via the one-shot ``_pending_agent_seed`` (as /blueprint)."""
+        parts = (cmd_original or "").strip().split(None, 1)
+        try:
+            composed = self._compose_in_editor(parts[1] if len(parts) > 1 else "")
+        except Exception as exc:
+            return _cp(_dim_line(f'(>_<) Could not open editor: {exc}'))
+        if not composed:
+            return _cp(_dim_line('(._.) Empty prompt — nothing sent.'))
+        # One-shot seed: the interactive loop runs this as the next agent turn right after
+        # process_command() returns (see cli.py main loop).
+        self._pending_agent_seed = composed
+
+    # ---- /focus and its display hooks -----------------------------------------------------
+    def _handle_focus_command(self, cmd_original: str) -> None:
+        """``/focus [on|off|status]`` — DISPLAY-ONLY reduced output. Reuses the ``/verbose``
+        suppression path: on stashes tool_progress_mode and snaps it to "off" (what
+        ``agent/tool_executor.py`` gates on); off restores the stash verbatim. Never touches
+        history, system prompt, or request payloads."""
+        from hermes_cli.colors import Colors as _Colors
+        from hermes_cli.focus_view import (
+            FOCUS_CONFIG_KEY, FOCUS_TOOL_PROGRESS_MODE, format_focus_status,
+            format_focus_toggle_message, normalize_tool_progress_mode, resolve_focus_arg)
+        current = bool(getattr(self, "_focus_view_enabled", False))
+        action, target = resolve_focus_arg(_command_arg(cmd_original), current)
+        if action == "usage":
+            return _cp("  Usage: /focus [on|off|status]")
+        # The mode /focus off restores: while focus is ON the live mode is "off", so use the stash.
+        restore_mode = normalize_tool_progress_mode(
+            getattr(self, "_focus_saved_tool_progress", None) if current
+            else getattr(self, "tool_progress_mode", "all"))
+        if action == "status":
+            head, _, tail = format_focus_status(current, restore_mode).partition("\n")
+            label, _, rest = head.partition(":")
+            state_color = _Colors.GREEN if current else _Colors.DIM
+            return _cp(f"  {_Colors.BOLD}{label}:{_Colors.RESET}{state_color}{rest}{_Colors.RESET}"
+                       + (f"\n{_Colors.DIM}  {tail.strip()}{_Colors.RESET}" if tail else ""))
+        if target == current:  # idempotent explicit set — report without rewriting config
+            return _cp(f"  {format_focus_toggle_message(current, restore_mode)}")
+        if target:
+            # Stash the user's configured mode, then reuse the EXISTING suppression path by
+            # snapping to "off".
+            self._focus_saved_tool_progress = restore_mode
+            self._set_tool_progress_mode(FOCUS_TOOL_PROGRESS_MODE)
+        else:
+            self._set_tool_progress_mode(restore_mode)
+            self._focus_saved_tool_progress = None
+        self._focus_view_enabled = bool(target)
+        self._focus_hidden_lines = 0
+        _save(FOCUS_CONFIG_KEY, bool(target))
+        message = format_focus_toggle_message(bool(target), restore_mode)
+        # Re-colour just the enabled/disabled word so the line matches siblings.
+        for word in ("enabled", "disabled"):
+            if word in message:
+                colour = _Colors.GREEN if target else _Colors.DIM
+                message = message.replace(word, f"{colour}{word}{_Colors.RESET}", 1)
+                break
+        _cp(f"  {message}")
+
+    def _set_tool_progress_mode(self, mode: str) -> None:
+        """Set the live tool-progress mode on both the CLI and the agent (one write path for
+        /focus and /verbose — the agent copy is what ``agent/tool_executor.py`` gates on)."""
+        from hermes_cli.focus_view import normalize_tool_progress_mode
+        normalized = normalize_tool_progress_mode(mode)
+        self.tool_progress_mode = normalized
+        agent = getattr(self, "agent", None)
+        if agent is not None:
+            with suppress(Exception):
+                agent.tool_progress_mode = normalized
+
+    def _note_focus_hidden_line(self, function_name: str) -> None:
+        """Count one tool line focus view is suppressing this turn — against the mode the user had
+        BEFORE focus snapped to "off", so a prior ``/verbose off`` user is never told focus hid lines."""
+        if not getattr(self, "_focus_view_enabled", False):
+            return
+        from hermes_cli.focus_view import would_display_tool_line
+        saved = getattr(self, "_focus_saved_tool_progress", None)
+        last = getattr(self, "_focus_last_counted_tool", None)
+        if not would_display_tool_line(saved, function_name, last):
+            return
+        self._focus_last_counted_tool = function_name
+        self._focus_hidden_lines = int(getattr(self, "_focus_hidden_lines", 0)) + 1
+
+    def _emit_focus_recovery_line(self) -> None:
+        """Print the dim post-turn recovery line and reset the counter."""
+        count = int(getattr(self, "_focus_hidden_lines", 0) or 0)
+        self._focus_hidden_lines = 0
+        self._focus_last_counted_tool = None
+        if not getattr(self, "_focus_view_enabled", False):
+            return
+        from hermes_cli.focus_view import format_hidden_line
+        line = format_hidden_line(count)
+        if line:
+            with suppress(Exception):
+                _cp(_dim_line(line))
+
+    # ---- persisted display toggles: /approvals, /footer, /timestamps ----------------------
+    def _handle_approvals_command(self, cmd_original: str) -> None:
+        """Show or persist the profile-wide dangerous-command approval mode."""
+        from hermes_cli.approval_mode import run_approval_mode_command
+        parts = (cmd_original or "").strip().split(None, 1)
+        result = run_approval_mode_command(parts[1] if len(parts) > 1 else None)
+        _cp(f"  {result.message}")
+
+    def _toggle_setting(self, arg: str, current: bool, *, usage: str, status_line: str,
+                        config_key: str, label: str, failed: str):
+        """Shared /footer + /timestamps flow: status query, usage error, or save + report.
+        Returns the new bool state when it was saved (None otherwise)."""
+        from hermes_cli.colors import Colors as _Colors
+        new_state = _toggle_target(arg, current)
+        if new_state == "status":
+            state = "ON" if current else "OFF"
+            return _cp(f"  {_Colors.BOLD}{label}:{_Colors.RESET} {state}{status_line}")
+        if new_state is None:
+            return _cp(f"  Usage: {usage}")
+        if _save(config_key, new_state):
+            colour = _Colors.GREEN if new_state else _Colors.DIM
+            _cp(f"  {label}: {colour}{'ON' if new_state else 'OFF'}{_Colors.RESET}")
+        else:
+            _cp(f"  Failed to save {failed} setting to config.yaml")
+        return new_state
+
+    def _handle_footer_command(self, cmd_original: str) -> None:
+        """Toggle or inspect ``display.runtime_footer.enabled`` (``/footer [on|off|status]``)."""
+        from hermes_cli.config import load_config
+        footer_cfg = (((load_config() or {}).get("display") or {}).get("runtime_footer") or {})
+        fields = footer_cfg.get("fields") or ["model", "context_pct", "cwd"]
+        self._toggle_setting(
+            _command_arg(cmd_original, lower=True), bool(footer_cfg.get("enabled", False)),
+            usage="/footer [on|off|status]", status_line=f"\n  Fields: {', '.join(fields)}",
+            config_key="display.runtime_footer.enabled", label="Runtime footer", failed="runtime_footer",
+        )
+
+    def _handle_timestamps_command(self, cmd_original: str) -> None:
+        """Toggle or inspect ``display.timestamps`` (``/timestamps [on|off|status]``). When on,
+        message labels carry an ``[HH:MM]`` suffix and ``/history`` prefixes stored-timestamp turns."""
+        arg = _command_arg(cmd_original, lower=True)
+        current = bool(getattr(self, "show_timestamps", False))
+        new_state = _toggle_target(arg, current)
+        if isinstance(new_state, bool):
+            self.show_timestamps = new_state
+        self._toggle_setting(
+            arg, current, usage="/timestamps [on|off|status]", status_line="",
+            config_key="display.timestamps", label="Message timestamps", failed="timestamps")
+
+    # ---- model-behaviour settings: /reasoning, /busy, /indicator, /fast -------------------
+    def _handle_reasoning_command(self, cmd: str):
+        """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
+        scope unless --global) and thinking display toggles (always saved)."""
+        from cli import CLI_CONFIG, _parse_reasoning_config
+        raw = _command_arg(cmd)
+        if not raw:  # show current state
+            rc = self.reasoning_config
+            level = ("medium (default)" if rc is None else "none (disabled)"
+                     if rc.get("enabled") is False else rc.get("effort", "medium"))
+            display_state = "on ✓" if self.show_reasoning else "off"
+            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
+            return _cp(_accent_line(f"Reasoning effort:  {level}"),
+                       _accent_line(f"Reasoning display: {display_state} ({full_state})"),
+                       _dim_line("Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra"
+                          "|show|hide|full|clamp> [--global]"))
+        arg, explicit_global = _split_scope_flags(raw)
+        toggle = _REASONING_TOGGLES.get(arg)
+        if toggle is not None:  # display show/hide or full/clamp recap toggle
+            attr, value, headline, note = toggle
+            setattr(self, attr, value)
+            if attr == "show_reasoning" and self.agent:
+                self.agent.reasoning_callback = self._current_reasoning_callback()
+            _save(f"display.{attr}", value)
+            _cp(_accent_line(f"✓ Reasoning display: {headline} (saved)"))
+            if note:
+                _cp(_dim_line(f"  {note}"))
+            if attr == "reasoning_full" and value and not self.show_reasoning:
+                _cp(_dim_line("  Note: reasoning display is OFF — run /reasoning show to see it."))
+            return
+        # Effort level change
+        parsed = _parse_reasoning_config(arg)
+        if parsed is None:
+            return _cp(_dim_line(f'(._.) Unknown argument: {arg}'),
+                       _dim_line('Valid levels: none, minimal, low, medium, high, xhigh, max, ultra'),
+                       _dim_line('Display:      show, hide'),
+                       _dim_line('Scope:        session-scoped by default, --global to persist'))
+        self.reasoning_config = parsed
+        self.agent = None  # Force agent re-init with new reasoning config
+        saved = explicit_global and _save("agent.reasoning_effort", arg)
+        if saved:
+            if not isinstance(CLI_CONFIG.get("agent"), dict):
+                CLI_CONFIG["agent"] = {}
+            CLI_CONFIG["agent"]["reasoning_effort"] = arg
+        _cp(_accent_line(f"✓ Reasoning effort set to '{arg}' {_scope_outcome(explicit_global, saved)}"))
+
+    def _handle_busy_command(self, cmd: str):
+        """Handle /busy [status|queue|steer|interrupt] — what Enter does while Hermes is working."""
+        arg = _command_arg(cmd, lower=True)
+        usage = _dim_line('Usage: /busy [queue|steer|interrupt|status]')
+        if not arg or arg == "status":
+            behavior = _BUSY_MODE_SHORT.get(self.busy_input_mode, _BUSY_MODE_SHORT["interrupt"])
+            return _cp(_accent_line(f"Busy input mode: {self.busy_input_mode}"),
+                       _dim_line(f'Enter while busy: {behavior}'), usage)
+        if arg not in _BUSY_MODE_LONG:
+            return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
+        self.busy_input_mode = arg
+        _persist_display_choice("display.busy_input_mode", arg, "Busy input mode", _BUSY_MODE_LONG[arg])
+
+    def _handle_indicator_command(self, cmd: str):
+        """Handle /indicator [status|kaomoji|emoji|unicode|ascii] — pick the TUI busy-indicator style.
+        Persists to ``display.tui_status_indicator`` (the key the TUI reads) for its next render."""
+        from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+        current = (self.config.get("display") or {}).get("tui_status_indicator", DEFAULT_INDICATOR_STYLE)
+        arg = _command_arg(cmd, lower=True)
+        usage = _dim_line(f"Usage: /indicator [{'|'.join(INDICATOR_STYLES)}]")
+        if not arg or arg == "status":
+            return _cp(_accent_line(f"Busy-indicator style: {current}"), usage)
+        if arg not in INDICATOR_STYLES:
+            return _cp(_dim_line(f'(._.) Unknown indicator style: {arg}'), usage)
+        self.config.setdefault("display", {})["tui_status_indicator"] = arg
+        _persist_display_choice("display.tui_status_indicator", arg, "Busy-indicator style",
+                                "The TUI picks up the new style on its next render.")
+
+    def _handle_fast_command(self, cmd: str):
+        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
+        Session-scoped by default; ``--global`` persists agent.service_tier to config.yaml
+        (parity with /model and /reasoning)."""
+        if not self._fast_command_available():
+            return _cp("  (._.) /fast is only available for models that support fast mode "
+                       "(OpenAI Priority Processing or Anthropic Fast Mode).")
+        # Determine the branding for the current model
+        model = getattr(getattr(self, "agent", None), "model", None) or getattr(self, "model", None)
+        anthropic = _probe("hermes_cli.models", "_is_anthropic_fast_model", None, model)
+        feature_name = ("Fast mode" if anthropic is None
+                        else "Anthropic Fast Mode" if anthropic else "Priority Processing")
+        raw = _command_arg(cmd)
+        usage = _dim_line('Usage: /fast [normal|fast|auto|cold|status] [--global]')
+        if not raw or raw.lower() == "status":
+            status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
+            return _cp(_accent_line(f"{feature_name}: {status}"), usage)
+        arg, explicit_global = _split_scope_flags(raw)
+        if arg not in _FAST_TIERS:
+            return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
+        self.service_tier, saved_value = _FAST_TIERS[arg]
+        self.agent = None  # Force agent re-init with new service-tier config
+        saved = explicit_global and _save("agent.service_tier", saved_value)
+        outcome = _scope_outcome(explicit_global, saved)
+        _cp(_accent_line(f"✓ {feature_name} set to {saved_value.upper()} {outcome}"))
+
+    # ---- /debug, /update, /voice, /wake ---------------------------------------------------
+    def _handle_debug_command(self, cmd_original: str = ""):
+        """Handle /debug [nous|local] — upload debug report + logs and print share URLs.
+        Default: public paste service; ``nous``: Nous-internal (staff-only); ``local``: render to
+        stdout, no upload. ``local`` wins if both are given (never touches the network)."""
+        from hermes_cli.debug import run_debug_share
+        from types import SimpleNamespace
+        words = {w.lower() for w in cmd_original.split()[1:]}
+        local = "local" in words
+        # Typing /debug is the upload consent (yes=True); input() would hang in prompt_toolkit anyway.
+        run_debug_share(SimpleNamespace(
+            lines=200, expire=7, local=local, nous="nous" in words and not local, yes=True))
+
+    def _handle_update_command(self) -> bool:
+        """Handle /update — exit the session and relaunch as ``hermes update``. Returns True when
+        confirmed (the caller exits the app; the relaunch runs on the main thread after
+        prompt_toolkit restores terminal modes), False when cancelled."""
+        from hermes_cli.config import is_managed, format_managed_message
+        if is_managed():
+            print(f"  ✗ {format_managed_message('update Hermes Agent')}")
+            return False
+        # prompt_toolkit-native modal: renders above the composer, no raw input() races.
+        choices = [("once", "Update Now", "exit the current session and update Hermes Agent"),
+                   ("cancel", "Cancel", "keep the current session")]
+        raw = self._prompt_text_input_modal(
+            title="⚕  Update Hermes Agent",
+            detail="This will exit the current session and run `hermes update`.", choices=choices)
+        if raw is None or self._normalize_slash_confirm_choice(raw, choices) != "once":
+            print("  🟡 /update cancelled.")
+            return False
+        _say_block("  ⚕ Launching update...")
         # run() execs this on the main thread after prompt_toolkit restores terminal modes;
         # relaunching from this daemon thread would skip cleanup (POSIX) / only end the thread (Windows).
         self._pending_relaunch = ["update"]

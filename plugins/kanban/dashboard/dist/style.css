@@ -293,6 +293,18 @@
   padding: 0.05rem 0.3rem !important;
 }
 
+.hermes-kanban-epic-badge {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  border-color: var(--color-ring) !important;
+  color: var(--color-foreground) !important;
+  letter-spacing: 0.02em;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Board-level project binding readout in the board switcher; the × unbinds. */
 .hermes-kanban-board-project-unbind {
   margin-left: 0.25rem;

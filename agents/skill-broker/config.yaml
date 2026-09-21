@@ -1,0 +1,25 @@
+model:
+  default: gpt-oss:20b
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+toolsets:
+- hermes-cli
+- kanban
+- terminal
+agent:
+  max_turns: 85
+  reasoning_effort: low
+skills:
+  always_skills:
+  - kanban-worker
+  - skill-broker-core
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  enabled_skills:
+  - kanban-worker
+  - skill-broker-core
+  enforcement_mode: enforce

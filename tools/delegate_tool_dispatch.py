@@ -48,6 +48,13 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+    # KENSEI CUSTOM — verify/synthesis primitive inputs (defaults keep upstream callsites working)
+    verify: bool = False
+    verify_rubric: Optional[str] = None
+    synthesize: bool = False
+    synthesis_prompt: Optional[str] = None
+    profile: Optional[str] = None
+    profile_content: Optional[Dict[str, Any]] = None
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -193,6 +200,22 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
+    # ── KENSEI CUSTOM — verify/synthesis primitives (ported) ──
+    # Runs the fork's skeptic-verify (single task) and batch-synthesis primitives after
+    # finalize; enriched fields ride in `combined` below.
+    _kensei_extra = None
+    try:
+        from tools.delegate_tool_primitives import run_kensei_primitives
+        _kensei_extra = run_kensei_primitives(
+            results=results,
+            batch=batch,
+            parent_agent=batch.parent_agent,
+        )
+    except Exception as _kp_exc:  # noqa: BLE001 — primitives must never break delegation
+        from tools import delegate_tool_progress as _dtp  # KENSEI CUSTOM
+        with _dtp._quiet("KENSEI verify/synthesis primitives failed", exc_info=True):
+            _kensei_extra = None
+    # ── END KENSEI CUSTOM ──
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:
         _idx = entry.get("task_index", -1)
@@ -204,6 +227,10 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     update_manifest_statuses(batch.live_deleg_id, results)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    # ── KENSEI CUSTOM — primitive enrichment rides in `combined` (verify/synthesis) ──
+    if _kensei_extra:
+        combined.update(_kensei_extra)
+    # ── END KENSEI CUSTOM ──
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
     from tools.process_registry_notifications import _process_accounting_lines
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
@@ -468,3 +495,47 @@ def _run_batch(batch: _Batch, background: bool) -> str:
     if background:
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)
+
+def _split_child_budget(effective_max_iter: int, task_count: int) -> int:
+    """Split a delegation iteration budget across batch children.
+
+    Single-child batches are unchanged. Multi-child batches divide the
+    budget so one fan-out cannot multiply total iterations N-fold.
+    Floor of 1: a zero budget means no child work, never silent starvation.
+    """
+    try:
+        _n = max(1, int(task_count))
+        _cap = max(1, int(effective_max_iter))
+    except (TypeError, ValueError):
+        return effective_max_iter
+    return max(1, _cap // _n)
+
+
+
+def _check_delegation_cycle(parent_agent, profile_name: str | None) -> None:
+    """Reject a spawn that would recurse into its own ancestor profile.
+
+    Walks the _delegate_parent_ref chain (cap 8 hops); if the requested
+    profile name matches any ancestor's stamped profile, raises ValueError
+    loudly (same posture as pinned-transport preflight #80450) instead of
+    building a child that recurses until budgets die. Profile-less
+    (inherit-model) children carry no name and skip the check.
+    """
+    if not profile_name:
+        return
+    _want = str(profile_name).strip().lower()
+    if not _want:
+        return
+    _cur = parent_agent
+    for hop in range(8):
+        _current_profile = getattr(_cur, "_delegate_profile_name", None)
+        if _current_profile and str(_current_profile).strip().lower() == _want:
+            raise ValueError(f"Delegation cycle rejected: profile '{profile_name}' is already in this spawn chain.")
+        _ref = getattr(_cur, "_delegate_parent_ref", None)
+        if _ref is not None and not callable(_ref):
+            raise ValueError("Delegation cycle check failed: malformed ancestry metadata")
+        _ancestor = _ref() if callable(_ref) else None
+        if _ancestor is None:
+            return
+        _cur = _ancestor
+    raise ValueError("Delegation cycle check failed: ancestry exceeds 8-hop limit")

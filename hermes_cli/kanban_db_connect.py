@@ -78,6 +78,12 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
         with contextlib.suppress(Exception):
             conn.close()
         raise
+    # KENSEI CUSTOM (fork re-anchor): stash the path so write_txn can resolve the
+    # cross-process lock file. Keyed by id(conn) because sqlite3.Connection does
+    # not allow arbitrary attribute assignment in all Python builds.
+    from hermes_cli import kanban_db as _kb_reg  # late-bound (circular-safe)
+
+    _kb_reg._conn_paths[id(conn)] = str(path)
     return conn
 
 
@@ -835,12 +841,24 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    # KENSEI CUSTOM (fork re-anchor): fork-only task columns.
+    ("escalation_target", "escalation_target TEXT"),
+    ("theme", "theme TEXT"),
+    ("tier", "tier TEXT"),
+    ("status_reason", "status_reason TEXT"),
+    ("pipeline_mode", "pipeline_mode TEXT"),
+    ("reviewer", "reviewer TEXT"),
+    ("pipeline_stage", "pipeline_stage TEXT"),
+    ("epic_id", "epic_id TEXT"),
+    ("done_at", "done_at INTEGER"),
+    ("archived_at", "archived_at INTEGER"),
+    ("task_kind", "task_kind TEXT NOT NULL DEFAULT 'task'"),
+    ("parent_task_id", "parent_task_id TEXT"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
-    ("last_ping_event_id", "last_ping_event_id INTEGER NOT NULL DEFAULT 0"),
     ("notifier_profile", "notifier_profile TEXT"),
     ("delivery_mode", "delivery_mode TEXT NOT NULL DEFAULT 'notify'"),
     ("chat_type", "chat_type TEXT"),
@@ -880,6 +898,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # migration idempotent.
     cols = _column_names(conn, "tasks")
 
+    # KENSEI COMBINE: last_ping_event_id (independent ping cursor) added after
+    # v1 — legacy DBs get it via ADD COLUMN so notifier pings checkpoint cleanly.
+    # Guarded: the notify table is created later in the schema pass; a fresh or
+    # minimal test DB reaching this migration first must not crash on it.
+    if _table_exists(conn, "kanban_notify_subs") and "last_ping_event_id" not in _column_names(conn, "kanban_notify_subs"):
+        _add_column_if_missing(conn, "kanban_notify_subs", "last_ping_event_id",
+                               "INTEGER NOT NULL DEFAULT 0")
+
     # Legacy renames via ADD-then-copy rather than ``RENAME COLUMN``: very old
     # DBs may lack the legacy column entirely (RENAME raises "no such column"),
     # and RENAME reparses the whole schema, failing if views/triggers reference
@@ -902,6 +928,25 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
+    # KENSEI CUSTOM (fork re-anchor): indexes for fork-only columns.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_theme ON tasks(theme)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent_task_id ON tasks(parent_task_id)")
+    # KENSEI CUSTOM (fork re-anchor): done_at backfill for auto-archive cron
+    # (proxy: completed_at, then updated_at; guarded for minimal test schemas).
+    _cols_after = _column_names(conn, "tasks")
+    if "done_at" in _cols_after:
+        _proxy = None
+        if "completed_at" in _cols_after and "updated_at" in _cols_after:
+            _proxy = "COALESCE(completed_at, updated_at)"
+        elif "completed_at" in _cols_after:
+            _proxy = "completed_at"
+        elif "updated_at" in _cols_after:
+            _proxy = "updated_at"
+        if _proxy:
+            conn.execute(
+                f"UPDATE tasks SET done_at = {_proxy} "
+                "WHERE status = 'done' AND done_at IS NULL"
+            )
 
     # task_events.run_id back-fills as NULL for historical events (they predate
     # runs and can't be attributed).
@@ -935,6 +980,49 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 _add_column_if_missing(conn, "task_runs", name, ddl)
         _backfill_legacy_inflight_runs(conn)
 
+    # KENSEI CUSTOM (fork re-anchor): v2 epics table (JIRA-style grouping).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS epics ("
+        " id TEXT PRIMARY KEY,"
+        " title TEXT NOT NULL,"
+        " description TEXT,"
+        " board_slug TEXT,"
+        " status TEXT NOT NULL DEFAULT 'active',"
+        " parent_epic_id TEXT,"
+        " created_at INTEGER NOT NULL,"
+        " updated_at INTEGER NOT NULL,"
+        " FOREIGN KEY (parent_epic_id) REFERENCES epics(id))"
+    )
+    # KENSEI CUSTOM (fork re-anchor): profile-lifecycle approval records.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS profile_lifecycle_approvals ("
+        " id TEXT PRIMARY KEY,"
+        " task_id TEXT NOT NULL,"
+        " op TEXT NOT NULL,"
+        " profile TEXT NOT NULL,"
+        " args_json TEXT NOT NULL DEFAULT '{}',"
+        " requested_by TEXT,"
+        " blast_summary TEXT,"
+        " status TEXT NOT NULL DEFAULT 'pending',"
+        " token TEXT NOT NULL,"
+        " error TEXT,"
+        " resolved_by TEXT,"
+        " created_at INTEGER NOT NULL,"
+        " resolved_at INTEGER,"
+        " notified_at INTEGER)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_profile_approvals_status "
+        "ON profile_lifecycle_approvals(status, created_at)"
+    )
+    # KENSEI CUSTOM (fork re-anchor): daily agent-spawn counter (P2-1).
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS daily_spawn_counter ("
+        " date_utc TEXT NOT NULL PRIMARY KEY,"
+        " count INTEGER NOT NULL DEFAULT 0,"
+        " last_tick INTEGER NOT NULL DEFAULT 0)"
+    )
+
     # One-shot event-kind rename: old names still worked but were awkward on
     # the wire. Fires once per DB — after the UPDATE no rows match.
     for old, new in (
@@ -954,7 +1042,7 @@ def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:
     write_txn serializes against concurrent dispatchers, and the per-row
     UPDATE uses ``current_run_id IS NULL`` as a CAS guard so a racing claim
     can't produce an orphaned row."""
-    with write_txn(conn):
+    with write_txn(conn, internal=True):
         inflight = conn.execute(
             "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
             "       max_runtime_seconds, last_heartbeat_at, started_at "
@@ -1018,6 +1106,8 @@ _REBUILD_SPECS = {
         (
             "CREATE INDEX idx_events_task ON task_events(task_id, created_at)",
             "CREATE INDEX idx_events_run ON task_events(run_id, id)",
+            # KENSEI CUSTOM (fork re-anchor): kind+created_at index (council/loop queries).
+            "CREATE INDEX idx_events_kind ON task_events(kind, created_at)",
         ),
     ),
     "task_comments": (
@@ -1049,7 +1139,6 @@ _REBUILD_SPECS = {
         " notifier_profile TEXT, delivery_mode TEXT NOT NULL DEFAULT 'notify',"
         " delivery_metadata TEXT, created_at INTEGER NOT NULL,"
         " last_event_id INTEGER NOT NULL DEFAULT 0,"
-        " last_ping_event_id INTEGER NOT NULL DEFAULT 0,"
         " PRIMARY KEY (task_id, platform, chat_id, thread_id))",
         ("CREATE INDEX idx_notify_task ON kanban_notify_subs(task_id)",),
     ),
@@ -1188,9 +1277,16 @@ def _main_db_file(conn: sqlite3.Connection) -> Optional[str]:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
+def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False, internal: bool = False):
     """IMMEDIATE write transaction; a claim CAS inside is atomic — at most one
     concurrent writer succeeds.
+
+    KENSEI CUSTOM (fork re-anchor): a cross-process ``.write_lock`` sidecar file
+    lock is acquired before ``BEGIN IMMEDIATE`` so only one *process* may enter
+    a write transaction at any instant (WAL checkpoint race hardening). The
+    sidecar path resolves through ``kanban_db._conn_paths``; if the lock cannot
+    be taken (read-only fs, exotic layout) the write proceeds on the in-DB
+    ``BEGIN IMMEDIATE`` guarantee alone.
 
     Nesting is an explicit opt-in (``allow_nested=True`` → savepoint; otherwise
     a loud ``RuntimeError``). Only composition primitives (``create_task``,
@@ -1198,50 +1294,93 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     (``complete_task`` & co.) must never run under an open outer transaction,
     since those side effects would fire while the outer txn can still roll back.
     """
-    _kb._assert_not_delegated_child_mutation(_main_db_file(conn))
-    if getattr(conn, "in_transaction", False):
-        if not allow_nested:
-            raise RuntimeError(
-                "write_txn: already inside a transaction. Nested composition "
-                "must opt in explicitly with write_txn(conn, allow_nested=True) "
-                "(savepoint semantics; the inner RELEASE is not durable until "
-                "the outer transaction commits)."
-            )
-        savepoint = f"hermes_nested_{secrets.token_hex(8)}"
-        conn.execute(f"SAVEPOINT {savepoint}")
+    if not internal:
+        # Schema/maintenance migrations pass internal=True: they are system-internal
+        # (idempotent backfills on connect), not user mutations, and must not be
+        # blocked by the delegate-child guard — otherwise a delegate descendant
+        # cannot even READ a board that still needs migration. Upstream now scopes
+        # the guard to the mutated DB via _main_db_file(conn).
+        _kb._assert_not_delegated_child_mutation(_main_db_file(conn))
+    nested = getattr(conn, "in_transaction", False)
+    _lock_handle = None
+    if not nested:
+        # KENSEI CUSTOM (fork re-anchor): cross-process sidecar lock.
+        _db_path_str = _kb._conn_paths.get(id(conn))
+        if _db_path_str:
+            try:
+                _lock_path = Path(_db_path_str).with_name(Path(_db_path_str).name + ".write_lock")
+                _lock_path.parent.mkdir(parents=True, exist_ok=True)
+                _lock_handle = _lock_path.open("a+b")
+                if _kb._IS_WINDOWS:
+                    import msvcrt
+
+                    _lock_handle.seek(0)
+                    msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                with contextlib.suppress(Exception):
+                    if _lock_handle is not None:
+                        _lock_handle.close()
+                _lock_handle = None
+    try:
+        if nested:
+            if not allow_nested:
+                raise RuntimeError(
+                    "write_txn: already inside a transaction. Nested composition "
+                    "must opt in explicitly with write_txn(conn, allow_nested=True) "
+                    "(savepoint semantics; the inner RELEASE is not durable until "
+                    "the outer transaction commits)."
+                )
+            savepoint = f"hermes_nested_{secrets.token_hex(8)}"
+            conn.execute(f"SAVEPOINT {savepoint}")
+            try:
+                yield conn
+            except Exception:
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(f"ROLLBACK TO {savepoint}")
+                    conn.execute(f"RELEASE {savepoint}")
+                raise
+            else:
+                conn.execute(f"RELEASE {savepoint}")
+            return
+
+        _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
         try:
             yield conn
         except Exception:
-            with contextlib.suppress(sqlite3.OperationalError):
-                conn.execute(f"ROLLBACK TO {savepoint}")
-                conn.execute(f"RELEASE {savepoint}")
-            raise
-        else:
-            conn.execute(f"RELEASE {savepoint}")
-        return
-
-    _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
-    try:
-        yield conn
-    except Exception:
-        # SQLite may already have auto-rolled-back (EIO, contention, corruption);
-        # don't let this secondary failure shadow the real one.
-        with contextlib.suppress(sqlite3.OperationalError):
-            conn.execute("ROLLBACK")
-        raise
-    else:
-        try:
-            _execute_boundary_with_retry(conn, "COMMIT")
-        except Exception:
-            # COMMIT exhausted retries with the txn still open; roll back so the
-            # connection isn't poisoned for the next BEGIN IMMEDIATE.
+            # SQLite may already have auto-rolled-back (EIO, contention, corruption);
+            # don't let this secondary failure shadow the real one.
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("ROLLBACK")
             raise
-        # Post-commit torn-extend check — raise now rather than silently corrupt.
-        _check_file_length_invariant(conn)
+        else:
+            try:
+                _execute_boundary_with_retry(conn, "COMMIT")
+            except Exception:
+                # COMMIT exhausted retries with the txn still open; roll back so the
+                # connection isn't poisoned for the next BEGIN IMMEDIATE.
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute("ROLLBACK")
+                raise
+            # Post-commit torn-extend check — raise now rather than silently corrupt.
+            _check_file_length_invariant(conn)
+    finally:
+        # KENSEI CUSTOM (fork re-anchor): release the cross-process sidecar lock.
+        if _lock_handle is not None:
+            try:
+                if _kb._IS_WINDOWS:
+                    import msvcrt
 
+                    _lock_handle.seek(0)
+                    msvcrt.locking(_lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
 
-# Late-bound origin namespace (see module docstring); imported LAST so this
-# module is fully populated before ``kanban_db`` imports from it.
+                    fcntl.flock(_lock_handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                _lock_handle.close()
+
 from hermes_cli import kanban_db as _kb  # noqa: E402

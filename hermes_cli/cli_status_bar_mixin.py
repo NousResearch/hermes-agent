@@ -186,6 +186,7 @@ class CLIStatusBarMixin:
             return ""
         return f"✓ {format_duration_compact(max(0.0, time.time() - last_finished_at))}"
 
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         from cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
@@ -204,12 +205,36 @@ class CLIStatusBarMixin:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        # ── KENSEI CUSTOM (restored): provider + reasoning effort for status bar ──
+        # Prefer the durable display identity: after a call, agent.provider degrades to the
+        # generic transport label "custom"; provider_display keeps the custom:<name> slug.
+        _agent_provider = getattr(agent, "provider", None)
+        _agent_display = getattr(agent, "provider_display", None) or getattr(self, "provider_display", None)
+        if _agent_provider and _agent_provider != "custom":
+            provider_name = str(_agent_display or _agent_provider)
+        elif _agent_provider == "custom":
+            # Transport label degraded mid-call: show the durable custom:<name> slug.
+            provider_name = str(_agent_display or _agent_provider)
+        else:
+            provider_name = (_agent_provider or getattr(self, "provider_display", None)
+                             or getattr(self, "provider", None) or "")
+        reasoning_cfg = getattr(self, "reasoning_config", None)
+        reasoning_effort = ""
+        if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
+            reasoning_effort = str(reasoning_cfg.get("effort", "") or "")
+        # ── END KENSEI CUSTOM ──
         prompt_start = getattr(self, "_prompt_start_time", None)
         turn_live = prompt_start is not None
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            # ── KENSEI CUSTOM (restored): provider + reasoning effort ──
+            "provider_name": provider_name,
+            "reasoning_effort": reasoning_effort,
+            # ── KENSEI CUSTOM: agent mode in status bar ──
+            "agent_mode": self._detect_current_mode(),
+            # ── END KENSEI CUSTOM ──
             "duration": format_duration_compact(elapsed_seconds),
             "session_title": self._get_status_bar_session_title(),
             "prompt_elapsed": self._format_prompt_elapsed(
@@ -1034,10 +1059,38 @@ class CLIStatusBarMixin:
                 add(name, style(count) if callable(style) else style, f"{glyph} {count}")
 
         if _ok("model"):
+            _bar_width = width if width else self._get_tui_terminal_width()
+            wide = _bar_width >= 76
+            effort = snapshot.get("reasoning_effort", "")
+            provider = snapshot.get("provider_name", "")
             if styled:
-                segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
+                model_frags = [(_SB, " ☤ "), (_STRONG, model_short)]
+                # ── KENSEI CUSTOM (restored): reasoning effort + provider ──
+                if effort and effort != "default":
+                    model_frags.append((_STRONG, f" 🧠{effort}"))
+                if provider and provider != "auto" and wide:
+                    model_frags.append((_DIM, f" ({provider})"))
+                # ── END KENSEI CUSTOM ──
+                segs.append(model_frags)
             else:
-                segs.append([("", f"☤ {model_short}")])
+                model_text = f"☤ {model_short}"
+                # ── KENSEI CUSTOM (restored): reasoning effort + provider ──
+                if effort and effort != "default":
+                    model_text += f" 🧠{effort}"
+                if provider and provider != "auto" and wide:
+                    model_text += f" ({provider})"
+                # ── END KENSEI CUSTOM ──
+                segs.append([("", model_text)])
+            # ── KENSEI CUSTOM: mode badge (all width tiers; appended right after model) ──
+            _MODE_FRAGS = {
+                "plan": ("class:status-bar-good", " 📋 Plan"),
+                "gods_plan": ("class:status-bar-bad", " 👑 UltraPlan"),
+                "recon": ("class:status-bar-warn", " 🔍 Recon"),
+            }
+            _mode_frag = _MODE_FRAGS.get(snapshot.get("agent_mode", "auto"))
+            if _mode_frag:
+                segs.append([_mode_frag])
+            # ── END KENSEI CUSTOM ──
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
@@ -1123,6 +1176,18 @@ class CLIStatusBarMixin:
             return self._right_align_status_title(text, session_title, width)
         except Exception:
             return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+
+    # ── KENSEI CUSTOM: detect current mode for status bar ──
+    def _detect_current_mode(self) -> str:
+        """Return the authoritative agent mode key for the status bar."""
+        try:
+            from hermes_cli.mode_prompts import validate_mode
+
+            current = getattr(self, "agent", None)
+            return validate_mode(getattr(current, "agent_mode", "auto") or "auto")
+        except Exception:
+            return "auto"
+    # ── END KENSEI CUSTOM ──
 
     def _get_status_bar_fragments(self):
         if (

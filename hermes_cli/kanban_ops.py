@@ -59,8 +59,9 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee, kanban.max_in_progress,
-    # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
-    # semantics as the gateway dispatch path.
+    # kanban.max_in_progress_per_profile, kanban.max_spawn and
+    # kanban.max_spawn_per_tick with the same semantics as the gateway
+    # dispatch path.
     try:
         from hermes_cli.config import load_config
         _cfg = load_config()
@@ -78,9 +79,21 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = (
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
+        # Per-tick start budget: caps NEW worker starts during this one tick.
+        # Distinct from max_spawn (live concurrency). Coercion must match the
+        # gateway path exactly — including the bool guard, since int(True)==1
+        # would otherwise silently impose a 1-per-tick cap that the gateway
+        # (and dispatch_once) both reject. NOT overridden by --max, which
+        # historically means the live-concurrency cap.
+        _raw_mspt = _kanban_cfg.get("max_spawn_per_tick")
+        max_spawn_per_tick = (
+            None if isinstance(_raw_mspt, bool)
+            else kbd._positive_int(_raw_mspt, None)
+        )
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        max_spawn_per_tick = None
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -90,6 +103,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_spawn_per_tick=max_spawn_per_tick,
         )
     if getattr(args, "json", False):
         _print_json({
@@ -101,6 +115,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_review_nonspawnable": [
+                {"task_id": tid, "reviewer": who}
+                for (tid, who) in res.skipped_review_nonspawnable
+            ],
             "skipped_per_profile_capped": [
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
@@ -146,6 +164,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    for tid, who in res.skipped_review_nonspawnable:
+        print(f"REVIEW STARVED ({tid}): reviewer '{who}' is not a spawnable profile")
     for tid, reason in res.respawn_guarded:
         print(f"Guarded ({reason}): {tid}")
     if res.rate_limited:

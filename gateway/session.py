@@ -1,5 +1,5 @@
 """Gateway session management: message sources, the persisted routing index (SessionStore),
-explicit resets and the dynamic "Current Session Context" system prompt section."""
+reset policy and the dynamic "Current Session Context" system prompt section."""
 
 import asyncio
 import hashlib
@@ -490,14 +490,20 @@ class SessionEntry:
     estimated_cost_usd: float = 0.0
     cost_status: str = "unknown"
     last_prompt_tokens: int = 0  # last API-reported prompt tokens (compression pre-check)
-    # Suspension replacement metadata; historical automatic-reset rows retain these fields.
+    # Created because the previous session expired; consumed once to inject a notice.
     was_auto_reset: bool = False
-    auto_reset_reason: Optional[str] = None
-    reset_had_activity: bool = False
-    prev_session_id: Optional[str] = None  # feeds the continuity note
-    # Explicit /new or /reset triggers topic/channel skill re-injection on the first turn.
+    auto_reset_reason: Optional[str] = None  # "idle" or "daily"
+    reset_had_activity: bool = False  # the expired session had messages
+    prev_session_id: Optional[str] = None  # replaced by auto-reset; feeds the continuity note
+    # Explicit /new or /reset; consumed once to re-inject topic/channel skills. Distinct from
+    # was_auto_reset, whose "expired due to inactivity" notice is wrong for a manual reset.
+    # Set by reset_session() when the user explicitly sends /new or /reset. Consumed once by
+    # _handle_message_with_agent to trigger topic/channel skill re-injection on the first message of the new
+    # session. We can't reuse was_auto_reset for this because that flag fires the "session expired due to
+    # inactivity" user-facing notice and a misleading context-note prepend — both wrong for an explicit
+    # manual reset. See issue #6508.
     is_fresh_reset: bool = False
-    # Historical finalization fence; timers no longer write it.
+    # Set by the expiry watcher after finalizing; persisted so restarts don't re-run finalization.
     expiry_finalized: bool = False
     # Next get_or_create_session() auto-resets; set by /stop to break stuck-resume loops.
     # When True the next call to get_or_create_session() will auto-reset this session (create a new
@@ -537,6 +543,13 @@ class SessionEntry:
         "prev_session_id",
     )
 
+    # KENSEI CUSTOM: session-scoped agent mode (auto/plan/gods_plan/recon).
+    # Persisted to sessions.json so it survives gateway restarts, and cleared
+    # on /new (reset_session creates a fresh entry with the default "auto").
+    # The gateway /mode handler and the TUI config.set key=mode handler both
+    # write here via SessionStore.set_agent_mode.  See skill agent-modes.
+    agent_mode: str = "auto"
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key, "session_id": self.session_id,
@@ -553,6 +566,7 @@ class SessionEntry:
         if self.model_override:
             # Defence-in-depth against an unsanitized dict stored directly.
             result["model_override"] = sanitize_model_override(self.model_override)
+        result["agent_mode"] = self.agent_mode
         if self.transport_profile:
             result["transport_profile"] = self.transport_profile
         if self.origin:
@@ -595,6 +609,8 @@ class SessionEntry:
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),
             active_turn_token=token, active_turn_started_at=started_at,
             model_override=sanitize_model_override(data.get("model_override")),
+            # KENSEI CUSTOM: persisted session-scoped agent mode (agent-modes)
+            agent_mode=data.get("agent_mode", "auto") or "auto",
             transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
             **plain,
         )
@@ -920,13 +936,13 @@ class SessionStore(
         with self._lock:
             self._ensure_loaded_locked()
             observed = self._entries.get(session_key)
-        # Phase 1b (no lock): compression tip + stale check + explicit suspension.
+        # Phase 1b (no lock): compression tip + stale check + reset policy.
         checks = None
         if not force_new and observed is not None:
             sid = observed.session_id
             checks = _RouteChecks(
                 sid, self._compression_tip_for_session_id(sid), self._is_session_ended_in_db(sid),
-                self._route_reset_reason(observed),
+                self._route_reset_reason(observed, source, now),
             )
         # Phase 2 (lock): apply the decisions to _entries.
         decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now)
@@ -985,7 +1001,7 @@ class SessionStore(
                     session_key, entry.session_id,
                 )
             if stale_hit or reset_reason:
-                # Honour an explicit suspension/reset decision instead of silently reopening via recovery.
+                # Honour an expiry/reset decision instead of silently reopening via recovery.
                 if reset_reason:
                     decision.schedule_reset(reset_reason, entry, entry.last_prompt_tokens > 0)
                 self._entries.pop(session_key, None)
@@ -1005,6 +1021,10 @@ class SessionStore(
         """Adopt a recoverable state.db row, or schedule its reset (no lock held on entry)."""
         recovered = self._query_recoverable_session(session_key=session_key, source=source, now=now)
         if recovered is None:
+            return
+        reset_reason = self._should_reset(recovered, source)
+        if reset_reason:
+            decision.schedule_reset(reset_reason, recovered, recovered.reset_had_activity)
             return
         self._reopen_session_row(session_key, recovered.session_id)
         with self._lock:
@@ -1070,10 +1090,40 @@ class SessionStore(
         """Persist a small JSON-serializable metadata value. Deliberately does NOT advance
         ``updated_at``: a background write must not make an idle session look fresh.
 
-        Internal bookkeeping must not advance the user-activity clock used by housekeeping
-        and restart recovery.
+        Metadata writes are internal bookkeeping and deliberately do NOT advance ``updated_at``: it is the
+        user-activity clock that drives idle/daily reset policy and the restart-resume freshness gate
+        (#85709), and a background write must not make an idle session look fresh.
         """
         return self._update_entry(session_key, lambda e: e.metadata.__setitem__(key, value))
+
+    # KENSEI CUSTOM: session-scoped agent mode persistence (skill agent-modes).
+    # Re-based on upstream's _update_entry helper (same lock/load/save
+    # contract as set_model_override); fork's inline _lock/_save version
+    # dropped as duplicate of the upstream refactor.
+    def set_agent_mode(self, session_key: str, mode: str) -> None:
+        """Persist the session-scoped agent mode (auto/plan/gods_plan/recon).
+
+        Mirrors the set_model_override pattern: writes the field on the
+        SessionEntry and saves to disk so it survives gateway restarts.
+        Pass "auto" to reset.  No-op when the session does not exist.
+        """
+        normalised = (mode or "auto").strip().lower()
+
+        def _apply(entry: SessionEntry):
+            if entry.agent_mode == normalised:
+                return False
+            entry.agent_mode = normalised
+            entry.updated_at = _now()
+
+        self._update_entry(session_key, _apply)
+
+    def get_agent_mode(self, session_key: str) -> str:
+        """Return the persisted agent mode for *session_key*, or "auto"."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None:
+                return "auto"
+            return entry.agent_mode or "auto"
 
     def set_model_override(self, session_key: str, override: Optional[Dict[str, Any]]) -> None:
         """Persist (or clear, with ``None``) the /model override; non-secret keys only."""
@@ -1183,7 +1233,7 @@ class SessionStore(
         return len(dropped)
 
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
-    # background compression on an idle session cannot make it look fresh to the
+    # background compression on an idle session cannot make it look fresh to reset policy or the
     # restart-resume freshness gate (#85709).
     def switch_session(
         self, session_key: str, target_session_id: str, *, expected_session_id: Optional[str] = None,

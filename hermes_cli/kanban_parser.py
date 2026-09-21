@@ -329,6 +329,35 @@ _SPECS = [
              help="Override the live-claim guard: move a running, claimed "
                   "task to review even without owning its run (clears the worker's claim)."),
     ], help="Move a task to 'review' (implementation done, awaiting review) — NOT a block"),
+
+      # ── KENSEI CUSTOM — governance commands (ported) ──
+      _cmd("escalate", [
+          _arg("task_ids", nargs="+"),
+          _arg("--target", default="sahil", help="Escalation recipient slug (default: sahil)."),
+          _arg("--reason", default=None, help="One-line reason, recorded as a comment. Quote multi-word reasons."),
+          _arg("--clear", action="store_true", help="Clear the escalation instead of setting it."),
+      ], help="Flag a task as needing Sahil's decision (appears in the daily briefing's NEEDS YOU). Use --clear to resolve."),
+      _cmd("profile-gate", [
+          _arg("pg_action", choices=["list", "approve", "reject"],
+               help="list pending approvals, or approve/reject one by id"),
+          _arg("approval_id", nargs="?", help="approval id (required for approve / reject)"),
+      ], help="Review profile create/delete approvals (PROFILE-GATE manual path)"),
+      _cmd("promote-backlog", [
+          _TASK_ID,
+          _arg("--json", action="store_true", help="Emit JSON output"),
+      ], help="Move a backlog task into triage so the specifier can pick it up"),
+      _cmd("epics", [], children=("epics_action", [
+          _cmd("list", [_arg("--board", default=None, help="Filter by board slug")],
+               help="List all epics with task counts"),
+          _cmd("show", [_arg("epic_id", help="Epic id to show")],
+               help="Show all tasks under an epic"),
+          _cmd("create", [
+              _arg("--title", required=True, help="Epic title"),
+              _arg("--description", default="", help="Epic description"),
+              _arg("--board", default=None, help="Board slug for this epic"),
+              _arg("--parent", default=None, help="Parent epic id (for sub-epics)"),
+          ], help="Create a new epic"),
+      ]), help="Manage epics (list, show, create)"),
     _cmd("request-changes", [_TASK_ID, _arg("reason", nargs="+", help="Concrete changes required before re-review")],
          help="Reviewer verdict: return the active review run to its implementer"),
     _cmd("reopen-review", [

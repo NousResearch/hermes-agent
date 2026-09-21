@@ -1,0 +1,293 @@
+# Model Profiles for Prompt Optimizer — family + capability composition
+#
+# Each model resolves along TWO orthogonal axes:
+#   1. family     — vendor / model family (claude, openai, deepseek, …)
+#   2. capability — reasoning vs general
+#
+# The rewriter system prompt is composed by concatenating whichever axes
+# resolved. If both come back None (unknown vendor + no reasoning hints)
+# the base template runs untouched.
+#
+# Coverage: 21 vendor families, derived from the OpenRouter model catalog
+# (https://openrouter.ai/api/v1/models). Families with public prompt-
+# engineering guidance get vendor-sourced tactics; smaller / community
+# vendors get principled instruction-tuned defaults.
+
+families:
+  claude:
+    description: "Anthropic Claude — XML-friendly, long context, nuanced reasoning"
+    prompt_tactics:
+      - "Use XML tags (<thinking>, <answer>, <example>) to mark structure"
+      - "State constraints and boundaries explicitly"
+      - "Open with an imperative verb — no hedging or pleasantries"
+      - "Put examples in <example> blocks rather than inline prose"
+    token_efficiency_rules:
+      - "Replace 'Could you please' with imperative verbs"
+      - "Remove filler adverbs (very, really, quite, just)"
+      - "Use bullet lists instead of prose enumerations"
+
+  openai:
+    description: "OpenAI GPT — strong tool use, function calling, generalist"
+    prompt_tactics:
+      - "State the output format explicitly (JSON, markdown, plain)"
+      - "Put static instructions in the system role, dynamic input in user"
+      - "Use numbered steps for multi-part tasks"
+      - "Reference functions/tools by name when expecting calls"
+    token_efficiency_rules:
+      - "Move repeated instructions to the system prompt"
+      - "Compress examples to minimal viable form"
+      - "Avoid restating role / persona mid-prompt"
+
+  deepseek:
+    description: "DeepSeek — coding-strong, cost-efficient"
+    prompt_tactics:
+      - "Get to the task in the first sentence — no preamble"
+      - "Break complex requests into numbered sub-tasks"
+      - "Use markdown code blocks for any code-shaped input or output"
+    token_efficiency_rules:
+      - "Use short variable names in code examples"
+      - "Strip redundant explanations after code blocks"
+      - "Skip the closing summary"
+
+  google:
+    description: "Google Gemini / Gemma — long context, multimodal, factual"
+    prompt_tactics:
+      - "Use clear section headers (## Context, ## Task, ## Output)"
+      - "Leverage long context — full documents beat excerpts"
+      - "State citation requirements upfront when grounding matters"
+      - "Prefer structured data (tables, JSON) over prose"
+    token_efficiency_rules:
+      - "Group related instructions under one header"
+      - "Reference earlier sections by header name, don't repeat"
+      - "Use tables for parallel comparisons"
+
+  nvidia:
+    description: "Nvidia Nemotron — instruction-tuned, reasoning variants strong"
+    prompt_tactics:
+      - "Open with an imperative verb stating the deliverable"
+      - "List constraints as a bulleted checklist"
+      - "Specify output structure (sections, headings) explicitly"
+    token_efficiency_rules:
+      - "Drop politeness phrasing"
+      - "Use concise constraint language ('must', 'never', 'only')"
+
+  kimi:
+    description: "Moonshot Kimi — long context, content-heavy tasks"
+    prompt_tactics:
+      - "State the goal in one sentence at the top"
+      - "Provide full reference material rather than summaries"
+      - "Specify output length and format explicitly"
+    token_efficiency_rules:
+      - "Skip self-introductions"
+      - "Use direct commands"
+
+  qwen:
+    description: "Alibaba Qwen — multilingual, instruction-following, agent-capable"
+    prompt_tactics:
+      - "Lead with the action verb"
+      - "State output language explicitly if non-English"
+      - "Use markdown for structured output"
+    token_efficiency_rules:
+      - "Strip filler and hedge words"
+      - "Use bullet points over prose"
+
+  mistral:
+    description: "Mistral / Magistral — fast, instruction-tuned, function-calling capable"
+    prompt_tactics:
+      - "Be concise — Mistral handles short prompts best"
+      - "State output format explicitly"
+      - "Use the system role for persistent context"
+    token_efficiency_rules:
+      - "Drop pleasantries"
+      - "Move static context to system prompt"
+
+  llama:
+    description: "Meta Llama — open-weight generalist, instruction-tuned, tool use"
+    prompt_tactics:
+      - "Use the system message for role + persistent constraints"
+      - "Provide examples for any structured-output task"
+      - "Number steps for multi-part workflows"
+    token_efficiency_rules:
+      - "Remove conversational fillers"
+      - "Use direct commands; Llama responds well to imperatives"
+
+  nousresearch:
+    description: "NousResearch Hermes — agentic, tool-use focused, JSON-mode strong"
+    prompt_tactics:
+      - "State the task imperatively in the first line"
+      - "Define tool contracts explicitly when expecting calls"
+      - "Use JSON schemas for structured output"
+      - "Be explicit about reasoning vs action steps"
+    token_efficiency_rules:
+      - "Skip pleasantries"
+      - "Use minimal prose around code/JSON blocks"
+
+  xai:
+    description: "xAI Grok — generalist, conversational, reasoning variants"
+    prompt_tactics:
+      - "Be direct — Grok handles informal language well"
+      - "State the format requirement once, clearly"
+      - "Use markdown structure for technical content"
+    token_efficiency_rules:
+      - "Drop unnecessary politeness"
+      - "Avoid restating context the model has just seen"
+
+  amazon:
+    description: "Amazon Nova — generalist, multimodal, AWS-integrated"
+    prompt_tactics:
+      - "Structure prompts as: Context → Task → Output spec"
+      - "Be explicit about output format (JSON, markdown, plain text)"
+      - "Provide examples for any non-trivial schema"
+    token_efficiency_rules:
+      - "Separate static instructions into system role"
+      - "Compress example data to minimal viable form"
+
+  cohere:
+    description: "Cohere Command — RAG-optimised, citation-aware, multilingual"
+    prompt_tactics:
+      - "Provide reference documents explicitly — Command excels at grounded answers"
+      - "Request citations when grounding matters"
+      - "Use clear section markers for documents vs instructions"
+    token_efficiency_rules:
+      - "Reference documents by ID rather than re-quoting"
+      - "Strip explanatory padding around the core question"
+
+  microsoft:
+    description: "Microsoft Phi — small instruction-tuned models, efficient"
+    prompt_tactics:
+      - "Keep prompts concise — Phi has limited context tolerance"
+      - "Use simple structure (one task per prompt)"
+      - "State output format explicitly"
+    token_efficiency_rules:
+      - "Avoid long preambles"
+      - "One example is enough — don't pile on shots"
+
+  perplexity:
+    description: "Perplexity Sonar — search-augmented, citation-native"
+    prompt_tactics:
+      - "Scope the query narrowly — Sonar searches what you ask for"
+      - "State freshness / recency requirements explicitly"
+      - "Ask for sources / citations when factuality matters"
+    token_efficiency_rules:
+      - "Skip 'please search for' — Sonar searches by default"
+      - "Use specific terms over generic ones"
+
+  zhipu:
+    description: "Zhipu GLM / GLM-Z — bilingual, instruction-tuned, reasoning variants"
+    prompt_tactics:
+      - "Be explicit about output language (English/Chinese)"
+      - "Use structured input (sections, bullets) for complex tasks"
+      - "State the deliverable in the opening sentence"
+    token_efficiency_rules:
+      - "Strip hedge language"
+      - "Use direct constraint statements"
+
+  liquid:
+    description: "Liquid Foundation Models — efficient, edge-friendly"
+    prompt_tactics:
+      - "Keep prompts focused — one task per call"
+      - "State output format explicitly"
+      - "Provide minimal but precise context"
+    token_efficiency_rules:
+      - "Avoid padding and pleasantries"
+      - "Use lists over prose"
+
+  minimax:
+    description: "MiniMax M-series — long context, reasoning-capable, generalist"
+    prompt_tactics:
+      - "State the deliverable in one sentence at the top"
+      - "Structure input with clear section headers"
+      - "Specify output length and format explicitly"
+    token_efficiency_rules:
+      - "Move reusable context to a separate section"
+      - "Avoid restating constraints mid-prompt"
+
+  ibm:
+    description: "IBM Granite — enterprise instruction-tuned, code-aware"
+    prompt_tactics:
+      - "Use structured prompts with clear sections"
+      - "State output format and length requirements upfront"
+      - "Provide schemas for any structured-output task"
+    token_efficiency_rules:
+      - "Drop conversational filler"
+      - "Use precise technical terminology"
+
+  inflection:
+    description: "Inflection Pi — conversational, empathy-tuned"
+    prompt_tactics:
+      - "Use a conversational tone — Pi responds best to natural dialogue"
+      - "State the desired outcome clearly"
+    token_efficiency_rules:
+      - "Avoid robotic bullet-list-only prompts"
+      - "Keep instructions natural and contextual"
+
+  xiaomi:
+    description: "Xiaomi MiMo — reasoning-focused, multilingual"
+    prompt_tactics:
+      - "State constraints upfront — MiMo reasons over the full context"
+      - "Use structured input for complex problems"
+      - "Specify reasoning depth requirements"
+    token_efficiency_rules:
+      - "Avoid restating earlier context"
+      - "Use bullet structure for multi-part problems"
+
+capabilities:
+  reasoning:
+    description: "Reasoning-native model (o-series, r-series, thinking, magistral, etc.)"
+    prompt_tactics:
+      - "Front-load ALL constraints and examples — no incremental hints"
+      - "State the goal once, clearly, without back-references"
+      - "Skip 'think step by step' — these models reason by default"
+      - "Provide explicit verification criteria for correctness"
+    token_efficiency_rules:
+      - "Avoid restating context the model has just seen"
+      - "Drop chain-of-thought scaffolding (the model adds its own)"
+      - "Keep prompts dense — these models tolerate complexity well"
+
+  general:
+    description: "Standard chat model — clarity and structure beat brevity"
+    prompt_tactics: []
+    token_efficiency_rules: []
+
+# Family resolution: substring/prefix match on the model string (case-insensitive).
+# First match wins; ordered most-specific to least-specific.
+family_aliases:
+  claude:       ["claude-", "anthropic/"]
+  openai:       ["gpt-", "openai/", "o1", "o3", "o4"]
+  deepseek:     ["deepseek-", "deepseek/"]
+  google:       ["gemini-", "gemma-", "google/"]
+  nvidia:       ["nvidia/", "nemotron-"]
+  kimi:         ["kimi-", "moonshotai/"]
+  qwen:         ["qwen"]
+  mistral:      ["mistral-", "mistralai/", "magistral"]
+  llama:        ["llama-", "meta-llama/"]
+  nousresearch: ["nousresearch/", "hermes-4", "hermes-3"]
+  xai:          ["x-ai/", "grok-"]
+  amazon:       ["amazon/", "nova-"]
+  cohere:       ["cohere/", "command-"]
+  microsoft:    ["microsoft/", "phi-"]
+  perplexity:   ["perplexity/", "sonar-"]
+  zhipu:        ["z-ai/", "glm-"]
+  liquid:       ["liquid/", "lfm-"]
+  minimax:      ["minimax/", "minimaxai/"]
+  ibm:          ["ibm-granite/", "granite-"]
+  inflection:   ["inflection/"]
+  xiaomi:       ["xiaomi/", "mimo-"]
+
+# Capability resolution: a model is "reasoning" if ANY of these substrings
+# appears in its model string (case-insensitive). Otherwise it's "general"
+# when a family was detected, or None when family is also None.
+reasoning_indicators:
+  - "o1"
+  - "o3"
+  - "o4"
+  - "-r1"
+  - "deepseek-r"
+  - "thinking"
+  - "-think"
+  - "reasoning"
+  - "nemotron-3-super"
+  - "qwq"
+  - "magistral"
+  - "glm-z"
+  - "deepresearch"

@@ -1415,8 +1415,11 @@ class GatewayStartupMixin:
     # Long-lived supervised watchers spawned at the end of start(), in order; supervised name = method
     # name minus the leading underscore.
     _PRE_RECONNECT_WATCHERS = (
-        "_session_housekeeping_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
+        "_session_expiry_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
         "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
+        # KENSEI CUSTOM (restored from 863c2bbecc): profile create/delete approvals
+        # delivered to Discord by the dispatch-owning gateway.
+        "_profile_gate_watcher",
     )
     _POST_RECONNECT_WATCHERS = (
         "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",

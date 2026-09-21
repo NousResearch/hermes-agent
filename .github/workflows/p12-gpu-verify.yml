@@ -1,0 +1,69 @@
+name: P12 GPU Fast-Path Verify
+
+# Live GPU verification of ADR 0012 (P12 256K memory policy) for NORMAL
+# daily work. Runs scripts/p12_fast_path_verify.py on a self-hosted
+# dual-GPU runner: boots a real llama-server on GPU0, checks weights stay
+# on GPU0, GPU1 stays isolated, and compares perf against the pre-P12 raw
+# argv for regression.
+#
+# CI-safe unit assertions run in the normal Tests workflow
+# (tests/scripts/test_p12_fast_path.py); this job is the live device check
+# and must be dispatched manually on a machine with an NVIDIA GPU.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'GGUF path for the smoke model (default TinyLlama)'
+        required: false
+        default: '/home/kensei/.hermes/mnemosyne/models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf'
+      perf_tolerance:
+        description: 'Max allowed enforced-vs-raw perf degradation (0.30 = 30%)'
+        required: false
+        default: '0.30'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Fast-path + GPU1 isolation + perf
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify GPU visibility
+        run: |
+          nvidia-smi --query-gpu=index,name,memory.used,memory.total --format=csv,noheader
+          test "$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)" -ge 2
+
+      - name: Install dependencies (stdlib only; venv for safety)
+        run: |
+          if [ ! -d .venv ]; then python3 -m venv .venv; fi
+          . .venv/bin/activate
+          python -m pip install --quiet pytest
+
+      - name: Run CI-safe fast-path unit tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/scripts/test_p12_fast_path.py -v --tb=short
+
+      - name: Run live fast-path verification + perf baseline
+        run: |
+          source .venv/bin/activate
+          python scripts/p12_fast_path_verify.py \
+            --model "${{ github.event.inputs.model }}" \
+            --perf-tolerance "${{ github.event.inputs.perf_tolerance }}" \
+            --json-out /tmp/p12-fastpath-result.json
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+
+      - name: Upload result summary
+        uses: actions/upload-artifact@4bfc195244834b65f335371b0b0c1e7f9d0f1f5f # v4.3.2
+        if: always()
+        with:
+          name: p12-fastpath-result
+          path: /tmp/p12-fastpath-result.json
+          if-no-files-found: warn

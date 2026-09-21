@@ -62,13 +62,15 @@ class TestDelegateRequirements(unittest.TestCase):
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_task")
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        # tasks[] is the only advertised spawn shape (single task = one-entry
-        # array); legacy top-level goal/context/output_schema stay
-        # handler-accepted but unadvertised.
+        # Kensei keeps the single-specialist profile route while adopting the
+        # upstream tasks[] batch shape.
         self.assertIn("tasks", props)
-        self.assertNotIn("goal", props)
-        self.assertNotIn("context", props)
-        self.assertNotIn("output_schema", props)
+        self.assertIn("goal", props)
+        self.assertIn("context", props)
+        self.assertIn("output_schema", props)
+        self.assertIn("profile", props)
+        self.assertNotIn("role", props)
+        self.assertNotIn("background", props)
         task_props = props["tasks"]["items"]["properties"]
         self.assertIn("goal", task_props)
         self.assertIn("context", task_props)
@@ -2301,6 +2303,274 @@ class TestFallbackModelInheritance(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     _resolve_delegation_credentials(cfg, parent)
         self.assertIn("missing-acp-binary", str(ctx.exception))
+
+
+# =========================================================================
+# KENSEI nested-delegation hardening (direct fix, 2026-09-04)
+# =========================================================================
+
+
+class TestSplitChildBudget(unittest.TestCase):
+    """_split_child_budget divides batch budgets, never starves."""
+
+    def test_single_child_unchanged(self):
+        from tools.delegate_tool import _split_child_budget
+        self.assertEqual(_split_child_budget(50, 1), 50)
+
+    def test_batch_splits_evenly(self):
+        from tools.delegate_tool import _split_child_budget
+        self.assertEqual(_split_child_budget(50, 5), 10)
+
+    def test_floor_is_one(self):
+        from tools.delegate_tool import _split_child_budget
+        self.assertEqual(_split_child_budget(2, 5), 1)
+        self.assertEqual(_split_child_budget(0, 3), 1)
+
+    def test_bad_input_passes_through(self):
+        from typing import Any
+        from tools.delegate_tool import _split_child_budget
+        _bad: Any = "many"
+        self.assertEqual(_split_child_budget(_bad, 2), "many")
+
+
+class TestDelegationCycleGuard(unittest.TestCase):
+    """_check_delegation_cycle rejects profile self-recursion at spawn."""
+
+    def _chain(self, *profiles):
+        """Build parent mock whose ancestor chain carries profiles[0..]."""
+        parent = MagicMock()
+        cur = parent
+        for name in profiles:
+            ancestor = MagicMock()
+            ancestor._delegate_profile_name = name
+            ancestor._delegate_parent_ref = None
+            cur._delegate_parent_ref = lambda _a=ancestor: _a
+            cur = ancestor
+        return parent
+
+    def test_repeat_profile_raises(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("remii", "octacon")
+        with self.assertRaises(ValueError) as ctx:
+            _check_delegation_cycle(parent, "remii")
+        self.assertIn("remii", str(ctx.exception))
+
+    def test_repeat_is_case_insensitive(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("Remii")
+        with self.assertRaises(ValueError):
+            _check_delegation_cycle(parent, "REMII")
+
+    def test_distinct_profile_passes(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("remii", "octacon")
+        _check_delegation_cycle(parent, "wesker")  # must not raise
+
+    def test_no_profile_skips(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("remii")
+        _check_delegation_cycle(parent, None)  # must not raise
+
+    def test_no_ancestors_passes(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = MagicMock()
+        parent._delegate_parent_ref = None
+        _check_delegation_cycle(parent, "remii")  # must not raise
+
+    def test_whitespace_padded_name_still_caught(self):
+        from tools.delegate_tool import _check_delegation_cycle
+        parent = self._chain("remii")
+        with self.assertRaises(ValueError):
+            _check_delegation_cycle(parent, "  remii  ")
+
+    def test_two_cycle_ab_is_caught_on_return(self):
+        """A -> B -> A: the return hop finds A in the ancestor chain."""
+        from tools.delegate_tool import _check_delegation_cycle
+        # Parent chain: immediate parent is B, grandparent is A.
+        parent = self._chain("octacon", "remii")
+        with self.assertRaises(ValueError):
+            _check_delegation_cycle(parent, "remii")
+
+
+class TestRegistrySurfaceChain(unittest.TestCase):
+    """_registry_surface_chain resolves governed chains, fail-closed."""
+
+    def test_unknown_profile_returns_none(self):
+        from tools.delegate_tool import _registry_surface_chain
+        self.assertIsNone(_registry_surface_chain("no-such-profile-xyz"))
+
+    def test_kill_switch_returns_none(self):
+        from tools.delegate_tool import _registry_surface_chain
+        with patch("tools.delegate_tool._load_config",
+                   return_value={"fallback_enabled": False}):
+            self.assertIsNone(_registry_surface_chain("remii"))
+
+    def test_known_surface_shape(self):
+        """Structural contract only — no frozen counts or model names."""
+        from tools.delegate_tool import _registry_surface_chain
+        chain = _registry_surface_chain("remii")
+        self.assertIsInstance(chain, list)
+        self.assertGreater(len(chain), 2)
+        for entry in chain:
+            self.assertTrue(entry["provider"])
+            self.assertTrue(entry["model"])
+        # No duplicate deployments in one chain.
+        keys = [(e["provider"], e["model"], e["base_url"]) for e in chain]
+        self.assertEqual(len(keys), len(set(keys)))
+        # Governed tail: tier-correct Codex then local final.
+        # The local provider was renamed turbohaul-local -> turbofit-local with the
+        # Turbofit gateway (port 8091); assert the CURRENT governed tail name.
+        self.assertEqual(chain[-1]["provider"], "custom:turbofit-local")
+        self.assertEqual(chain[-2]["provider"], "openai-codex")
+        # No credentials ever ride the chain entries.
+        for entry in chain:
+            self.assertNotIn("api_key", entry)
+
+
+# =========================================================================
+# KENSEI delegation fidelity: receipts, nested schemas, auto-continue
+# =========================================================================
+
+
+class TestHasReceipts(unittest.TestCase):
+    """_has_receipts detects verifiable handles, ignores bare prose."""
+
+    def test_absolute_path_counts(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("Wrote /home/kensei/repos/KenseiAgent/a.py"))
+
+    def test_diff_stat_counts(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("3 files changed, 10 insertions(+)"))
+
+    def test_full_hash_counts(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("Committed 1fc3d37d619b6e06491af4d914c26eb8b14ff79a on main"))
+
+    def test_short_hash_needs_commit_context(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("commit 1fc3d37 on main"))
+        self.assertFalse(_has_receipts("id sa-0-8c826e03 finished ok"))
+
+    def test_no_files_statement_counts(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("Research only, no files changed."))
+
+    def test_bare_prose_does_not_count(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertFalse(_has_receipts("All done, everything works great."))
+        self.assertFalse(_has_receipts(""))
+        self.assertFalse(_has_receipts(None))
+
+
+class TestNestedDefaultSchema(unittest.TestCase):
+    """Nested spawns get a shape even when the caller supplies none."""
+
+    def test_nested_spawn_gets_default_contract(self):
+        from tools.delegate_tool import _NESTED_DEFAULT_SCHEMA
+        parent = _make_mock_parent(depth=1)
+        with patch("tools.delegate_tool._load_config",
+                   return_value={"max_spawn_depth": 3}):
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                mock_child.model = "test"
+                mock_child.session_prompt_tokens = 0
+                mock_child.session_completion_tokens = 0
+                mock_child.run_conversation.return_value = {
+                    "final_response": "done",
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+                MockAgent.return_value = mock_child
+                delegate_task(goal="nested shape test", parent_agent=parent)
+                attached = mock_child._delegate_output_schema
+                self.assertIsInstance(attached, dict)
+                self.assertIn("summary", attached["required"])
+                self.assertEqual(attached, _NESTED_DEFAULT_SCHEMA)
+
+    def test_default_schema_coerces_clean(self):
+        from tools.delegation_output_schema import coerce_output_schema
+        from tools.delegate_tool import _NESTED_DEFAULT_SCHEMA
+        schema, err = coerce_output_schema(_NESTED_DEFAULT_SCHEMA)
+        self.assertIsNone(err)
+        self.assertIsInstance(schema, dict)
+
+
+class TestTruncationAutoContinue(unittest.TestCase):
+    """One bounded continuation turn rescues cut-but-summarized work."""
+
+    def _run_truncated(self, kill_switch=None):
+        parent = _make_mock_parent(depth=0)
+        cfg = {}
+        if kill_switch is not None:
+            cfg["continue_on_truncation"] = kill_switch
+        with patch("tools.delegate_tool._load_config", return_value=cfg):
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                mock_child.model = "test"
+                mock_child.session_prompt_tokens = 0
+                mock_child.session_completion_tokens = 0
+                mock_child.run_conversation.side_effect = [
+                    {
+                        "final_response": "partial work in /tmp/x.py",
+                        "completed": False,
+                        "interrupted": False,
+                        "api_calls": 2,
+                        "messages": [],
+                    },
+                    {
+                        "final_response": "finished the rest",
+                        "completed": True,
+                        "interrupted": False,
+                        "api_calls": 1,
+                        "messages": [],
+                    },
+                ]
+                MockAgent.return_value = mock_child
+                result = json.loads(
+                    delegate_task(goal="cut work test", parent_agent=parent)
+                )
+                return result["results"][0], mock_child
+
+    def test_continuation_runs_and_marks(self):
+        entry, mock_child = self._run_truncated()
+        self.assertEqual(mock_child.run_conversation.call_count, 2)
+        self.assertTrue(entry["truncated"])
+        self.assertTrue(entry["continued"])
+        self.assertEqual(entry["continuation"], "finished the rest")
+        self.assertEqual(entry["api_calls"], 3)
+        self.assertTrue(entry["receipts_present"])
+
+    def test_kill_switch_skips_continuation(self):
+        entry, mock_child = self._run_truncated(kill_switch=False)
+        self.assertEqual(mock_child.run_conversation.call_count, 1)
+        self.assertTrue(entry["truncated"])
+        self.assertFalse(entry["continued"])
+        self.assertIsNone(entry["continuation"])
+
+    def test_receipts_flag_off_without_handles(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "All done, everything works great.",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+            result = json.loads(
+                delegate_task(goal="no handles test", parent_agent=parent)
+            )
+            entry = result["results"][0]
+            self.assertFalse(entry["receipts_present"])
+            self.assertFalse(entry["continued"])
 
 
 class TestAtomicChildCredentialBundle(unittest.TestCase):

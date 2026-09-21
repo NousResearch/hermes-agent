@@ -1,0 +1,474 @@
+model:
+  default: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+fallback_providers:
+- provider: ollama-cloud
+  model: kimi-k2.6
+  base_url: https://ollama.com/v1
+- provider: openrouter
+  model: google/gemma-4-31b-it:free
+  base_url: https://openrouter.ai/api/v1
+- provider: openrouter
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  base_url: https://openrouter.ai/api/v1
+credential_pool_strategies: {}
+toolsets:
+- hermes-cli
+- kanban
+agent:
+  max_turns: 85
+  gateway_timeout: 1800
+  restart_drain_timeout: 60
+  api_max_retries: 3
+  service_tier: ''
+  tool_use_enforcement: auto
+  gateway_timeout_warning: 900
+  gateway_notify_interval: 180
+  gateway_auto_continue_freshness: 3600
+  image_input_mode: auto
+  disabled_toolsets: []
+  verbose: false
+  reasoning_effort: low
+  personalities:
+    helpful: You are a helpful, friendly AI assistant.
+    concise: You are a concise assistant. Keep responses brief and to the point.
+    teacher: You are a patient teacher. Explain concepts clearly with examples.
+    creative: You are a creative assistant. Think outside the box and offer 
+      innovative solutions.
+    technical: You are a technical expert. Provide detailed, accurate technical 
+      information.
+terminal:
+  backend: local
+  modal_mode: auto
+  cwd: .
+  timeout: 180
+  env_passthrough: []
+  shell_init_files: []
+  auto_source_bashrc: true
+  docker_image: nikolaik/python-nodejs:python3.11-nodejs20
+  docker_forward_env: []
+  docker_env: {}
+  singularity_image: docker://nikolaik/python-nodejs:python3.11-nodejs20
+  modal_image: nikolaik/python-nodejs:python3.11-nodejs20
+  daytona_image: nikolaik/python-nodejs:python3.11-nodejs20
+  vercel_runtime: node24
+  container_cpu: 1
+  container_memory: 5120
+  container_disk: 51200
+  container_persistent: true
+  docker_volumes: []
+  docker_mount_cwd_to_workspace: false
+  docker_run_as_host_user: false
+  persistent_shell: true
+  lifetime_seconds: 300
+browser:
+  inactivity_timeout: 120
+  command_timeout: 30
+  record_sessions: false
+  allow_private_urls: false
+  auto_local_for_private_urls: true
+  cdp_url: ''
+  dialog_policy: must_respond
+  dialog_timeout_s: 300
+  camofox:
+    managed_persistence: false
+checkpoints:
+  enabled: true
+  max_snapshots: 50
+  auto_prune: false
+  retention_days: 7
+  delete_orphans: true
+  min_interval_hours: 24
+file_read_max_chars: 100000
+tool_output:
+  max_bytes: 50000
+  max_lines: 2000
+  max_line_length: 2000
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: false
+  warn_after:
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
+  hard_stop_after:
+    exact_failure: 5
+    same_tool_failure: 8
+    idempotent_no_progress: 5
+compression:
+  enabled: true
+  threshold: 0.8
+  target_ratio: 0.2
+  protect_last_n: 20
+  hygiene_hard_message_limit: 400
+prompt_caching:
+  cache_ttl: 5m
+bedrock:
+  region: ''
+  discovery:
+    enabled: true
+    provider_filter: []
+    refresh_interval: 3600
+  guardrail:
+    guardrail_identifier: ''
+    guardrail_version: ''
+    stream_processing_mode: async
+    trace: disabled
+auxiliary:
+  vision:
+    provider: ollama-cloud
+    model: ''
+    base_url: ''
+    api_key: sk-pro...xJ8A
+    timeout: 120
+    extra_body: {}
+    download_timeout: 30
+  web_extract:
+    provider: ollama-cloud
+    model: ''
+    base_url: ''
+    api_key: sk-pro...xJ8A
+    timeout: 360
+    extra_body: {}
+  compression:
+    provider: ollama-cloud
+    model: ''
+    base_url: ''
+    api_key: sk-pro...xJ8A
+    timeout: 120
+    extra_body: {}
+  session_search:
+    provider: ollama-cloud
+    model: ''
+    base_url: ''
+    api_key: sk-pro...xJ8A
+    timeout: 30
+    extra_body: {}
+    max_concurrency: 3
+  skills_hub:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: sk-pro...xJ8A
+    timeout: 30
+    extra_body: {}
+  approval:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: sk-pro...xJ8A
+    timeout: 30
+    extra_body: {}
+  mcp:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: sk-pro...xJ8A
+    timeout: 30
+    extra_body: {}
+  title_generation:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: sk-pro...xJ8A
+    timeout: 30
+    extra_body: {}
+  curator:
+    provider: auto
+    model: ''
+    base_url: ''
+    api_key: sk-pro...xJ8A
+    timeout: 600
+    extra_body: {}
+display:
+  compact: false
+  personality: minimal
+  resume_display: full
+  busy_input_mode: interrupt
+  tui_auto_resume_recent: false
+  bell_on_complete: false
+  show_reasoning: true
+  streaming: true
+  final_response_markdown: strip
+  inline_diffs: true
+  show_cost: false
+  skin: default
+  tui_status_indicator: kaomoji
+  user_message_preview:
+    first_lines: 2
+    last_lines: 2
+  interim_assistant_messages: true
+  tool_progress_command: false
+  tool_progress_overrides: {}
+  tool_preview_length: 0
+  ephemeral_system_ttl: 0
+  platforms: {}
+  runtime_footer:
+    enabled: false
+    fields:
+    - model
+    - context_pct
+    - cwd
+  tool_progress: all
+  background_process_notifications: all
+dashboard:
+  theme: default
+privacy:
+  redact_pii: false
+tts:
+  provider: kenseivoice
+  edge:
+    voice: en-US-AriaNeural
+  elevenlabs:
+    voice_id: pNInz6obpgDQGcFmaJgB
+    model_id: eleven_multilingual_v2
+  openai:
+    model: gpt-4o-mini-tts
+    voice: fable
+  xai:
+    voice_id: eve
+    language: en
+    sample_rate: 24000
+    bit_rate: 128000
+  mistral:
+    model: voxtral-mini-tts-2603
+    voice_id: c69964a6-ab8b-4f8a-9465-ec0925096ec8
+  neutts:
+    ref_audio: ''
+    ref_text: ''
+    model: neuphonic/neutts-air-q4-gguf
+    device: cpu
+  piper:
+    voice: en_US-lessac-medium
+  voice: kokoro:am_michael
+  speed: 1.3
+stt:
+  enabled: true
+  provider: local
+  local:
+    model: base
+    language: ''
+  openai:
+    model: whisper-1
+  mistral:
+    model: voxtral-mini-latest
+voice:
+  record_key: ctrl+b
+  max_recording_seconds: 120
+  auto_tts: false
+  beep_enabled: true
+  silence_threshold: 200
+  silence_duration: 3
+human_delay:
+  mode: false
+  min_ms: 800
+  max_ms: 2500
+context:
+  engine: compressor
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 2600
+  nudge_interval: 10
+  flush_min_turns: 6
+delegation:
+  model: deepseek-v4-flash
+  provider: ollama-cloud
+  base_url: https://ollama.com/v1
+  api_key: sk-pro...xJ8A
+  inherit_mcp_toolsets: true
+  max_iterations: 50
+  child_timeout_seconds: 900
+  reasoning_effort: low
+  max_concurrent_children: 3
+  max_spawn_depth: 2
+  orchestrator_enabled: true
+  subagent_auto_approve: false
+prefill_messages_file: ''
+goals:
+  max_turns: 20
+skills:
+  always_skills:
+  - mailbox-agent
+  - gmail-inbox-audit
+  - google-workspace
+  - maps
+  - job-hunt-automation
+  - job-prep
+  - morning-pulse
+  - kanban-worker
+  external_dirs:
+  - /home/kensei/.hermes/skills
+  template_vars: true
+  inline_shell: false
+  inline_shell_timeout: 10
+  guard_agent_created: false
+  creation_nudge_interval: 15
+  disabled: []
+  enabled_skills:
+  - mailbox-cleaner
+  - adaptive-rate-limiter
+  - mailbox-agent
+  - gmail-inbox-audit
+  - google-workspace
+  - maps
+  - job-hunt-automation
+  - job-prep
+  - morning-pulse
+  - kanban-worker
+  enforcement_mode: enforce
+curator:
+  enabled: true
+  interval_hours: 168
+  min_idle_hours: 2
+  stale_after_days: 30
+  archive_after_days: 90
+  auxiliary:
+    provider:
+    model:
+honcho: {}
+timezone: Europe/London
+whatsapp: {}
+slack:
+  channel_prompts: {}
+mattermost:
+  channel_prompts: {}
+approvals:
+  mode: manual
+  timeout: 60
+  cron_mode: deny
+  mcp_reload_confirm: true
+command_allowlist:
+- stop/restart system service
+- hermes update (restarts gateway, kills running agents)
+- stop/restart hermes gateway (kills running agents)
+quick_commands: {}
+hooks: {}
+hooks_auto_accept: false
+personalities: {}
+security:
+  allow_private_urls: false
+  redact_secrets: true
+  tirith_enabled: true
+  tirith_path: tirith
+  tirith_timeout: 5
+  tirith_fail_open: true
+  website_blocklist:
+    enabled: false
+    domains: []
+    shared_files: []
+cron:
+  wrap_response: true
+  max_parallel_jobs:
+  ticker_enabled: false
+kanban:
+  # Only the base KENSEI gateway dispatches kanban (single-dispatcher rule:
+  # concurrent dispatchers corrupt the shared kanban SQLite DBs). See
+  # discord-bot-architecture skill. Drift to true caused the 2026-06-12 runaway.
+  dispatch_in_gateway: false
+  dispatch_interval_seconds: 60
+code_execution:
+  mode: project
+  timeout: 300
+  max_tool_calls: 50
+logging:
+  level: INFO
+  max_size_mb: 5
+  backup_count: 3
+model_catalog:
+  enabled: true
+  url: https://hermes-agent.nousresearch.com/docs/api/model-catalog.json
+  ttl_hours: 24
+  providers: {}
+network:
+  force_ipv4: false
+sessions:
+  auto_prune: false
+  retention_days: 90
+  vacuum_after_prune: true
+  min_interval_hours: 24
+onboarding:
+  seen:
+    tool_progress_prompt: true
+    busy_input_prompt: true
+updates:
+  pre_update_backup: true
+  backup_keep: 5
+_config_version: 23
+session_reset:
+  mode: both
+  idle_minutes: 1440
+  at_hour: 4
+group_sessions_per_user: true
+streaming:
+  enabled: false
+platform_toolsets:
+  cli:
+  - web
+  - terminal
+  - file
+  - code_execution
+  - skills
+  - memory
+  - session_search
+  - clarify
+  - delegation
+  - cronjob
+  - messaging
+  - no_mcp
+  discord:
+  - hermes-discord
+  whatsapp:
+  - hermes-whatsapp
+  slack:
+  - hermes-slack
+  signal:
+  - hermes-signal
+  homeassistant:
+  - hermes-homeassistant
+  qqbot:
+  - hermes-qqbot
+plugins:
+  enabled:
+  - disk-cleanup
+  - kenseivoice
+  disabled: []
+smart_model_routing:
+  enabled: false
+workspace:
+  conductor_default_orchestrator_model: deepseek-v4-flash
+  conductor_default_worker_provider: ollama-cloud
+  conductor_default_worker_model: kimi-k2.6
+  conductor_preferred_worker_models:
+  - provider: ollama-cloud
+    model: kimi-k2.6
+    use: primary general worker
+  - provider: ollama-cloud
+    model: qwen3-coder:480b
+    use: coding worker
+  - provider: ollama-cloud
+    model: qwen3-coder-next
+    use: fast coding worker
+  - provider: ollama-cloud
+    model: glm-5.1
+    use: planning and review worker
+  - provider: ollama-cloud
+    model: qwen3.5:397b
+    use: heavy Qwen worker, live fallback because Qwen 3.6 is unavailable here
+  conductor_projects_dir: /tmp/scaffold
+  conductor_max_parallel_workers: 3
+  operations_default_worker_provider: ollama-cloud
+  operations_default_worker_model: kimi-k2.6
+discord:
+  require_mention: true
+  free_response_channels: 1506022733287391282,1506022690501169295
+  allowed_channels: ''
+  auto_thread: true
+  reactions: true
+  channel_prompts: {}
+  extra:
+    gateway_restart_notification: false
+    allow_bots: mentions
+  server_actions: ''

@@ -85,6 +85,10 @@ AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset({
     "drive_preview", "annotate_preview", "read_window_below", "manage_connections", "setup_mcp", "gui_tour",
     "delegate_task",
 })
+# NOTE: Kensei's ask_user_questions + config_set are registry-dispatched tools
+# (tools/ask_user_questions_tool.py, tools/config_set_tool.py). Their post-tool
+# hooks fire through the registry's own hook chain, so they do NOT belong in
+# the agent-runtime inline ownership set (pre-decomposition leftovers).
 
 _TRAJECTORY_SYSTEM_PROMPT = (
     "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
@@ -3020,7 +3024,6 @@ _ACK_WORKSPACE_MARKERS = (
     "directory", "current directory", "current dir", "cwd", "repo", "repository", "codebase",
     "project", "folder", "filesystem", "file tree", "files", "path",
 )
-
 
 def looks_like_codex_intermediate_ack(
     agent, user_message: Any, assistant_content: str, messages: List[Dict[str, Any]],

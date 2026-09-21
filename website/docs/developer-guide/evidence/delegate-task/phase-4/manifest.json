@@ -1,0 +1,63 @@
+{
+  "phase": "phase-4",
+  "status": "GO",
+  "plan": "/home/kensei/delegate-task-phased-implementation-plan.md",
+  "base_sha": "04681867c6f804c795059b9aafc0ff53828a20d5",
+  "implementation_commit_sha": "6aac1f96ad8b6dce60ec69ba94b7b9e53e17f6d0",
+  "branch": "delegate-task-phase-4-authority",
+  "worktree": "/home/kensei/repos/KenseiAgent-worktrees/delegate-task-phase-4",
+  "changed_files": [
+    "docs/evidence/delegate-task/phase-4/audit.md",
+    "docs/evidence/delegate-task/phase-4/baseline-toolset.txt",
+    "docs/evidence/delegate-task/phase-4/manifest.json",
+    "docs/evidence/delegate-task/phase-4/phase-4-authority-final.txt",
+    "docs/evidence/delegate-task/phase-4/phase-4-authority.txt",
+    "docs/evidence/delegate-task/phase-4/phase-4-toolset-regression.txt",
+    "docs/evidence/delegate-task/phase-4/post-commit-authority.txt",
+    "docs/evidence/delegate-task/phase-4/results.md",
+    "tests/tools/test_delegate_authority.py",
+    "tools/delegate_tool_dispatch.py"
+  ],
+  "production_source_changes": [
+    "tools/delegate_tool_dispatch.py"
+  ],
+  "test_changes": [
+    "tests/tools/test_delegate_authority.py"
+  ],
+  "evidence_hashes": {
+    "docs/evidence/delegate-task/phase-4/baseline-toolset.txt": "eb680df173dbceb1a9882c43cba95634321f1f2a4ac584ec2d03a205bec4742d",
+    "docs/evidence/delegate-task/phase-4/phase-4-authority-final.txt": "8f464cafde7c117c5980985331ce4b0d4b38176450651822ea39526b3f8712f1",
+    "docs/evidence/delegate-task/phase-4/phase-4-authority.txt": "a043d6d2bfd9c7daa915b1f2cc44d5e39e769cf124af2b67a512a6f28bdbea8e",
+    "docs/evidence/delegate-task/phase-4/phase-4-toolset-regression.txt": "ec217f8b9a3404702ea51d1e0eb054654284bd500333d83e6a24d2cb7ee1882e",
+    "docs/evidence/delegate-task/phase-4/post-commit-authority.txt": "e2bc618e7f82db30a6973f3f15fab7e893d7e49ab25d84dd37b0934828bcfe24",
+    "docs/evidence/delegate-task/phase-4/results.md": "2cf91e97a5777738f908e0c0a402696223d33f799cae9fccd945b9dbd4c7b79d",
+    "tests/tools/test_delegate_authority.py": "7a8e262255c6e11a9c5be924c64cfd7a296831cd8a8794cbac2f928dd2d067ea",
+    "tools/delegate_tool_dispatch.py": "ec5cf10e10c433c43997fdc7ef3472e8db29c4ae8e7ab19d62467939bf2d7b53",
+    "docs/evidence/delegate-task/phase-4/audit.md": "eacec0d8c0b39ac13aaee35aa94317b87bfec68664c3d4c21458ed9913af4dc1"
+  },
+  "test_results": {
+    "authority": "18 passed",
+    "post_commit_authority": "7 passed",
+    "toolset_baseline": "5 failed, 7 passed; pre-existing"
+  },
+  "deferred_or_excluded": [
+    "legacy toolset regression failures reproduced on Phase 3 endpoint",
+    "provider routing",
+    "completion units"
+  ],
+  "out_of_scope": [
+    "provider-routing",
+    "completion-units",
+    "toolset semantics",
+    "merge",
+    "push",
+    "restart",
+    "activation",
+    "deployment"
+  ],
+  "post_release_cleanup": {
+    "status": "complete",
+    "removed": "generated-mock-db test residue",
+    "reason": "Binary SQLite/WAL/SHM artefacts were incidental test residue; behaviour evidence remains in the committed text logs."
+  }
+}

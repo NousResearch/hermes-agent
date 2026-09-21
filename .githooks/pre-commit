@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Pre-commit hook for KenseiAgent.
+# 1. Blocks commits when HERMES_PROFILE indicates you should be in the upstream repo.
+# 2. Runs gitleaks secret scan if available.
+set -euo pipefail
+
+# ── Profile guard ──────────────────────────────────────────────────────────
+PROFILE="${HERMES_PROFILE:-}"
+if [[ -z "$PROFILE" && -f /home/kensei/.hermes/profile ]]; then
+    PROFILE=$(cat /home/kensei/.hermes/profile)
+fi
+
+FORBIDDEN_PROFILES=("moss" "upstream")
+for fp in "${FORBIDDEN_PROFILES[@]}"; do
+    if [[ "$PROFILE" == "$fp" ]]; then
+        cat >&2 <<-EOF
+❌ COMMIT BLOCKED: Profile '$PROFILE' is active.
+   You are in /home/kensei/repos/KenseiAgent (custom fork)
+   But profile $PROFILE means you're working on upstream PRs.
+
+   Switch to the correct profile or set HERMES_PROFILE=default:
+
+     echo "default" > /home/kensei/.hermes/profile
+     # or: export HERMES_PROFILE=default
+
+   If this commit IS meant for KenseiAgent, override with:
+     git commit --no-verify
+EOF
+        exit 1
+    fi
+done
+
+# ── Gitleaks secret scan ────────────────────────────────────────────────────
+if command -v gitleaks &>/dev/null; then
+    CONFIG="$(git rev-parse --show-toplevel)/.gitleaks.toml"
+    if [ -f "$CONFIG" ]; then
+        echo "🔍 Running gitleaks secret scan..."
+        gitleaks detect --source "$(git rev-parse --show-toplevel)" --config "$CONFIG" --pre-commit --verbose 2>&1
+    fi
+fi
+
+exit 0

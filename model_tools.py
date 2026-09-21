@@ -332,6 +332,26 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+    # Ambient toolsets: always-on tools that must stay reachable regardless of
+    # the session's enabled/disabled scope (e.g. Toolaria's rescuer_fetch, the
+    # inverse of an ungated result-rescue hook). Unioned in AFTER the disabled
+    # subtraction so an unrelated `disabled_toolsets` entry cannot strip them.
+    # Mirrors the HERMES_KANBAN_TASK lifecycle exemption above. No-op when
+    # enabled_toolsets is None, since the unrestricted branch already included
+    # every toolset. (KENSEI CUSTOM — ambient-toolset tier)
+    if enabled_toolsets is not None:
+        try:
+            for _amb in registry.ambient_toolsets():
+                if disabled_toolsets and _amb in disabled_toolsets:
+                    # Ambient wins by design; surface it so an operator who
+                    # disabled the toolset on purpose is not left guessing.
+                    logger.debug("ambient toolset '%s' overrides its presence in "
+                                 "disabled_toolsets (always-on by design)", _amb)
+                tools.update(resolve_toolset(_amb))
+        except Exception as exc:
+            # Never silent: see resolve_allowed_tool_names.
+            logger.warning("ambient toolset union (schema) failed; ambient tools "
+                           "may be unavailable this session: %s", exc)
     return tools
 
 
@@ -539,6 +559,41 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
         logger.warning("Tool search assembly skipped: %s", e)
 
     return filtered_tools
+
+
+def resolve_allowed_tool_names(  # KENSEI CUSTOM (ported): execution-time toolset scope fence
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
+) -> Optional[set]:
+    """Resolve the set of tool names a session's toolset scope permits.
+
+    Mirrors the toolset resolution in :func:`_select_tool_names` (enabled
+    toolsets -> resolved tool names, minus disabled toolsets, plus the
+    dispatcher-worker kanban exemption) so the execution-time scope fence in
+    agent/tool_executor.py agrees with the schemas the model was shown.
+
+    Returns ``None`` when ``enabled_toolsets`` is ``None`` (unrestricted),
+    meaning callers should skip enforcement entirely.
+    """
+    if enabled_toolsets is None:
+        return None
+    allowed = _select_tool_names(list(enabled_toolsets), list(disabled_toolsets) if disabled_toolsets else None, quiet_mode=True)
+    # Re-add the kanban lifecycle tools after the disabled-toolset subtraction:
+    # a dispatcher-spawned worker (HERMES_KANBAN_TASK set) must always retain
+    # the handoff tools, or enforce mode would strand it with no way to hand
+    # the task back.
+    if os.environ.get("HERMES_KANBAN_TASK") and not _is_delegated_child_context():
+        try:
+            allowed.update(resolve_toolset("kanban"))
+        except Exception:
+            pass
+    # Ambient toolsets are always allowed (widening only; never narrows).
+    try:
+        for _amb in registry.ambient_toolsets():
+            allowed.update(resolve_toolset(_amb))
+    except Exception as exc:
+        logger.warning("ambient toolset union (fence) failed; ambient tools may be blocked this session: %s", exc)
+    return allowed
 
 
 def _active_model_config() -> Tuple[str, Dict[str, Any]]:

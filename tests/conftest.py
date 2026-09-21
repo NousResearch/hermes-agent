@@ -31,6 +31,18 @@ from pathlib import Path
 
 import pytest
 
+# A few script-focused tests temporarily prepend ``scripts/`` to sys.path.
+# That directory contains a local namespace/package named ``mcp`` which must
+# not shadow the installed MCP SDK for later collection. Import the real SDK
+# and its shared submodules before any test module can alter the path.
+try:
+    import mcp as _real_mcp
+    import mcp.shared  # noqa: F401
+    import mcp.shared.auth  # noqa: F401
+    import mcp.types  # noqa: F401
+except ImportError:
+    _real_mcp = None
+
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -622,6 +634,36 @@ def _hermetic_environment(tmp_path, monkeypatch):
         _plugins_mod._reset_plugin_managers_for_tests()
     except Exception:
         pass
+    # 5b. Reset the provider-profile registry the same way. Discovery is
+    #     lazy and process-global: the first get_provider_profile() call
+    #     imports every plugin under $HERMES_HOME/plugins/model-providers/
+    #     and caches them in providers._REGISTRY (last-writer-wins, so user
+    #     plugins shadow the bundled ones). When that first call happens
+    #     before this fixture redirects HERMES_HOME — e.g. during test
+    #     collection or a module-level import — stale user-installed
+    #     profiles get pinned for the whole process and the hermetic
+    #     HERMES_HOME redirect in step 3 never reaches them. Clear the
+    #     registry and ALL cached provider-plugin modules (both user and
+    #     bundled) so the next get_provider_profile() re-discovers from the
+    #     (now-empty) hermetic HERMES_HOME and picks up the bundled profiles
+    #     shipped with the repo under test.
+    try:
+        import providers as _providers_mod
+        monkeypatch.setattr(_providers_mod, "_discovered", False)
+        _providers_mod._REGISTRY.clear()
+        _providers_mod._ALIASES.clear()
+        # _import_plugin_dir() skips modules already in sys.modules, so
+        # both user (_hermes_user_provider_*) and bundled
+        # (plugins.model_providers.*) plugin modules must be evicted or
+        # re-discovery won't re-execute their register_provider() calls.
+        for _mod_name in [
+            m for m in list(sys.modules)
+            if m.startswith("_hermes_user_provider_")
+            or m.startswith("plugins.model_providers.")
+        ]:
+            monkeypatch.delitem(sys.modules, _mod_name, raising=False)
+    except Exception:
+        pass
     # Explicitly clear provider-specific base URL overrides that don't match
     # the generic credential-shaped env-var filter above.
     monkeypatch.delenv("GMI_API_KEY", raising=False)
@@ -917,6 +959,7 @@ def _state_db_write_guard(request, monkeypatch):
         monkeypatch.setattr(_hs, "_STATE_DB_GUARD_BYPASS", True)
         yield
         return
+
     extra_roots = []
     if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
         _PRE_SANDBOX_HERMES_HOME

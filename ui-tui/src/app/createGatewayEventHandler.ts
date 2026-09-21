@@ -29,7 +29,7 @@ import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
-import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
+import type { AgentMode, GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
@@ -432,6 +432,8 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
 
   return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
 }
+
+// KENSEI CUSTOM: legacy pre-clarify-lane gateways may still emit this wrapper
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: AnyGatewayEvent) => void {
   syncThemeToTerminalBackground()
@@ -845,6 +847,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         patchUiState(state => ({
           ...state,
+          agentMode: (info.agent_mode || state.agentMode) as AgentMode,
           info,
           status: state.status === 'starting agent…' ? 'ready' : state.status,
           storedSid,
@@ -1278,7 +1281,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        if (ev.payload.name === 'clarify') {
+        if (ev.payload.name === 'clarify' || ev.payload.name === 'ask_user_questions') {
           flushAbandonedClarify()
         }
 

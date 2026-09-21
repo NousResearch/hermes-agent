@@ -1,0 +1,546 @@
+surfaces:
+- surface: ceecee
+  tier: SOL
+  main_model: qwen3.8-flash
+  primary_model_migration:
+    expected_old_main: minimax/minimax-m3-free
+    primary_slot: slot-qwenflash-1
+  slots:
+  - slot-qwenflash-1
+- surface: ceecee-brand
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: ceecee-reviewer
+  tier: SOL
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: ceecee-seo
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: ceecee-social
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: ceecee-writer
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: content-strategist
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  primary_model_migration:
+    expected_old_main: minimax/minimax-m3-free
+    primary_slot: slot-dsflash-1
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: default
+  tier: SOL
+  main_model: gpt-5.6-sol
+  slots: []
+  routes_policy: keep_current
+- surface: denji
+  tier: SOL
+  main_model: glm-5.3-flash
+  slots:
+  - slot-glm53flash-1
+  - slot-glm53flash-2
+  - slot-glm53flash-3
+  - slot-glm53flash-4
+- surface: denji-ledger
+  tier: LUNA
+  main_model: mimo-v2.5
+  slots:
+  - slot-mimo-v25-main
+  - slot-mimo-v25-1
+  - slot-mimo-v25-2
+  - slot-mimo-v25-3
+  primary_model_migration:
+    expected_old_main: stepfun/step-3.7-flash:free
+    primary_slot: slot-mimo-v25-main
+- surface: denji-monitor
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: denji-reviewer
+  tier: SOL
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: denji-skill
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: dezzy
+  tier: SOL
+  main_model: gpt-5.6-sol
+  slots: []
+  routes_policy: keep_current
+- surface: dezzy-brand
+  tier: LUNA
+  main_model: qwen3.8-flash
+  primary_model_migration:
+    expected_old_main: minimax/minimax-m3-free
+    primary_slot: slot-qwenflash-1
+  slots:
+  - slot-qwenflash-1
+- surface: dezzy-component-lib
+  tier: LUNA
+  main_model: qwen3.8-flash
+  primary_model_migration:
+    expected_old_main: minimax-m3
+    primary_slot: slot-qwenflash-1
+  slots:
+  - slot-qwenflash-1
+- surface: dezzy-design-system
+  tier: LUNA
+  main_model: qwen3.8-flash
+  primary_model_migration:
+    expected_old_main: minimax-m3
+    primary_slot: slot-qwenflash-1
+  slots:
+  - slot-qwenflash-1
+- surface: dezzy-image-prompt
+  tier: LUNA
+  main_model: qwen3.8-flash
+  primary_model_migration:
+    expected_old_main: minimax-m3
+    primary_slot: slot-qwenflash-1
+  slots:
+  - slot-qwenflash-1
+- surface: dezzy-ux-architect
+  tier: SOL
+  main_model: glm-5.3-flash
+  slots:
+  - slot-glm53flash-1
+  - slot-glm53flash-2
+  - slot-glm53flash-3
+  - slot-glm53flash-4
+- surface: dezzy-ux-prototype
+  tier: LUNA
+  main_model: qwen3.8-flash
+  primary_model_migration:
+    expected_old_main: minimax-m3
+    primary_slot: slot-qwenflash-1
+  slots:
+  - slot-qwenflash-1
+- surface: gojo
+  tier: SOL
+  main_model: poolside/laguna-s-2.1:free
+  slots: []
+  routes_policy: keep_current
+- surface: gojo-admin
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
+- surface: gojo-calendar
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
+- surface: gojo-mailbox
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
+- surface: kensei
+  tier: SOL
+  main_model: null
+  slots: []
+  routes_policy: keep_current
+- surface: kensei-review
+  tier: SOL
+  main_model: glm-5.3-flash
+  slots:
+  - slot-glm53flash-1
+  - slot-glm53flash-2
+  - slot-glm53flash-3
+  - slot-glm53flash-4
+- surface: light
+  tier: SOL
+  main_model: stepfun/step-3.7-flash:free
+  slots:
+  - slot-step37free-1
+  - slot-step37free-3
+- surface: light-archivist
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: light-indexer
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: light-wiki
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: market-scanner
+  tier: LUNA
+  main_model: stepfun/step-3.7-flash:free
+  slots:
+  - slot-step37free-1
+  - slot-step37free-3
+- surface: misa-misa
+  tier: SOL
+  main_model: qwen3.8-flash
+  primary_model_migration:
+    expected_old_main: minimax-m3
+    primary_slot: slot-qwenflash-1
+  slots:
+  - slot-qwenflash-1
+- surface: moss
+  tier: SOL
+  main_model: glm-5.3-flash
+  slots:
+  - slot-glm53flash-1
+  - slot-glm53flash-2
+  - slot-glm53flash-3
+  - slot-glm53flash-4
+- surface: mrhermagi
+  tier: SOL
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: octacon
+  tier: SOL
+  main_model: glm-5.3-flash
+  slots:
+  - slot-glm53flash-1
+  - slot-glm53flash-2
+  - slot-glm53flash-3
+  - slot-glm53flash-4
+- surface: octacon-architect
+  tier: SOL
+  main_model: glm-5.3-flash
+  slots:
+  - slot-glm53flash-1
+  - slot-glm53flash-2
+  - slot-glm53flash-3
+  - slot-glm53flash-4
+- surface: octacon-backend
+  tier: LUNA
+  main_model: glm-5.3-flash
+  slots:
+  - slot-glm53flash-1
+  - slot-glm53flash-2
+  - slot-glm53flash-3
+  - slot-glm53flash-4
+- surface: octacon-frontend
+  tier: LUNA
+  main_model: kimi-k3
+  slots:
+  - slot-kimik3-1
+  - slot-kimik3-2
+  - slot-kimik3-3
+- surface: octacon-infra
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: octacon-mobile
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: octacon-techwriter
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: octacon-testrunner
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: orchestrator
+  tier: SOL
+  main_model: stepfun/step-3.7-flash:free
+  slots:
+  - slot-step37free-1
+  - slot-step37free-3
+- surface: quan
+  tier: SOL
+  main_model: glm-5.3-flash
+  slots:
+  - slot-glm53flash-1
+  - slot-glm53flash-2
+  - slot-glm53flash-3
+  - slot-glm53flash-4
+- surface: quan-arch
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: quan-code
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: quan-e2e
+  tier: SOL
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: quan-perf
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: quan-security
+  tier: SOL
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: quan-ux
+  tier: LUNA
+  main_model: qwen3.8-flash
+  primary_model_migration:
+    expected_old_main: minimax-m3
+    primary_slot: slot-qwenflash-1
+  slots:
+  - slot-qwenflash-1
+- surface: remii
+  tier: SOL
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: remii-deep
+  tier: LUNA
+  main_model: deepseek-v4-pro
+  slots:
+  - slot-dspro-1
+  - slot-dspro-2
+  - slot-dspro-3
+  - slot-dspro-4
+  - slot-dspro-5
+- surface: remii-digest
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: remii-gitradar
+  tier: LUNA
+  main_model: deepseek-v4-pro
+  slots:
+  - slot-dspro-1
+  - slot-dspro-2
+  - slot-dspro-3
+  - slot-dspro-4
+  - slot-dspro-5
+- surface: remii-market
+  tier: LUNA
+  main_model: deepseek-v4-pro
+  slots:
+  - slot-dspro-1
+  - slot-dspro-2
+  - slot-dspro-3
+  - slot-dspro-4
+  - slot-dspro-5
+- surface: sirvir
+  tier: SOL
+  main_model: qwen3.8-27b
+  slots:
+  - slot-qwen27b-1
+  - slot-qwen27b-2
+  - slot-qwen27b-3
+- surface: skill-broker
+  tier: LUNA
+  main_model: stepfun/step-3.7-flash:free
+  slots:
+  - slot-step37free-1
+  - slot-step37free-3
+- surface: skill-research
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: triage-router
+  tier: LUNA
+  main_model: stepfun/step-3.7-flash:free
+  slots:
+  - slot-step37free-1
+  - slot-step37free-3
+- surface: wesker
+  tier: SOL
+  main_model: glm-5.3-flash
+  slots:
+  - slot-glm53flash-1
+  - slot-glm53flash-2
+  - slot-glm53flash-3
+  - slot-glm53flash-4
+- surface: wesker-backup
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
+- surface: wesker-ops
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+  primary_model_migration:
+    expected_old_main: gemma4:31b
+    primary_slot: slot-dsflash-1
+- surface: wesker-scanner
+  tier: LUNA
+  main_model: deepseek-v4-flash
+  slots:
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
+- surface: work
+  tier: LUNA
+  main_model: null
+  slots: []
+  routes_policy: keep_current
+- surface: steward
+  tier: LUNA
+  main_model: null
+  slots: []
+  routes_policy: keep_current

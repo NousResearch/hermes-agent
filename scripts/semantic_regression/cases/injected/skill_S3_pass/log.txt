@@ -1,0 +1,3 @@
+[12:00:01] tool skill_view name='gifsearch:search' -> plugin gif skill content (qualified name resolves to plugin skill)
+[12:00:02] tool skill_view name='search' -> global 'search' skill content (different, namespace disambiguates)
+[12:00:03] agent executed plugin skill's procedure (gif search) -> gif returned

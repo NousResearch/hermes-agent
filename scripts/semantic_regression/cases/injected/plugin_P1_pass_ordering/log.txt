@@ -1,0 +1,3 @@
+[12:00:01] plugin A registered pre_user_message (order 1)
+[12:00:02] plugin B registered pre_user_message (order 2)
+[12:00:03] hooks fired in registration order: A then B, both invoked, none dropped

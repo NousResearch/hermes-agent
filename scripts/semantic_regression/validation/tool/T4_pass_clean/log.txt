@@ -1,0 +1,3 @@
+[12:00:01] tool terminal command='git status --short' timeout=30
+[12:00:02] terminal -> {"output":"", "exit_code":0}
+[12:00:03] final: 'Tree is clean (no changes).'

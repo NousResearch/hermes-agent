@@ -1488,6 +1488,20 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     )
 
 
+def _local_client_meta_additions(agent, cache_scope_id: str | None) -> dict:  # KENSEI CUSTOM (restored for test + reuse)
+    """Build loopback-only Turbohaul identity for a main/delegated turn."""
+    from agent.local_client_meta import (
+        agent_role_metadata,
+        local_client_meta_extra_body,
+    )
+
+    return local_client_meta_extra_body(
+        base_url=getattr(agent, "base_url", ""),
+        session_id=cache_scope_id or getattr(agent, "session_id", ""),
+        role_metadata=agent_role_metadata(agent),
+    )
+
+
 def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     # One-shot continuation override — consumed exactly once, on the FIRST
     # request this call builds (only one api_mode branch runs per invocation).
@@ -1505,7 +1519,33 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # (memoized on the agent); anthropic/bedrock above don't use it.
     cache_scope_id = _prompt_cache_scope_for_agent(agent)
     builder = _build_codex_kwargs if agent.api_mode == "codex_responses" else _build_chat_completions_kwargs
-    return builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
+    kwargs = builder(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id)
+    # ── KENSEI CUSTOM — loopback (Turbohaul) identity tagging (ported) ──
+    # Loopback-only: binds the wire call to the rotation-stable cache scope and
+    # role metadata so the local manager can classify/limit auxiliary traffic.
+    try:
+        from agent.local_client_meta import (
+            agent_role_metadata,
+            local_client_meta_extra_body,
+        )
+
+        local_meta_additions = local_client_meta_extra_body(
+            base_url=getattr(agent, "base_url", ""),
+            session_id=cache_scope_id or getattr(agent, "session_id", ""),
+            role_metadata=agent_role_metadata(agent),
+        )
+        if local_meta_additions:
+            merged_extra = dict(kwargs.get("extra_body") or {})
+            explicit_meta = merged_extra.get("client_meta")
+            meta = dict(local_meta_additions["client_meta"])
+            if isinstance(explicit_meta, dict):
+                meta.update(explicit_meta)
+            merged_extra["client_meta"] = meta
+            kwargs["extra_body"] = merged_extra
+    except Exception:
+        pass
+    # ── END KENSEI CUSTOM ──
+    return kwargs
 
 
 def _model_dump_safe(obj):

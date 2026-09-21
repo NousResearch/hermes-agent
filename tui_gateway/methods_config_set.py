@@ -462,8 +462,39 @@ def _set_display_toggle(rid, params, key, value, session):
 
 # ── dispatch
 
+def _set_mode(rid, params, key, value, session):  # KENSEI CUSTOM (agent modes)
+    """Validate via the shared contract (case-insensitive); preserve the exact
+    fork error text, lower-case normalisation, and session/DB side-effects."""
+    from hermes_cli.mode_prompts import get_mode_prompt as _mode_prompt, validate_mode
+    previous = "auto"
+    raw = str(value or "").strip().lower()
+    try:
+        nv = validate_mode(raw)
+    except ValueError:
+        return _err(rid, 4002, f"unknown mode: {raw} (valid: auto, plan, gods_plan, recon)")
+    if session:
+        previous = session.get("agent_mode", "auto") or "auto"
+        session["agent_mode"] = nv
+        agent = session.get("agent")
+        if agent is not None:
+            previous = getattr(agent, "agent_mode", "auto") or "auto"
+            agent.agent_mode = nv
+            agent.ephemeral_system_prompt = _mode_prompt(nv)
+        db = _get_db()
+        session_key = session.get("session_key", "")
+        if db and session_key:
+            try:
+                db.update_session_agent_mode(session_key, nv)
+            except Exception:
+                pass
+        if agent is not None:
+            _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
+    return _ok(rid, {"key": key, "value": nv, "prompt_cache_reset": previous != nv})
+
+
 _CONFIG_SETTERS = {
     "model": _set_model, "fast": _set_fast, "busy": _set_busy, "verbose": _set_verbose, "focus": _set_focus,
+    "mode": _set_mode,  # KENSEI CUSTOM
     "approval_mode": _set_approval_mode, "approvals.mode": _set_word, "yolo": _set_yolo,
     "reasoning": _set_reasoning, "details_mode": _set_word, "thinking_mode": _set_word,
     "density": _set_toggle, "battery": _set_toggle, "theme": _set_word,

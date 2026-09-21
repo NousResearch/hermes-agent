@@ -496,6 +496,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
+  agentMode = 'auto',
   battery,
   focusView,
   cwdLabel,
@@ -530,6 +531,23 @@ export function StatusRule({
   // display.status_bar.fields visibility gate (same key + names as the
   // classic CLI bar). null = user hasn't customized → everything shows.
   const ok = (name: string) => statusBarFields === null || statusBarFields.has(name)
+
+  // ── KENSEI CUSTOM: mode badge in status bar ──
+  const MODE_BADGE: Record<string, { icon: string; label: string; color: string }> = {
+    auto:      { icon: '', label: '', color: '' },
+    plan:      { icon: '📋', label: 'Plan', color: 'green' },
+    gods_plan: { icon: '👑', label: 'UltraPlan', color: 'red' },
+    recon:     { icon: '🔍', label: 'Recon', color: 'yellow' },
+  }
+
+  const modeInfo = MODE_BADGE[agentMode] || MODE_BADGE.auto
+  const modeText = modeInfo.label ? `${modeInfo.icon} ${modeInfo.label}` : ''
+
+  const modeColor = modeInfo.color === 'green' ? t.color.ok
+    : modeInfo.color === 'red' ? t.color.error
+    : modeInfo.color === 'yellow' ? t.color.label
+    : t.color.muted
+  // ── END KENSEI CUSTOM ──
 
   // On narrow terminals the context read-out collapses to a bare token count
   // (`12k tok`) and the visual fill bar is dropped entirely.
@@ -582,6 +600,9 @@ export function StatusRule({
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
+    // ── KENSEI CUSTOM: mode badge width (inline with model) ──
+    (modeText ? stringWidth(' ') + stringWidth(modeText) : 0) +
+    // ── END KENSEI CUSTOM ──
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
   const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
@@ -728,6 +749,13 @@ export function StatusRule({
             {' │ '}
             {modelText}
           </Text>
+          {/* ── KENSEI CUSTOM: mode badge (inline with model+reasoning) ── */}
+          {modeText ? (
+            <Text color={modeColor} wrap="truncate-end">
+              {' '}{modeText}
+            </Text>
+          ) : null}
+          {/* ── END KENSEI CUSTOM ── */}
           {ctxLabel ? (
             <Text color={t.color.muted} wrap="truncate-end">
               {' │ '}
@@ -946,6 +974,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  agentMode?: string
   battery?: BatteryInfo | null
   // Focus view (/focus) badge — display-only reduced-output indicator.
   focusView?: boolean

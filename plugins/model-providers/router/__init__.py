@@ -34,6 +34,11 @@ _efforts_lock = threading.Lock()
 _warm_started = False
 _disk_checked = False
 
+# KENSEI NOTE (restored): the Sep-2026 upstream refactor dropped this constant while
+# keeping its uses in _load_disk()/_load_efforts(); re-added from our pre-merge tree
+# so the plugin's cache paths do not NameError. Remove once upstream re-adds it.
+_DISK_TTL_SECONDS = 24 * 60 * 60
+
 
 class _CacheState:
     """Efforts cache + once-only flags for one Hermes home (same names as the module slots)."""

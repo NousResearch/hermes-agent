@@ -1294,7 +1294,17 @@ def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile:
     ``/p/<profile>/v1/...`` answered. Only a live default entry is mirrored; its state is the profile's
     state, plus the ``/p/<profile>`` URL the client must actually call.
     """
-    from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
+    # KENSEI CUSTOM: long-lived processes started before an editable-install update can hold a
+    # gateway.config module cached from before the multiplex names existed; reload once and retry
+    # so delivery/status code paths resolve them without a process restart. Fresh processes hit
+    # the happy path and never reload.
+    try:
+        from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
+    except ImportError:
+        import importlib
+        import gateway.config as _gateway_config
+        importlib.reload(_gateway_config)
+        from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
     plats = (runtime or {}).get("platforms")
     if not profile or profile == "default" or not isinstance(plats, dict):
         return {}
@@ -1890,6 +1900,33 @@ def planned_stop_marker_targets_self() -> bool:
     are still cleaned up; markers naming another PID are left alone."""
     parsed = _read_live_pid_marker(_get_planned_stop_marker_path(), _PLANNED_STOP_MARKER_TTL_S)
     return parsed is not None and _pid_marker_names_self(parsed[1], parsed[2])
+
+
+# KENSEI CUSTOM: unconditional planned-stop marker removal. Upstream relies on
+# unlink-always cleanup inside the probe/consume paths; the fork kept an explicit
+# helper because the planned-stop watcher fires whenever the marker merely exists,
+# so a marker that cannot be consumed (unreadable/root-owned) must still be
+# removable. (fork _discard_marker absorbed here rather than resurrected.)
+def _discard_marker(path: Path) -> None:
+    """Best-effort removal of a stop/takeover marker. Safe to call repeatedly.
+
+    Any marker we cannot consume MUST be removed. The planned-stop watcher
+    (gateway/run.py) fires a shutdown whenever the marker merely *exists*, so a
+    marker left on disk re-triggers shutdown on every restart, an infinite
+    crash loop. This bit us on 2026-05-29 with a root-owned 0600 marker the
+    non-root gateway could not read. Unlink only needs write+execute on the
+    containing dir (HERMES_HOME), which the gateway owns, so it succeeds even
+    when the file itself is unreadable.
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def clear_planned_stop_marker() -> None:
+    """Remove the planned-stop marker unconditionally."""
+    _discard_marker(_get_planned_stop_marker_path())
 
 
 def get_running_pid(

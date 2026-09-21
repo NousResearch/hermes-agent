@@ -58,9 +58,7 @@ _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 # Size of the pool that runs turn bodies (blocking agent work).
 _TURN_MAX_WORKERS = 10
-# Size of the separate pool for best-effort session HOUSEKEEPING (finalize hooks, agent cleanup).
-# It is separate from the turn pool because housekeeping callers ABANDON their worker on timeout —
-# see _run_housekeeping_in_executor.
+# Size of the separate pool for best-effort session HOUSEKEEPING; why it is separate: _run_housekeeping_in_executor.
 _HOUSEKEEPING_MAX_WORKERS = 4
 
 # End reasons meaning the USER deliberately closed this thread. Shared by _classify_completion_target and
@@ -3577,9 +3575,7 @@ class GatewayRunner(
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        # Best-effort session housekeeping runs on its OWN pool: those callers abandon their
-        # worker on timeout, and an abandoned worker holds its slot until its blocking call
-        # returns — on a shared pool that starves turn bodies. See _run_housekeeping_in_executor.
+        # Best-effort session housekeeping runs on its OWN pool; see _run_housekeeping_in_executor.
         self._housekeeping_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect the pool.
         self._executor_closing = False

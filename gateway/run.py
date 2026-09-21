@@ -4772,22 +4772,42 @@ async def _await_thread_exit(
     return not thread.is_alive()
 
 
-async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0) -> bool:
+async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = None) -> bool:
     """Close MCP servers off-loop with a bounded wait; True when done within ``timeout``.
     ``shutdown_mcp_servers()`` can block ~15s; on the loop thread short-grace supervisors (s6 3s)
     SIGKILL us before ``mark_exited()`` runs, so every later boot reports a phantom unclean death.
     On timeout shutdown proceeds and the daemon thread is left to finish or die.
 
+    Teardown is per served profile, under that profile's runtime scope — the mirror of startup
+    discovery (``_discover_mcp_tools_for_profiles``) and of the periodic reconcile chore. A
+    server's close path reads its own config/credentials at call time, so an unscoped shutdown on
+    a bare thread resolved every served profile's teardown against the LAUNCH home. The trailing
+    wildcard call (under the launch profile's own scope) stops the shared loop and reaps anything
+    the per-profile passes did not own.
+
     See #82874.
     """
+    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+
+    profile_homes = (
+        _multiplex_profile_homes(config) if getattr(config, "multiplex_profiles", False) else [])
+
     def _do() -> None:
+        from tools.mcp_tool_common import _core
+        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        for profile_name, profile_home in profile_homes:
+            try:
+                with _profile_runtime_scope(Path(profile_home), hydrate_secrets=False):
+                    shutdown_mcp_servers(scope=_core._mcp_registry_scope())
+            except Exception:
+                logger.debug("MCP shutdown raised for profile '%s'", profile_name, exc_info=True)
         try:
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            shutdown_mcp_servers()
+            with launch_profile_scope_if_multiplexed():
+                shutdown_mcp_servers()
         except Exception:
             logger.debug("MCP shutdown raised", exc_info=True)
 
-    thread = threading.Thread(target=_do, name="mcp-shutdown", daemon=True)
+    thread = threading.Thread(target=copy_context().run, args=(_do,), name="mcp-shutdown", daemon=True)
     thread.start()
     done = await _await_thread_exit(thread, timeout=timeout)
     if not done:
@@ -5355,7 +5375,7 @@ async def _start_gateway_shutdown_tail(
     _planned_stop_watcher_thread.join(timeout=2)
 
     with suppress(Exception):
-        await _shutdown_mcp_servers_nonblocking()
+        await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
 
     # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
     # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
@@ -5502,7 +5522,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         try:
             await runner.wait_for_shutdown()
             with suppress(Exception):
-                await _shutdown_mcp_servers_nonblocking()
+                await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
             return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
         finally:
             _shutdown_gateway_health_export(runner)

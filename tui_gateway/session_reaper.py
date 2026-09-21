@@ -30,8 +30,13 @@ def _flush_session_messages(session: dict | None) -> bool:
     snapshot = getattr(agent, "_session_messages", None) if hasattr(agent, "_persist_session") else None
     if not snapshot:
         return False
+    # state.db, config and the token ledger are resolved at CALL time, and every caller of this helper
+    # is an unscoped reaper / exit-flush thread with no turn on the stack. Without the session's own
+    # binding a SERVED profile's transcript is written into the LAUNCH profile's home — the same class
+    # as _finalize_session, which binds it at the identical chokepoint (session_lifecycle.py).
     try:
-        agent._persist_session(snapshot)
+        with _session_profile_runtime_scope(session or {}):
+            agent._persist_session(snapshot)
         return True
     except Exception:
         logger.debug("incremental session flush failed", exc_info=True)

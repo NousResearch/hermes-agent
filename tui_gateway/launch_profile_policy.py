@@ -48,6 +48,34 @@ def activate_multi_profile_hosting() -> None:
     set_multiplex_active(True)
 
 
+def activate_multi_profile_hosting_eagerly() -> bool:
+    """Activate at HOST startup when this machine has more than one servable profile home.
+
+    Activation used to be lazy and one-way — it fired the first time a *request* asked for a second
+    home. Everything the host had already done by then (idle-reaper ticks, cron start, adapter
+    connects, MCP discovery) ran under single-profile assumptions and is never re-scoped, and the
+    launch profile's env had already been mutated by then, so ``capture_launch_env`` froze a
+    polluted snapshot. One ``hermes serve`` / ``hermes gateway run`` per host means the process
+    knows at boot whether it can be asked for a second home: decide there, once.
+
+    A genuinely single-profile host still never activates (byte-identical behaviour, ``os.environ``
+    precedence preserved). Returns True when this call activated hosting.
+    """
+    from agent.secret_scope import is_multiplex_active
+    if is_multiplex_active():
+        return False
+    try:
+        from hermes_cli.profiles import profiles_to_serve
+        homes = {Path(home).resolve() for _name, home in profiles_to_serve(multiplex=True)}
+        homes.add(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve())
+    except Exception:
+        return False
+    if len(homes) < 2:
+        return False
+    activate_multi_profile_hosting()
+    return True
+
+
 def _launch_env() -> Dict[str, str]:
     """The launch profile's env: frozen once multiplexing is active; the LIVE process env before
     (no secondary has run yet, so it is provably the launch profile's, and freezing it early would
@@ -96,3 +124,30 @@ def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
     finally:
         reset_terminal_scope(terminal_token)
         reset_secret_scope(secret_token)
+
+
+def launch_profile_scope_if_multiplexed():
+    """The launch profile's own runtime scope once this process multiplexes; ``nullcontext``
+    before.
+
+    The single seam for "no routed profile here": under the one-process-per-host ruling the launch
+    profile is a tenant like any other, so a body that used to run with NO scope at all (ambient
+    ``os.environ`` + the process home) must bind the launch profile explicitly — otherwise a
+    secondary's context can have poisoned the ambient state, and a fail-closed ``get_secret`` raises
+    on a perfectly legitimate launch-profile read. Before activation the process env IS the launch
+    profile's, so binding nothing is still correct (and keeps single-profile hosts byte-identical —
+    callers assert the returned object is literally a ``nullcontext``).
+    """
+    from agent.secret_scope import is_multiplex_active
+    if not is_multiplex_active():
+        return contextlib.nullcontext()
+    from hermes_constants import get_process_hermes_home
+    return launch_profile_runtime_scope(get_process_hermes_home())
+
+
+@contextlib.asynccontextmanager
+async def async_launch_profile_scope_if_multiplexed():
+    """``async with`` twin of :func:`launch_profile_scope_if_multiplexed` (no I/O of its own: the
+    launch scope is rebuilt from already-hydrated sources, so there is nothing to move off-loop)."""
+    with launch_profile_scope_if_multiplexed():
+        yield

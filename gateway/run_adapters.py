@@ -516,7 +516,7 @@ class GatewayAdapterLifecycleMixin:
 
         # A row still 'running' at startup died mid-dispatch and blocks request_handoff until reclaimed.
         def _scope(profile_home):  # local: tests bind this watcher onto bare SimpleNamespace runners
-            return GatewayAdapterLifecycleMixin._scope_or_null(_async_profile_runtime_scope, profile_home)
+            return GatewayAdapterLifecycleMixin._async_scope_or_null(_async_profile_runtime_scope, profile_home)
 
         for _pname, _phome in _handoff_watch_scopes(self):
             with _log_suppressed(logging.DEBUG, "Stale-handoff reclaim failed", exc_info=True):
@@ -1378,8 +1378,27 @@ class GatewayAdapterLifecycleMixin:
 
     @staticmethod
     def _scope_or_null(scope_factory, profile_home):
-        """``scope_factory(profile_home)`` or a nullcontext when the profile home is unknown."""
-        return scope_factory(profile_home) if profile_home is not None else contextlib.nullcontext()
+        """``scope_factory(profile_home)`` for a known profile home, else the LAUNCH profile's own
+        scope once this process multiplexes.
+
+        ``None`` here means "no routed profile for this body" — the launch profile's own work, or a
+        profile name that no longer resolves. Returning a bare ``nullcontext()`` made the launch
+        profile the one tenant that ran with ambient ``os.environ`` and the process home, which a
+        secondary's context may have poisoned; under the one-process-per-host ruling it is a tenant
+        like any other. Single-profile hosts are unchanged: the helper is a no-op until activation.
+        """
+        if profile_home is not None:
+            return scope_factory(profile_home)
+        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+        return launch_profile_scope_if_multiplexed()
+
+    @staticmethod
+    def _async_scope_or_null(scope_factory, profile_home):
+        """``async with`` twin of :meth:`_scope_or_null` (for ``_async_profile_runtime_scope``)."""
+        if profile_home is not None:
+            return scope_factory(profile_home)
+        from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+        return async_launch_profile_scope_if_multiplexed()
 
     def _canonicalize(self, source, *, transport_profile: Optional[str] = None,
                       primary_home: Optional[Path] = None):
@@ -1411,7 +1430,7 @@ class GatewayAdapterLifecycleMixin:
 
         async def _handler(event):
             self._canonicalize(getattr(event, "source", None), transport_profile=profile_name)
-            async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
+            async with self._async_scope_or_null(_async_profile_runtime_scope, profile_home):
                 return await self._handle_message(event)
 
         return _handler
@@ -1424,7 +1443,7 @@ class GatewayAdapterLifecycleMixin:
 
         async def _handler(event, _session_key):
             self._canonicalize(event.source, transport_profile=profile_name)
-            async with self._scope_or_null(_async_profile_runtime_scope, profile_home):
+            async with self._async_scope_or_null(_async_profile_runtime_scope, profile_home):
                 return await self._handle_active_session_busy_message(event, self._session_key_for_source(event.source))
 
         return _handler

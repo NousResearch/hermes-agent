@@ -54,6 +54,18 @@ is documented as a known limitation at the end of this document.
   a plain module global, not a contextvar: it describes the deployment mode,
   not a per-task value. Its only job is to arm the fail-closed behavior in
   `get_secret()`.
+- The dashboard/Desktop backend (`hermes serve`) has no such flag, so
+  `hermes_cli/web_server.py::start_server` calls
+  `tui_gateway.launch_profile_policy.activate_multi_profile_hosting_eagerly()`
+  at boot: the host arms the guard when the machine has more than one servable
+  profile home, instead of waiting for the first `?profile=<other>` request.
+  Activation is one-way, and anything the backend had already done by then
+  (idle-reaper transcript flushes, hosted rooms, cron) was never re-scoped. A
+  genuinely single-profile host still never activates.
+- With the guard armed the **launch profile is a tenant too**: a body with no
+  routed profile binds `launch_profile_scope_if_multiplexed()` (its `.env` over
+  the env frozen at activation) rather than running unscoped on ambient
+  `os.environ`.
 
 ## Scope composition
 

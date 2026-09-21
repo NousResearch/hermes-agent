@@ -1042,6 +1042,23 @@ def _status_404(c: _Ctx) -> Verdict:
     return _V_MODEL_NOT_FOUND if _model_id_missing_known_prefix(c.model_slug, c.provider_slug) else _V_UNKNOWN
 
 
+def _status_413(c: _Ctx) -> Verdict:
+    # Some providers (Groq confirmed) return 413 rather than 429 for a per-minute/
+    # per-day TOKEN quota rejection ("tokens per minute (TPM): Limit 8000, Requested
+    # 16885") — a rate limit wearing a payload-size status code. Routing it into
+    # payload_too_large's compress-and-retry recovery (turn_overflow.py) is wrong:
+    # there is nothing to compress (a fresh cron turn has no history), so it burns
+    # the "no progress" check and fails the WHOLE turn instead of trying the next
+    # fallback provider — even though rate_limit's should_fallback=True would have
+    # let it reach a provider whose TPM ceiling isn't already blown. Text-refine
+    # exactly like _status_429 does, using the same _RATE_LIMIT_PATTERNS (which
+    # already lists "tokens per minute"); only a real over-window-for-any-provider
+    # 413 (no rate-limit phrase) still routes to payload_too_large/compression.
+    if any(p in c.msg for p in _RATE_LIMIT_PATTERNS):
+        return _V_RATE_LIMIT
+    return _V_PAYLOAD_TOO_LARGE
+
+
 def _status_429(c: _Ctx) -> Verdict:
     # A structured billing code is decisive: LiteLLM stamps
     # ``terminal_quota_exhausted`` (a hard cap, not throttling) on 429s, and
@@ -1212,7 +1229,7 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
 # read window). Unlisted 4xx → format_error, 5xx → server_error.
 _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
     400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
-    403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
+    403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: _status_413,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,

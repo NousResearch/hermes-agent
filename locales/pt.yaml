@@ -7,7 +7,11 @@ approval:
   choose_short:    "      [o]uma vez  |  [s]sessão  |  [d]negar"
   prompt_long:     "      Escolha [o/s/a/D]: "
   prompt_short:    "      Escolha [o/s/D]: "
-  timeout:         "      ⏱ Tempo esgotado — comando negado"
+  choose_smart_deny: "      [o]uma vez  |  [d]negar"
+  prompt_smart_deny: "      Escolha [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
+  timeout:         "      ⏱ Sem resposta em {waited} — o comando não foi executado. Peça novamente para tentar de novo, ou aumente o limite: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ Permitido uma vez"
   allowed_session: "      ✓ Permitido nesta sessão"
   allowed_always:  "      ✓ Adicionado à lista de permissões permanente"
@@ -49,6 +53,7 @@ gateway:
     more:                  "... e mais {count}"
     running_processes:     "**Processos em segundo plano em execução:** {count}"
     async_jobs:            "**Tarefas assíncronas do gateway:** {count}"
+    background_delegations: "**Delegações em segundo plano:** {count}"
     none:                  "Não há agentes ativos nem tarefas em execução."
     state_starting:        "a iniciar"
     state_running:         "em execução"
@@ -63,8 +68,16 @@ gateway:
     always_plural:         "✅ Comandos aprovados (padrão aprovado permanentemente) ({count} comandos). O agente está a retomar..."
 
   background:
-    usage:                 "Uso: /background <prompt>\nExemplo: /background Resume as principais histórias do HN de hoje\n\nExecuta o prompt numa sessão separada. Podes continuar a conversar — o resultado aparecerá aqui quando estiver concluído."
+    usage:                 "Uso: /bg <prompt>\nExemplo: /bg Resume as principais histórias do HN de hoje\n\nExecuta o prompt numa sessão separada. Podes continuar a conversar — o resultado aparecerá aqui quando estiver concluído."
     started:               "🔄 Tarefa em segundo plano iniciada: \"{preview}\"\nID da tarefa: {task_id}\nPodes continuar a conversar — os resultados aparecerão aqui quando estiverem prontos."
+
+  btw:
+    usage:                 "Uso: /btw <pergunta>\nExemplo: /btw em que ficheiro estava aquele erro?\n\nResponde a uma pergunta rápida sobre esta conversa sem a interromper. Para uma tarefa independente em segundo plano, usa /bg <prompt>."
+    no_history:            "Ainda não há conversa — envia a tua pergunta como mensagem normal."
+    no_provider:           "❌ Não é possível responder: nenhuma credencial de fornecedor configurada."
+    started:               "💬 Pergunta à parte: \"{preview}\"\nA responder a partir de um instantâneo desta conversa — o trabalho atual continua."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw falhou: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Base de dados de sessões indisponível."
@@ -73,6 +86,9 @@ gateway:
     switch_failed:         "Ramo criado, mas não foi possível mudar para ele."
     branched_one:          "⑂ Ramificado para **{title}** ({count} mensagem copiada)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
     branched_many:         "⑂ Ramificado para **{title}** ({count} mensagens copiadas)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
+    branched_thread_one:   "⑂ Ramificado para **{title}** em um novo tópico ({count} mensagem copiada)\nTópico: {thread}\nOriginal: `{parent}` — este chat permanece nele\nRamo: `{new}`\nUse `/branch --here` para ramificar neste chat."
+    branched_thread_many:  "⑂ Ramificado para **{title}** em um novo tópico ({count} mensagens copiadas)\nTópico: {thread}\nOriginal: `{parent}` — este chat permanece nele\nRamo: `{new}`\nUse `/branch --here` para ramificar neste chat."
+    thread_fallback:       "Não foi possível criar um tópico aqui, então o ramo substituiu a sessão deste chat."
 
   commands:
     usage:                 "Uso: `/commands [page]`"
@@ -93,6 +109,7 @@ gateway:
     summary_failed:        "⚠️ Falha ao gerar o resumo ({error}). {count} mensagem(ns) histórica(s) foram removidas e substituídas por um marcador; o contexto anterior já não pode ser recuperado. Considera verificar a configuração do modelo auxiliary.compression."
     aborted:               "⚠️ Compressão abortada ({error}). Nenhuma mensagem foi removida — a conversa está inalterada. Executa /compress para tentar de novo, /reset para uma sessão nova, ou verifica a configuração do modelo auxiliary.compression."
     aux_failed:            "ℹ️ O modelo de compressão configurado `{model}` falhou ({error}). Recuperado com o teu modelo principal — o contexto está intacto — mas talvez queiras verificar `auxiliary.compression.model` em config.yaml."
+    turnhold_deferred:     "ℹ️ Compressão de contexto adiada — o resumo ainda está em transmissão. Continuando sem compressão neste turno."
     failed:                "Compressão falhou: {error}"
 
   debug:
@@ -120,6 +137,11 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\nModo atual: `{mode}`\\n\\nEscolha uma opção:"
+    choice_fast:           "fast — Priority Processing ativado"
+    choice_normal:         "normal — processamento padrão"
+    choice_auto:           "auto — rápido nos primeiros segundos de cada turno"
+    choice_cold:           "cold — rápido apenas no primeiro turno de uma sessão"
 
   footer:
     status:                "📎 Rodapé de execução: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
@@ -134,7 +156,7 @@ gateway:
     no_goal_set:           "Nenhum objetivo definido."
     paused:                "⏸ Objetivo pausado: {goal}"
     no_resume:             "Nenhum objetivo para retomar."
-    resumed:               "▶ Objetivo retomado: {goal}\nEnvia qualquer mensagem para continuar, ou aguarda — darei o próximo passo no próximo turno."
+    resumed:               "▶ Objetivo retomado: {goal}\nContinuando agora — darei o próximo passo imediatamente."
     invalid:               "Objetivo inválido: {error}"
     set:                   "⊙ Objetivo definido (orçamento de {budget} turnos): {goal}\nVou continuar a trabalhar até o objetivo estar concluído, pausares/limpares ou o orçamento esgotar.\nControlos: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -158,9 +180,15 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "Nenhuma personalidade configurada em `{path}/config.yaml`"
@@ -182,14 +210,19 @@ gateway:
     level_disabled:            "none (desativado)"
     scope_session:             "substituição de sessão"
     scope_global:              "configuração global"
-    status:                    "🧠 **Definições de raciocínio**\n\n**Esforço:** `{level}`\n**Âmbito:** {scope}\n**Visualização:** {display}\n\n_Uso:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
+    status:                    "🧠 **Definições de raciocínio**\n\n**Esforço:** `{level}`\n**Âmbito:** {scope}\n**Visualização:** {display}\n\n_Uso:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"
     display_on:                "ativada ✓"
     display_off:               "desativada"
     display_set_on:            "🧠 ✓ Visualização do raciocínio: **ATIVADA**\nO pensamento do modelo será mostrado antes de cada resposta em **{platform}**."
     display_set_off:           "🧠 ✓ Visualização do raciocínio: **DESATIVADA** para **{platform}**"
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` não é suportado. Usa `/reasoning <level> --global` para alterar o predefinido global."
     reset_done:                "🧠 ✓ Substituição de raciocínio da sessão removida; a regressar à configuração global."
-    unknown_arg:               "⚠️ Argumento desconhecido: `{arg}`\n\n**Níveis válidos:** none, minimal, low, medium, high, xhigh\n**Visualização:** show, hide\n**Persistir:** adiciona `--global` para guardar para além desta sessão"
+    unknown_arg:               "⚠️ Argumento desconhecido: `{arg}`\n\n**Níveis válidos:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualização:** show, hide\n**Persistir:** adiciona `--global` para guardar para além desta sessão"
+    picker_title:              "🧠 **Definições de raciocínio**\\n\\n**Esforço:** `{level}`\\n**Âmbito:** {scope}\\n**Visualização:** {display}\\n\\nEscolha uma opção:"
+    choice_none:               "none — desativar raciocínio"
+    choice_reset:              "reset — limpar o override de sessão"
+    choice_show:               "mostrar raciocínio nas respostas"
+    choice_hide:               "ocultar raciocínio das respostas"
     set_global:                "🧠 ✓ Esforço de raciocínio definido como `{effort}` (guardado na configuração)\n_(produz efeito na próxima mensagem)_"
     set_global_save_failed:    "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — falha ao guardar a configuração)\n_(produz efeito na próxima mensagem)_"
     set_session:               "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — adiciona `--global` para persistir)\n_(produz efeito na próxima mensagem)_"
@@ -241,6 +274,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Não foram encontradas sessões com nome.\nUsa `/title A minha sessão` para nomear a sessão atual e depois `/resume A minha sessão` para voltar a ela."
+    all_requires_admin: "_Nota: `--all` (listagem entre conversas) requer um administrador configurado; mostram-se apenas as sessões desta conversa._"
     list_header:           "📋 **Sessões com nome**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -264,11 +298,37 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Não foram encontrados checkpoints para {cwd}"
     invalid_number:        "Número de checkpoint inválido. Usa 1-{max}."
     restored:              "✅ Restaurado para o checkpoint {hash}: {reason}\nFoi guardado automaticamente um snapshot anterior ao rollback."
+    kept_user_edits:       "↷ As suas edições manuais foram mantidas: {files}\nUse /rollback <N> --all para restaurar essas também."
+    kept_oversize:         "↷ Mantido (grande demais para os checkpoints, sem cópia guardada para reverter): {files}"
+    failed_deletes:        "⚠️ Não foi possível remover (mantido no lugar): {files}"
     restore_failed:        "❌ {error}"
+
+  diff:
+    not_enabled:           "Os checkpoints não estão ativados, então não há linha de base da sessão.\nAtive em config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nO /diff simples continua funcionando — ele usa git diretamente."
+    no_changes:            "Sem alterações."
+    failed:                "{error}"
 
   set_home:
     save_failed:           "Falha ao guardar o canal principal: {error}"
     success:               "✅ Canal principal definido como **{name}** (ID: {chat_id}).\nAs tarefas cron e mensagens entre plataformas serão entregues aqui."
+  context:
+    header:                "🧠 **Context Window**"
+    model:                 "Model: `{model}`"
+    window:                "Window: {total} tokens"
+    in_use:                "In use: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Headroom to limit: {headroom} tokens"
+    threshold:             "Auto-compresses at: {threshold} ({threshold_pct}%) — {to_go} to go"
+    over_threshold:        "⚠️ **Over auto-compression threshold ({threshold}, {threshold_pct}%)**"
+    compressions:          "Compressions this session: {count}"
+    last_savings:          "Last compression freed: {savings}% of context"
+    totals_header:         "Session totals (cumulative across {calls} API calls)"
+    totals_line:           "Input {input} · Output {output} · Reasoning {reasoning}"
+    total_billed:          "Total billed: {total}"
+    throughput_note:       "_Throughput, not context size — each call re-sends the window above._"
+    estimated:             "Estimated context: ~{count} tokens across {messages} messages"
+    detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
+    no_data:               "No context data available yet. Send a message to start a session."
 
   status:
     header:                "📊 **Estado do Hermes Gateway**"
@@ -284,9 +344,10 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**Última atividade:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · plano gratuito · nous/welcome · /login para entrar"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
-    tokens:                "**Tokens de API cumulativos (reenviados a cada chamada):** {tokens}"
+    tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
     agent_running:         "**Agente em execução:** {state}"
     state_yes:             "Sim ⚡"
     state_no:              "Não"
@@ -329,7 +390,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_git_repo:            "✗ Não é um repositório git — não é possível atualizar."
     hermes_cmd_not_found:    "✗ Não foi possível localizar o comando `hermes`. O Hermes está em execução, mas o comando de atualização não conseguiu encontrar o executável no PATH nem através do interpretador Python atual. Tenta executar `hermes update` manualmente no teu terminal."
     start_failed:            "✗ Falha ao iniciar a atualização: {error}"
-    starting:                "⚕ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
+    starting:                "☤ A iniciar a atualização do Hermes… Vou transmitir o progresso aqui."
 
   usage:
     rate_limits:              "⏱️ **Limites de taxa:** {state}"
@@ -360,6 +421,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Contexto estimado: ~{count} tokens"
     detailed_after_first:     "_(Utilização detalhada disponível após a primeira resposta do agente)_"
     no_data:                  "Não há dados de utilização disponíveis para esta sessão."
+    unknown_subcommand:       "Subcomando /usage desconhecido: `{args}`. Tente `/usage` ou `/usage reset [--force]`."
+    reset_wrong_provider:     "Os resets de limite acumulados só estão disponíveis no provedor openai-codex. Troque primeiro com `/model`."
 
   credits:
     not_logged_in:            "Você não está conectado ao Nous Portal. Faça login para ver seu saldo de créditos e recarregar."

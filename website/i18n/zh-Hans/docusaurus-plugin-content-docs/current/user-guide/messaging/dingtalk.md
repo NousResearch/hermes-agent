@@ -154,7 +154,7 @@ gateway:
 
 - `group_sessions_per_user: true` 在共享群聊中保持每个参与者的上下文隔离
 - `require_mention: true` 防止机器人响应每条群消息——仅在有人 @提及 时才回答
-- `dingtalk.extra` 下的 `allowed_users` 是 `DINGTALK_ALLOWED_USERS` 的替代方式；若两者同时设置，则合并生效
+- `dingtalk.extra` 下的 `allowed_users` 是 `DINGTALK_ALLOWED_USERS` 的替代方式；两者择一配置（若同时设置，只有同时出现在两个列表中的用户才会被授权）
 
 ### 启动 Gateway
 

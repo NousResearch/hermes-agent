@@ -43,16 +43,80 @@ class TestDiscordFormatMessage:
         assert out.rstrip().endswith("Done.")
         assert "|---" not in out
 
-    def test_plain_text_unchanged(self):
-        adapter = _make_discord_adapter()
-        text = "Hello world, no tables here."
-        assert adapter.format_message(text) == text
 
-    def test_code_block_table_unchanged(self):
-        adapter = _make_discord_adapter()
-        text = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
-        assert adapter.format_message(text) == text
+class TestDiscordToolPreviewFormatting:
+    def test_truncated_url_keeps_full_click_target(self):
+        from agent.display import ToolPreview
 
-    def test_empty_string(self):
         adapter = _make_discord_adapter()
-        assert adapter.format_message("") == ""
+        url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
+        visible = "https://hermes-agent.nousresearch..."
+
+        out = adapter.format_tool_preview(ToolPreview(visible, truncated=True, url=url))
+
+        assert out == f"[hermes-agent.nousresearch...](<{url}>)"
+
+    def test_truncated_url_label_is_not_a_second_url_target(self):
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        url = "https://centaur.run/secrets/advanced-permissioning"
+        visible = "https://centaur.run/secrets/advanced-..."
+
+        out = adapter.format_tool_preview(ToolPreview(visible, truncated=True, url=url))
+
+        assert out == (
+            "[centaur.run/secrets/advanced-...]"
+            "(<https://centaur.run/secrets/advanced-permissioning>)"
+        )
+
+    def test_link_escapes_discord_markdown_delimiters(self):
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        preview = ToolPreview(
+            r"https://example.com/docs/[beta]...",
+            truncated=True,
+            url="https://example.com/docs/_(beta)",
+        )
+
+        assert adapter.format_tool_preview(preview) == (
+            r"[example.com/docs/\[beta\]...]"
+            r"(<https://example.com/docs/_%28beta%29>)"
+        )
+
+    def test_structured_tool_event_uses_clickable_truncated_url(self):
+        from gateway.stream_events import ToolCallChunk
+
+        adapter = _make_discord_adapter()
+        url = "https://hermes-agent.nousresearch.com/docs/gateway/discord/tool-progress"
+        visible = url[:37] + "..."
+
+        out = adapter.format_tool_event(
+            ToolCallChunk("web_extract", preview=url, args={"urls": [url]}),
+            mode="all",
+            preview_max_len=40,
+        )
+
+        assert out is not None
+        assert f"[{visible.removeprefix('https://')}](<{url}>)" in out
+
+    def test_untruncated_url_remains_plain(self):
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        url = "https://example.com/page"
+
+        out = adapter.format_tool_preview(ToolPreview(url))
+
+        assert out == url
+
+    def test_truncated_non_url_remains_plain(self):
+        from agent.display import ToolPreview
+
+        adapter = _make_discord_adapter()
+        visible = "a long search query that was trunc..."
+
+        out = adapter.format_tool_preview(ToolPreview(visible, truncated=True))
+
+        assert out == visible

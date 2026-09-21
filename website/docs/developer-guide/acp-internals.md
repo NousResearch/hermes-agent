@@ -17,7 +17,6 @@ Key implementation files:
 - `acp_adapter/permissions.py`
 - `acp_adapter/tools.py`
 - `acp_adapter/auth.py`
-- `acp_registry/agent.json`
 
 ## Boot flow
 
@@ -30,8 +29,6 @@ hermes acp / hermes-acp / python -m acp_adapter
   -> construct HermesACPAgent
   -> acp.run_agent(agent, use_unstable_protocol=True)
 ```
-
-The Zed ACP Registry path launches the same adapter through `uvx --from 'hermes-agent[acp]==<version>' hermes-acp`, pointed at the `hermes-agent` PyPI release.
 
 Stdout is reserved for ACP JSON-RPC transport. Human-readable logs go to stderr.
 
@@ -82,6 +79,12 @@ Bridged callbacks:
 - `thinking_callback` (currently set to `None` in the ACP bridge — reasoning is forwarded through `step_callback` instead)
 - `step_callback`
 
+Every ACP tool call reaches a terminal status: `tool.completed` closes the call with its own
+result (`completed` / `failed`), the `step_callback` `prev_tools` pass is only a fallback for
+runtimes that never project a completion, and anything still open when the turn ends —
+a denied or blocked call, an interrupted one — is marked `failed` before the response is
+returned.
+
 Because `AIAgent` runs in a worker thread while ACP I/O lives on the main event loop, the bridge uses:
 
 ```python
@@ -128,6 +131,13 @@ prompt(..., session_id)
   -> emit final agent message chunk
 ```
 
+A turn that ends in a terminal failure (provider refusal, non-retryable error, exhausted
+retries, interrupt before any reply) is closed by the core loop with a Hermes-authored
+assistant row ("Your request was not processed…" / "This turn did not complete…") so the
+durable transcript never ends on an open `user` row. Without it the next prompt would be
+merged into the failed request and replayed. Context-overflow failures are exempt: their
+repair is session rotation, not another row.
+
 ### Cancelation
 
 `cancel(session_id)`:
@@ -149,7 +159,7 @@ Instead it reuses Hermes' runtime resolver:
 - `acp_adapter/auth.py`
 - `hermes_cli/runtime_provider.py`
 
-So ACP advertises and uses the currently configured Hermes provider/credentials. It also always advertises a terminal setup auth method (`hermes-setup`, args `--setup`) so first-run registry clients can open Hermes' interactive model/provider configuration before starting a normal ACP session.
+So ACP advertises and uses the currently configured Hermes provider/credentials. It also always advertises a terminal setup auth method (`hermes-setup`, args `--setup`) so first-run ACP clients can open Hermes' interactive model/provider configuration before starting a normal ACP session.
 
 ## Working directory binding
 
@@ -178,7 +188,7 @@ ACP temporarily installs an approval callback on the terminal tool during prompt
 
 ## Related files
 
-- `tests/acp/` — ACP test suite
+- `tests/acp_adapter/` — ACP test suite
 - `toolsets.py` — `hermes-acp` toolset definition
 - `hermes_cli/main.py` — `hermes acp` CLI subcommand
 - `pyproject.toml` — `[acp]` optional dependency + `hermes-acp` script

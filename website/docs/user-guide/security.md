@@ -10,15 +10,16 @@ Hermes Agent is designed with a defense-in-depth security model. This page cover
 
 ## Overview
 
-The security model has seven layers:
+The security model has eight layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
 2. **Dangerous command approval** — human-in-the-loop for destructive operations
-3. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
-4. **MCP credential filtering** — environment variable isolation for MCP subprocesses
-5. **Context file scanning** — prompt injection detection in project files
-6. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
-7. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
+3. **File write safety** — denylist and optional write sandbox for `write_file`/`patch`
+4. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
+5. **MCP credential filtering** — environment variable isolation for MCP subprocesses
+6. **Context file scanning** — prompt injection detection in project files
+7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
+8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
 ## Dangerous Command Approval
 
@@ -31,8 +32,10 @@ The approval system supports three modes, configured via `approvals.mode` in `~/
 ```yaml
 approvals:
   mode: smart                     # smart | manual | off
-  timeout: 60                     # seconds to wait for user response (default: 60)
+  timeout: 300                    # seconds to wait for user response (default: 300)
   cron_mode: deny                 # deny | approve — what cron jobs do when they hit a dangerous command
+  single_query_mode: deny         # deny | approve — what single-query (-q) sessions do on a dangerous command
+  unattended_mode: deny           # deny | approve — what webhook/API sessions do on a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
 ```
@@ -42,10 +45,12 @@ The full set of keys:
 | Key | Default | What it controls |
 |---|---|---|
 | `mode` | `smart` | Approval policy for dangerous shell commands — see the table below. |
-| `timeout` | `60` | Seconds Hermes waits for an approval reply before timing out. |
+| `timeout` | `300` | Seconds Hermes waits for an approval reply before timing out. |
 | `cron_mode` | `deny` | How [cron jobs](./features/cron.md) behave headlessly when they trigger a dangerous-command prompt. `deny` blocks the command (the agent must find another path); `approve` auto-approves everything in cron context. |
+| `single_query_mode` | `deny` | How one-shot [`hermes chat -q`](./cli.md) sessions behave when they trigger a dangerous-command prompt. A `-q` session runs a single turn and exits with no user waiting to answer prompts; `deny` blocks the command (the agent must find another path), `approve` auto-approves everything in single-query context. Mirrors `cron_mode`. |
+| `unattended_mode` | `deny` | How sessions on unattended programmatic platforms (webhook, msgraph_webhook, api_server) behave when they trigger a dangerous-command prompt. These surfaces have no human who can answer `/approve`, so instead of blocking for the full approval timeout, `deny` blocks the command instantly (the agent must find another path) and `approve` auto-approves everything in unattended context. Mirrors `cron_mode`. |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
-| `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. TUI uses its own modal overlay (set `HERMES_TUI_NO_CONFIRM=1` to opt out there). |
+| `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
 
 | Mode | Behavior |
 |------|----------|
@@ -88,6 +93,43 @@ YOLO mode disables **all** dangerous command safety checks for the session — *
 
 For destructive session slash commands (`/clear`, `/new` / `/reset`, `/undo`, `/quit --delete` — `/exit --delete` is an alias), the CLI also prompts for confirmation before running them. See [Slash Commands — Confirmation prompts for destructive commands](../reference/slash-commands.md#confirmation-prompts-for-destructive-commands).
 
+### Supervised-gateway lifecycle restriction
+
+The terminal tool has a separate, non-overridable guard against stopping or
+restarting the gateway from inside its own supervised process. A self-restart can
+terminate the tool before it finishes and cause a supervisor/auto-resume loop.
+User approval, YOLO mode, and `force=True` do not bypass this guard.
+
+The guard also refuses process killers aimed at the interpreter image the gateway
+runs as — `taskkill /F /IM python.exe`, `taskkill /FI "IMAGENAME eq python.exe"`,
+`Stop-Process -Name python`, `pkill -9 python3`, `killall python`, `pkill -f python`,
+and name-derived kills such as `pgrep python | xargs kill` — because a supervised
+gateway is literally a `python` process and such a command takes it (and the agent's
+own turn) down. Kills scoped to a process the agent owns pass: the `proc_*` id of a
+background job (`process(action="kill", …)`) or an explicit PID
+(`taskkill /F /PID <pid>`, `kill <pid>`). Other image names (`taskkill /F /IM notepad.exe`)
+are unaffected. The guard is active under every generated launcher — systemd unit,
+launchd plist, s6 run script and the Windows Scheduled Task — via the
+`HERMES_SUPERVISED_CHILD` marker they export.
+
+On macOS, executed `launchctl submit` and `launchctl bootstrap` commands are
+restricted **regardless of the job label**. This is a conservative registration
+restriction intended to catch indirect restart helpers with neutral labels, not
+an inspection of the target plist. It also rejects independent scheduled jobs
+with `RunAtLoad=false` and no `KeepAlive` key; rejection does **not** establish that
+the job uses KeepAlive or controls Hermes.
+
+For authorized LaunchAgent maintenance, use a separate shell outside the running
+gateway. Some independent `load`/`unload` commands currently pass the label-based
+checks, but that is not a target-verified exemption or a supported way to evade a
+`bootstrap` rejection. Read-only `launchctl print` is not a lifecycle operation.
+After external maintenance, distinguish the on-disk plist from the loaded job:
+validate the plist and read back the loaded schedule before reporting activation.
+
+A tool rejection means the command did not execute through that tool call. An
+assistant declining to issue a call is a separate model decision; changing models
+does not change the terminal guard's policy.
+
 ### Hardline Blocklist (Always-On Floor)
 
 Some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them **regardless** of:
@@ -110,6 +152,8 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
 
+The floor also fails closed on a command whose shell quoting cannot be parsed (`grep 'unterminated`): the error says `malformed executable payload`. Quoting is judged on the command exactly as written, so shell-valid escapes inside a quoted pattern (`grep -o "[^\"]*" file`) are not malformed, and an escaped quote before a separator (`echo "a\"b"; reboot`) does not hide the command that follows it.
+
 ### User-Defined Deny Rules (`approvals.deny`)
 
 The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
@@ -124,27 +168,32 @@ approvals:
 
 Details:
 
-- Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively** against the whole command text. `git push --force*` matches `git push --force origin main` but not `git push origin main`.
+- Patterns are [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs (`*`, `?`, `[...]`) matched **case-insensitively** against the whole command text and individual executable-command candidates. `git push --force*` matches `git push --force origin main` but not `git push origin main`.
 - Matching runs over the same normalized/deobfuscated command variants the dangerous-pattern detector uses, so simple quoting tricks (`git pu""sh --force`) don't slip past a rule.
+- Executable candidates retain the literal path and also match its basename: `sudo *` covers `/usr/bin/sudo -n id` and `./sudo -n id`. A path-specific rule such as `/usr/bin/sudo *` does **not** become a rule for every binary named `sudo`.
+- Quote-aware parsing exposes commands after assignments, leading redirections, `;`, `&&`, `||`, pipelines, groups, command substitutions, and ordinary `if`/`then`/`else`/`do` transitions. Supported launchers include `sudo`, `env`, `command`, `exec`, `nohup`, `setsid`, `time`, `nice`, `timeout`, `stdbuf`, `ionice`, `chrt`, `taskset`, and `chroot`. Known option operands are skipped; `command -v`/`-V` lookups are not executions. Shell `-c` payloads are inspected recursively. Literal executable-and-argument strings in `env -S` / `--split-string` use GNU quoting and escapes (including `\_` word boundaries and `\c` termination), with the remaining command arguments appended; shell punctuation inside those arguments stays data unless an actual shell `-c` consumes it. `env -a` / `--argv0` values are arguments, not executable names. Shell and GNU split-string comments do not introduce executable candidates.
+- In the additional executable candidates, whitespace **between** words is collapsed, but quoted argument content and argument paths are retained. An exact rule such as `git status` therefore also matches `env git\tstatus; echo done` (where `\t` represents a tab). Quoted mentions such as `echo 'sudo -n id'` are not promoted to commands. Existing whole-input globs such as `*sudo*` still intentionally match mentions anywhere.
 - **YAML quoting:** always quote patterns. A bare leading `*` is a YAML alias and fails to parse; `{`, `!`, and `: ` have their own YAML meanings. Single quotes are safest for shell-ish content.
-- Deny rules apply to host-reaching backends (local, SSH, host-mounted Docker). Isolated container backends skip the guard stack entirely, as they always have — nothing they run can touch the host.
+- User-defined deny rules apply to all terminal backends, including isolated containers, before any backend-specific approval shortcut.
 - A denied command returns a BLOCKED error to the agent telling it not to retry or rephrase. Nothing runs.
 
 Like the rest of the approval config, changes take effect immediately (the config cache is mtime-keyed) — no session restart needed.
 
 :::note Threat model
-Deny rules are a guardrail against an honest-but-wrong agent, the same threat model as the dangerous-pattern detector. They are not a sandbox against a deliberately adversarial process — for that, use an isolated backend (Docker, Modal) or an egress-restricted environment.
+Deny rules are a shell-command policy, not a complete shell interpreter or an OS capability sandbox. Normalization does not resolve arbitrary variables (including GNU `env -S` `${NAME}` expansion), aliases, functions, renamed binaries, scripts, interpreter programs, or every shell/launcher grammar (for example, case-pattern syntax, clustered launcher options, or options embedded inside an `env -S` string). Do not use a basename deny rule as a guarantee that a capability cannot be reached by other means. For containment, use OS permissions and an isolated backend with appropriately restricted mounts, credentials, and network access. This matching behavior does not change the configured approval mode or the empty-deny-list default.
 :::
 
 ### Approval Timeout
 
 When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
 
+An expired prompt cannot be reopened: the pending entry is discarded and the agent is told not to retry on its own within that turn. To run the operation after all, send a new message asking for it (for example "go ahead and run that now") — the agent issues a fresh tool call, which raises a fresh approval card, and a "once" approval applies only to that call. A timeout is not counted as a denial, so asking again is never penalized.
+
 Configure the timeout in `~/.hermes/config.yaml`:
 
 ```yaml
 approvals:
-  timeout: 60  # seconds (default: 60)
+  timeout: 300  # seconds (default: 300)
 ```
 
 ### What Triggers Approval
@@ -181,9 +230,13 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `sed -i` / `sed --in-place` on `/etc/` | In-place edit of system config |
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
 | `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
+| `docker stop/kill/restart`, `docker compose down/stop/kill/restart` | Container lifecycle (also catches global flags and `docker-compose`) |
+| `docker -H`/`--host`/`--context`, `DOCKER_HOST=`/`DOCKER_CONTEXT=` | Docker daemon redirect — the command targets a different (often remote) daemon |
+| `docker context use` | Switches the default daemon for all future docker commands |
+| `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
 ### Approval Flow (CLI)
@@ -192,7 +245,7 @@ In the interactive CLI, dangerous commands show an inline approval prompt:
 
 ```
   ⚠️  DANGEROUS COMMAND: recursive delete
-      rm -rf /tmp/old-project
+      rm -rf ~/old-project
 
       [o]nce  |  [s]ession  |  [a]lways  |  [d]eny
 
@@ -228,8 +281,129 @@ command_allowlist:
 
 These patterns are loaded at startup and silently approved in all future sessions.
 
+Entries can be exact command text, a shell-style glob (`podman *`), or a
+dangerous-pattern rule key such as `script execution via heredoc` (the key shown
+in the approval prompt). Rule keys are honored on every surface, including
+unattended ones: a cron job, `hermes chat -q` run or webhook session under
+`cron_mode`/`single_query_mode`/`unattended_mode: deny` still runs a command whose
+detected rule key is in `command_allowlist`, while Tirith content-security
+findings on the same command continue to block it.
+
+The setting must be a list of strings. Legacy installs that stored a list as a
+quoted YAML/JSON string recover that list at load time and log a warning to
+re-save it with `hermes config edit`. Other malformed values are ignored with
+a warning; they never become per-character approvals. Loading does not rewrite
+your configuration file.
+
 :::tip
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.
+:::
+
+:::caution
+The list is read when Hermes starts. A pattern you remove while a session is
+already running stays approved in that session until it next writes the file
+(the next time you answer `always` to a prompt) or you restart Hermes. If you
+removed it for safety reasons, restart.
+:::
+
+### Mining Approval History (`hermes approvals suggest`)
+
+Instead of answering the same prompt session after session, you can mine your
+past approval decisions into allowlist proposals:
+
+```bash
+hermes approvals suggest            # dry run — prints a numbered proposal
+hermes approvals suggest --apply 1,3  # merge picks into command_allowlist
+hermes approvals suggest --json     # machine-readable output
+```
+
+The command scans the session database (`~/.hermes/state.db`) for
+dangerous-classified commands that actually executed — i.e. commands you
+approved — aggregates them into patterns (`git push *`, or the dangerous-class
+key for compound commands), and ranks them by approval frequency:
+
+```
+Proposed command_allowlist additions (from approval history, last 90 days):
+
+  1. git push *    — approved 14x
+  2. docker restart/stop/kill (container lifecycle)    — approved 9x (class key)
+```
+
+Safety rules:
+
+- **Nothing is ever applied automatically** — the default run is read-only;
+  only an explicit `--apply N[,M...]` writes to `config.yaml`.
+- **Destructive classes are never proposed**, no matter how often they were
+  approved: recursive deletes, `sudo`, disk/device writes, credential and
+  system-config edits, pipe-to-shell, SQL DROP/TRUNCATE, process kills, and
+  every hardline class are excluded outright. `rm -rf build/` approved 100
+  times still never yields an `rm` entry.
+- Proposals already covered by your existing `command_allowlist` are skipped.
+- **Credentials inside mined commands are masked** (`ghp_…`, `bot<id>:<token>`
+  URLs, `KEY=value` assignments, bearer tokens) in both the printed `e.g.`
+  examples and the `--json` payload, using the same redactor as terminal
+  output. Masked text is never used as an allowlist pattern: a command whose
+  glob would embed a credential (`TOKEN=… git …`) is proposed under its
+  dangerous-class key instead. The session database itself still holds the
+  command as it was executed.
+
+Useful flags: `--days N` (history window, default 90), `--min-count N`
+(minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.
+
+## File Write Safety {#file-write-safety}
+
+Before `write_file` or `patch` touches disk, Hermes checks the target path against a denylist and an optional sandbox. Blocked writes return an error to the agent immediately — **there is no approval prompt** and no way to override from the chat UI. The model may still claim the edit succeeded; when `display.file_mutation_verifier` is on (default), trust the [file-mutation verifier footer](./configuration.md#file-mutation-verifier) over the assistant's closing summary.
+
+### Protected paths (always blocked)
+
+These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
+
+| Category | Examples |
+|----------|----------|
+| OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
+| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden cache (`cache/bws_cache.json`, `cache/bws_cache.enc.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
+| Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
+
+Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
+
+Sensitive paths inside the safe root are still blocked — pointing `HERMES_WRITE_SAFE_ROOT` at `$HOME` does not allow writing `~/.ssh/id_rsa`.
+
+The `~` in the OS-credential rows means *every* home a write can land in, not just the process `HOME`: the OS user's real home, the profile home (`{HERMES_HOME}/home` under `TERMINAL_HOME_MODE=profile`, containers and spawned workers, where the process `HOME` is pinned), and named accounts (`~root/.ssh/authorized_keys`). An absolute path to the real home's `~/.aws/credentials` is denied even when the agent process runs with `HOME` pointed elsewhere.
+
+Safe-root violations return `Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (…)`. Credential-path blocks use `Write denied: '…' is a protected system/credential file.`
+
+**Exception — `~/.ssh/config` is approval-gated, not hard-blocked.** The SSH
+*client config* holds no private-key material and editing it (host aliases,
+`ProxyJump`, VS Code Remote-SSH targets) is a routine task, so `write_file` /
+`patch` route it through the same approve-once/session/always prompt the
+terminal tool already uses for `~/.ssh` writes — instead of the flat refusal
+that used to apply. It can still carry `ProxyCommand` / `Match exec` directives
+that run commands, so the write is never silent. Non-interactive callers (ACP
+file bridge, background jobs with no human channel) fail closed. Private keys,
+`authorized_keys`, and everything else under `~/.ssh/` remain hard-blocked.
+
+### HERMES_WRITE_SAFE_ROOT (optional sandbox)
+
+When set, `write_file` and `patch` may only target paths inside the listed directory prefix(es). Anything outside is **hard-blocked** — not routed through dangerous-command approval.
+
+- Set automatically in the [official Docker image](https://github.com/NousResearch/hermes-agent) (`HERMES_WRITE_SAFE_ROOT=/opt/data`)
+- Supports multiple roots separated by `:` on Unix or `;` on Windows
+- **Do not add to `~/.hermes/.env` casually.** If you set it to a project directory, the agent cannot write to `~/.hermes/cron/jobs.json`, profile skills, or other Hermes state outside that prefix
+
+To allow both a workspace and Hermes home:
+
+```bash
+export HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
+```
+
+Unset the variable to restore unrestricted writes (subject to the protected-path denylist). Full reference: [HERMES_WRITE_SAFE_ROOT](../reference/environment-variables.md#hermes_write_safe_root).
+
+### Cron and other Hermes state
+
+Do not ask the agent to `patch` `~/.hermes/cron/jobs.json` directly. Use the `cronjob_manage` tool, [`hermes cron`](./features/cron.md), or `/cron` — they update the job store through the supported API. The same applies to other Hermes control files when write safety blocks direct edits.
+
+:::note Defense-in-depth, not a hard boundary
+Write guards apply to `write_file` and `patch` only, with one exception: the Windows NT/device-namespace row is also enforced on reads — `read_file`, `search_files`, `@file:`/`@folder:` context references and the ACP file bridge all refuse those paths on the raw string, before anything resolves them. The `terminal` tool runs as the same OS user and can still `cat` or overwrite denied paths via shell commands. The denylist reduces accidental damage and gives models a clear stop signal; it does not sandbox a hostile or compromised agent.
 :::
 
 ## User Authorization (Gateway)
@@ -268,6 +442,8 @@ DISCORD_ALLOW_ALL_USERS=true
 GATEWAY_ALLOW_ALL_USERS=true
 ```
 
+The global allow-all can also live in `config.yaml` as `gateway.allow_all_users: true` (or top-level `allow_all_users: true`); a true value is bridged to `GATEWAY_ALLOW_ALL_USERS` at gateway startup (re-derived on every config load and restart, so flipping it back to `false` closes the gate), an explicit env var wins, and the gateway logs a warning naming `config.yaml` as the grant source. In a multi-profile gateway a secondary profile sets `GATEWAY_ALLOW_ALL_USERS` in its own `.env` (its `config.yaml` is never bridged into the process environment).
+
 :::warning
 If **no allowlists are configured** and `GATEWAY_ALLOW_ALL_USERS` is not set, **all users are denied**. The gateway logs a warning at startup:
 
@@ -300,6 +476,7 @@ whatsapp:
 
 - `pair` is the default for chat-style DM platforms. Unauthorized DMs get a pairing code reply.
 - `ignore` silently drops unauthorized DMs.
+- `decline` sends one short, polite decline ("I can only chat with my owner") instead of a pairing code, then ignores further messages from that sender for 24 hours. Customize the text with `unauthorized_dm_decline_message`.
 - Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing on Telegram while keeping WhatsApp silent.
 
@@ -371,6 +548,7 @@ _BASE_SECURITY_ARGS = [
     "--cap-add", "FOWNER",                        # Package managers need file ownership
     "--security-opt", "no-new-privileges",         # Block privilege escalation
     "--pids-limit", "256",                         # Limit process count
+    # no-tmp: ok — configures the sandbox's own tmpfs
     "--tmpfs", "/tmp:rw,nosuid,size=512m",         # Size-limited /tmp
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",  # No-exec /var/tmp
 ]
@@ -399,7 +577,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, or `daytona` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
 :::
 
 :::warning
@@ -416,10 +594,13 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **singularity** | Container | ❌ Skipped | HPC environments |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
+| **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 
 Both `execute_code` and `terminal` strip sensitive environment variables from child processes to prevent credential exfiltration by LLM-generated code. However, skills that declare `required_environment_variables` legitimately need access to those vars.
+
+First-party platform credentials — the `BUZZ_*` variables used by the Buzz messaging platform — are passed through to `terminal` children (foreground and background/PTY spawns) **only when the session is actually operating as a Buzz agent**: the process is a Buzz-ACP managed agent (`BUZZ_MANAGED_AGENT` set by the Buzz Desktop harness) or the live gateway session's platform is `buzz`. This lets a Buzz platform agent invoke its platform-mandated CLI (e.g. `buzz`) from the terminal tool, while Telegram/CLI/cron sessions on the same host keep the variables stripped. Because `_sanitize_subprocess_env` also feeds search workers (e.g. the ddgs web-search subprocess), the computer-use driver binary, and user-script runners (bang `!` commands, quick commands, cron scripts, webhook-filter scripts), those children receive the variables too when spawned from a Buzz session. The carve-out is **terminal-only**: it does not apply to `execute_code`, browser/TUI-host spawns (`hermes_subprocess_env`), Docker/Modal children, or `env_passthrough` registration, which remain sealed.
 
 ### How It Works
 
@@ -454,6 +635,8 @@ terminal:
     - ANOTHER_TOKEN
 ```
 
+Both lists apply to `terminal`, `execute_code` and `no_agent` cron scripts alike. A declared variable is forwarded with the value of the profile the child runs for: when one process serves several profiles (multi-profile gateway, Desktop/dashboard backend) each profile's declared value comes from its own `.env` / secret sources, never from the process environment the launch profile populated, and the launch profile's `.env` credentials are dropped from a served profile's children.
+
 ### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
 
 Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` under the active profile's `HERMES_HOME`. Skills declare these in frontmatter:
@@ -483,6 +666,17 @@ terminal:
 
 Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
 
+### Borrowed CLI logins (Codex CLI, Claude Code) {#borrowed-cli-logins}
+
+When Hermes has no usable login of its own for `openai-codex` or `anthropic`, it can borrow the Codex CLI's `~/.codex/auth.json` and Claude Code's `~/.claude/.credentials.json` (or Keychain entry) and refresh them on your behalf. Both use single-use, rotating refresh tokens: once two programs hold one token family, whichever refreshes first invalidates the other's copy, which shows up as "I logged in once in the terminal and Hermes keeps failing" (or the reverse). If you run those CLIs alongside Hermes, give Hermes its own login and turn adoption off:
+
+```yaml
+auth:
+  adopt_external_logins: false   # default: true
+```
+
+With the switch off Hermes never reads or refreshes those files: the `claude_code` credential-pool row disappears, `hermes auth list` prints one line saying so, and the log carries one INFO line per process. Only automatic adoption is affected — `hermes auth add openai-codex` still asks before importing an existing Codex CLI login. Automatic recovery also only repairs the credential Hermes already holds: a Codex CLI/Desktop login into a different ChatGPT workspace is refused with a warning (re-authenticate with `hermes auth add openai-codex`), and a login you complete while recovery is running is never overwritten. Add your own logins with `hermes auth add anthropic` / `hermes auth add openai-codex`.
+
 ### What Each Sandbox Filters
 
 | Sandbox | Default Filter | Passthrough Override |
@@ -490,6 +684,7 @@ Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside
 | **execute_code** | Blocks vars containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, `AUTH` in name; only allows safe-prefix vars through | ✅ Passthrough vars bypass both checks |
 | **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys) | ✅ Passthrough vars bypass the blocklist |
 | **terminal** (Docker) | No host env vars by default | ✅ Passthrough vars + `docker_forward_env` forwarded via `-e` |
+| **terminal** (SSH) | No host env vars by default | ✅ Passthrough vars forwarded via `SendEnv`; the remote `sshd_config` needs a matching `AcceptEnv` (see [SSH backend](configuration.md#ssh-backend)) |
 | **terminal** (Modal) | No host env/files by default | ✅ Credential files mounted; env passthrough via sync |
 | **MCP** | Blocks everything except safe system vars + explicitly configured `env` | ❌ Not affected by passthrough (use MCP `env` config instead) |
 
@@ -553,7 +748,7 @@ security:
 
 When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_navigate`, and all URL-capable tools.
 
-See [Website Blocklist](/user-guide/configuration#website-blocklist) in the configuration guide for full details.
+See [Website Blocklist](./configuration.md#website-blocklist) in the configuration guide for full details.
 
 ### SSRF Protection
 
@@ -568,6 +763,8 @@ All URL-capable tools (web search, web extract, vision, browser) validate URLs b
 
 SSRF protection is always active for internet-facing use and DNS failures are treated as blocked (fail-closed). Redirect chains are re-validated at each hop to prevent redirect-based bypasses.
 
+The same guard covers fetches whose URL comes from a remote party rather than from you: image/video URLs returned by a generation provider, reference-image URLs a model supplies for edits, pet spritesheets and the petdex manifest, and skills.sh sitemap entries. A provider or index that points one of those at a private or metadata address is refused before any connection opens; the operator's own provider `base_url` is not affected — a download fetched directly from your configured `base_url` (the OpenRouter video content endpoint) skips only the private-address class check on that first hop, while the cloud-metadata floor still applies and any redirect it issues is re-validated in full — and an image-generation provider hosted on your LAN needs `security.allow_private_urls: true` (below) for the *result* URLs it returns to be cached locally.
+
 #### Intentionally allowing private URLs
 
 Some setups legitimately need private/internal URL access — home networks that resolve `home.arpa` to RFC 1918 space, LAN-only Ollama/llama.cpp endpoints, internal wikis, cloud metadata debugging, and the like. For those cases there's a global opt-out:
@@ -580,6 +777,30 @@ security:
 When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT / cloud-metadata destinations. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
+
+#### Local proxy fake-ip ranges
+
+A TUN proxy in fake-ip mode (Mihomo/Clash `fake-ip`, Surge enhanced mode) answers DNS with an
+address from its own block — `198.18.0.0/15` (RFC 2544 benchmarking) by default — for every name
+outside its filter. Those answers are the proxy's sentinel, not an internal host, so the
+private-IP guard otherwise rejects every outbound fetch on such a host: `web_extract`, platform
+attachment downloads and the browser relay all fail with *URL targets a private or internal
+network address* while the request never reaches the network. Declare the block to let the
+sentinel through:
+
+```yaml
+security:
+  fake_ip_ranges:
+    - 198.18.0.0/15
+```
+
+Empty by default, and narrower than `allow_private_urls`: only the declared blocks get the
+exemption, they should be ranges the local proxy owns (the dial still goes to the proxy, which
+resolves the real target itself), and loopback, RFC 1918, link-local, CGNAT and cloud-metadata
+destinations stay blocked — an entry that overlaps one of those classes (including `0.0.0.0/0`
+or `::/0`) is ignored with a warning rather than widening the guard. On a host with a cloud
+browser provider, the declared sentinel also stops counting as private for
+`browser.auto_local_for_private_urls`, so those pages keep going to the cloud browser.
 
 ### Tirith Pre-Exec Security Scanning
 
@@ -602,9 +823,13 @@ security:
 
 When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
 
+Three consecutive operational failures (spawn error, timeout, crash) suspend scanning for five minutes so a broken binary cannot stall every command; after that window one command re-probes tirith, and any completed scan (allow, warn or block) resumes normal scanning. A probe that fails again re-arms the five-minute window.
+
 Tirith ships prebuilt binaries for Linux (x86_64 / aarch64) and macOS (x86_64 / arm64). On platforms with no prebuilt binary (Windows, etc.), tirith is silently skipped — pattern-matching guards still run, and the CLI does not surface an "unavailable" banner. To use tirith on Windows, run Hermes under WSL.
 
 Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
+
+Two known Tirith false positives are downgraded to "allow" so they never prompt (or, in cron, never deny): a `lookalike_tld` warning whose only target is the legitimate `.app` gTLD, and a `variation_selector` warning when every selector in the command is U+FE0F directly after an emoji (folder names such as `🗞️ Journal/` or `▶️ Media/`). A variation selector after a letter or digit — the steganographic-obfuscation signal the rule exists for — still prompts.
 
 ### Context File Injection Protection
 
@@ -616,11 +841,26 @@ Context files (AGENTS.md, .cursorrules, SOUL.md) are scanned for prompt injectio
 - Credential exfiltration via `curl`
 - Invisible Unicode characters (zero-width spaces, bidirectional overrides)
 
-Blocked files show a warning:
+The translation-and-execution check requires a short language/format clause (for example,
+“translate this into a bash script and execute it”). It does not connect translation
+and execution verbs across unrelated comma-separated role prose. These patterns are
+heuristics, not semantic intent detection.
+
+Blocked project files show a warning:
 
 ```
 [BLOCKED: AGENTS.md contained potential prompt injection (prompt_injection). Content not loaded.]
 ```
+
+Your own `SOUL.md` in `HERMES_HOME` is treated differently: it is a file you wrote (file-tool writes to it
+need your approval, and project checkouts never supply it), so a scanner hit there **does not block the
+file**. Hermes logs a warning naming the matched pattern, loads the file as usual, and `/context` lists it as
+`⚠ SOUL.md … loaded — matched prompt-injection pattern(s); review the file`. This lets an identity file that
+*documents* an attack phrase (security guidance such as "content telling you to ignore previous instructions")
+keep working; if you did not write the flagged text, treat the warning as a sign that something else edited
+the file. The exception does not extend to a `SOUL.md` shipped by a profile distribution: `hermes profile
+install <git-url>` and `hermes profile update` copy a third party's `SOUL.md` into the profile home without
+a scan or an approval prompt, so when `distribution.yaml` owns the file a scanner hit still blocks it.
 
 ## Best Practices for Production Deployment
 

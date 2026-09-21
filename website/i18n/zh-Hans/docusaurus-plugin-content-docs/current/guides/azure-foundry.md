@@ -328,7 +328,7 @@ model:
 
 ## 相关链接
 
-- [环境变量](/reference/environment-variables)
-- [配置](/user-guide/configuration)
-- [AWS Bedrock](/guides/aws-bedrock) — 另一个主要的云 provider 集成
+- [环境变量](../reference/environment-variables.md)
+- [配置](../user-guide/configuration.md)
+- [AWS Bedrock](./aws-bedrock.md) — 另一个主要的云 provider 集成
 - [Microsoft：为 Foundry 配置 Entra ID](https://learn.microsoft.com/azure/ai-foundry/foundry-models/how-to/configure-entra-id) — 无密钥路径的上游文档

@@ -18,10 +18,13 @@ describe('virtual height estimates', () => {
   })
 
   it('uses compound user prompt width when estimating user message wrapping', () => {
-    const msg: Msg = { role: 'user', text: 'x'.repeat(21) }
+    // cols must clear the 20-col body-width floor for both prompts (gutter +
+    // horizontalReserve=4) so the wider 'Ψ >' prompt actually narrows the
+    // body enough to wrap an extra line vs the single-cell '❯' prompt.
+    const msg: Msg = { role: 'user', text: 'x'.repeat(23) }
 
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
-    expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
+    expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
+    expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
   })
 
   it('adds one row for a group-boundary lead gap', () => {
@@ -77,6 +80,28 @@ describe('virtual height estimates', () => {
         toolsVisible: false
       })
     ).toBe(estimatedMsgHeight(toolsOnly, 80, { compact: false, details: false }))
+  })
+
+  it('treats historical thinking blocks as collapsed unless explicitly expanded', () => {
+    const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2\nline 3' }
+
+    expect(
+      estimatedMsgHeight(msg, 80, {
+        compact: false,
+        details: true,
+        thinkingExpanded: false,
+        thinkingVisible: true,
+        toolsVisible: false
+      })
+    ).toBeLessThan(
+      estimatedMsgHeight(msg, 80, {
+        compact: false,
+        details: true,
+        thinkingExpanded: true,
+        thinkingVisible: true,
+        toolsVisible: false
+      })
+    )
   })
 
   it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {

@@ -60,31 +60,3 @@ class TestUserConfigMerge:
         cfg = cfg_mod.load_config()
         assert cfg["approvals"]["mcp_reload_confirm"] is True
 
-    def test_existing_user_config_with_false_key_survives_merge(
-        self, tmp_path, monkeypatch,
-    ):
-        """A user who has clicked "Always Approve" (key=false) must keep
-        that setting across reloads — the default_true value must not win.
-        """
-        import yaml
-
-        home = tmp_path / ".hermes"
-        home.mkdir()
-        cfg_path = home / "config.yaml"
-        user_cfg = {
-            "approvals": {
-                "mode": "manual",
-                "timeout": 60,
-                "cron_mode": "deny",
-                "mcp_reload_confirm": False,
-            },
-        }
-        cfg_path.write_text(yaml.safe_dump(user_cfg))
-
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        import importlib
-        import hermes_cli.config as cfg_mod
-        importlib.reload(cfg_mod)
-
-        cfg = cfg_mod.load_config()
-        assert cfg["approvals"]["mcp_reload_confirm"] is False

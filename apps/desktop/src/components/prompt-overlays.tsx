@@ -1,9 +1,8 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 
-import { PendingApprovalFallback } from '@/components/assistant-ui/tool/approval'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -13,14 +12,29 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { LogView } from '@/components/ui/log-view'
 import { useI18n } from '@/i18n'
 import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
-import { KeyRound, Loader2, Lock } from '@/lib/icons'
+import { KeyRound, Loader2, Lock, ShieldLock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
+import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
-import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } from '@/store/prompts'
+import {
+  clearSecretRequest,
+  clearSudoRequest,
+  clearVaultCodeRequest,
+  clearVaultSaveLoginRequest,
+  clearVaultUnlockRequest,
+  sessionSecretRequest,
+  sessionSudoRequest,
+  sessionVaultCodeRequest,
+  sessionVaultSaveLoginRequest,
+  sessionVaultUnlockRequest
+} from '@/store/prompts'
+import { respondToServerRequest } from '@/store/server-requests'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
 // password and skill secret capture. Dangerous-command / execute_code approval
@@ -35,10 +49,11 @@ import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } fr
 // fire a second `*.respond` alongside onOpenChange (double-send) or block the
 // backdrop-dismiss path.
 
-function SudoDialog() {
+function SudoDialog({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
   const copy = t.prompts
-  const request = useStore($sudoRequest)
+  const $request = useMemo(() => sessionSudoRequest(sessionId), [sessionId])
+  const request = useStore($request)
   const gateway = useStore($gateway)
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -55,7 +70,7 @@ function SudoDialog() {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed, { action: reconnectAction() })
 
         return
       }
@@ -63,10 +78,7 @@ function SudoDialog() {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ status?: string }>('sudo.respond', {
-          password: value,
-          request_id: request.requestId
-        })
+        respondToServerRequest(request.requestId, { value })
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -108,11 +120,28 @@ function SudoDialog() {
 
   return (
     <Dialog onOpenChange={onOpenChange} open>
-      <DialogContent showCloseButton={false}>
+      <DialogContent blurBackdrop={false} showCloseButton={false}>
         <DialogHeader>
           <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
           <DialogDescription>{copy.sudoDesc}</DialogDescription>
         </DialogHeader>
+
+        {request.command?.trim() ? (
+          <Field label={t.assistant.approval.command}>
+            <LogView
+              aria-label={t.assistant.approval.command}
+              className="max-h-48 text-xs text-foreground"
+              role="region"
+              tabIndex={0}
+            >
+              {request.command}
+            </LogView>
+          </Field>
+        ) : (
+          <p className="text-xs text-(--ui-text-secondary)" role="status">
+            {copy.sudoCommandUnavailable}
+          </p>
+        )}
 
         <form className="grid gap-3" onSubmit={onSubmit}>
           <Input
@@ -137,10 +166,11 @@ function SudoDialog() {
   )
 }
 
-function SecretDialog() {
+function SecretDialog({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
   const copy = t.prompts
-  const request = useStore($secretRequest)
+  const $request = useMemo(() => sessionSecretRequest(sessionId), [sessionId])
+  const request = useStore($request)
   const gateway = useStore($gateway)
   const [value, setValue] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -157,7 +187,7 @@ function SecretDialog() {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed, { action: reconnectAction() })
 
         return
       }
@@ -165,10 +195,7 @@ function SecretDialog() {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ status?: string }>('secret.respond', {
-          request_id: request.requestId,
-          value: secret
-        })
+        respondToServerRequest(request.requestId, { value: secret })
         triggerHaptic('submit')
         clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -237,12 +264,328 @@ function SecretDialog() {
   )
 }
 
-export function PromptOverlays() {
+/** Masked master-password card for an external password manager (1Password / Bitwarden).
+ *  Mirrors SecretDialog's contract: closing without submitting answers "" (keep locked); a late
+ *  answer after expiry is tolerated by the backend. The value only lives in this component. */
+function VaultUnlockDialog({ sessionId }: { sessionId: string | null }) {
+  const { t } = useI18n()
+  const copy = t.prompts
+  const $request = useMemo(() => sessionVaultUnlockRequest(sessionId), [sessionId])
+  const request = useStore($request)
+  const gateway = useStore($gateway)
+  const [value, setValue] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    setValue('')
+    setSubmitting(false)
+  }, [request?.requestId])
+
+  const send = useCallback(
+    async (password: string) => {
+      if (!request) {
+        return
+      }
+
+      if (!gateway) {
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultUnlockSendFailed, { action: reconnectAction() })
+
+        return
+      }
+
+      setSubmitting(true)
+
+      try {
+        // The response frame goes back over the socket the request arrived on — the
+        // backend that raised the prompt, never whatever gateway is foreground.
+        respondToServerRequest(request.requestId, { value: password })
+        triggerHaptic('submit')
+        clearVaultUnlockRequest(request.sessionId, request.requestId)
+      } catch (error) {
+        if (isMissingPendingPromptRequest(error, 'password')) {
+          clearVaultUnlockRequest(request.sessionId, request.requestId)
+
+          return
+        }
+
+        notifyError(error, copy.vaultUnlockSendFailed)
+        setSubmitting(false)
+      } finally {
+        setValue('')
+      }
+    },
+    [copy.gatewayDisconnected, copy.vaultUnlockSendFailed, gateway, request]
+  )
+
+  if (!request) {
+    return null
+  }
+
+  return (
+    <Dialog onOpenChange={open => !open && !submitting && void send('')} open>
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle icon={ShieldLock}>{copy.vaultUnlockTitle(request.displayName)}</DialogTitle>
+          <DialogDescription>{copy.vaultUnlockDesc(request.displayName)}</DialogDescription>
+        </DialogHeader>
+
+        <form
+          className="grid gap-3"
+          onSubmit={event => {
+            event.preventDefault()
+            void send(value)
+          }}
+        >
+          <Input
+            autoComplete="current-password"
+            autoFocus
+            disabled={submitting}
+            onChange={event => setValue(event.target.value)}
+            placeholder={copy.vaultUnlockPlaceholder}
+            type="password"
+            value={value}
+          />
+          <DialogFooter>
+            <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
+              {copy.vaultUnlockKeepLocked}
+            </Button>
+            <Button disabled={submitting || !value} type="submit">
+              {submitting ? <Loader2 className="size-3.5 animate-spin" /> : copy.vaultUnlockConfirm}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** "Save this login" card: the agent is on a sign-in page for `site` with nothing in the vault.
+ *  Identifier is plain, password masked; the pair goes to `vault.save_login.respond` as JSON and
+ *  the backend stores it encrypted and fills the page. Closing answers "" (don't save). */
+function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
+  const { t } = useI18n()
+  const copy = t.prompts
+  const $request = useMemo(() => sessionVaultSaveLoginRequest(sessionId), [sessionId])
+  const request = useStore($request)
+  const gateway = useStore($gateway)
+  const [identifier, setIdentifier] = useState('')
+  const [password, setPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    setIdentifier('')
+    setPassword('')
+    setSubmitting(false)
+  }, [request?.requestId])
+
+  const send = useCallback(
+    async (login: string) => {
+      if (!request) {
+        return
+      }
+
+      if (!gateway) {
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultSaveSendFailed, { action: reconnectAction() })
+
+        return
+      }
+
+      setSubmitting(true)
+
+      try {
+        respondToServerRequest(request.requestId, { value: login })
+        triggerHaptic('submit')
+        clearVaultSaveLoginRequest(request.sessionId, request.requestId)
+      } catch (error) {
+        if (isMissingPendingPromptRequest(error, 'login')) {
+          clearVaultSaveLoginRequest(request.sessionId, request.requestId)
+
+          return
+        }
+
+        notifyError(error, copy.vaultSaveSendFailed)
+        setSubmitting(false)
+      } finally {
+        setIdentifier('')
+        setPassword('')
+      }
+    },
+    [copy.gatewayDisconnected, copy.vaultSaveSendFailed, gateway, request]
+  )
+
+  if (!request) {
+    return null
+  }
+
+  const canSave = Boolean(identifier.trim()) && Boolean(password)
+
+  return (
+    <Dialog onOpenChange={open => !open && !submitting && void send('')} open>
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle icon={ShieldLock}>{copy.vaultSaveTitle(request.site)}</DialogTitle>
+          <DialogDescription>{copy.vaultSaveDesc(request.origin)}</DialogDescription>
+        </DialogHeader>
+
+        <form
+          className="grid gap-3"
+          onSubmit={event => {
+            event.preventDefault()
+
+            if (canSave) {
+              void send(JSON.stringify({ identifier: identifier.trim(), password }))
+            }
+          }}
+        >
+          <Field htmlFor="vault-save-identifier" label={copy.vaultSaveIdentifierLabel}>
+            <Input
+              autoComplete="username"
+              autoFocus
+              disabled={submitting}
+              id="vault-save-identifier"
+              onChange={event => setIdentifier(event.target.value)}
+              placeholder={copy.vaultSaveIdentifierPlaceholder}
+              value={identifier}
+            />
+          </Field>
+          <Field htmlFor="vault-save-password" label={copy.vaultSavePasswordPlaceholder}>
+            <Input
+              autoComplete="current-password"
+              disabled={submitting}
+              id="vault-save-password"
+              onChange={event => setPassword(event.target.value)}
+              type="password"
+              value={password}
+            />
+          </Field>
+          <p className="text-xs text-muted-foreground">{copy.vaultSaveFootnote}</p>
+          <DialogFooter>
+            <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
+              {copy.vaultSaveDecline}
+            </Button>
+            <Button disabled={submitting || !canSave} type="submit">
+              {submitting ? <Loader2 className="size-3.5 animate-spin" /> : copy.vaultSaveConfirm}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** One-time-code card: the site asked for a second factor and no authenticator key is saved. The code
+ *  is shown as typed (a 6-digit code is not worth masking and typos must be visible) and goes to the
+ *  page over the vault socket; the model never sees it. Closing answers "" (skip). */
+function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
+  const { t } = useI18n()
+  const copy = t.prompts
+  const $request = useMemo(() => sessionVaultCodeRequest(sessionId), [sessionId])
+  const request = useStore($request)
+  const gateway = useStore($gateway)
+  const [code, setCode] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    setCode('')
+    setSubmitting(false)
+  }, [request?.requestId])
+
+  const send = useCallback(
+    async (value: string) => {
+      if (!request) {
+        return
+      }
+
+      if (!gateway) {
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultCodeSendFailed, { action: reconnectAction() })
+
+        return
+      }
+
+      setSubmitting(true)
+
+      try {
+        respondToServerRequest(request.requestId, { value })
+        triggerHaptic('submit')
+        clearVaultCodeRequest(request.sessionId, request.requestId)
+      } catch (error) {
+        if (isMissingPendingPromptRequest(error, 'code')) {
+          clearVaultCodeRequest(request.sessionId, request.requestId)
+
+          return
+        }
+
+        notifyError(error, copy.vaultCodeSendFailed)
+        setSubmitting(false)
+      } finally {
+        setCode('')
+      }
+    },
+    [copy.gatewayDisconnected, copy.vaultCodeSendFailed, gateway, request]
+  )
+
+  if (!request) {
+    return null
+  }
+
+  const trimmed = code.replace(/[\s-]/g, '')
+
+  return (
+    <Dialog onOpenChange={open => !open && !submitting && void send('')} open>
+      <DialogContent showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle icon={ShieldLock}>{copy.vaultCodeTitle(request.site)}</DialogTitle>
+          <DialogDescription>{copy.vaultCodeDesc(request.site)}</DialogDescription>
+        </DialogHeader>
+
+        <form
+          className="grid gap-3"
+          onSubmit={event => {
+            event.preventDefault()
+
+            if (trimmed) {
+              void send(trimmed)
+            }
+          }}
+        >
+          <Field htmlFor="vault-code" label={copy.vaultCodeLabel}>
+            <Input
+              autoComplete="one-time-code"
+              autoFocus
+              disabled={submitting}
+              id="vault-code"
+              inputMode="numeric"
+              onChange={event => setCode(event.target.value)}
+              placeholder="123 456"
+              value={code}
+            />
+          </Field>
+          <p className="text-xs text-muted-foreground">{copy.vaultCodeFootnote}</p>
+          <DialogFooter>
+            <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
+              {copy.vaultCodeSkip}
+            </Button>
+            <Button disabled={submitting || !trimmed} type="submit">
+              {submitting ? <Loader2 className="size-3.5 animate-spin" /> : copy.vaultCodeConfirm}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Mid-turn prompt surfaces for ONE session. Mounted by both the primary chat
+ *  and each tile with its own session id, so a background/tiled session's
+ *  blocking prompt renders instead of silently stalling. */
+export function PromptOverlays({ sessionId }: { sessionId: string | null }) {
   return (
     <>
-      <PendingApprovalFallback />
-      <SudoDialog />
-      <SecretDialog />
+      <SudoDialog sessionId={sessionId} />
+      <SecretDialog sessionId={sessionId} />
+      <VaultUnlockDialog sessionId={sessionId} />
+      <VaultSaveLoginDialog sessionId={sessionId} />
+      <VaultCodeDialog sessionId={sessionId} />
     </>
   )
 }

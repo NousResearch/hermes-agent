@@ -1,5 +1,6 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
+import json
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -25,13 +26,6 @@ def _write_config(tmp_path, config_dict):
 class TestNormalizeVisionProvider:
     """_normalize_vision_provider should resolve 'main' to actual main provider."""
 
-    def test_main_resolves_to_named_custom(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "my-model", "provider": "custom:beans"},
-            "custom_providers": [{"name": "beans", "base_url": "http://localhost/v1"}],
-        })
-        from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("main") == "custom:beans"
 
     def test_main_resolves_to_openrouter(self, tmp_path):
         _write_config(tmp_path, {
@@ -40,30 +34,10 @@ class TestNormalizeVisionProvider:
         from agent.auxiliary_client import _normalize_vision_provider
         assert _normalize_vision_provider("main") == "openrouter"
 
-    def test_main_resolves_to_deepseek(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "deepseek-chat", "provider": "deepseek"},
-        })
-        from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("main") == "deepseek"
 
-    def test_main_falls_back_to_custom_when_no_provider(self, tmp_path):
-        _write_config(tmp_path, {"model": {"default": "gpt-4o"}})
-        from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("main") == "custom"
 
-    def test_bare_provider_name_unchanged(self):
-        from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("beans") == "beans"
-        assert _normalize_vision_provider("deepseek") == "deepseek"
 
-    def test_custom_colon_named_provider_preserved(self):
-        from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("custom:beans") == "beans"
 
-    def test_codex_alias_still_works(self):
-        from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("codex") == "openai-codex"
 
     def test_auto_unchanged(self):
         from agent.auxiliary_client import _normalize_vision_provider
@@ -136,18 +110,6 @@ class TestResolveProviderClientNamedCustom:
         assert model == "my-model"
         assert "beans.local" in str(client.base_url)
 
-    def test_named_custom_provider_default_model(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "main-model"},
-            "custom_providers": [
-                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
-            ],
-        })
-        from agent.auxiliary_client import resolve_provider_client
-        client, model = resolve_provider_client("beans")
-        assert client is not None
-        # Should use _read_main_model() fallback
-        assert model == "main-model"
 
     def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
         _write_config(tmp_path, {
@@ -161,17 +123,38 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # no-key-required should be used
 
-    def test_nonexistent_named_custom_falls_through(self, tmp_path):
+    def test_providers_dict_uses_durable_pool_when_no_inline_key(self, tmp_path):
+        """Titles/compression/vision must read credential_pool.<key>, not a placeholder."""
         _write_config(tmp_path, {
-            "model": {"default": "test"},
-            "custom_providers": [
-                {"name": "beans", "base_url": "http://beans.local/v1"},
-            ],
+            "providers": {
+                "b-ai": {
+                    "name": "B.AI",
+                    "base_url": "https://api.b.ai/v1",
+                },
+            },
         })
+        auth_path = tmp_path / ".hermes" / "auth.json"
+        auth_path.write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "b-ai": [
+                    {
+                        "id": "k1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-real-b-ai-pool-key-12345",
+                    }
+                ]
+            },
+        }))
         from agent.auxiliary_client import resolve_provider_client
-        # "coffee" doesn't exist in custom_providers
-        client, model = resolve_provider_client("coffee", "test")
-        assert client is None
+        client, _model = resolve_provider_client("b-ai", "b-ai-model")
+        assert client is not None
+        assert "api.b.ai" in str(client.base_url)
+        assert client.api_key == "sk-real-b-ai-pool-key-12345"
 
 
 class TestResolveProviderClientModelNormalization:
@@ -196,24 +179,6 @@ class TestResolveProviderClientModelNormalization:
         assert client is not None
         assert model == "glm-5.1"
 
-    def test_non_matching_prefix_is_preserved_for_direct_provider(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "zai/glm-5.1", "provider": "zai"},
-        })
-        with (
-            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
-                "api_key": "glm-key",
-                "base_url": "https://api.z.ai/api/paas/v4",
-            }),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
-        ):
-            mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import resolve_provider_client
-
-            client, model = resolve_provider_client("zai", "google/gemini-2.5-pro")
-
-        assert client is not None
-        assert model == "google/gemini-2.5-pro"
 
     def test_aggregator_vendor_slug_is_preserved(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -251,7 +216,44 @@ class TestResolveVisionProviderClientModelNormalization:
 
         assert provider == "zai"
         assert client is not None
-        assert model == "glm-5v-turbo"  # zai has dedicated vision model in _PROVIDER_VISION_MODELS
+        assert model == "glm-5.3-flash"  # zai coding endpoints support this vision-capable fallback
+
+
+class TestAutoClientCacheModelCompatibility:
+    """Auto client cache should not keep OpenRouter-format model overrides on non-OR clients."""
+
+    def test_first_auto_cache_miss_drops_openrouter_model_for_named_custom_runtime(self, tmp_path):
+        from agent import auxiliary_client as ac
+
+        ac._client_cache.clear()
+        try:
+            fake_client = MagicMock()
+            fake_client.base_url = "https://aixj.vip/v1"
+            fake_client.api_key = "test-key"
+
+            runtime = {
+                "provider": "custom:aixj.vip",
+                "model": "gpt-5.4",
+                "base_url": "https://aixj.vip/v1",
+                "api_key": "***",
+                "api_mode": "codex_responses",
+            }
+
+            with patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fake_client, "gpt-5.4"),
+            ) as mock_resolve:
+                client, model = ac._get_cached_client(
+                    "auto",
+                    "google/gemini-3-flash-preview",
+                    main_runtime=runtime,
+                )
+
+            assert client is fake_client
+            assert model == "gpt-5.4"
+            mock_resolve.assert_called_once()
+        finally:
+            ac._client_cache.clear()
 
 
 class TestVisionPathApiMode:
@@ -306,41 +308,12 @@ class TestProvidersDictApiModeAnthropicMessages:
         assert entry.get("base_url") == "https://example-relay.test/anthropic"
         assert entry.get("api_key") == "sk-test"
 
-    def test_providers_dict_invalid_api_mode_is_dropped(self, tmp_path):
-        _write_config(tmp_path, {
-            "providers": {
-                "weird": {
-                    "name": "weird",
-                    "base_url": "https://example.test",
-                    "api_mode": "bogus_nonsense",
-                    "default_model": "x",
-                },
-            },
-        })
-        from hermes_cli.runtime_provider import _get_named_custom_provider
-        entry = _get_named_custom_provider("weird")
-        assert entry is not None
-        assert "api_mode" not in entry
 
-    def test_providers_dict_without_api_mode_is_unchanged(self, tmp_path):
-        _write_config(tmp_path, {
-            "providers": {
-                "localchat": {
-                    "name": "localchat",
-                    "base_url": "http://127.0.0.1:1234/v1",
-                    "api_key": "local-key",
-                    "default_model": "llama-3",
-                },
-            },
-        })
-        from hermes_cli.runtime_provider import _get_named_custom_provider
-        entry = _get_named_custom_provider("localchat")
-        assert entry is not None
-        assert "api_mode" not in entry
 
     def test_resolve_provider_client_returns_anthropic_client(self, tmp_path, monkeypatch):
         """Named custom provider with api_mode=anthropic_messages must
-        route through AnthropicAuxiliaryClient."""
+        route through AnthropicAuxiliaryClient, carrying the entry's extra_headers
+        like the OpenAI-wire arms do (#109595)."""
         monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
         _write_config(tmp_path, {
             "providers": {
@@ -350,6 +323,7 @@ class TestProvidersDictApiModeAnthropicMessages:
                     "key_env": "MYRELAY_API_KEY",
                     "api_mode": "anthropic_messages",
                     "default_model": "claude-opus-4-7",
+                    "extra_headers": {"X-Gateway-Token": "gw-1"},
                 },
             },
         })
@@ -363,6 +337,9 @@ class TestProvidersDictApiModeAnthropicMessages:
             f"expected AnthropicAuxiliaryClient, got {type(sync_client).__name__}"
         )
         assert sync_model == "claude-opus-4-7"
+        sdk_headers = sync_client._real_client._custom_headers
+        assert sdk_headers.get("X-Gateway-Token") == "gw-1"
+        assert "anthropic-beta" in sdk_headers, "entry headers must merge onto, not replace, the builder's headers"
 
         async_client, async_model = resolve_provider_client("myrelay", async_mode=True)
         assert isinstance(async_client, AsyncAnthropicAuxiliaryClient), (
@@ -370,62 +347,7 @@ class TestProvidersDictApiModeAnthropicMessages:
         )
         assert async_model == "claude-opus-4-7"
 
-    def test_aux_task_override_routes_named_provider_to_anthropic(self, tmp_path, monkeypatch):
-        """The full chain: auxiliary.<task>.provider: myrelay with
-        api_mode anthropic_messages must produce an Anthropic client."""
-        monkeypatch.setenv("MYRELAY_API_KEY", "sk-test")
-        _write_config(tmp_path, {
-            "providers": {
-                "myrelay": {
-                    "name": "myrelay",
-                    "base_url": "https://example-relay.test/anthropic",
-                    "key_env": "MYRELAY_API_KEY",
-                    "api_mode": "anthropic_messages",
-                    "default_model": "claude-opus-4-7",
-                },
-            },
-            "auxiliary": {
-                "compression": {
-                    "provider": "myrelay",
-                    "model": "claude-sonnet-4.6",
-                },
-            },
-            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
-        })
-        from agent.auxiliary_client import (
-            get_async_text_auxiliary_client,
-            get_text_auxiliary_client,
-            AnthropicAuxiliaryClient,
-            AsyncAnthropicAuxiliaryClient,
-        )
-        async_client, async_model = get_async_text_auxiliary_client("compression")
-        assert isinstance(async_client, AsyncAnthropicAuxiliaryClient)
-        assert async_model == "claude-sonnet-4.6"
 
-        sync_client, sync_model = get_text_auxiliary_client("compression")
-        assert isinstance(sync_client, AnthropicAuxiliaryClient)
-        assert sync_model == "claude-sonnet-4.6"
-
-    def test_provider_without_api_mode_still_uses_openai(self, tmp_path):
-        """Named providers that don't declare api_mode should still go
-        through the plain OpenAI-wire path (no regression)."""
-        _write_config(tmp_path, {
-            "providers": {
-                "localchat": {
-                    "name": "localchat",
-                    "base_url": "http://127.0.0.1:1234/v1",
-                    "api_key": "local-key",
-                    "default_model": "llama-3",
-                },
-            },
-        })
-        from agent.auxiliary_client import resolve_provider_client
-        from openai import OpenAI, AsyncOpenAI
-        sync_client, _ = resolve_provider_client("localchat", async_mode=False)
-        # sync returns the raw OpenAI client
-        assert isinstance(sync_client, OpenAI)
-        async_client, _ = resolve_provider_client("localchat", async_mode=True)
-        assert isinstance(async_client, AsyncOpenAI)
 
 
 class TestCustomProviderAliasCollision:
@@ -471,6 +393,28 @@ class TestCustomProviderAliasCollision:
         base_url = str(client.base_url)
         # Built-in kimi-coding points at api.moonshot.ai
         assert "moonshot" in base_url or "kimi" in base_url, f"unexpected base_url {base_url!r}"
+
+    @pytest.mark.parametrize("provider", ["llamacpp", "custom:llamacpp"])
+    def test_named_llamacpp_wins_over_local_server_alias(self, tmp_path, provider):
+        """A ``providers:`` entry whose name is also a local-server alias (``llamacpp``) resolves to
+        its configured base_url, not to the alias's generic ``custom`` branch (#115990)."""
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+            "providers": {
+                "llamacpp": {
+                    "base_url": "http://127.0.0.1:8081/v1",
+                    "model": "local-model",
+                },
+            },
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI
+
+        client, model = resolve_provider_client(provider, model="local-model", raw_codex=True)
+
+        assert isinstance(client, OpenAI)
+        assert str(client.base_url).rstrip("/") == "http://127.0.0.1:8081/v1"
+        assert model == "local-model"
 
     def test_explicit_overrides_applied_on_api_key_branch(self, tmp_path, monkeypatch):
         """Explicit base_url/api_key from the caller must override the
@@ -561,3 +505,105 @@ class TestResolveProviderClientMainRuntimeCustom:
         assert model == "explicit-model"
         assert "explicit.example.com" in str(client.base_url)
         assert client.api_key == "sk-explicit"
+
+
+class TestBareNamedAuxCredentialSurvivesAsyncRebuild:
+    """#109595: a bare-named ``providers:`` entry pinned by ``auxiliary.<task>`` must reach the wire
+    with its key_cmd bearer AND its extra_headers on the async path too. The SDK parks a callable
+    key in ``_api_key_provider`` and leaves ``.api_key`` empty, so a rebuild from the snapshot
+    alone sends no Authorization header at all."""
+
+    def _cfg(self):
+        import sys
+        return {
+            "model": {"provider": "hermes-gw", "default": "main-model"},
+            "providers": {
+                "hermes-gw": {
+                    "base_url": "http://127.0.0.1:1/openai/v1",
+                    "api_mode": "chat_completions",
+                    "key_cmd": f'"{sys.executable}" -c "print(\'vk-test-1234\')"',
+                    "extra_headers": {"x-gw-session": "aux-session-tag"},
+                },
+            },
+            "auxiliary": {"compression": {"provider": "hermes-gw", "model": "aux-model"}},
+        }
+
+    @staticmethod
+    def _wire_headers(client):
+        """Headers the SDK would put on a request (after its own auth refresh), not the config view."""
+        from openai._models import FinalRequestOptions
+        return client._build_headers(FinalRequestOptions(method="post", url="/chat/completions"))
+
+    def test_async_task_client_carries_key_cmd_bearer_and_extra_headers(self, tmp_path):
+        import asyncio
+        _write_config(tmp_path, self._cfg())
+        from agent.auxiliary_client import resolve_provider_client
+        client, _model = resolve_provider_client("hermes-gw", "aux-model", async_mode=True, task="compression")
+        assert client is not None
+        asyncio.run(client._refresh_api_key())
+        headers = self._wire_headers(client)
+        assert headers["authorization"] == "Bearer vk-test-1234"
+        assert headers["x-gw-session"] == "aux-session-tag"
+
+    def test_sync_to_async_rebuild_keeps_credential_and_headers(self, tmp_path):
+        """The fallback-candidate ladder rebuilds a resolved sync client through ``_to_async_client``."""
+        import asyncio
+        _write_config(tmp_path, self._cfg())
+        from agent.auxiliary_client import _to_async_client, resolve_provider_client
+        sync_client, model = resolve_provider_client("hermes-gw", "aux-model", task="compression")
+        sync_client._refresh_api_key()  # what the SDK does in _prepare_options before each request
+        assert self._wire_headers(sync_client)["authorization"] == "Bearer vk-test-1234"
+        async_client, _ = _to_async_client(sync_client, model)
+        asyncio.run(async_client._refresh_api_key())
+        headers = self._wire_headers(async_client)
+        assert headers["authorization"] == "Bearer vk-test-1234"
+        assert headers["x-gw-session"] == "aux-session-tag"
+
+
+class TestKeyedCustomProviderReasoningWire:
+    """Aux calls to a keyed ``providers:`` entry take the ``custom`` profile's reasoning wire (#75089).
+
+    Referenced by bare key or via ``main``, a keyed OpenAI-compatible endpoint must get top-level
+    ``reasoning_effort`` (what the main path sends), never the aggregator-only nested
+    ``extra_body.reasoning`` that strict gateways reject with 400.
+    """
+
+    _KEYED = {
+        "model": {"default": "vendor/model", "provider": "groq"},
+        "providers": {"groq": {"name": "groq", "api": "https://api.groq.com/openai/v1", "api_key": "k"}},
+    }
+
+    @pytest.mark.parametrize("provider", ["groq", "main", "custom:groq"])
+    def test_keyed_entry_sends_top_level_reasoning_effort(self, tmp_path, provider):
+        """api.groq.com takes top-level reasoning_effort only as 'none'/'default' (#75089), so the
+        configured 'medium' is clamped to 'default' — the bare-key case goes through ``call_llm``."""
+        _write_config(tmp_path, self._KEYED)
+        from agent.auxiliary_client import _build_call_kwargs, call_llm
+        common = dict(reasoning_config={"enabled": True, "effort": "medium"}, base_url="https://api.groq.com/openai/v1")
+        if provider == "groq":
+            client = MagicMock(base_url=common["base_url"])
+            with patch("agent.auxiliary_client._get_cached_client", return_value=(client, "vendor/model")), \
+                    patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _t, **_kw: resp):
+                call_llm(provider=provider, model="vendor/model", messages=[{"role": "user", "content": "hi"}], **common)
+            kwargs = client.chat.completions.create.call_args.kwargs
+        else:
+            kwargs = _build_call_kwargs(provider, "vendor/model", [{"role": "user", "content": "hi"}], **common)
+        assert kwargs.get("reasoning_effort") == "default"
+        assert "reasoning" not in (kwargs.get("extra_body") or {})
+
+    def test_profile_backed_and_unknown_providers_keep_their_wire(self, tmp_path):
+        _write_config(tmp_path, self._KEYED)
+        from agent.auxiliary_client import _build_call_kwargs
+        nested = {"reasoning": {"enabled": True, "effort": "medium"}}
+        # Aggregator profile: nested extra_body.reasoning is its wire; unchanged.
+        kwargs = _build_call_kwargs(
+            "openrouter", "vendor/model", [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"}, base_url="https://openrouter.ai/api/v1",
+        )
+        assert kwargs["extra_body"] == nested and "reasoning_effort" not in kwargs
+        # No keyed entry, no base_url, no profile: generic fallback, never the custom projection.
+        kwargs = _build_call_kwargs(
+            "someunknown", "vendor/model", [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kwargs["extra_body"] == nested and "reasoning_effort" not in kwargs

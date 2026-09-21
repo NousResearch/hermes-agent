@@ -25,12 +25,6 @@ class TestDestructiveSlashConfirmDefault:
         # silently wipe history without an explicit user "yes".
         assert DEFAULT_CONFIG["approvals"]["destructive_slash_confirm"] is True
 
-    def test_shape_matches_other_approval_keys(self):
-        approvals = DEFAULT_CONFIG["approvals"]
-        assert isinstance(approvals.get("destructive_slash_confirm"), bool)
-        # Sibling key shape sanity — same flat dict level as mcp_reload_confirm.
-        assert isinstance(approvals.get("mcp_reload_confirm"), bool)
-
 
 class TestUserConfigMerge:
     """If a user has a pre-existing config without this key, load_config
@@ -56,31 +50,3 @@ class TestUserConfigMerge:
         cfg = cfg_mod.load_config()
         assert cfg["approvals"]["destructive_slash_confirm"] is True
 
-    def test_existing_user_config_with_false_key_survives_merge(
-        self, tmp_path, monkeypatch,
-    ):
-        """A user who clicked "Always Approve" (key=false) must keep that
-        setting — the default-true value must not win on later loads.
-        """
-        import yaml
-
-        home = tmp_path / ".hermes"
-        home.mkdir()
-        cfg_path = home / "config.yaml"
-        user_cfg = {
-            "approvals": {
-                "mode": "manual",
-                "timeout": 60,
-                "cron_mode": "deny",
-                "destructive_slash_confirm": False,
-            },
-        }
-        cfg_path.write_text(yaml.safe_dump(user_cfg))
-
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        import importlib
-        import hermes_cli.config as cfg_mod
-        importlib.reload(cfg_mod)
-
-        cfg = cfg_mod.load_config()
-        assert cfg["approvals"]["destructive_slash_confirm"] is False

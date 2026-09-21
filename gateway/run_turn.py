@@ -1274,6 +1274,7 @@ class GatewayTurnMixin:
     async def _hmwa_hygiene_detached_attempt(
         self, attempt, hs, plan, history, _hyg_msgs, _hyg_model, _hyg_runtime,
         source, session_entry, session_key, _quick_key, run_generation,
+        commit_authority_check=None, cache_owner=None,
     ):
         """Run one detached hygiene compression attempt end to end; publishes the transcript to
         continue with (compressed or original) on ``attempt.history``."""
@@ -1293,7 +1294,10 @@ class GatewayTurnMixin:
             _hyg_agent._print_fn = lambda *a, **kw: None
 
             loop = asyncio.get_running_loop()
-            _hyg_commit_fence = CompressionCommitFence(total_ceiling_seconds=hs.total_ceiling_seconds)
+            _hyg_commit_fence = CompressionCommitFence(
+                total_ceiling_seconds=hs.total_ceiling_seconds,
+                admission_check=commit_authority_check,
+            )
             # Default executor (NOT self._get_executor): a hung summary must never occupy an
             # agent-work slot. MUST run in the caller's contextvars (multiplex secret scope).
             attempt.commit_fence = _hyg_commit_fence
@@ -1329,13 +1333,17 @@ class GatewayTurnMixin:
             )
         finally:
             # Evict the cached agent so the next turn rebuilds its system prompt.
-            self._evict_cached_agent(session_key)
+            self._evict_cached_agent(
+                session_key,
+                expected_agent=cache_owner,
+                run_generation=run_generation if cache_owner is not None else None,
+            )
             if not attempt.cleanup_deferred:
                 await self._cleanup_agent_resources_off_loop(_hyg_agent, context="session hygiene")
 
     async def _hmwa_run_session_hygiene(
         self, event, source, session_entry, session_key, history, _quick_key, run_generation,
-        *, trigger_tokens=None,
+        *, trigger_tokens=None, commit_authority_check=None, cache_owner=None,
     ):
         """Auto-compress pathologically large transcripts before the agent starts so oversized
         histories don't cause repeated truncation/context failures. Token source: the API's
@@ -1372,6 +1380,7 @@ class GatewayTurnMixin:
                     await self._hmwa_hygiene_detached_attempt(
                         attempt, hs, plan, history, _hyg_msgs, _hyg_model, _hyg_runtime,
                         source, session_entry, session_key, _quick_key, run_generation,
+                        commit_authority_check=commit_authority_check, cache_owner=cache_owner,
                     )
         except HygieneTurnHoldExceeded:
             # Availability boundary, not a failure — already logged at INFO by the turn-hold handler.

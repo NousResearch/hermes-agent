@@ -377,17 +377,29 @@ class GatewayGoalsMixin:
         if prior is not None and not prior.done():
             return prior
         expected_session_id = session_entry.session_id
-        run_generation = getattr(state.conversation, "run_generation", None)
+        run_generation = getattr(state.persistent, "run_generation", None)
+        if run_generation is None:
+            return None
+
+        def _authority_current() -> bool:
+            live_entry = self.session_store.lookup_by_session_key(session_key)
+            return bool(
+                live_entry is not None
+                and live_entry.session_id == expected_session_id
+                and self._is_session_run_current(session_key, run_generation)
+            )
 
         async def _run() -> None:
             history = await self.async_session_store.load_transcript(expected_session_id)
             # /new, /resume or rotating compaction won while this task was queued: the old snapshot
             # no longer owns this routing key and must not be published back into it.
-            if session_entry.session_id != expected_session_id:
+            if not _authority_current():
                 return
             await self._hmwa_run_session_hygiene(
                 event, source, session_entry, session_key, history, session_key,
                 run_generation, trigger_tokens=trigger_tokens,
+                commit_authority_check=_authority_current,
+                cache_owner=agent,
             )
 
         task = self._retain_background_task(asyncio.create_task(

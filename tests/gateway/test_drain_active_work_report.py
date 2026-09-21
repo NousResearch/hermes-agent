@@ -38,7 +38,7 @@ def test_draining_status_names_chat_and_cron_units_and_clears_when_running(tmp_p
     assert sched.try_register_running_job("job-a")
     try:
         with sched._running_lock:
-            sched._running_worker_pids["job-a"] = 4242
+            sched._running_worker_pids[sched._inflight_key("job-a")] = 4242
         runner._update_runtime_status("draining")
         flush_runtime_status()
         record = json.loads((tmp_path / "gateway_state.json").read_text())

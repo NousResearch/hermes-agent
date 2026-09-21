@@ -3845,17 +3845,29 @@ def clear_do_not_dispatch(
 def unblock_loop_signal(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
     """Loop-risk readout for an unblock confirmation gate, else None.
 
-    A signal fires when the task carries unblock-loop history: ``recurrences
-    >= 1`` means one more same-kind re-block routes it to ``triage``
-    (``BLOCK_RECURRENCE_LIMIT`` is 2), and ``recurrences >= LIMIT`` means it
-    already sits at the triage threshold. The CLI ``unblock`` gate keys its
-    ``--force`` confirmation off this; automation calling
-    :func:`unblock_task` directly is unaffected.
+    Fires ONLY on proven loop history — never on a first block — so routine
+    unblocks stay silent:
+
+    * the task must be unblockable (``blocked``/``scheduled``); anything
+      else has no unblock transition to confirm (same-kind re-blocks that
+      reach ``BLOCK_RECURRENCE_LIMIT`` already route to ``triage``);
+    * ``block_recurrences >= 2`` (two same-kind blocks PROVE a return to
+      the pool between them — ``block_task`` fires only from
+      ``running``/``ready``), or ``recurrences == 1`` with an ``unblocked``
+      event on record (blocked, unblocked, blocked again).
+
+    A first block (any kind, including untyped ``None`` — which also stores
+    ``recurrences=1``) and a fresh breaker block (``recurrences=0``) both
+    read as None. The CLI ``unblock`` gate keys its ``--force``
+    confirmation off this; automation calling :func:`unblock_task`
+    directly is unaffected.
     """
     row = conn.execute(
-        "SELECT block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
+        "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     if row is None:
+        return None
+    if _row_get(row, "status") not in ("blocked", "scheduled"):
         return None
     try:
         recurrences = int(_row_get(row, "block_recurrences") or 0)
@@ -3863,6 +3875,13 @@ def unblock_loop_signal(conn: sqlite3.Connection, task_id: str) -> Optional[dict
         return None
     if recurrences < 1:
         return None
+    if recurrences == 1:
+        cycled = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'unblocked' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if cycled is None:
+            return None
     return {
         "block_kind": _row_get(row, "block_kind"),
         "block_recurrences": recurrences,

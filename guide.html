@@ -373,6 +373,7 @@ hermes portal tools</code></pre>
     <thead><tr><th>بستهٔ اضافی</th><th>دستور نصب</th><th>چه چیزی را باز می‌کند</th></tr></thead>
     <tbody>
       <tr><td><code dir="ltr">dev</code></td><td><code dir="ltr">pip install -e ".[dev]"</code></td><td>خود pytest و pytest-asyncio، mcp، httpx، ruff و ty — پیش‌نیاز هر اجرای تستی</td></tr>
+      <tr><td><code dir="ltr">mcp</code></td><td><code dir="ltr">pip install "mcp==2.0.0"</code></td><td>SDK پروتکل MCP به‌تنهایی (بدون extra کامل dev) — پنج فایل gated با <code dir="ltr">importorskip("mcp")</code> به‌جای skip اجرا می‌شوند: test_mcp_serve.py و چهار فایل MCP در tests/tools</td></tr>
       <tr><td><code dir="ltr">messaging</code></td><td><code dir="ltr">pip install -e ".[messaging]"</code></td><td>تست‌های تلگرام، Discord، Slack و کانال‌های پیام‌رسانی (tests/gateway، tests/tools)</td></tr>
       <tr><td><code dir="ltr">anthropic</code></td><td><code dir="ltr">pip install -e ".[anthropic]"</code></td><td>تست‌های آداپتور Anthropic در tests/agent (سایر ارائه‌دهنده‌ها از طریق کلید API قلابی stub می‌شوند)</td></tr>
       <tr><td><code dir="ltr">web</code></td><td><code dir="ltr">pip install -e ".[web]"</code></td><td>سرور داشبورد/دروازه که تست‌های یکپارچگی به آن وصل می‌شوند</td></tr>

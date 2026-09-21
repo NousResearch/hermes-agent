@@ -105,6 +105,34 @@ def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
     assert decision.code == "repeated_exact_failure_block"
 
 
+def test_oversized_delegation_is_blocked_before_runtime_dispatch():
+    agent = _make_agent("delegate_task", config={
+        "tool_loop_guardrails": {"loop_caps": {"max_subagents": 2}},
+    })
+    call = _mock_tool_call("delegate_task", json.dumps({"tasks": [{"goal": str(i)} for i in range(3)]}))
+    messages = []
+    with patch("model_tools.handle_function_call") as dispatch:
+        agent._execute_tool_calls_sequential(SimpleNamespace(content="", tool_calls=[call]), messages, "bounded")
+    dispatch.assert_not_called()
+    assert [message["tool_call_id"] for message in messages] == [call.id]
+    assert json.loads(messages[0]["content"])["guardrail"]["code"] == "loop_subagent_cap"
+
+
+def test_hard_stop_prevents_later_side_effects_in_the_same_batch():
+    agent = _make_agent("web_search", "terminal", config=_hard_stop_config())
+    _seed_exact_failures(agent, "web_search", {"query": "same"})
+    calls = [
+        _mock_tool_call("web_search", '{"query": "same"}'),
+        _mock_tool_call("terminal", '{"command": "echo should-not-run"}'),
+    ]
+    messages = []
+    with patch("model_tools.handle_function_call", return_value='{"output": "ran", "exit_code": 0}') as dispatch:
+        agent._execute_tool_calls_sequential(SimpleNamespace(content="", tool_calls=calls), messages, "halted")
+    dispatch.assert_not_called()
+    assert [message["tool_call_id"] for message in messages] == [call.id for call in calls]
+    assert "repeated_exact_failure_block" in messages[0]["content"]
+
+
 @pytest.mark.parametrize("platform", ["desktop", "acp"])
 def test_interactive_platforms_keep_warning_only_default(platform):
     agent = _make_agent("web_search", platform=platform)
@@ -215,11 +243,12 @@ def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
     assert "different tool" in content
 
 
-def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():
+def test_halted_concurrent_batch_does_not_dispatch_and_preserves_result_order():
     agent = _make_agent("web_search", config=_hard_stop_config())
     blocked_args = {"query": "blocked"}
     allowed_args = {"query": "allowed"}
     _seed_exact_failures(agent, "web_search", blocked_args)
+    assert agent._tool_guardrails.before_call("web_search", blocked_args).should_halt
     starts = []
     progress_events = []
     agent.tool_start_callback = lambda tool_call_id, name, args: starts.append((tool_call_id, name, args))
@@ -239,16 +268,15 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     with patch("model_tools.handle_function_call", side_effect=fake_handle):
         agent._execute_tool_calls_concurrent(msg, messages, "task-1")
 
-    assert executed == [("web_search", allowed_args, "c-allow")]
+    assert executed == []
     assert [m["tool_call_id"] for m in messages] == ["c-block", "c-allow"]
     assert "repeated_exact_failure_block" in messages[0]["content"]
-    assert json.loads(messages[1]["content"]) == {"ok": "allowed"}
-    assert starts == [("c-allow", "web_search", allowed_args)]
+    assert "repeated_exact_failure_block" in messages[1]["content"]
+    assert starts == []
     started_events = [event for event in progress_events if event[0] == "tool.started"]
     completed_events = [event for event in progress_events if event[0] == "tool.completed"]
-    assert started_events == [("tool.started", "web_search", allowed_args, {})]
-    assert len(completed_events) == 1
-    assert completed_events[0][1] == "web_search"
+    assert started_events == []
+    assert completed_events == []
 
 
 def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispatch():

@@ -49,6 +49,28 @@ _PYTEST_SPELLINGS = (
     ["python", "-m", "pytest"], ["python3", "-m", "pytest"],
     ["uv", "run", "pytest"], ["poetry", "run", "pytest"], ["pipenv", "run", "pytest"],
 )
+# These invocations can exit successfully without running the selected checks.
+_NON_EXECUTING_OPTIONS = frozenset({"--collect-only", "--co", "--help", "-h", "--version"})
+# A selector without a path still narrows the suite (pytest -k smoke, Jest -t name, etc.).
+_TEST_SELECTOR_OPTIONS = frozenset({
+    "-k", "-m", "-t", "-g", "--lf", "--last-failed", "--sw", "--stepwise",
+    "--deselect", "--ignore", "--ignore-glob", "--testNamePattern", "--testPathPattern",
+    "--testPathPatterns", "--grep", "--filter", "--shard", "--match",
+})
+
+
+def _verification_scope(trailing_args: list[str]) -> str | None:
+    """Never promote collection/help or a filtered suite into a full passing check."""
+    options = {arg.split("=", 1)[0] for arg in trailing_args if arg.startswith("-")}
+    if options & _NON_EXECUTING_OPTIONS:
+        return None
+    selected = bool(options & _TEST_SELECTOR_OPTIONS) or any(
+        arg.startswith(("-k", "-m", "-t", "-g")) and not arg.startswith("--")
+        for arg in trailing_args
+    )
+    return "targeted" if selected or any(map(_looks_like_target, trailing_args)) else "full"
+
+
 _SCHEMA_DDL = (
     """
         CREATE TABLE IF NOT EXISTS meta (
@@ -440,7 +462,9 @@ def classify_verification_command(
     if match is not None:
         canonical, trailing_args = match
         kind = _kind_for_command(canonical)
-        scope = "targeted" if any(map(_looks_like_target, trailing_args)) else "full"
+        scope = _verification_scope(trailing_args)
+        if scope is None:
+            return None
     else:
         if verify_commands or _find_ad_hoc_match(command, facts.get("root"), int(exit_code)) is None:
             return None

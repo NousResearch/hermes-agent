@@ -282,6 +282,24 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.should_halt is True
 
 
+def test_subagent_batch_must_fit_remaining_budget_without_spending_rejected_spawns():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_subagents=3))
+    )
+    assert controller.before_call("delegate_task", {"goal": "first"}).allows_execution
+    oversized = {"tasks": [{"goal": str(i)} for i in range(3)]}
+    decision = controller.before_call("delegate_task", oversized)
+    assert not decision.allows_execution
+    assert decision.code == "loop_subagent_cap"
+    assert decision.count == 1
+    assert controller.before_call("delegate_task", {"tasks": [{"goal": "a"}, {"goal": "b"}]}).allows_execution
+    assert not controller.before_call("delegate_task", {"goal": "extra"}).allows_execution
+    for action in ("list", "steer", "stop"):
+        assert controller.before_call("delegate_task", {"action": action}).allows_execution
+    controller.reset_for_turn()
+    assert controller.before_call("delegate_task", oversized).allows_execution
+
+
 
 
 

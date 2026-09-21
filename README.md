@@ -4,7 +4,7 @@
 
 # Hermes Agent ☤
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
+  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/docs/user-guide/desktop">Hermes Desktop</a>
 </p>
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
@@ -142,7 +142,7 @@ You can still bring your own keys per-tool whenever you want — the gateway is 
 
 ## CLI vs Messaging Quick Reference
 
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
+Hermes has several interfaces. The classic CLI and the TUI run in a terminal; the gateway connects Hermes to messaging platforms such as Telegram, Discord, Slack, WhatsApp, Signal, and Email. Once you're in a conversation, many slash commands are shared across the CLI and messaging interfaces.
 
 | Action                         | CLI                                           | Messaging platforms                                                              |
 | ------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
@@ -158,6 +158,8 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 
+The other interfaces share the same agent runtime: use [`hermes --tui`](https://hermes-agent.nousresearch.com/docs/user-guide/tui) for the modern terminal UI, [`hermes desktop`](https://hermes-agent.nousresearch.com/docs/user-guide/desktop) for the native desktop app, [`hermes dashboard`](https://hermes-agent.nousresearch.com/docs/user-guide/features/web-dashboard) for the browser dashboard, and [ACP](https://hermes-agent.nousresearch.com/docs/user-guide/features/acp) for editor integrations.
+
 ---
 
 ## Documentation
@@ -171,7 +173,7 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 | [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)                | Config file, providers, models, all options                |
 | [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)                | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
 | [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security)                          | Command approval, DM pairing, container isolation          |
-| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)            | 40+ tools, toolset system, terminal backends               |
+| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)            | Tool registry, toolsets, terminal backends                 |
 | [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)              | Procedural memory, Skills Hub, creating skills             |
 | [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)                     | Persistent memory, user profiles, best practices           |
 | [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)               | Connect any MCP server for extended capabilities           |
@@ -181,6 +183,27 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 | [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)             | Development setup, PR process, code style                  |
 | [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands)                  | All commands and flags                                     |
 | [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference                                 |
+
+---
+
+## Repository layout
+
+Hermes is a shared Python agent runtime with several interfaces and extension surfaces. The main directories are:
+
+| Path | Purpose |
+| --- | --- |
+| `run_agent.py`, `cli.py`, `agent/` | Agent runtime, turn loop, prompt construction, provider and memory handling |
+| `hermes_cli/` | CLI commands, setup, configuration, plugins, and the dashboard backend (`web_server.py` and `web_routers/`) |
+| `tools/` | Tool registry, tool implementations, and terminal environments under `tools/environments/` |
+| `gateway/`, `plugins/platforms/` | Messaging gateway, built-in adapters, and bundled platform plugins |
+| `ui-tui/`, `tui_gateway/` | React/Ink terminal UI and its Python JSON-RPC backend |
+| `apps/desktop/`, `apps/shared/` | Electron desktop application and shared client transport |
+| `web/` | Browser dashboard frontend |
+| `plugins/`, `providers/`, `skills/`, `optional-skills/`, `optional-mcps/` | Plugin categories, provider registry, bundled skills, optional skills, and optional MCP servers |
+| `acp_adapter/`, `cron/`, `evals/` | Editor integration, scheduled jobs, and offline evaluations |
+| `website/`, `tests/`, `tests-js/` | Documentation site and Python/JavaScript test suites |
+
+Root entry modules such as `run_agent.py`, `cli.py`, `model_tools.py`, `toolsets.py`, and `hermes_state.py` are load-bearing surfaces. Facades such as `run_agent.py`, `cli.py`, and `hermes_state.py` keep their topic-specific implementation in sibling modules such as `agent/turn_*.py`, `gateway/run_*.py`, and `hermes_state_*.py`. See the [Architecture guide](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture) for the runtime flow and contribution-oriented map.
 
 ---
 

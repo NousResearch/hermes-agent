@@ -34,6 +34,28 @@ def _python_project(root: Path) -> None:
     (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
 
 
+@pytest.mark.parametrize("selector", ["-k smoke", "-ksmoke", "-m fast", "--lf", "--deselect=case"])
+def test_filtered_test_evidence_remains_targeted(tmp_path, selector):
+    _python_project(tmp_path)
+    evidence = record_terminal_result(
+        command=f"pytest {selector}", cwd=tmp_path, session_id="filtered", exit_code=0,
+    )
+    assert evidence is not None
+    status = verification_status(session_id="filtered", cwd=tmp_path)
+    assert status["evidence"]["scope"] == "targeted"
+
+
+@pytest.mark.parametrize("option", ["--collect-only", "--co", "--help", "--version"])
+def test_nonexecuting_test_commands_cannot_clear_verification_gate(tmp_path, option):
+    _python_project(tmp_path)
+    mark_workspace_edited(session_id="discovery", cwd=tmp_path, paths=["app.py"])
+    evidence = record_terminal_result(
+        command=f"pytest {option}", cwd=tmp_path, session_id="discovery", exit_code=0,
+    )
+    assert evidence is None
+    assert verification_status(session_id="discovery", cwd=tmp_path)["status"] != "passed"
+
+
 
 
 

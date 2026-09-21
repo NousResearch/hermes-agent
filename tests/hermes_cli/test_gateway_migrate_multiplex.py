@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -172,6 +173,39 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     assert named_profile_served_by_running_multiplexer("coder") is False
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def test_migration_uses_secondary_effective_stop_budget_instead_of_rolling_back(fleet, monkeypatch):
+    """A long configured drain must not outlast the CLI's systemctl client timeout (#118158)."""
+    from hermes_cli import gateway as gw
+
+    (fleet.root / "profiles/coder/config.yaml").write_text(
+        "agent:\n  restart_drain_timeout: 120\n", encoding="utf-8"
+    )
+    real_service_op = gm._service_op
+    stop_timeouts = []
+    expected_stop_budget = gw.resolve_systemd_timeout_stop_sec(120.0, gw._get_cron_drain_timeout())
+
+    monkeypatch.setattr(gw, "_systemd_scope_preamble", lambda *args, **kwargs: False)
+
+    def _run_systemctl(args, **kwargs):
+        if args[0] == "stop":
+            stop_timeouts.append(kwargs["timeout"])
+            if kwargs["timeout"] < expected_stop_budget:
+                raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    def _service_op(kind, system, verb, home, *, run_as_user=None):
+        if (kind, verb, _name(home)) == ("systemd", "uninstall", "coder"):
+            with gm._home_env(home):
+                gw.systemd_uninstall(system=system)
+        real_service_op(kind, system, verb, home, run_as_user=run_as_user)
+
+    monkeypatch.setattr(gw, "_run_systemctl", _run_systemctl)
+    monkeypatch.setattr(gm, "_service_op", _service_op)
+
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=0.1) is True
+    assert stop_timeouts == [expected_stop_budget]
+    assert _config_flag(fleet.root) is True
 
 
 def test_migration_preserves_root_system_service_user_for_default_install(fleet, monkeypatch):

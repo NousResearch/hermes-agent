@@ -3219,7 +3219,12 @@ def systemd_uninstall(system: bool = False):
     system = _systemd_scope_preamble("uninstall", system, require_installed=False)
     if not _systemd_unit_belongs_to_current_home(system):
         return
-    _run_systemctl(["stop", get_service_name()], system=system, check=False, timeout=90)
+    # Match the unit's TimeoutStopSec budget. A multiplex migration uninstalls each secondary through
+    # this path; its configured drain may legitimately exceed the former 90s client-side timeout.
+    stop_timeout = resolve_systemd_timeout_stop_sec(
+        _get_restart_drain_timeout(), _get_cron_drain_timeout()
+    )
+    _run_systemctl(["stop", get_service_name()], system=system, check=False, timeout=stop_timeout)
     _run_systemctl(["disable", get_service_name()], system=system, check=False, timeout=30)
 
     unit_path = get_systemd_unit_path(system=system)

@@ -44,6 +44,34 @@ def _init_git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
 
 
+def test_auto_decompose_failures_back_off_and_eventually_block(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="needs decomposition", triage=True)
+
+        first = kb.record_auto_decompose_failure(conn, tid, reason="provider unavailable", now=100)
+        assert first == {
+            "attempt": 1,
+            "limit": 3,
+            "reason": "provider unavailable",
+            "blocked": False,
+            "retry_at": 400,
+        }
+        assert not kb.auto_decompose_retry_due(conn, tid, now=399)
+        assert kb.auto_decompose_retry_due(conn, tid, now=400)
+
+        second = kb.record_auto_decompose_failure(conn, tid, reason="provider unavailable", now=400)
+        assert second["retry_at"] == 1000
+        third = kb.record_auto_decompose_failure(conn, tid, reason="provider unavailable", now=1000)
+
+        task = kb.get_task(conn, tid)
+        assert third["blocked"] is True
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        events = kb.list_events(conn, tid)
+        assert [event.payload["attempt"] for event in events if event.kind == "auto_decompose_failed"] == [1, 2, 3]
+        assert any(event.kind == "blocked" for event in events)
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------

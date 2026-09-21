@@ -17,7 +17,10 @@ from gateway.kanban_watchers_common import _to_thread_process_service
 
 def _dispatcher():
     settings = kwd._DispatcherSettings(60.0, None, None, 2, 0, True, None, None)
-    return kwd._KanbanDispatcher(SimpleNamespace(DEFAULT_BOARD="default"), settings)
+    return kwd._KanbanDispatcher(
+        SimpleNamespace(DEFAULT_BOARD="default", auto_decompose_retry_due=lambda conn, tid: True),
+        settings,
+    )
 
 
 def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkeypatch, tmp_path):

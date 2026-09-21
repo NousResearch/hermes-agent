@@ -195,6 +195,12 @@ def dial_host(record: HostRecord) -> str:
     return "127.0.0.1" if host in ("0.0.0.0", "::", "*", "") else host
 
 
+def url_host(record: HostRecord) -> str:
+    """URL authority host for ``record`` (IPv6 literals require brackets)."""
+    host = dial_host(record)
+    return f"[{host}]" if ":" in host else host
+
+
 def probe_owner(record: HostRecord, *, timeout: float = PROBE_TIMEOUT_S) -> Optional[dict]:
     """Make the recorded endpoint prove it is this record's owner; ``None`` when it does not.
 
@@ -222,7 +228,7 @@ def probe_owner(record: HostRecord, *, timeout: float = PROBE_TIMEOUT_S) -> Opti
     token = read_token(record.role)
     headers = {"X-Hermes-Token": token, "Authorization": f"Bearer {token}"} if token else {}
     request = urllib.request.Request(
-        f"http://{host}:{record.port}{HOST_IDENTITY_PATH}", headers=headers)
+        f"http://{url_host(record)}:{record.port}{HOST_IDENTITY_PATH}", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 — fixed http scheme
             if response.status != 200:

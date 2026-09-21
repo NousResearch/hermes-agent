@@ -154,3 +154,23 @@ def test_dashboard_is_never_routed_to_a_headless_backend(host_dir, owner, capsys
 
     assert exc.value.code == 1
     assert "no dashboard UI" in capsys.readouterr().out
+
+
+def test_ipv6_owner_attach_prints_a_valid_bracketed_url(host_dir, monkeypatch, capsys):
+    """The attach receipt is a browser URL, where a bare IPv6 literal is invalid."""
+    record = hr.HostRecord(
+        role=hr.ROLE_SERVE, pid=os.getpid(), create_time=hr.process_create_time(),
+        host="::1", port=9119, protocol_version=hr.HOST_PROTOCOL_VERSION,
+        token_fingerprint="", profiles=("default",),
+        updated_at="2026-01-01T00:00:00+00:00")
+    monkeypatch.setattr(
+        "hermes_cli.main_dashboard._host_backend_attachment", lambda: record)
+    monkeypatch.setattr(
+        hr, "probe_owner",
+        lambda _record: {"pid": os.getpid(), "role": hr.ROLE_SERVE, "servesSpa": True})
+
+    with pytest.raises(SystemExit) as exc:
+        _attach_to_host_backend(_args(host="::1"), headless_backend=True)
+
+    assert exc.value.code == 0
+    assert "http://[::1]:9119/?profile=default" in capsys.readouterr().out

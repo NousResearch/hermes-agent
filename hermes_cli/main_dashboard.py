@@ -860,7 +860,7 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     except Exception:
         profile = "default"
     wanted = getattr(args, "open_profile", "") or profile
-    url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
+    url = f"http://{hr.url_host(record)}:{record.port}/?profile={wanted}"
 
     kind = "backend" if headless_backend else "dashboard"
     print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")

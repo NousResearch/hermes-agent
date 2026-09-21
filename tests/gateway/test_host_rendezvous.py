@@ -187,6 +187,40 @@ def test_probe_owner_refuses_a_closed_port_and_a_foreign_listener(host_dir):
         foreign.close()
 
 
+def test_probe_owner_brackets_an_ipv6_literal_in_the_identity_url(host_dir, monkeypatch):
+    """The socket API takes ``::1`` bare, while an HTTP URL requires ``[::1]``."""
+    record = hr.HostRecord(
+        role=hr.ROLE_SERVE, pid=os.getpid(), create_time=hr.process_create_time(),
+        host="::1", port=9119, protocol_version=hr.HOST_PROTOCOL_VERSION,
+        token_fingerprint="", profiles=(), updated_at="2026-01-01T00:00:00+00:00")
+    seen = {}
+
+    class _Context:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return json.dumps({"pid": os.getpid(), "role": hr.ROLE_SERVE}).encode()
+
+    def _urlopen(request, timeout):
+        seen["url"] = request.full_url
+        seen["timeout"] = timeout
+        return _Context()
+
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: _Context())
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+
+    assert hr.probe_owner(record, timeout=1.5) == {
+        "pid": os.getpid(), "role": hr.ROLE_SERVE}
+    assert seen == {
+        "url": f"http://[::1]:9119{hr.HOST_IDENTITY_PATH}", "timeout": 1.5}
+
+
 def test_relative_xdg_state_home_is_ignored(monkeypatch, tmp_path):
     """XDG spec: a relative ``$XDG_STATE_HOME`` is invalid and must be ignored. Honouring one made
     the host lock dir CWD-relative, so two serves started from different directories would each

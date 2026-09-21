@@ -64,14 +64,35 @@ automatically on crash and on user login.
 ## Alternative: one gateway for all profiles (multiplexing)
 
 The model above runs **one process per profile**. The alternative is a
-**single multiplexing gateway**: the default profile's gateway becomes the sole
-inbound process and serves messages for *every* profile on the box.
+**single multiplexing gateway**: one gateway process — whichever profile
+launched it — becomes the sole inbound process and serves messages for *every*
+profile on the box.
+
+Because there is only ever one of them, the lifecycle verbs target that process
+rather than "this profile's gateway":
+
+- `hermes -p <name> gateway run` while it is live **attaches** instead of
+  starting a second process: it prints the host gateway's PID and served set and
+  exits 0. If `<name>` is not served yet, it asks the host gateway to re-scan
+  `profiles/` and attaches once the answer includes it; it refuses (non-zero)
+  only when the host gateway cannot be made to serve it.
+- `hermes gateway start --all` / `restart --all` mean *the one host
+  multiplexer*. They never sweep every gateway process on the box; a profile
+  that still runs its own gateway is reported, never killed, with the
+  `hermes gateway migrate --multiplex` one-liner.
+- `hermes gateway run --replace` takes the host role over, whichever profile
+  launched the running process; `hermes gateway run --force` starts a separate
+  gateway without asking the host process at all (the escape hatch when it is
+  wedged or answering wrongly).
+- Under a service supervisor the attach exits 75, not 0 — systemd, s6 and
+  launchd all restart a 75 after a short delay, so the unit keeps retrying and
+  takes over by itself the moment the host process goes away.
 
 Multiplexing is **on by default** (`gateway.multiplex_profiles` defaults to
 `true`), with one safety rule: an *unset* flag is a request the default gateway
 settles at boot, never a verdict. Each start it runs the same preflight as
 [`hermes gateway migrate --multiplex`](#migrating-from-per-profile-gateways) and
-multiplexes only when the fold would have been safe — the default profile, two
+multiplexes only when the fold would have been safe — two
 or more profiles, no secondary still running its own gateway (live process or
 installed service), no duplicate bot credential, no port-binding platform
 without a `/p/<profile>/` ingress, and a host the migration understands (not an
@@ -107,8 +128,8 @@ ability to restart one profile without touching the others).
 ### Pinning the flag
 
 With the flag unset, the default gateway decides at each boot (above). To pin
-it, set it on the **default profile** (it owns the multiplexer) and restart its
-gateway — `true` forces multiplexing even where the boot preflight would have
+it, set it on the profile whose gateway runs as the host process (usually the
+**default profile**) and restart its gateway — `true` forces multiplexing even where the boot preflight would have
 held back, `false` opts out durably:
 
 ```bash
@@ -355,7 +376,9 @@ parent conversation.
 
 There is a single process-level PID and lock (the multiplexer, under the default home). `hermes status` on the default profile reports the multiplexer and lists the profiles it serves (`Serves: coder, research`). `hermes -p coder status` and `hermes -p coder gateway status` report "running via the default-profile multiplexer" instead of "stopped". The dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as coder's running gateway, with coder's own adapters as its platforms. The single `gateway_state.json` lives under the default home: secondary adapters appear there as `<profile>:<platform>` entries beside `served_profiles`; no per-profile gateway status file is written.
 
-`hermes -p coder cron status` prints `Scheduler host: default-profile multiplexer`, then checks coder's own ticker heartbeat and last successful tick. A missing or stale heartbeat produces a warning rather than an unconditional running verdict; the restart hint targets `hermes --profile default gateway restart`. `cron list` and `cron create` also warn when a served profile has no fresh heartbeat. `cron status` adds tick-failure details that those lightweight checks do not read.
+`hermes -p coder cron status` names the single host gateway and the profiles it serves — `Scheduler host: the host gateway (PID 4211) serving profiles default, coder` — then checks coder's own ticker heartbeat and last successful tick. A missing or stale heartbeat produces a warning rather than an unconditional running verdict. `cron list` and `cron create` also warn when a served profile has no fresh heartbeat. `cron status` adds tick-failure details that those lightweight checks do not read.
+
+When no gateway owns the host role, `cron status` tells you to start the **one** host gateway (`hermes --profile default gateway install` / `gateway run`) and to make sure it serves this profile. Installing a per-profile service is shown only under `LEGACY (pre-multiplex topology, not recommended)`: it would start a second gateway process on the host. `hermes doctor` follows the same rule — under s6 it reports `Host gateway: the host gateway (PID 4211) serving profiles default, coder` instead of a per-profile slot count, flags any still-supervised per-profile slot as LEGACY, and checks the host systemd unit's linger even when you run doctor from a served profile. The `state.db` holder lines name the shared host process too, so "3 process(es) holding the DB open" says which gateway and which profiles stopping it would affect.
 
 #### What does **not** change
 

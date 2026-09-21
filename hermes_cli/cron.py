@@ -464,10 +464,18 @@ def cron_status():
         print(color("  (No ticker heartbeat is expected for an external provider; "
                     "due jobs are delivered by an authenticated webhook.)", Colors.DIM))
     else:
-        pids = find_gateway_pids()
+        from gateway.host_topology import host_gateway_serving
+        active = get_active_profile_name()
+        # FIRST question under multiplex-only: is the HOST gateway alive and does it tick THIS
+        # profile? Starting from find_gateway_pids() (argv `-p <name>`) made every served profile
+        # report "not running" and told the user to start a SECOND host process.
+        host = None
+        with contextlib.suppress(Exception):
+            host = host_gateway_serving(active)
+        pids = [] if host is not None else find_gateway_pids()
         gateway_alive_via_lock = False
         served_by_multiplexer = False
-        if not pids:
+        if host is None and not pids:
             # The pid scan transiently misses a live gateway right after a restart; the runtime
             # lock proves the process is alive. Declare "not running" only when both agree.
             with contextlib.suppress(Exception):
@@ -481,15 +489,19 @@ def cron_status():
             # Multiplexer identity does not establish the active profile's ticker health.
             if not gateway_alive_via_lock:
                 served_by_multiplexer = named_profile_served_by_running_multiplexer()
-        if pids or gateway_alive_via_lock or served_by_multiplexer:
+        if host is not None:
+            print(f"  Scheduler host: {host.describe()}")
+            # `hermes gateway restart` exits 78 for a served NAMED profile
+            # (_guard_named_profile_under_multiplexer): the one host process is the default's.
+            _print_ticker_health([host.pid], restart_command="hermes --profile default gateway restart")
+        elif pids or gateway_alive_via_lock or served_by_multiplexer:
             if served_by_multiplexer:
-                print("  Scheduler host: default-profile multiplexer")
+                print("  Scheduler host: the host gateway (multiplexing this profile)")
                 _print_ticker_health([], restart_command="hermes --profile default gateway restart")
             else:
                 _print_ticker_health(pids)
         else:
-            print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
-            active = get_active_profile_name()
+            print(color("✗ No gateway is running on this host — cron jobs will NOT fire", Colors.RED))
             # When scheduling last worked before the host went away: without this, a
             # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
             with contextlib.suppress(Exception):
@@ -499,18 +511,18 @@ def cron_status():
                     print(color("  Scheduler last ticked "
                                 f"{_format_lateness(hb_age)} ago — jobs that came due "
                                 "since then have not fired.", Colors.YELLOW))
-            print("\n  To enable automatic execution for this profile:\n"
-                  "    hermes gateway install    # Install as a user service\n"
-                  "    sudo hermes gateway install --system  # Linux servers: boot-time system service\n"
-                  "    hermes gateway run        # Or run in foreground")
+            print("\n  Start the ONE host gateway (it multiplexes every profile, this one included):\n"
+                  "    hermes --profile default gateway install   # user service\n"
+                  "    sudo hermes --profile default gateway install --system  # Linux servers: boot-time service\n"
+                  "    hermes --profile default gateway run       # Or run in foreground")
             if active not in ("default", "custom"):
-                print("\n  Alternatives for this named profile:\n"
-                      "    Keep the Desktop app open with this profile included in its scheduler and the machine awake, or\n"
-                      "    configure a running default gateway to tick this profile:\n"
+                print("\n  Then make sure it serves this profile:\n"
                       "      hermes --profile default config set gateway.multiplex_profiles true\n"
                       "      hermes --profile default gateway restart\n"
-                      "    To migrate existing per-profile services with preflight checks:\n"
+                      "    To fold existing per-profile services into it, with preflight checks:\n"
                       "      hermes --profile default gateway migrate --multiplex\n"
+                      "  LEGACY (pre-multiplex topology, not recommended): a per-profile service via\n"
+                      "      hermes gateway install   # starts a SECOND gateway process on this host\n"
                       "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
 
     print()

@@ -139,7 +139,7 @@ export function createLinuxNotifications() {
       abort.abort()
       release()
 
-      if (!target || connection !== target.state) {
+      if (!target) {
         return
       }
       const { state, owner, id } = target
@@ -216,7 +216,7 @@ export function createLinuxNotifications() {
           callOptions
         )
 
-        if (finished || connection !== state || state.generation !== generation) {
+        if (state.generation !== generation) {
           throw new Error('Notification owner changed before delivery')
         }
 
@@ -254,14 +254,11 @@ export function createLinuxNotifications() {
                 return reject(error)
               }
 
-              if (
-                finished ||
-                connection !== state ||
-                state.generation !== generation ||
-                !Number.isInteger(id) ||
-                id <= 0
-              ) {
+              if (state.generation !== generation) {
                 return reject(new Error('Notification owner changed during delivery'))
+              }
+              if (!Number.isInteger(id) || id <= 0) {
+                return reject(new Error(`Notify returned an invalid id: ${String(id)}`))
               }
 
               delivered = { state, owner, id }
@@ -270,10 +267,6 @@ export function createLinuxNotifications() {
               state.live.set(`${owner}:${id}`, {
                 owner,
                 receive: (member, value) => {
-                  if (finished) {
-                    return
-                  }
-
                   if (
                     member === 'ActionInvoked' &&
                     typeof value === 'string' &&

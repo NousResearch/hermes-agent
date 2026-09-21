@@ -222,3 +222,28 @@ def test_parent_worktree_deferred_until_children_done(
         assert kb.complete_task(conn, child, summary="child done")
     # last child terminal -> deferred parent worktree reaped
     assert not parent_wt.exists()
+
+
+def test_rmtree_force_removes_read_only_tree(tmp_path: Path) -> None:
+    """Pants drops the write bit on every dir it materialises under
+    ``.pants_exec_dir/immutable_inputs``; ``rmtree(ignore_errors=True)`` bails
+    on the first one and silently leaves the whole workspace on disk."""
+    import os
+    import shutil
+
+    def build(name: str) -> Path:
+        root = tmp_path / name
+        inner = root / "repo" / ".pants_exec_dir" / "immutable_inputs" / "deep"
+        inner.mkdir(parents=True)
+        (inner / "f.txt").write_text("x")
+        for d in (inner, inner.parent, inner.parent.parent):
+            os.chmod(d, 0o500)
+        return root
+
+    stale = build("stale")
+    shutil.rmtree(stale, ignore_errors=True)
+    assert stale.exists(), "guard: ignore_errors=True must leave the tree behind"
+
+    reaped = build("reaped")
+    kbw._rmtree_force(reaped)
+    assert not reaped.exists()

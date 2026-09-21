@@ -110,6 +110,37 @@ def _is_managed_scratch_path(p: Path) -> bool:
     return _managed_scratch_path_info(p)[0]
 
 
+def _rmtree_force(wp: Path) -> None:
+    """``rmtree`` that survives read-only directories.
+
+    Build tools write trees Python cannot delete as-is: Pants' local execution
+    root (``.pants_exec_dir/immutable_inputs*``) drops the write bit on every
+    directory it materialises, so a plain ``rmtree(ignore_errors=True)`` raises
+    ``PermissionError`` on the first one, abandons the walk and leaves the whole
+    workspace behind — silently, because the errors are ignored. Observed
+    leaving 13 GB per completed task on disk. Restore the owner write bit and
+    retry; anything still undeletable is skipped, keeping this best-effort.
+    """
+
+    def _retry(func, path, _exc_info):
+        # Unlinking an entry needs the write bit on its PARENT directory, not on
+        # the entry itself, so restore both before retrying.
+        try:
+            os.chmod(os.path.dirname(path), 0o700)
+        except OSError:
+            pass
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+        try:
+            func(path)
+        except OSError:
+            pass
+
+    shutil.rmtree(wp, onerror=_retry)
+
+
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """Remove a task's scratch workspace dir and kill its stale tmux session.
     Called from :func:`complete_task` after the transaction commits; best-effort
@@ -151,7 +182,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
             # source tree; without this, completion would rmtree the user's data.
             # See #28818.
             if _is_managed_scratch_path(wp):
-                shutil.rmtree(wp, ignore_errors=True)
+                _rmtree_force(wp)
                 _kb._log.debug("Removed scratch workspace: %s", wp)
             else:
                 _kb._log.warning(
@@ -242,7 +273,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 continue
             wp = Path(row["workspace_path"])
             if wp.is_dir() and _is_managed_scratch_path(wp):
-                shutil.rmtree(wp, ignore_errors=True)
+                _rmtree_force(wp)
                 _kb._log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
     except Exception:
         pass  # best-effort

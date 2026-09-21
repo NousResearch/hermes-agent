@@ -4752,7 +4752,7 @@ class TestEnsureDmConversation:
 # ---------------------------------------------------------------------------
 
 
-class TestThreadImageContext:
+class TestThreadFileContext:
     """Thread-context visibility of images/files posted before the mention."""
 
     # -- _slack_file_marker / _render_message_text unit coverage -----------
@@ -4951,6 +4951,37 @@ class TestThreadImageContext:
         # The context marker AND the delivered image coexist.
         assert "[image: chart.png]" in msg_event.channel_context
         a._download_slack_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cold_start_delivers_thread_root_pdf(
+        self, adapter_with_session_store
+    ):
+        """A PDF attached to the thread root is delivered when the bot is first
+        mentioned later in that thread, just like a directly mentioned upload."""
+        a = self._prep(adapter_with_session_store)
+        a._download_slack_file_bytes = AsyncMock(return_value=b"%PDF-1.7\n")
+        a._app.client.conversations_replies = self._replies(
+            root_files=[
+                {
+                    "id": "F2",
+                    "name": "briefing.pdf",
+                    "mimetype": "application/pdf",
+                    "size": 9,
+                    "url_private_download": "https://files.slack.com/T1-F2/briefing.pdf",
+                }
+            ]
+        )
+
+        await a._handle_slack_message(self._thread_event("<@U_BOT> read this"))
+
+        a.handle_message.assert_awaited_once()
+        msg_event = a.handle_message.call_args[0][0]
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types == ["application/pdf"]
+        assert msg_event.media_text_inlined == [False]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert "[file: briefing.pdf (application/pdf)]" in msg_event.channel_context
+        a._download_slack_file_bytes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_root_image_download_failure_degrades_to_marker(

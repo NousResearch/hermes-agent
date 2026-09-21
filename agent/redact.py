@@ -4,6 +4,7 @@ Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and
 last 4 characters for debuggability.
 """
 
+import base64
 import logging
 import os
 import re
@@ -580,6 +581,33 @@ _ZHIPU_API_KEY_RE = re.compile(
     r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
 )
 
+# Discord bot tokens: ``<base64 user id>.<base64 timestamp>.<hmac>``, plus the ``mfa.<secret>``
+# form. Shape alone is not enough — a long dotted CamelCase identifier
+# (``SomeVeryLongClassName.Config.AnotherLongAttributeName``) fits it — so a candidate only
+# counts when its first segment base64-decodes to a Discord snowflake (17-20 ASCII digits),
+# which is what the real first segment always is. JWTs are handled by _JWT_RE. Without this,
+# ``DISCORD_BOT_TOKEN=<tok>`` was masked by the assignment pass but the same token as a JSON
+# value or bare in tool output went through verbatim (#117848) — in a project whose Discord
+# adapter keeps one in every install's ``.env``.
+_DISCORD_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])("
+    r"mfa\.[A-Za-z0-9_-]{20,}"
+    r"|M[A-Za-z0-9_-]{22,27}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}"
+    r")(?![A-Za-z0-9_.-])"
+)
+
+
+def _is_discord_token(candidate: str) -> bool:
+    """True when *candidate* carries a real Discord user id, not just the token shape."""
+    if candidate.startswith("mfa."):
+        return True
+    head = candidate.split(".", 1)[0]
+    try:
+        decoded = base64.urlsafe_b64decode(head + "=" * (-len(head) % 4))
+    except (ValueError, base64.binascii.Error):
+        return False
+    return decoded.isdigit() and 17 <= len(decoded) <= 20
+
 
 def _mask_control_split_tokens(text: str, mask_fn) -> str:
     """Mask tokens whose body is split by control/zero-width characters.
@@ -925,6 +953,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "." in text:
         _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
         text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
+        text = _DISCORD_TOKEN_RE.sub(
+            lambda m: _zhipu_sub(m.group(1)) if _is_discord_token(m.group(1)) else m.group(1), text)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)

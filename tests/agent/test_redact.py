@@ -530,6 +530,38 @@ class TestTelegramTokens:
         assert "ABCDEfghij" not in result
 
 
+class TestDiscordTokens:
+    """Discord bot tokens (#117848): the adapter keeps one in every install's .env, and
+    only the ``KEY=value`` shape used to be masked."""
+
+    TOKEN = "MTIzNDU2Nzg5MDEyMzQ1Njc4.GxAbCd.7Zq1rJ8mN0pQ2sT4uV6wX8yA0bC2dE4f"
+    MFA_TOKEN = "mfa.VkO_2G4Qv3T--NO--lWetW_tjND-toY_XyGMTCsGrhkGRlEjJ1nHPvKIhQEB"
+
+    def test_bare_token_is_masked(self):
+        result = redact_sensitive_text(f"connecting with {self.TOKEN}")
+        assert self.TOKEN not in result
+        assert "7Zq1rJ8mN0pQ" not in result
+
+    def test_json_value_is_masked(self):
+        """The reported gap: masked as an assignment, verbatim as a JSON value."""
+        result = redact_sensitive_text(f'{{"DISCORD_BOT_TOKEN": "{self.TOKEN}"}}')
+        assert self.TOKEN not in result
+
+    def test_mfa_form_is_masked(self):
+        result = redact_sensitive_text(self.MFA_TOKEN)
+        assert self.MFA_TOKEN not in result
+
+    def test_shape_alone_does_not_match(self):
+        """A long dotted CamelCase identifier fits the token's shape; only a first
+        segment that decodes to a Discord snowflake counts, so code survives intact."""
+        for benign in (
+            "MyVeryLongModuleNameHere.Config.SomeExtremelyLongAttributeName_value",
+            "org.apache.commons.lang3.StringUtils.isNotBlank(someVariableName)",
+            "Mozilla.Firefox.Nightly.channel.release.update.manifest.checksum.value",
+        ):
+            assert redact_sensitive_text(benign) == benign
+
+
 class TestPassthrough:
     def test_empty_string(self):
         assert redact_sensitive_text("") == ""

@@ -96,3 +96,13 @@ def test_a_scalar_on_disk_reads_back_as_uncustomised(config_home):
 
 def test_non_string_entries_are_refused(config_home):
     assert _set(["anthropic::claude-opus-5", 7])["error"]["code"] == 4002
+
+
+def test_non_string_entries_on_disk_are_dropped_with_log(config_home, caplog):
+    import logging
+    config_home.write_text(yaml.safe_dump({"display": {"visible_models": ["anthropic::claude-opus-5", 123, None]}}))
+    server._cfg_cache = server._cfg_sig = server._cfg_path = None
+
+    with caplog.at_level(logging.DEBUG):
+        assert _get()["result"] == {"value": ["anthropic::claude-opus-5"]}
+    assert "non-string entry" in caplog.text

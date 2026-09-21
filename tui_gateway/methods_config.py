@@ -9,6 +9,10 @@ import threading
 from .method_ctx import HandlerRegistry, bind_module
 from ._env import env_int
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
 from hermes_constants import display_hermes_home as _display_hermes_home
 
@@ -273,6 +277,7 @@ def _cfg_get_visible_models(params: dict) -> dict:
     keys: list[str] = []
     for entry in raw:
         if not isinstance(entry, str):
+            logger.debug("display.visible_models contains non-string entry %r; dropping", entry)
             continue
         item = entry.strip()
         if item and item not in seen:

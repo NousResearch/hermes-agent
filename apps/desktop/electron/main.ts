@@ -12,6 +12,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  crashReporter,
   dialog,
   net as electronNet,
   webContents as electronWebContents,
@@ -268,6 +269,7 @@ import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ensureMainWindow } from './main-window-lifecycle'
@@ -986,6 +988,22 @@ const DESKTOP_LOG_MAX_BYTES = 10 * 1024 * 1024
 const DESKTOP_LOG_BACKUP_COUNT = 3
 const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
 const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
+
+// #100573: keep the FATAL line and a local minidump for the next Linux SIGTRAP.
+// Both must be wired before `app` is ready; the log-file switch is inherited by
+// every child process, so a zygote or GPU CHECK lands in the same file.
+const CRASH_DIAGNOSTICS = linuxCrashDiagnostics(path.dirname(DESKTOP_LOG_PATH))
+
+if (CRASH_DIAGNOSTICS) {
+  fs.mkdirSync(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
+
+  for (const [name, value] of CRASH_DIAGNOSTICS.switches) {
+    app.commandLine.appendSwitch(name, value)
+  }
+
+  crashReporter.start(CRASH_DIAGNOSTICS.crashReporter)
+}
+
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 // Automated teardown (Playwright's app.close(), harness scripts) quits with

@@ -1303,6 +1303,25 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
     # --- Custom-endpoint identity resolution (issue #7833) ---
 
+    def test_named_custom_child_pool_follows_requested_provider_not_endpoint_order(self):
+        """#45763 (salvage #89021): two named custom providers on one gateway URL keep separate pools; the child
+        leases the pool of the identity it inherited, not the first entry registered for that URL."""
+        from hermes_constants import get_hermes_home
+
+        url = "https://gateway.invalid/v1"
+        get_hermes_home().joinpath("config.yaml").write_text(
+            f"providers:\n  claude-ai:\n    api: {url}\n  open-ai:\n    api: {url}\n", encoding="utf-8",
+        )
+        parent = _make_mock_parent()
+        parent.provider, parent.base_url, parent.requested_provider = "custom", url, "custom:open-ai"
+        parent._credential_pool = None
+
+        with patch("tools.delegate_tool_config._loaded_pool", side_effect=lambda key: key) as loaded:
+            key = _resolve_child_credential_pool("custom", parent, url, effective_requested_provider="custom:open-ai")
+        loaded.assert_called_once()
+        self.assertIn("open-ai", key)
+        self.assertNotIn("claude", key)
+
 
     @patch(
         "tools.delegate_tool._load_config",

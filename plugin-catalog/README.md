@@ -73,7 +73,7 @@ version: "1.4.0"            # optional human label for the sha (quote it); shown
 image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
                             # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
 screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /docs/plugins/<name>
-readme: false               # optional; true renders the README FROM THE PINNED SHA on /docs/plugins/<name>
+readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 capabilities:
   provides_tools: []
@@ -93,8 +93,8 @@ code.
 Every entry gets a page at `https://hermes-agent.nousresearch.com/docs/plugins/<name>`
 and every maintainer a page at `/docs/plugins/by/<maintainer>`, both generated
 from these files at docs build time. `screenshots:` fills the page's gallery;
-`readme: true` makes the build fetch `README.md` (from `subdir` if set, else the
-repo root) **at the pinned sha** — GitHub and GitLab repos — and render it
+the build fetches the README (from `subdir` if set, else the repo root) **at the
+pinned sha** — GitHub and GitLab repos, on by default, `readme: false` opts out — and renders it
 through an allowlist (raw HTML dropped, links and images resolved against the
 pinned tree). The page therefore shows the README the reviewer read, and it
 changes only when a reviewed re-pin lands.

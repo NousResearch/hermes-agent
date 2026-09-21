@@ -32,6 +32,10 @@ def served_root(tmp_path, monkeypatch):
          "served_profiles": ["default", "coder"]}))
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    # Never read the developer's / CI's REAL host rendezvous record (superseded by the
+    # tests/conftest.py hook in #118097 once that lands).
+    (tmp_path / "locks").mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     import hermes_constants
     import gateway.status as status
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
@@ -184,7 +188,13 @@ def test_satellite_gateway_identity_does_not_imply_cron_health(served_root, monk
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         cr.cron_status()
-    assert "Scheduler host: default-profile multiplexer" in buf.getvalue()
+    # Multiplex-only: the ONE host gateway is named as the ticker, with the profiles it serves —
+    # the FULL line, so this cannot pass on the sibling "(multiplexing this profile)" rung.
+    assert f"Scheduler host: the host gateway (PID {os.getpid()}) serving profiles default, coder" \
+        in buf.getvalue()
+    # The remediation this rung prints must run for a served NAMED profile (`hermes gateway
+    # restart` exits 78 there).
+    assert "restart: hermes --profile default gateway restart" in buf.getvalue()
     # A live scheduler host alone does not prove this satellite's ticker is healthy.
     assert "has not reported a heartbeat" in buf.getvalue()
     assert "will fire automatically" not in buf.getvalue()

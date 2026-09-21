@@ -1257,6 +1257,9 @@ def _on_server_started(
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
+    # Published by /api/host/identity: an attaching `hermes dashboard` must never be routed to a
+    # headless backend (a URL with no UI behind it).
+    app.state.serves_spa = not headless
 
     # Positive process identity in the machine spawn ledger (+ Windows
     # kill-on-close job). Registered AFTER the bind so the entry carries the
@@ -1272,6 +1275,41 @@ def _on_server_started(
         attach_self_to_kill_on_close_job()
 
     _best_effort("process-identity registration", _register_identity)
+
+    # Host rendezvous (multiplex-only): the host lock + record that let a SECOND `hermes serve`
+    # for any profile find this process and attach instead of binding a second port. Published
+    # after the bind so the record carries the real port, and beside — not instead of — the
+    # spawn-ledger entry above, which Desktop's attach ladder reads.
+    def _publish_host_record() -> None:
+        from gateway import host_rendezvous as hr
+
+        outcome, error = hr.claim_host_lock(hr.ROLE_SERVE)
+        if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
+            _log.warning(
+                "Host backend lock could not be opened (%s); this backend is not discoverable. "
+                "This is NOT another backend holding it.", error)
+            return
+        if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
+            owner = hr.read_record(hr.ROLE_SERVE)
+            _log.warning(
+                "Another backend already owns this host (%s); this one bound anyway "
+                "(observe-only). Multiplex-only expects exactly one backend per host.",
+                hr.describe(owner) if owner else "owner unknown",
+            )
+            return
+        hr.publish_record(
+            hr.ROLE_SERVE,
+            host=host,
+            port=actual_port,
+            profiles=hr.served_profiles(),
+            # The live session token, so an attaching client of the same OS user can
+            # authenticate even when the backend is gated and `GET /` withholds it.
+            token=_SESSION_TOKEN,
+        )
+        # SIGTERM included: it is the normal stop, and it does not run atexit here.
+        hr.cleanup_on_exit(hr.ROLE_SERVE)
+
+    _best_effort("host rendezvous publish", _publish_host_record)
 
     _write_dashboard_ready_file(actual_port)
     # Port-discovery sentinel parsed by the Desktop spawn (matches either
@@ -1442,6 +1480,22 @@ def start_server(
     if _port_bind_conflict(host, port):
         _report_port_in_use(host, port)
         raise SystemExit(PORT_IN_USE_EXIT_CODE)
+
+    # LAST boot step, deliberately. One host process serves every profile and this one can be asked
+    # for any of them via ``?profile=``, so the decision is made here instead of on the first such
+    # request — activation is one-way, and everything the backend had already done by then
+    # (idle-reaper flushes, hosted rooms, cron) stayed on single-profile assumptions. It runs after
+    # the keepalive / auth gate / uvicorn build because activation FREEZES ``os.environ`` as the
+    # launch profile's credentials, and that snapshot is the only source for launch keys with no
+    # ``.env`` to rebuild from (systemd ``Environment=``, ``op run``, Compose): anything injected or
+    # rotated by a later boot step would otherwise be invisible for the process lifetime. No-op on a
+    # single-profile host and on one that pinned ``gateway.multiplex_profiles: false``.
+    try:
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
+
+        activate_multi_profile_hosting_eagerly()
+    except Exception:
+        _log.warning("eager multi-profile activation failed", exc_info=True)
 
     async def _serve():
         # startup split from main_loop so the bound (ephemeral) port is readable.

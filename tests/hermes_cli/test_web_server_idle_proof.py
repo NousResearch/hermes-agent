@@ -12,6 +12,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import json
@@ -158,6 +159,20 @@ def _read_until(proc: subprocess.Popen, token: str, timeout: float = 120.0):
     return hit.is_set(), lines
 
 
+def _probe_settled(port: int, settled, timeout: float = 20.0) -> tuple[int, dict]:
+    """The probe is stable BETWEEN ticks, not at every instant: the in-process cron ticker holds
+    retirement admission for its whole scan (#98745), so a single sample can say
+    ``retirement_admission`` for an idle resident, or name the admission instead of the cron ledger
+    for a busy child. Poll until *settled(body)* or the window closes; the last verdict is returned
+    either way, so a genuinely wrong state still fails the assertion."""
+    deadline = time.monotonic() + timeout
+    while True:
+        verdict = _probe(port)
+        if settled(verdict[1]) or time.monotonic() >= deadline:
+            return verdict
+        time.sleep(0.25)
+
+
 def _probe(port: int, token: str | None = TOKEN) -> tuple[int, dict]:
     req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health/idle",
                                  headers={"X-Hermes-Session-Token": token} if token else {})
@@ -166,6 +181,18 @@ def _probe(port: int, token: str | None = TOKEN) -> tuple[int, dict]:
             return resp.status, json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         return exc.code, {}
+
+
+def _await_verdict(port: int, accept, timeout: float = 60.0) -> tuple[tuple[int, dict], list]:
+    """Probe until ``accept(verdict)`` or the deadline; returns the last verdict and every one seen."""
+    deadline = time.monotonic() + timeout
+    seen: list[tuple[int, dict]] = []
+    while True:
+        verdict = _probe(port)
+        seen.append(verdict)
+        if accept(verdict) or time.monotonic() >= deadline:
+            return verdict, seen
+        time.sleep(0.2)
 
 
 @pytestmark_live
@@ -186,11 +213,20 @@ def test_live_pooled_children_prove_idle_or_busy_over_the_desktop_probe(tmp_path
             ready_line = next(l for l in lines if "HERMES_BACKEND_READY" in l)
             ports[name] = int(ready_line.strip().rsplit("port=", 1)[1])
 
-        verdicts = {name: _probe(port) for name, port in ports.items()}
+        # READY precedes quiescence: the desktop child's cron ticker runs its first tick right at
+        # start and holds retirement admission through the whole scan (``retirement_admission``),
+        # which on a loaded runner outlasts the first probe. A resident is "provably idle" once that
+        # startup work drains, so poll until the verdict settles instead of sampling once.
+        verdicts = {name: _probe_settled(port, lambda b: b.get("idle") is True)
+                    for name, port in ports.items() if name != "cron-busy"}
+        verdicts["cron-busy"], busy_seen = _await_verdict(
+            ports["cron-busy"], lambda v: str(v[1].get("detail", "")).startswith("cron:"))
         assert verdicts["resident-a"] == (200, {"ok": True, "idle": True, "reason": None}), verdicts
         assert verdicts["resident-b"] == (200, {"ok": True, "idle": True, "reason": None}), verdicts
         assert verdicts["cron-busy"] == (200, {
             "ok": True, "idle": False, "reason": "turn_in_flight", "detail": "cron:live-idle-proof-job"}), verdicts
+        # Whatever startup work shadowed the cron ledger, the busy child never once claimed idle.
+        assert all(body.get("idle") is False for _status, body in busy_seen), busy_seen
 
         status, body = _probe(ports["resident-a"], token=None)
         assert status == 401 and "idle" not in body

@@ -84,6 +84,16 @@ def _patch_gateway_discovery(isolated_update_runtime):
 
 
 class TestCmdUpdateNpmLockfileCache:
+    @pytest.fixture(autouse=True)
+    def _stub_npx_warmup(self):
+        """The npx cache warm-up is best-effort product behavior covered by its own
+        dedicated suite (tests/tools/test_browser_npx_warmup.py); stub it here so a
+        cold-cache, network-denied runner cannot stall inside a real npx (#115034).
+        Same convention as the autouse fixture in TestUpdateNodeDependencies."""
+        with patch(
+            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
+        ):
+            yield
     @staticmethod
     def _cache_file(hermes_root, project_root):
         cache_key = hashlib.sha256(str(project_root).encode()).hexdigest()[:12]
@@ -1139,6 +1149,18 @@ class TestNodeRuntimeNpmResolution:
     """Regression tests for #30271 — WSL must not run Windows npm against the
     Linux checkout, and a failed Node refresh must not report success."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_npx_warmup(self):
+        """The pre-install npx cache warm-up must stay out of these tests: it
+        resolves npx through the extended browser PATH, which a stock runner
+        satisfies, and spawns it via Popen — invisible to the subprocess.run
+        mocks below and unbounded on a cold-cache network-denied runner
+        (#115034). The warm itself has a dedicated suite."""
+        with patch(
+            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
+        ):
+            yield
+
 
 
 
@@ -1158,10 +1180,7 @@ class TestNodeRuntimeNpmResolution:
             lambda *a, **k: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
         )
 
-        with patch(
-            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
-        ):
-            failed = update_cmd._update_node_dependencies()
+        failed = update_cmd._update_node_dependencies()
         assert failed == ["ui-tui, web workspaces"]
         out = capsys.readouterr().out
         assert "mixed state" in out

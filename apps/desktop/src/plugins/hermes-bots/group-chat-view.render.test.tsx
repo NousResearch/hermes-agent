@@ -37,6 +37,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
         {text}
       </span>
     ),
+    Switch: () => null,
     Tip: ({ children }: { children: ReactNode }) => children,
     relativeTime: () => 'now',
     useI18n: () => ({ t: { common: { cancel: 'Cancel', save: 'Save' } } }),

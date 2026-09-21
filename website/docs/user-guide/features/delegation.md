@@ -357,24 +357,28 @@ By default there is **no wall-clock timeout** on subagents. Children fail only f
 
 Genuinely stuck children are still detected on every runtime, with or without a configured cap: the heartbeat staleness monitor watches each child's progress signals (API calls, tool starts, activity-timestamp ticks). A child whose progress is completely frozen past the stale threshold — 450s idle between turns, 1200s while inside a tool — is interrupted and its wait is **abandoned**: the parent gets a `status: "timeout"` entry whose error reads `Subagent stopped making progress after N API call(s) — no activity for 450s (heartbeat stale threshold); the pending worker was abandoned.` The wait ends even in one-shot runs (`hermes chat -Q`, Bot Chat one-shot, cron) that have no gateway inactivity watchdog behind them, so a wedged child can no longer hold the turn or its session lease forever. An in-flight model wait still counts as progress — subagents refresh the activity clock while waiting on the provider, so a slow local / long-prefill completion is not treated as stalled.
 
-If you want a hard cap anyway (e.g. cost control on unattended cron-driven delegation), opt in per-install:
+If you want a cap anyway (e.g. cost control on unattended cron-driven delegation), opt in per-install:
 
 ```yaml
 delegation:
   child_timeout_seconds: 0     # default: 0 = no timeout
-  # child_timeout_seconds: 1800  # opt-in hard cap (floor 30s)
+  # child_timeout_seconds: 1800  # opt-in inactivity cap (floor 30s)
 ```
 
-A positive value enforces a hard wall-clock limit on each child; `0` or a negative value disables it.
+A positive value bounds **inactivity, not total runtime**: it is the longest a child may go with *no* progress (no completed API call, no tool change, no activity-clock tick) before it is abandoned. Every sign of progress restarts the window, so a child waiting on a multi-minute completion — the case that used to lose finished work — is never killed for taking long, while a child that has genuinely stopped moving is still caught (and an in-flight request is bounded independently by the per-call stale watchdog). `0` or a negative value disables the cap; the heartbeat staleness monitor below stays active either way.
+
+At ~80% of an idle window the child receives a one-line `[delegation budget warning]` through its steer channel (delivered at its next iteration boundary) telling it how long it has been idle and to return its summary now, so a slow-but-recoverable child can wrap up instead of losing its context. The warning fires once per idle window and re-arms when progress resumes.
 
 When a configured cap or the stale threshold fires, the child's result carries
 structured timeout metadata alongside the error message so parents and hooks
 can distinguish a stopwatch kill from other failures without parsing text:
 `timeout_seconds` (whichever limit actually ended the wait — the stale
 threshold when it pre-empts a longer configured cap, otherwise the cap),
-`timed_out_after_seconds` (actual wall clock), and `timeout_phase`
+`timed_out_after_seconds` (actual wall clock), `last_event_age` (how long
+the child had been silent when the wait ended — the fast way to tell a slow
+provider from a runaway), and `timeout_phase`
 (`before_first_llm_call` when the child never reached its first request,
-`after_llm_calls` otherwise). All three are `null` on non-timeout errors.
+`after_llm_calls` otherwise). All four are `null` on non-timeout errors.
 
 ## Failure Visibility
 
@@ -446,6 +450,8 @@ The classic CLI, TUI, and Desktop automatically show live subagents above the co
 | Desktop | Expand **Subagents** above the composer, then select a worker to inspect its activity and details | **Steer** queues guidance; **Stop** requests interruption for that worker |
 
 Closing the terminal monitor returns to your existing composer draft. Steering uses its own input and acknowledges **queued**, not delivery: the child consumes guidance at a checkpoint. Stop does not interrupt unrelated siblings.
+
+**Background processes share the dock.** Anything the agent starts with `terminal(background=true)` (a build, a test run, a dev server, a CI poller) appears in a **Processes** block under the subagent rows the moment it spawns — `⚙ <command> · 42s · last: <latest output line>` — and flips in place to `✔ exit 0` / `✘ exit 1` / `✘ killed` when it ends, then leaves the dock about 60 seconds later (the completion notification in the conversation is the durable record). In the Classic CLI monitor, process rows sit under the agents: **Enter** shows the process log tail and **x** stops that one process; processes cannot be steered. The TUI `/agents` overlay lists the same block under the spawn tree (`/stop` ends every background process). Desktop shows the same processes as tiles above the composer.
 
 Press **F7** in the Classic CLI or TUI composer to toggle the dock between its multi-row preview and a single shaded summary line. The summary retains the live count and expand/restore hints, adding activity when space permits. Typing and sending remain available; opening and closing the monitor preserves your draft and insertion point. This is a local presentation choice, not a saved config change.
 
@@ -542,6 +548,8 @@ delegate_task(
 - `delegation.orchestrator_enabled: false`: global kill switch that forces every child to `leaf` regardless of the `role` parameter.
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
+
+**One-shot runs are capped separately.** `hermes chat -q` / `--oneshot` sessions may spawn at most `delegation.oneshot_max_children` subagents in total (default `2`, `0` = unlimited). A one-shot run has no later turn to receive results, and in benchmark trajectories most of its spawns were "independently review my own work" rather than parallel work — each such child re-pays a cold system prompt and re-reads the repo. Interactive and gateway sessions are unaffected.
 
 ## Lifetime and Durability
 

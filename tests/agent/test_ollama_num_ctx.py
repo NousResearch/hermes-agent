@@ -207,3 +207,21 @@ class TestServedNumCtxSatisfiesTheFloor:
         with pytest.raises(ValueError, match="below the minimum"):
             _build_agent({"agent": {}, "model": {"ollama_num_ctx": 65536}}, probed_ctx=40960,
                          base_url="https://openrouter.ai/api/v1")
+
+
+class TestFloorRefusalNamesTheLocalServerHonestly:
+    """#87075: a local OpenAI-compatible server without /api/show (llama.cpp, vLLM) that serves a
+    sub-64K window must get server-agnostic guidance — raise the server's context or set
+    model.ollama_num_ctx — while a hosted route keeps the model.context_length advice."""
+
+    def test_local_refusal_names_server_flag_and_num_ctx_key(self):
+        with pytest.raises(ValueError) as exc:
+            _build_agent({"agent": {}, "model": {}}, probed_ctx=32768, base_url="http://127.0.0.1:8422/v1")
+        msg = str(exc.value)
+        assert "llama.cpp: -c 64000" in msg and "model.ollama_num_ctx" in msg
+        assert "Choose a model" not in msg
+
+    def test_hosted_refusal_keeps_context_length_advice(self):
+        with pytest.raises(ValueError, match="model.context_length") as exc:
+            _build_agent({"agent": {}, "model": {}}, probed_ctx=32768, base_url="https://openrouter.ai/api/v1")
+        assert "ollama_num_ctx" not in str(exc.value)

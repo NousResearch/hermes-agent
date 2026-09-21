@@ -38,6 +38,10 @@ SHUTDOWN_GRACE = 1.0  # seconds after `exit` before SIGTERM, and between SIGTERM
 # Retry policy for transient ContentModified errors: 0.5, 1.0, 2.0s.
 MAX_CONTENT_MODIFIED_RETRIES = 3
 RETRY_BASE_DELAY = 0.5
+# Last server stderr lines kept for failure reports; the V8 heap-abort trace that explains a
+# tsserver SIGABRT is otherwise only visible at DEBUG, so the WARNING a user actually reads
+# cannot distinguish "binary missing" from "server ran out of memory".
+STDERR_TAIL_LINES = 30
 # Cap on tracked documents: each _DocState pins the file's full text here AND the server mirrors
 # every open document, so an uncapped dict pins everything a long session ever touched on both
 # sides of the pipe until the idle reaper kills the whole client (#62950).  64 covers an active
@@ -99,7 +103,8 @@ def _end_position(text: str) -> Dict[str, int]:
     # splitlines drops a trailing newline: the end is then the start of the next (empty) line.
     if text.endswith(("\n", "\r")):
         return {"line": len(lines), "character": 0}
-    return {"line": len(lines) - 1, "character": len(lines[-1])}
+    # Positions use UTF-16 code units, matching our advertised positionEncodings.
+    return {"line": len(lines) - 1, "character": len(lines[-1].encode("utf-16-le")) // 2}
 
 
 @dataclass
@@ -147,6 +152,9 @@ class LSPClient:
 
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._stderr_task: Optional[asyncio.Task] = None
+        # Ring buffer of the most recent server stderr lines, surfaced when spawn/initialize fails.
+        self._stderr_tail: List[str] = []
+        self._exit_code: Optional[int] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._cleanup_lock = asyncio.Lock()
         self._next_id: int = 0
@@ -206,9 +214,32 @@ class LSPClient:
             if not self._connection_is_open():
                 raise LSPProtocolError("server connection closed during initialization")
             self._state = "running"
-        except Exception:
+        except BaseException as e:
             self._state = "error"
-            await self._cleanup_process()
+            # Reap the server now so the failure report can name the exit status (a Node heap
+            # abort dies on SIGABRT; without this the caller logs an opaque JSON-RPC error).
+            # The reader loop may have run ``_cleanup_process`` first — it records the code
+            # too, so both orderings leave ``failure_details`` populated.
+            proc = self._proc
+            if proc is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+                if proc.returncode is not None:
+                    self._exit_code = proc.returncode
+                stderr_task = self._stderr_task
+                if stderr_task is not None:  # brief window to collect the abort trace
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(asyncio.shield(stderr_task), timeout=0.5)
+            # ``_BackgroundLoop.run`` cancels this task when its outer budget expires.
+            # CancelledError is a BaseException on supported Python versions, and cleanup
+            # must outlive that cancellation or the spawned server escapes all tracking.
+            await asyncio.shield(self._cleanup_process())
+            # Attach the details to the ORIGINAL exception rather than re-instantiating its
+            # type: LSPRequestError's ctor is (code, message, data), so ``type(e)(text)``
+            # would surface as a TypeError instead of the LSP error the caller logs.
+            details = self.failure_details()
+            if details and isinstance(e, Exception):
+                e.args = (f"{e} ({details})",)
             raise
 
     async def _spawn(self) -> None:
@@ -240,8 +271,32 @@ class LSPClient:
             while line := await self._proc.stderr.readline():
                 if text := line.decode("utf-8", errors="replace").rstrip():
                     logger.debug("[%s] stderr: %s", self.server_id, text[:1000])
+                    self._stderr_tail.append(text[:1000])
+                    del self._stderr_tail[:-STDERR_TAIL_LINES]
         except (asyncio.CancelledError, OSError):
             pass
+
+    def _describe_exit(self) -> str:
+        """Human rendering of the server exit status; empty when the process is still live."""
+        proc = self._proc
+        if self._exit_code is not None:
+            code = self._exit_code
+        elif proc is not None and proc.returncode is not None:
+            code = proc.returncode
+        else:
+            return ""
+        if code < 0:
+            return f"server exited on signal {-code}"
+        return f"server exited with code {code}"
+
+    def failure_details(self) -> str:
+        """Exit status + last stderr lines for a failed spawn/initialize; empty for a live server."""
+        parts: List[str] = []
+        if exit_desc := self._describe_exit():
+            parts.append(exit_desc)
+        if self._stderr_tail:
+            parts.append("last stderr lines: " + " | ".join(self._stderr_tail))
+        return "; ".join(parts)
 
     def _dispatch(self, msg: dict) -> None:
         kind, key = classify_message(msg)
@@ -348,17 +403,28 @@ class LSPClient:
             for t in live:
                 t.cancel()
             await asyncio.gather(*live, return_exceptions=True)
-            if proc is None or proc.returncode is not None:
+            if proc is None:
+                return
+            if proc.returncode is not None:
+                if self._exit_code is None:
+                    self._exit_code = proc.returncode
                 return
             try:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-                except asyncio.TimeoutError:
+                # ``shutdown`` has already given the protocol a grace period.  Hard-kill
+                # the tree while its ancestry is still observable: waiting for the launcher
+                # after SIGTERM can let an ignoring descendant become reparented and escape.
+                # Windows maps this to a synchronous taskkill /T /F (up to 15s), so the
+                # kill runs off the event loop.
+                from agent.deadline import kill_process_tree
+
+                if not await asyncio.to_thread(kill_process_tree, proc.pid):
                     proc.kill()
-                    await proc.wait()
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
             except ProcessLookupError:
                 pass
+            if self._exit_code is None and proc.returncode is not None:
+                self._exit_code = proc.returncode
 
     # ---- request / notification plumbing ----
 

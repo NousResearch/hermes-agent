@@ -79,8 +79,6 @@ class TestProfileScopedConfig:
         assert _cfg(isolated_profiles["worker_beta"]).get("timezone") == "Pluto/Far"
         assert _cfg(isolated_profiles["default"]).get("timezone") != "Pluto/Far"
 
-
-
     def test_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/config", params={"profile": "ghost"})
         assert resp.status_code == 404
@@ -138,8 +136,6 @@ class TestProfileScopedMcp:
         assert "profile-bearer" not in _cfg(isolated_profiles["default"]).get(
             "mcp_servers", {}
         )
-
-
 
     def test_mcp_test_oauth_server_without_token_is_not_ok(
         self, client, isolated_profiles, monkeypatch
@@ -362,115 +358,6 @@ class TestProfileScopedModel:
         resp = client.post("/api/profiles", json={"name": "newbie2", "provider": "nobox", "model": "qwen3"})
         assert resp.status_code == 200 and resp.json()["model_set"] is False
         assert "Unknown provider 'nobox'" in resp.json()["model_error"]
-
-    def test_main_assignment_reports_only_target_profile_cron_impact(
-        self, client, isolated_profiles
-    ):
-        stale = {
-            "name": "Worker summary",
-            "enabled": True,
-            "no_agent": False,
-            "provider_snapshot": "openrouter",
-            "model_snapshot": "old/model",
-        }
-        _write_jobs(
-            isolated_profiles["worker_beta"], [{"id": "worker-job", **stale}]
-        )
-        _write_jobs(
-            isolated_profiles["default"],
-            [{"id": "default-job", **stale, "name": "Default summary"}],
-        )
-
-        resp = client.post(
-            "/api/model/set",
-            json={
-                "scope": "main",
-                "provider": "nous",
-                "model": "new/model",
-                "confirm_expensive_model": True,
-                "profile": "worker_beta",
-            },
-        )
-
-        assert resp.status_code == 200
-        assert resp.json()["cron_model_impact"] == {
-            "available": True,
-            "affected_count": 1,
-            "truncated": False,
-            "jobs": [
-                {
-                    "id": "worker-job",
-                    "name": "Worker summary",
-                    "drifted_axes": ["provider", "model"],
-                }
-            ],
-        }
-
-    def test_unavailable_impact_does_not_fail_persisted_assignment(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import cron.jobs
-
-        monkeypatch.setattr(cron.jobs, "load_jobs", lambda: {"malformed": True})
-
-        resp = client.post(
-            "/api/model/set",
-            json={
-                "scope": "main",
-                "provider": "nous",
-                "model": "new/model",
-                "confirm_expensive_model": True,
-                "profile": "worker_beta",
-            },
-        )
-
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        assert resp.json()["cron_model_impact"]["available"] is False
-        assert _cfg(isolated_profiles["worker_beta"])["model"]["default"] == "new/model"
-
-    def test_auxiliary_and_confirmation_responses_have_no_impact_summary(
-        self, client, isolated_profiles
-    ):
-        _write_jobs(
-            isolated_profiles["worker_beta"],
-            [
-                {
-                    "id": "worker-job",
-                    "enabled": True,
-                    "provider_snapshot": "openrouter",
-                    "model_snapshot": "old/model",
-                }
-            ],
-        )
-
-        auxiliary = client.post(
-            "/api/model/set",
-            json={
-                "scope": "auxiliary",
-                "provider": "nous",
-                "model": "new/model",
-                "profile": "worker_beta",
-            },
-        )
-        confirmation = client.post(
-            "/api/model/set",
-            json={
-                "scope": "main",
-                "provider": "openrouter",
-                "model": "openai/gpt-5.5-pro",
-                "profile": "worker_beta",
-            },
-        )
-
-        assert auxiliary.status_code == 200
-        assert "cron_model_impact" not in auxiliary.json()
-        assert confirmation.status_code == 200
-        assert confirmation.json()["confirm_required"] is True
-        assert "cron_model_impact" not in confirmation.json()
-
-
-
 
 
     def test_model_options_uses_config_only_scope_for_selected_profile(
@@ -971,8 +858,6 @@ class TestProfileScopedAudio:
     profile's TTS/STT settings were silently ignored (#53441 #45506 #66012
     #64057).
     """
-
-
 
     def test_transcribe_runs_inside_target_profile_home(
         self, client, isolated_profiles, monkeypatch

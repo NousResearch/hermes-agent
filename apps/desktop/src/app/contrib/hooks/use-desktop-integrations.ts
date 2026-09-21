@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { openConnectionDoneLink } from '@/components/assistant-ui/connector-tool'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
@@ -17,6 +18,7 @@ import {
   invokePluginNotifyActivate,
   respondToApprovalAction
 } from '@/store/native-notifications'
+import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
 import {
@@ -295,6 +297,9 @@ export function useDesktopIntegrations({
 
   // hermes:// deep links:
   //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
+  //  - plugin/install?catalog=<name> → curated-catalog lookup, then the same
+  //    reviewed/pinned install modal an in-app catalog pick opens; unknown
+  //    names toast an error and never fall back to a git-path install.
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
@@ -314,6 +319,18 @@ export function useDesktopIntegrations({
 
       const action = resolveDeepLinkAction(payload)
 
+      // The user finished a sign-in in their browser and the portal sent them back. Show the card
+      // and wake its watcher; the link's status is not allowed to move any row.
+      if (action.type === 'connection-done') {
+        void openConnectionDoneLink(action.op, navigate, runtimeId => {
+          const viaLocalMap = storedSessionIdForNotification(runtimeId, runtimeIdByStoredSessionId.current)
+
+          return viaLocalMap !== runtimeId ? viaLocalMap : (storedSessionIdForRuntimeId(runtimeId) ?? runtimeId)
+        })
+
+        return
+      }
+
       if (action.type === 'composer-blueprint') {
         const slots = Object.entries(action.params || {})
           .map(([k, v]) => {
@@ -326,6 +343,12 @@ export function useDesktopIntegrations({
         const command = `/blueprint ${action.name}${slots ? ' ' + slots : ''}`
         requestComposerInsert(command, { mode: 'block', target: 'main' })
         requestComposerFocus('main')
+
+        return
+      }
+
+      if (action.type === 'plugin-catalog-install') {
+        void requestPluginCatalogInstallFromDeepLink(action.name)
 
         return
       }
@@ -354,7 +377,7 @@ export function useDesktopIntegrations({
     void window.hermesDesktop?.signalDeepLinkReady?.()
 
     return () => unsubscribe?.()
-  }, [navigate])
+  }, [navigate, runtimeIdByStoredSessionId])
 
   // ⌘W via the macOS menu accelerator → close the focused tab; if nothing is
   // closeable, fall back to closing the window (so ⌘W still works as the

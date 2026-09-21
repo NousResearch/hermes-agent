@@ -261,6 +261,10 @@ export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
+### `Failed building wheel for uvloop`
+
+`uvloop` bundles libuv, whose `./configure` does not run on Android. Hermes keeps it out of the core install and of the `termux` / `termux-all` extras — `uvicorn` falls back to the stdlib asyncio loop, which the dashboard and gateway run fine on. If you see this error, you are installing an extra that includes `uvloop` (for example `[all]`): install `.[termux]` or `.[termux-all]` instead.
+
 ### `hermes doctor` says ripgrep or Node is missing
 
 Install them with Termux packages:

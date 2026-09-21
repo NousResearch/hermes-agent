@@ -391,7 +391,7 @@ or allow-all opt-in are read from the owning profile's `.env` — the default
 profile opting into open access never opens a secondary profile's bot, and a
 secondary that opts in only in its own `.env` is honored. The same holds for
 per-bot behaviour written in a profile's `config.yaml` (`require_mention`,
-`mention_patterns`, `allow_bots`, `reactions`, `auto_thread`, `dm_policy`,
+`mention_patterns`, `allow_bots`, `reactions`, `auto_thread`, `free_response_auto_thread`, `dm_policy`,
 `ignored_channels`, Matrix `session_scope`, …): a secondary profile's YAML never
 lands in the shared process environment, so it cannot become the default
 profile's policy, and the default profile's YAML never governs a secondary

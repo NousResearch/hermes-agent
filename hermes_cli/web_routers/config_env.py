@@ -18,11 +18,11 @@ from hermes_cli.web_server_config import (
     _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
-    _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_ids,
+    _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_entries,
 )
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, redact_key, _deep_merge
-from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
+from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -382,6 +382,18 @@ def _config_api_key_is_env_ref(endpoint_id: str) -> bool:
     return bool(isinstance(raw_key, str) and re.search(r"\$\{[^}]+\}", raw_key))
 
 
+_DESKTOP_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages"}
+
+
+def _endpoint_api_mode(entry: Dict[str, Any]) -> str:
+    """The transport a providers entry pins (``api_mode``, or the v12 migration's ``transport``
+    spelling), canonicalized; ``""`` = runtime auto-detect. Mirrors the read order of
+    ``runtime_provider_custom._get_named_custom_provider``."""
+    raw = str(entry.get("api_mode") or entry.get("transport") or "")
+    mode = _canonical_api_mode(raw).lower()
+    return mode if mode in _DESKTOP_API_MODES else ""
+
+
 def _endpoint_row(
     endpoint_id: str, name: str, base_url: str, model: str, models: List[str], context_length,
     discover_models: bool, key_entry: Dict[str, Any], is_current: bool, source: str,
@@ -389,6 +401,7 @@ def _endpoint_row(
     has_api_key, api_key_preview = _api_key_display(key_entry)
     return {
         "id": endpoint_id, "name": name, "base_url": base_url, "model": model, "models": models,
+        "api_mode": _endpoint_api_mode(key_entry),
         "context_length": context_length, "discover_models": discover_models,
         "has_api_key": has_api_key, "api_key_preview": api_key_preview,
         "is_current": is_current, "source": source,
@@ -534,28 +547,65 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
 
     # Merge onto the existing entry rather than replacing it: a providers.<name>
     # block can carry hand-written keys the dashboard has no field for
-    # (``api_mode``, ``key_env``/``api_key_env``, ``extra_headers`` — possibly
-    # with credentials — ``request_overrides``); rebuilding from scratch
-    # silently dropped them on an unrelated edit.
+    # (``key_env``/``api_key_env``, ``extra_headers`` — possibly with
+    # credentials — ``request_overrides``); rebuilding from scratch silently
+    # dropped them on an unrelated edit.
     entry: Dict[str, Any] = dict(existing)
     entry.update({
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),
     })
+    # A Responses-only or Anthropic-compatible host 404s on the runtime's
+    # Chat Completions default, so the panel pins the transport the same way
+    # ``hermes model`` does (``api_mode``; the runtime also reads the v12
+    # ``transport`` spelling, so drop it rather than let the two disagree).
+    # ``None`` = older UI payload: keep whatever is hand-written. See #93622.
+    if body.api_mode is not None:
+        entry.pop("transport", None)
+        if body.api_mode:
+            entry["api_mode"] = body.api_mode
+        else:
+            entry.pop("api_mode", None)
     # Same for the model map, so existing models keep their context lengths.
     # ``body.models`` is the catalogue the panel's Test button discovered;
     # without it only the hand-typed model survived Save. A payload with no
     # ``models`` (older UI) still ensures the named default is present.
     # See #69988.
+    details = {d.id.strip(): d for d in (body.model_details or ()) if d.id.strip()}
     existing_models = entry.get("models")
     models_map: Dict[str, Any] = dict(existing_models) if isinstance(existing_models, dict) else {}
-    for candidate in (*(body.models or ()), model):
+    for candidate in (*(body.models or ()), *details, model):
         model_id = str(candidate).strip()
         if not model_id:
             continue
         current = models_map.get(model_id)
-        models_map[model_id] = dict(current) if isinstance(current, dict) else {}
+        row = dict(current) if isinstance(current, dict) else {}
+        detail = details.get(model_id)
+        if detail is not None:
+            # Keep the alias metadata ``/v1/models`` advertised so the catalogue
+            # still says what ``gpt-5.6-sol-high`` stands for after Save.
+            row.update({k: v.strip() for k, v in (("canonical_model", detail.canonical_model),
+                                                  ("reasoning_effort", detail.reasoning_effort)) if v and v.strip()})
+        models_map[model_id] = row
     entry["models"] = models_map
+    # A reasoning alias is not a model the inference route accepts literally:
+    # persist the canonical model and pin its effort through the one runtime
+    # chokepoint (``agent.reasoning_overrides`` → ``resolve_reasoning_config``).
+    alias = details.get(model)
+    canonical = (alias.canonical_model or "").strip() if alias is not None else ""
+    if canonical and canonical != model:
+        from hermes_constants import parse_reasoning_effort
+        effort = (alias.reasoning_effort or "").strip().lower()
+        if parse_reasoning_effort(effort) is not None:
+            agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+            overrides = agent_cfg.get("reasoning_overrides")
+            overrides = dict(overrides) if isinstance(overrides, dict) else {}
+            overrides[canonical] = effort
+            agent_cfg["reasoning_overrides"] = overrides
+            cfg["agent"] = agent_cfg
+        model = canonical
+        entry["model"] = model
+        models_map.setdefault(model, {})
     if body.context_length and body.context_length > 0:
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
@@ -714,23 +764,100 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
-    url = base_url + "/models"
     headers = {"Accept": "application/json"}
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
 
-    try:
-        async with _endpoint_probe_client(url, 8.0) as client:
-            resp = await client.get(url, headers=headers)
-    except Exception:
-        return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
-
+    resolved, resp = await _probe_openai_compatible_models(base_url, headers)
+    if resp is None:
+        return {"ok": False, "reachable": False, "message": f"Could not reach {base_url}/models.", "models": []}
     if resp.status_code in (401, 403):
         return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
     if not resp.is_success:
         return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
+    # ``models`` stays the bare id list older clients read; ``model_details`` keeps the
+    # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
+    entries = _parse_model_entries(resp)
+    ids = [e["id"] for e in entries]
+    # /models answering proves nothing about the transport the runtime will POST to:
+    # a Responses-only host lists models fine and 404s every /chat/completions (#93622).
+    # Probe the route the saved mode (or the runtime's URL auto-detect) actually uses, on the
+    # base that actually served /models (#65488) — that is the URL the runtime will persist.
+    mode = _canonical_api_mode(body.api_mode or "").lower() or _auto_api_mode(resolved)
+    probe_model = (body.model or "").strip() or (ids[0] if ids else "")
+    try:
+        async with _endpoint_probe_client(resolved, 8.0) as client:
+            missing = await _probe_transport_route(client, resolved, mode, probe_model, headers)
+    except Exception:
+        missing = ""  # inconclusive (see _probe_transport_route): never block on a transport error
 
-    return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+    result = {"ok": True, "reachable": True, "message": "", "models": ids, "model_details": entries,
+              "transport_checked": mode, "resolved_base_url": resolved}
+    if missing:
+        result.update(ok=False, message=missing)
+    return result
+
+async def _probe_openai_compatible_models(base_url: str, headers: Optional[dict]) -> Tuple[str, Any]:
+    """GET ``{base}/models``, then ``{base}/v1/models`` (or the ``/v1``-stripped variant) when the
+    first answers a non-success. Returns ``(resolved_base_url, response)`` — the base that served the
+    model list is what the caller must PERSIST: the runtime appends ``/chat/completions`` to the saved
+    URL verbatim, so a bare host root that only "detected" via ``/v1/models`` would 404 every chat
+    (#65488). ``response`` is None when no candidate could be reached at all."""
+    base = base_url.rstrip("/")
+    alternate = base[:-3].rstrip("/") if base.lower().endswith("/v1") else base + "/v1"
+    resolved, resp = base, None
+    async with _endpoint_probe_client(base, 8.0) as client:
+        for candidate in (base, alternate):
+            try:
+                candidate_resp = await client.get(candidate + "/models", headers=headers)
+            except Exception:
+                continue
+            # Keep the most telling failure: a 401/403 from the /v1 alternate says "server is
+            # there, key rejected", which beats the typed root's 404 (wrong path).
+            if resp is None or candidate_resp.is_success or resp.status_code == 404:
+                resolved, resp = candidate, candidate_resp
+            if candidate_resp.is_success:
+                break
+    return resolved, resp
+
+
+_TRANSPORT_ROUTES = {"chat_completions": "/chat/completions", "codex_responses": "/responses",
+                     "anthropic_messages": "/messages"}
+_TRANSPORT_LABELS = {"chat_completions": "Chat Completions", "codex_responses": "Responses API",
+                     "anthropic_messages": "Anthropic Messages"}
+
+
+def _auto_api_mode(base_url: str) -> str:
+    """The transport the runtime falls back to for an endpoint without a pinned ``api_mode``
+    (same resolver as ``runtime_provider_custom._custom_runtime``)."""
+    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+    return _detect_api_mode_for_url(base_url) or "chat_completions"
+
+
+async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: Dict[str, str]) -> str:
+    """POST a 1-token request to ``mode``'s route; return a failure message when the host does
+    not serve it (404/405/501), ``""`` otherwise. Any other status — 200, 400 (bad body), 401,
+    422, 429 — means the route exists, which is all the check needs to know; a network error or
+    timeout (a local server still loading the model) is inconclusive and does not block."""
+    route = _TRANSPORT_ROUTES.get(mode)
+    if route is None:
+        return ""
+    if mode == "anthropic_messages":
+        payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
+        token = headers.get("Authorization", "").removeprefix("Bearer ")
+        headers = {**headers, "anthropic-version": "2023-06-01", **({"x-api-key": token} if token else {})}
+    elif mode == "codex_responses":
+        payload = {"model": model, "input": "hi", "max_output_tokens": 16}
+    else:
+        payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
+    try:
+        resp = await client.post(base_url + route, json=payload, headers=headers)
+    except Exception:
+        return ""
+    if resp.status_code not in (404, 405, 501):
+        return ""
+    return (f"{base_url}/models answered, but POST {route} returned HTTP {resp.status_code}: this host "
+            f"does not serve the {_TRANSPORT_LABELS[mode]} API. Pick the API mode it does serve.")
 
 
 def _endpoint_probe_client(url: str, timeout: float):
@@ -766,20 +893,20 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # default. The optional API key is sent so servers that require auth on
     # ``/v1/models`` still enumerate instead of returning an empty list.
     if key == "OPENAI_BASE_URL":
-        url = value.rstrip("/") + "/models"
         api_key = (body.api_key or "").strip()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-        try:
-            async with _endpoint_probe_client(url, 8.0) as client:
-                resp = await client.get(url, headers=headers)
-        except Exception:
+        resolved, resp = await _probe_openai_compatible_models(value, headers)
+        url = resolved + "/models"
+        if resp is None:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
-        models = _parse_model_ids(resp)
+        entries = _parse_model_entries(resp)
+        models = [e["id"] for e in entries]
         if not models and not resp.is_success:
             # A proxy/gateway error page parses as "no models"; name the status instead so the
             # GUI does not tell the user to "start a model" on a server that answered.
             return {"ok": False, "reachable": True, "message": f"{url} answered HTTP {resp.status_code}.", "models": []}
-        return {"ok": True, "reachable": True, "message": "", "models": models}
+        return {"ok": True, "reachable": True, "message": "", "models": models, "model_details": entries,
+                "resolved_base_url": resolved}
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:
@@ -789,8 +916,9 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     url, auth = probe
     if key == "GEMINI_API_KEY":
         from agent.gemini_native_adapter import normalize_gemini_base_url
-        # A Vertex express key (AQ.) can only 403 on the Studio host; normalize routes it to aiplatform.
-        url = normalize_gemini_base_url(url.rsplit("/models", 1)[0], value) + "/models"
+        # Normalize guarantees the version segment; the key itself never decides the surface —
+        # AQ. keys exist for both AI Studio and Vertex express mode (#115306).
+        url = normalize_gemini_base_url(url.rsplit("/models", 1)[0]) + "/models"
     headers = {"Accept": "application/json"}
     params = {}
     if auth == "bearer":

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -299,6 +300,47 @@ class TestGenerate:
             {"url": "https://x.com/a.png", "strength": 0.6},
             {"url": "https://x.com/b.png", "strength": 1.2},
         ]
+
+    def test_local_style_reference_is_embedded_as_data_uri(self, tmp_path):
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        image = tmp_path / "ref.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+        submit = _submit_response()
+        poll = _poll_response(_completed_job())
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+             patch("plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            KreaImageGenProvider().generate(prompt="test", image_url=str(image), upscale=False)
+
+        [ref] = mock_post.call_args.kwargs["json"]["image_style_references"]
+        expected = "data:image/png;base64," + base64.b64encode(image.read_bytes()).decode("ascii")
+        assert ref == {"url": expected, "strength": 0.6}
+
+    def test_oversized_local_style_reference_is_refused_before_submit(self, tmp_path, monkeypatch):
+        from plugins.image_gen import krea
+
+        monkeypatch.setattr(krea, "_MAX_LOCAL_REFERENCE_BYTES", 4)
+        image = tmp_path / "big.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        with patch("plugins.image_gen.krea.requests.post") as mock_post:
+            result = krea.KreaImageGenProvider().generate(prompt="test", image_url=str(image))
+
+        assert result["error_type"] == "source_too_large"
+        mock_post.assert_not_called()
+
+    def test_missing_local_style_reference_is_refused_before_submit(self):
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        with patch("plugins.image_gen.krea.requests.post") as mock_post:
+            result = KreaImageGenProvider().generate(
+                prompt="test", reference_image_urls=["/nowhere/ref.png"])
+
+        assert result["error_type"] == "invalid_image_url"
+        mock_post.assert_not_called()
 
     def test_unknown_kwargs_ignored(self):
         """Forward-compat: unknown kwargs must not break generate()."""

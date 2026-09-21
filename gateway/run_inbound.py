@@ -1058,7 +1058,10 @@ class GatewayInboundMixin:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
+                    from gateway.plugin_commands import invoke_plugin_command_handler
+                    result = invoke_plugin_command_handler(
+                        plugin_handler, event.get_command_args().strip(), source,
+                    )
                     if asyncio.iscoroutine(result):
                         result = await result
                     return True, str(result) if result else None, command

@@ -448,6 +448,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 wire_api_observers(agent, self._approval_owner, want_interim_messages)
         # A platform send can't be retracted; a local viewer withdraws the keyed notice.
         agent.notice_clear_callback = self._local_notice_clear_callback_sync if local_viewer_turn(self) else None
+        # Fallback route health is persisted independently of turn boundaries. The callback is
+        # optional and receives an already-sanitized snapshot; persistence itself runs on the
+        # callback's daemon thread so a slow filesystem cannot delay completion.
+        agent.fallback_status_callback = lambda _snapshot: runner._persist_active_agents()
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier
         self._merge_turn_request_overrides(agent, turn_route)

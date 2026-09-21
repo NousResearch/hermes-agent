@@ -84,6 +84,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     "terminal.vercel_runtime": _select("Vercel Sandbox runtime", "node24", "node22", "python3.13"),
     "terminal.modal_mode": _select("Modal sandbox mode", "sandbox", "function"),
+    "terminal.worker_scope_isolation": _select(
+        "cgroup isolation for local background commands (auto: the supervised gateway only; "
+        "always: also this host when it runs under a systemd unit — dashboard/serve backend, "
+        "embedded WebUI — so a worker OOM cannot take the host down)",
+        "auto", "always",
+    ),
     "proxy.enabled": {
         "type": "boolean",
         "description": (

@@ -402,6 +402,19 @@ terminal:
   home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
+  # Hard lifetime cap for tracked background processes (`terminal(background=true)`). Past it the
+  # registry kills the whole process tree and reports the termination like any other; this bounds
+  # a forgotten child (a headless browser, a dev server) the model started and never closed, which
+  # would otherwise live in the host's cgroup until restart. 0 disables. Default 86400 (24h).
+  # background_max_age_seconds: 86400
+  # cgroup isolation for local background commands:
+  #   auto   - default: a worker gets its own `systemd-run --user --scope` only when this process
+  #            IS the supervised gateway.
+  #   always - also isolate inside any other Hermes host running under a systemd unit (a
+  #            dashboard/serve backend, or an embedding host such as hermes-webui). Use it when
+  #            the agent loop lives in your own service: without a scope a memory-heavy or leaked
+  #            worker sits in that service's cgroup and can exhaust the host with it.
+  # worker_scope_isolation: "auto"
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 

@@ -119,6 +119,18 @@ teardown, kills the worker cgroup) runs only after that PID kill in `kill()`, or
 proven dead/recycled (`session.exited`, `_signal_kill` recycled-PID path, checkpoint recovery) —
 it is never the first signal a live parent receives.
 
+**Background processes carry a hard lifetime cap and a cgroup-isolation opt-in.** Every tracked
+background process gets `expires_at` from `terminal.background_max_age_seconds` (default 86400, 0
+disables); a single registry watchdog thread (`_expiry_watchdog_loop`) reaps overdue trees via the
+normal `kill_process(source="max_age")` teardown — so the completion notification still fires — and
+checkpoint recovery re-arms from the persisted `started_at` (a restart grants no extra lifetime).
+Scope isolation (`systemd-run --user --scope`) defaults to the supervised gateway only
+(`terminal.worker_scope_isolation: auto`); `always` additionally isolates inside any other Hermes
+host running under a systemd unit (dashboard/serve backend, an embedding host like hermes-webui),
+gated on systemd's own `INVOCATION_ID` marker so third-party embedders work without importing
+gateway code. It is deliberately NEVER used alone (descendants inherit it) and plain CLI hosts
+stay unscoped. See #116936.
+
 ## Delegation (`tools/delegate_tool.py`)
 
 Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless

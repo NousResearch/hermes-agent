@@ -295,6 +295,17 @@ DEFAULT_CONFIG = {
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
         # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,
+        # cgroup isolation for local background executors. "auto" (default) puts a worker in its
+        # own `systemd-run --user --scope` only when this process IS the supervised gateway;
+        # "always" also isolates inside any other Hermes host that runs under a systemd unit (an
+        # embedding host such as the dashboard/serve backend or a WebUI service), so a
+        # memory-heavy worker cannot be OOM-killed together with — or OOM-kill — its host cgroup.
+        "worker_scope_isolation": "auto",
+        # Hard lifetime cap (seconds) for tracked background processes: past it the registry
+        # reaps the process tree and reports the kill like any other termination. Bounds a
+        # forgotten/leaked child (a headless browser, a dev server) that would otherwise live
+        # until the host restarts. 0 disables the cap.
+        "background_max_age_seconds": 86400.0,
         # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
         # background processes to finish. The dying parent owns their stdout pipes, so exiting
         # immediately kills the delivery (e.g. Bot Mode handoff replies via message_agent /

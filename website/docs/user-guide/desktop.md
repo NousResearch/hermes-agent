@@ -153,6 +153,11 @@ Enable **Settings → Appearance → Window layout → Minimize to tray** to hid
 With the setting enabled and a tray available, closing the main window with **X** or **Alt+F4** hides it without stopping Hermes or destroying its session. Closing secondary windows still closes those windows. Use **Show Hermes** in the system tray (the menu bar on macOS) to restore hidden windows. **Quit Hermes** from the tray menu and **Cmd+Q** still quit, including the normal active-work confirmation. If the tray is unavailable, closing the main window behaves normally.
 
 On macOS, the Dock icon hides only when no ordinary Hermes window remains visible. On Linux, a registered StatusNotifier tray host is required; desktops without one keep normal minimize behavior. If the host disappears, hidden windows are restored.
+#### Third-party titlebar buttons
+
+On Windows, utilities that add their own caption buttons can overlap Hermes' titlebar controls because Chromium reports only the native minimize, maximize, and close buttons. Open **Settings → Appearance → Window Layout → Third-Party Titlebar Buttons** and select the number of additional buttons to reserve space for.
+
+The default is **0**, so the titlebar is unchanged unless you enable the setting. The available values are **0–4**, and the reserved space follows the measured window-controls overlay so it remains proportional across display scaling and UI zoom levels.
 
 ### Terminal
 

@@ -159,11 +159,17 @@ describe('turn arc', () => {
     expect(Object.values(room.data.$botAttention.get())[0]?.reason).toBe('provider_auth_or_access')
   })
 
-  it('an untyped failed member turn keeps the message-classification fallback', async () => {
+  // #117366: an untyped failure used to collapse to a bare "builder hit an
+  // error" — no cause, nothing to act on. The row now keeps the error's first
+  // line (secret spans redacted) and the badge still classifies from it.
+  it('an untyped failed member turn surfaces the error first line, redacted, and keeps the badge fallback', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => {
         if (profile === 'builder') {
-          throw new Error('No LLM provider configured')
+          throw new Error(
+            'No LLM provider configured for https://api.example.test/v1?api_key=sk-live-0123456789abcdef\n' +
+              '    at runMemberTurn (group-turns.ts:1)'
+          )
         }
 
         return '(pass)'
@@ -174,8 +180,11 @@ describe('turn arc', () => {
     await drain(() => Boolean(room.chat.$groupChats.get()['Untyped failure']?.running))
 
     const failed = feed(room, 'Untyped failure').find(event => event.kind === 'failed' && event.member === 'builder')
+    const label = room.activity.groupActivityLabel(failed!, 'Untyped failure')
 
-    expect(failed?.reason).toBeUndefined()
+    expect(label.startsWith('builder hit an error — No LLM provider configured for ')).toBe(true)
+    expect(label).not.toContain('sk-live-0123456789abcdef')
+    expect(label).not.toContain('runMemberTurn')
     expect(Object.values(room.data.$botAttention.get())[0]?.reason).toBe('missing_config')
   })
 

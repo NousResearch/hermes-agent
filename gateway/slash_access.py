@@ -116,8 +116,17 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     if not isinstance(extra, dict):
         extra = platform_config if isinstance(platform_config, dict) else {}
     chat_type = getattr(source, "chat_type", None)
-    scope = "dm" if chat_type and chat_type.lower() in _DM_CHAT_TYPES else "group"
-    return policy_from_extra(extra, scope)
+    normalized = str(chat_type).strip().lower() if chat_type is not None else ""
+    if normalized:
+        scope = "dm" if normalized in _DM_CHAT_TYPES else "group"
+        return policy_from_extra(extra, scope)
+    # Blank/None chat_type is ambiguous (relay frames may send "" / null; restored rows keep a
+    # stored empty value verbatim). _DM_CHAT_TYPES lists "" but a truthiness guard made it
+    # unreachable: resolve to whichever scope is gated so an ambiguous source never lands in an
+    # ungated allow-everything scope; keep the historical group scope on a tie.
+    dm_policy = policy_from_extra(extra, "dm")
+    group_policy = policy_from_extra(extra, "group")
+    return dm_policy if dm_policy.enabled and not group_policy.enabled else group_policy
 
 
 __all__ = ["SlashAccessPolicy", "policy_from_extra", "policy_for_source"]

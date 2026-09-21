@@ -135,6 +135,69 @@ async def test_forked_session_stays_listable_and_parent_survives_failed_fork(ada
         assert resp.status >= 500
     assert session_db.get_session("solo")["end_reason"] is None
 
+
+@pytest.mark.asyncio
+async def test_list_sessions_resurrects_bot_chat_off_the_event_loop(adapter, session_db, monkeypatch):
+    """Canonical Bot Chat recovery must not run SQLite work in the HTTP loop."""
+    session_id = session_db.create_session("archived-bot-chat", "gateway_botmode")
+    assert session_db.set_session_title(session_id, "Bot Chat")
+    session_db.end_session(session_id, "ws_orphan_reap")
+    assert session_db.set_session_archived(session_id, True)
+
+    loop_thread = threading.get_ident()
+    call_threads = {}
+    get_by_title = session_db.get_session_by_title
+    unarchive = session_db.unarchive_recoverable_session
+
+    def record_get_by_title(title):
+        call_threads["get_session_by_title"] = threading.get_ident()
+        return get_by_title(title)
+
+    def record_unarchive(stale_id):
+        call_threads["unarchive_recoverable_session"] = threading.get_ident()
+        return unarchive(stale_id)
+
+    monkeypatch.setattr(session_db, "get_session_by_title", record_get_by_title)
+    monkeypatch.setattr(session_db, "unarchive_recoverable_session", record_unarchive)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get("/api/sessions?title=Bot%20Chat")
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [session["id"] for session in payload["data"]] == [session_id]
+    assert set(call_threads) == {"get_session_by_title", "unarchive_recoverable_session"}
+    assert all(thread_id != loop_thread for thread_id in call_threads.values())
+    assert not session_db.get_session(session_id)["archived"]
+
+
+@pytest.mark.asyncio
+async def test_session_model_lock_persists_off_the_event_loop(adapter, session_db, monkeypatch):
+    """POST /api/sessions/{id}/model writes the lock row through a worker thread: the same
+    contended-write class as the Bot Chat resurrection, on a sibling handler."""
+    session_id = session_db.create_session("lock-off-loop", "api_server", model="gpt-5.5")
+    loop_thread = threading.get_ident()
+    seen = []
+    real = session_db.update_session_runtime_lock
+
+    def record(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(session_db, "update_session_runtime_lock", record)
+    app = _create_session_app(adapter)
+    _register_session_model_route(app, adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/model",
+                json={"provider": "nous", "model": "x-ai/grok-4.5", "require_model_lock": True})
+            assert resp.status == 200, await resp.text()
+    assert seen and all(tid != loop_thread for tid in seen)
+    assert session_db.get_session(session_id)["model"] == "x-ai/grok-4.5"
+
+
 @pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
@@ -385,6 +448,40 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert any(m.get("tool_calls") for m in messages)
 
 
+@pytest.mark.asyncio
+async def test_session_chat_stream_reports_interrupted_turn_as_not_completed(adapter, session_db):
+    """The SSE terminal payload is derived from the result, never hard-coded: an interrupted
+    turn streams ``completed: false`` / ``interrupted: true`` and ends with ``run.cancelled``,
+    and the run status matches (#111770)."""
+    import json as _json
+
+    session_id = session_db.create_session("interrupted-session", "api_server")
+
+    async def fake_run(**_kwargs):
+        return {"final_response": "Operation interrupted.", "interrupted": True, "completed": False,
+                "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "hello"})
+            body = await resp.text()
+
+    payloads = {}
+    for block in body.split("\n\n"):
+        lines = block.splitlines()
+        event = next((ln[7:] for ln in lines if ln.startswith("event: ")), None)
+        data = next((ln[6:] for ln in lines if ln.startswith("data: ")), None)
+        if event and data:
+            payloads[event] = _json.loads(data)
+
+    assert payloads["assistant.completed"]["completed"] is False
+    assert payloads["assistant.completed"]["interrupted"] is True
+    assert "run.cancelled" in payloads and "run.completed" not in payloads
+    assert payloads["run.cancelled"]["completed"] is False
+    assert next(iter(adapter._run_statuses.values()))["status"] == "cancelled"
+
+
 # ---------------------------------------------------------------------------
 # Session-persisted model threading + provider-auth failure surfacing
 # (salvaged from PR #57947 by @FvanW and PR #59941 by @kaishi00)
@@ -506,7 +603,7 @@ def _patch_api_server_runtime(monkeypatch):
     monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
     monkeypatch.setattr(
         "gateway.run._resolve_runtime_agent_kwargs_for_provider",
-        lambda provider: {
+        lambda provider, target_model=None: {
             "provider": provider,
             "api_key": f"sk-{provider}",
             "base_url": f"https://{provider}.example/v1",
@@ -760,6 +857,55 @@ async def test_confirmed_runtime_lock_rejects_actual_runtime_mismatch(adapter, m
         )
 
 
+def test_confirmed_runtime_lock_rejects_provider_only_mismatch(adapter):
+    class FakeAgent:
+        provider = "fallback-provider"
+        model = "some-model"
+        _hermes_api_runtime = {
+            "provider": "nous",
+            "model": "some-model",
+            "route_source": "session_model_lock",
+        }
+
+    with pytest.raises(RuntimeError, match="confirmed model lock runtime mismatch"):
+        adapter._turn_runtime_metadata(
+            FakeAgent(),
+            route={"provider": "nous", "model": "some-model"},
+            requested_runtime={"provider": "nous", "model": "some-model"},
+            route_source="session_model_lock",
+            confirmed_runtime_lock=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("resolved_provider", "actual_provider"),
+    [("custom", "custom"), ("my-endpoint", "my-endpoint")],
+    ids=["custom-family", "plugin-canonical-name"],
+)
+def test_confirmed_runtime_lock_accepts_resolved_provider_identity(
+    adapter, resolved_provider, actual_provider
+):
+    class FakeAgent:
+        provider = actual_provider
+        model = "some-model"
+        _hermes_api_runtime = {
+            "provider": resolved_provider,
+            "model": "some-model",
+            "route_source": "session_model_lock",
+        }
+
+    runtime = adapter._turn_runtime_metadata(
+        FakeAgent(),
+        route={"provider": "custom:my-endpoint", "model": "some-model"},
+        requested_runtime={"provider": "custom:my-endpoint", "model": "some-model"},
+        route_source="session_model_lock",
+        confirmed_runtime_lock=True,
+    )
+
+    assert runtime["provider"] == actual_provider
+    assert runtime["requested"]["provider"] == "custom:my-endpoint"
+
+
 def test_confirmed_runtime_lock_disables_global_fallback_model(adapter, monkeypatch):
     _patch_api_server_runtime(monkeypatch)
     monkeypatch.setattr(
@@ -972,3 +1118,155 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
+    adapter, session_db
+):
+    """A caller whose socket died must still be able to read what the agent said.
+
+    The session-stream route put the reply only on the SSE queue, so a client
+    that lost its connection saw the run reach "completed" with no way to learn
+    the text — indistinguishable from, and as useless as, a run that produced
+    nothing. POST /v1/runs has always recorded `output`; this pins the same for
+    this route, which is what makes GET /v1/runs/{run_id} a recovery path.
+    """
+    session_id = session_db.create_session("recover-stream-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            allow_finish.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("partial ")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "the answer worth keeping", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    with patch.object(
+        adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)
+    ), patch.object(
+        adapter, "_read_json_body", return_value=({"message": "stream please"}, None)
+    ), patch.object(
+        adapter, "_create_agent", side_effect=lambda **kw: FakeAgent(kw["stream_delta_callback"])
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        allow_finish.set()
+        await handler_task
+
+    record = adapter._run_statuses[run_id]
+    assert record["status"] == "completed"
+    # The whole point: the text survived the dead socket.
+    assert record.get("output") == "the answer worth keeping"
+
+    # And it is reachable through the documented read path, not just the dict.
+    get_request = MagicMock()
+    get_request.headers = {}
+    get_request.match_info = {"run_id": run_id}
+    response = await adapter._handle_get_run(get_request)
+    assert response.status == 200
+    assert "the answer worth keeping" in response.text
+
+
+@pytest.mark.asyncio
+async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapter, session_db, monkeypatch):
+    """Codex commentary / mid-turn assistant text is a typed ``assistant.commentary`` event on the
+    session SSE endpoint and a ``phase: commentary`` message item on /v1/responses, never part of
+    the final answer; ``display.interim_assistant_messages: false`` installs no callback (#67580)."""
+    import json as _json
+
+    session_id = session_db.create_session("commentary-session", "api_server")
+
+    def fake_create_agent(**kwargs):
+        interim = kwargs["interim_assistant_callback"]
+
+        class FakeAgent:
+            provider, model = "openai-codex", "gpt-5"
+            session_prompt_tokens = session_completion_tokens = session_total_tokens = 0
+
+            def run_conversation(self, **_kw):
+                interim("Checking the docs first.", already_streamed=False)
+                return {"final_response": "Done.", "messages": [], "api_calls": 1}
+
+        return FakeAgent()
+
+    app = _create_session_app(adapter)
+    app.router.add_post("/v1/responses", adapter._handle_responses)
+    with patch.object(adapter, "_create_agent", side_effect=fake_create_agent):
+        async with TestClient(TestServer(app)) as cli:
+            sse = await (await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "go"})).text()
+            responses = await (await cli.post(
+                "/v1/responses", json={"model": "hermes-agent", "input": "go", "stream": True})).text()
+
+    def _events(body):
+        out = []
+        for block in body.split("\n\n"):
+            lines = block.splitlines()
+            name = next((ln[7:] for ln in lines if ln.startswith("event: ")), None)
+            data = next((ln[6:] for ln in lines if ln.startswith("data: ")), None)
+            if data:
+                out.append((name, _json.loads(data)))
+        return out
+
+    sse_events = _events(sse)
+    commentary = [d for n, d in sse_events if n == "assistant.commentary"]
+    assert [(d["text"], d["already_streamed"]) for d in commentary] == [("Checking the docs first.", False)]
+    assert next(d for n, d in sse_events if n == "assistant.completed")["content"] == "Done."
+
+    done_items = [d["item"] for n, d in _events(responses) if n == "response.output_item.done"]
+    assert [(i.get("phase"), i["content"][0]["text"]) for i in done_items if i["type"] == "message"] == [
+        ("commentary", "Checking the docs first."), (None, "Done.")]
+
+    # Display gate: the callback is dropped before it reaches AIAgent, like the gateway/TUI.
+    _patch_api_server_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config", lambda: {"display": {"interim_assistant_messages": False}})
+    captured = {}
+
+    class CapturingAgent:
+        provider, model = "openrouter", "global/model"
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("run_agent.AIAgent", CapturingAgent)
+    adapter._create_agent(session_id="gated", interim_assistant_callback=lambda *_a, **_k: None)
+    assert captured["interim_assistant_callback"] is None

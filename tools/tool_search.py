@@ -16,12 +16,14 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 from tools.registry import tool_error
 from tools.tool_search_catalog import (
     BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
-from tools.tool_search_validation import normalize_tool_call_entries, validate_deferred_call_args
+from tools.tool_search_validation import (
+    local_batch_error, normalize_tool_call_entries, not_deferrable_error, validate_deferred_call_args)
 from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
 from tools.connectors.search import connections_in_scope, connector_entries_by_group, remote_schemas_for
 
@@ -60,6 +62,14 @@ class ToolSearchConfig:
             raw = {"enabled": "off" if raw is False else "auto"}
         max_search_limit = _clamped_int(raw.get("max_search_limit"), 25, 1, 50)
         defer_raw = raw.get("defer")
+        if defer_raw is not None and not isinstance(defer_raw, (list, tuple, set)):
+            # Loud, then the curated default: a scalar here means the user tried to shrink the
+            # tool surface and got nothing — never silently ignore it (#116404).
+            logger.warning(
+                "tools.tool_search.defer is %r, expected a YAML list of tool names "
+                "(e.g. [todo_list, computer_use]; [] keeps every tool eager) - "
+                "using the curated default set.", defer_raw)
+            defer_raw = None
         return cls(
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
@@ -126,17 +136,12 @@ def _core_tool_names() -> frozenset[str]:
 # their schema; once enabled they stay direct unless the deferral list names them.
 _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 
-# Event-triggered core tools deferred BY DEFAULT (a catalog stub suffices); the ``defer``
-# config replaces this wholesale ([] = everything eager). POST-rename names. ``clarify``
-# is deliberately absent: A/B showed deferring it collapsed structured-clarify usage
-# (18/18 -> 7/18) — the ask-the-user affordance must be ambient, a stub is not enough.
-_DEFAULT_DEFERRED_TOOLS = frozenset({
-    "computer_use", "session_search", "image_generate",
-    "todo_list", "process_manage", "cronjob_manage",
-    # Desktop GUI surface (desktop_ui + project toolsets)
-    "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
-    "show_tip", "desktop_project", "close_terminal",
-    "apply_layout", "read_terminal", "read_window_below", "focus_pane"})
+# Event-triggered tools deferred BY DEFAULT (a catalog stub suffices). Keep the curated
+# list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit
+# ``defer`` list replaces this wholesale ([] = everything eager). ``clarify`` is deliberately
+# absent: A/B showed deferring it collapsed structured-clarify usage (18/18 -> 7/18) — the
+# ask-the-user affordance must be ambient, a stub is not enough.
+_DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
 
 
 def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
@@ -507,9 +512,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
             name, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
-            errors[name] = (
-                f"'{name}' is not a deferrable tool. If you see it in the tools list "
-                "already, call it directly; otherwise check the spelling against tool_search.")
+            errors[name] = not_deferrable_error(name)
         else:
             not_found.append(name)
     result: Dict[str, Any] = {"tools": tools}
@@ -551,19 +554,14 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
         return None, {}, err
 
     if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries):
-        return None, {}, (
-            "Local tools require one entry per tool_call; mixed and multi-local batches are not supported."
-        )
+        return None, {}, local_batch_error(entries)
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
 
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
-        return None, {}, (
-            f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
-            "list already, call it directly instead of via tool_call."
-        )
+        return None, {}, not_deferrable_error(name)
     return name, raw_args, None
 
 

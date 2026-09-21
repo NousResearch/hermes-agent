@@ -33,6 +33,8 @@ class InflightTurn(Result):
     assistant: str = ""
     streaming: bool = False
     user: str = ""
+    display_kind: str | None = None
+    display_metadata: dict[str, JsonValue] | None = None
     corrections: list[str] | None = None
     correction_offsets: list[int] | None = None
     error: str | None = None
@@ -432,8 +434,20 @@ class ContextCategory(Result):
     tokens: int
 
 
+class ContextFileSource(Result):
+    """One row of ``agent.context_file_sources.list_context_file_sources``."""
+
+    label: str
+    path: str
+    chars: int
+    est_tokens: int
+    loaded: bool
+    status: str
+
+
 class SessionContextBreakdownResult(Result):
-    """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)."""
+    """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
+    plus the per-file context manifest (empty until the agent exists)."""
 
     categories: list[ContextCategory]
     context_max: int
@@ -443,6 +457,7 @@ class SessionContextBreakdownResult(Result):
     context_estimated: bool
     context_source: str
     model: str
+    context_files: list[ContextFileSource] = []
 
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,

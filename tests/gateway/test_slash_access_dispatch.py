@@ -258,6 +258,24 @@ async def test_group_only_gating_leaves_dm_unrestricted():
     assert "Tier: unrestricted" in result
 
 
+@pytest.mark.asyncio
+async def test_blank_chat_type_resolves_to_gated_scope():
+    """A blank chat_type (relay frames can send ""/null; restored rows keep a
+    stored empty value) used to resolve to group scope, so on a DM-only-gated
+    install the source landed in an ungated scope and every command ran."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["status"],
+        }
+    )
+    for blank in ("", None):
+        result = await runner._handle_message(
+            _make_event("/stop", _make_source(user_id="999", chat_type=blank))
+        )
+        assert "⛔" in result, repr(blank)
+
+
 # ---------------------------------------------------------------------------
 # Plugin-registered slash commands are gated through the same path
 # ---------------------------------------------------------------------------
@@ -474,7 +492,7 @@ async def test_stop_sibling_authorization_uses_event_actor_on_shared_source():
         )
     )
     runner._running_agents = {}
-    runner._sibling_thread_run_keys = MagicMock(return_value=["sibling-session"])
+    runner._same_chat_runs = MagicMock(return_value=[("sibling-session", "group", "42:222")])
     runner._is_user_authorized = MagicMock(
         side_effect=lambda source: source.user_id == "111"
     )

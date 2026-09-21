@@ -28,9 +28,8 @@ const MEMBERS: GroupMember[] = [
   { name: 'ops', title: 'The Ops' }
 ]
 
-/** A failed turn's activity row carries the typed reason the gateway sent.
- *  `recordGroupActivity` spreads it through, so it isn't on the entry type. */
-type ActivityRow = GroupActivityEntry & { reason?: string }
+/** A failed turn's activity row carries the typed reason the gateway sent. */
+type ActivityRow = GroupActivityEntry
 
 interface Room {
   activity: typeof groupActivity
@@ -92,6 +91,35 @@ describe('turn arc', () => {
     expect(events.find(event => event.kind === 'replied')?.member).toBe('research')
   })
 
+  it('records source-scoped members by member key and labels them through their owner meta', async () => {
+    // #94869 / #102294: bot meta lives under `connectionId::profile`, so an
+    // activity row recorded by bare name could neither find the title nor
+    // tell two same-named connections apart.
+    const room = await loadRoom({ turn: () => 'on it' })
+
+    const scoped: GroupMember = {
+      connectionId: 'local',
+      connectionKind: 'local',
+      connectionLabel: 'This device',
+      name: 'research',
+      route: { connectionId: 'local', mode: 'local', profile: 'research', targetProfile: 'research' },
+      sourceScoped: true,
+      title: ''
+    }
+
+    room.data.$botMeta.set({ 'local::research': { title: 'Radar' } })
+    room.data.$lastRoster.set([scoped])
+
+    room.rounds.sendToGroupChat('Scoped', [scoped], 'status?')
+    await drain(() => Boolean(room.chat.$groupChats.get().Scoped?.running))
+
+    const events = feed(room, 'Scoped').filter(event => event.member && event.member !== 'You')
+
+    expect(events.length).toBeGreaterThan(0)
+    expect(events.every(event => event.member === 'local::research')).toBe(true)
+    expect(events.map(event => room.activity.groupActivityLabel(event))).toContain('Radar replied')
+  })
+
   it('a failed member turn records failed instead of a phantom reply', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => {
@@ -149,6 +177,31 @@ describe('turn arc', () => {
 
     expect(failed?.reason).toBeUndefined()
     expect(Object.values(room.data.$botAttention.get())[0]?.reason).toBe('missing_config')
+  })
+
+  // #116458: a member whose backend never got a pool slot is healthy; the
+  // room must not describe pool starvation as a bot crash (and never badge it).
+  it('a slot-wait timeout reads as could-not-start, not as a bot error', async () => {
+    const room = await loadRoom({
+      turn: ({ profile }) => {
+        if (profile === 'builder') {
+          throw new Error(
+            "Error invoking remote method 'hermes:api': Local backend start for \"builder\" timed out while waiting for a free slot."
+          )
+        }
+
+        return '(pass)'
+      }
+    })
+
+    room.rounds.sendToGroupChat('Slot wait', MEMBERS, 'anyone around?')
+    await drain(() => Boolean(room.chat.$groupChats.get()['Slot wait']?.running))
+
+    const failed = feed(room, 'Slot wait').find(event => event.kind === 'failed' && event.member === 'builder')
+
+    expect(failed?.reason).toBe(room.activity.GROUP_SLOT_WAIT_REASON)
+    expect(room.activity.groupActivityLabel(failed!, 'Slot wait')).toBe("builder couldn't start — too many bots running")
+    expect(room.data.$botAttention.get()).toEqual({})
   })
 })
 
@@ -244,6 +297,9 @@ describe('feed shape', () => {
     expect(label({ kind: 'queued', member: 'You' })).toBe('You sent a message')
     expect(label({ kind: 'replied', member: 'research' })).toBe('research replied')
     expect(label({ kind: 'timed-out', member: 'ops' })).toBe('ops took too long')
+    expect(label({ kind: 'failed', member: 'ops', reason: 'slot wait timed out' })).toBe(
+      'ops hit an error — slot wait timed out'
+    )
     expect(label({ kind: 'cancelled', member: null })).toBe('turn interrupted by a newer message')
     expect(label({ kind: 'settled', member: null })).toBe('turn settled')
   })

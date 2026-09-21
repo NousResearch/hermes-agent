@@ -448,3 +448,107 @@ async def test_default_lane_under_multiplex_still_gated_by_primary(work_profile_
     )
     assert denied is not None
     assert "⛔" in denied
+
+
+@pytest.mark.asyncio
+async def test_observed_dispatch_preserves_transport_and_shared_profile_sessions(tmp_path, monkeypatch):
+    """Observed A→B→A commands retain provenance, actor policy and durable shared lanes."""
+    from pathlib import Path
+    import hermes_state
+    from gateway.platforms.event import MessageType
+    from gateway.session import SessionStore
+    from gateway.session_identity import identity_of
+    from hermes_constants import get_hermes_home
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    _write_profile_scaffold(home)
+    _write_profile_scaffold(home / "profiles" / PROFILE_NAME)
+    (home / "profiles" / PROFILE_NAME / "config.yaml").write_text("{}\n")
+    runner = _make_multiplex_runner()
+    runner._primary_profile_name = "default"
+    runner.session_store = SessionStore(sessions_dir=home / "sessions", config=runner.config)
+    adapters = {}
+    handlers = {}
+    for profile, cfg in [("default", runner.config), (PROFILE_NAME, runner._secondary_config)]:
+        adapter = object.__new__(TelegramAdapter)
+        adapter.platform = Platform.TELEGRAM
+        adapter.config = cfg.platforms[Platform.TELEGRAM]
+        adapter.config.extra.update(observe_unmentioned_group_messages=True, group_allowed_chats=["-100"])
+        adapter.gateway_runner = runner
+        adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
+        adapter.set_owner_profile(profile)
+        adapter.clear_session_status = AsyncMock()
+        adapters[profile] = adapter
+        handlers[profile] = (runner._make_default_profile_message_handler() if profile == "default"
+                             else runner._make_profile_message_handler(profile))
+    runner.adapters = {Platform.TELEGRAM: adapters["default"]}
+    runner._profile_adapters = {PROFILE_NAME: {Platform.TELEGRAM: adapters[PROFILE_NAME]}}
+    raw = SimpleNamespace(chat=SimpleNamespace(id=-100, type="supergroup"))
+    observed = []
+    for profile, admin in [("default", PRIMARY_ADMIN), (PROFILE_NAME, SECONDARY_ADMIN),
+                           ("default", PRIMARY_ADMIN)]:
+        adapter = adapters[profile]
+        source = adapter.build_source(chat_id="-100", chat_type="group", user_id=admin)
+        identity = adapter._canonicalize(source)
+        assert identity is not None
+        event = adapter._apply_telegram_group_observe_attribution(MessageEvent(
+            text="/stop", source=source, user_id=admin, message_type=MessageType.COMMAND,
+            raw_message=raw, message_id="command"))
+        assert event.source.user_id is None
+        assert identity_of(event.source) is identity
+        assert runner._intake_adapter_for(event.source) is adapter
+        response = await handlers[profile](event)
+        assert response is not None and "⛔" not in response
+        key = runner._session_key_for_source(event.source)
+        entry = runner.session_store.get_or_create_session(event.source)
+        observed.append((key, entry.session_id))
+        ordinary = adapter._apply_telegram_group_observe_attribution(MessageEvent(
+            text="hello", source=source, user_id=admin, raw_message=raw))
+        assert runner._session_key_for_source(ordinary.source) == key
+        assert runner.session_store.get_or_create_session(ordinary.source).session_id == entry.session_id
+        assert runner.hooks.emit_collect.call_args.args[1]["user_id"] == admin
+        before = runner.hooks.emit_collect.await_count
+        for actor in [SECONDARY_ADMIN if admin == PRIMARY_ADMIN else PRIMARY_ADMIN, None]:
+            denied = await handlers[profile](MessageEvent(
+                text="/stop", source=event.source, user_id=actor, message_id="denied"))
+            assert "⛔" in denied
+        assert runner.hooks.emit_collect.await_count == before
+        assert Path(get_hermes_home()) == home
+    assert observed[0] == observed[2]
+    assert observed[0][0] != observed[1][0]
+    assert observed[0][1] != observed[1][1]
+
+
+def test_secondary_picker_policy_follows_canonical_runtime_route(work_profile_home, monkeypatch):
+    """A secondary bot routed to default must apply the destination's slash policy."""
+    from pathlib import Path
+    from gateway.profile_routing import ProfileRoute
+    from gateway.session_identity import identity_of
+    from hermes_constants import get_hermes_home
+
+    runner = _make_multiplex_runner()
+    runner._primary_profile_name = "default"
+    default_home = Path(get_hermes_home())
+    runner.config.profile_routes = [ProfileRoute(
+        name="secondary-to-default", platform="telegram", chat_id="routed",
+        bot_profile=PROFILE_NAME, profile="default")]
+    monkeypatch.setattr("gateway.run._multiplex_profile_homes", lambda _cfg: [
+        ("default", default_home), (PROFILE_NAME, work_profile_home)])
+    checker = runner._make_profile_slash_access_check(
+        PROFILE_NAME, gateway_config=runner._secondary_config)
+    for chat_id, runtime, allowed, denied in [
+        ("own", PROFILE_NAME, SECONDARY_ADMIN, PRIMARY_ADMIN),
+        ("routed", "default", PRIMARY_ADMIN, SECONDARY_ADMIN),
+        ("own", PROFILE_NAME, SECONDARY_ADMIN, PRIMARY_ADMIN),
+    ]:
+        for actor, expected_allowed in [(allowed, True), (denied, False)]:
+            source = SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id,
+                                   chat_type="group", user_id=actor)
+            assert (checker(source, "model") is None) is expected_allowed
+            if chat_id == "routed":
+                assert identity_of(source).runtime_profile == runtime
+        assert Path(get_hermes_home()) == default_home

@@ -148,6 +148,10 @@ _SPECS = [
     _cmd("create", [
         _arg("title", help="Task title"),
         _arg("--body", help="Optional opening post"),
+        _arg("--body-file", metavar="PATH",
+             help="Read the opening post from a file ('-' = stdin), so bodies with embedded "
+                  "newlines or flag-like lines survive shell quoting. "
+                  "Mutually exclusive with --body."),
         _arg("--assignee", help="Profile name to assign"),
         _arg("--parent", action="append", default=[], help="Parent task id (repeatable)"),
         _arg("--workspace",
@@ -284,12 +288,18 @@ _SPECS = [
         _arg("--metadata",
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
+        _arg("--force", action="store_true",
+             help="Override the live-claim guard: complete a running, claimed task "
+                  "even without owning its run (closes the worker's run)."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,
-        _arg("--result", required=True, help="Backfilled task result text for a done task"),
+        _arg("--title", help="Replace the task title"),
+        _arg("--body", help="Replace the task body"),
+        _arg("--priority", type=int, help="Replace the task priority"),
+        _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
-    ], help="Edit recovery fields on an already-completed task"),
+    ], help="Edit task fields or recovery fields on an already-completed task"),
     _cmd("block", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason (also appended as a comment)"),

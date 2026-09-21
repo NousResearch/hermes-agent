@@ -9,11 +9,63 @@ modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from tools.mcp_oauth import HermesTokenStorage
 logger = logging.getLogger(__name__)
+
+# Authorization servers that advertise ``authorization_response_iss_parameter_supported`` and then
+# omit ``iss`` from the redirect (#111135). Exact issuer match, nothing else is relaxed.
+_ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com"})
+
+# Authorization-server metadata documents the SDK tries in its 401 branch (RFC 8414 / OIDC discovery).
+_ASM_DISCOVERY_PATHS = ("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")
+_DISCOVERY_CONTEXT_LEAD = "Could not read authorization-server metadata"
+
+
+def _default_auth_request_user_agent() -> str:
+    """``Hermes-Agent/<version>`` for SDK-built OAuth requests that would otherwise carry no User-Agent at
+    all; versioned so an operator debugging a WAF block can tell which client they are looking at."""
+    from hermes_cli import __version__
+    return f"Hermes-Agent/{__version__}"
+
+
+DEFAULT_AUTH_REQUEST_USER_AGENT = _default_auth_request_user_agent()
+
+
+def stamp_default_user_agent(request):
+    """Give an SDK-built OAuth request (discovery, registration, token) a User-Agent if it has none.
+
+    The SDK builds those as bare ``httpx.Request`` objects and sends them through ``client.send()``,
+    which never merges the client's default headers, so they leave with NO ``User-Agent`` at all.
+    WAF-fronted authorization servers (www.tradingview.com, coda.io) answer 403 to header-less
+    requests while curl and a plain ``client.get()`` get 200 — the metadata document is then "not
+    found", the SDK falls back to guessing ``/register`` and ``/authorize`` on the MCP host, and the
+    user sees ``Registration failed: 404`` (#113771). Only an absent header is filled, so a
+    configured ``oauth.user_agent`` (token requests) still wins."""
+    if "user-agent" not in request.headers:
+        request.headers["User-Agent"] = DEFAULT_AUTH_REQUEST_USER_AGENT
+    return request
+
+
+def _asm_discovery_failure(response) -> str | None:
+    """``"<status> from <url>"`` when *response* is a failed authorization-server metadata fetch."""
+    req = getattr(response, "request", None)
+    status = getattr(response, "status_code", None)
+    if req is None or status is None or 200 <= status < 300:
+        return None
+    url = str(req.url)
+    return f"{status} from {url}" if any(p in url for p in _ASM_DISCOVERY_PATHS) else None
+
+
+def _with_discovery_context(exc: Exception, failures: list[str]):
+    """Re-shape a registration error raised after every metadata fetch failed: lead with the discovery
+    failure, since the 404 on the guessed ``/register`` URL is only its consequence (#113771)."""
+    return type(exc)(f"{_DISCOVERY_CONTEXT_LEAD} ({'; '.join(failures)}); dynamic client registration "
+                     f"then fell back to a guessed endpoint on the MCP host and failed: {exc}")
 
 
 
@@ -28,7 +80,9 @@ class HermesProviderMixin:
       ``token_endpoint_auth_method``; the SDK then treats the client as public and the token
       endpoint rejects the exchange (looping the browser page) — coerce ``client_secret_post``.
     - ``token_user_agent`` (``oauth.user_agent``) is stamped onto token-endpoint requests only
-      (some authorization servers/WAFs reject httpx's default).
+      (some authorization servers/WAFs reject httpx's default); unset falls back to the shared
+      ``Hermes-Agent/<version>`` default, since a header-less token POST is 403'd by WAF-fronted
+      authorization servers (#115329).
     - Any 2xx token/refresh response is accepted; token bodies never leak into errors/logs."""
 
     _hermes_logger: logging.Logger = logger
@@ -49,14 +103,104 @@ class HermesProviderMixin:
             raise OAuthNonInteractiveError(
                 "MCP device authorization requires `hermes mcp login <server> --flow device`; "
                 "background reconnects cannot start a device login")
+        self._tolerate_missing_iss_for_known_server()
+        self._request_google_offline_access()
         return await super()._perform_authorization()
 
+    def _tolerate_missing_iss_for_known_server(self) -> None:
+        """Figma advertises ``authorization_response_iss_parameter_supported`` and then omits ``iss``
+        from the redirect, so the SDK's RFC 9207 check rejects every valid code (#111135). For that
+        one issuer only, fill a missing ``iss`` with the discovered issuer and warn; a present-but-
+        different ``iss`` still fails the SDK check, and every other server keeps the strict rule."""
+        issuer = _metadata_issuer(self.context)
+        if issuer not in _ISS_OMITTING_ISSUERS:
+            return
+        inner = self.context.callback_handler
+
+        async def _fill_iss():
+            result = await inner()
+            if getattr(result, "iss", None) is None and getattr(result, "code", None):
+                self._hermes_logger.warning(
+                    "MCP OAuth: %s omitted the iss parameter it advertises; accepting the redirect for that issuer only", issuer)
+                result = result.model_copy(update={"iss": str(self.context.oauth_metadata.issuer)})
+            return result
+
+        self.context.callback_handler = _fill_iss
+
+    def _request_google_offline_access(self) -> None:
+        """Wrap the redirect handler so Google's authorization URL asks for a refresh token (#117510).
+
+        ``access_type=offline`` is what makes Google issue one at all, and ``prompt=consent`` is what
+        makes it re-issue one on repeat logins (the first consent already spent the grant); MCP
+        discovery advertises neither. The SDK builds the URL itself, so the two parameters are
+        appended here — never overwriting values already present in the query. Wraps once: every
+        authorization runs through here, and the wrapper reads the issuer at call time."""
+        inner = self.context.redirect_handler
+        if inner is None or getattr(inner, "_hermes_offline_access", False):
+            return
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+        async def _with_offline_access(authorization_url: str) -> None:
+            params = google_offline_access_params(self.context)
+            if not params:
+                await inner(authorization_url)
+                return
+            parts = urlsplit(authorization_url)
+            query = dict(parse_qsl(parts.query, keep_blank_values=True))
+            query.update(params)
+            query.setdefault("prompt", "consent")
+            await inner(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)))
+
+        _with_offline_access._hermes_offline_access = True  # type: ignore[attr-defined]
+        self.context.redirect_handler = _with_offline_access
+
+    async def _hermes_accept_origin_issued_metadata(self, response):
+        """Accept a path-scoped authorization server's metadata document whose ``issuer`` is the origin
+        it lives under (see ``metadata_issued_by_origin``); the SDK's exact-string check (RFC 8414 §3.3)
+        would reject it and park the connection on an issuer mismatch (Strava, #116233).
+
+        The SDK validates inside its Step 2 loop right after reading the response, so the document is
+        installed on the context here and the SDK is handed an empty 204: ``handle_auth_metadata_response``
+        reads that as "stop trying", leaving the installed document in place. ``auth_server_url`` is left
+        untouched, so the SEP-2352 credential binding still uses the advertised identifier (stable across
+        runs), while the RFC 9207 ``iss`` check and Hermes' refresh-token binding use the document's issuer.
+        Every other response goes back to the SDK unchanged, including its issuer check."""
+        # This compatibility shim is only for authorization-server metadata
+        # responses. Never consume arbitrary 200 responses here: MCP resource
+        # responses may be long-lived SSE streams (for example GET /v2/mcp),
+        # and response.aread() would wait for that stream to end while holding
+        # the OAuth state semaphore.
+        req = getattr(response, "request", None)
+        request_path = urlsplit(str(req.url)).path if req is not None else ""
+        if not any(request_path == base or request_path.startswith(f"{base}/")
+                   for base in _ASM_DISCOVERY_PATHS):
+            return response
+
+        from mcp.shared.auth import OAuthMetadata
+        from pydantic import ValidationError
+        try:
+            metadata = OAuthMetadata.model_validate_json(await response.aread())
+        except ValidationError:
+            return response
+        if not metadata_issued_by_origin(metadata, self.context.auth_server_url, response):
+            return response
+        self._hermes_logger.info(
+            "MCP OAuth: accepting authorization-server metadata from %s whose issuer %s is the origin of the "
+            "advertised server %s", response.url, metadata.issuer, self.context.auth_server_url)
+        self.context.oauth_metadata = metadata
+        return type(response)(204, request=response.request)
+
     def _prepare_token_request(self, request):
-        """Stamp the configured User-Agent onto a token/refresh request."""
+        """Stamp a token/refresh request's User-Agent: the configured ``oauth.user_agent`` when set,
+        else the shared ``Hermes-Agent/<version>`` default. These requests are built by hand — the
+        SDK's ``_exchange_token_authorization_code``/``_refresh_token`` and ``tools.mcp_oauth_device``
+        — and travel through ``client.send()``, which never merges the client's default headers, so
+        without a stamp the POST leaves with NO ``User-Agent`` at all and a WAF-fronted authorization
+        server answers 403 (#115329)."""
         ua = getattr(self, "_hermes_token_user_agent", None)  # tests build via __new__
         if ua:
             request.headers["User-Agent"] = ua
-        return request
+        return stamp_default_user_agent(request)
 
     def _coerce_client_secret_post(self) -> None:
         """Same rule as ``HermesTokenStorage._coerce_secret_auth_method``, applied to the
@@ -97,6 +241,7 @@ class HermesProviderMixin:
         """
         while True:
             inner = super().async_auth_flow(request)
+            discovery_failures: list[str] = []
             try:
                 sent, thrown = None, None
                 while True:
@@ -110,6 +255,14 @@ class HermesProviderMixin:
                         return
                     except _RefreshCompletedByPeer:
                         break
+                    except Exception as exc:
+                        from mcp.client.auth.oauth2 import OAuthRegistrationError
+                        if (isinstance(exc, OAuthRegistrationError) and discovery_failures
+                                and self.context.oauth_metadata is None):
+                            raise _with_discovery_context(exc, discovery_failures) from exc
+                        raise
+                    if out is not request:
+                        stamp_default_user_agent(out)
                     # Full bidirectional delegation: the SDK drives this flow with
                     # asend(response), so `async for` would swallow the response and
                     # feed the inner generator None. Async generators have no
@@ -121,6 +274,12 @@ class HermesProviderMixin:
                         raise
                     except BaseException as exc:
                         sent, thrown = None, exc
+                    else:
+                        failure = _asm_discovery_failure(sent)
+                        if failure:
+                            discovery_failures.append(failure)
+                        elif getattr(sent, "status_code", None) == 200:
+                            sent = await self._hermes_accept_origin_issued_metadata(sent)
             finally:
                 await self._hermes_release_refresh_fence()
 
@@ -258,10 +417,16 @@ class HermesProviderMixin:
         await self.context.storage.set_tokens(token_response)
 
     async def _handle_token_response(self, response):
-        """Accept any 2xx token response; never echo the body into errors."""
+        """Accept any 2xx token response; a 2xx body (it carries the tokens) never reaches an error.
+
+        A non-2xx body carries no tokens and is the only clue to WHY the exchange failed — a WAF's
+        HTML "Request blocked" page vs the issuer's ``invalid_grant`` JSON (#115329) — so a short,
+        tag-stripped, redacted excerpt rides along with the status."""
         from mcp.client.auth.oauth2 import OAuthTokenError
         if not (200 <= response.status_code < 300):
-            raise OAuthTokenError(f"Token exchange failed ({response.status_code})")
+            from tools.mcp_tool_common import _sanitize_error
+            excerpt = " ".join(re.sub(r"<[^>]+>", " ", response.text).split())[:200]
+            raise OAuthTokenError(f"Token exchange failed ({response.status_code}): {_sanitize_error(excerpt)}".rstrip(": "))
         from httpx import HTTPError
         from mcp.client.auth.utils import handle_token_response_scopes
         try:
@@ -357,6 +522,49 @@ def _metadata_issuer(context: Any) -> str | None:
     return (str(issuer).rstrip("/") or None) if issuer else None
 
 
+def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, response: Any) -> bool:
+    """Whether *metadata* may stand in for the exact-issuer match of RFC 8414 §3.3 because it is the
+    document of the path-scoped authorization server *auth_server_url* and names that server's origin.
+
+    The issuer check stops a party controlling a path or a sibling host from making the client accept
+    endpoints of a different authorization server (RFC 8414 §3.3, RFC 9728 §3.3). This narrow shape keeps
+    that boundary: *response* must be the document fetched directly (no redirect) from the RFC 8414 §3.1
+    well-known URL DERIVED from the advertised identifier, ``<origin>/.well-known/oauth-authorization-server
+    <path>`` — a location only the origin's operator controls — and its ``issuer`` must be exactly that
+    origin, i.e. the advertised server is ``issuer + path``. ``response.url`` is the URL the body was
+    actually read from (the final request after any followed redirect), so a redirected document never
+    matches. Whoever can publish that document already
+    controls the origin's well-known tree, so accepting it grants a path-controlling attacker nothing.
+    Strava's MCP connector publishes exactly this pair (#116233). Anything else (another origin, a
+    different path, the root or OIDC fallback documents, a redirect target) still goes through the
+    exact-string check."""
+    from urllib.parse import urlsplit
+    if not auth_server_url:
+        return False
+    parts = urlsplit(auth_server_url)
+    path = parts.path.rstrip("/")
+    if (not path or ".." in path.split("/") or parts.username is not None or parts.query or parts.fragment
+            or response.status_code != 200):
+        return False
+    origin = f"{parts.scheme}://{parts.netloc}"
+    derived = f"{origin}/.well-known/oauth-authorization-server{path}"
+    return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
+
+
+def google_offline_access_params(context: Any) -> dict[str, str]:
+    """Parameters that ask the authorization server for a refresh token Google-style: Google issues
+    one only when the authorization request carries ``access_type=offline`` — its idiom where OIDC
+    servers use the ``offline_access`` scope that MCP discovery would advertise — so without the
+    parameter the grant ends with the short-lived access token and every later reconnect (a gateway
+    process, cron) fails back to an interactive login it cannot perform (#117510). Empty for every
+    other issuer, whose requests keep the SDK-built parameters untouched."""
+    from urllib.parse import urlsplit
+    issuer = _metadata_issuer(context)
+    if issuer is None or urlsplit(issuer).netloc != "accounts.google.com":
+        return {}
+    return {"access_type": "offline"}
+
+
 def bind_issuer_from_context(context: Any) -> None:
     """Record the discovered issuer so the next ``storage.set_tokens`` (exchange or refresh) carries
     it. No-op when metadata is not discovered yet or storage is not Hermes'."""
@@ -418,7 +626,7 @@ def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy
     return {
         "client_metadata": client_metadata,
         "storage": storage,
-        "redirect_handler": mo._make_redirect_handler(port, redirect_uri=redirect_uri),
+        "redirect_handler": mo._make_redirect_handler(port, redirect_uri=redirect_uri, redirect_host=cfg.get("redirect_host")),
         # mcp 2.0 dropped OAuthClientProvider's own `timeout`; the configured
         # `oauth.timeout` bounds the callback waiter's poll loop instead.
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),

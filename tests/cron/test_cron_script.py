@@ -97,6 +97,27 @@ class TestRunJobScript:
         assert success is True
         assert output == "hello from script"
 
+    def test_script_stdout_non_utf8_decoded_lossily(self, cron_env):
+        """A stray non-UTF-8 byte in script stdout must not fail the run (#105582).
+
+        The POSIX decode path used text=True without errors= (i.e. errors='strict'), so a
+        single bad byte raised UnicodeDecodeError in communicate() and the whole run failed
+        with "Script execution failed: 'utf-8' codec can't decode ...", discarding the
+        output. The Windows branch already decoded lossily (#45099).
+        """
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "binary_stdout.py"
+        script.write_text(
+            "import sys\n"
+            'sys.stdout.buffer.write(b"alert before \\x80 after\\n")\n'
+        )
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert "alert before" in output
+        assert "\ufffd" in output
+
     def test_script_relative_path(self, cron_env):
         from cron.scheduler_script import _run_job_script
 
@@ -106,6 +127,16 @@ class TestRunJobScript:
         success, output = _run_job_script("relative.py")
         assert success is True
         assert output == "relative works"
+
+    def test_missing_script_names_the_profile_folder(self, cron_env):
+        """Scripts resolve per profile (#4707); the runtime error must say so (#94821)."""
+        from cron.scheduler_script import _run_job_script
+
+        success, output = _run_job_script("copied-from-other-profile.py")
+        assert success is False
+        assert "Script not found" in output
+        assert str(cron_env / "scripts") in output and "profile" in output
+        assert "hermes cron edit" in output
 
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
@@ -282,7 +313,13 @@ class TestRunJobScript:
         sys.platform == "win32",
         reason="Windows always takes the overlay/creationflags branch",
     )
-    def test_non_windows_script_preserves_default_text_decoding(self, cron_env, monkeypatch):
+    def test_non_windows_script_keeps_locale_encoding_with_lossy_errors(self, cron_env, monkeypatch):
+        """POSIX keeps the platform-default (locale) encoding — gating ``encoding=`` to win32
+        was deliberate (#66566: unconditional UTF-8 leaked into POSIX) — but decoding must be
+        lossy: ``errors='replace'`` so a stray non-UTF-8 byte in script output cannot raise
+        UnicodeDecodeError in communicate() and fail the whole run (#105582). Supersedes
+        ``test_non_windows_script_preserves_default_text_decoding``, which pinned strict
+        decoding as a side effect of the win32 encoding gate."""
         # No platform patching: the Linux CI host already takes this branch.
         from cron import scheduler as sched_mod
         from cron import scheduler_script as sched_script
@@ -321,7 +358,7 @@ class TestRunJobScript:
         assert captured["kwargs"]["text"] is True
         assert "creationflags" not in captured["kwargs"]
         assert "encoding" not in captured["kwargs"]
-        assert "errors" not in captured["kwargs"]
+        assert captured["kwargs"]["errors"] == "replace"
 
     def test_non_overlay_branch_keeps_plain_argv(self, cron_env, monkeypatch):
         """When the Windows uv-venv overlay is NOT active, the invocation must
@@ -451,6 +488,7 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "some_script.py").write_text("print('hi')\n")
         create_result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
@@ -471,6 +509,7 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "data_collector.py").write_text("print('hi')\n")
         cronjob(
             action="create",
             schedule="every 1h",

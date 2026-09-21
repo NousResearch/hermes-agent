@@ -101,6 +101,9 @@ def test_timeout_and_interrupt_early_results():
     assert admission.lease is None
     assert admission.early_result["failed"] is True
     assert admission.early_result["error"] == "session_turn_lease_timeout:s1"
+    # Stamped so UI descriptors show "session busy" instead of code="unknown".
+    assert admission.early_result["failure_reason"] == "session_busy"
+    assert admission.early_result["failure_retryable"] is True
     assert admission.early_result["messages"] == [{"role": "user", "content": "x"}]
 
     agent = _agent(_Db(acquired=False), _interrupt_requested=True, _interrupt_message="stop")

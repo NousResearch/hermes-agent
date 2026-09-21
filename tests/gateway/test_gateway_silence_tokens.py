@@ -145,12 +145,33 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
 
 
 @pytest.mark.asyncio
+async def test_scheduled_heartbeat_silence_suppresses_delivery(monkeypatch, tmp_path):
+    """A poller-stamped heartbeat turn may end on a bare marker (#113031); the event stays
+    non-internal so authorization and the emergency stop still apply to it."""
+    runner = _runner(monkeypatch, tmp_path)
+    entry = runner.session_store.get_or_create_session.return_value
+    entry.suspended = False
+    runner.session_store.lookup_by_session_key.return_value = entry
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "NO_REPLY",
+        "messages": [], "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": False,
+    })
+    event = _event()
+    event._heartbeat_session_id = entry.session_id
+
+    assert await runner._handle_message_with_agent(event, _source(), entry.session_key, 1) == ""
+    assert not event.internal
+
+
+@pytest.mark.asyncio
 async def test_queued_human_turn_also_gets_the_visible_fallback():
     runner = gateway_run.GatewayRunner(GatewayConfig())
     runner._deliver_queued_first_response = AsyncMock()
     turn_ctx = SimpleNamespace(
         session_key="agent:main:telegram:group:-1001:12345",
         stream_consumer_holder=[None],
+        mute_notification_reply=False,
         persist_user_display_kind=None,
         source=_source(),
         _status_thread_metadata=None,
@@ -176,14 +197,14 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     runner._is_goal_continuation_event = MagicMock(return_value=False)
     runner._session_key_for_source = MagicMock(return_value="agent:main:telegram:group:-1001:12345")
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
-    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     turn_ctx = SimpleNamespace(
         source=_source(), session_id="sid", session_key="agent:main:telegram:group:-1001:12345",
         run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(source=_source(), message_id="43", channel_prompt=None,
-                                    message_type=None, internal=True)
+                                    message_type=None, internal=True, metadata={})
 
     merged = await gateway_run.GatewayRunner._run_agent_queued_followup(
         runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,

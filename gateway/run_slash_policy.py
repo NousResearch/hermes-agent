@@ -29,24 +29,19 @@ class GatewaySlashPolicyMixin:
     ):
         """Return a slash checker scoped to one multiplexed profile runtime."""
         from gateway.run import _profile_runtime_scope
-        from hermes_cli.profiles import get_profile_dir
-
-        try:
-            profile_home = get_profile_dir(profile_name)
-        except Exception:
-            profile_home = None
 
         def _check(source: SessionSource, canonical_cmd: str) -> Optional[str]:
-            if profile_home is None:
+            identity = self._canonicalize(source, transport_profile=profile_name)
+            if identity is None:
                 return f"⛔ /{canonical_cmd} is unavailable without profile policy context."
-            scoped_source = source
-            if not getattr(source, "profile", None):
-                scoped_source = copy_session_source_with(source, profile=profile_name)
-            with _profile_runtime_scope(profile_home):
+            # A secondary-owned bot can route to another served profile. Its captured
+            # config governs only its own runtime, never the routed destination.
+            policy_config = gateway_config if identity.runtime_profile == profile_name else None
+            if identity.runtime_profile == getattr(self, "_primary_profile_name", "default"):
+                policy_config = self.config
+            with _profile_runtime_scope(identity.runtime_home):
                 return self._check_slash_access(
-                    scoped_source,
-                    canonical_cmd,
-                    gateway_config=gateway_config,
+                    source, canonical_cmd, gateway_config=policy_config,
                 )
 
         return _check

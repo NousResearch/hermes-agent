@@ -19,6 +19,12 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 
+// Gateway routing note for Discord turns (gateway/run_inbound.py::discord_triggering_note).
+// Current gateways persist the authored text; this heals rows written before that fix. Only
+// the note is model-facing — the `[Replying to: …]` pointer next to it is kept.
+const DISCORD_TRIGGERING_NOTE_RE =
+  /(^|\n)\[Triggering message id: `[^`\n]*` — use as `message_id` for reply\/react\/pin via the discord tools\.\]\n*/
+
 /**
  * Reply text from a Responses-API `codex_message_items` sidecar (#68321), for rows
  * whose `content` persisted empty. `commentary` / `analysis` items are mid-turn
@@ -88,11 +94,13 @@ function codexMessageItemText(message: SessionMessage): string {
 }
 
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
-  const textContent = textFromUnknown(content)
+  const rawText = textFromUnknown(content)
 
   if (role !== 'user') {
-    return textContent
+    return rawText
   }
+
+  const textContent = rawText.replace(DISCORD_TRIGGERING_NOTE_RE, '$1')
 
   // A `/skill` turn is stored expanded (the whole skill body). Current
   // gateways project it to the invocation before it ever reaches us; this is
@@ -432,6 +440,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
+      ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(reactions.length ? { reactions } : {}),

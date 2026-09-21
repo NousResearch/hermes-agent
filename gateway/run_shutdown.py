@@ -1082,29 +1082,23 @@ class GatewayShutdownMixin:
                     "Home-channel shutdown broadcast suppressed by drain marker (suppress_notification=true)"
                 )
                 return
-        # Snapshot adapters: adapter.send() can hit a fatal path (_handle_fatal) that pops the adapter
-        # from self.adapters -> ``RuntimeError: dictionary changed size during iteration``.
-        for platform, adapter in list(self.adapters.items()):
-            home = self.config.get_home_channel(platform)
-            if not home or not home.chat_id:
-                continue
-            if not self._notice_allowed(platform, "home channel"):
+        # A multiplex host serves every profile, while ``self.adapters`` and ``self.config`` belong
+        # only to the launch profile. Resolve each configured home with that profile's live transport
+        # so a secondary cannot be skipped or accidentally sent by the launch bot.
+        for _profile, platform, platform_cfg, home, transport in self._served_home_channel_transports():
+            if not platform_cfg.gateway_restart_notification:
+                logger.info(
+                    "Shutdown notification suppressed for home channel: %s has gateway_restart_notification=false",
+                    platform.value,
+                )
                 continue
             dedup_key = _notice_target_key(platform.value, home.chat_id, home.thread_id)
             if dedup_key in notified:
                 continue
-            try:
-                metadata = self._thread_metadata_for_target(platform, home.chat_id, home.thread_id, adapter=adapter)
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
-                )
-                continue
-            # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
-            async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
-                if await self._send_shutdown_notice(
-                    adapter, str(home.chat_id), msg, "home channel", platform.value,
-                    **({"metadata": metadata} if metadata else {}),
+            async def _send_home(platform=platform, home=home, transport=transport, dedup_key=dedup_key):
+                if await self._send_home_channel_message(
+                    platform, home, transport, msg,
+                    "Failed to send shutdown notification to home channel %s:%s: %s",
                 ):
                     notified.add(dedup_key)
             from gateway.warning_notifications import present_notification

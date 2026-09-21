@@ -459,6 +459,13 @@ KANBAN_CREATE_SCHEMA = _schema(
                     "type": "integer", "minimum": 1,
                     "description": "Maximum web_extract/browser_extract calls during collection.",
                 },
+                "repeated_intent_max": {
+                    "type": "integer", "minimum": 1,
+                    "description": (
+                        "Maximum collection attempts for one normalized, explicitly declared "
+                        "research_intent label."
+                    ),
+                },
                 "collection_deadline_seconds": {
                     "type": "number", "exclusiveMinimum": 0,
                     "description": "Maximum collection time in seconds.",

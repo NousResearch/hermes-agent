@@ -12,6 +12,7 @@ import json
 import math
 import threading
 import time
+import unicodedata
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Callable, Mapping
@@ -93,6 +94,9 @@ RESEARCH_BUDGET_ENV = "HERMES_KANBAN_RESEARCH_BUDGET"
 RESEARCH_MODE_ENV = "HERMES_KANBAN_RESEARCH_MODE"
 RESEARCH_SYNTHESIS_ONLY_MODE = "synthesis_only"
 RESEARCH_SYNTHESIS_ONLY = "RESEARCH_SYNTHESIS_ONLY"
+RESEARCH_INTENT_FIELD = "research_intent"
+RESEARCH_INTENT_REQUIRED = "RESEARCH_INTENT_REQUIRED"
+RESEARCH_INTENT_INVALID = "RESEARCH_INTENT_INVALID"
 RESEARCH_COLLECTION_TOOL_NAMES = frozenset({
     "web_search", "web_extract",
     "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
@@ -103,7 +107,9 @@ RESEARCH_COLLECTION_TOOL_NAMES = frozenset({
 })
 _RESEARCH_EXTRACT_TOOL_NAMES = frozenset({"web_extract", "browser_extract"})
 
-_RESEARCH_BUDGET_INT_FIELDS = frozenset({"web_search_max", "browser_extract_max"})
+_RESEARCH_BUDGET_INT_FIELDS = frozenset({
+    "web_search_max", "browser_extract_max", "repeated_intent_max",
+})
 _RESEARCH_BUDGET_FLOAT_FIELDS = frozenset({
     "collection_deadline_seconds", "synthesis_reserve_seconds",
 })
@@ -112,6 +118,26 @@ _RESEARCH_BUDGET_FIELDS = (
     | _RESEARCH_BUDGET_FLOAT_FIELDS
     | {"collection_tools"}
 )
+
+_MAX_RESEARCH_INTENT_CHARS = 128
+
+
+def normalize_research_intent(value: Any) -> str | None:
+    """Normalize one caller-declared research intent label.
+
+    Labels are deliberately explicit and exact: this normalizes Unicode width,
+    surrounding/collapsed whitespace, and case, but never infers intent from a
+    query or URL. ``None`` means the value is missing or malformed.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = unicodedata.normalize("NFKC", value).strip().casefold()
+    normalized = " ".join(normalized.split())
+    if not normalized or len(normalized) > _MAX_RESEARCH_INTENT_CHARS:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        return None
+    return normalized
 
 
 def normalize_research_budget(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -224,6 +250,7 @@ class ResearchBudgetConfig:
 
     web_search_max: int | None = None
     browser_extract_max: int | None = None
+    repeated_intent_max: int | None = None
     collection_deadline_seconds: float | None = None
     synthesis_reserve_seconds: float | None = None
     collection_tools: frozenset[str] = field(default_factory=lambda: RESEARCH_COLLECTION_TOOL_NAMES)
@@ -235,6 +262,7 @@ class ResearchBudgetConfig:
             for value in (
                 self.web_search_max,
                 self.browser_extract_max,
+                self.repeated_intent_max,
                 self.collection_deadline_seconds,
                 self.synthesis_reserve_seconds,
             )
@@ -254,6 +282,7 @@ class ResearchBudgetConfig:
         return cls(
             web_search_max=_optional_positive_int(data.get("web_search_max")),
             browser_extract_max=_optional_positive_int(data.get("browser_extract_max")),
+            repeated_intent_max=_optional_positive_int(data.get("repeated_intent_max")),
             collection_deadline_seconds=_optional_positive_float(data.get("collection_deadline_seconds")),
             synthesis_reserve_seconds=_optional_positive_float(data.get("synthesis_reserve_seconds")),
             collection_tools=collection_tools,
@@ -308,6 +337,7 @@ class ToolCallGuardrailConfig:
             key in data
             for key in (
                 "web_search_max", "browser_extract_max",
+                "repeated_intent_max",
                 "collection_deadline_seconds", "synthesis_reserve_seconds",
             )
         ):
@@ -543,6 +573,7 @@ class ToolCallGuardrailController:
         self._research_web_search_count = 0
         self._research_browser_extract_count = 0
         self._research_evidence_count = 0
+        self._research_intent_counts: dict[str, int] = {}
         self._research_lock = threading.Lock()
 
     @property
@@ -569,6 +600,8 @@ class ToolCallGuardrailController:
             "web_search_max": policy.web_search_max,
             "browser_extract_count": self._research_browser_extract_count,
             "browser_extract_max": policy.browser_extract_max,
+            "repeated_intent_max": policy.repeated_intent_max,
+            "intent_counts": dict(self._research_intent_counts),
             "evidence_count": self._research_evidence_count,
             "evidence_present": self._research_evidence_count > 0,
             "collection_deadline_seconds": self._research_effective_deadline_seconds(),
@@ -643,7 +676,7 @@ class ToolCallGuardrailController:
         return decision
 
     def _research_before_call(
-        self, tool_name: str, signature: ToolCallSignature,
+        self, tool_name: str, signature: ToolCallSignature, args: Mapping[str, Any],
     ) -> ToolGuardrailDecision | None:
         policy = self.config.research_budget
         if self.config.research_synthesis_only and tool_name in RESEARCH_COLLECTION_TOOL_NAMES:
@@ -676,14 +709,42 @@ class ToolCallGuardrailController:
                 )
             counter = self._research_counter(tool_name)
             if counter is not None:
-                attr, count, limit = counter
+                _, count, limit = counter
                 if limit is not None and count >= limit:
                     label = "web_search" if tool_name == "web_search" else "browser extract"
                     return self._research_transition(
                         tool_name, count, signature,
                         reason=f"the {label} budget of {limit} was reached",
                     )
-                setattr(self, attr, count + 1)
+            if policy.repeated_intent_max is not None:
+                raw_intent = args.get(RESEARCH_INTENT_FIELD)
+                intent = normalize_research_intent(raw_intent)
+                if intent is None:
+                    missing = raw_intent is None
+                    return ToolGuardrailDecision(
+                        action="block",
+                        code=RESEARCH_INTENT_REQUIRED if missing else RESEARCH_INTENT_INVALID,
+                        message=(
+                            "Bounded research collection calls require a non-empty string "
+                            f"'{RESEARCH_INTENT_FIELD}' label. No collection call was executed; "
+                            "provide a stable label for this fact-check attempt."
+                        ),
+                        tool_name=tool_name,
+                        signature=signature,
+                        state=self._research_state,
+                        terminal=False,
+                    )
+                intent_count = self._research_intent_counts.get(intent, 0)
+                if intent_count >= policy.repeated_intent_max:
+                    return self._research_transition(
+                        tool_name,
+                        intent_count,
+                        signature,
+                        reason=f"the repeated intent budget of {policy.repeated_intent_max} was reached",
+                    )
+                self._research_intent_counts[intent] = intent_count + 1
+            if counter is not None:
+                setattr(self, counter[0], counter[1] + 1)
         return None
 
     def _research_after_call(
@@ -729,7 +790,7 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         allow = ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
-        research_block = self._research_before_call(tool_name, signature)
+        research_block = self._research_before_call(tool_name, signature, args)
         if research_block is not None:
             return research_block
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).

@@ -530,6 +530,7 @@ DEFAULT_CONFIG = {
         "research_budget": {
             "web_search_max": None,
             "browser_extract_max": None,
+            "repeated_intent_max": None,
             "collection_deadline_seconds": None,
             "synthesis_reserve_seconds": None,
         },

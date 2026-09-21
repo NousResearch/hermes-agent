@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import sys
+import re
 import time
 import types
 from types import SimpleNamespace
@@ -1976,6 +1977,93 @@ async def test_verbose_mode_does_not_truncate_args_by_default(monkeypatch, tmp_p
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
     assert VerboseAgent.LONG_CODE in all_content
+
+
+class FenceCaptureAdapter(ProgressCaptureAdapter):
+    """A markdown-capable progress adapter (declares supports_code_blocks)."""
+
+    supports_code_blocks = True
+
+
+class FenceToolAgent:
+    """Agent that emits a tool.started whose args JSON contains markdown-hostile characters."""
+
+    ARGS = {"code": "print(loc)\n_x_ *y* {'a': 1}"}
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.tool_progress_callback("tool.started", "execute_code", None, self.ARGS)
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_verbose_args_fenced_on_markdown_adapters(monkeypatch, tmp_path):
+    """Verbose raw-args progress on a markdown-capable adapter is wrapped in a bare
+    fenced code block so the platform formatter stashes the payload verbatim instead
+    of mangling it as markdown (underscores → italics, braces → escapes). On a
+    non-markdown adapter the plain (unfenced) form is preserved."""
+    config = {"display": {"tool_progress": "verbose", "tool_preview_length": 0}}
+
+    fenced_adapter, _ = await _run_with_agent(
+        monkeypatch, tmp_path, FenceToolAgent,
+        session_id="sess-verbose-fenced", config_data=config,
+        adapter_cls=FenceCaptureAdapter,
+    )
+    fenced = " ".join(c["content"] for c in fenced_adapter.sent) + " ".join(
+        c["content"] for c in fenced_adapter.edits)
+    # args are JSON-dumped inside the fence; _x_ etc. survive verbatim
+    assert "```\n" in fenced and "```" in fenced.split("```\n", 1)[1]
+    assert '_x_ *y* {\'a\': 1}' in fenced
+
+
+class FenceInArgsAgent:
+    """Emits args whose JSON payload contains a nested ``` fence — the Telegram
+    killer: MarkdownV2 only parses exactly-3-backtick fences, so the payload's
+    backticks must be escaped and the wrapper stays at 3."""
+
+    ARGS = {"code": "before\n```bash\nfalse_cmd\n```\nafter"}
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.tool_progress_callback("tool.started", "execute_code", None, self.ARGS)
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_verbose_args_nested_backticks_escaped(monkeypatch, tmp_path):
+    """Args containing a nested ``` fence are sent with backticks escaped and a
+    fixed 3-backtick wrapper fence, so the platform formatter keeps the whole
+    payload inside one pre block (MarkdownV2 accepts exactly-3 fences only)."""
+    adapter, _ = await _run_with_agent(
+        monkeypatch, tmp_path, FenceInArgsAgent,
+        session_id="sess-verbose-nested-fence",
+        config_data={"display": {"tool_progress": "verbose", "tool_preview_length": 0}},
+        adapter_cls=FenceCaptureAdapter,
+    )
+    all_content = " ".join(c["content"] for c in adapter.sent) + " ".join(
+        c["content"] for c in adapter.edits)
+    # backticks inside the args are escaped; the wrapper fence is exactly 3
+    assert "\\`\\`\\`bash" in all_content
+    assert '```\n{"code": "before' in all_content
+    # no 4+ backtick runs (Telegram treats them as literal text)
+    assert not re.search(r"`{4,}", all_content)
+    plain_adapter, _ = await _run_with_agent(
+        monkeypatch, tmp_path, FenceToolAgent,
+        session_id="sess-verbose-plain", config_data={"display": {"tool_progress": "verbose", "tool_preview_length": 0}},
+        adapter_cls=ProgressCaptureAdapter,
+    )
+    plain = " ".join(c["content"] for c in plain_adapter.sent) + " ".join(
+        c["content"] for c in plain_adapter.edits)
+    assert '_x_ *y* {\'a\': 1}' in plain
+    assert "```" not in plain
 
 
 class CodeBlockProgressAdapter(ProgressCaptureAdapter):

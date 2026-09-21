@@ -679,6 +679,11 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]])
                     agent, conversation_history
                 ):
                     note_checkpoint()
+                    # Restored usage can describe the input that produced this
+                    # checkpoint rather than its compacted replay.
+                    from agent.usage_anchor import set_usage_anchor
+
+                    set_usage_anchor(agent, None)
             except Exception:
                 logger.debug(
                     "restored native checkpoint hydration skipped", exc_info=True

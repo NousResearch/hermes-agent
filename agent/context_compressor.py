@@ -3245,9 +3245,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize turns into labeled, redacted text for the summarizer."""
+        return "\n\n".join(self._serialize_summary_records(turns))
+
+    def _serialize_summary_records(self, turns: List[Dict[str, Any]]) -> list[str]:
+        """Serialize each turn independently so lean sampling can retain whole records."""
         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
         from agent.agent_runtime_helpers import strip_think_blocks
-        parts = []
+        records = []
         for msg in turns:
             role = msg.get("role", "unknown")
             content = msg.get("content")
@@ -3261,12 +3265,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if len(content) > self._CONTENT_MAX:
                 content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
             if role == "tool":
-                parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
+                records.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
                 continue
             if role == "assistant" and msg.get("tool_calls", []):
                 content += "\n[Tool calls:\n" + "\n".join(map(self._render_tool_call_for_summary, msg["tool_calls"])) + "\n]"
-            parts.append(f"[{role.upper()}]: {content}")
-        return "\n\n".join(parts)
+            records.append(f"[{role.upper()}]: {content}")
+        return records
 
     def _fallback_anchors(self, turns_to_summarize: List[Dict[str, Any]]) -> Dict[str, list[str]]:
         """Locally extractable anchors: user asks, actions, files, blockers, last dropped turns."""
@@ -3491,6 +3495,92 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             prev_end = end
         return "".join(parts)
 
+    def _record_summary_input_coverage(self, coverage: Dict[str, int]) -> None:
+        """Expose lean sampling coverage without including transcript content in telemetry."""
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            return
+        telemetry.update({
+            "summary_input_chars": coverage["input_chars"],
+            "summary_input_sampled_chars": coverage["sampled_chars"],
+            "summary_input_omitted_chars": coverage["omitted_chars"],
+            "summary_input_record_count": coverage["record_count"],
+            "summary_input_sampled_record_count": coverage["sampled_record_count"],
+            "summary_input_elided_record_count": coverage["omitted_record_count"],
+        })
+
+    def _sample_summary_records(self, records: list[str]) -> tuple[str, Dict[str, int]]:
+        """Evenly sample complete serialized records and identify every elided record range."""
+        content = "\n\n".join(records)
+        total_chars = len(content)
+        record_count = len(records)
+        if total_chars <= self._SUMMARY_INPUT_MAX_CHARS:
+            coverage = {
+                "input_chars": total_chars, "sampled_chars": total_chars, "omitted_chars": 0,
+                "record_count": record_count, "sampled_record_count": record_count, "omitted_record_count": 0,
+            }
+            self._record_summary_input_coverage(coverage)
+            return content, coverage
+
+        slice_count = min(max(2, self._SAMPLED_INPUT_SLICES), record_count)
+        # Reserve enough room for one explicit marker per sampled slice. The remaining budget selects only
+        # whole records; no record may be cut merely to fill the character cap.
+        record_budget = max(self._SUMMARY_INPUT_MAX_CHARS - (slice_count * 96), slice_count)
+        slice_budget = max(1, record_budget // slice_count)
+        offsets: list[tuple[int, int]] = []
+        cursor = 0
+        for record in records:
+            offsets.append((cursor, cursor + len(record)))
+            cursor += len(record) + 2
+
+        selected: list[int] = []
+        stride = total_chars / slice_count
+        for slice_index in range(slice_count):
+            start = int(slice_index * stride)
+            if slice_index == slice_count - 1:
+                start = max(start, total_chars - slice_budget)
+            end = min(start + slice_budget, total_chars)
+            candidates = [
+                index for index, (record_start, record_end) in enumerate(offsets)
+                if record_start >= start and record_end <= end
+            ]
+            if not candidates:
+                candidates = [
+                    index for index, (record_start, record_end) in enumerate(offsets)
+                    if record_start >= start and len(records[index]) <= slice_budget
+                ][:1]
+            selected.extend(candidates)
+        selected = list(dict.fromkeys(selected))
+
+        def marker(start: int, end: int) -> str:
+            omitted_chars = sum(len(records[index]) for index in range(start, end + 1))
+            return (
+                f"...[{end - start + 1:,} serialized records elided (records {start + 1:,}-{end + 1:,}; "
+                f"{omitted_chars:,} chars) — recover via session_search]..."
+            )
+
+        parts: list[str] = []
+        previous = -1
+        for index in selected:
+            if index > previous + 1:
+                parts.append(marker(previous + 1, index - 1))
+            parts.append(records[index])
+            previous = index
+        if previous < record_count - 1:
+            parts.append(marker(previous + 1, record_count - 1))
+        sampled_chars = sum(len(records[index]) for index in selected)
+        coverage = {
+            "input_chars": total_chars, "sampled_chars": sampled_chars,
+            "omitted_chars": total_chars - sampled_chars, "record_count": record_count,
+            "sampled_record_count": len(selected), "omitted_record_count": record_count - len(selected),
+        }
+        sampled = "\n\n".join(parts)
+        # The fixed reserve above leaves headroom for marker widths and separators. This protects callers
+        # if a future marker gains fields without allowing a partial serialized record.
+        assert len(sampled) <= self._SUMMARY_INPUT_MAX_CHARS
+        self._record_summary_input_coverage(coverage)
+        return sampled, coverage
+
     def _fallback_to_main_for_compression(
         self, e: Exception, reason: str, failed_model: Optional[str] = None
     ) -> None:
@@ -3627,9 +3717,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _pruned_skill_names = list(dict.fromkeys(
             _collect_ghosted_skill_names(turns_to_summarize) + _extract_pruned_skill_names(self._previous_summary or "")
         ))[:_MAX_PRUNED_SKILL_MARKERS]
-        # Lean mode even-samples oversized input (one bounded request, never a second).
-        bound = self._sample_summary_input if getattr(self, "tail_mode", "lean") == "lean" else self._bound_summary_input
-        content_to_summarize = bound(self._serialize_for_summary(turns_to_summarize))
+        # Lean mode even-samples oversized input (one bounded request, never a second). Sampling
+        # operates on serialized records so a character boundary cannot hide part of a turn.
+        if getattr(self, "tail_mode", "lean") == "lean":
+            content_to_summarize, _coverage = self._sample_summary_records(
+                self._serialize_summary_records(turns_to_summarize)
+            )
+        else:
+            content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
         has_user_turn = getattr(self, "_summary_has_user_turn", None)
         if has_user_turn is None:
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)

@@ -3315,6 +3315,48 @@ class TestDoubleCompactionSummaryRole:
 
 class TestSummaryPromptBounding:
 
+    def test_lean_sampling_keeps_serialized_records_whole_and_labels_elided_ranges(self, monkeypatch):
+        """Even sampling must account for whole serialized records, not character fragments."""
+        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 2_400)
+        records = [
+            f"[USER]: record-{index:03d} " + ("x" * 180)
+            for index in range(24)
+        ]
+
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+        sampled, coverage = compressor._sample_summary_records(records)
+
+        assert len(sampled) <= ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        assert coverage == {
+            "input_chars": sum(len(record) for record in records) + (2 * (len(records) - 1)),
+            "sampled_chars": sum(len(record) for record in records if record in sampled),
+            "omitted_chars": coverage["input_chars"] - coverage["sampled_chars"],
+            "record_count": 24,
+            "sampled_record_count": 8,
+            "omitted_record_count": 16,
+        }
+        assert "serialized records elided" in sampled
+        assert "records 2-3" in sampled
+        for index in range(24):
+            record = records[index]
+            if f"record-{index:03d}" in sampled:
+                assert record in sampled
+
+    def test_lean_sampling_records_content_free_coverage_telemetry(self, monkeypatch):
+        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 2_400)
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+        compressor._begin_compression_telemetry(current_tokens=10_000)
+        records = [f"[USER]: record-{index:03d} " + ("x" * 180) for index in range(24)]
+
+        compressor._sample_summary_records(records)
+
+        telemetry = compressor._last_compression_telemetry
+        assert telemetry["summary_input_record_count"] == 24
+        assert telemetry["summary_input_sampled_record_count"] == 8
+        assert telemetry["summary_input_elided_record_count"] == 16
+        assert telemetry["summary_input_sampled_chars"] < telemetry["summary_input_chars"]
+        assert telemetry["summary_input_omitted_chars"] > 0
+
 
 
 

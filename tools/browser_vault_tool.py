@@ -180,6 +180,26 @@ def _current_page_origin(task_id: str) -> Optional[str]:
         return None
 
 
+def _verified_login_origin(task_id: str) -> Optional[str]:
+    """Return the current HTTP(S) origin only when the same evaluation sees a password form."""
+    res = _eval_js(
+        task_id,
+        "JSON.stringify({href: window.location.href, hasPassword: !!document.querySelector('input[type=password]')})",
+    )
+    details = _parse_json_result(res.get("result")) if res.get("success") else None
+    if not isinstance(details, dict) or not details.get("hasPassword"):
+        return None
+    href = str(details.get("href") or "").strip()
+    if not href.startswith(("http://", "https://")):
+        return None
+    try:
+        from agent.vault_store import normalize_origin
+
+        return normalize_origin(href)
+    except Exception:
+        return None
+
+
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
 _TAB_PROBES = {
     "login": "!!document.querySelector('input[type=password]')",
@@ -287,7 +307,9 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
     # the daemon's blank tab); the login form lives in the tab with a password field, so focus that one.
     _focus_bound_origin(effective_task_id, "", "login")
-    origin = _current_page_origin(effective_task_id)
+    # A missing supervisor still has a legitimate fallback: inspect the current page, but only prompt after
+    # the same evaluation has proved that it is an HTTP(S) page with a password field.
+    origin = _verified_login_origin(effective_task_id)
     if not origin:
         return json.dumps({"success": False, "error": "Open the site's login page first; the login is saved for that page's origin."})
     prompt = get_save_login_prompt_callback()
@@ -301,6 +323,10 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
     if not answer or not answer.get("password") or not answer.get("identifier"):
         return json.dumps({"success": False, "error_type": "save_declined",
                            "error": "The user chose not to save a login for this site. Do not ask again this turn."})
+    if _verified_login_origin(effective_task_id) != origin:
+        answer.clear()
+        return json.dumps({"success": False, "error_type": "origin_changed",
+                           "error": "The page changed before the login could be saved. Nothing was written."})
     identifier = str(answer["identifier"]).strip()
     id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
     try:

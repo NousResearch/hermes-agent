@@ -709,7 +709,10 @@ class TestSaveLoginPrompt:
             return {"identifier": "tek@acme.test", "password": "hunter2-very-secret"}
 
         unlock_mod.set_save_login_prompt_callback(prompt)
-        monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
+        monkeypatch.setattr(browser_vault_tool, "_focus_bound_origin", lambda *args: None)
+        monkeypatch.setattr(browser_vault_tool, "_eval_js", lambda task_id, expression: {
+            "success": True, "result": json.dumps({"href": "https://acme.test/login", "hasPassword": True}),
+        })
         monkeypatch.setattr(browser_vault_tool, "browser_vault_fill",
                             lambda handle, task_id=None: json.dumps({"success": True, "filled_fields": 1}))
         with patch("agent.vault_store.get_vault_store", return_value=store), \
@@ -723,11 +726,75 @@ class TestSaveLoginPrompt:
         [meta] = store.list_items()
         assert meta.origin == "https://acme.test" and meta.identifier == "tek@acme.test"
 
+    @pytest.mark.parametrize(
+        ("inspection", "legacy_origin"),
+        [
+            ({"href": "https://acme.test/login", "hasPassword": False}, "https://acme.test/login"),
+            ({"href": "chrome://new-tab-page/", "hasPassword": True}, "chrome://new-tab-page/"),
+            (None, "https://acme.test/login"),
+        ],
+        ids=["no-password-form", "internal-page", "inspection-failed"],
+    )
+    def test_refuses_to_prompt_or_store_without_a_verified_web_login_form(self, store, monkeypatch, inspection, legacy_origin):
+        """A prompt is allowed only after one evaluation verifies both a password form and an HTTP(S) origin."""
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        prompted = []
+        unlock_mod.set_save_login_prompt_callback(lambda origin, site: prompted.append((origin, site)) or {
+            "identifier": "user", "password": "not-stored",
+        })
+        monkeypatch.setattr(browser_vault_tool, "_focus_bound_origin", lambda *args: None)
+
+        def eval_page(_task_id, expression):
+            if expression == "window.location.href":
+                return {"success": True, "result": legacy_origin}
+            return ({"success": False, "error": "eval failed"} if inspection is None
+                    else {"success": True, "result": json.dumps(inspection)})
+
+        monkeypatch.setattr(browser_vault_tool, "_eval_js", eval_page)
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+            out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t1"))
+        unlock_mod.set_save_login_prompt_callback(None)
+
+        assert out["success"] is False
+        assert prompted == []
+        assert store.list_items() == []
+
+    def test_does_not_store_when_the_page_changes_while_the_user_is_prompted(self, store, monkeypatch):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        prompted = []
+        states = iter((
+            {"href": "https://acme.test/login", "hasPassword": True},
+            {"href": "https://elsewhere.test/login", "hasPassword": True},
+        ))
+        unlock_mod.set_save_login_prompt_callback(lambda origin, site: prompted.append((origin, site)) or {
+            "identifier": "user", "password": "not-stored",
+        })
+        monkeypatch.setattr(browser_vault_tool, "_focus_bound_origin", lambda *args: None)
+        monkeypatch.setattr(browser_vault_tool, "_eval_js", lambda task_id, expression: {
+            "success": True, "result": json.dumps(next(states)),
+        })
+        with patch("agent.vault_store.get_vault_store", return_value=store), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+            out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t1"))
+        unlock_mod.set_save_login_prompt_callback(None)
+
+        assert out["error_type"] == "origin_changed"
+        assert prompted == [("https://acme.test", "acme.test")]
+        assert store.list_items() == []
+
     def test_declined_or_headless_stores_nothing(self, store, monkeypatch):
         from agent.vault_backends import unlock as unlock_mod
         from tools import browser_vault_tool
 
-        monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
+        monkeypatch.setattr(browser_vault_tool, "_focus_bound_origin", lambda *args: None)
+        monkeypatch.setattr(browser_vault_tool, "_eval_js", lambda task_id, expression: {
+            "success": True, "result": json.dumps({"href": "https://acme.test/login", "hasPassword": True}),
+        })
         with patch("agent.vault_store.get_vault_store", return_value=store):
             unlock_mod.set_save_login_prompt_callback(lambda origin, site: None)
             with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):

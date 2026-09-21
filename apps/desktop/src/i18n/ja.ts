@@ -963,7 +963,7 @@ export const ja = defineLocale({
     config: {
       minimizeToTrayTitle: 'トレイに最小化',
       minimizeToTrayDesc:
-        '最小化したウィンドウをシステムトレイ（macOS ではメニューバー）に隠し、Hermes を実行し続けます。閉じる、Alt+F4、Cmd+Q の動作は変わりません。初期設定はオフで、このデバイスにのみ適用されます。',
+        'ウィンドウの最小化やメインウィンドウを閉じる操作でシステムトレイ（macOS ではメニューバー）に隠し、Hermes を実行し続けます。終了するにはトレイメニューの「Hermes を終了」または Cmd+Q を使います。初期設定はオフで、このデバイスにのみ適用されます。',
       minimizeToTrayUnavailable:
         'システムトレイを利用できないため、通常どおり最小化・終了します。再試行するには一度オフにしてからオンにしてください。',
       none: 'なし',
@@ -991,7 +991,11 @@ export const ja = defineLocale({
       permission:
         'システム設定 → プライバシーとセキュリティ → 入力監視で Hermes を許可し、再試行してください。このジェスチャーはキー入力の記録や画面の撮影を行いません。',
       unavailable:
-        'ここではこのジェスチャーを使用できません。Linux では X11 セッションが必要です。Wayland はグローバルな修飾キーのタップを公開しません。Hermes 内の既存の HUD ショートカットは引き続き使用できます。'
+        'HUD ジェスチャーヘルパーを起動できなかったか、予期せず停止しました。再試行するか Hermes を再起動してください。Hermes 内の既存の HUD ショートカットは引き続き使用できます。',
+      missingHelper:
+        'この Hermes には HUD ジェスチャーヘルパーが含まれていません。Hermes を更新または再インストールしてから再試行してください。',
+      unsupportedSession:
+        'このデスクトップセッションはグローバルな修飾キータップに対応していません。Linux では X11 が必要です。Wayland には対応していません。'
     },
     screenshot: {
       enabledTitle: 'スクリーンショットのショートカット',

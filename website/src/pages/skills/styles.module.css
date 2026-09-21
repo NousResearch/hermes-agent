@@ -1219,6 +1219,13 @@
   padding-top: 0.5rem;
 }
 
+/* The navbar is hidden in picker mode, so the sticky controls row must pin to
+   the frame top — its normal 60px navbar offset would float it over the first
+   card row. */
+.pickerMode .controlsTopRow {
+  top: 0;
+}
+
 :global(html):has(.pickerMode) :global(.navbar),
 :global(html):has(.pickerMode) :global(footer) {
   display: none;

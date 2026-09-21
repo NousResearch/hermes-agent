@@ -1103,7 +1103,8 @@
 /* The navbar is hidden in picker mode, so the sticky controls bar must pin
    to the frame top — its normal 60px navbar offset would float it over the
    first card row. */
-.pickerMode .controlsBar {
+.pickerMode .controlsBar,
+.pickerMode .controlsTopRow {
   top: 0;
 }
 

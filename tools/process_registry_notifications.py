@@ -1,5 +1,5 @@
 """Human-readable rendering of ``ProcessRegistry.completion_queue`` events (completion,
-watch_match, watch_disabled, watch_overflow_*, async_delegation) into the
+watch_match, watch_disabled, watch_overflow_*, soft_timeout, async_delegation) into the
 ``[IMPORTANT: ...]`` / ``[ASYNC DELEGATION ...]`` text the CLI drain loop, gateway and
 TUI inject into the agent conversation."""
 
@@ -419,6 +419,21 @@ def format_process_notification(evt: dict) -> "str | None":
             f"[IMPORTANT: Background process {_sid} matched watch pattern \"{evt.get('pattern', '?')}\".\n"
             f"{attribution}Command: {_cmd}\nMatched output:\n{evt.get('output', '')}"
             + (f"\n({_sup} earlier matches were suppressed by rate limit)" if _sup else "") + "]")
+    if evt_type == "soft_timeout":
+        # Soft timeout (#110427): the task is over budget but was NOT killed — say so, and
+        # spell out both decisions so the agent (not the timer) ends it.
+        _budget = evt.get("budget_seconds") or "?"
+        _elapsed = evt.get("elapsed_seconds")
+        _ran = f"{_elapsed}s" if _elapsed is not None else "past its budget"
+        return (
+            f"[IMPORTANT: Background process {_sid} has been running {_ran} — past its "
+            f"{_budget}s soft timeout (notice #{evt.get('hit', 1)}). It is STILL RUNNING; "
+            f"nothing was killed. Your call:\n"
+            f"- let it continue (it keeps running and you are re-notified at the next "
+            f"{_budget}s threshold), optionally with a fresh budget: "
+            f"process(action='continue', session_id='{_sid}', seconds={_budget})\n"
+            f"- or end it: process(action='kill', session_id='{_sid}')\n"
+            f"{attribution}Command: {_cmd}]")
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     _signal = ", SIGTERM" if _exit in {-15, 143, "-15", "143"} else ""

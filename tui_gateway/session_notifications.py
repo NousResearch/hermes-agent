@@ -114,6 +114,8 @@ _DEDUP_EXTRA_FIELDS = {
     "watch_match": ("command", "pattern", "output", "suppressed", "message_id"),
     "watch_disabled": ("command", "message", "suppressed"),
     "watch_overflow_": ("command", "message", "suppressed"),  # prefix match
+    # Soft timeouts repeat by design (one per threshold crossing) — the hit index keeps them distinct.
+    "soft_timeout": ("command", "hit", "budget_seconds"),
 }
 
 

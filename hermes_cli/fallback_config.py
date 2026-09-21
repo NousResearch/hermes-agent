@@ -75,45 +75,49 @@ def _fallback_entry_from_string(value: str) -> dict[str, Any] | None:
 
 def normalize_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     """Normalize mapping, JSON, and compact ``provider:model`` fallback entries."""
-    if isinstance(raw, str):
-        text = raw.strip()
-        try:
-            decoded = json.loads(text)
-        except (json.JSONDecodeError, TypeError):
-            decoded = text
-        if isinstance(decoded, (dict, list)):
-            return normalize_fallback_entries(decoded)
-        candidates = [text]
-    elif isinstance(raw, dict):
-        candidates = [raw]
-    elif isinstance(raw, list):
-        candidates = raw
-    elif raw is None:
-        return []
-    else:
-        logger.warning("Ignoring fallback configuration with unsupported type %s", type(raw).__name__)
-        return []
-
     entries: list[dict[str, Any]] = []
-    for index, entry in enumerate(candidates):
+
+    def append_candidate(entry: Any, location: str) -> None:
         if isinstance(entry, str):
-            entry = _fallback_entry_from_string(entry)
+            text = entry.strip()
+            try:
+                decoded = json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                decoded = text
+            if decoded != text or isinstance(decoded, (dict, list)):
+                append_candidate(decoded, location)
+                return
+            entry = _fallback_entry_from_string(text)
+        if isinstance(entry, list):
+            for index, nested in enumerate(entry):
+                append_candidate(nested, f"{location}.{index}")
+            return
         if not isinstance(entry, dict):
             logger.warning(
-                "Ignoring fallback entry %d: expected a provider:model string or mapping with provider and model",
-                index,
+                "Ignoring fallback entry %s: expected a provider:model string or mapping with provider and model",
+                location,
             )
-            continue
+            return
         provider = str(entry.get("provider") or "").strip()
         model = str(entry.get("model") or "").strip()
         if not provider or not model:
-            logger.warning("Ignoring fallback entry %d: both provider and model are required", index)
-            continue
+            logger.warning("Ignoring fallback entry %s: both provider and model are required", location)
+            return
         normalized = {**entry, "provider": provider, "model": model}
         base_url = _normalized_base_url(entry.get("base_url"))
         if base_url:
             normalized["base_url"] = base_url
         entries.append(normalized)
+
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        for index, candidate in enumerate(raw):
+            append_candidate(candidate, str(index))
+    elif isinstance(raw, (dict, str)):
+        append_candidate(raw, "0")
+    else:
+        logger.warning("Ignoring fallback configuration with unsupported type %s", type(raw).__name__)
     return entries
 
 

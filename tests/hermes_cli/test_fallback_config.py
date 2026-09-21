@@ -13,11 +13,18 @@ from hermes_cli.fallback_config import (
 
 def test_fallback_chain_accepts_compact_and_json_string_entries():
     assert get_fallback_chain({
-        "fallback_providers": ["openrouter:qwen/qwen3.6-plus", "nous:model:free"],
+        "fallback_providers": [
+            "openrouter:qwen/qwen3.6-plus",
+            "nous:model:free",
+            '{"provider":"xai","model":"grok-code-fast-1"}',
+            '"google:gemini-2.5-pro"',
+        ],
         "fallback_model": '[{"provider":"anthropic","model":"claude-sonnet-4-6"}]',
     }) == [
         {"provider": "openrouter", "model": "qwen/qwen3.6-plus"},
         {"provider": "nous", "model": "model:free"},
+        {"provider": "xai", "model": "grok-code-fast-1"},
+        {"provider": "google", "model": "gemini-2.5-pro"},
         {"provider": "anthropic", "model": "claude-sonnet-4-6"},
     ]
 

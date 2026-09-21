@@ -2006,7 +2006,7 @@
     },
     {
       "name": "plugins.manage",
-      "summary": "Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install.",
+      "summary": "Plugins Hub backend: list installed plugins, toggle, git-install, re-pin a catalog install, or remove a user install.",
       "params": [
         {
           "name": "params",
@@ -18316,7 +18316,8 @@
           "list",
           "toggle",
           "install",
-          "update"
+          "update",
+          "remove"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -18346,7 +18347,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name``.",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name``; ``remove``: ``name`` (user installs only).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -18466,7 +18467,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``name``/``plugin``;\n``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` \u2192\n``ok``/``unchanged``/``sha``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``name``/``plugin``;\n``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` \u2192\n``ok``/``unchanged``/``sha``; ``remove`` \u2192 ``ok``/``name``.",
         "properties": {
           "plugins": {
             "anyOf": [

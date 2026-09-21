@@ -185,6 +185,22 @@ class CronTickYielded(RuntimeError):
         )
 
 
+_STALE_YIELD_RE = re.compile(r"stale code: booted on (\S+), disk is at (\S+)\)")
+
+
+def stale_code_yield_labels(recorded_error: str | None) -> tuple[str, str] | None:
+    """``(boot_rev, disk_rev)`` when a persisted ``ticker_last_error`` is a ``CronTickYielded``.
+
+    ``hermes cron status`` runs in another process and only sees the marker text; a yielding
+    ticker still refreshes its heartbeat, so this is the one signal that separates "stale code,
+    firing nothing" from a healthy loop (#117275).
+    """
+    if not recorded_error or not recorded_error.startswith(CronTickYielded.__name__):
+        return None
+    match = _STALE_YIELD_RE.search(recorded_error)
+    return (match.group(1), match.group(2)) if match else None
+
+
 # Log the yield at most once per episode (reset when the skew changes) to avoid per-interval spam.
 _YIELD_LOG_INTERVAL_SECONDS = 3600.0
 _last_yield_log: dict[str, object] = {}

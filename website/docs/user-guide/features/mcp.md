@@ -738,6 +738,19 @@ That keeps the tool list clean.
 
 Hermes discovers MCP servers at startup and registers their tools into the normal tool registry.
 
+Servers are connected at most **4 at a time** per discovery pass (startup, `/reload-mcp`, config
+watcher). Every stdio server spawns its own child-process tree, so an unbounded pass with many servers
+used to launch them all in the same instant — a CPU/RAM spike and, on multi-profile fleets, a burst of
+simultaneous provider calls. Tune it in `config.yaml`:
+
+```yaml
+mcp:
+  discovery_concurrency: 4   # max simultaneous server connects; 0 = unlimited
+```
+
+A pass with more servers than the cap runs in waves; each wave keeps the usual 120 s budget (whole
+pass capped at 300 s), so a slow fleet finishes later rather than timing out.
+
 ### Lazy start
 
 A server with `lazy: true` is registered from the on-disk schema cache instead: its tools appear in the registry immediately, and the process is spawned (or the HTTP endpoint connected) on the first tool call. The cache is written on every live connect, so the first run of a new or changed server is always eager. The banner and the TUI session panel show such a server as **lazy** with its cached tool count (`3 tool(s) (lazy, starts on first use)`) — it is a working server, not a failed one — and the startup discovery summary counts it as `N lazy, not spawned yet`.

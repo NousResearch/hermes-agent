@@ -3686,7 +3686,7 @@ export interface LegacyPluginRow {
   version: string
   enabled: boolean
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name``. */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name``; ``remove``: ``name`` (user installs only). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -3699,8 +3699,8 @@ export interface PluginsManageParams {
   force?: boolean | null
   ref?: string | null
 }
-export type PluginsAction = 'list' | 'toggle' | 'install' | 'update'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` → ``ok``/``unchanged``/``sha``. */
+export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove'
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` → ``ok``/``unchanged``/``sha``; ``remove`` → ``ok``/``name``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
@@ -4448,7 +4448,7 @@ export interface RpcMethods {
   ping: { params: PingParams; result: PingResult }
   /** Loaded plugin manager entries (legacy flat view); the Plugins Hub uses plugins.manage list. */
   'plugins.list': { params: PluginsListParams; result: PluginsListResult }
-  /** Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install. */
+  /** Plugins Hub backend: list installed plugins, toggle, git-install, re-pin a catalog install, or remove a user install. */
   'plugins.manage': { params: PluginsManageParams; result: PluginsManageResult }
   /** Preview act respond passthrough */
   'preview.act.respond': { params: RespondParams; result: RespondResult }

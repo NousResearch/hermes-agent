@@ -71,16 +71,12 @@ function highlightMatch(text: string, query: string): React.ReactNode {
 function PluginCard({
   plugin,
   query,
-  expanded,
-  onToggle,
   onPick,
   onCategoryClick,
   style,
 }: {
   plugin: CatalogPlugin;
   query: string;
-  expanded: boolean;
-  onToggle: () => void;
   /** Picker embed mode: render "+ Add to this Agent" and call this. */
   onPick?: (plugin: CatalogPlugin) => void;
   onCategoryClick?: (category: string) => void;
@@ -95,14 +91,21 @@ function PluginCard({
   const pagePath = pluginPagePath(plugin.name);
   const history = useHistory();
   const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
-  // Outside the Desktop picker a card is a link to the plugin's own page (shareable, indexable);
-  // inside the picker iframe navigation would leave the host's embed, so the card keeps
-  // expanding in place there.
-  const onCardClick = onPick ? onToggle : () => history.push(pageHref);
+  // A card IS the link to the plugin's own page: nothing expands or collapses in place. Inside
+  // the Desktop picker iframe an in-frame navigation would leave the host's embed, so the page
+  // opens in a new tab there instead.
+  const onCardClick = onPick
+    ? () => window.open(new URL(pageHref, window.location.href).toString(), "_blank", "noopener,noreferrer")
+    : () => history.push(pageHref);
 
   return (
     <div
-      className={`${styles.card} ${expanded ? styles.cardExpanded : ""}`}
+      className={styles.card}
+      role="link"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onCardClick();
+      }}
       onClick={onCardClick}
       style={style}
     >
@@ -159,7 +162,7 @@ function PluginCard({
           </div>
         </div>
 
-        <p className={`${styles.cardDesc} ${expanded ? styles.cardDescFull : ""}`}>
+        <p className={styles.cardDesc}>
           {highlightMatch(plugin.description || "No description available.", query)}
         </p>
 
@@ -239,7 +242,7 @@ function PluginCard({
           </a>
         )}
 
-        {expanded && (
+        {
           <div className={styles.cardDetail}>
             {plugin.maintainer && (
               <div className={styles.metaRow}>
@@ -320,7 +323,7 @@ function PluginCard({
               ) : null}
             </div>
           </div>
-        )}
+        }
       </div>
     </div>
   );
@@ -382,7 +385,6 @@ export default function PluginCatalogPage() {
   const [tierFilter, setTierFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [sort, setSort] = useState<SortKey>("stars");
-  const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -418,7 +420,6 @@ export default function PluginCatalogPage() {
       }
       if (e.key === "Escape") {
         searchRef.current?.blur();
-        setExpandedCard(null);
       }
     };
     window.addEventListener("keydown", handler);
@@ -463,7 +464,6 @@ export default function PluginCatalogPage() {
   }, [allPlugins, tierFilter]);
 
   useEffect(() => {
-    setExpandedCard(null);
   }, [search, tierFilter, categoryFilter]);
 
   const clearAll = useCallback(() => {
@@ -486,8 +486,6 @@ export default function PluginCatalogPage() {
         key={key}
         plugin={plugin}
         query={search}
-        expanded={expandedCard === key}
-        onToggle={() => setExpandedCard(expandedCard === key ? null : key)}
         onPick={pickerMode ? pickPlugin : undefined}
         onCategoryClick={pickCategory}
         style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}

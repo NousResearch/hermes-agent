@@ -908,7 +908,34 @@ class TestEnvironmentHints:
         assert created.get("env_type") == "docker"
         assert line is not None
         assert "Linux 6.8.0" in line
-        assert "root" in line
+
+    def test_remote_backend_probe_carries_no_user_home_cwd(self, monkeypatch):
+        """#117262: the sandbox's user, $HOME and cwd are user-identifying metadata that
+        nothing consumes — the probe must neither ask for them nor render them. The
+        fake sandbox answers with the legacy full payload so a formatter that still
+        renders those keys is caught too."""
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool_backends as _tt
+        import tools.terminal_tool_lifecycle as _lc
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+        ran = {}
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                ran["cmd"] = cmd
+                return {"returncode": 0, "output": "os=Linux\nkernel=6.8.0\nhome=/home/alice\ncwd=/srv/secret\nuser=alice\n"}
+
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _FakeEnv())
+        monkeypatch.setattr(_lc, "_cleanup_env", lambda env, **kw: None)
+
+        hint = _pb._remote_backend_hint("docker")
+        assert "OS: Linux 6.8.0" in hint
+        for probe_token in ("whoami", "id -un", "$HOME", "pwd"):
+            assert probe_token not in ran["cmd"]
+        for leaked in ("User:", "Home:", "Working directory:", "alice", "/srv/secret"):
+            assert leaked not in hint
 
     def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
         """THE BUG: the probe leaked a second, permanently idle sandbox.

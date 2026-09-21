@@ -76,6 +76,11 @@ _EXCLUDED_DIRS = {
 # is user data.
 _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS
 
+# Browser Use CLI profile dir (browser.backend: browser-use): Chromium user-data with Login Data
+# / Cookies. Root-scoped like models/ — a skill's own browser_profiles/ is user data. Backup-only:
+# do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
+_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
+
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
 # the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
@@ -90,7 +95,7 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
         parts = parts[2:]
     if not parts:
         return False
-    if parts[0] in _EXCLUDED_ROOT_DIRS:
+    if parts[0] in _EXCLUDED_ROOT_DIRS or parts[0] in _EXCLUDED_BACKUP_ROOT_DIRS:
         return True
     return parts[0] == "cache" and len(parts) >= 2 and parts[1] not in _KEPT_CACHE_SUBDIRS
 

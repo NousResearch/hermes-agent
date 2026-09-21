@@ -216,6 +216,7 @@ class TestResolveApproval:
     @pytest.mark.asyncio
     async def test_resolves_once(self):
         adapter = _make_adapter()
+        adapter._allowed_group_users = {"ou_user1"}
         adapter._approval_state[1] = {
             "session_key": "agent:main:feishu:group:oc_12345",
             "message_id": "msg_001",
@@ -335,6 +336,7 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is not None
+
         assert response.card.type == "raw"
         card = response.card.data
         assert card["header"]["template"] == "green"
@@ -495,7 +497,7 @@ class TestCardActionCallbackResponse:
         adapter._admins = set()
         adapter._allowed_group_users = set()
         adapter._approval_state[15] = {
-            "session_key": "sess-15",
+            "session_key": "agent:main:feishu:dm:oc_dm_chat",
             "message_id": "msg-15",
             "chat_id": "oc_dm_chat",
         }
@@ -521,7 +523,7 @@ class TestCardActionCallbackResponse:
         adapter._admins = set()
         adapter._allowed_group_users = set()
         adapter._update_prompt_state[23] = {
-            "session_key": "sess-up-23",
+            "session_key": "agent:main:feishu:dm:oc_dm_chat",
             "message_id": "msg_up_023",
             "chat_id": "oc_dm_chat",
         }
@@ -534,6 +536,131 @@ class TestCardActionCallbackResponse:
 
         with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
             response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+
+    @pytest.mark.asyncio
+    async def test_group_update_prompt_rechecks_exact_group_allowlist(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+        adapter._admins = set()
+        adapter._allowed_group_users = set()
+        adapter._group_rules = {
+            "oc_group": SimpleNamespace(policy="open", allowlist=set(), blacklist=set()),
+        }
+        adapter._update_prompt_state[28] = {
+            "session_key": "agent:main:feishu:group:oc_group:ou_requester",
+            "message_id": "msg-up-28",
+            "chat_id": "oc_group",
+        }
+
+        await adapter._resolve_update_prompt(
+            28, "y", "Unlisted", open_id="ou_unlisted", chat_id="oc_group"
+        )
+
+        assert not (tmp_path / ".hermes" / ".update_response").exists()
+        assert 28 in adapter._update_prompt_state
+
+        adapter._group_rules = {
+            "oc_group": SimpleNamespace(
+                policy="allowlist", allowlist={"ou_group_operator"}, blacklist=set()
+            ),
+        }
+        adapter._update_prompt_state[30] = {
+            "session_key": "agent:main:feishu:group:oc_group:ou_requester",
+            "message_id": "msg-up-30",
+            "chat_id": "oc_group",
+        }
+
+        await adapter._resolve_update_prompt(
+            30, "y", "Allowed", open_id="ou_group_operator", chat_id="oc_group"
+        )
+
+        assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
+        assert 30 not in adapter._update_prompt_state
+
+        adapter._group_rules["oc_forum"] = SimpleNamespace(
+            policy="allowlist", allowlist={"ou_forum_operator"}, blacklist=set()
+        )
+        adapter._update_prompt_state[32] = {
+            "session_key": "agent:main:feishu:forum:oc_forum:ou_requester",
+            "message_id": "msg-up-32",
+            "chat_id": "oc_forum",
+        }
+
+        await adapter._resolve_update_prompt(
+            32, "n", "Forum Operator", open_id="ou_forum_operator", chat_id="oc_forum"
+        )
+
+        assert (tmp_path / ".hermes" / ".update_response").read_text() == "n"
+        assert 32 not in adapter._update_prompt_state
+
+    def test_empty_global_lists_allow_only_per_group_approval_operators(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = set()
+        adapter._group_rules = {
+            "oc_group": SimpleNamespace(policy="open", allowlist=set(), blacklist=set()),
+        }
+        adapter._approval_state[27] = {
+            "session_key": "agent:main:feishu:group:oc_group:ou_requester",
+            "message_id": "msg-27",
+            "chat_id": "oc_group",
+        }
+        unlisted = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 27},
+            chat_id="oc_group",
+            open_id="ou_unlisted",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as mock_submit:
+            response = adapter._on_card_action_trigger(unlisted)
+
+        assert response is not None
+        assert response.card is None
+        assert 27 in adapter._approval_state
+        mock_submit.assert_not_called()
+
+        adapter._group_rules["oc_group"] = SimpleNamespace(
+            policy="allowlist", allowlist={"ou_group_operator"}, blacklist=set()
+        )
+        adapter._approval_state[29] = {
+            "session_key": "agent:main:feishu:group:oc_group:ou_requester",
+            "message_id": "msg-29",
+            "chat_id": "oc_group",
+        }
+        allowed = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 29},
+            chat_id="oc_group",
+            open_id="ou_group_operator",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(allowed)
+
+        assert response is not None
+        assert response.card is not None
+
+        adapter._group_rules["oc_forum"] = SimpleNamespace(
+            policy="allowlist", allowlist={"ou_forum_operator"}, blacklist=set()
+        )
+        adapter._approval_state[31] = {
+            "session_key": "agent:main:feishu:forum:oc_forum:ou_requester",
+            "message_id": "msg-31",
+            "chat_id": "oc_forum",
+        }
+        forum_action = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 31},
+            chat_id="oc_forum",
+            open_id="ou_forum_operator",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(forum_action)
 
         assert response is not None
         assert response.card is not None
@@ -626,7 +753,7 @@ class TestResolveUpdatePrompt:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir()
         adapter._update_prompt_state[1] = {
-            "session_key": "sess-up-1",
+            "session_key": "agent:main:feishu:dm:oc_12345",
             "message_id": "msg_up_003",
             "chat_id": "oc_12345",
         }
@@ -671,5 +798,3 @@ class TestResolveUpdatePrompt:
 
         assert not (tmp_path / ".hermes" / ".update_response").exists()
         assert 3 in adapter._update_prompt_state
-
-

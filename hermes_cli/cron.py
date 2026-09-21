@@ -395,8 +395,10 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
     from cron.jobs import (
         get_ticker_heartbeat_age, get_ticker_last_error, get_ticker_success_age)
     from cron.scheduler import _is_fd_exhaustion_text as _cron_is_fd_exhaustion_text
+    from cron.scheduler import stale_code_yield_labels
     hb_age = get_ticker_heartbeat_age()
     ok_age = get_ticker_success_age()
+    last_error = get_ticker_last_error()
     pid_line = f"  PID: {', '.join(map(str, pids))}" if pids else None
 
     def _warn(headline: str) -> None:
@@ -414,10 +416,19 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
         _warn("⚠ Gateway is running but the cron ticker looks STALLED — "
               f"no heartbeat for {int(hb_age)}s (expected every ~60s).")
         print(f"  Cron jobs may NOT be firing. Restart: {restart_command}")
-    elif ok_age is not None and not _ticker_age_is_fresh(ok_age):  # loop alive but every tick fails
+    elif (skew := stale_code_yield_labels(last_error)) is not None:
+        # `hermes update` moved the checkout under a running gateway: its ticker yields every
+        # tick (heartbeat stays fresh, nothing dispatches) until the process is restarted (#117275).
+        _warn("⚠ Gateway is running STALE code — its cron ticker yields every tick and "
+              "fires NOTHING.")
+        print(color(f"  Booted on {skew[0]}, checkout is now at {skew[1]} "
+                    "(the code was updated under the running gateway).", Colors.RED))
+        print(f"  Restart it onto the new code: {restart_command}")
+    elif (ok_age is not None and not _ticker_age_is_fresh(ok_age)) or (ok_age is None and last_error):
+        # Loop alive but every tick fails (or has never succeeded since boot).
         _warn("⚠ Gateway and cron ticker are running, but no tick has "
-              f"succeeded in {int(ok_age)}s — ticks may be failing.")
-        last_error = get_ticker_last_error()
+              f"succeeded {'in ' + str(int(ok_age)) + 's' if ok_age is not None else 'yet'} "
+              "— ticks may be failing.")
         if last_error:
             # WHY ticks fail: root-rewritten jobs.json (PermissionError) or fd exhaustion.
             # Show WHY ticks fail — e.g. a root-rewritten jobs.json (PermissionError) that silently locked

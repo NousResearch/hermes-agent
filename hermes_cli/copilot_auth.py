@@ -44,7 +44,7 @@ def load_copilot_cli_config() -> dict:
     path = Path(os.path.expanduser("~/.copilot/config.json"))
     if not path.is_file():
         return {}
-    raw = path.read_text(encoding="utf-8", errors="ignore")
+    raw = path.read_text(encoding="utf-8-sig", errors="ignore")
     chars = list(raw)
     i = 0
     in_string = False

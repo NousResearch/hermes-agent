@@ -24,14 +24,15 @@ def status():
 
 @pytest.mark.parametrize("comment", ["", "// full line\n", "/* block\ncomment */"])
 @pytest.mark.parametrize("inline", ["", "// active login\n", "/* active login */"])
-def test_both_readers_accept_comments(config_file, comment, inline):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_both_readers_accept_comments(config_file, comment, inline, encoding):
     from hermes_cli.models import _copilot_cli_config_tokens
     from hermes_cli.copilot_auth import load_copilot_cli_config
     token = 'gho_quote"_slash\\_//_/*literal*/'
     value = {"https://github.com:user": token}
     config_file.write_text(
         '{\n' + comment + '"copilotTokens":' + json.dumps(value) + ', ' + inline
-        + '"lastLoggedInUser":{"login":"user"}}', encoding="utf-8")
+        + '"lastLoggedInUser":{"login":"user"}}', encoding=encoding)
     assert load_copilot_cli_config()["copilotTokens"] == value
     assert _copilot_cli_config_tokens() == [token]
     assert status()["auth_verified"] is True
@@ -56,7 +57,7 @@ def test_invalid_config_preserves_hosts_fallback(config_file, text):
     assert status()["auth_verified"] is False
     hosts = config_file.parent.parent / ".config" / "github-copilot" / "hosts.json"
     hosts.parent.mkdir(parents=True)
-    hosts.write_text('{"github.com": {}}', encoding="utf-8")
+    hosts.write_text('{"github.com": {"oauth_token": "gho_synthetic_fallback"}}', encoding="utf-8")
     assert status()["auth_source"] == "~/.config/github-copilot/hosts.json"
 
 

@@ -1,13 +1,13 @@
 name: hermes-discord-rpc
 repo: https://github.com/DarRahman/hermes-discord-presence
-sha: 4da9f3b8267186ae794ac0a8b79f2f5bb8ce2e7d
+sha: 5599a911e4b0d39b3b387774b7d6519e88bd97f6
 description: >-
   Native Discord Rich Presence (RPC) integration for Hermes Agent — real-time
   session, model, token, and tool tracking with local-only IPC.
 maintainer: DarRahman
 tier: community
-version: "1.1.1"
-category: desktop
+version: "1.1.2"
+category: general
 docs_url: https://github.com/DarRahman/hermes-discord-presence/blob/main/README.md
 platforms: []
 capabilities:

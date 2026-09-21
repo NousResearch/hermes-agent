@@ -235,9 +235,14 @@ class DiscordMediaMixin:
                     self.name, len(files), chunk_idx + 1, len(chunks),
                 )
                 if self._is_forum_parent(channel):
-                    await self._forum_post_file(
+                    forum_result = await self._forum_post_file(
                         channel, content=(content or "").strip(), files=files,
                     )
+                    if not forum_result.success:
+                        raise RuntimeError(
+                            f"Forum post failed on chunk {chunk_idx + 1}/{len(chunks)}: "
+                            f"{forum_result.error or 'unknown failure'}"
+                        )
                 else:
                     await channel.send(content=content, files=files)
                 delivered = True

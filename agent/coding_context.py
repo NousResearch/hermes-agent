@@ -202,6 +202,7 @@ def guarded_prompt_enabled(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     config: Optional[dict[str, Any]] = None,
+    fallback_routes: tuple[tuple[Any, Any], ...] = (),
 ) -> bool:
     """Return whether the explicitly opt-in guarded coding prompt applies."""
     if config is None:
@@ -228,15 +229,19 @@ def guarded_prompt_enabled(
         for route in routes
         if isinstance(route, dict)
     }
-    pair = (str(provider or "").strip().lower(), str(model or "").strip().lower())
-    return bool(
-        pair[0]
-        and pair[1]
-        and pair in route_keys
-        and resolve_runtime_mode(
-            platform=platform, cwd=cwd, config=config, model=model
-        ).is_coding
+    routes_to_check = ((provider, model), *fallback_routes)
+    normalized_routes = tuple(
+        (str(route_provider or "").strip().lower(), str(route_model or "").strip().lower())
+        for route_provider, route_model in routes_to_check
     )
+    if any(
+        not route_provider or not route_model or (route_provider, route_model) not in route_keys
+        for route_provider, route_model in normalized_routes
+    ):
+        return False
+    return resolve_runtime_mode(
+        platform=platform, cwd=cwd, config=config, model=model
+    ).is_coding
 
 
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:

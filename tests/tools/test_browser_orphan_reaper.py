@@ -202,6 +202,7 @@ class TestReapOrphanedBrowserSessions:
 
         info = {"session_name": session, "bb_session_id": None}
         bt._active_sessions["metadata-task"] = info
+        monkeypatch.setattr(bt, "_recording_sessions", {"metadata-task"})
         ambiguous = metadata not in ("absent", "valid", "whitespace")
         with (
             patch("gateway.status._pid_exists", return_value=False),
@@ -209,8 +210,8 @@ class TestReapOrphanedBrowserSessions:
             patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=777),
             patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as terminate,
             patch("tools.browser_tool_cdp._stop_cdp_supervisor"),
-            patch("tools.browser_tool._maybe_stop_recording"),
-            patch("tools.browser_tool_session._run_browser_command") as close,
+            patch("tools.browser_tool_session._run_browser_command",
+                  return_value={"success": True, "data": {}}) as close,
         ):
             # Include the Chromium-first sweep: retaining the outer directory
             # alone must not hide deletion of its profile in an earlier pass.
@@ -232,6 +233,9 @@ class TestReapOrphanedBrowserSessions:
                 assert os.path.lexists(pid_file)
             else:
                 assert not d.exists()
+                if boundary == "explicit":
+                    close.assert_any_call("metadata-task", "record", ["stop"])
+                    assert [c.args[1] for c in close.call_args_list] == ["record", "close"]
 
 
 class TestOwnerPidCrossProcess:
@@ -578,6 +582,8 @@ class TestReaperIdentityGuard:
         (["/usr/bin/grep", "agent-browser", "/var/log/syslog"], False),
         (["/usr/bin/node", "/tmp/unrelated.js", "agent-browser", "{socket}"], False),
         (["/usr/bin/node", "--eval", "agent-browser", "{socket}"], False),
+        (["/usr/bin/node", "--title=/tmp/agent-browser.js", "/tmp/unrelated.js", "{socket}"], False),
+        (["/usr/bin/node", "--require=/tmp/agent-browser/dist/daemon.js", "/tmp/unrelated.js", "{socket}"], False),
         (["/tmp/not-agent-browser", "{socket}"], False),
         (["/usr/bin/agent-browser", "daemon", "{socket}"], True),
         (["/opt/agent-browser/bin/agent-browser-linux-arm64", "daemon"], True),

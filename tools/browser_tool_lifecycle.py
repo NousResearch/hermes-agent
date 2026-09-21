@@ -271,7 +271,8 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
         executable,
     )
     node_script = False
-    if executable in {"node", "nodejs", "node.exe"} and len(argv) > 1:
+    if (executable in {"node", "nodejs", "node.exe"} and len(argv) > 1
+            and not argv[1].startswith("-")):
         script = Path(argv[1])
         node_script = script.name in {"agent-browser", "agent-browser.js"} or (
             script.parts[-3:] == ("agent-browser", "dist", "daemon.js")
@@ -765,21 +766,25 @@ def _cleanup_single_browser_session(task_id: str) -> None:
         return
 
     _bt.logger.debug("Found session for task %s: bb_session_id=%s", task_id, session_info.get("bb_session_id", "unknown"))
-    _bt._maybe_stop_recording(task_id)  # saves the file before close
+    lightpanda = (session_info.get("features") or {}).get("lightpanda")
+    session_name = session_info.get("session_name", "")
+    pid_file = os.path.join(
+        _bt._socket_safe_tmpdir(), f"agent-browser-{session_name}", f"{session_name}.pid",
+    )
+    # Recording stop is a command too: do not publish ownership or launch a
+    # client when daemon metadata is ambiguous. Lightpanda has no such daemon.
+    if lightpanda or _read_pid_file_state(pid_file) != (None, True):
+        _bt._maybe_stop_recording(task_id)  # saves the file before close
 
     # Lightpanda sessions have no daemon to ``close``; an expired cloud CDP URL cannot
     # accept one and would make _get_session_info() renew the session mid-cleanup.
-    if (session_info.get("features") or {}).get("lightpanda"):
+    if lightpanda:
         try:
             from tools.browser_lightpanda import stop_lightpanda
             stop_lightpanda(session_info.get("session_name", ""))
         except Exception as e:
             _bt.logger.warning("lightpanda stop failed for task %s: %s", task_id, e)
-    elif _read_pid_file_state(os.path.join(
-        _bt._socket_safe_tmpdir(),
-        f"agent-browser-{session_info.get('session_name', '')}",
-        f"{session_info.get('session_name', '')}.pid",
-    )) == (None, True):
+    elif _read_pid_file_state(pid_file) == (None, True):
         _bt.logger.debug("Skipping agent-browser close: ambiguous daemon PID metadata")
     elif _session_has_expired(session_info):
         _bt.logger.debug("Skipping agent-browser close for expired session %s", task_id)

@@ -68,3 +68,40 @@ export function describeGitSpawnFailure(error: any, binaryPath: string): string 
     'Install a Git build for this machine (on macOS: `xcode-select --install`) and check again.'
   )
 }
+
+/**
+ * macOS ships /usr/bin/git as a shim over the active developer directory, so a
+ * broken Xcode toolchain fails git by EXIT CODE with the remedy on stderr —
+ * the binary spawned fine, so describeGitSpawnFailure never sees it. Both
+ * triggers are common: Xcode auto-updates to a new major and every git command
+ * refuses until the new licence is accepted, or the active developer path is
+ * missing entirely.
+ *
+ * Without this the caller cannot tell the difference between "git is broken"
+ * and "the network is down" and shows the update-server copy, which sends the
+ * user to debug their connection while the actual fix is one local command
+ * printed in the stderr we already captured.
+ *
+ * Matches the remedy git itself prints rather than the prose around it, which
+ * is localised and reworded between releases. Returns null for everything else
+ * so genuine network and repository failures keep their existing wording.
+ */
+const LOCAL_TOOLCHAIN_STDERR = /xcodebuild -license|xcode-select|invalid active developer path/i
+
+// The licence notice already names its own remedy; the invalid-developer-path
+// one does not, so the user is told what to run rather than only what broke.
+const NAMES_A_REMEDY = /xcodebuild -license|xcode-select/i
+
+export function describeGitExitFailure(stderr: string): string | null {
+  const notice = (stderr || '').trim()
+
+  if (!LOCAL_TOOLCHAIN_STDERR.test(notice)) {
+    return null
+  }
+
+  const remedy = NAMES_A_REMEDY.test(notice) ? '' : ' Run `xcode-select --install`, then check again.'
+
+  return `Git on this computer cannot run. ${firstLine(notice)}${remedy}`
+}
+
+const firstLine = (text: string): string => text.split('\n').find(Boolean)?.trim() || ''

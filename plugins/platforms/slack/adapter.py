@@ -1107,7 +1107,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
         # Native streaming state per chat_id: {"ts", "draft_id", "sent", "started"}.
         # ``sent`` is raw pre-mrkdwn text; the API is append-only so deltas diff against it.
-        self._active_streams: Dict[str, Dict[str, Any]] = {}
+        self._active_streams: Dict[Tuple[str, str, str], Dict[str, Any]] = {}  # see _stream_key
         # Set once startStream reports the app lacks streaming (Agents & AI Apps
         # off / missing scope); later responses skip straight to edit-based streaming.
         self._native_stream_unsupported = False
@@ -1872,8 +1872,8 @@ class SlackAdapter(BasePlatformAdapter):
         """Disconnect from Slack."""
         self._running = False
         # Seal dangling native streams so no live-typing indicator survives a restart.
-        for chat_id, stream in list(self._active_streams.items()):
-            await self._seal_stream(chat_id, stream)
+        for stream in list(self._active_streams.values()):
+            await self._seal_stream(str(stream.get("chat_id", "")), stream)
         self._active_streams.clear()
         # A watchdog that lost the cancel race must not block cleanup/lock release.
         await self._cancel_socket_watchdog("[Slack] Watchdog task raised during disconnect")
@@ -2203,7 +2203,7 @@ class SlackAdapter(BasePlatformAdapter):
                 return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
             # An active native stream that this content finalizes IS the final
             # message: seal it instead of posting a duplicate.
-            stream_result = await self._try_finalize_stream(chat_id, content)
+            stream_result = await self._try_finalize_stream(chat_id, content, metadata)
             if stream_result is not None:
                 return stream_result
             formatted = self.format_message(content)
@@ -2452,13 +2452,15 @@ class SlackAdapter(BasePlatformAdapter):
         if self._native_stream_unsupported:
             return SendResult(success=False, error="native streaming unsupported")
         text = self._strip_stream_cursor(content)
-        client = self._get_client(chat_id)
-        stream = self._active_streams.get(chat_id)
+        stream_key = self._stream_key(chat_id, metadata)
+        client = self._get_client(chat_id, team_id=stream_key[0] or None)
+        stream = self._active_streams.get(stream_key)
         try:
             if stream is not None and stream.get("draft_id") != draft_id:
                 # New segment while a prior stream is open: seal the old one so
                 # it doesn't hang with a live-typing indicator.
                 await self._seal_stream(chat_id, stream)
+                self._active_streams.pop(stream_key, None)
                 stream = None
             if stream is None:
                 return await self._start_stream(client, chat_id, draft_id, text, metadata)
@@ -2469,14 +2471,14 @@ class SlackAdapter(BasePlatformAdapter):
                 # Text was rewritten mid-segment: seal the stream, then fail
                 # the frame so the consumer falls back to the edit path.
                 await self._seal_stream(chat_id, stream)
-                self._active_streams.pop(chat_id, None)
+                self._active_streams.pop(stream_key, None)
                 return SendResult(success=False, error="stream prefix mismatch")
             delta = text[len(sent) :]
             await client.chat_appendStream(channel=chat_id, ts=stream["ts"], markdown_text=delta)
             stream["sent"] = text
             return SendResult(success=True, message_id=stream["ts"])
         except Exception as e:  # pragma: no cover - network/API errors
-            self._active_streams.pop(chat_id, None)
+            self._active_streams.pop(stream_key, None)
             err = str(e)
             # Feature-gate errors: remember unsupported so later responses
             # skip the native attempt instead of erroring each time.
@@ -2502,7 +2504,8 @@ class SlackAdapter(BasePlatformAdapter):
         start_kwargs: Dict[str, Any] = {"channel": chat_id, "thread_ts": thread_ts}
         md = metadata or {}
         user_id = md.get("user_id") or md.get("sender_id")
-        team_id = self._channel_team.get(chat_id)
+        stream_key = self._stream_key(chat_id, metadata)
+        team_id = stream_key[0] or self._channel_team.get(chat_id)
         if user_id:
             start_kwargs["recipient_user_id"] = str(user_id)
         if team_id:
@@ -2513,61 +2516,124 @@ class SlackAdapter(BasePlatformAdapter):
         ts = response.get("ts") if response else None
         if not ts:
             raise RuntimeError("chat.startStream returned no ts")
-        self._active_streams[chat_id] = {
-            "ts": str(ts), "draft_id": draft_id, "sent": text, "started": time.time()}
+        self._active_streams[stream_key] = {
+            "ts": str(ts), "draft_id": draft_id, "sent": text, "started": time.time(),
+            "chat_id": str(chat_id), "team_id": stream_key[0]}
         self._bot_message_ts.add(str(ts))
         return SendResult(success=True, message_id=str(ts))
 
+    def _stream_key(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> Tuple[str, str, str]:
+        """Identity of a native stream: ``(team_id, chat_id, thread_ts)``. The stream consumer
+        stamps the same ``thread_id`` metadata on every draft frame AND on the turn-final
+        ``send()``, so both resolve to the same key; keying per thread keeps concurrent turns in
+        two threads of one channel from sealing or overwriting each other's stream."""
+        md = metadata or {}
+        team_id = self._metadata_team_id(md) or self._channel_team.get(chat_id, "") or ""
+        return (str(team_id), str(chat_id), str(self._resolve_thread_ts(None, md) or ""))
+
+    @staticmethod
+    def _stream_relation(sent: str, text: str) -> Tuple[str, str]:
+        """Classify turn-final ``text`` against the streamed ``sent``: ``("equal", "")`` — the
+        streamed message already shows the whole final; ``("extends", delta)`` — the final
+        continues it, ``delta`` being the exact raw tail still to append; ``("unrelated", "")`` —
+        not this stream's final (interim commentary, a rewritten answer, an empty stream).
+
+        The agent strips its final response and appends footers with ``rstrip()``, so the final
+        may differ from the streamed frames by surrounding whitespace only. The delta is sliced
+        from the RAW ``text`` where the streamed core ends — never from a normalized copy — so
+        nothing inside the answer (blank lines, fences, tables) is dropped or repeated."""
+        core = sent.strip()
+        if not core:
+            return "unrelated", ""
+        if text.startswith(sent):
+            delta = text[len(sent):]
+            return ("extends" if delta else "equal"), delta
+        lead = len(text) - len(text.lstrip())
+        if text[lead:].startswith(core):
+            delta = text[lead + len(core):]
+            return ("extends" if delta.strip() else "equal"), delta
+        return "unrelated", ""
+
     async def _seal_stream(
-        self, chat_id: str, stream: Dict[str, Any], final_text: Optional[str] = None,
-        blocks: Optional[list] = None) -> bool:
-        """Best-effort chat.stopStream for an open stream.
-        ``final_text`` is the complete final content; only the unsent delta is passed to stopStream
-        (append-only API). Returns True on success."""
+        self, chat_id: str, stream: Dict[str, Any], delta: Optional[str] = None) -> bool:
+        """Best-effort chat.stopStream for an open stream. ``delta`` is the exact unsent tail of
+        the final content (the API is append-only: ``stopStream.markdown_text`` APPENDS). Returns
+        True on success."""
         try:
             kwargs: Dict[str, Any] = {"channel": chat_id, "ts": stream["ts"]}
-            if final_text is not None:
-                sent = stream.get("sent", "")
-                if final_text.startswith(sent) and len(final_text) > len(sent):
-                    kwargs["markdown_text"] = final_text[len(sent) :]
-            if blocks:
-                kwargs["blocks"] = blocks
-            await self._get_client(chat_id).chat_stopStream(**kwargs)
+            if delta and delta.strip():
+                kwargs["markdown_text"] = delta
+            await self._get_client(chat_id, team_id=stream.get("team_id") or None).chat_stopStream(**kwargs)
             return True
         except Exception as e:  # pragma: no cover - defensive
             logger.debug(
                 "[Slack] chat.stopStream failed for %s/%s: %s", chat_id, stream.get("ts"), e)
             return False
 
-    async def _try_finalize_stream(self, chat_id: str, content: str) -> Optional[SendResult]:
+    async def _try_finalize_stream(
+        self, chat_id: str, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> Optional[SendResult]:
         """Seal the active native stream if ``content`` is its final text: SendResult when the
-        stream IS the final message; None when unrelated (interim commentary), leaving it open."""
-        stream = self._active_streams.get(chat_id)
+        stream IS the final message; None when unrelated (interim commentary), leaving it open.
+
+        Invariant (duplicate-final class): a successfully streamed answer is NEVER posted a
+        second time. A fresh post happens only when the streamed message is demonstrably
+        uncommittable — the seal failed AND an in-place ``chat.update`` of it failed — or when
+        the content is unrelated to the stream."""
+        md = metadata or {}
+        # Streaming contract: interim sends (commentary, segment-tail flushes) and editable
+        # previews are never the turn final, whatever their text looks like.
+        if md.get("_interim_send") or md.get("expect_edits"):
+            return None
+        key = self._stream_key(chat_id, md)
+        stream = self._active_streams.get(key)
         if stream is None:
             return None
-        sent = stream.get("sent", "")
         text = self._strip_stream_cursor(content)
-        # Only claim sends that extend what was streamed; an empty ``sent``
-        # prefix would match everything.
-        if not sent or not text.startswith(sent):
+        kind, delta = self._stream_relation(stream.get("sent", ""), text)
+        if kind == "unrelated":
+            if md.get("notify"):
+                # A turn-final that does not continue the stream (the model rewrote its answer):
+                # close the stale stream on what is visible so no live-typing indicator hangs,
+                # then let send() post the real final.
+                self._active_streams.pop(key, None)
+                await self._seal_stream(chat_id, stream)
             return None
-        self._active_streams.pop(chat_id, None)
+        if kind == "extends" and len(delta) > self.MAX_MESSAGE_LENGTH:
+            # Tail too large for one append: close the stream on what is visible and let the
+            # normal split path deliver the full final.
+            self._active_streams.pop(key, None)
+            await self._seal_stream(chat_id, stream)
+            return None
+        self._active_streams.pop(key, None)
         ts = stream["ts"]
-        ok = await self._seal_stream(chat_id, stream, final_text=text)
-        if not ok:
-            # Stop failed — post normally; the dangling stream times out on Slack's side.
-            return None
-        # Streams render markdown natively; rich blocks are applied via
-        # chat_update on the sealed message (mirrors edit_message finalize).
-        blocks = self._maybe_blocks(text)
-        if blocks:
-            try:
-                await self._get_client(chat_id).chat_update(
-                    channel=chat_id, ts=ts, text=self.format_message(text), blocks=blocks)
-            except Exception as e:
-                logger.debug(
-                    "[Slack] Post-stream Block Kit update failed (markdown fallback stands): %s", e)
-        await self.stop_typing(chat_id)
+        # Bounded: stopStream, one retry ONLY when nothing is appended (``markdown_text`` APPENDS:
+        # a first attempt that landed server-side but raised here would repeat the tail), then one
+        # in-place update as the commit signal — idempotent, it carries the full text — then the
+        # caller's plain post.
+        sealed = await self._seal_stream(chat_id, stream, delta=delta)
+        if not sealed and not (delta and delta.strip()):
+            sealed = await self._seal_stream(chat_id, stream)
+        if sealed:
+            # A sealed native stream is a regular message: the rich layout (if any) is applied by
+            # edit_message, which owns format/truncate/blocks/block-rejection retry.
+            # Failure is non-fatal — the streamed markdown stands.
+            if self._maybe_blocks(text):
+                await self.edit_message(chat_id, ts, text, finalize=True, metadata=metadata)
+        else:
+            # The answer is visible but not provably durable: commit it in place. Only when THAT
+            # fails too does send() post a fresh message (a duplicate beats a lost answer).
+            committed = await self.edit_message(chat_id, ts, text, finalize=True, metadata=metadata)
+            if not committed.success:
+                logger.warning(
+                    "[Slack] Native stream %s/%s could not be sealed or updated in place; "
+                    "delivering the final as a fresh post", chat_id, ts)
+                return None
+            logger.warning(
+                "[Slack] chat.stopStream failed for %s/%s; final committed via chat.update "
+                "instead (no duplicate post)", chat_id, ts)
+        await self.stop_typing(chat_id, metadata)
         return SendResult(success=True, message_id=ts)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:

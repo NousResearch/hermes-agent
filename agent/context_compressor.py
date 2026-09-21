@@ -1549,6 +1549,75 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     return pruned
 
 
+# #83714 — this text lands inside the model's OWN replayed tool call, so it must not read like
+# something the model would write itself: the bare "...[truncated]" it replaced was imitated into
+# new calls and written to disk. Non-prose delimiters, an explicit "not original content"
+# disclaimer, and per-instance counts keep a copied marker visibly wrong; the counts also make a
+# verbatim copy stale, which is why the marker must never be re-applied (see ``_shrink``).
+_COMPRESSION_MARKER_PREFIX = "⟪HERMES-CONTEXT-COMPRESSION:"
+_COMPRESSION_MARKER_TEMPLATE = (
+    _COMPRESSION_MARKER_PREFIX
+    + " {omitted:,} of {total:,} chars omitted here by Hermes's context compressor. "
+    "This is NOT part of the original tool call and must never be reproduced in new "
+    "output — always write full, untruncated content.⟫"
+)
+
+
+# A tool whose string leaves are AUTHORED PROSE that *is* the payload gets a wider head than the
+# bulk-data default. The pruned list is PERSISTED (session_db.archive_and_compact), so a narrow
+# head erodes the session's record of what was actually sent. ``message_agent`` sends a DM body.
+_DEFAULT_ARG_HEAD_CHARS = 200
+_PROSE_ARG_HEAD_CHARS = 4_000
+_PROSE_ARG_TOOLS = frozenset({"message_agent"})
+
+
+def _truncate_tool_call_args_json(args: str, head_chars: int = _DEFAULT_ARG_HEAD_CHARS) -> str:
+    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
+
+    Only leaves where the replacement is a net reduction are changed (``head_chars`` plus the
+    marker, ~420 chars); the input string is returned unchanged when nothing was replaced.
+    """
+    try:
+        parsed = json.loads(args)
+    except (ValueError, TypeError):
+        return args
+
+    changed = False
+
+    def _shrink(obj: Any) -> Any:
+        nonlocal changed
+        if isinstance(obj, str):
+            # Already marked: the compressor writes the head and the marker as the whole tail, so
+            # key on that shape. A substring/prefix test alone would exempt a leaf that merely
+            # quotes the marker — including the imitation #83714 is about — from shrinking forever.
+            marked = obj.startswith(_COMPRESSION_MARKER_PREFIX, head_chars) and obj.endswith("⟫")
+            if len(obj) <= head_chars or marked:
+                return obj
+            marker = _COMPRESSION_MARKER_TEMPLATE.format(
+                omitted=len(obj) - head_chars, total=len(obj)
+            )
+            # Only replace when it reclaims bytes: for a leaf just over the cap the marker is
+            # longer than what it replaces.
+            if head_chars + len(marker) >= len(obj):
+                return obj
+            changed = True
+            return obj[:head_chars] + marker
+        if isinstance(obj, dict):
+            return {k: _shrink(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_shrink(v) for v in obj]
+        return obj
+
+    shrunken = _shrink(parsed)
+    # Re-serialising alone would rewrite the caller's bytes (compact wire JSON gains spaces),
+    # which the callers read as "this message changed" and count as reclaimed pressure.
+    if not changed:
+        return args
+    # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
+    out = json.dumps(shrunken, ensure_ascii=False)
+    return out if len(out) < len(args) else args
+
+
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
@@ -3134,6 +3203,26 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 pruned += 1
             content_hashes.add(h)
         return pruned
+
+    @staticmethod
+    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
+        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
+        msg = result[idx]
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            return False
+        new_tcs = []
+        for tc in msg["tool_calls"]:
+            fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+            args = fn.get("arguments", "") or ""
+            # Args whose leaves ARE the authored payload (a message_agent DM body) keep a wider head:
+            # the pruned list is persisted, so the narrow default erodes the record of what was sent.
+            head = _PROSE_ARG_HEAD_CHARS if fn.get("name") in _PROSE_ARG_TOOLS else _DEFAULT_ARG_HEAD_CHARS
+            new_args = _truncate_tool_call_args_json(args, head) if len(args) > 500 else args
+            new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
+        modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
+        if modified:
+            result[idx] = {**msg, "tool_calls": new_tcs}
+        return modified
 
     @staticmethod
     def _demote_tool_result_at(

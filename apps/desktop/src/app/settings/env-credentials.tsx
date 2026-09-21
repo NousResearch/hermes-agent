@@ -154,6 +154,37 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     }
   }
 
+  // Register a user-added custom key: insert a pending, not-yet-persisted row
+  // shaped exactly like the backend's `custom` rows (GET /api/env synthesises
+  // those for .env keys outside every catalog) and open it for editing. The
+  // value is NOT written yet — the user types one and saves, and the normal
+  // handleSave → setEnvVar path persists it; the row then round-trips back
+  // from the backend as a durable custom row.
+  function addKey(key: string) {
+    if (!key || (vars && vars[key])) {
+      return
+    }
+
+    setVars(c =>
+      c && c[key]
+        ? c
+        : {
+            ...(c ?? {}),
+            [key]: {
+              advanced: false,
+              category: 'custom',
+              description: '',
+              is_password: true,
+              is_set: false,
+              redacted_value: null,
+              tools: [],
+              url: null
+            }
+          }
+    )
+    setEdits(c => ({ ...c, [key]: '' }))
+  }
+
   async function handleClear(key: string) {
     if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) }))) {
       return
@@ -190,6 +221,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   }
 
   return {
+    addKey,
     saveValue,
     vars,
     rowProps: {
@@ -211,6 +243,7 @@ interface CategoryHeadingProps {
 }
 
 interface UseEnvCredentials {
+  addKey: (key: string) => void
   rowProps: Omit<EnvRowProps, 'varKey' | 'info'>
   saveValue: (key: string, value: string) => Promise<{ message?: string; ok: boolean }>
   vars: Record<string, EnvVarInfo> | null

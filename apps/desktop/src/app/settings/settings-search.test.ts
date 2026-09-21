@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { Settings2, Wrench } from '@/lib/icons'
+import { Settings2, SlidersHorizontal, Wrench } from '@/lib/icons'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import {
@@ -70,8 +70,8 @@ describe('settings search index', () => {
 
     const entries = buildCredentialSearchEntries(
       vars,
-      { settings: 'Settings', tools: 'Tools' },
-      { settings: Settings2, tools: Wrench }
+      { custom: 'Custom', settings: 'Settings', tools: 'Tools' },
+      { custom: SlidersHorizontal, settings: Settings2, tools: Wrench }
     )
 
     expect(entries.map(entry => entry.id)).toEqual([
@@ -88,12 +88,29 @@ describe('settings search index', () => {
     expect(filterSettingsSearchEntries(entries, 'gateway traffic')[0]?.id).toBe('credential:FUTURE_GATEWAY_URL')
   })
 
-  it('shares the Tools and Settings category boundary with the rendered page', () => {
+  it('shares the Tools, Settings, and Custom category boundary with the rendered page', () => {
     expect(credentialSettingsView(envVar('tool'))).toBe('tools')
     expect(credentialSettingsView(envVar('setting'))).toBe('settings')
     expect(credentialSettingsView(envVar('messaging'))).toBe('settings')
+    expect(credentialSettingsView(envVar('custom'))).toBe('custom')
     expect(credentialSettingsView(envVar('messaging', { channel_managed: true }))).toBeNull()
+    expect(credentialSettingsView(envVar('custom', { channel_managed: true }))).toBeNull()
     expect(credentialSettingsView(envVar('provider'))).toBeNull()
+  })
+
+  it('routes custom entries to the Custom sub-view with its own context and deep link', () => {
+    const entries = buildCredentialSearchEntries(
+      { MY_SERVICE_API_KEY: envVar('custom') },
+      { custom: 'Custom', settings: 'Settings', tools: 'Tools' },
+      { custom: SlidersHorizontal, settings: Settings2, tools: Wrench }
+    )
+
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      context: 'Custom',
+      label: 'MY SERVICE',
+      target: { key: 'MY_SERVICE_API_KEY', keysView: 'custom', view: 'keys' }
+    })
   })
 
   it('uses AND matching across labels, context, descriptions, and raw keys', () => {
@@ -102,8 +119,8 @@ describe('settings search index', () => {
         BRAVE_SEARCH_API_KEY: envVar('tool', { description: 'Search public web pages.' }),
         FIRECRAWL_API_KEY: envVar('tool', { description: 'Extract public web pages.' })
       },
-      { settings: 'Settings', tools: 'Tools' },
-      { settings: Settings2, tools: Wrench }
+      { custom: 'Custom', settings: 'Settings', tools: 'Tools' },
+      { custom: SlidersHorizontal, settings: Settings2, tools: Wrench }
     )
 
     expect(filterSettingsSearchEntries(entries, 'brave tools')[0]?.id).toBe('credential:BRAVE_SEARCH_API_KEY')

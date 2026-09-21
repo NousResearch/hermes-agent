@@ -22,6 +22,7 @@ import {
   Search,
   Settings2,
   ShieldLock,
+  SlidersHorizontal,
   Upload,
   Wrench,
   Zap
@@ -348,6 +349,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             id: 'kview:settings',
             label: t.settings.nav.keysSettings,
             onSelect: () => openKeysView('settings')
+          },
+          {
+            active: activeView === 'keys' && keysView === 'custom',
+            icon: SlidersHorizontal,
+            id: 'kview:custom',
+            label: t.settings.nav.keysCustom,
+            onSelect: () => openKeysView('custom')
           }
         ],
         icon: KeyRound,

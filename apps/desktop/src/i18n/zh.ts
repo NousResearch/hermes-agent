@@ -516,6 +516,7 @@ export const zh = defineLocale({
       keybinds: '键盘快捷键',
       keysTools: '工具',
       keysSettings: '设置',
+      keysCustom: '自定义',
       mcp: 'MCP',
       archivedChats: '已归档对话',
       about: '关于',
@@ -1511,7 +1512,15 @@ export const zh = defineLocale({
     keys: {
       loading: '正在加载 API 密钥和凭据...',
       failedLoad: 'API 密钥加载失败',
-      empty: '此类别暂时没有配置项。'
+      empty: '此类别暂时没有配置项。',
+      customTitle: '自定义密钥',
+      customHint: '存储在 .env 中、Hermes 无法识别的任意环境变量。可用于为技能、MCP 服务器或你自己的工具注入环境变量。',
+      addCustomKey: '添加自定义密钥',
+      customKeyName: '变量名',
+      customKeyNamePlaceholder: '例如 MY_SERVICE_API_KEY',
+      customKeyExists: '已存在同名的变量。',
+      invalidKeyName: '只能使用字母、数字和下划线（必须以字母或下划线开头）。',
+      add: '添加'
     },
     search: {
       placeholder: '搜索所有设置...',

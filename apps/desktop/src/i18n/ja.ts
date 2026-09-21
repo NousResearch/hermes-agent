@@ -380,6 +380,7 @@ export const ja = defineLocale({
       keybinds: 'キーボードショートカット',
       keysTools: 'ツール',
       keysSettings: '設定',
+      keysCustom: 'カスタム',
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
       about: '情報',
@@ -1149,7 +1150,16 @@ export const ja = defineLocale({
     keys: {
       loading: 'API キーと認証情報を読み込み中...',
       failedLoad: 'API キーの読み込みに失敗しました',
-      empty: 'このカテゴリーにはまだ設定がありません。'
+      empty: 'このカテゴリーにはまだ設定がありません。',
+      customTitle: 'カスタムキー',
+      customHint:
+        'Hermes が認識しない、.env に保存された任意の環境変数。スキル、MCP サーバー、または独自のツール用に環境変数を注入するために使用します。',
+      addCustomKey: 'カスタムキーを追加',
+      customKeyName: '変数名',
+      customKeyNamePlaceholder: '例: MY_SERVICE_API_KEY',
+      customKeyExists: '同じ名前の変数がすでに存在します。',
+      invalidKeyName: '英字・数字・アンダースコアのみ使用できます（英字またはアンダースコアで始める必要があります）。',
+      add: '追加'
     },
     search: {
       placeholder: 'すべての設定を検索...',

@@ -434,6 +434,7 @@ export const ar = defineLocale({
       apiKeys: 'الأدوات والمفاتيح',
       keysTools: 'الأدوات',
       keysSettings: 'الإعدادات',
+      keysCustom: 'مخصص',
       mcp: 'MCP',
       archivedChats: 'المحادثات المؤرشفة',
       about: 'حول',
@@ -1010,7 +1011,16 @@ export const ar = defineLocale({
     keys: {
       loading: 'جار تحميل مفاتيح API وبيانات الاعتماد...',
       failedLoad: 'فشل تحميل مفاتيح API',
-      empty: 'لا يوجد شيء مضبوط في هذه الفئة بعد.'
+      empty: 'لا يوجد شيء مضبوط في هذه الفئة بعد.',
+      customTitle: 'مفاتيح مخصصة',
+      customHint:
+        'متغيرات بيئة عشوائية مخزنة في ملف .env ولا يتعرف إليها Hermes. استخدمها لحقن متغيرات بيئة للمهارات أو خوادم MCP أو أدواتك الخاصة.',
+      addCustomKey: 'إضافة مفتاح مخصص',
+      customKeyName: 'اسم المتغير',
+      customKeyNamePlaceholder: 'مثال: MY_SERVICE_API_KEY',
+      customKeyExists: 'يوجد متغير بهذا الاسم بالفعل.',
+      invalidKeyName: 'استخدم الأحرف والأرقام والشرطات السفلية فقط (يجب أن يبدأ الاسم بحرف أو شرطة سفلية).',
+      add: 'إضافة'
     },
     profileScope: {
       appliesTo: 'ينطبق على',

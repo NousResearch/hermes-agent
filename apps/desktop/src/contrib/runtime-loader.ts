@@ -676,24 +676,60 @@ async function scanDiskPlugins(): Promise<void> {
         continue
       }
 
-      if (record.id) {
-        unloadRuntimePlugin(record.id)
-        dropPlugin(record.id)
-      }
-
-      dropOriginRecord(record.origin, record)
-
-      if (record.watchId) {
-        void desktop.stopPreviewFileWatch(record.watchId)
-      }
-
-      disk.delete(file)
+      retireDiskPlugin(file, record)
     }
   } catch {
     // No plugin roots (or no gateway yet) — nothing to reconcile.
   } finally {
     scanning = false
   }
+}
+
+/** Forget a disk entry whose folder is gone: unload its registration, drop
+ *  its inventory rows, stop its file watch. */
+function retireDiskPlugin(file: string, record: DiskPlugin): void {
+  if (record.id) {
+    unloadRuntimePlugin(record.id)
+    dropPlugin(record.id)
+  }
+
+  dropOriginRecord(record.origin, record)
+
+  if (record.watchId) {
+    void window.hermesDesktop?.stopPreviewFileWatch(record.watchId)
+  }
+
+  disk.delete(file)
+}
+
+/** Uninstall a STANDALONE disk plugin (Capabilities → Plugins trash button):
+ *  Electron deletes `<root>/<folder>` (containment enforced there), then the
+ *  entry is retired here so the pane/commands vanish without waiting for the
+ *  next scan. Unified-package halves are not addressable this way — the agent
+ *  uninstall prunes them. Resolves with the failure reason instead of throwing. */
+export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boolean; error?: string }> {
+  const found = [...disk.entries()].find(([, record]) => record.id === pluginId || record.origin === pluginId)
+
+  if (!found) {
+    return { ok: false, error: 'not an installed desktop plugin' }
+  }
+
+  const [file, record] = found
+  const remove = window.hermesDesktop?.removeDesktopPlugin
+
+  if (!remove) {
+    return { ok: false, error: 'this Hermes Desktop build cannot remove desktop plugins — delete the folder by hand' }
+  }
+
+  const result = await remove({ name: record.origin })
+
+  if (!result?.ok) {
+    return { ok: false, error: result?.error ?? 'unknown error' }
+  }
+
+  retireDiskPlugin(file, record)
+
+  return { ok: true }
 }
 
 /** Manual rescan (the ⌘K "Reload desktop plugins" fallback). */

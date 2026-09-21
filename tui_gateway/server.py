@@ -1119,6 +1119,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
             scopes = _bind_build_profile_scopes(profile_home)
             if profile_home:
                 session_db = _open_profile_session_db(profile_home)
+                # Plugin managers are cached per resolved home. Discover while the routed
+                # profile scope is bound so this session admits that profile's toolsets rather
+                # than the dashboard launch home's registry.
+                from hermes_cli.plugins import discover_plugins
+                discover_plugins()
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
                 ensure_mcp_discovery_started()

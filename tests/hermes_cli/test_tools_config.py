@@ -45,6 +45,19 @@ def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     assert any("#38798" in m and "hermes" in m for m in warnings), warnings
 
 
+def test_unregistered_explicit_toolset_warns_with_server_context(caplog, monkeypatch):
+    import hermes_cli.tools_config as _tc
+
+    monkeypatch.setattr(_tc, "_get_plugin_toolset_keys", lambda: set())
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools({"platform_toolsets": {"cli": ["profile_plugin_tools"]}}, "cli")
+
+    assert any(
+        "requested toolset 'profile_plugin_tools' is not registered in this server" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_valid_platform_toolsets_no_runtime_warning(caplog):
     """A correctly-configured platform must not emit the #38798 warning."""
     config = {"platform_toolsets": {"cli": ["hermes-cli"]}}

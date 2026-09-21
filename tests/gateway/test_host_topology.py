@@ -40,3 +40,13 @@ def test_unserved_profile_is_not_claimed_by_the_host_gateway(host_gateway, monke
     monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda *a: False)
     (host_gateway / "profiles" / "other").mkdir()
     assert status.multiplexer_liveness_for_profile(host_gateway / "profiles" / "other") is None
+
+
+def test_unprovable_record_is_a_candidate_not_the_host_gateway(host_gateway, monkeypatch):
+    """A leftover record whose (pid, createTime) cannot be POSITIVELY matched must never be
+    reported as the live host gateway — otherwise it is a permanent "running" lie."""
+    from gateway import host_topology
+
+    monkeypatch.setattr("gateway.host_rendezvous.liveness_is_proven", lambda record: False)
+    monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
+    assert host_topology.host_gateway_topology() is None

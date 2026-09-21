@@ -1,6 +1,7 @@
 """Tests for hermes_cli.cron command handling."""
 
 import argparse
+import tempfile
 import time
 from argparse import Namespace
 from datetime import datetime, timedelta, timezone
@@ -610,6 +611,9 @@ class TestStatusSurfacesDeadScheduler:
     flag it as overdue and say when the scheduler last ticked."""
 
     def _dead_gateway(self, monkeypatch):
+        # No gateway owns the HOST role either: point the rendezvous dir at an empty scratch dir
+        # so an unrelated host record can never make this profile look served.
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", tempfile.mkdtemp(prefix="hermes-locks-"))
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         monkeypatch.setattr(
             "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None

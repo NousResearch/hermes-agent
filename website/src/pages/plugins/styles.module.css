@@ -903,7 +903,7 @@
 
   .searchWrap {
     flex: 1 1 22rem;
-    min-width: 12rem;
+    min-width: 8rem;
     max-width: none;
   }
 
@@ -925,7 +925,7 @@
   .compactSelect select {
     height: 44px;
     max-width: 10.5rem;
-    min-width: 0;
+    min-width: 7.5rem;
     padding: 0 1.9rem 0 0.65rem;
     border: 1px solid rgba(255, 215, 0, 0.14);
     border-radius: 8px;

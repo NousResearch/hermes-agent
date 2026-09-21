@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Optional
 
@@ -142,6 +143,38 @@ def _task_prompt_fields(task: kb.Task) -> dict[str, str]:
     }
 
 
+_OPS_ACCOUNTING_SESSION_ID = "kanban-ops"
+
+
+def _bind_headless_aux_accounting(log: logging.Logger = logger):
+    """Bind an accounting context for a headless aux call; ``(db, token)`` or ``(None, None)``.
+
+    Outside an agent turn (CLI sweep, dashboard route, dispatcher tick) no
+    ``(session_db, session_id)`` is ambient, so the aux-usage chokepoint would
+    silently drop the row. Mint/refresh one stable hidden ops session per profile
+    state db — ``session_model_usage`` rows need a real parent session (FK ON
+    DELETE CASCADE) and a synthetic id would be rejected. Strictly best-effort:
+    accounting trouble must never block the specify/decompose call itself.
+    """
+    try:
+        from agent.aux_accounting import accounting_context_active, set_accounting_context
+        from hermes_state import SessionDB
+
+        if accounting_context_active():
+            return None, None
+        db = SessionDB()
+        try:
+            db.ensure_session(_OPS_ACCOUNTING_SESSION_ID, source="kanban", display_name="Kanban operations")
+            db.set_session_hidden(_OPS_ACCOUNTING_SESSION_ID, True)
+        except Exception:
+            db.close()  # an unhealthy state db must not break decomposition
+            raise
+        return db, set_accounting_context(db, _OPS_ACCOUNTING_SESSION_ID)
+    except Exception as exc:
+        log.debug("kanban aux usage accounting unavailable (usage will go unrecorded): %s", exc)
+        return None, None
+
+
 def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
               max_tokens: int, timeout: int, log: logging.Logger = logger) -> tuple[Optional[str], str]:
     """One auxiliary LLM call; ``(reply_text, "")`` or ``(None, reason)``.
@@ -162,6 +195,13 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
     # in-turn caller keeps its conversation's key.
     from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
     affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+    # Same headless gap on the accounting side: with no agent turn there is no ambient
+    # (session_db, session_id) for the aux-usage chokepoint, so these calls — the most
+    # frequent aux lane in an auto-decompose install — never wrote a session_model_usage
+    # row while title_generation/approval/compression did (they run inside a turn).
+    # Bind a stable hidden ops session, but only when none is already bound so an
+    # in-turn caller keeps its conversation's session (#118595).
+    ops_db, acct_token = _bind_headless_aux_accounting(log)
     try:
         # Route through call_llm so auxiliary.triage_specifier.* config (provider/model/base_url,
         # extra_body, reasoning_effort, retries) all apply — the direct-create path dropped extra_body
@@ -178,6 +218,12 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
         log.info("%s: API call failed for %s (%s)%s", verb, task_id, exc, suffix)
         return None, f"LLM error: {type(exc).__name__}"
     finally:
+        if acct_token is not None:
+            from agent.aux_accounting import reset_accounting_context
+            reset_accounting_context(acct_token)
+        if ops_db is not None:
+            with suppress(Exception):
+                ops_db.close()
         if affinity_token is not None:
             reset_affinity_scope(affinity_token)
     try:

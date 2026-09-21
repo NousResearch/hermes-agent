@@ -56,42 +56,10 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
-# Size of the pool that runs agent TURN bodies, and of the separate pool for best-effort session
-# HOUSEKEEPING (finalize hooks, agent cleanup). They are separate because housekeeping callers
-# ABANDON their worker on timeout — see _run_housekeeping_in_executor. Both are ops-tunable.
-_EXECUTOR_MAX_WORKERS_DEFAULT = 10
-_HOUSEKEEPING_EXECUTOR_MAX_WORKERS_DEFAULT = 4
-# Log PHASE=executor_wait when a submitted work item sat queued this long before its first
-# instruction. Well above scheduling jitter, well below a budget a human would notice.
-_EXECUTOR_WAIT_WARN_SECS_DEFAULT = 5.0
-
-
-def _env_positive_int(name: str, default: int) -> int:
-    """Return a positive int from ``name``, falling back to ``default``."""
-    raw = os.getenv(name, "").strip()
-    if raw:
-        try:
-            value = int(raw)
-        except ValueError:
-            logger.warning("Ignoring invalid %s=%r", name, raw)
-        else:
-            if value > 0:
-                return value
-            logger.warning("Ignoring non-positive %s=%r", name, raw)
-    return default
-
-
-def _executor_max_workers() -> int:
-    """Return the size of the turn-body executor."""
-    return _env_positive_int(
-        "HERMES_GATEWAY_EXECUTOR_MAX_WORKERS", _EXECUTOR_MAX_WORKERS_DEFAULT)
-
-
-def _housekeeping_executor_max_workers() -> int:
-    """Return the size of the best-effort housekeeping executor."""
-    return _env_positive_int(
-        "HERMES_GATEWAY_HOUSEKEEPING_MAX_WORKERS",
-        _HOUSEKEEPING_EXECUTOR_MAX_WORKERS_DEFAULT)
+# Size of the separate pool for best-effort session HOUSEKEEPING (finalize hooks, agent cleanup).
+# It is separate from the turn pool because housekeeping callers ABANDON their worker on timeout —
+# see _run_housekeeping_in_executor.
+_HOUSEKEEPING_MAX_WORKERS = 4
 
 
 def _get_or_create_pool(
@@ -118,15 +86,7 @@ def _get_or_create_pool(
         return executor
 
 
-def _executor_wait_warn_secs() -> float:
-    """Return the queue-latency threshold that triggers a PHASE=executor_wait log."""
-    raw = os.getenv("HERMES_GATEWAY_EXECUTOR_WAIT_WARN", "").strip()
-    if raw:
-        try:
-            return max(0.0, float(raw))
-        except ValueError:
-            logger.warning("Ignoring invalid HERMES_GATEWAY_EXECUTOR_WAIT_WARN=%r", raw)
-    return _EXECUTOR_WAIT_WARN_SECS_DEFAULT
+_EXECUTOR_WAIT_WARN_SECS = 5.0
 # End reasons meaning the USER deliberately closed this thread. Shared by _classify_completion_target and
 # _resolve_async_delegation_session so they never disagree (else a "delivered" reason is acked, then lost).
 _USER_BOUNDARY_END_REASONS = ("session_reset", "user_exit", "session_switch", "new_session")
@@ -4377,7 +4337,7 @@ class GatewayRunner(
         loop = asyncio.get_running_loop()
         ctx = copy_context()
         submitted_at = time.monotonic()
-        warn_after = _executor_wait_warn_secs()
+        warn_after = _EXECUTOR_WAIT_WARN_SECS
 
         def _timed(*call_args):
             waited = time.monotonic() - submitted_at
@@ -4400,15 +4360,13 @@ class GatewayRunner(
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""
-        return _get_or_create_pool(
-            self, "_executor", "hermes-gateway", _executor_max_workers())
+        return _get_or_create_pool(self, "_executor", "hermes-gateway", 10)
 
     def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for best-effort session housekeeping."""
         # Prefix stays under "hermes-gateway" so existing thread-name scans keep matching.
         return _get_or_create_pool(
-            self, "_housekeeping_executor", "hermes-gateway-hk",
-            _housekeeping_executor_max_workers())
+            self, "_housekeeping_executor", "hermes-gateway-hk", _HOUSEKEEPING_MAX_WORKERS)
 
     def _shutdown_executor(self, drain_timeout: float = 0.0) -> int:
         """Stop the gateway-owned executor; returns the number of worker threads still running.

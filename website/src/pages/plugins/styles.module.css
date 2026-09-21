@@ -955,3 +955,14 @@ a.pickBtn {
   text-align: center;
   text-decoration: none;
 }
+
+/* Card title doubles as the link to the plugin's own page. */
+.cardTitleLink {
+  color: inherit;
+  text-decoration: none;
+}
+
+.cardTitleLink:hover {
+  color: var(--ifm-color-primary);
+  text-decoration: none;
+}

@@ -1,86 +1,34 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
+import { useHistory } from "@docusaurus/router";
+import useBaseUrl from "@docusaurus/useBaseUrl";
 import styles from "./styles.module.css";
 
-interface PluginCapabilities {
-  providesTools?: string[];
-  providesHooks?: string[];
-  providesMiddleware?: string[];
-  requiresEnv?: string[];
-}
-
-interface CatalogPlugin {
-  name: string;
-  description: string;
-  repo: string;
-  sha: string;
-  shaShort: string;
-  tier: string;
-  category: string;
-  maintainer: string;
-  subdir?: string;
-  requiresHermes?: string;
-  platforms?: string[];
-  capabilities?: PluginCapabilities;
-  docsUrl?: string;
-  /** Human label for the pin ("1.4.0"); cosmetic, shown beside the sha. */
-  version?: string;
-  /** Card banner image (GitHub-hosted https URL enforced by the extractor). */
-  image?: string;
-  installCommand: string;
-  /** GitHub stargazers at the last daily probe; null when the repo is not on GitHub or unprobed. */
-  stars?: number | null;
-  /** ISO committer date of the commit that added the entry to plugin-catalog/ (null: no git history at build). */
-  addedAt?: string | null;
-  /** ISO committer date of the last commit touching the entry (pin bumps, metadata edits). */
-  updatedAt?: string | null;
-  /** Lowercase pre-joined haystack for the search filter (built at load). */
-  _search?: string;
-}
-
-interface CatalogMeta {
-  generatedAt?: string;
-  total?: number;
-  byTier?: Record<string, number>;
-  byCategory?: Record<string, number>;
-  removedCount?: number;
-  starsFetchedAt?: string | null;
-}
+import {
+  type CatalogPlugin,
+  type CatalogMeta,
+  CATEGORY_CONFIG,
+  CATEGORY_ORDER,
+  SUBMIT_PLUGIN_URL,
+  TIER_CONFIG,
+  authorPagePath,
+  categoryOf,
+  desktopInstallLink,
+  formatDate,
+  formatRelativeTime,
+  formatStars,
+  pinUrl,
+  pluginPagePath,
+  repoUrl,
+  tierOf,
+} from "../../components/PluginCatalog/catalog";
+import CopyButton from "../../components/PluginCatalog/CopyButton";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
 const PLUGINS_URL = "/docs/api/plugins.json";
 const META_URL = "/docs/api/plugins-meta.json";
-
-// Docs section describing the PR-based submission workflow.
-const SUBMIT_PLUGIN_URL = "/user-guide/features/plugin-catalog#submitting-a-plugin-to-the-catalog";
-
-/** Deep link into the Desktop app's Install Plugin dialog, catalog mode: the app
- *  resolves the reviewed pin itself, so the page never hands it a repo URL. */
-function desktopInstallLink(name: string): string {
-  return `hermes://plugin/install?catalog=${encodeURIComponent(name)}`;
-}
-
-const TIER_CONFIG: Record<
-  string,
-  { label: string; color: string; bg: string; border: string; icon: string }
-> = {
-  official: {
-    label: "Official",
-    color: "#ffd700",
-    bg: "rgba(255, 215, 0, 0.08)",
-    border: "rgba(255, 215, 0, 0.25)",
-    icon: "\u{2713}",
-  },
-  community: {
-    label: "Community",
-    color: "#94a3b8",
-    bg: "rgba(148, 163, 184, 0.08)",
-    border: "rgba(148, 163, 184, 0.2)",
-    icon: "\u{2756}",
-  },
-};
 
 const TIER_ORDER = ["all", "official", "community"];
 
@@ -107,50 +55,6 @@ function sortPlugins(list: CatalogPlugin[], sort: SortKey): CatalogPlugin[] {
   );
 }
 
-// Browse taxonomy. Order here is the order of the filter pills and of the
-// grouped sections; keep it in sync with CATALOG_CATEGORIES in
-// hermes_cli/plugin_catalog.py and website/scripts/extract-plugins.py.
-const CATEGORY_CONFIG: Record<string, { label: string; icon: string; blurb: string }> = {
-  desktop: { label: "Desktop", icon: "\u{1F5A5}\u{FE0F}", blurb: "Panes, tabs and views for Hermes Desktop" },
-  memory: { label: "Memory", icon: "\u{1F9E0}", blurb: "Memory providers and context engines" },
-  platform: { label: "Platforms", icon: "\u{1F4AC}", blurb: "Messaging and channel adapters" },
-  web: { label: "Web & Browser", icon: "\u{1F310}", blurb: "Search backends, extraction and browser control" },
-  tools: { label: "Tools", icon: "\u{1F6E0}\u{FE0F}", blurb: "New tools the agent can call" },
-  voice: { label: "Voice", icon: "\u{1F399}\u{FE0F}", blurb: "Speech, TTS and realtime audio" },
-  automation: { label: "Automation", icon: "\u{23F1}\u{FE0F}", blurb: "Hooks, wake triggers and session automation" },
-  models: { label: "Models", icon: "\u{2728}", blurb: "Model and inference providers" },
-  general: { label: "General", icon: "\u{1F4E6}", blurb: "Plugins that span several areas" },
-};
-const CATEGORY_ORDER = Object.keys(CATEGORY_CONFIG);
-
-function formatRelativeTime(iso?: string): string | null {
-  if (!iso) return null;
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return null;
-  const diffMs = Date.now() - then;
-  if (diffMs < 0) return "just now";
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
-  const months = Math.floor(days / 30);
-  return `${months} month${months === 1 ? "" : "s"} ago`;
-}
-
-function formatDate(iso?: string | null): string {
-  const d = iso ? new Date(iso) : null;
-  return d && Number.isFinite(d.getTime())
-    ? d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
-    : "";
-}
-
-function formatStars(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
-}
-
 function highlightMatch(text: string, query: string): React.ReactNode {
   if (!query || !text) return text;
   const idx = text.toLowerCase().indexOf(query.toLowerCase());
@@ -161,47 +65,6 @@ function highlightMatch(text: string, query: string): React.ReactNode {
       <mark className={styles.highlight}>{text.slice(idx, idx + query.length)}</mark>
       {text.slice(idx + query.length)}
     </>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const onCopy = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      navigator.clipboard?.writeText(text).then(
-        () => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        },
-        () => {},
-      );
-    },
-    [text],
-  );
-  return (
-    <button
-      className={styles.copyBtn}
-      onClick={onCopy}
-      title="Copy install command"
-      aria-label="Copy install command"
-    >
-      {copied ? (
-        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
-          <path
-            fillRule="evenodd"
-            d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
-            clipRule="evenodd"
-          />
-        </svg>
-      ) : (
-        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
-          <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
-          <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
-        </svg>
-      )}
-      <span className={styles.copyBtnLabel}>{copied ? "Copied" : "Copy"}</span>
-    </button>
   );
 }
 
@@ -223,18 +86,24 @@ function PluginCard({
   onCategoryClick?: (category: string) => void;
   style?: React.CSSProperties;
 }) {
-  const tier = TIER_CONFIG[plugin.tier] || TIER_CONFIG.community;
-  const category = CATEGORY_CONFIG[plugin.category] || CATEGORY_CONFIG.other;
+  const tier = tierOf(plugin);
+  const category = categoryOf(plugin);
   const caps = plugin.capabilities || {};
   const toolCount = caps.providesTools?.length || 0;
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
-  const pinUrl = `${plugin.repo.replace(/\.git$/, "").replace(/\/$/, "")}/tree/${plugin.sha}`;
+  const pagePath = pluginPagePath(plugin.name);
+  const history = useHistory();
+  const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
+  // Outside the Desktop picker a card is a link to the plugin's own page (shareable, indexable);
+  // inside the picker iframe navigation would leave the host's embed, so the card keeps
+  // expanding in place there.
+  const onCardClick = onPick ? onToggle : () => history.push(pageHref);
 
   return (
     <div
       className={`${styles.card} ${expanded ? styles.cardExpanded : ""}`}
-      onClick={onToggle}
+      onClick={onCardClick}
       style={style}
     >
       <div className={styles.cardAccent} style={{ background: tier.color }} />
@@ -255,7 +124,11 @@ function PluginCard({
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle}>{highlightMatch(plugin.name, query)}</h3>
+            <h3 className={styles.cardTitle}>
+              <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+                {highlightMatch(plugin.name, query)}
+              </Link>
+            </h3>
             <span
               className={styles.tierPill}
               style={{
@@ -274,7 +147,7 @@ function PluginCard({
             {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
-                href={`${plugin.repo.replace(/\.git$/, "").replace(/\/$/, "")}/stargazers`}
+                href={`${repoUrl(plugin)}/stargazers`}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
@@ -371,7 +244,15 @@ function PluginCard({
             {plugin.maintainer && (
               <div className={styles.metaRow}>
                 <span className={styles.metaLabel}>Maintainer</span>
-                <span className={styles.metaValue}>{plugin.maintainer}</span>
+                <span className={styles.metaValue}>
+                  {plugin.maintainerSlug ? (
+                    <Link to={authorPagePath(plugin.maintainerSlug)} onClick={(e) => e.stopPropagation()}>
+                      {plugin.maintainer}
+                    </Link>
+                  ) : (
+                    plugin.maintainer
+                  )}
+                </span>
               </div>
             )}
             {plugin.requiresHermes && (
@@ -386,7 +267,7 @@ function PluginCard({
               <span className={styles.metaLabel}>Pinned</span>
               <span className={styles.metaValue}>
                 <a
-                  href={pinUrl}
+                  href={pinUrl(plugin)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
@@ -414,6 +295,9 @@ function PluginCard({
               <CopyButton text={plugin.installCommand} />
             </div>
             <div className={styles.cardLinks}>
+              <Link className={styles.docsLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+                Plugin page →
+              </Link>
               <a
                 className={styles.docsLink}
                 href={plugin.repo}

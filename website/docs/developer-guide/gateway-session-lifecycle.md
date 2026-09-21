@@ -463,6 +463,17 @@ post-command drain starts it right away instead of the session idling until the 
 message. Whether a wake pinned to a session that `/new` just closed may still run is decided at
 processing time (`_resolve_async_delegation_session`, fail-closed).
 
+Both commands also end the session's **background delegations** (`tools.async_delegation.
+interrupt_for_session`, selected by routing key and by the spawner's durable session id):
+`_interrupt_and_clear_session` fans the stop out for the busy path, and `_handle_stop_command`
+does the same for an idle session whose dispatching turn already ended (replying "Stopped" rather
+than "No active task to stop"). The turn's own hard interrupt never reaches those units — they are
+detached from `_active_children` at dispatch — so without the fan-out they run to completion and wake
+the chat minutes later. Each stopped unit still finalizes normally and re-enters as its completion
+notice with `status="interrupted"` and the child's partial output. `/new` and `/reset` already did this
+in `_handle_reset_command`; the shared helper's earlier call is idempotent there (a hard interrupt
+requested twice is one stop).
+
 ### FIFO Invariant
 
 Each `/queue` invocation produces exactly one full agent turn, in FIFO order, with no

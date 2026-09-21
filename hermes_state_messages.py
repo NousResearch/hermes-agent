@@ -6,10 +6,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, split_user_originated_turn
+from agent.context_compressor import (
+    _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, _is_checkpoint_item, _newest_checkpoint_carrier,
+    split_user_originated_turn)
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
@@ -26,6 +29,12 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+# Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
+# owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
+# key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
+_MESSAGE_SCHEMA_KEYS = frozenset(
+    re.findall(r"\w+", _INSERT_MESSAGE_SQL.split("(", 1)[1].split(")", 1)[0])
+) | {"id", "compacted", "display_order"}
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -38,10 +47,15 @@ _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id =
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id IN ({ids})" + _DISPLAY_ACTIVE_CLAUSE
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
+_LIVE_IDENTITY_SQL = ("SELECT id, role, content, tool_call_id, tool_calls FROM messages "
+                      "WHERE session_id = ? AND active = 1 ORDER BY id LIMIT ?")
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
 _SET_DISPLAY_META_SQL = "UPDATE messages SET display_metadata = ? WHERE id = ?"
 _ARCHIVE_ACTIVE_SQL = "UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1"
+_SHADOWED_CHECKPOINT_ROWS_SQL = ("SELECT id, codex_reasoning_items FROM messages WHERE session_id = ? AND active = 1 "
+    "AND role = 'assistant' AND id < ? AND codex_reasoning_items LIKE '%\"compaction\"%'")
+_SET_CODEX_REASONING_SQL = "UPDATE messages SET codex_reasoning_items = ? WHERE id = ?"
 _INVALID = object()  # _json_or sentinel where the fallback must be distinguishable from JSON null
 
 
@@ -506,7 +520,26 @@ class SessionMessagesMixin:
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6
+        carrier = _newest_checkpoint_carrier(messages, "codex_reasoning_items")
+        if carrier >= 0 and isinstance(messages[carrier].get("_row_id"), int):
+            self._drop_shadowed_checkpoint_rows(conn, session_id, messages[carrier]["_row_id"])
         return inserted, tool_calls_total
+
+    def _drop_shadowed_checkpoint_rows(self, conn, session_id: str, carrier_row_id: int) -> int:
+        """Rewrite older active assistant rows so only the row *carrier_row_id* keeps a ``type: "compaction"``
+        checkpoint (durable twin of ``context_compressor.drop_shadowed_checkpoints``). Under native compaction
+        every assistant response re-persists a ~120 KB checkpoint the wire builder will never replay once a
+        newer one lands, and local compaction — the only other prune site — rarely fires (#102374).
+        Non-checkpoint items stay; returns rows rewritten."""
+        rewritten = 0
+        for row_id, raw in conn.execute(_SHADOWED_CHECKPOINT_ROWS_SQL, (session_id, carrier_row_id)).fetchall():
+            items = _json_or(raw, None, "Ignoring malformed codex_reasoning_items on message row")
+            if not isinstance(items, list) or not any(_is_checkpoint_item(item) for item in items):
+                continue
+            kept = [item for item in items if not _is_checkpoint_item(item)]
+            conn.execute(_SET_CODEX_REASONING_SQL, (self._reasoning_json_text(kept), row_id))
+            rewritten += 1
+        return rewritten
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
         archive_dropped: bool = False, reject_active_turn_lease: bool = False) -> None:
@@ -521,9 +554,12 @@ class SessionMessagesMixin:
         ``include_inactive=True``. This is the mode a rewind/edit/regenerate must use: those flows overwrite
         a transcript the user may not have meant to drop, and a plain DELETE also evicts the rows from the
         FTS index, leaving nothing to recover from (#82756). It implies active-only handling —
-        already-archived rows are never touched — so ``active_only`` is redundant with it. The rewritten set
-        is inserted as fresh active rows exactly as in the destructive path, so the live view is identical
-        either way; only the durability of the dropped turns differs.
+        already-archived rows are never touched — so ``active_only`` is redundant with it. Live rows that
+        *messages* keeps in place (the common in-order prefix, matched on role/content/tool identity) are
+        left untouched with their ids; only the divergent live suffix is archived and only the new suffix
+        of *messages* is inserted (#82956: archiving and re-inserting the kept prefix grew the archive by
+        the whole transcript on every rewind). The live view is identical either way; only the durability
+        of the dropped turns differs.
         """
         from hermes_state_errors import CompressionSessionClosedError
         def _do(conn):
@@ -532,15 +568,56 @@ class SessionMessagesMixin:
                     conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
             elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 raise CompressionSessionClosedError(session_id)
+            kept = kept_tool_calls = 0
             if archive_dropped:
-                # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
-                conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1", (session_id,))
+                # Only the first len(messages)+1 live rows matter: the prefix to match plus the row whose
+                # id anchors the archive UPDATE (which itself covers every later row via `id >= ?`).
+                live = conn.execute(_LIVE_IDENTITY_SQL, (session_id, len(messages) + 1)).fetchall()
+                kept = self._stamp_kept_live_prefix(live, messages)
+                kept_tool_calls = sum(_tool_calls_len(row[4], scalar=1) for row in live[:kept])
+                if kept < len(live):
+                    # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
+                    conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1 AND id >= ?",
+                                 (session_id, live[kept][0]))
             else:
                 conn.execute(f"DELETE FROM messages WHERE session_id = ?{' AND active = 1' if active_only else ''}", (session_id,))
-            conn.execute(_RESET_COUNTERS_SQL, (session_id,))
-            total_messages, total_tool_calls = self._insert_message_rows(conn, session_id, messages)
-            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (total_messages, total_tool_calls, session_id))
+            inserted, inserted_tool_calls = self._insert_message_rows(conn, session_id, messages[kept:])
+            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?",
+                         (kept + inserted, kept_tool_calls + inserted_tool_calls, session_id))
         self._execute_write(_do)
+
+    @classmethod
+    def _row_identity(cls, role: str, content: Any, tool_call_id: Any, tool_calls: Any) -> tuple:
+        """The (role, content, tool_call_id, tool_calls) columns a message writes — the identity the
+        kept-prefix match compares. *content* is passed through the loader's lens first so a message
+        read back from the DB matches the row it came from."""
+        return (role, cls._encode_content(cls._loaded_view_content(role, content)), tool_call_id,
+                json.dumps(tool_calls) if tool_calls else None)
+
+    def _stamp_kept_live_prefix(self, live: list, messages: List[Dict[str, Any]]) -> int:
+        """Length of the in-order prefix of *messages* already present as the leading live rows; each
+        matched message gets its existing ``_row_id`` stamped, as a fresh insert would set it."""
+        kept = 0
+        for row, msg in zip(live, messages):
+            role = msg.get("role", "unknown")
+            # Cheap scalars first; the content compare pays decode/sanitize/encode on both sides.
+            if row[1] != role or row[3] != msg.get("tool_call_id"):
+                break
+            identity = self._row_identity(role, msg.get("content"), msg.get("tool_call_id"),
+                                          _parse_tool_calls(msg.get("tool_calls")))
+            if identity != self._row_identity(row[1], self._decode_content(row[2]), row[3], _parse_tool_calls(row[4])):
+                break
+            msg["_row_id"] = row[0]
+            kept += 1
+        return kept
+
+    @staticmethod
+    def _loaded_view_content(role: str, content: Any) -> Any:
+        """Content as ``_rows_to_messages`` hands it to callers: user/assistant strings are sanitized and
+        stripped on load, so a reloaded session's messages must be compared to rows through the same lens."""
+        if role in {"user", "assistant"} and isinstance(content, str):
+            return sanitize_context(content).strip()
+        return content
 
     def has_archived_messages(self, session_id: str) -> bool:
         """True if the session has any soft-archived (``active = 0``) rows (tests/diagnostics).
@@ -842,6 +919,14 @@ class SessionMessagesMixin:
                 msg["tool_calls"], [], f"Failed to deserialize tool_calls in {warn_context}, falling back to []")
         if msg.get("display_metadata") is not None:
             msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
+        # A `SELECT *` picks up every column, including any BLOB added to the schema later; the
+        # JSON encoder that serves these dicts over HTTP fails outright on raw bytes. Drop them
+        # here, once, rather than needing a new named pop for each future binary column. Known
+        # columns are exempt: popping `content` because a row holds bytes turns a decode problem
+        # into a KeyError for every msg["content"] reader downstream.
+        for key, value in list(msg.items()):
+            if key not in _MESSAGE_SCHEMA_KEYS and isinstance(value, (bytes, bytearray)):
+                msg.pop(key)
         return msg
 
     @staticmethod
@@ -1026,9 +1111,7 @@ class SessionMessagesMixin:
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
         for row in rows:
-            content = self._decode_content(row["content"])
-            if row["role"] in {"user", "assistant"} and isinstance(content, str):
-                content = sanitize_context(content).strip()
+            content = self._loaded_view_content(row["role"], self._decode_content(row["content"]))
             # Underscore-prefixed like ``_row_id``: transports strip it before the wire; compression's
             # assembly copies strip it so rotated child handoffs still flush (_fresh_compaction_message_copy).
             msg = {"role": row["role"], "content": content, _DB_PERSISTED_MARKER_KEY: True}

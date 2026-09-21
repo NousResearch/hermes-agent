@@ -663,8 +663,21 @@ def _close_leaked_session_dbs():
     on those ``close()`` releases a refcount rather than closing, so a sweep
     would silently retire a shared generation that a wider-scoped fixture
     still holds. The registry owns that lifecycle (``close_all()``).
+
+    Before the sweep, the auto-title upgrade threads a turn spawned are joined
+    (bounded): they hold the turn's SessionDB and write to it (and print to
+    ``sys.stdout``) after the turn returns, so left running they race this
+    close (``_reopen_after_close_locked`` on a daemon thread), the next test's
+    capture, and interpreter finalization — the ``Fatal Python error`` /
+    SIGSEGV shape of #113186, seen from ``tests/gateway/test_timestamp_sidecar_replay.py``.
     """
     yield
+    # sys.modules lookup, not import: a file that never touched title_generator spawned
+    # nothing. Tests that swap in a stub module (tui_gateway golden transcript) have no
+    # real threads either, so a stub without the helper is the same "nothing to join" case.
+    wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+    if wait is not None:
+        wait()
     try:
         from hermes_state_guard import _test_instance_registry as registry
     except Exception:
@@ -726,6 +739,14 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
     monkeypatch.setattr(
         _mod,
         "_read_claude_code_credentials_from_keychain",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    # The #98334 refresh write also mirrors into the Keychain; keep that out of
+    # the real store in any test that hasn't explicitly opted in.
+    monkeypatch.setattr(
+        _mod,
+        "_mirror_claude_code_credentials_to_keychain",
         lambda *_args, **_kwargs: None,
         raising=False,
     )

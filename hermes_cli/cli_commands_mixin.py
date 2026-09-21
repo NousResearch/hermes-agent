@@ -31,6 +31,7 @@ from rich.panel import Panel
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
 from hermes_state_ids import new_session_id as mint_session_id
 from agent.turn_context import extract_api_content_sidecar
+from hermes_cli.cli_agent_setup_mixin import _retire_agent
 from hermes_cli.browser_connect import (
     DEFAULT_BROWSER_CDP_URL, discover_local_cdp_url, find_free_debug_port, is_browser_debug_ready,
     launch_chrome_debug, local_port_in_use, manual_chrome_debug_command)
@@ -1387,7 +1388,9 @@ class CLICommandsMixin:
             return _cp("  No conversation to branch — send a message first.")
         if not self._session_db:
             return _cp(_db_unavailable_line())
-        branch_name = _command_arg(cmd_original)
+        # CLI has no threads: always in place; strip the gateway's ``--here`` so it is never a title.
+        from gateway.slash_commands_branch_thread import parse_branch_args
+        _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
         new_session_id = mint_session_id(now)
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(
@@ -1555,12 +1558,12 @@ class CLICommandsMixin:
                     cfg_get(read_raw_config(), "agent", "system_prompt", default=""))
             except Exception:
                 self.system_prompt = ""
-            self.agent = None  # Force re-init
+            _retire_agent(self)  # Force re-init
             _pr(f"{face} Personality cleared {scope}",
                 "  No personality overlay — using base agent behavior.")
         else:
             self.system_prompt = personality_prompt
-            self.agent = None  # Force re-init
+            _retire_agent(self)  # Force re-init
             _pr(f"{face} Personality set to '{name}' {scope}",
                 f"  \"{_ellipsize(personality_prompt, 60)}\"")
 
@@ -2562,11 +2565,13 @@ class CLICommandsMixin:
         """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
         scope unless --global) and thinking display toggles (always saved)."""
         from cli import CLI_CONFIG, _parse_reasoning_config
+        from agent.reasoning_effort import effort_display_label
         raw = _command_arg(cmd)
+        _route = (getattr(self, "provider", None), getattr(self, "model", None))
         if not raw:  # show current state
             rc = self.reasoning_config
             level = ("medium (default)" if rc is None else "none (disabled)"
-                     if rc.get("enabled") is False else rc.get("effort", "medium"))
+                     if rc.get("enabled") is False else effort_display_label(rc.get("effort", "medium"), *_route))
             display_state = "on ✓" if self.show_reasoning else "off"
             full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             return _cp(_accent_line(f"Reasoning effort:  {level}"),
@@ -2595,13 +2600,14 @@ class CLICommandsMixin:
                        _dim_line('Display:      show, hide'),
                        _dim_line('Scope:        session-scoped by default, --global to persist'))
         self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
+        _retire_agent(self)  # Force agent re-init with new reasoning config
         saved = explicit_global and _save("agent.reasoning_effort", arg)
         if saved:
             if not isinstance(CLI_CONFIG.get("agent"), dict):
                 CLI_CONFIG["agent"] = {}
             CLI_CONFIG["agent"]["reasoning_effort"] = arg
-        _cp(_accent_line(f"✓ Reasoning effort set to '{arg}' {_scope_outcome(explicit_global, saved)}"))
+        _cp(_accent_line(f"✓ Reasoning effort set to '{effort_display_label(arg, *_route)}' "
+                         f"{_scope_outcome(explicit_global, saved)}"))
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy [status|queue|steer|interrupt] — what Enter does while Hermes is working."""
@@ -2652,7 +2658,7 @@ class CLICommandsMixin:
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(f'(._.) Unknown argument: {arg}'), usage)
         self.service_tier, saved_value = _FAST_TIERS[arg]
-        self.agent = None  # Force agent re-init with new service-tier config
+        _retire_agent(self)  # Force agent re-init with new service-tier config
         saved = explicit_global and _save("agent.service_tier", saved_value)
         outcome = _scope_outcome(explicit_global, saved)
         _cp(_accent_line(f"✓ {feature_name} set to {saved_value.upper()} {outcome}"))

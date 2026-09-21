@@ -63,15 +63,15 @@ the chat, and Install writes the same config the CLI would. On the CLI and in
 messaging apps the agent relays the commands below instead.
 
 ```bash
-hermes mcp                # interactive picker (default)
-hermes mcp catalog        # plain-text list, scriptable
-hermes mcp install n8n    # install a catalog entry by name
+hermes mcp                   # interactive picker (default)
+hermes mcp catalog           # plain-text list, scriptable
+hermes mcp install deepwiki  # install a catalog entry by name
 ```
 
 The picker shows each entry with its current status:
 
 ```
-n8n          available              Manage and inspect n8n workflows from Hermes
+deepwiki     available              Ask questions about public GitHub repositories
 linear       enabled                Linear issue/project management (remote OAuth)
 github       installed (disabled)   GitHub repo + PR tools
 ```
@@ -82,6 +82,14 @@ enable, disable, or uninstall. Catalog entries are stored under
 Nous approval. There is no community submission tier; entries are added by
 merging a PR.
 
+The third-party n8n bridge is no longer available for catalog installation.
+Existing installations keep their `mcp_servers` configuration, credentials,
+installed files, and selected tools. They continue to load as configured MCP
+servers and appear as custom entries in the picker, where you can still
+configure tools or enable and disable them. Catalog reinstall is no longer
+available. This change does not migrate existing connections to
+[n8n's official MCP server](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
+
 Catalog entries can require:
 
 - **API key** — Hermes prompts at install time and writes the value to
@@ -90,6 +98,30 @@ Catalog entries can require:
   client opens a browser on first connection.
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at
   `hermes auth <provider>` if you haven't authenticated already.
+
+### n8n's official MCP server
+
+The `n8n-official` catalog entry connects directly to your n8n Cloud or
+self-hosted instance over HTTP with browser OAuth. No local bridge or n8n
+API key is required.
+
+1. Ask an owner or admin to enable **Settings > Instance-level MCP** in n8n.
+2. Open **Connect** and copy the full **Server URL** ending in
+   `/mcp-server/http`, not the editor URL. Older versions show the endpoint
+   directly on the MCP settings page.
+3. Run `hermes mcp install n8n-official` and enter that URL when prompted.
+4. Complete browser OAuth. If needed, run `hermes mcp login n8n-official`
+   or use **Authorize** on the configured server in Desktop or the dashboard.
+5. Review tools with `hermes mcp configure n8n-official`, then start a new
+   session or use `/reload-mcp`.
+
+The Hermes backend must be able to reach the URL. n8n controls permissions
+and workflow exposure; some tools modify or run workflows. See
+[n8n's connection guide](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
+
+This entry uses the existing catalog setup and storage behavior. It is
+separate from the retired `n8n` bridge, so existing connections, credentials,
+installed files, and tool selections are not replaced.
 
 ### Tool selection at install time
 
@@ -317,6 +349,8 @@ Refresh tokens are bound to the authorization server that granted them: Hermes r
 
 The redirect back from the authorization server is checked against RFC 9207: when the server's metadata advertises `authorization_response_iss_parameter_supported`, a redirect without a matching `iss` is rejected. Figma's authorization server (`https://api.figma.com`) advertises that support and then omits `iss`; Hermes fills the missing value from the discovered issuer for that one issuer and logs a warning, so `hermes mcp login figma` completes. A present-but-different `iss` is still rejected, and no other server gets the exemption.
 
+The authorization server's metadata document must name the server the resource advertised (RFC 8414 §3.3); a document for a different server is rejected before any registration or login. One shape is accepted without an exact match: a server advertised with a path (`https://host/path`) whose document, fetched from `https://host/.well-known/oauth-authorization-server/path`, names the origin `https://host` as its issuer — Strava's MCP connector publishes exactly that pair. Only the origin's operator controls that well-known location, so the document is treated as the advertised server's own; a document naming another origin or another path, or one reached only through a redirect or a fallback location, still fails with `Authorization server metadata issuer mismatch`.
+
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
 - **Hermes Desktop (automatic):** when you run the OAuth sign-in from the Desktop app's MCP setup UI against a remote backend, Desktop hosts the callback listener on *your* machine and relays the authorization back to the gateway automatically — no tunnel, paste, or proxy needed. Requires both the Desktop app and the backend to be up to date.
@@ -356,6 +390,8 @@ mcp_servers:
 Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
+
+**Need longer than 5 minutes to approve?** Set `oauth.timeout` on the server entry (seconds). `hermes mcp login`, the dashboard and Desktop re-auth all wait `oauth.timeout` + 15 s (or the entry's `connect_timeout`, whichever is longer); a login that still runs out of time reports `Connecting to MCP server '<name>' timed out after Ns` naming both knobs instead of a blank failure line.
 
 ## mTLS / client certificates
 
@@ -443,7 +479,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 mcp_servers:
   filesystem:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
 ```
 
 ### Recycling memory-heavy stdio servers
@@ -799,6 +835,16 @@ npx --version
 ```
 
 Then verify your config and restart Hermes.
+
+The startup summary in `agent.log` names every server that did not register, with the recorded
+connect error, so you never have to work out the failing one by elimination:
+
+```
+MCP: registered 116 tool(s) from 4 server(s) (2 failed: github (Connection closed); notion (HTTP 401 from POST https://mcp.notion.com/mcp))
+```
+
+A server that was skipped this pass because it is still inside its retry cooldown from an earlier
+failure is listed as `not attempted (in retry cooldown)`.
 
 ### Remote (HTTP) server rejects the connection
 

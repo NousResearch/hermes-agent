@@ -15,14 +15,14 @@ AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/audiocraft-audio-generation` |
-| Path | `optional-skills/creative\audiocraft-audio-generation` |
+| Path | `optional-skills/creative/audiocraft-audio-generation` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
 | Dependencies | `audiocraft`, `torch>=2.0.0`, `transformers>=4.30.0` |
 | Platforms | linux, macos |
 | Tags | `Multimodal`, `Audio Generation`, `Text-to-Music`, `Text-to-Audio`, `MusicGen` |
-| Related skills | [`heartmula`](./creative-heartmula.md), [`songwriting-and-ai-music`](../../bundled/creative/creative-songwriting-and-ai-music.md) |
+| Related skills | [`heartmula`](../../optional/creative/creative-heartmula.md), [`songwriting-and-ai-music`](../../bundled/creative/creative-songwriting-and-ai-music.md) |
 
 ## Reference: full SKILL.md
 
@@ -576,8 +576,8 @@ for desc in descriptions:
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\audiocraft-audio-generation/references/advanced-usage.md)** - Training, fine-tuning, deployment
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\audiocraft-audio-generation/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft-audio-generation/references/advanced-usage.md)** - Training, fine-tuning, deployment
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft-audio-generation/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

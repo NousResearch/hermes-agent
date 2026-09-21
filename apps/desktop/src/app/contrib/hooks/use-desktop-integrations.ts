@@ -17,6 +17,7 @@ import {
   invokePluginNotifyActivate,
   respondToApprovalAction
 } from '@/store/native-notifications'
+import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { openFolderAsProject } from '@/store/projects'
 import {
@@ -30,7 +31,6 @@ import {
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
-import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -296,9 +296,11 @@ export function useDesktopIntegrations({
 
   // hermes:// deep links:
   //  - mcp/install?… → pending MCP install (explicit confirm, never auto-install)
+  //  - plugin/install?catalog=<name> → curated-catalog lookup, then the same
+  //    reviewed/pinned install modal an in-app catalog pick opens; unknown
+  //    names toast an error and never fall back to a git-path install.
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
-  //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
   //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
   //  - open/<path>?… → in-app navigate (generic)
@@ -332,26 +334,20 @@ export function useDesktopIntegrations({
         return
       }
 
+      if (action.type === 'plugin-catalog-install') {
+        void requestPluginCatalogInstallFromDeepLink(action.name)
+
+        return
+      }
+
       if (action.type === 'plugin-install') {
         openPluginInstallRequest({
           repo: action.repo,
           enable: action.enable,
           force: action.force,
-          legacyHint: action.legacyHint,
-          catalogName: action.catalogName,
-          sha: action.sha
+          legacyHint: action.legacyHint
         })
 
-        return
-      }
-
-      if (action.type === 'skill-install') {
-        void requestSkillInstallFromDeepLink(action.identifier)
-
-        return
-      }
-
-      if (payload.kind === 'skill') {
         return
       }
 

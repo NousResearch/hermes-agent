@@ -185,7 +185,7 @@ _TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "f
 def _strip_reasoning_tags(text: str) -> str:
     """Strip reasoning blocks (closed, unterminated, orphan-close) and leaked tool-call XML from display text.
 
-    Keep in sync with ``run_agent._strip_think_blocks`` and the stream consumer's think-tag sets.
+    Keep in sync with ``agent.agent_runtime_helpers.strip_think_blocks`` and the stream consumer's think-tag sets.
 
     Also strips tool-call XML blocks some open models leak into visible content (``<tool_call>``,
     ``<function_calls>``, Gemma-style ``<function name="…">…</function>``). Ported from
@@ -197,20 +197,23 @@ def _strip_reasoning_tags(text: str) -> str:
         cleaned = re.sub(rf"<{tag}>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(rf"</{tag}>\s*", "", cleaned, flags=re.IGNORECASE)
     for tc_tag in _TOOL_CALL_TAGS:
-        cleaned = re.sub(rf"<{tc_tag}\b[^>]*>.*?</{tc_tag}>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(
+            rf"<(?:[\w.-]+:)?{tc_tag}\b[^>]*>.*?</(?:[\w.-]+:)?{tc_tag}>\s*",
+            "", cleaned, flags=re.DOTALL | re.IGNORECASE,
+        )
     # <function name="..."> — boundary + attribute gated to avoid prose false positives.
     cleaned = re.sub(
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*\bname\s*=[^>]*>(?:(?:(?!</function>).)*)</function>\s*',
         '', cleaned, flags=re.DOTALL | re.IGNORECASE,
     )
     cleaned = re.sub(
-        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*', '', cleaned,
+        r'</(?:(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls|function))>\s*', '', cleaned,
         flags=re.IGNORECASE,
     )
     # Unterminated opener / stray <arg_key>/<arg_value> markup = stream cut
     # mid tool-call serialization (#101899); strip to end of text.
     cleaned = re.sub(
-        r'(?:^|\n)[ \t]*<(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
+        r'(?:^|\n)[ \t]*<(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
         r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
         '',
         cleaned,
@@ -1038,6 +1041,7 @@ from hermes_cli.worktree_ops import (
     _repo_is_shallow,
     _setup_worktree,
     _worktree_has_unpushed_commits,
+    release_lsp_clients,
 )
 
 # ============================================================================= Git Worktree Isolation
@@ -1067,7 +1071,9 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         _active_worktree = None
         return
 
-    # Unlock first so `remove` isn't blocked by the lock placed at creation. Fail-soft.
+    # Release the tree's language servers while the path still exists, then unlock so `remove`
+    # isn't blocked by the lock placed at creation. Fail-soft.
+    release_lsp_clients(wt_path)
     _git_quiet(["worktree", "unlock", wt_path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", wt_path, "--force"], repo_root, timeout=15, log="Failed to remove worktree")
     _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}")
@@ -2406,10 +2412,6 @@ def save_config_value(key_path: str, value: any) -> bool:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
-        # Same unpinned-cron notice as `hermes config set` for every model switch.
-        from hermes_cli.config import warn_unpinned_cron_jobs_after_model_config_change
-
-        warn_unpinned_cron_jobs_after_model_config_change(key_path, value)
         return True
     except Exception as e:
         logger.error("Failed to save config: %s", e)
@@ -3746,7 +3748,14 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             pass
 
     def _tui_startup_background_maintenance(self):
-        """Best-effort startup passes: curator skill maintenance, personal + org skill sync."""
+        """Best-effort startup passes: curator skill maintenance, personal + org skill sync.
+
+        Off the main thread: the curator's deterministic pass snapshots and prunes the whole
+        skills tree (a due weekly pass held the prompt for 6 minutes on a large library), and
+        the sync pulls can hit the network. The REPL must never wait on housekeeping."""
+        threading.Thread(target=self._run_startup_maintenance, name="startup-maintenance", daemon=True).start()
+
+    def _run_startup_maintenance(self):
         with suppress(Exception):
             from agent.curator import maybe_run_curator
             maybe_run_curator(
@@ -4119,8 +4128,19 @@ _TRANSIENT_PROVIDER_REASONS = frozenset({
     "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
 })
 
+# ``failure_reason`` values a retry can never heal: the credential was rejected, the model does
+# not exist for this account, or the TLS chain is broken. A Kanban worker exits
+# ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` so the dispatcher parks the card after ONE spawn with
+# the provider's words as the reason, instead of re-spawning into the same wall until
+# ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
+# ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
+# header change heals it, never a retry.
+_TERMINAL_PROVIDER_REASONS = frozenset({
+    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
+})
 
-def _single_query_exit_code(result) -> int:
+
+def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -> int:
     """Map a one-shot turn result onto a process exit code, for both `-q` and `-Q`.
 
     0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
@@ -4129,16 +4149,28 @@ def _single_query_exit_code(result) -> int:
     failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
     (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
     WITHOUT counting a failure, so a quota window or a provider outage cannot trip the breaker.
+    The same sentinel applies when credential resolution itself is a quota/rate-limit
+    AuthError (no turn result object is produced). One that failed on a terminal provider
+    error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
+    (EX_CONFIG): the dispatcher blocks the card at once.
     """
     if not isinstance(result, dict):
+        if credentials_rate_limited and os.environ.get("HERMES_KANBAN_TASK"):
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+            return KANBAN_RATE_LIMIT_EXIT_CODE
         return 1
     if result.get("interrupted"):
         return 130
     if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
         return 0
-    if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in _TRANSIENT_PROVIDER_REASONS:
-        from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
-        return KANBAN_RATE_LIMIT_EXIT_CODE
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        reason = result.get("failure_reason")
+        if reason in _TRANSIENT_PROVIDER_REASONS:
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+            return KANBAN_RATE_LIMIT_EXIT_CODE
+        if reason in _TERMINAL_PROVIDER_REASONS:
+            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
     return 1
 
 
@@ -4178,11 +4210,17 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         # without this sync it would point at the ended parent after compression.
         _sync_cli_session_id_from_agent(cli)
         # The turn is over and persisted: the one-shot exit linger that follows protects nested
-        # notify_on_complete replies and is NOT part of the spawner's delivery (#113608).
-        write_turn_report(
-            turn_report_path, exit_code=_single_query_exit_code(result),
-            error=str(result.get("error") or "") if isinstance(result, dict) else "agent turn did not run",
-        )
+        # notify_on_complete replies and is NOT part of the spawner's delivery (#113608). The
+        # report carries what this run will print, so a spawner booking a child still lingering
+        # at its cap relays the answer instead of a timeout (#114980).
+        def _report_turn(res) -> None:
+            write_turn_report(
+                turn_report_path, exit_code=_single_query_exit_code(res),
+                error=str(res.get("error") or "") if isinstance(res, dict) else "agent turn did not run",
+                reply=res.get("final_response", "") if isinstance(res, dict) else str(res),
+            )
+
+        _report_turn(result)
         if isinstance(result, dict) and not result.get("failed"):
             history = result.get("messages") or cli.conversation_history
 
@@ -4215,6 +4253,8 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 cli._quiet_notify_linger_done = True
             if isinstance(continued, dict):
                 result = continued
+                # A teammate's reply displaced the answer this run prints; tell the spawner.
+                _report_turn(result)
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
@@ -4573,10 +4613,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                         emitter.attach(cli.agent)
                     _run_quiet_single_query(cli, effective_query, emitter=emitter)
 
+            fail_code = _single_query_exit_code(
+                None, credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False))
             if emitter is not None:
                 emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
-                                    session_id=cli.session_id or "", exit_code=1)
-            exit_single_query(1)  # credentials or agent init failed
+                                    session_id=cli.session_id or "", exit_code=fail_code)
+            exit_single_query(fail_code)  # credentials or agent init failed
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
         if _query_label:

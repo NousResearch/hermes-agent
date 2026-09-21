@@ -165,10 +165,6 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     return result
 
 
-# Highest ``manifest_version`` this installer understands; breaking schema changes bump it.
-_SUPPORTED_MANIFEST_VERSION = 1
-
-
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
     plugins = get_hermes_home() / "plugins"
@@ -542,6 +538,28 @@ def _git_head_revision(repo: Path, git_exe: str) -> str:
     ).stdout.strip().lower()
 
 
+def _git_resolve_commit(repo: Path, git_exe: str, revision: str) -> str:
+    """The COMMIT a revision names, peeling annotated tags.
+
+    A catalog pin is 40 hex, but that does not make it a commit: a tag object
+    has a sha of its own, and a pin recorded as `git rev-parse <tag>` names the
+    tag object, not the commit it points at. Git detaches at the commit, so
+    comparing HEAD against the tag object's sha refuses a correct checkout
+    (and the catalog installer then cannot install that entry at all). Peeling
+    first keeps the guard — HEAD must still BE that commit — while admitting
+    the pins authors actually publish. Returns `revision` unchanged when it
+    resolves to nothing, so the mismatch guard below still fires.
+    """
+    try:
+        result = _run_plugin_git(
+            git_exe, repo, "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}", timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return revision
+    resolved = result.stdout.strip().lower()
+    return resolved if result.returncode == 0 and resolved else revision
+
+
 def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url: str = "") -> None:
     """Fetch and detach at one immutable commit, then verify the resulting HEAD."""
     for verb, args, failure_prefix in (
@@ -554,7 +572,7 @@ def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url
         except subprocess.TimeoutExpired as exc:
             raise PluginOperationError(f"Git {verb} of commit '{revision}' timed out after 60 seconds.") from exc
     actual = _git_head_revision(repo, git_exe)
-    if actual != revision:
+    if actual != _git_resolve_commit(repo, git_exe, revision):
         raise PluginOperationError(
             f"Checked-out revision '{actual}' does not match requested commit '{revision}'.")
 
@@ -595,11 +613,14 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
         raise PluginOperationError(
             f"Plugin '{plugin_name}' has invalid manifest_version '{mv}' (expected an integer).",
         ) from None
-    if mv_int > _SUPPORTED_MANIFEST_VERSION:
+    # Shared with the runtime loader so the installer can never drift behind what the loader
+    # accepts (#85879): a private cap here refused v2 manifests the runtime happily loads.
+    from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION
+    if mv_int > SUPPORTED_MANIFEST_VERSION:
         from hermes_cli.config import recommended_update_command
         raise PluginOperationError(
             f"Plugin '{plugin_name}' requires manifest_version {mv}, "
-            f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
+            f"but this Hermes supports up to {SUPPORTED_MANIFEST_VERSION}. "
             f"Run {recommended_update_command()} to update Hermes.",
         ) from None
 
@@ -1087,8 +1108,9 @@ def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
 def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled).
 
-    Non-bundled plugins are asked about the privileged ``allow_tool_override`` grant;
-    tri-state: ``True``/``False`` skip the prompt, ``None`` asks. Bundled plugins are trusted.
+    Non-bundled plugins request consent for declared capabilities. The legacy
+    ``allow_tool_override`` grant changes only with an explicit True/False flag;
+    None leaves it unchanged. Bundled plugins are trusted.
     """
     from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
     console = _console()
@@ -1132,10 +1154,10 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     declared_caps = _declared_capabilities_for_key(key)
     if declared_caps:
         _run_capability_consent(console, key, declared_caps, context="enable")
-        if allow_tool_override is not None:
-            _resolve_tool_override_grant(console, key, allow_tool_override)
-        return
-    _resolve_tool_override_grant(console, key, allow_tool_override)
+    # Enabling a plugin is not a request for undeclared privileges. Keep existing
+    # grants unchanged unless the operator explicitly grants or revokes one.
+    if allow_tool_override is not None:
+        _resolve_tool_override_grant(console, key, allow_tool_override)
 
 
 # ── Capability consent flow ──────────────────────────────────────────────────
@@ -1907,12 +1929,17 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
     if not toolset_key:
         return
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
     config = load_config()
     platform_toolsets = _child_dict(config, "platform_toolsets")
     changed = False
-    for ts_list in platform_toolsets.values():
-        if isinstance(ts_list, list) and enable != (toolset_key in ts_list):
+    for platform, raw in list(platform_toolsets.items()):
+        # A list-literal string (older `hermes config set`) is the user's real selection; toggling
+        # it re-saves the entry as a proper list so the string never persists.
+        ts_list = parse_platform_toolsets_value(raw)
+        if ts_list is not None and enable != (toolset_key in ts_list):
             (ts_list.append if enable else ts_list.remove)(toolset_key)
+            platform_toolsets[platform] = ts_list
             changed = True
     # Enabling with no platform lists yet: seed "cli" at minimum.
     if enable and not changed and not platform_toolsets:
@@ -2021,9 +2048,16 @@ def _reapply_stash(git_exe: str, target: Path) -> bool:
 def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
     """Stash local edits before a pull. Returns ``(stash_created, error)``; a non-empty error means
     the tree is dirty but nothing was saved, so the pull must not run."""
-    status = _run_plugin_git(git_exe, target, "status", "--porcelain")
+    status = _run_plugin_git(git_exe, target, "status", "--porcelain", "-z")
     if status.returncode != 0 or not status.stdout.strip():
         return False, ""
+    # `git add -N` entries make `git stash push` fail outright (see update_cmd_stash), so promote them
+    # to real staged adds first; the checkout's own local edits are otherwise unstashable.
+    from hermes_cli.update_cmd_stash import _intent_to_add_paths
+
+    intent_to_add = _intent_to_add_paths(status.stdout)
+    if intent_to_add:
+        _run_plugin_git(git_exe, target, "add", "--", *intent_to_add)
     pre_stash = _stash_ref(git_exe, target)
     push = _run_plugin_git(
         git_exe, target, "stash", "push", "--include-untracked", "-m", "hermes-plugin-update-autostash")

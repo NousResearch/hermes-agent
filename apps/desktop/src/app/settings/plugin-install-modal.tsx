@@ -291,7 +291,7 @@ export function PluginInstallModal() {
 
         closePluginInstallRequest()
         // Catalog picks come from Capabilities → Plugins; land back there.
-        navigate(request.catalogName ? '/skills?tab=plugins' : '/settings?tab=plugins')
+        navigate(request.catalogName ? '/capabilities?tab=plugins' : '/settings?tab=plugins')
 
         return
       }

@@ -282,7 +282,7 @@ async def cancel_mcp_oauth_flow(flow_id: str, request: Request):
     flow = _mcp_oauth_flows.get(flow_id)
     if flow is None:  # expired/GC'd is the goal state of a cancel — not an error
         return {"ok": True, "status": "expired"}
-    flow.mark_error("Cancelled by user")
+    flow.mark_error("Cancelled by user", cancelled=True)
     return {"ok": True, "status": flow.snapshot()["status"]}
 
 

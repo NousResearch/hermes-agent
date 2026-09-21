@@ -18,6 +18,7 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
+  type MenuItemConstructorOptions,
   nativeTheme,
   powerMonitor,
   powerSaveBlocker,
@@ -41,6 +42,7 @@ import {
   withRetry
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
 import {
   stopBackendChild as stopBackendChildImpl,
   stopBackendTreesForUpdate,
@@ -234,6 +236,7 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
+  homeRelativeAttachmentCandidates,
   readFileDataUrlForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
@@ -325,6 +328,7 @@ import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
+import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
@@ -357,6 +361,7 @@ import {
   tagRegistrySessionResponse
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import { createQuitFinalization } from './quit-finalization'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import { backendQuitNeedsWait, createQuitTeardownCoordinator } from './quit-teardown'
 import * as remoteLifecycle from './remote-lifecycle'
@@ -427,9 +432,12 @@ import {
   compareApiUrl,
   describeUpdateCheckFailure,
   githubRepoSlug,
+  listLocalCommits,
   parseCompare,
-  rateLimitFromHeaders
+  rateLimitFromHeaders,
+  resolveBehindLocally
 } from './update-api-check'
+import { updateCheckAgent } from './update-api-proxy'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -1355,6 +1363,14 @@ function previewFileMetadata(filePath, mimeType) {
 }
 
 app.setName(APP_NAME)
+
+// No application menu until the first window exists. Electron would otherwise
+// install its default menu at `will-finish-launching` (before `ready`), and a
+// key equivalent routed through that menu's delegate with no window open
+// segfaults the macOS shell — the updater relaunch races the user's keystroke
+// (#115332). Must run at module scope: on macOS a later `null` never removes
+// an installed menu. The real menu lands in installApplicationMenuAfterFirstWindow.
+Menu.setApplicationMenu(null)
 
 // Windows toast notifications silently no-op unless an AppUserModelID is set:
 // `new Notification().show()` returns without error and nothing appears. The
@@ -2410,16 +2426,20 @@ const UPDATE_WAIT_POLL_MS = 1000
 const UPDATE_HANDOFF_DWELL_MS = 2500
 
 // Gate deps shared by the primary-window boot path and the pool-backend
-// spawn path. Consulting BOTH the on-disk marker and the in-process
-// updateInFlight flag is load-bearing (#73822): applyUpdates kills its own
-// backend BEFORE the Windows venv-blocker scan but only writes the marker
-// AFTER it, so a marker-only gate lets the renderer's ~1s reconnect respawn
-// a backend inside the update's own critical section — which the scan then
-// reports as a blocker, aborting every update attempt.
+// spawn path. Consulting the on-disk marker, the in-process updateInFlight
+// flag, AND the successful detached hand-off state is load-bearing (#73822):
+// applyUpdates kills its own backend BEFORE the Windows venv-blocker scan but
+// only writes the marker AFTER it, so a marker-only gate lets the renderer's
+// ~1s reconnect respawn a backend inside the update's own critical section —
+// which the scan then reports as a blocker, aborting every update attempt.
+// The hand-off state closes the later Windows `cmd start` wrapper gap: the
+// wrapper exits 0 before the real PowerShell script claims the marker, and
+// `finally` clears updateInFlight immediately after the hand-off is accepted.
 function updateGateDeps() {
   return {
     hasLiveMarker: () => Boolean(readLiveUpdateMarker(HERMES_HOME)),
-    isUpdateInFlight: () => updateInFlight
+    isUpdateInFlight: () => updateInFlight,
+    isHandoffActive: () => isQuittingForHandoff
   }
 }
 
@@ -3302,7 +3322,7 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const slug = githubRepoSlug(originUrl)
 
   const status = slug
-    ? await checkUpdatesViaApi({ slug, branch, currentSha })
+    ? await checkUpdatesViaApi({ slug, branch, currentSha, updateRoot })
     : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
 
   const result = {
@@ -3344,7 +3364,7 @@ function writeUpdateCheckCache(entry) {
 // then the compare endpoint only when the tips differ — it yields the exact
 // behind count plus the commit list the overlay renders, replacing both
 // `rev-list --count` and `git log HEAD..origin/<branch>`.
-async function checkUpdatesViaApi({ slug, branch, currentSha }) {
+async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
   let targetSha
 
   try {
@@ -3363,15 +3383,40 @@ async function checkUpdatesViaApi({ slug, branch, currentSha }) {
 
   // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
   // "update available, count unknown" — never a fabricated number.
+  let compareError = null
   const compared = await fetchGitHubApi(compareApiUrl(slug, currentSha, targetSha))
     .then(parseCompare)
-    .catch(() => null)
+    .catch(error => {
+      compareError = error
+
+      return null
+    })
 
   // ahead_by === 0 with differing tips: the remote tip is reachable from our
   // HEAD — a local commit sitting AHEAD, not behind. Flagging that as an update
   // nudges the user into wiping their work.
   if (compared?.behind === 0) {
     return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+  }
+
+  // A local-only HEAD (a patched checkout's merge/rebase commits exist nowhere
+  // upstream) makes the compare endpoint 404 FOREVER — the fallback below then
+  // holds a permanent "update available" no update can ever clear, since every
+  // update re-creates the local-only HEAD. When the already-fetched tip is in
+  // the local object database, answer from the local graph instead — the same
+  // ancestry guard the ls-remote path already applies and the backend's
+  // banner._tips_behind uses. Only a tip we can't see at all stays "unknown".
+  if (compared === null && compareError && updateRoot) {
+    const local = await resolveBehindLocally(runGit, updateRoot, currentSha, targetSha)
+
+    if (local !== null) {
+      return {
+        behind: local,
+        updateAvailable: local > 0,
+        targetSha,
+        commits: local > 0 ? await listLocalCommits(runGit, updateRoot, currentSha, targetSha) : []
+      }
+    }
   }
 
   return {
@@ -3451,6 +3496,7 @@ function fetchGitHubApiOnce(url, accept, token) {
     const req = https.get(
       url,
       {
+        agent: updateCheckAgent(url),
         headers: githubApiHeaders(
           {
             Accept: accept,
@@ -4188,7 +4234,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // ── Pre-flight state.db integrity guard (#68474) ─────────────────
     // Emergency backup and header verification before the update touches
     // anything.  Runs while the backend is still alive.
-    preflightStateDb(HERMES_HOME, rememberLog)
+    await preflightStateDb(HERMES_HOME, rememberLog)
 
     if (IS_WINDOWS && resolveUpdateScriptHandoff(updateRoot)) {
       const message = windowsUpdatePrerequisiteError(updateRoot)
@@ -4313,11 +4359,13 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see
-      // wrapHandoffForDetachedConsole). Route through `cmd start` so the
-      // script gets its own minimized console and survives our exit. The
-      // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
-      // pid — the script claims the update marker itself with its own $PID
-      // as its first action, and a relaunched Desktop parks on that.
+      // wrapHandoffForDetachedConsole). Route through a NON-detached, hidden
+      // `cmd start /b` wrapper: cmd.exe owns one hidden console, the script
+      // runs inside it (no window is ever created, #116161) and outlives
+      // both cmd.exe and this process. The wrapper cmd.exe exits
+      // immediately, so child.pid is NOT the script's pid — the script
+      // claims the update marker itself with its own $PID as its first
+      // action, and a relaunched Desktop parks on that.
       const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
         '-InstallRoot',
         updateRoot,
@@ -4337,7 +4385,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
           PATH: pathWithHermesManagedNode(venvBin)
         },
-        detached: true,
+        detached: wrapped.detached,
         stdio: 'ignore'
       })
 
@@ -4574,7 +4622,7 @@ function runningAppBundle() {
 // desktop Electron process itself, before the backend is killed and
 // before the updater is spawned — a separate safety net from the
 // Python-level pre-update snapshot inside `hermes update`.
-function preflightStateDb(hermesHome, rememberLog) {
+async function preflightStateDb(hermesHome, rememberLog) {
   const stateDbPath = path.join(hermesHome, 'state.db')
 
   if (!fileExists(stateDbPath)) {
@@ -4606,6 +4654,17 @@ function preflightStateDb(hermesHome, rememberLog) {
           '[updates] state.db header is INVALID before update — ' +
             'this indicates pre-existing corruption or a concurrent write issue'
         )
+      }
+
+      if (
+        !(await readPreUpdateBackupEnabled(
+          resolveHermesBackend(['config', 'get', 'updates.pre_update_backup', '--json']),
+          hermesHome
+        ))
+      ) {
+        rememberLog('[updates] emergency state.db backup disabled by updates.pre_update_backup')
+
+        return
       }
 
       // Emergency timestamped backup, separate from the Python-level snapshot.
@@ -4682,7 +4741,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   // ── Pre-flight state.db integrity guard (#68474) ──
-  preflightStateDb(HERMES_HOME, rememberLog)
+  await preflightStateDb(HERMES_HOME, rememberLog)
 
   // Branch-pin so a non-main checkout doesn't get switched to main (and
   // self-heal to main when the pinned branch no longer exists on origin).
@@ -6429,6 +6488,21 @@ async function previewFileTarget(rawTarget, baseDir) {
     purpose: 'Preview target'
   })
 
+  // Attachment references stored in chat history are frequently HOME-relative
+  // (e.g. "AppData/Local/hermes/attachments/foo.xlsx" on Windows, or
+  // ".hermes/attachments/foo.xlsx" elsewhere) rather than relative to the
+  // agent's working directory. The primary resolution above only tries
+  // `base` (the working dir), so such a ref never exists there and the
+  // preview/download 404s even though the file is present on disk (#115609).
+  if (!fileExists(resolved) && !directoryExists(resolved)) {
+    for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), HERMES_HOME)) {
+      if (fileExists(candidate)) {
+        resolved = candidate
+        break
+      }
+    }
+  }
+
   if (directoryExists(resolved)) {
     resolved = path.join(resolved, 'index.html')
   }
@@ -7025,7 +7099,7 @@ async function showPluginCompatNoticeOnce() {
     })
 
     if (response === 0) {
-      handleDeepLink(`${HERMES_PROTOCOL}://open/skills?tab=plugins`)
+      handleDeepLink(`${HERMES_PROTOCOL}://open/capabilities?tab=plugins`)
     }
   } finally {
     try {
@@ -7085,7 +7159,7 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
 }
 
 function buildApplicationMenu() {
-  const template = []
+  const template: MenuItemConstructorOptions[] = []
 
   const checkForUpdatesItem = {
     label: 'Check for Updates…',
@@ -7152,7 +7226,16 @@ function buildApplicationMenu() {
       // terminal, preview, and other editable surfaces that need the strip.
       { role: 'pasteAndMatchStyle' },
       { role: 'delete' },
-      { role: 'selectAll' }
+      { role: 'selectAll' },
+      ...(IS_MAC
+        ? ([
+            { type: 'separator' },
+            {
+              label: 'Substitutions',
+              submenu: [{ role: 'showSubstitutions' }, { type: 'separator' }, { role: 'toggleTextReplacement' }]
+            }
+          ] satisfies MenuItemConstructorOptions[])
+        : [])
     ]
   })
   template.push({
@@ -12693,6 +12776,13 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
 })
 
 const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
+const quitFinalization = createQuitFinalization({
+  isWindows: IS_WINDOWS,
+  hardExit: code => {
+    rememberLog(`[quit] forcing Windows process exit after Electron quit finalization stalled`)
+    app.exit(code)
+  }
+})
 
 async function teardownSshForQuit() {
   const scopes = [...sshConnections.keys()]
@@ -17206,6 +17296,11 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   sshIsolatedKeepalives.stopAll()
   destroyKeepaliveAgents()
+  quitFinalization.arm()
+})
+
+app.on('quit', () => {
+  quitFinalization.cancel()
 })
 
 // Answered synchronously so preload can publish the verdict before the
@@ -18165,12 +18260,6 @@ app.whenReady().then(() => {
   // connection resolution.
   migrateLegacyEncryptedSecretsOnce()
 
-  if (IS_MAC) {
-    Menu.setApplicationMenu(buildApplicationMenu())
-  } else {
-    Menu.setApplicationMenu(null)
-  }
-
   installMediaPermissions()
   installDownloadHandling()
   registerMediaProtocol()
@@ -18211,7 +18300,12 @@ app.whenReady().then(() => {
   // its worker waits for the install marker to clear, then reopens every scope
   // captured by the original transaction before removing the journal entry.
   void resumeManagedSshRecoveries()
-  createWindow()
+  installApplicationMenuAfterFirstWindow({
+    isMac: IS_MAC,
+    buildMenu: buildApplicationMenu,
+    setApplicationMenu: menu => Menu.setApplicationMenu(menu),
+    createWindow
+  })
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -18264,7 +18358,10 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
   }
 
   const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
-  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  // A hidden aux window must never parent the quit prompt: the dialog would
+  // be invisible and the held quit unanswerable (#116376 §E).
+  const parent =
+    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(window => window.isVisible())
 
   if (!prompt || !parent || parent.isDestroyed()) {
     return false

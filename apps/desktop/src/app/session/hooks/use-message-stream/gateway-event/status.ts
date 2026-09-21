@@ -37,10 +37,15 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'status.update') {
-    if (sessionId && payload?.kind === 'compacting') {
+    // `compacting`/`compacted` is auto-compaction's pair. Manual /compress
+    // pins `compressing` and always clears it with `ready` (the `finally` in
+    // methods_session._compress_live). Both spellings drive the same phase —
+    // the TUI has matched the pair since createGatewayEventHandler.ts:904;
+    // without `compressing` the desktop showed no progress for /compress.
+    if (sessionId && (payload?.kind === 'compacting' || payload?.kind === 'compressing')) {
       setSessionCompacting(sessionId, true)
       compactedTurnRef.current.add(sessionId)
-    } else if (sessionId && payload?.kind === 'compacted') {
+    } else if (sessionId && (payload?.kind === 'compacted' || payload?.kind === 'ready')) {
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)
 

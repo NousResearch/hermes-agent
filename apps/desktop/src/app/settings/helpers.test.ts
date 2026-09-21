@@ -32,6 +32,17 @@ describe('settings helpers', () => {
     expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
   })
 
+  it('exposes the auxiliary compression timeout in Memory & Context with user-facing copy', () => {
+    // 3-segment schema key: the label lookup must round-trip the nested
+    // auxiliary.compression.timeout path the backend schema flattens.
+    const memory = SECTIONS.find(section => section.id === 'memory')
+
+    expect(memory?.keys).toContain('auxiliary.compression.timeout')
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'auxiliary.compression.timeout')).toBe('Compression model timeout (s)')
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'auxiliary.compression.timeout')).toContain('default 120')
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'model_context_length')).toMatch(/main model/i)
+  })
+
   it('does not shadow the backend schema options for memory.provider', () => {
     // memory.provider options are discovery-driven and served by the backend
     // config schema (merged per-request); enumOptionsFor must return undefined

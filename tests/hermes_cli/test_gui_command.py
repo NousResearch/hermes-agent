@@ -337,6 +337,115 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     assert "Desktop GUI build failed" in capsys.readouterr().out
 
 
+def _make_electron_dist(root: Path) -> Path:
+    """Lay a complete Electron install where ``_electron_dist_ok`` looks on THIS host.
+
+    Resolved through ``_electron_dist_binary()`` rather than a hardcoded path so
+    the fixture and the code agree by construction on every OS lane.
+    """
+    binary = main_desktop._electron_dist_binary(root)
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_text("", encoding="utf-8")
+    return binary
+
+
+def _pack_that_never_reaches_the_builder():
+    """A ``subprocess.run`` stand-in for a pack that dies before electron-builder.
+
+    It lays NOTHING down in the staging output — that is the signature of a
+    compile, bundler or native-link failure — and records each attempt's env so
+    a test can see whether the mirror rung was entered.
+    """
+    attempts: list[dict] = []
+
+    def _run(cmd, **kwargs):
+        if len(cmd) >= 3 and cmd[1:3] == ["run", "pack"]:
+            attempts.append(dict(kwargs.get("env") or {}))
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    return attempts, _run
+
+
+def test_gui_skips_mirror_retry_when_electron_dist_is_intact(tmp_path, monkeypatch, capsys):
+    """A pack that never reached electron-builder has no mirror problem to repair.
+
+    "The pack failed and the staging output holds no exe" is ALSO true of a
+    compile / bundler / native-link failure, so on its own it cannot select the
+    mirror rung — yet that rung re-ran the whole pack while telling the user the
+    Electron download from GitHub looked blocked. The mirror retry additionally
+    requires the Electron distributable to be missing.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_electron_dist(root)
+    live_exe = _make_packaged_executable(root, monkeypatch)
+    live_exe.write_text("good build", encoding="utf-8")
+    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
+
+    attempts, run_pack = _pack_that_never_reaches_the_builder()
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]) as mock_purge, \
+         patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main.subprocess.run", side_effect=run_pack), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    # One pack, no mirror env on it, no false accusation of a blocked download.
+    assert len(attempts) == 1
+    assert not any(a.get("ELECTRON_MIRROR") for a in attempts)
+    assert "looks blocked" not in capsys.readouterr().out
+    # Nothing recovery-shaped ran either.
+    mock_purge.assert_not_called()
+    mock_dl.assert_not_called()
+
+
+def test_gui_still_retries_via_mirror_when_electron_dist_is_missing(tmp_path, monkeypatch, capsys):
+    """The blocked-download recovery the mirror rung exists for still fires.
+
+    Guard so a later tightening of the gate cannot silently drop the last rung:
+    Electron staged its package but ``dist`` was never populated, the pack
+    produces no exe, and the user hasn't pinned a mirror — refresh via
+    npmmirror.com and pack once more.
+    """
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    # electron present, dist half-populated (a blocked postinstall download).
+    (root / "node_modules" / "electron" / "dist").mkdir(parents=True)
+    live_exe = _make_packaged_executable(root, monkeypatch)
+    live_exe.write_text("good build", encoding="utf-8")
+    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
+
+    attempts, run_pack = _pack_that_never_reaches_the_builder()
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]) as mock_purge, \
+         patch("hermes_cli.main_desktop._redownload_electron_dist", return_value=True) as mock_dl, \
+         patch("hermes_cli.main.subprocess.run", side_effect=run_pack), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    # The whole ladder still runs: pack, refreshed-download retry, mirror retry.
+    assert len(attempts) == 3
+    assert not attempts[0].get("ELECTRON_MIRROR")
+    assert not attempts[1].get("ELECTRON_MIRROR")
+    assert attempts[2].get("ELECTRON_MIRROR") == main_desktop._ELECTRON_FALLBACK_MIRROR
+    assert "looks blocked" in capsys.readouterr().out
+    # And the mirror run reached the dist re-download, mirror in hand.
+    assert mock_purge.called
+    assert any(a.kwargs.get("mirror") == main_desktop._ELECTRON_FALLBACK_MIRROR
+               for a in mock_dl.call_args_list)
+
+
 
 
 # ── electronDist (re)download helper tests (#47266) ───────────────────
@@ -1456,6 +1565,64 @@ def test_swap_staged_desktop_app_rolls_back_when_second_rename_fails(tmp_path, m
     assert main_desktop._swap_staged_desktop_app(desktop_dir, staging) is None
     assert live_exe.read_text(encoding="utf-8") == "old"
     assert not (live_exe.parent.parent / (live_exe.parent.name + ".previous")).exists()
+
+
+def test_swap_staged_desktop_app_stops_live_renderer_before_rename(tmp_path):
+    """#109643: a renderer alive through the promotion rename keeps fetching its
+    old hashed chunks from disk and dies on the next lazy import — the swap must
+    ask for running desktop processes to stop on EVERY platform."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = staging / _packaged_exe_rel()
+    staged_exe.parent.mkdir(parents=True)
+    staged_exe.write_text("new", encoding="utf-8")
+
+    with patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build",
+               return_value=[4321]) as stop:
+        promoted = main_desktop._swap_staged_desktop_app(desktop_dir, staging)
+
+    assert promoted == live_exe
+    stop.assert_called_once_with(desktop_dir, also_posix=True)
+
+
+def test_stop_desktop_processes_locking_build_posix_swap_bypasses_early_return(tmp_path, monkeypatch):
+    """#109643: also_posix=True must run the scan on POSIX (the default pack-time
+    call stays Windows-only — the staging pack never touches the live tree)."""
+    monkeypatch.setattr(main_desktop.sys, "platform", "darwin")
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+
+    class _FakeProc:
+        def __init__(self, pid, exe):
+            self.info = {"pid": pid, "exe": exe}
+            self.pid = pid
+
+        def terminate(self):
+            return None
+
+    target = _FakeProc(100, str(live_exe))
+    outsider = _FakeProc(200, "/usr/bin/unrelated")
+
+    class _FakePsutil:
+        @staticmethod
+        def process_iter(attrs):
+            return [target, outsider]
+
+        @staticmethod
+        def wait_procs(victims, timeout=5):
+            return [], []
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+
+    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir) == []
+    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [100]
 
 
 def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, capsys):

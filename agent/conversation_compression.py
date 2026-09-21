@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import contextvars
 import copy
 import dataclasses
 import inspect
@@ -169,9 +170,11 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
     "_previous_summary", "_summary_has_user_turn", "compression_count", "_last_compression_savings_pct",
     "_ineffective_compression_count", "_anti_thrash_recovery_deadline", "_fallback_compression_streak",
     "_verify_compaction_cleared_threshold", "_last_compression_made_progress", "_summary_failure_cooldown_until",
-    "_cooldown_persist_failed", "_last_summary_error", "_consecutive_timeout_failures", "_last_summary_dropped_count",
+    "_cooldown_persist_failed", "_last_summary_error", "_consecutive_timeout_failures", "_consecutive_truncation_failures",
+    "_last_summary_dropped_count",
     "_last_summary_fallback_used", "_last_compress_aborted", "_last_summary_auth_failure",
     "_last_summary_network_failure", "_last_summary_empty_content_failure", "_last_summary_truncated_failure",
+    "_last_summary_overload_failure",
     "_last_aux_model_failure_error", "_last_aux_model_failure_model", "_summary_model_fallen_back", "summary_model",
     "_last_compression_telemetry", "_active_compression_telemetry", "_compression_telemetry_seed",
     "_proactive_prune_rearm_tokens",
@@ -212,12 +215,39 @@ def _snapshot_compressor_attempt_state(compressor: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 _COMPRESSOR_ATTEMPT_LOCK = threading.Lock()
 
+# The calling attempt's generation rides a ContextVar (not a compressor attribute) so compressor code
+# deep in the call stack can tell ITS OWN attempt apart from whichever attempt currently owns the
+# compressor. A shared attribute can only answer "who owns now", never "am I stale". Set/reset inside
+# _run_summary_dispatch around compress_fn, which always runs in the calling attempt's own thread, so
+# worker and fallback threads each see their own generation. Callers outside the dispatch machinery
+# (manual compress, legacy paths) read None and keep unguarded historical behavior.
+_COMPRESSOR_ATTEMPT_GENERATION: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "hermes_compressor_attempt_generation", default=None
+)
+
+
+def _compressor_attempt_serial_lock(compressor: Any) -> Any:
+    """Per-compressor lock serializing the durable cooldown rollback against claims. The process-wide
+    claim lock must stay cheap (every compressor in a gateway shares it), so the slow SQLite write in
+    ``_restore_compressor_attempt_state`` is fenced by THIS lock instead; ``_claim_compressor_attempt``
+    takes it first so a claim on that compressor waits for the restore while other compressors proceed.
+    A slotted/frozen compressor that cannot hold the attribute gets a no-op (its guard is off anyway)."""
+    with _COMPRESSOR_ATTEMPT_LOCK:
+        lock = getattr(compressor, "_compression_attempt_serial_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            try:
+                compressor._compression_attempt_serial_lock = lock
+            except Exception:
+                return contextlib.nullcontext()
+        return lock
+
 
 def _claim_compressor_attempt(compressor: Any) -> int:
     """Claim the compressor for a new attempt; return its monotonic generation id.
     Restores or cancelled-check mutations stamped with an OLDER generation no-op, so a detached late attempt
     cannot clobber its successor's state."""
-    with _COMPRESSOR_ATTEMPT_LOCK:
+    with _compressor_attempt_serial_lock(compressor), _COMPRESSOR_ATTEMPT_LOCK:
         generation = int(getattr(compressor, "_compression_attempt_generation", 0) or 0) + 1
         try:
             compressor._compression_attempt_generation = generation
@@ -247,6 +277,19 @@ def _mark_compressor_working_attempt(compressor: Any, generation: int) -> None:
     with _COMPRESSOR_ATTEMPT_LOCK:
         with contextlib.suppress(Exception):
             compressor._compression_working_attempt_generation = generation
+
+
+def _raise_if_stale_attempt(compressor: Any) -> None:
+    """Unwind the CALLING attempt (its generation rides the ContextVar) as a cancellation when a newer
+    attempt has since begun summary work on *compressor*, so none of the shared-state writes that
+    follow the call site can land."""
+    if not _caller_attempt_is_current(compressor):
+        raise AuxiliaryExplicitCancellation()
+
+
+def _caller_attempt_is_current(compressor: Any) -> bool:
+    """Working-attempt check for the calling attempt's own generation (ContextVar; None → unguarded)."""
+    return _working_attempt_is_current(compressor, _COMPRESSOR_ATTEMPT_GENERATION.get())
 
 
 def _working_attempt_is_current(compressor: Any, generation: Any) -> bool:
@@ -331,26 +374,32 @@ def _restore_compressor_attempt_state(
             attempt_generation, getattr(compressor, "_compression_attempt_generation", None),
         )
         return
-    # Success clears the durable cooldown pre-commit; recreate/clear that row BEFORE
-    # restoring in-memory values or the next refresh overwrites the rollback. Never
-    # turn unknown durable state / unpersisted local cooldowns into DB writes.
-    if (
-        "_summary_failure_cooldown_until" in snapshot
-        and durable_cooldown_authoritative is not False
-        and (durable_cooldown_authoritative is True or not bool(snapshot.get("_cooldown_persist_failed", False)))
-    ):
-        _rollback_durable_cooldown(compressor, snapshot, durable_cooldown_authoritative, durable_cooldown_state)
     restored = copy.deepcopy(snapshot)
-    # Re-validate under the claim lock: the slow durable rollback above leaves a
-    # window where a fallback may have claimed; stale writes must not interleave.
-    # The rollback itself is safe: landing after a fallback needs a prior claim.
-    with _COMPRESSOR_ATTEMPT_LOCK:
-        if attempt_generation and int(getattr(compressor, "_compression_attempt_generation", 0) or 0) != attempt_generation:
+    # Re-validate AND run the durable rollback under this compressor's serial lock: the slow DB
+    # write used to sit between the first ownership check and this re-check, so a fallback
+    # claiming mid-restore could have its freshly written cooldown row overwritten by this
+    # attempt's stale snapshot row. _claim_compressor_attempt takes the same per-compressor
+    # lock, so the write is serialized against claims on THIS compressor without stalling
+    # every other compressor behind the process-wide claim lock. The row still lands BEFORE
+    # the in-memory restore so the next refresh cannot overwrite the rollback.
+    with _compressor_attempt_serial_lock(compressor):
+        with _COMPRESSOR_ATTEMPT_LOCK:
+            lost = attempt_generation and int(getattr(compressor, "_compression_attempt_generation", 0) or 0) != attempt_generation
+        if lost:
             logger.warning(
                 "Skipping stale compressor attempt-state restore at write "
                 "time: attempt generation %s lost the compressor mid-restore.", attempt_generation,
             )
             return
+        # Success clears the durable cooldown pre-commit; recreate/clear that row BEFORE
+        # restoring in-memory values or the next refresh overwrites the rollback. Never
+        # turn unknown durable state / unpersisted local cooldowns into DB writes.
+        if (
+            "_summary_failure_cooldown_until" in snapshot
+            and durable_cooldown_authoritative is not False
+            and (durable_cooldown_authoritative is True or not bool(snapshot.get("_cooldown_persist_failed", False)))
+        ):
+            _rollback_durable_cooldown(compressor, snapshot, durable_cooldown_authoritative, durable_cooldown_state)
         for name, value in restored.items():
             setattr(compressor, name, value)
 
@@ -1121,6 +1170,13 @@ def run_compress_context_with_progress_timeout(
 
     ceiling = max(float(total_ceiling_seconds), float(idle_timeout_seconds))
     idle = float(idle_timeout_seconds)
+    # An over-window request cannot be sent uncompressed, so a summary that keeps streaming while
+    # reclaiming nothing must not hold the host (and the Desktop UI) to the full ceiling: bound the
+    # pre-commit wait to one inactivity budget (``compression.context_timeout_seconds``) and let the
+    # first-stall deterministic fallback below carry the compaction (#116472: a 600s trickle froze
+    # the Desktop for 10 minutes per turn).
+    if request_exceeds_window:
+        ceiling = idle
     fence = fence if fence is not None else CompressionCommitFence()
     fence.set_total_ceiling_seconds(ceiling)
     # Read BEFORE this attempt runs: the host's ``stalled`` record and the cancelled worker's
@@ -2932,6 +2988,7 @@ def _run_summary_dispatch(
             or (commit_fence is not None and commit_fence.is_cancelled)
         )
 
+    _attempt_ctx_token = _COMPRESSOR_ATTEMPT_GENERATION.set(attempt_generation)
     try:
         # F6: never start expensive summary work for an already-cancelled
         # fence (a stale queued job admitted after host departure).
@@ -2955,6 +3012,7 @@ def _run_summary_dispatch(
                 if hard_cancel_event is not None and hard_cancel_event.is_set():
                     raise AuxiliaryExplicitCancellation()
     finally:
+        _COMPRESSOR_ATTEMPT_GENERATION.reset(_attempt_ctx_token)
         if commit_fence is not None:
             _clear_compression_cancelled_check_if_owner(agent.context_compressor, attempt_generation)
     return compressed

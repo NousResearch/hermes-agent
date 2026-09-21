@@ -363,6 +363,13 @@ export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
  *  needs a bound of its own or it outlives the wake it describes. */
 export const HYDRATION_SYNC_BADGE_TIMEOUT_MS = 30_000
 let openSessionGeneration = 0
+/** Which generation's wake most recently set $gatewaySwapTarget. Clearing it
+ *  keys off this, not off `generation === openSessionGeneration`, so a
+ *  superseded wake still clears the overlay IT put up — the generation
+ *  counter has already moved on by the time its `finally` runs, and a later
+ *  wake that never sets the target (e.g. a paint-first open without
+ *  awaitHydration) would otherwise leave it stuck forever (#115844). */
+let gatewaySwapTargetOwnerGeneration: number | null = null
 
 export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
@@ -1049,6 +1056,7 @@ export const host = {
         // Keep the target-specific overlay visible through transcript hydration,
         // not merely through the gateway/profile activation that precedes it.
         $gatewaySwapTarget.set(targetProfile)
+        gatewaySwapTargetOwnerGeneration = generation
       }
 
       // Only the HYDRATION half retries. Activation already failed its own
@@ -1191,8 +1199,13 @@ export const host = {
 
       throw error
     } finally {
-      if (options.awaitHydration && generation === openSessionGeneration) {
+      // Clear the overlay THIS wake set, even when a later open superseded
+      // it: `generation === openSessionGeneration` is false by then, but
+      // nothing else is coming to clear it. Skip only when a newer wake has
+      // since taken ownership of the target.
+      if (gatewaySwapTargetOwnerGeneration === generation) {
         $gatewaySwapTarget.set(null)
+        gatewaySwapTargetOwnerGeneration = null
       }
     }
   },
@@ -1517,15 +1530,17 @@ export const host = {
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
-   *  the app itself uses. Lazy: resolves the LIVE socket per call. */
-  request: async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+   *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`
+   *  overrides the socket's 30 s default for RPCs that legitimately run longer
+   *  (session.compress); unset keeps the default. */
+  request: async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> => {
     const gateway = $gateway.get()
 
     if (!gateway) {
       throw new Error('Hermes gateway unavailable')
     }
 
-    return gateway.request<T>(method, params)
+    return timeoutMs === undefined ? gateway.request<T>(method, params) : gateway.request<T>(method, params, timeoutMs)
   },
 
   /** The LIVE gateway instance for the active profile (null before the first
@@ -1538,6 +1553,24 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+/** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
+ *  lists, full-skill detail pane, embedded hub picker with one-click
+ *  installs). For plugin dialogs pass `embedded` (tab state stays local —
+ *  never touches the page router) and `fixedProfile` to pin every tab to one
+ *  bot's backend; the internal profile selector hides itself. Add
+ *  `fixedConnection` (registry connection id) to pin a bot living on another
+ *  registered gateway — probe `CapabilitiesView.supportsFixedConnection` first;
+ *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
+ *  Advanced section is the reference consumer. */
+export { CapabilitiesView } from '@/app/capabilities'
+
+// -- ui: the design language --------------------------------------------------
+
+/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
+ *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
+ *  renders anywhere (a plugin dialog); pass a live `gateway` (see
+ *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
+export { McpTab } from '@/app/capabilities/mcp/mcp-tab'
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
@@ -1548,9 +1581,6 @@ export {
   type ComposerAttachmentProvider,
   type ComposerMiddleware
 } from '@/app/chat/composer/contrib'
-
-// -- ui: the design language --------------------------------------------------
-
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1628,21 +1658,6 @@ export {
 } from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
-/** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
- *  lists, full-skill detail pane, embedded hub picker with one-click
- *  installs). For plugin dialogs pass `embedded` (tab state stays local —
- *  never touches the page router) and `fixedProfile` to pin every tab to one
- *  bot's backend; the internal profile selector hides itself. Add
- *  `fixedConnection` (registry connection id) to pin a bot living on another
- *  registered gateway — probe `SkillsView.supportsFixedConnection` first;
- *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
- *  Advanced section is the reference consumer. */
-export { SkillsView } from '@/app/skills'
-/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
- *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
- *  renders anywhere (a plugin dialog); pass a live `gateway` (see
- *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
-export { McpTab } from '@/app/skills/mcp-tab'
 /** Canonical raw message renderer: applies Desktop message transforms (including
  * `MEDIA:` delivery directives) and the same rich Markdown/media components as
  * core chat. Prefer this over raw Streamdown for transcript-style messages. */
@@ -1759,9 +1774,12 @@ export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
  *  `translateNow` is the one-shot form for the places a hook can't reach —
  *  notably a `ctx.register` pane `title`, which is read at registration time
  *  and is why plugin pane titles otherwise strand as hardcoded English. It
- *  samples the locale at call time, so React should still use the hooks. */
+ *  samples the locale at call time, so React should still use the hooks. A
+ *  pane whose label must track the locale pairs that `title` with
+ *  `data.tabTitle: () => <LocalizedTabTitle select={t => ...} />`. */
 export {
   type Locale,
+  LocalizedTabTitle,
   type PluginI18n,
   type PluginLocaleBundles,
   type PluginMessages,

@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
+from gateway.session_identity import transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
@@ -519,6 +520,10 @@ class SessionEntry:
     # Session-scoped /model override (model/provider/base_url ONLY — never credentials, see
     # sanitize_model_override). Persisted so a restart keeps the chosen model.
     model_override: Optional[Dict[str, str]] = None
+    # Profile owning the bot that received this lane's traffic (``RoutingIdentity.transport_profile``,
+    # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
+    # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
+    transport_profile: Optional[str] = None
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
@@ -548,6 +553,8 @@ class SessionEntry:
         if self.model_override:
             # Defence-in-depth against an unsanitized dict stored directly.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.transport_profile:
+            result["transport_profile"] = self.transport_profile
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -578,6 +585,7 @@ class SessionEntry:
         defaults = {f.name: f.default for f in fields(cls)}
         plain = {n: data.get(n, defaults[n]) for n in cls._PLAIN_FIELDS + cls._RESET_FIELDS}
         plain["expiry_finalized"] = data.get("expiry_finalized", data.get("memory_flushed", False))
+        transport_profile = data.get("transport_profile")
         return cls(
             session_key=session_key, session_id=session_id,
             created_at=datetime.fromisoformat(data["created_at"]),
@@ -586,7 +594,9 @@ class SessionEntry:
             chat_type=data.get("chat_type", "dm"), metadata=dict(data.get("metadata") or {}),
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),
             active_turn_token=token, active_turn_started_at=started_at,
-            model_override=sanitize_model_override(data.get("model_override")), **plain,
+            model_override=sanitize_model_override(data.get("model_override")),
+            transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
+            **plain,
         )
 
 
@@ -1013,7 +1023,7 @@ class SessionStore(
             origin=source, display_name=source.chat_name, platform=source.platform,
             chat_type=source.chat_type, was_auto_reset=decision.reset_reason is not None,
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
-            prev_session_id=decision.prev_session_id,
+            prev_session_id=decision.prev_session_id, transport_profile=transport_profile_of(source),
         )
         with self._lock:
             current = self._entries.get(session_key)
@@ -1044,9 +1054,11 @@ class SessionStore(
                 entry.last_prompt_tokens = last_prompt_tokens
             # Snapshot peer fields under _lock so a concurrent reset/heal cannot tear the row.
             peer_sid, peer_origin, peer_name = entry.session_id, entry.origin, entry.display_name
+            peer_transport = entry.transport_profile
         # Metadata-only: single-row UPSERT, outside ``_lock``.
         self._save_entry(session_key)
-        self._record_gateway_session_peer(peer_sid, session_key, peer_origin, display_name=peer_name)
+        self._record_gateway_session_peer(
+            peer_sid, session_key, peer_origin, display_name=peer_name, transport_profile=peer_transport)
 
     def get_session_metadata(self, session_key: str, key: str, default: Any = None) -> Any:
         """Return a metadata value stored on a live session entry."""
@@ -1117,7 +1129,7 @@ class SessionStore(
         new_entry = SessionEntry(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
-            **fields,
+            transport_profile=old_entry.transport_profile, **fields,
         )
         self._entries[session_key] = new_entry
         self._save()
@@ -1212,6 +1224,7 @@ class SessionStore(
             self._record_gateway_session_peer(
                 target_session_id, session_key, new_entry.origin,
                 display_name=new_entry.display_name, include_compression_ancestors=True,
+                transport_profile=new_entry.transport_profile,
             )
         return new_entry
 

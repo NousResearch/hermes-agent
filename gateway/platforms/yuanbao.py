@@ -64,7 +64,6 @@ from gateway.platforms.yuanbao_proto import (
     encode_send_private_heartbeat, encode_send_group_heartbeat, encode_query_group_info,
     encode_get_group_member_list, next_seq_no,
 )
-from gateway.session import build_session_key
 from gateway.session_transcript import TranscriptReadError
 
 logger = logging.getLogger(__name__)
@@ -1666,11 +1665,8 @@ class DispatchMiddleware(InboundMiddleware):
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
-        _sk = build_session_key(
-            ctx.source,
-            group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
-        )
+        # The adapter seam: keyed in the owner profile's namespace, same as ``handle_message``.
+        _sk = adapter._source_session_key(ctx.source)
 
         async def _dispatch_inbound_event() -> None:
             if any(mt.startswith(("application/", "text/")) for mt in ctx.media_types):

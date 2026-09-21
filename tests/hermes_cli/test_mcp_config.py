@@ -846,6 +846,38 @@ class TestMcpLogin:
         # OAuth round-trip — far longer than the 30s probe default.
         assert seen["connect_timeout"] >= 180
 
+    def test_login_clears_tokens_but_keeps_discovered_server_metadata(self, tmp_path, capsys, monkeypatch):
+        """Re-login wipes the stale grant and client registration but spares ``.meta.json``: when the
+        authorization server's metadata document cannot be re-fetched (a WAF-fronted split-host
+        server), the cached ``authorization_endpoint`` is what keeps the announced authorize URL off
+        the SDK's ``{mcp-origin}/authorize`` guess (#115329)."""
+        _seed_config(tmp_path, {
+            "tv": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        (token_dir / "tv.json").write_text('{"access_token": "stale"}', encoding="utf-8")
+        (token_dir / "tv.client.json").write_text('{"client_id": "old"}', encoding="utf-8")
+        (token_dir / "tv.meta.json").write_text(
+            '{"issuer": "https://www.example.com", "authorization_endpoint": "https://www.example.com/oauth/authorize",'
+            ' "token_endpoint": "https://www.example.com/oauth/token"}', encoding="utf-8")
+        state_at_probe = {}
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            state_at_probe.update({p.name: p.exists() for p in token_dir.glob("tv*")})
+            state_at_probe["meta"] = (token_dir / "tv.meta.json").exists()
+            (token_dir / "tv.json").write_text('{"access_token": "fresh"}', encoding="utf-8")
+            return [("a", "d")]
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="tv"))
+
+        assert state_at_probe["meta"] is True
+        assert state_at_probe.get("tv.json") is None and state_at_probe.get("tv.client.json") is None
+        assert "Authenticated — 1 tool(s) available" in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_reauth (GH#36767)

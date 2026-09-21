@@ -29,6 +29,7 @@ import {
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
+  setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
   setMessagingSessions,
@@ -1477,6 +1478,20 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
 
+  // A hidden row (canonical Bot Chat, room plumbing) is unlisted by design:
+  // inserting it into $sessions paints a sidebar row until the next refresh,
+  // and the keep-list then holds it there (#113273). Park it on the off-list
+  // owner atom the draft stubs ride — owner resolution still finds it via
+  // ownerLookupSessionRows, the sidebar never does.
+  if (session.hidden) {
+    setUnlistedSessionOwnerRows(prev => [
+      session,
+      ...prev.filter(existing => (existing._lineage_root_id ?? existing.id) !== lineage)
+    ])
+
+    return
+  }
+
   const prepend = (prev: SessionInfo[]) => [
     session,
     ...prev.filter(existing => {
@@ -1689,7 +1704,16 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'reasoningEffortWire'
+    | 'serviceTier'
+    | 'yolo'
   >
 >
 
@@ -1743,6 +1767,10 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 
   if (state.reasoningEffort !== undefined) {
     setCurrentReasoningEffort(state.reasoningEffort)
+  }
+
+  if (state.reasoningEffortWire !== undefined) {
+    setCurrentReasoningEffortWire(state.reasoningEffortWire)
   }
 
   if (state.serviceTier !== undefined) {
@@ -1807,6 +1835,10 @@ export function applyRuntimeInfo(
 
   if (typeof info.reasoning_effort === 'string') {
     sessionState.reasoningEffort = info.reasoning_effort
+  }
+
+  if (typeof info.reasoning_effort_wire === 'string') {
+    sessionState.reasoningEffortWire = info.reasoning_effort_wire
   }
 
   if (typeof info.service_tier === 'string') {

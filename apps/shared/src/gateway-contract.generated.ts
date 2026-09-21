@@ -574,6 +574,7 @@ export interface SessionLiveInfo {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean
@@ -2694,6 +2695,7 @@ export interface SessionCwdSetResult {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean
@@ -3039,6 +3041,8 @@ export interface ProcessEntry {
   watch_hit?: boolean | null
   notify_on_complete?: boolean | null
   exit_code?: number | null
+  exited_at?: number | null
+  completion_reason?: string | null
   detached?: boolean | null
   [key: string]: unknown
 }
@@ -3907,13 +3911,14 @@ export interface BillingBlock {
   message: string
   unverified?: boolean | null
 }
-/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint). */
+/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts). */
 export interface ErrorSurface {
   layer: string
   code: string
   retryable: boolean
   provider?: string | null
   model?: string | null
+  resets_at?: number | null
   [key: string]: unknown
 }
 /** ``server._status_update`` and the direct emitters (goal / loop / heartbeat / process). */

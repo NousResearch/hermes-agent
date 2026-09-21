@@ -157,15 +157,81 @@ class TestReapOrphanedBrowserSessions:
         assert terminate_calls == []
 
 
-    def test_corrupt_pid_file_is_cleaned(self, fake_tmpdir):
-        """PID file with non-integer content is cleaned up."""
-        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+    @pytest.mark.parametrize("boundary", ["orphan", "explicit", "force", "timeout"])
+    @pytest.mark.parametrize("metadata", [
+        "absent", "valid", "whitespace", "corrupt", "empty", "invalid_utf8",
+        "zero", "negative", "symlink", "dangling", "directory", "unreadable",
+    ])
+    def test_daemon_metadata_ambiguity_preserves_session(
+        self, fake_tmpdir, monkeypatch, boundary, metadata
+    ):
+        """Only absent or valid daemon metadata permits destructive cleanup."""
+        import tools.browser_tool as bt
 
-        d = _make_socket_dir(fake_tmpdir, "h_corrupt1234")
-        (d / "h_corrupt1234.pid").write_text("not-a-number")
+        session = "h_metadata"
+        d = _make_socket_dir(fake_tmpdir, session, owner_pid=999999)
+        profile = d / f"agent-browser-chrome-{session}"
+        profile.mkdir()
+        (profile / "state").write_bytes(b"profile state")
+        socket = d / f"{session}.sock"
+        socket.write_bytes(b"socket metadata")
+        pid_file = d / f"{session}.pid"
+        payloads = {
+            "valid": b"12345", "whitespace": "\u2003 12345\n\u00a0".encode(),
+            "corrupt": b"not-a-pid", "empty": b"", "invalid_utf8": b"\xff",
+            "zero": b"0", "negative": b"-12345", "unreadable": b"12345",
+        }
+        if metadata in payloads:
+            pid_file.write_bytes(payloads[metadata])
+        elif metadata in ("symlink", "dangling"):
+            target = fake_tmpdir / "pid-target"
+            if metadata == "symlink":
+                target.write_text("12345")
+            pid_file.symlink_to(target)
+        elif metadata == "directory":
+            pid_file.mkdir()
+        if metadata == "unreadable":
+            original = Path.read_text
 
-        _reap_orphaned_browser_sessions()
-        assert not d.exists()
+            def read_text(path, *args, **kwargs):
+                if path == pid_file:
+                    raise PermissionError("unreadable daemon metadata")
+                return original(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "read_text", read_text)
+
+        info = {"session_name": session, "bb_session_id": None}
+        bt._active_sessions["metadata-task"] = info
+        ambiguous = metadata not in ("absent", "valid", "whitespace")
+        with (
+            patch("gateway.status._pid_exists", return_value=False),
+            patch("tools.browser_tool_lifecycle._socket_dir_idle_seconds", return_value=10000),
+            patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=777),
+            patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as terminate,
+            patch("tools.browser_tool_cdp._stop_cdp_supervisor"),
+            patch("tools.browser_tool._maybe_stop_recording"),
+            patch("tools.browser_tool_session._run_browser_command") as close,
+        ):
+            # Include the Chromium-first sweep: retaining the outer directory
+            # alone must not hide deletion of its profile in an earlier pass.
+            if boundary == "orphan":
+                bt_lifecycle._reap_orphaned_browser_chromes(min_age_seconds=0)
+                bt_lifecycle._reap_orphaned_browser_sessions()
+            elif boundary == "explicit":
+                bt_lifecycle.cleanup_browser("metadata-task")
+            elif boundary == "force":
+                bt_lifecycle._force_reap_browser_session("metadata-task")
+            else:
+                bt_session._discard_timed_out_browser_session("metadata-task", info, str(d))
+            if ambiguous:
+                terminate.assert_not_called()
+                close.assert_not_called()
+                assert (profile / "state").read_bytes() == b"profile state"
+                assert socket.read_bytes() == b"socket metadata"
+                assert (d / f"{session}.owner_pid").read_text() == "999999"
+                assert os.path.lexists(pid_file)
+            else:
+                assert not d.exists()
 
 
 class TestOwnerPidCrossProcess:
@@ -421,6 +487,9 @@ class TestReaperIdentityGuard:
         def name(self):
             return self._name
 
+        def exe(self):
+            return self._cmdline[0] if self._cmdline else self._name
+
         def cmdline(self):
             return self._cmdline
 
@@ -503,6 +572,55 @@ class TestReaperIdentityGuard:
         )
         assert self._run(bound, socket_dir) == 777
 
+
+    @pytest.mark.parametrize("argv, allowed", [
+        (["/usr/bin/grep", "{socket}", "/var/log/syslog"], False),
+        (["/usr/bin/grep", "agent-browser", "/var/log/syslog"], False),
+        (["/usr/bin/node", "/tmp/unrelated.js", "agent-browser", "{socket}"], False),
+        (["/usr/bin/node", "--eval", "agent-browser", "{socket}"], False),
+        (["/tmp/not-agent-browser", "{socket}"], False),
+        (["/usr/bin/agent-browser", "daemon", "{socket}"], True),
+        (["/opt/agent-browser/bin/agent-browser-linux-arm64", "daemon"], True),
+        (["/opt/agent-browser/bin/agent-browser-linux-musl-x64", "daemon"], True),
+        (["/usr/bin/node", "/opt/agent-browser/bin/agent-browser.js"], True),
+        (["/usr/bin/node", "/opt/agent-browser/dist/daemon.js"], True),
+        (["/usr/bin/node", "/opt/node_modules/.bin/agent-browser"], True),
+    ])
+    def test_executable_identity_is_independent_of_socket_binding(
+        self, fake_tmpdir, argv, allowed
+    ):
+        """A full socket path or matching env cannot make grep a daemon."""
+        session = "h_identity"
+        d = _make_socket_dir(fake_tmpdir, session, pid=12345)
+        argv = [arg.replace("{socket}", str(d)) for arg in argv]
+        # Even a spoofed process name plus the exact environment binding is
+        # insufficient: identity comes from executable/script positions.
+        proc = self._FakeProc(name="agent-browser", cmdline=argv,
+                              environ={"AGENT_BROWSER_SOCKET_DIR": str(d)})
+        events = []
+
+        def lookup(pid):
+            events.append("identity")
+            assert events[0] == "start"
+            return proc
+
+        def start(pid):
+            events.append("start")
+            return 777
+
+        with (
+            patch("gateway.status._pid_exists", side_effect=[True, False]),
+            patch("gateway.status.get_process_start_time", side_effect=start),
+            patch("psutil.Process", side_effect=lookup),
+            patch("tools.process_registry.ProcessRegistry._terminate_host_pid") as terminate,
+        ):
+            bt_lifecycle._reap_orphaned_browser_sessions()
+        if allowed:
+            terminate.assert_called_once_with(12345, expected_start=777)
+            assert not d.exists()
+        else:
+            terminate.assert_not_called()
+            assert d.exists()
 
     def test_planted_pid_survives_full_reaper_path(self, fake_tmpdir):
         """End-to-end through the reaper: a planted non-browser PID is spared.

@@ -5,8 +5,10 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 import contextlib
 import os
+import re
 import shutil
 import signal
+import stat
 import subprocess
 import threading
 import tempfile
@@ -232,8 +234,8 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
 
     The ``.pid`` file sits in a world-writable temp dir: a planted or recycled PID
     would turn the tree-kill into an arbitrary-process DoS. Both must pass:
-    (1) identity — ``agent-browser`` in name/cmdline; (2) binding — the socket dir in
-    the cmdline or ``AGENT_BROWSER_SOCKET_DIR`` in its environ (the real spoof defense).
+    (1) identity — a supported executable or Node script invocation; (2) binding —
+    the socket dir in argv or ``AGENT_BROWSER_SOCKET_DIR`` in its environ.
     """
     def refuse(reason: str, *args) -> Optional[int]:
         _bt.logger.warning("Refusing to reap browser daemon PID %d (session %s): " + reason,
@@ -255,14 +257,26 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     try:
         proc = psutil.Process(daemon_pid)
         name = (proc.name() or "").lower()
+        executable = os.path.basename(proc.exe() or "").lower()
         argv = list(proc.cmdline() or [])
-        cmdline = " ".join(argv).lower()
     except psutil.NoSuchProcess:
         return None  # vanished between the liveness check and now
     except (psutil.AccessDenied, OSError) as exc:
         return refuse("could not read process identity (%s)", exc)
 
-    if "agent-browser" not in name and "agent-browser" not in cmdline:
+    # Native npm builds, including musl, and the Node CLI/legacy daemon.
+    # Data arguments and environment bindings must never establish identity.
+    native = re.fullmatch(
+        r"agent-browser(?:-(?:linux(?:-musl)?|darwin|win32)-(?:x64|arm64))?(?:\.exe)?",
+        executable,
+    )
+    node_script = False
+    if executable in {"node", "nodejs", "node.exe"} and len(argv) > 1:
+        script = Path(argv[1])
+        node_script = script.name in {"agent-browser", "agent-browser.js"} or (
+            script.parts[-3:] == ("agent-browser", "dist", "daemon.js")
+        )
+    if not native and not node_script:
         return refuse("not an agent-browser process (name=%r)", name)
 
     # Binding must be the FULL socket-dir path as an argv token (bare or `--flag=path`),
@@ -302,12 +316,30 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
     return max(0.0, time.time() - latest)
 
 
-def _read_pid_file(path: str) -> Optional[int]:
-    """Integer PID from ``path``; None when missing or corrupt."""
+def _read_pid_file_state(path: str) -> Tuple[Optional[int], bool]:
+    """Return (positive PID, present); (None, True) means ambiguous, not absent.
+
+    Only ENOENT on the lexical entry permits the pidless cleanup path. Never
+    follow symlinks or open nonregular entries (which could block on a FIFO).
+    """
     try:
-        return int(Path(path).read_text(encoding="utf-8").strip())
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        return None, False
+    except OSError:
+        return None, True
+    if not stat.S_ISREG(mode):
+        return None, True
+    try:
+        pid = int(Path(path).read_text(encoding="utf-8").strip())
+        return (pid if pid > 0 else None), True
     except (ValueError, OSError):
-        return None
+        return None, True
+
+
+def _read_pid_file(path: str) -> Optional[int]:
+    """Positive PID from regular metadata; None when absent or ambiguous."""
+    return _read_pid_file_state(path)[0]
 
 
 def _owner_pid_alive(socket_dir: str, session_name: str) -> Tuple[Optional[int], Optional[bool]]:
@@ -365,16 +397,18 @@ def _reap_socket_dir(socket_dir: str, session_name: str, tracked_names: set) -> 
         return False
 
     pid_file = os.path.join(socket_dir, f"{session_name}.pid")
-    if not os.path.isfile(pid_file):
+    daemon_pid, present = _read_pid_file_state(pid_file)
+    if daemon_pid is None:
+        if present:
+            return False
         idle_s = _socket_dir_idle_seconds(socket_dir)
         if idle_s is None or idle_s < _bt.BROWSER_ORPHAN_GRACE_SECONDS:
             return False
         _remove_browser_socket_dir_if_safe(socket_dir, session_name)
         return False
 
-    daemon_pid = _read_pid_file(pid_file)
     from gateway.status import _pid_exists
-    if daemon_pid is None or daemon_pid <= 0 or not _pid_exists(daemon_pid):
+    if not _pid_exists(daemon_pid):
         _remove_browser_socket_dir_if_safe(socket_dir, session_name)
         return False
 
@@ -638,10 +672,10 @@ def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
     """Tree-kill the daemon in ``<socket_dir>/<session>.pid`` if verifiably ours; True when
     a kill was issued. Never raises."""
     pid_file = os.path.join(socket_dir, f"{session_name}.pid")
-    if not os.path.isfile(pid_file):
+    daemon_pid = _read_pid_file(pid_file)
+    if daemon_pid is None:
         return False
     try:
-        daemon_pid = int(Path(pid_file).read_text(encoding="utf-8").strip())
         expected_start = _verify_reapable_browser_daemon(daemon_pid, socket_dir, session_name)
         if expected_start is None:
             _bt.logger.debug("Skipped daemon kill for %s: pid %s failed identity verification", session_name, daemon_pid)
@@ -680,9 +714,11 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
         socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
         if os.path.exists(socket_dir):
             pid_file = os.path.join(socket_dir, f"{session_name}.pid")
-            daemon_pid = _read_pid_file(pid_file)
-            daemon_gone = not os.path.lexists(pid_file)
-            if daemon_pid is not None and daemon_pid > 0:
+            daemon_pid, present = _read_pid_file_state(pid_file)
+            if present and daemon_pid is None:
+                return
+            daemon_gone = not present
+            if daemon_pid is not None:
                 daemon_gone = not _pid_exists(daemon_pid) or _kill_verified_daemon(socket_dir, session_name)
             _reap_session_chromium(socket_dir, session_name, min_age_seconds=0)
             if daemon_gone:
@@ -739,6 +775,12 @@ def _cleanup_single_browser_session(task_id: str) -> None:
             stop_lightpanda(session_info.get("session_name", ""))
         except Exception as e:
             _bt.logger.warning("lightpanda stop failed for task %s: %s", task_id, e)
+    elif _read_pid_file_state(os.path.join(
+        _bt._socket_safe_tmpdir(),
+        f"agent-browser-{session_info.get('session_name', '')}",
+        f"{session_info.get('session_name', '')}.pid",
+    )) == (None, True):
+        _bt.logger.debug("Skipping agent-browser close: ambiguous daemon PID metadata")
     elif _session_has_expired(session_info):
         _bt.logger.debug("Skipping agent-browser close for expired session %s", task_id)
     else:
@@ -842,6 +884,8 @@ def _managed_profile_in_use(profile: Path) -> bool:
 
 def _remove_browser_socket_dir_if_safe(socket_dir: str, session_name: str) -> bool:
     """Remove session metadata only when no process still references its profile."""
+    if _read_pid_file_state(os.path.join(socket_dir, f"{session_name}.pid")) == (None, True):
+        return False
     profile = _managed_chrome_profile(socket_dir, session_name)
     if profile is None or _managed_profile_in_use(profile):
         _bt.logger.warning(
@@ -912,6 +956,8 @@ def _reap_session_chromium(
     Identity, username, start time, command line, profile path, and ancestry are
     revalidated immediately before termination.  Any ambiguity fails closed.
     """
+    if _read_pid_file_state(os.path.join(socket_dir, f"{session_name}.pid")) == (None, True):
+        return 0
     try:
         import psutil
     except ImportError:

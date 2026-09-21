@@ -375,11 +375,13 @@ def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any
             _bt._last_active_session_key.pop(bare_task_id, None)
 
     session_name = str(session_info.get("session_name") or "")
-    if session_name and os.path.isfile(os.path.join(task_socket_dir, f"{session_name}.pid")):
-        daemon_pid = _read_browser_daemon_pid(task_socket_dir, session_name)
-        if daemon_pid is None:  # corrupt pid file
-            _bt.logger.debug("Could not kill timed-out browser daemon for %s", session_name)
-            return
+    daemon_pid, present = _lifecycle._read_pid_file_state(
+        os.path.join(task_socket_dir, f"{session_name}.pid")
+    )
+    if present and daemon_pid is None:
+        _bt.logger.debug("Could not kill timed-out browser daemon for %s", session_name)
+        return
+    if session_name and daemon_pid is not None:
         expected_start = _lifecycle._verify_reapable_browser_daemon(daemon_pid, task_socket_dir, session_name)
         if expected_start is None:
             return
@@ -401,10 +403,7 @@ def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any
 def _read_browser_daemon_pid(task_socket_dir: str, session_name: str) -> Optional[int]:
     """Read the agent-browser daemon PID for a session (best-effort)."""
     pid_file = os.path.join(task_socket_dir, f"{session_name}.pid")
-    try:
-        return int(Path(pid_file).read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
+    return _lifecycle._read_pid_file(pid_file)
 
 
 def _browser_daemon_responsive(task_socket_dir: str, probe_timeout_s: float = 1.0) -> bool:

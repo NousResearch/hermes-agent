@@ -1061,14 +1061,10 @@ def _await_worker_within_budget(
         try:
             return True, future.result(timeout=wait_slice)
         except concurrent.futures.TimeoutError:
-            # concurrent.futures.TimeoutError IS builtin TimeoutError (3.11+), so this also fires when
-            # the WORKER died raising a timeout-class error (the aux client raises bare TimeoutError on a
-            # stalled summary stream). A settled future never becomes unsettled: without this check the
-            # loop re-waits on a dead future, each result() returning instantly, spinning the CPU at
-            # ~2k iterations/sec until the full idle budget elapses and reporting the dead worker as
-            # "still streaming". Take the stall path immediately instead. A non-timeout worker exception
-            # still propagates out of result() unchanged.
+            # Aliases builtin TimeoutError (3.11+): also fires when the WORKER died with one (#63892).
+            # A settled future never unsettles — re-waiting spun ~2k iter/s; take the stall path now.
             if future.done():
+                logger.info("Context compression worker exited with %r — taking the stall path", future.exception())
                 return False, None
             waited = time.monotonic() - wait_started
             since_progress = fence.seconds_since_progress()
@@ -1111,10 +1107,8 @@ def _await_in_flight_commit(
         try:
             return future.result(timeout=remaining)
         except concurrent.futures.TimeoutError:
-            # A settled future never becomes unsettled, so a timeout-class exception raised BY the
-            # commit worker (concurrent.futures.TimeoutError aliases builtin TimeoutError on 3.11+)
-            # would otherwise loop forever at full CPU, never surfacing the failure. Re-raise the
-            # worker's own exception once the future is done; a live commit still loops as before.
+            # Aliases builtin TimeoutError (3.11+): also fires when the commit worker died with one (#63892).
+            # A settled future never unsettles — this ceiling-less loop spun forever; re-raise the worker's error.
             if future.done():
                 return future.result()
             # Commit-phase progress is informative only — the commit must complete; loop

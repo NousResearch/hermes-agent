@@ -1193,17 +1193,16 @@ def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:
 
 
 def _validate_code_execution(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
-    """A negative max_tool_calls otherwise only surfaces as a ValueError deep in the code
-    execution tool's first call; catch it at startup instead."""
+    """Reject malformed limits while preserving the documented non-positive unlimited values."""
     ce_cfg = config.get("code_execution")
-    if not isinstance(ce_cfg, dict):
+    if not isinstance(ce_cfg, dict) or "max_tool_calls" not in ce_cfg:
         return
-    value = ce_cfg.get("max_tool_calls")
-    if isinstance(value, int) and not isinstance(value, bool) and value < 0:
+    value = ce_cfg["max_tool_calls"]
+    if not isinstance(value, int) or isinstance(value, bool):
         _issue(
             issues, "error",
-            f"code_execution.max_tool_calls is negative ({value!r})",
-            "Use zero to disable the limit, or a positive integer to cap tool calls",
+            "code_execution.max_tool_calls must be an integer",
+            "Use an integer; values less than or equal to zero disable the limit",
         )
 
 
@@ -1243,6 +1242,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             return [config_load_issue(exc)]
 
     issues: List[ConfigIssue] = []
+
     _validate_voice(config, issues)
     _validate_timezone(config, issues)
     cp = config.get("custom_providers")

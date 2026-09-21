@@ -29,7 +29,7 @@ vi.mock('@/hermes', async importActual => ({
 }))
 
 const {
-  $gateway, closeSecondaryGateways, configureGatewayRegistry, ensureGatewayForAgent,
+  $gateway, closeSecondaryGateways, configureGatewayRegistry, disposeSecondariesForConnection, ensureGatewayForAgent,
   openGatewayForAgent, requestGatewayForAgent, retainGatewayForAgent,
   setPrimaryGateway, setPrimaryGatewayConnectionId
 } = await import('./gateway')
@@ -84,6 +84,83 @@ afterEach(() => {
 const ownerChanges = ['gateway', 'profile', 'connection', 'gateway-aba', 'profile-aba', 'connection-aba'] as const
 const outcomes = ['success', 'failure', 'isolated'] as const
 const races = ownerChanges.flatMap(change => outcomes.map(outcome => ({ change, outcome })))
+
+it('leases the SDK shared route across RPCs and rejects an in-flight primary ABA', async () => {
+  desktop()
+  const a = primary()
+  setPrimaryGateway(a as never)
+  setPrimaryGatewayConnectionId('gateway-a')
+
+  const lease = await host.acquireProfileRoute(route())
+  const held = deferred<{ method: string; params: Record<string, unknown> }>()
+  a.request.mockReturnValueOnce(held.promise)
+  const response = lease.request('groups.import_history', { private_history: 'bytes' })
+  await vi.waitFor(() => expect(a.request).toHaveBeenCalledOnce())
+
+  setPrimaryGatewayConnectionId('gateway-b')
+  setPrimaryGatewayConnectionId('gateway-a')
+  held.resolve({ method: 'groups.import_history', params: { private_history: 'bytes' } })
+
+  await expect(response).rejects.toThrow('route lease expired')
+  expect(() => lease.assertCurrent()).toThrow('route lease expired')
+  lease.release()
+
+  const fresh = await host.acquireProfileRoute(route())
+  await expect(fresh.request('groups.capabilities')).resolves.toEqual({
+    method: 'groups.capabilities',
+    params: { profile: 'reviewer' }
+  })
+  fresh.release()
+})
+
+it('keeps an isolated lease on one socket and fences edit, removal, and same-id recovery', async () => {
+  desktop(vi.fn(async () => ({ sharedRemote: false })))
+  const a = primary()
+  setPrimaryGateway(a as never)
+  setPrimaryGatewayConnectionId('gateway-a')
+
+  const lease = await host.acquireProfileRoute(route('source-a'))
+  const firstSocket = sockets.created.mock.calls[0][0]
+  const held = deferred<{ ok: boolean }>()
+  firstSocket.request.mockReturnValueOnce(held.promise)
+  const response = lease.request('groups.import_history', { private_history: 'bytes' })
+  await vi.waitFor(() => expect(firstSocket.request).toHaveBeenCalledOnce())
+
+  disposeSecondariesForConnection('source-a', { redial: true })
+  disposeSecondariesForConnection('source-a', { redial: true })
+  held.resolve({ ok: true })
+
+  await expect(response).rejects.toThrow('route lease expired')
+  expect(firstSocket.close).not.toHaveBeenCalled()
+  lease.release()
+  await vi.waitFor(() => expect(sockets.created).toHaveBeenCalledTimes(2))
+  expect(firstSocket.close).toHaveBeenCalledOnce()
+
+  const fresh = await host.acquireProfileRoute(route('source-a'))
+  await expect(fresh.request('groups.capabilities')).resolves.toEqual({
+    method: 'groups.capabilities',
+    params: {}
+  })
+  const freshSocket = sockets.created.mock.calls[1][0]
+  const callsBeforeRemoval = freshSocket.request.mock.calls.length
+
+  disposeSecondariesForConnection('source-a')
+
+  expect(() => fresh.assertCurrent()).toThrow('route lease expired')
+  await expect(fresh.request('groups.import_history', { private_history: 'later-bytes' })).rejects.toThrow(
+    'route lease expired'
+  )
+  expect(freshSocket.request).toHaveBeenCalledTimes(callsBeforeRemoval)
+  expect(freshSocket.close).toHaveBeenCalledOnce()
+  fresh.release()
+
+  const recovered = await host.acquireProfileRoute(route('source-a'))
+  await expect(recovered.request('groups.capabilities')).resolves.toEqual({
+    method: 'groups.capabilities',
+    params: {}
+  })
+  recovered.release()
+})
 
 it.each(races)(
   'rejects private SDK dispatch and sibling consumers after $change with a held $outcome descriptor',

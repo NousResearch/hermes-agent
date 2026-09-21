@@ -26,6 +26,15 @@ import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 
 const normKey = (profile: string | null | undefined): string => (profile ?? '').trim() || 'default'
 
+export interface GatewayRouteLease {
+  readonly connectionId: string
+  readonly generation: number
+  readonly profile: string
+  assertCurrent: () => void
+  release: () => void
+  request: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => Promise<T>
+}
+
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
 const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
@@ -89,6 +98,8 @@ interface Secondary {
   reconnecting: boolean
   /** A material connection edit is waiting for live owners to drain. */
   pendingConnectionRedial: boolean
+  /** Advances before every physical socket dial, including reconnect ABA. */
+  ownerGeneration: number
   /**
    * True when a foreground/prewarmed consumer owns this entry beyond one RPC.
    * Guards ONLY the dispose-at-refcount-0 paths (request/relay leases), never
@@ -149,6 +160,9 @@ interface GatewayRegistryState {
   primaryProfile: string
   /** Advances at the primary ownership writers, including same-object ABA. */
   primaryOwnerGeneration?: number
+  /** Connection-registry generation. Remove/edit/re-add advances it even when
+   * the public connection id returns to the same value. */
+  routeOwnerGenerations?: Map<string, number>
   activeKey: string
   activationEpoch: number
   secondaries: Map<string, Secondary>
@@ -170,6 +184,7 @@ function createRegistryState(): GatewayRegistryState {
     primaryGateway: null,
     primaryConnectionId: null,
     primaryProfile: 'default',
+    routeOwnerGenerations: new Map<string, number>(),
     activeKey: 'default',
     activationEpoch: 0,
     secondaries: new Map<string, Secondary>(),
@@ -205,6 +220,7 @@ function gatewayState(): GatewayRegistryState {
     // Existing dev-HMR containers predate whole-turn leases.
     store[STATE_KEY].turnLeases ??= new Map()
     store[STATE_KEY].turnLeaseReleaseTimers ??= new Map()
+    store[STATE_KEY].routeOwnerGenerations ??= new Map()
 
     return store[STATE_KEY]
   }
@@ -213,6 +229,15 @@ function gatewayState(): GatewayRegistryState {
 }
 
 const g = gatewayState()
+
+function connectionRouteGeneration(connectionId: string): number {
+  return g.routeOwnerGenerations?.get(connectionId) ?? 0
+}
+
+function advanceConnectionRouteGeneration(connectionId: string): void {
+  const generations = (g.routeOwnerGenerations ??= new Map<string, number>())
+  generations.set(connectionId, connectionRouteGeneration(connectionId) + 1)
+}
 
 // Dev HMR can hand a newer module an older state-container shape. Keep the
 // generation ledger lazy so an already-open socket still survives the update.
@@ -480,6 +505,10 @@ function reportGatewayState(profile: string, state: ConnectionState): void {
 }
 
 export function reportPrimaryGatewayState(state: ConnectionState): void {
+  if (state !== 'open') {
+    g.primaryOwnerGeneration = (g.primaryOwnerGeneration ?? 0) + 1
+  }
+
   reportGatewayState(g.primaryProfile, state)
 }
 
@@ -554,6 +583,7 @@ async function openSecondary(entry: Secondary): Promise<void> {
   }
 
   const pending = (async () => {
+    entry.ownerGeneration = Number.isFinite(entry.ownerGeneration) ? entry.ownerGeneration + 1 : 1
     // A secondary can be reopened directly by the next routed user action,
     // without passing through reconnectSecondary(). Its previous backend may
     // have been respawned, so every stored→runtime binding for this exact scope
@@ -800,6 +830,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     stalledDials: 0,
     reconnecting: false,
     pendingConnectionRedial: false,
+    ownerGeneration: 0,
     retained: false,
     relayRetainCount: 0,
     wantOpen: true,
@@ -1062,6 +1093,186 @@ export async function requestGatewayForAgent<T>(
       if (g.secondaries.get(entry.scope) === entry) {
         g.secondaries.delete(entry.scope)
       }
+    }
+  }
+}
+
+/** Retain one resolved registry route and physical socket across a sensitive
+ * multi-RPC sequence. Registry edit/remove generations invalidate immediately;
+ * a retained old socket may finish bytes already dispatched, but no later
+ * request or ownership publication can pass assertCurrent(). */
+export async function acquireGatewayRouteLease(
+  connectionId: string,
+  profile: string
+): Promise<GatewayRouteLease> {
+  const id = String(connectionId || '').trim()
+  const key = normKey(profile)
+
+  if (!id) {
+    throw new Error('Gateway route lease requires an explicit connection')
+  }
+
+  const connectionGeneration = connectionRouteGeneration(id)
+
+  const makePrimaryLease = (
+    gateway: HermesGateway,
+    ownerGeneration: number,
+    routedProfile: boolean
+  ): GatewayRouteLease => {
+    let released = false
+
+    const assertCurrent = () => {
+      if (
+        released ||
+        connectionRouteGeneration(id) !== connectionGeneration ||
+        gateway !== g.primaryGateway ||
+        ownerGeneration !== (g.primaryOwnerGeneration ?? 0) ||
+        id !== g.primaryConnectionId ||
+        !isOpen(gateway)
+      ) {
+        throw new Error('Hermes gateway route lease expired')
+      }
+    }
+
+    return {
+      connectionId: id,
+      generation: connectionGeneration,
+      profile: key,
+      assertCurrent,
+      release: () => {
+        released = true
+      },
+      request: async <T>(
+        method: string,
+        params: Record<string, unknown> = {},
+        timeoutMs?: number,
+        signal?: AbortSignal
+      ) => {
+        assertCurrent()
+        const routedParams = routedProfile ? { ...params, profile: key } : params
+
+        const result = await (timeoutMs === undefined && signal === undefined
+          ? gateway.request<T>(method, routedParams)
+          : gateway.request<T>(method, routedParams, timeoutMs, signal))
+
+        assertCurrent()
+
+        return result
+      }
+    }
+  }
+
+  if (isPrimaryRegistryRoute(id, key)) {
+    const gateway = g.primaryGateway
+
+    if (!gateway || !isOpen(gateway)) {
+      throw new Error('Hermes gateway unavailable')
+    }
+
+    return makePrimaryLease(gateway, g.primaryOwnerGeneration ?? 0, false)
+  }
+
+  const attached = await attachedRemoteProbe(id, key)
+  attached?.assertCurrent()
+
+  if (connectionRouteGeneration(id) !== connectionGeneration) {
+    throw new Error('Hermes gateway route lease expired')
+  }
+
+  if (attached?.sharedRemote) {
+    const gateway = attached.gateway
+
+    if (!gateway || !isOpen(gateway)) {
+      throw new Error('Hermes gateway unavailable')
+    }
+
+    return makePrimaryLease(gateway, g.primaryOwnerGeneration ?? 0, true)
+  }
+
+  if (!window.hermesDesktop?.getConnectionFor) {
+    throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
+  }
+
+  const scope = registryBackendScopeKey(id, key)
+  const entry = g.secondaries.get(scope) ?? createSecondary(key, id)
+  rearmSecondary(entry)
+  entry.activeRequests = Number.isFinite(entry.activeRequests) ? entry.activeRequests + 1 : 1
+  let released = false
+
+  const release = () => {
+    if (released) {
+      return
+    }
+
+    released = true
+    entry.activeRequests = Math.max(0, entry.activeRequests - 1)
+
+    if (
+      !drainPendingConnectionRedial(entry) &&
+      entry.activeRequests === 0 &&
+      !entry.retained &&
+      !relayRetained(entry) &&
+      !foregroundPinned(entry) &&
+      g.activeKey !== entry.scope &&
+      g.secondaries.get(entry.scope) === entry
+    ) {
+      disposeSecondary(entry)
+      g.secondaries.delete(entry.scope)
+    }
+  }
+
+  try {
+    if (!isOpen(entry.gateway)) {
+      await openSecondary(entry)
+    }
+  } catch (error) {
+    release()
+    throw error
+  }
+
+  const socketGeneration = entry.ownerGeneration
+
+  const assertCurrent = () => {
+    if (
+      released ||
+      connectionRouteGeneration(id) !== connectionGeneration ||
+      g.secondaries.get(scope) !== entry ||
+      entry.ownerGeneration !== socketGeneration ||
+      entry.pendingConnectionRedial ||
+      !isOpen(entry.gateway)
+    ) {
+      throw new Error('Hermes gateway route lease expired')
+    }
+  }
+
+  try {
+    assertCurrent()
+  } catch (error) {
+    release()
+    throw error
+  }
+
+  return {
+    connectionId: id,
+    generation: connectionGeneration,
+    profile: key,
+    assertCurrent,
+    release,
+    request: async <T>(
+      method: string,
+      params: Record<string, unknown> = {},
+      timeoutMs?: number,
+      signal?: AbortSignal
+    ) => {
+      assertCurrent()
+
+      const result = await (timeoutMs === undefined && signal === undefined
+        ? entry.gateway.request<T>(method, params)
+        : entry.gateway.request<T>(method, params, timeoutMs, signal))
+
+      assertCurrent()
+
+      return result
     }
   }
 }
@@ -1945,6 +2156,10 @@ export function disposeSecondariesForConnection(connectionId: string, opts: { re
   if (!id) {
     return
   }
+
+  // Invalidate first, even when a retained request keeps the old socket alive
+  // to settle. A remove/edit/re-add ABA of the same id cannot revive a lease.
+  advanceConnectionRouteGeneration(id)
 
   for (const [key, entry] of [...g.secondaries]) {
     if (entry.connectionId !== id) {

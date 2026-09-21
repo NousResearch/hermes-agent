@@ -51,6 +51,7 @@ import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
   $gateway,
+  acquireGatewayRouteLease,
   activeGatewayConnectionId,
   openGatewayForAgent,
   openGatewayForProfile,
@@ -207,6 +208,14 @@ export interface PluginProfileRoute {
   profile: string
   /** Backend Hermes profile served by that route. */
   targetProfile: string
+}
+
+export interface PluginProfileRouteLease {
+  readonly generation: number
+  readonly route: PluginProfileRoute
+  assertCurrent: () => void
+  release: () => void
+  request: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 }
 
 /** Window geometry + the app's responsive posture, one readonly rect. */
@@ -1330,6 +1339,27 @@ export const host = {
     params: Record<string, unknown> = {},
     timeoutMs?: number
   ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs),
+
+  /** Retain one immutable registry route and physical socket for a sensitive
+   * multi-RPC sequence. Material edit/remove/ABA invalidates assertCurrent and
+   * every later request without retargeting to the reusable connection id. */
+  acquireProfileRoute: async (route: PluginProfileRoute): Promise<PluginProfileRouteLease> => {
+    if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
+      throw new Error('Profile route must include connectionId, profile, and targetProfile')
+    }
+
+    const lease = await acquireGatewayRouteLease(route.connectionId, route.profile)
+    const captured = { ...route }
+
+    return {
+      generation: lease.generation,
+      route: captured,
+      assertCurrent: lease.assertCurrent,
+      release: lease.release,
+      request: <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number) =>
+        lease.request<T>(method, params, timeoutMs)
+    }
+  },
 
   /** Pin a route's pooled gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a

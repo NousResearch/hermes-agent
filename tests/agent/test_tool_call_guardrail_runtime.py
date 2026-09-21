@@ -407,6 +407,52 @@ def test_default_run_conversation_warns_without_guardrail_halt():
 
 
 
+def test_research_budget_blocks_collection_but_allows_synthesis_turn():
+    agent = _make_agent(
+        "web_search",
+        "terminal",
+        max_iterations=10,
+        config={
+            "tool_loop_guardrails": {
+                "research_budget": {"web_search_max": 1},
+            }
+        },
+    )
+    args = {"query": "bounded"}
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(args), "c-search")],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps({"query": "retry"}), "c-blocked")],
+        ),
+        _mock_response(content="synthesized", finish_reason="stop", tool_calls=None),
+    ]
+
+    with (
+        patch("model_tools.handle_function_call", return_value=json.dumps({"data": {"web": []}})) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research once and synthesize")
+
+    mock_hfc.assert_called_once()
+    assert result["final_response"] == "synthesized"
+    assert result["turn_exit_reason"].startswith("text_response")
+    budget = result["research_budget"]
+    assert budget["code"] == "RESEARCH_BUDGET_EXHAUSTED"
+    assert budget["state"] == "TERMINAL"
+    assert budget["action"] == "synthesize"
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("RESEARCH_BUDGET_EXHAUSTED" in content for content in tool_contents)
+    assert any("Collection tools are now disabled" in content for content in tool_contents)
+
+
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     """Regression for #30770: when the guardrail halts the loop, the
     synthesized halt message must be pushed through ``stream_delta_callback``

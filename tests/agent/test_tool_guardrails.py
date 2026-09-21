@@ -3,6 +3,9 @@
 import json
 
 from agent.tool_guardrails import (
+    RESEARCH_BUDGET_EXHAUSTED,
+    RESEARCH_SYNTHESIS_STATE,
+    RESEARCH_TERMINAL_STATE,
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
@@ -280,6 +283,57 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.action == "block"
     assert decision.code == "loop_web_search_cap"
     assert decision.should_halt is True
+
+
+def test_research_budget_is_opt_in_and_exhaustion_keeps_synthesis_turn_alive():
+    assert ToolCallGuardrailConfig().research_budget.enabled is False
+
+    config = ToolCallGuardrailConfig.from_mapping(
+        {
+            "research_budget": {
+                "web_search_max": 1,
+                "browser_extract_max": 2,
+                "collection_deadline_seconds": 60,
+                "synthesis_reserve_seconds": 15,
+            }
+        }
+    )
+    controller = ToolCallGuardrailController(config)
+
+    args = {"query": "one bounded search"}
+    assert controller.before_call("web_search", args).allows_execution
+    transition = controller.after_call("web_search", args, '{"data": {"web": []}}', failed=False)
+    assert transition.code == RESEARCH_BUDGET_EXHAUSTED
+    assert transition.state == RESEARCH_SYNTHESIS_STATE
+    assert transition.should_halt is False
+
+    blocked = controller.before_call("web_search", {"query": "retry"})
+    assert blocked.code == RESEARCH_BUDGET_EXHAUSTED
+    assert blocked.terminal is False
+    assert blocked.should_halt is False
+    assert controller.before_call("terminal", {"command": "write final report"}).allows_execution
+
+    controller.mark_terminal()
+    metadata = controller.research_budget_metadata
+    assert metadata is not None
+    assert metadata["code"] == RESEARCH_BUDGET_EXHAUSTED
+    assert metadata["state"] == RESEARCH_TERMINAL_STATE
+    assert metadata["action"] == "synthesize"
+
+
+def test_research_deadline_reserves_time_from_existing_run_budget():
+    now = [100.0]
+    config = ToolCallGuardrailConfig.from_mapping(
+        {"research_budget": {"synthesis_reserve_seconds": 4}}
+    )
+    controller = ToolCallGuardrailController(config, run_budget_seconds=10, clock=lambda: now[0])
+    assert controller.before_call("web_search", {"query": "within reserve"}).allows_execution
+
+    now[0] = 106.0  # effective collection deadline: run budget 10 - reserve 4
+    blocked = controller.before_call("browser_navigate", {"url": "https://example.test"})
+    assert blocked.code == RESEARCH_BUDGET_EXHAUSTED
+    assert blocked.state == RESEARCH_SYNTHESIS_STATE
+    assert blocked.should_halt is False
 
 
 

@@ -558,6 +558,12 @@ def finalize_turn(
     if isinstance(final_response, str):
         final_response = _sanitize_surrogates(final_response)
 
+    _research_guardrails = getattr(agent, "_tool_guardrails", None)
+    if _research_guardrails is not None:
+        mark_terminal = getattr(_research_guardrails, "mark_terminal", None)
+        if callable(mark_terminal):
+            mark_terminal()
+
     result = {
         "final_response": final_response,
         "last_reasoning": _last_turn_reasoning(messages),
@@ -590,6 +596,10 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if _research_guardrails is not None:
+        research_budget = getattr(_research_guardrails, "research_budget_metadata", None)
+        if isinstance(research_budget, dict) and research_budget.get("exhausted"):
+            result["research_budget"] = research_budget
     # Persistence failures already set failed=True; also stamp `error` so the gateway
     # surfaces status="error" (desktop can toast) instead of a quiet complete frame, plus
     # the machine-readable cause 'session_persistence_failed:<locked|compression|...>'.

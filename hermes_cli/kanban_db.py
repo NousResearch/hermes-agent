@@ -3440,11 +3440,20 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(conn: sqlite3.Connection, task_id: str, *, expected_initial_key: Optional[str] = None) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first.
+
+    With ``expected_initial_key``, release only the untouched creation hold for
+    that idempotency key. Validate under the same write lock before any mutation;
+    a mismatch returns False without reclaiming or changing a newer hold.
+    """
     now = int(time.time())
     with write_txn(conn):
+        if expected_initial_key is not None:
+            from hermes_cli.kanban_initial_hold import matches
+            if not matches(conn, task_id, expected_initial_key):
+                return False
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"

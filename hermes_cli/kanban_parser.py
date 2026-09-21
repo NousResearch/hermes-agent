@@ -312,6 +312,7 @@ _SPECS = [
     ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
+        _arg("--if-initial-key", help="Atomically release only the original, unstarted hold with this idempotency key; one task, no --reason"),
         _TASK_IDS,
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
     _cmd("request-review", [

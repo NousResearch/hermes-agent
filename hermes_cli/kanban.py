@@ -959,12 +959,17 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if rc:
         return rc
     reason = _stripped_or_none(getattr(args, "reason", None))
+    initial_key = getattr(args, "if_initial_key", None)
+    if initial_key is not None and (not initial_key.strip() or len(ids) != 1 or reason):
+        return _err("conditional initial unblock requires a nonempty key, one task and no --reason")
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
+        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(
+            conn, tid, **({'expected_initial_key': initial_key} if initial_key is not None else {})))
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
-                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+                           lambda tid: (f"cannot unblock {tid}: initial hold changed or key mismatched"
+                               if initial_key is not None else f"cannot unblock {tid} (not blocked/scheduled?)"))
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:

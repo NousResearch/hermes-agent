@@ -388,7 +388,10 @@ class TestSanitizeMessagesPersistMarker:
             canonical, api_messages, {}, "system ☕",
         )
 
-        assert recovered is True
+        # Nothing was repaired, so an identical retry cannot help: the error must
+        # surface through the normal path rather than consume a sanitization pass.
+        assert recovered is False
+        assert agent._unicode_sanitization_passes == 0
         assert canonical[0]["content"] == "olá ☕"
         assert api_messages[0]["content"] == "olá ☕"
         assert agent._cached_system_prompt == "system ☕"

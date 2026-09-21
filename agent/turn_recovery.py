@@ -148,7 +148,9 @@ def _recover_unicode_encode_error(
     # Error text is provider-controlled and can mention ``ascii`` even when the
     # process sends UTF-8. In that normal case, do not rewrite conversation,
     # tools, prompts, or prefill; only repair values that can poison an ASCII
-    # transport header and retry the unchanged request copy.
+    # transport header. If nothing was repaired, an identical retry cannot
+    # succeed — return False so the error surfaces through the normal path
+    # instead of burning both sanitization passes on unchanged requests.
     if not _runtime_uses_ascii_encoding():
         agent._force_ascii_payload = False
         _client_kwargs = getattr(agent, "_client_kwargs", None)
@@ -165,12 +167,12 @@ def _recover_unicode_encode_error(
                 if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
                     agent.client.api_key = _clean_key
                 _credential_sanitized = True
+        if not (_headers_sanitized or _credential_sanitized):
+            return False, active_system_prompt
         agent._unicode_sanitization_passes += 1
         _vlines(
             agent,
-            "⚠️  Repaired non-ASCII request credentials/headers without changing conversation content. Retrying..."
-            if (_headers_sanitized or _credential_sanitized) else
-            "⚠️  ASCII codec error under UTF-8 runtime — retrying unchanged request content...",
+            "⚠️  Repaired non-ASCII request credentials/headers without changing conversation content. Retrying...",
         )
         return True, active_system_prompt
 

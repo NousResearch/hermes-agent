@@ -3803,6 +3803,65 @@ def _cmd_config_check(args):
     print()
 
 
+def _cmd_config_validate(args):
+    """Validate the requested config without loading defaults or writing changes."""
+    config_path = Path(args.path) if getattr(args, "path", None) else get_config_path()
+    try:
+        with open(config_path, encoding="utf-8-sig") as config_file:
+            loaded_config = fast_safe_load(config_file)
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        print(
+            color(f"✗ Could not load config {config_path}: {exc}", Colors.RED),
+            file=sys.stderr,
+        )
+        return 1
+
+    if loaded_config is None:
+        config = {}
+    elif not isinstance(loaded_config, dict):
+        print(
+            color(
+                f"✗ Configuration root must be a mapping in {config_path} "
+                f"(got {type(loaded_config).__name__})",
+                Colors.RED,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    else:
+        config = loaded_config
+
+    non_string_keys = [key for key in config if not isinstance(key, str)]
+    if non_string_keys:
+        print(
+            color(
+                f"✗ Configuration top-level keys must be strings in {config_path} "
+                f"(got {type(non_string_keys[0]).__name__})",
+                Colors.RED,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    issues = validate_config_structure(config)
+    if not issues:
+        print(color(f"✓ Configuration structure is valid: {config_path}", Colors.GREEN))
+        return 0
+
+    print(f"Configuration issues in {config_path}:", file=sys.stderr)
+    had_error = False
+    for issue in issues:
+        if issue.severity == "error":
+            marker = color("✗", Colors.RED)
+            had_error = True
+        else:
+            marker = color("⚠", Colors.YELLOW)
+        print(f"  {marker} {issue.message}", file=sys.stderr)
+        for hint_line in issue.hint.splitlines():
+            print(color(f"    {hint_line}", Colors.DIM), file=sys.stderr)
+    return 1 if had_error else 0
+
+
 _CONFIG_SUBCOMMANDS = {
     None: lambda args: show_config(),
     "show": lambda args: show_config(),
@@ -3813,7 +3872,8 @@ _CONFIG_SUBCOMMANDS = {
     "path": lambda args: print(get_config_path()),
     "env-path": lambda args: print(get_env_path()),
     "migrate": _cmd_config_migrate,
-    "check": _cmd_config_check}
+    "check": _cmd_config_check,
+    "validate": _cmd_config_validate}
 
 _CONFIG_USAGE = """Available commands:
   hermes config           Show current configuration
@@ -3822,6 +3882,7 @@ _CONFIG_USAGE = """Available commands:
   hermes config set <key> <value>   Set a config value
   hermes config unset <key>        Remove a config value
   hermes config check     Check for missing/outdated config
+  hermes config validate [path]    Validate config.yaml structure
   hermes config migrate   Update config with new options
   hermes config path      Show config file path
   hermes config env-path  Show .env file path"""
@@ -3832,8 +3893,7 @@ def config_command(args):
     subcmd = getattr(args, 'config_command', None)
     handler = _CONFIG_SUBCOMMANDS.get(subcmd)
     if handler is not None:
-        handler(args)
-        return
+        return handler(args)
     print(f"Unknown config command: {subcmd}")
     print()
     print(_CONFIG_USAGE)

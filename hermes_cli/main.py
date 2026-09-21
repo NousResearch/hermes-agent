@@ -2237,7 +2237,7 @@ def cmd_config(args):
     from hermes_cli.config import config_command
 
     try:
-        config_command(args)
+        return config_command(args)
     except RuntimeError as exc:
         # Fail-closed config write guard (require_readable_config_before_write);
         # covers migrate and future write subcommands so none end in a traceback.

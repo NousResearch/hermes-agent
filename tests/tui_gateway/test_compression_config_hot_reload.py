@@ -172,7 +172,13 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
 
 def test_live_model_threshold_outranks_only_implicit_default_cap(monkeypatch):
     session, compressor = _neutral_session(threshold_tokens_cap=100_000)
-    cfg = {"compression": {"model_thresholds": {"unset-test-model": 0.6}}}
+    import agent.agent_init as agent_init
+
+    monkeypatch.setattr(agent_init, "config_context_length_for_runtime", lambda _agent, _cfg=None: 600_000)
+    cfg = {
+        "model": {"context_length": 600_000},
+        "compression": {"model_thresholds": {"unset-test-model": 0.6}},
+    }
 
     _sync_with_cfg(monkeypatch, session, cfg)
 

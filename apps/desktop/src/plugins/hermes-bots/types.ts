@@ -167,12 +167,25 @@ export interface GroupMessageAuthor {
   gateway?: string
 }
 
+/** What a message is answering: a SNAPSHOT, not a pointer — the room log is
+ *  trimmed, and a quote has to keep rendering after its original ages out. */
+export interface GroupQuote {
+  /** Epoch ms when the quote was TAKEN (not the quoted message's own age). */
+  at: number
+  /** The speaker's display name when the quote was taken. */
+  from: string
+  /** First GROUP_QUOTE_TEXT_CHARS characters (the log rides a byte budget). */
+  text: string
+}
+
 export interface GroupMessage {
   /** Milliseconds. */
   at: number
   from: GroupMessageAuthor
   id?: string
   images?: Attachment[]
+  /** The message this one answers, quoted in place (group-quote.ts). */
+  replyTo?: GroupQuote
   text: string
   /** Messages predating threading carry the sentinel thread `'legacy'`. */
   thread?: string

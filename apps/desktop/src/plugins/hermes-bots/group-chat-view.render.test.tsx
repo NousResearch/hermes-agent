@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, fireEvent, render } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -11,8 +11,18 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
   const base = await pluginSdkMock(createGroupGateway().host)
 
-  const Button = ({ children, onClick, title }: { children?: ReactNode; onClick?: () => void; title?: string }) => (
-    <button onClick={onClick} title={title}>
+  const Button = ({
+    'aria-label': ariaLabel,
+    children,
+    onClick,
+    title
+  }: {
+    'aria-label'?: string
+    children?: ReactNode
+    onClick?: () => void
+    title?: string
+  }) => (
+    <button aria-label={ariaLabel} onClick={onClick} title={title}>
       {children}
     </button>
   )
@@ -48,7 +58,11 @@ vi.mock('./avatar', () => ({ avatarColor: () => '#888', botAppearance: () => ({}
 vi.mock('./group-chat-parts', () => ({
   GroupClarifyCard: () => null,
   GroupImageControls: () => null,
-  GroupMentionInput: () => null
+  // A real input so a test can type into a composer and submit it; the shipped
+  // component is the mention-aware editor.
+  GroupMentionInput: ({ onChange, value }: { onChange?: (text: string) => void; value?: string }) => (
+    <input onChange={event => onChange?.(event.target.value)} value={value ?? ''} />
+  )
 }))
 afterEach(cleanup)
 
@@ -83,4 +97,86 @@ it('renders member replies through the shell message renderer, resolving media o
     ['MEDIA:/tmp/local.png', 'true'],
     ['MEDIA:/tmp/remote.png', 'false']
   ])
+})
+
+
+it('quotes a message into the composer, and renders the quoted line on the reply', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { $groupChats } = await import('./group-chat')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+
+  $groupChats.set({
+    Room: {
+      log: [
+        { from: { kind: 'member' as const, name: 'builder' }, id: 'm1', text: 'totals are 5', thread: 'a', at: 2 },
+        {
+          from: { kind: 'user' as const, name: 'You' },
+          id: 'u1',
+          replyTo: { at: 2, from: 'Builder', text: 'totals are 5' },
+          text: 'no — the second number',
+          thread: 'a',
+          at: 3
+        }
+      ],
+      sessions: {},
+      watermarks: {}
+    }
+  })
+
+  const { container, getByLabelText, getByText } = render(
+    <GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />
+  )
+
+  // The reference renders above the message that answers it.
+  const quote = container.querySelector('[data-slot="group-quote"]')
+  expect(quote?.textContent).toContain('totals are 5')
+
+  // Quoting a message arms the composer with the same line.
+  fireEvent.click(getByLabelText('Quote Builder'))
+  expect(container.querySelector('[data-slot="group-quote-draft"]')?.textContent).toContain('totals are 5')
+
+  // …and the composer can drop it again.
+  fireEvent.click(getByLabelText('Clear quote'))
+  expect(container.querySelector('[data-slot="group-quote-draft"]')).toBeNull()
+  expect(getByText('no — the second number')).toBeTruthy()
+})
+
+
+it('moves the armed quote into a thread reply box and consumes it on send', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { $groupChats } = await import('./group-chat')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+
+  $groupChats.set({
+    Room: {
+      log: [
+        { from: { kind: 'member' as const, name: 'builder' }, id: 'm1', text: 'totals are 5', thread: 'a', at: 2 }
+      ],
+      sessions: {},
+      watermarks: {}
+    }
+  })
+
+  const { container, getByLabelText, getByText } = render(
+    <GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />
+  )
+
+  fireEvent.click(getByLabelText('Quote Builder'))
+  expect(container.querySelectorAll('[data-slot="group-quote-draft"]')).toHaveLength(1)
+
+  // The reply box takes the quote over — and still shows it while typing.
+  fireEvent.click(getByLabelText('Reply to Builder'))
+  const strip = container.querySelector('[data-slot="group-quote-draft"]')
+  expect(strip).toBeTruthy()
+  expect(strip?.closest('form')).toBeTruthy()
+
+  const replyForm = strip!.closest('form') as HTMLFormElement
+  fireEvent.change(replyForm.querySelector('input') as HTMLElement, { target: { value: 'agreed' } })
+  fireEvent.submit(replyForm)
+
+  // Consumed, not leaked: the reply carries the quote, and nothing stays armed
+  // for the next main-composer send.
+  expect(container.querySelector('[data-slot="group-quote-draft"]')).toBeNull()
+  expect($groupChats.get().Room.log.at(-1)?.replyTo?.text).toBe('totals are 5')
+  expect(getByText('agreed')).toBeTruthy()
 })

@@ -100,6 +100,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
+import { quoteFromMessage } from './group-quote'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
@@ -949,13 +950,14 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       pendingAttachments: {
         ...(current.pendingAttachments || {}),
         main: []
-      }
+      },
+      quote: null
     }))
 
     // Main composer = START A NEW THREAD with the whole group (Slack shape).
     // Full descriptors ride into the turn loop: remote members keep their
     // connection fields so their turns route to their own machines.
-    const minted = sendToGroupChat(group, memberDescriptors(), text, null, images)
+    const minted = sendToGroupChat(group, memberDescriptors(), text, null, images, composerDraft.quote || undefined)
 
     if (!minted) {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
@@ -982,6 +984,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         ...(current.pendingAttachments || {}),
         [thread]: []
       },
+      // Consumed here too: a quote armed in the thread must not ride out on the
+      // next main-composer send.
+      quote: null,
       replies: {
         ...(current.replies || {}),
         [thread]: ''
@@ -989,8 +994,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }))
 
     // Reply box = CONTINUE this thread; the member turns it triggers are
-    // scoped to it.
-    const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images)
+    // scoped to it. The quote rides the same way it does from the main
+    // composer.
+    const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images, composerDraft.quote || undefined)
 
     if (!sent) {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
@@ -999,6 +1005,39 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         setComposerDraft(restored)
       }
     }
+  }
+
+  /** The armed quote, above whichever composer owns the next send: the main
+   *  composer and a thread's reply box both consume it. */
+  const quoteStrip = () => {
+    const quote = composerDraft.quote
+
+    if (!quote) {
+      return null
+    }
+
+    return (
+      <div
+        className="mx-1 mb-1 flex items-start gap-1.5 border-l-2 border-(--ui-accent) bg-(--chrome-action-hover) px-2 py-1"
+        data-slot="group-quote-draft"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[0.625rem] font-semibold text-(--ui-text-tertiary)">{quote.from}</div>
+          <div className="truncate text-[0.6875rem] text-(--ui-text-secondary)">{quote.text}</div>
+        </div>
+        <Tip label={b.group.quoteClear}>
+          <Button
+            aria-label={b.group.quoteClear}
+            className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+            onClick={() => updateComposerDraft(current => ({ ...current, quote: null }))}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <Codicon name="close" />
+          </Button>
+        </Tip>
+      </div>
+    )
   }
 
   /** Pending-attachment chips + the picker for one composer (thread = null →
@@ -1187,10 +1226,34 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                     </Button>
                   </Tip>
                 )}
+                {entry.text.trim() ? (
+                  <Tip label={`${b.group.quote} ${display}`}>
+                    <Button
+                      aria-label={`${b.group.quote} ${display}`}
+                      className="text-(--ui-text-tertiary) hover:text-foreground"
+                      onClick={() =>
+                        updateComposerDraft(current => ({ ...current, quote: quoteFromMessage(entry, display) }))
+                      }
+                      size="icon"
+                      variant="ghost"
+                    >
+                      <Codicon name="quote" />
+                    </Button>
+                  </Tip>
+                ) : null}
                 {entry.text.trim() ? <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} /> : null}
               </div>
             ) : null}
           </div>
+          {entry.replyTo ? (
+            <div
+              className="mb-1 flex min-w-0 items-baseline gap-1.5 border-l-2 border-(--ui-stroke-secondary) pl-2 text-[0.6875rem] text-(--ui-text-tertiary)"
+              data-slot="group-quote"
+            >
+              <span className="shrink-0 font-semibold">{entry.replyTo.from}</span>
+              <span className="min-w-0 truncate">{entry.replyTo.text}</span>
+            </div>
+          ) : null}
           <div
             className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
@@ -1263,6 +1326,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             submitReply(id)
           }}
         >
+          {quoteStrip()}
           {attachmentRow(id)}
           <div className="flex items-center gap-1.5">
             <GroupMentionInput
@@ -1376,6 +1440,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             submit()
           }}
         >
+          {quoteStrip()}
           {attachmentRow(null)}
           <div className="flex items-center gap-1.5">
             <GroupMentionInput

@@ -11,7 +11,7 @@ import { atom } from '@hermes/plugin-sdk'
 
 import { $groupChatWorkspace, groupChatRoomKey } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import type { Attachment } from './types'
+import type { Attachment, GroupQuote } from './types'
 
 // Group composer drafts are window-local UI state. They must survive pane
 // parking/re-registration and owner switches, but must never enter shared room
@@ -21,6 +21,8 @@ import type { Attachment } from './types'
 export interface GroupComposerDraft {
   activeReplyThread: null | string
   main: string
+  /** The message the next send answers, quoted in place (group-quote.ts). */
+  quote?: null | GroupQuote
   /** Keyed by thread id; the main composer parks under 'main'. */
   pendingAttachments: Record<string, Attachment[]>
   replies: Record<string, string>
@@ -32,6 +34,7 @@ function emptyGroupComposerDraft(): GroupComposerDraft {
   return {
     activeReplyThread: null,
     main: '',
+    quote: null,
     pendingAttachments: {},
     replies: {},
     revision: 0

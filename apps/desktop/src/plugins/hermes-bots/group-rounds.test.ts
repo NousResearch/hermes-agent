@@ -52,6 +52,16 @@ async function loadRoom(options: GatewayOptions = {}): Promise<Room> {
   return { activity, chat, gateway, rounds, turns }
 }
 
+it('carries the quoted message on the entry it sends', async () => {
+  const { chat, rounds } = await loadRoom()
+  const quote = { at: 1, from: 'The Ops', text: 'totals are 5' }
+
+  rounds.sendToGroupChat('Room', MEMBERS, 'no — the second number', null, undefined, quote)
+
+  const log = chat.$groupChats.get().Room.log
+  expect(log.at(-1)?.replyTo).toEqual(quote)
+})
+
 const MEMBERS: GroupMember[] = [
   { name: 'research', title: '' },
   { name: 'builder', title: '' },

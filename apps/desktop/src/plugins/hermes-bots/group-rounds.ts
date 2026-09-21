@@ -32,7 +32,7 @@ import { rejectGroupSlashCommand } from './group-slash'
 import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
 import { botsText } from './i18n'
 import { requestForBot } from './routing'
-import type { Attachment, GroupMember, GroupMessage } from './types'
+import type { Attachment, GroupMember, GroupMessage, GroupQuote } from './types'
 
 // ── group chats: bounded round-robin coordination over a shared room log ─────
 //
@@ -810,7 +810,8 @@ export function sendToGroupChat(
   members: GroupMember[],
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  replyTo?: GroupQuote
 ): null | string {
   const trimmed = String(text || '').trim()
 
@@ -859,7 +860,8 @@ export function sendToGroupChat(
     },
     trimmed,
     target,
-    attached
+    attached,
+    replyTo
   )
 
   updateGroupChat(group, (room: GroupChatRoom) => {

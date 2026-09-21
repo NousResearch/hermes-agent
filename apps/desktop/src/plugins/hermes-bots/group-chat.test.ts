@@ -1257,3 +1257,27 @@ describe('sync worker', () => {
     expect(room.chat.$groupChats.get().Core?.log.map(entry => entry.text)).toEqual(['fresh start'])
   })
 })
+
+
+it('projects the quoted line into the synced snapshot, bounded', async () => {
+  const { chat } = await loadRoom()
+  const long = 'q'.repeat(400)
+
+  const snapshot = chat.groupChatSyncSnapshot({
+    Room: {
+      log: [
+        {
+          at: 2,
+          from: { kind: 'user', name: 'You' },
+          replyTo: { at: 1, from: 'Builder', text: long },
+          text: 'no — the second number'
+        }
+      ]
+    }
+  } as unknown as Record<string, GroupChat>)
+
+  const entry = snapshot.rooms['name:Room'].log[0]
+
+  expect(entry.replyTo?.from).toBe('Builder')
+  expect(entry.replyTo?.text).toHaveLength(140)
+})

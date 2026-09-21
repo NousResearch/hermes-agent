@@ -82,6 +82,8 @@ _WORKTREE_RECLAIM_ARGS = (
               "~/workspace/*/.worktrees and the board's own worktree parents."),
     _arg("--no-worktrees", action="store_true", help="Skip the done-card worktree reclaim"),
     _arg("--dry-run", action="store_true", help="Report what would be reclaimed, remove nothing"),
+    _arg("--no-comment", action="store_true",
+         help="Do not record the before/after free space on the reclaimed cards"),
 )
 _NOTIFY_TARGET = (
     _arg("--platform", required=True),

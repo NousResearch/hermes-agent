@@ -492,6 +492,87 @@ def _free_name(dest: Path) -> Path:
     return candidate
 
 
+# --- Free-space accounting + the board record --------------------------------
+
+#: Volume whose free space the reclaim reports. Derived from the reclaim roots
+#: at call time, never a literal mount point.
+def free_space_mb(path: Path) -> Optional[int]:
+    """Free MB on the volume holding ``path``; ``None`` when it cannot be read.
+
+    ``shutil.disk_usage`` is the same number ``df`` prints (statvfs f_bavail),
+    so the before/after pair recorded on the card is comparable to a hand-run
+    ``df -m`` and does not depend on parsing ``df`` output.
+    """
+    probe = Path(path).expanduser()
+    while True:
+        try:
+            return int(shutil.disk_usage(probe).free // (1024 * 1024))
+        except (OSError, ValueError):
+            if probe.parent == probe:
+                return None
+            probe = probe.parent
+
+
+def format_reclaim_report(
+    decisions: Sequence[ReclaimDecision], *, before_mb: Optional[int], after_mb: Optional[int],
+) -> str:
+    """The body recorded on each reclaimed card: before/after free space + what went."""
+    removed = [d for d in decisions if d.removed]
+
+    def gi(mb: Optional[int]) -> str:
+        return "unknown" if mb is None else f"{mb}MB ({mb / 1024:.1f}Gi)"
+
+    delta = (
+        "unknown" if before_mb is None or after_mb is None
+        else f"{after_mb - before_mb:+d}MB"
+    )
+    lines = [
+        "Automated worktree reclaim (`hermes kanban reclaim`).",
+        "",
+        f"- free before: {gi(before_mb)}",
+        f"- free after:  {gi(after_mb)}",
+        f"- delta:       {delta}",
+        "",
+        f"Removed {len(removed)} of {len(decisions)} candidate director(ies):",
+    ]
+    lines += [f"- {d.path}: {d.reason}" for d in removed] or ["- (none)"]
+    return "\n".join(lines)
+
+
+def record_reclaim_comments(
+    decisions: Sequence[ReclaimDecision], *, before_mb: Optional[int], after_mb: Optional[int],
+    db_path: Optional[Path] = None, author: str = "disk-guard",
+) -> int:
+    """Comment the before/after free space on every card whose worktree was removed.
+
+    Deliverable 1 of t_a3cc342c: the evidence has to land on the board from the
+    scheduled tick, not from a human running a script by hand. Returns the
+    number of comments written. Never raises — a board write failing must not
+    turn a successful reclaim into an error.
+    """
+    removed = [d for d in decisions if d.removed]
+    if not removed:
+        return 0
+    body = format_reclaim_report(decisions, before_mb=before_mb, after_mb=after_mb)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    written = 0
+    try:
+        with kbc.connect_closing(db_path=db_path) as conn:
+            for d in removed:
+                if not TASK_ID_RE.match(d.task_id):
+                    continue
+                try:
+                    kb.add_comment(conn, d.task_id, author, body)
+                    written += 1
+                except (sqlite3.Error, ValueError):
+                    continue
+    except (sqlite3.Error, OSError):
+        return written
+    return written
+
+
 def format_decisions(decisions: Sequence[ReclaimDecision]) -> list[str]:
     """One human line per decision — refusals included, that is the whole point."""
     return [

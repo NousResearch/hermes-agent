@@ -25,7 +25,12 @@ DEFAULT_CONFIG = {
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
     # of switching the turn to a fallback model.
-    "fallback": {"min_switch_reset_seconds": 0},
+    "fallback": {"min_switch_reset_seconds": 0,
+                 # #117495: when True, a side-effecting tool is halted (block result to the
+                 # model) if the acting route changed since the turn began — mid-turn fallback
+                 # swap, manual /model switch, or credential rotation. Read-only tools and
+                 # same-route turns are unaffected.
+                 "halt_on_route_change": False},
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on

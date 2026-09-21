@@ -1473,6 +1473,15 @@ def _run_conversation_turn(
     except Exception:
         logger.debug("per-turn env credential refresh failed", exc_info=True)
 
+    # Provenance latch for the mid-turn route-change gate (#117495): snapshot the acting
+    # route before the loop so side-effecting tool dispatch can detect a swap (fallback,
+    # /model, credential rotation) that happened after the turn began.
+    try:
+        from agent.fallback_route_gate import latch_turn_route
+        latch_turn_route(agent)
+    except Exception:
+        logger.debug("turn route latch failed", exc_info=True)
+
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
         _ctx = build_turn_context(

@@ -688,6 +688,15 @@ def _dispatch_authorized_once(
 
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
+        # Mid-turn route-change gate (#117495): with model.fallback.halt_on_route_change,
+        # a side-effecting tool is halted when the acting route changed since turn start
+        # (fallback swap, manual /model, credential rotation). Checked FIRST: cheaper than
+        # plugin hooks, and the route provenance is decided before any hook observes args.
+        from agent.fallback_route_gate import check_tool_dispatch
+        block_message = check_tool_dispatch(agent, ref.name)
+        if block_message is not None:
+            block_error_type = "route_changed_block"
+    if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)

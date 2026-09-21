@@ -11,6 +11,7 @@ Inspired by OpenAI Codex's Smart Approvals guardian subagent.
 import logging
 import time
 from tools import approval_context as _ctx
+from tools.approval_detection import _scan_shell
 
 logger = logging.getLogger("tools.approval")
 
@@ -34,29 +35,26 @@ _VERDICTS = {"APPROVE": "approve", "DENY": "deny"}
 
 
 def _strip_line_comment(line: str) -> str:
-    """Remove a trailing ``# comment`` from one shell line, quote-aware
-    (``echo "hello # world"`` survives)."""
-    in_single = in_double = False
-    i = 0
-    while i < len(line):
-        ch = line[i]
-        if ch == "\\" and in_double and i + 1 < len(line):
-            i += 2  # skip escaped char inside double quotes
-            continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        elif ch == "#" and not in_single and not in_double:
+    """Strip a comment only at an unquoted shell word boundary.
+
+    An in-word hash (``echo a#; next``) is data, so stripping there would hide
+    executable operations from the reviewer. Quoted/escaped blanks and operators
+    are part of the word too; looking only at the previous character is unsafe.
+    """
+    word_start = True
+    for kind, i, _, quote in _scan_shell(line, subst="uq", brace=True):
+        unquoted = kind == "char" and quote is None
+        if unquoted and line[i] == "#" and word_start:
             return line[:i].rstrip()
-        i += 1
+        word_start = unquoted and line[i] in " \t\n;&|()<>"
     return line
 
 
 def _strip_shell_comments(command: str) -> str:
-    """Strip unquoted ``# ...`` comments before LLM assessment. Not a POSIX parser
-    — quoted ``#`` and heredoc bodies are preserved by a simple state machine; the
-    goal is removing the low-hanging injection surface, not full shell parsing."""
+    """Strip per-line shell comments before LLM assessment.
+
+    This is a word/quote-aware heuristic, not a full shell or heredoc parser.
+    """
     cleaned: list[str] = []
     for line in command.split("\n"):
         stripped = _strip_line_comment(line)

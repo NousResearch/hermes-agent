@@ -363,6 +363,16 @@ def _pid_alive(pid: Optional[int]) -> bool:
 # the live PID) but NEVER signalled — missing process identity is refusal, not permission (#99558).
 UNVERIFIED_WORKER_FINGERPRINT = "unverified"
 
+# psutil's macOS ``create_time()`` reading of an *unchanged* live process drifts forward across every
+# sleep/wake by the accumulated sleep (#118326: after 27 min asleep the stale-claim reaper read the
+# drifted fingerprint as a recycled PID, released a live worker's claim, and a duplicate worker spawned
+# beside it). A start-time gap proves recycling only when gross — PID allocation is sequential, so a
+# reused number's start lands minutes-to-hours away (the reasoning #111454 applies to the cron ledger).
+# Claim liveness tolerates the drift; the signalling path (``_pid_recycled``) stays exact so a stranger
+# is never signalled, and a claim wrongly held against a recycled PID is still released once the
+# heartbeat goes stale (#29747 backstop).
+_SAME_WORKER_START_DRIFT_CEILING = 12 * 3600 * 100  # centiseconds; ~ a long overnight sleep
+
 
 def _process_fingerprint(pid: int) -> Optional[str]:
     """Restart-stable identity of a live process: ``"<instantiation epoch>|<start time>"``. The start
@@ -385,12 +395,36 @@ def _worker_alive(pid: Optional[int], started_at) -> bool:
     a fingerprint keeps the existence answer: killing it is the pre-fingerprint behaviour and the row is
     rewritten with a fingerprint on its next spawn. An UNVERIFIED spawn also keeps the existence answer
     (a claim is never released beside a possibly-live worker) but ``_terminate_reclaimed_worker``
-    refuses to signal it."""
+    refuses to signal it. A start-time reading that drifted forward within
+    ``_SAME_WORKER_START_DRIFT_CEILING`` under a macOS sleep/wake is still our worker (#118326) —
+    the epoch half must still match."""
     if not _kb._pid_alive(pid):
         return False
     if started_at == UNVERIFIED_WORKER_FINGERPRINT:
         return True
-    return not _pid_recycled(pid, started_at)
+    return not _pid_recycled(pid, started_at) or _drifted_spawn_still_matches(pid, started_at)
+
+
+def _drifted_spawn_still_matches(pid: int, started_at) -> bool:
+    """Same incarnation despite a forward start-time drift: identical instantiation epoch and a
+    start-time delta within ``_SAME_WORKER_START_DRIFT_CEILING`` (#118326). Exact matches and legacy
+    integer fingerprints are decided by ``_pid_recycled`` before this runs; only a live near-match on
+    the same boot is rescued. The signalling path never consults this helper — a drifted stranger is
+    still not signalled."""
+    if not (isinstance(started_at, str) and "|" in started_at):
+        return False
+    current = _process_fingerprint(int(pid))
+    if current is None:
+        return False
+    recorded_epoch, _, recorded_start = started_at.partition("|")
+    current_epoch, _, current_start = current.partition("|")
+    if recorded_epoch != current_epoch:
+        return False
+    try:
+        delta = int(current_start) - int(recorded_start)
+    except ValueError:
+        return False
+    return 0 < delta <= _SAME_WORKER_START_DRIFT_CEILING
 
 
 def _pid_recycled(pid: Optional[int], started_at) -> bool:

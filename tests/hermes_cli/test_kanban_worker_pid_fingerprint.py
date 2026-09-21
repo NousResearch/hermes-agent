@@ -149,3 +149,59 @@ def test_unverified_fingerprint_capture_never_authorizes_a_signal(board, monkeyp
     monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
     assert kb.release_stale_claims(conn, signal_fn=sig) == 1
     assert killed == [] and kb.get_task(conn, tid2).status == "ready"
+
+
+def _drifted_live_fingerprint(forward_cs: int) -> str:
+    """The value a spawn would have recorded before a macOS sleep/wake drifted psutil's reading of
+    the (still live) process forward: the epoch half kept, the start half earlier by ``forward_cs``
+    centiseconds than today's reading — exactly the stale row the reaper misread in #118326."""
+    live = kbd._process_fingerprint(os.getpid())
+    assert live is not None and "|" in live
+    epoch, _, start = live.partition("|")
+    return f"{epoch}|{int(start) - forward_cs}"
+
+
+def test_sleep_drifted_fingerprint_keeps_the_live_worker(board):
+    """A start-time reading that drifted forward across a sleep/wake belongs to the same live
+    worker (#118326): the expired claim is extended, not reclaimed — no duplicate spawn, no
+    breaker booking."""
+    conn = board
+    killed = []
+    drifted = _drifted_live_fingerprint(27 * 60 * 100)  # 27 min of accumulated sleep
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=drifted)
+
+    assert kbd._worker_alive(os.getpid(), drifted) is True
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 0
+    assert killed == []
+    task = kb.get_task(conn, tid)
+    assert task.status == "running" and task.worker_pid == os.getpid()
+    assert "claim_extended" in [e.kind for e in kb.list_events(conn, tid)]
+
+
+def test_sleep_drifted_fingerprint_is_never_signalled(board):
+    """The drift rescue is claim-liveness only: on a stale heartbeat the same drifted worker is
+    reclaimed as a stranger — the claim is released without any signal, exactly like a recycled
+    PID (signalling a possibly-recycled number is the irreversible error)."""
+    conn = board
+    killed = []
+    drifted = _drifted_live_fingerprint(27 * 60 * 100)
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=drifted)
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+                     (int(time.time()) - 2 * 3600, tid))
+
+    assert kb.release_stale_claims(conn, signal_fn=lambda pid, sig: killed.append((pid, sig))) == 1
+    assert killed == []
+    assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_gross_start_drift_is_still_a_recycle(board):
+    """Beyond the drift ceiling a start-time gap keeps its old meaning: a recycled PID (#118326
+    rescues near-matches only, so the gross-mismatch recycle proof survives)."""
+    conn = board
+    gross = _drifted_live_fingerprint(13 * 3600 * 100)  # 13h > the 12h ceiling
+    tid = _claimed_running(conn, pid=os.getpid(), started_at=gross)
+
+    assert kbd._worker_alive(os.getpid(), gross) is False
+    assert kb.release_stale_claims(conn) == 1
+    assert kb.get_task(conn, tid).status == "ready"

@@ -405,10 +405,10 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         self.assertEqual([r["status"] for r in results], ["success"] * 6)
         self.assertEqual(len(_KERNELS), 1)
         live = subprocess.run(
-            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
+            ["pgrep", "-f", "-P", str(os.getpid()), "hermes_kernel_runner"],
             capture_output=True, text=True,
-        ).stdout.strip()
-        self.assertEqual(live, "1")
+        ).stdout.splitlines()
+        self.assertEqual(len(live), 1)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):

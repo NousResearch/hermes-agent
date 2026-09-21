@@ -71,14 +71,23 @@ export const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage):
 }
 
 /**
- * graftRefreshedTailOntoBackfill with one fix: `preserveLocalAssistantErrors`
- * APPENDS preserved local rows (user prompt + failed assistant pair) AFTER the
- * merged tail. On the next graft those rows can trail the refreshed tail, so
- * the anchor lookup fails with anchor === 0 — and the old code returned the
- * bare tail, silently dropping the preserved rows (they reappear on the next
- * successful hydrate: the "messages vanish and come back" symptom). When the
- * previous transcript ends with rows the refreshed tail legitimately lacks,
- * those rows are carried back onto the graft.
+ * graftRefreshedTailOntoBackfill with two fixes:
+ *
+ * 1. anchor === 0: `preserveLocalAssistantErrors` APPENDS preserved local rows
+ *    (user prompt + failed assistant pair) AFTER the merged tail. On the next
+ *    graft those rows can trail the refreshed tail, so the anchor lookup fails
+ *    with anchor === 0 — and the old code returned the bare tail, silently
+ *    dropping the preserved rows (they reappear on the next successful
+ *    hydrate: the "messages vanish and come back" symptom).
+ * 2. anchor < 0 (anchorless): after a compaction rewrite every row id in the
+ *    transcript is new, so the lookup cannot match anything and the refreshed
+ *    tail was adopted wholesale. A read landing while that rewrite is in
+ *    flight (or lagging it) returns a page without the newest settled reply —
+ *    a reply the user already saw vanished from the view while the row stayed
+ *    intact in the store. The newest settled local reply is held back and
+ *    re-appended when it is strictly newer than anything the page carries and
+ *    its text is absent from the page, so a page that has genuinely moved
+ *    past it still wins and nothing can be duplicated.
  */
 export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
   if (refreshedTail.length === 0 || previous.length === 0) {
@@ -94,7 +103,7 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   )
 
   if (anchor < 0) {
-    return refreshedTail
+    return keepSettledLocalReply(refreshedTail, previous)
   }
 
   if (anchor === 0) {
@@ -102,8 +111,47 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     // previous rows AFTER that point are locally-preserved rows (user prompt +
     // failed assistant) hydration does not know about yet — carry them back
     // instead of dropping them.
-    return previous.length > refreshedTail.length ? [...refreshedTail, ...previous.slice(refreshedTail.length)] : refreshedTail
+    const grafted =
+      previous.length > refreshedTail.length ? [...refreshedTail, ...previous.slice(refreshedTail.length)] : refreshedTail
+
+    return keepSettledLocalReply(grafted, previous)
   }
 
-  return [...previous.slice(0, anchor), ...refreshedTail]
+  return keepSettledLocalReply([...previous.slice(0, anchor), ...refreshedTail], previous)
+}
+
+/** Hold back ONE settled local assistant reply (last in `previous`, carrying
+ *  real text) when the refreshed page cannot have produced it: strictly newer
+ *  than the newest row the page carries, and its text absent from the page.
+ *  Every guard keeps the page authoritative — a page that moved past the reply
+ *  or already contains its text wins unchanged, and the merge preserves
+ *  reference identity when nothing is appended. */
+function keepSettledLocalReply(merged: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const localReply = [...previous]
+    .reverse()
+    .find(
+      message => message.role === 'assistant' && !message.hidden && normalizedTimelineText(message).length > 0
+    )
+
+  if (!localReply) {
+    return merged
+  }
+
+  const newest = merged[merged.length - 1]
+
+  if (typeof localReply.timestamp !== 'number' || typeof newest?.timestamp !== 'number') {
+    return merged
+  }
+
+  if (localReply.timestamp <= newest.timestamp) {
+    return merged
+  }
+
+  const text = normalizedTimelineText(localReply)
+
+  if (merged.some(message => message.role === 'assistant' && normalizedTimelineText(message) === text)) {
+    return merged
+  }
+
+  return [...merged, localReply]
 }

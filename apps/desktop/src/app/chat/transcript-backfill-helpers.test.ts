@@ -134,4 +134,47 @@ describe('graftRefreshedTailOntoBackfill preserved-prefix guard', () => {
 
     expect(grafted.map(m => m.id)).toEqual(['stored-1', 'assistant-stream-3', 'user-9'])
   })
+
+  it('keeps a settled reply the refreshed page no longer carries (anchorless)', () => {
+    // Compaction rewrite: every row id in the transcript is new, so the anchor
+    // lookup cannot match anything and the refreshed tail is adopted outright.
+    // A read landing while the rewrite is in flight (or lagging it) returns a
+    // page without the newest settled reply — adopting the page wholesale
+    // drops a reply the user already saw (same "vanishing message" family as
+    // the anchor === 0 defect, different branch).
+    const previous = [
+      msg({ id: 'u1', parts: [{ text: 'the prompt', type: 'text' }], role: 'user', timestamp: 1_900 }),
+      msg({ id: 'a1', parts: [{ text: 'the answer', type: 'text' }], role: 'assistant', timestamp: 2_000 })
+    ]
+    const refreshed = [
+      msg({ id: 'p', parts: [{ text: 'an older turn', type: 'text' }], role: 'assistant', timestamp: 1_000 }),
+      msg({ id: 'q', parts: [{ text: 'an older reply', type: 'text' }], role: 'assistant', timestamp: 1_400 })
+    ]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.id)).toEqual(['p', 'q', 'a1'])
+  })
+
+  it('does not re-append a settled reply the page has genuinely moved past', () => {
+    // The page carries a strictly newer row AND already contains the reply's
+    // text — the page wins, nothing is duplicated.
+    const previous = [
+      msg({ id: 'u1', parts: [{ text: 'the prompt', type: 'text' }], role: 'user', timestamp: 1_900 }),
+      msg({ id: 'a1', parts: [{ text: 'the answer', type: 'text' }], role: 'assistant', timestamp: 2_000 })
+    ]
+    const refreshed = [
+      msg({ id: 'q', parts: [{ text: 'an older reply', type: 'text' }], role: 'assistant', timestamp: 1_400 }),
+      msg({ id: 'r', parts: [{ text: 'the answer', type: 'text' }], role: 'assistant', timestamp: 2_100 })
+    ]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.id)).toEqual(['q', 'r'])
+  })
+
+  it('keeps reference identity when there is no settled reply to hold back', () => {
+    const previous = [msg({ id: 'u1', parts: [{ text: 'the prompt', type: 'text' }], role: 'user', timestamp: 1_900 })]
+    const refreshed = [
+      msg({ id: 'p', parts: [{ text: 'an older turn', type: 'text' }], role: 'assistant', timestamp: 1_000 })
+    ]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+  })
 })

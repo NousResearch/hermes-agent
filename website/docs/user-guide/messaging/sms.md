@@ -132,12 +132,33 @@ Text your Twilio number — Hermes will respond via SMS.
 | `SMS_ALLOW_ALL_USERS` | No | Set to `true` to allow anyone (not recommended) |
 | `SMS_HOME_CHANNEL` | No | Phone number for cron job / notification delivery |
 | `SMS_HOME_CHANNEL_NAME` | No | Display name for the home channel (default: `Home`) |
+| `SMS_STATUS_WEBHOOK_URL` | No | Public URL of the delivery-status callback for signature validation (default: `SMS_WEBHOOK_URL` + `/status`) |
+| `SMS_ALLOW_COMMANDS` | No | Set to `true` to keep accepting `/slash` commands from texters. Unset, inbound texts starting with `/` are dropped (for deployments where the texter is an end customer) |
 
 ---
+
+## Inbound MMS (voice memos, photos, documents)
+
+Attachments on inbound messages are downloaded (Twilio basic auth on the first hop, then the signed
+CDN redirect without credentials), cached, and handed to the gateway's existing pipelines: audio
+becomes a voice message and is transcribed by your configured STT provider, images go to vision,
+other files arrive as documents. Carriers deliver phone voice memos as `audio/amr`; when `ffmpeg`
+is installed the adapter transcodes them to m4a first, since no STT provider accepts AMR. Media is
+fetched in the background so Twilio's 15-second webhook window is always met; if an attachment
+cannot be retrieved the agent receives a note asking the sender to resend.
+
+## Delivery-status callbacks
+
+Point the phone number's (or Messaging Service's) **status callback** at
+`https://your-server/webhooks/twilio/status`. Requests are signature-validated against
+`SMS_STATUS_WEBHOOK_URL`. `failed` and `undelivered` deliveries are logged; when
+`TELEGRAM_BOT_TOKEN` and `TELEGRAM_HOME_CHANNEL` are set, a one-line alert is sent to that Telegram
+chat, rate limited to one per minute.
 
 ## SMS-Specific Behavior
 
 - **Plain text only** — Markdown is automatically stripped since SMS renders it as literal characters
+- **GSM-7 friendly** — em dashes, curly quotes, ellipses and bullets are replaced with ASCII equivalents so messages stay in 7-bit encoding (160 characters per segment instead of 67), and each message is capped at ~6 segments; longer replies are sent as several texts
 - **1600 character limit** — Longer responses are split across multiple messages at natural boundaries (newlines, then spaces)
 - **Echo prevention** — Messages from your own Twilio number are ignored to prevent loops
 - **Phone number redaction** — Phone numbers are redacted in logs for privacy

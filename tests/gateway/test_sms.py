@@ -4,6 +4,7 @@ Covers config loading, format/truncate, echo prevention,
 requirements check, toolset verification, and Twilio signature validation.
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -362,3 +363,171 @@ class TestMultiplexProfileScope:
         finally:
             reset_secret_scope(token)
         assert "TWILIO_PHONE_NUMBER required" in result["error"]
+
+
+# ── GSM-7 normalization ─────────────────────────────────────────────
+class TestGsmNormalize:
+    def test_typography_becomes_ascii(self):
+        from plugins.platforms.sms.adapter import _gsm_normalize
+        out = _gsm_normalize("a — b ‘c’ “d” … • e  f")
+        assert out.isascii()
+        assert out == 'a - b \'c\' "d" ... - e  f'
+
+    def test_chunks_respect_max_sms_length(self):
+        from plugins.platforms.sms.adapter import MAX_SMS_LENGTH, SmsAdapter, _gsm_normalize
+        long = "word — " * 400
+        chunks = SmsAdapter.truncate_message(_gsm_normalize(long), MAX_SMS_LENGTH)
+        assert len(chunks) > 1
+        assert all(len(c) <= MAX_SMS_LENGTH for c in chunks)
+
+    def test_standalone_send_normalizes(self):
+        import inspect
+        from plugins.platforms.sms import adapter
+        assert "_gsm_normalize(_strip_markdown_for_sms" in inspect.getsource(adapter._standalone_send)
+
+
+# ── Delivery-status callbacks ───────────────────────────────────────
+class TestStatusCallback:
+    def _make_adapter(self, webhook_url="https://example.com/webhooks/twilio", status_url=None):
+        from plugins.platforms.sms.adapter import SmsAdapter
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "test_token_secret",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+            "SMS_WEBHOOK_URL": webhook_url,
+        }
+        if status_url is not None:
+            env["SMS_STATUS_WEBHOOK_URL"] = status_url
+        with patch.dict(os.environ, env):
+            pc = PlatformConfig(enabled=True, api_key="test_token_secret")
+            adapter = SmsAdapter(pc)
+            adapter._env = env
+        return adapter
+
+    def _mock_request(self, body, headers=None, content_length=None):
+        request = MagicMock()
+        request.read = AsyncMock(return_value=body)
+        request.headers = headers or {}
+        request.content_length = content_length
+        return request
+
+    @staticmethod
+    def _sign(url, params, token="test_token_secret"):
+        s = url + "".join(k + params[k] for k in sorted(params))
+        return base64.b64encode(hmac.new(token.encode(), s.encode(), hashlib.sha1).digest()).decode()
+
+    _PARAMS = {"MessageSid": "SM123", "MessageStatus": "undelivered", "ErrorCode": "30019",
+               "To": "+15551234567", "From": "+15550001111"}
+
+    def _body(self):
+        from urllib.parse import urlencode
+        return urlencode(self._PARAMS).encode()
+
+    @pytest.mark.asyncio
+    async def test_missing_signature_returns_403(self):
+        adapter = self._make_adapter()
+        with patch.dict(os.environ, adapter._env):
+            resp = await adapter._handle_status(self._mock_request(self._body()))
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_signed_callback_accepted_and_alert_scheduled(self):
+        adapter = self._make_adapter(status_url="https://example.com/webhooks/twilio/status")
+        adapter._notify_operator = AsyncMock()
+        sig = self._sign("https://example.com/webhooks/twilio/status", self._PARAMS)
+        env = dict(adapter._env, TELEGRAM_BOT_TOKEN="t", TELEGRAM_HOME_CHANNEL="1")
+        with patch.dict(os.environ, env):
+            resp = await adapter._handle_status(self._mock_request(self._body(), headers={"X-Twilio-Signature": sig}))
+            for t in list(adapter._background_tasks):
+                await t
+        assert resp.status == 200
+        adapter._notify_operator.assert_awaited_once()
+        assert "undelivered" in adapter._notify_operator.await_args.args[2]
+
+    @pytest.mark.asyncio
+    async def test_status_url_derived_from_webhook_url(self):
+        """With SMS_STATUS_WEBHOOK_URL unset the inbound URL + '/status' is what the signature is checked against."""
+        adapter = self._make_adapter()
+        sig = self._sign("https://example.com/webhooks/twilio/status", self._PARAMS)
+        with patch.dict(os.environ, adapter._env):
+            resp = await adapter._handle_status(self._mock_request(self._body(), headers={"X-Twilio-Signature": sig}))
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_alerts_are_rate_limited(self):
+        adapter = self._make_adapter(status_url="https://example.com/webhooks/twilio/status")
+        adapter._notify_operator = AsyncMock()
+        sig = self._sign("https://example.com/webhooks/twilio/status", self._PARAMS)
+        env = dict(adapter._env, TELEGRAM_BOT_TOKEN="t", TELEGRAM_HOME_CHANNEL="1")
+        with patch.dict(os.environ, env):
+            for _ in range(3):
+                await adapter._handle_status(self._mock_request(self._body(), headers={"X-Twilio-Signature": sig}))
+            for t in list(adapter._background_tasks):
+                await t
+        assert adapter._notify_operator.await_count == 1
+        assert adapter._alert_suppressed == 2
+
+    @pytest.mark.asyncio
+    async def test_oversized_body_returns_413(self):
+        adapter = self._make_adapter()
+        resp = await adapter._handle_status(self._mock_request(b"x" * 65_537, content_length=65_537))
+        assert resp.status == 413
+
+
+# ── Inbound MMS ─────────────────────────────────────────────────────
+class TestInboundMedia:
+    def _make_adapter(self):
+        from plugins.platforms.sms.adapter import SmsAdapter
+        env = {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "tok", "TWILIO_PHONE_NUMBER": "+15550001111",
+               "SMS_WEBHOOK_URL": "", "SMS_INSECURE_NO_SIGNATURE": "true"}
+        with patch.dict(os.environ, env):
+            adapter = SmsAdapter(PlatformConfig(enabled=True, api_key="tok"))
+        adapter._message_handler = AsyncMock()
+        adapter._env = env
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_media_message_is_ingested_in_background(self):
+        adapter = self._make_adapter()
+        adapter._ingest_with_media = AsyncMock()
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=&MessageSid=MM1&NumMedia=1&MediaUrl0=https%3A%2F%2Fapi.twilio.com%2Fm%2F1&MediaContentType0=audio%2Famr"
+        request = MagicMock(); request.read = AsyncMock(return_value=body); request.headers = {}; request.content_length = None
+        with patch.dict(os.environ, adapter._env):
+            resp = await adapter._handle_webhook(request)
+            for t in list(adapter._background_tasks):
+                await t
+        assert resp.status == 200
+        adapter._ingest_with_media.assert_awaited_once()
+        assert adapter._ingest_with_media.await_args.args[-1] == 1
+
+    @pytest.mark.asyncio
+    async def test_unretrievable_media_yields_marker_text(self):
+        from gateway.platforms.event import MessageType
+        adapter = self._make_adapter()
+        adapter._download_inbound_media = AsyncMock(return_value=([], []))
+        adapter.handle_message = AsyncMock()
+        await adapter._ingest_with_media({}, "+15551234567", "", "MM1", 1)
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.TEXT
+        assert "could not be retrieved" in event.text
+
+    @pytest.mark.asyncio
+    async def test_audio_media_becomes_voice_event(self):
+        from gateway.platforms.event import MessageType
+        adapter = self._make_adapter()
+        adapter._download_inbound_media = AsyncMock(return_value=(["/tmp/a.m4a"], ["audio/mp4"]))
+        adapter.handle_message = AsyncMock()
+        await adapter._ingest_with_media({}, "+15551234567", "", "MM1", 1)
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.VOICE and event.media_urls == ["/tmp/a.m4a"]
+
+    @pytest.mark.asyncio
+    async def test_slash_commands_dropped_unless_allowed(self):
+        adapter = self._make_adapter()
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=%2Fnew&MessageSid=SM1"
+        request = MagicMock(); request.read = AsyncMock(return_value=body); request.headers = {}; request.content_length = None
+        with patch.dict(os.environ, adapter._env):
+            resp = await adapter._handle_webhook(request)
+            await asyncio.sleep(0)
+        assert resp.status == 200
+        adapter._message_handler.assert_not_called()

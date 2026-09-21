@@ -430,6 +430,8 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `SMS_ALLOWED_USERS` | Comma-separated E.164 phone numbers allowed to chat |
 | `SMS_ALLOW_ALL_USERS` | Allow all SMS senders without an allowlist |
 | `SMS_HOME_CHANNEL` | Phone number for cron job / notification delivery |
+| `SMS_STATUS_WEBHOOK_URL` | Public URL of `/webhooks/twilio/status` for Twilio signature validation (default: `SMS_WEBHOOK_URL` + `/status`) |
+| `SMS_ALLOW_COMMANDS` | Keep accepting `/slash` commands over SMS; unset drops them |
 | `SMS_HOME_CHANNEL_NAME` | Display name for the SMS home channel |
 | `EMAIL_ADDRESS` | Email address for the Email gateway adapter |
 | `EMAIL_PASSWORD` | Password or app password for the email account |

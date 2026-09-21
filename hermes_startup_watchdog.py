@@ -31,6 +31,7 @@ from __future__ import annotations
 import faulthandler
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -134,6 +135,12 @@ def resolve_startup_watchdog_timeout() -> float:
             ENV_STARTUP_WATCHDOG_TIMEOUT_S, raw, DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S,
         )
         return DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S
+    if not math.isfinite(value):
+        logger.warning(
+            "Ignoring non-finite %s=%r; using default %.0fs",
+            ENV_STARTUP_WATCHDOG_TIMEOUT_S, raw, DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S,
+        )
+        return DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S
     if value <= 0:
         return DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S
     return max(value, _MIN_TIMEOUT_S)
@@ -219,9 +226,12 @@ class StartupWatchdogHandle:
         respawn-storm backoff sleep), otherwise indistinguishable from a parked deadlock.
         """
         try:
-            extra = max(0.0, float(extra_s))
+            extra = float(extra_s)
         except (TypeError, ValueError):
             extra = 0.0
+        if not math.isfinite(extra):
+            extra = 0.0
+        extra = max(0.0, extra)
         with self._state_lock:
             self._deadline = time.monotonic() + self.timeout_s + extra
 
@@ -237,7 +247,7 @@ class StartupWatchdogHandle:
             expected = float(expected_s)
         except (TypeError, ValueError):
             return
-        if expected <= 0:
+        if not math.isfinite(expected) or expected <= 0:
             return
         expected = min(expected, _MAX_LEASE_S)
         with self._state_lock:
@@ -446,7 +456,9 @@ def arm_startup_watchdog(
                 return _handle
             resolved = (
                 float(timeout_s)
-                if timeout_s is not None and float(timeout_s) > 0
+                if timeout_s is not None
+                and math.isfinite(float(timeout_s))
+                and float(timeout_s) > 0
                 else resolve_startup_watchdog_timeout()
             )
             handle = StartupWatchdogHandle(resolved, exit_code)

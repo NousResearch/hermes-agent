@@ -13,6 +13,7 @@ live-PID zombie.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from pathlib import Path
@@ -187,6 +188,13 @@ class TestConfigResolution:
         monkeypatch.setenv(sw.ENV_STARTUP_WATCHDOG_TIMEOUT_S, "-1")
         assert resolve_startup_watchdog_timeout() == sw.DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S
 
+    @pytest.mark.parametrize("raw", ["nan", "-nan", "inf", "-inf", "1e999", "Infinity"])
+    def test_nonfinite_env_falls_back_to_default(self, monkeypatch, raw):
+        # NaN compares false against every bound, so a NaN deadline reads as
+        # already expired and fires on the first poll; +inf never expires.
+        monkeypatch.setenv(sw.ENV_STARTUP_WATCHDOG_TIMEOUT_S, raw)
+        assert resolve_startup_watchdog_timeout() == sw.DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S
+
     @pytest.mark.parametrize("raw", ["0", "false", "no", "off", "FALSE", "Off"])
     def test_disabled_values(self, monkeypatch, raw):
         monkeypatch.setenv(sw.ENV_STARTUP_WATCHDOG, raw)
@@ -212,6 +220,34 @@ class TestArmDisarm:
         first = arm_startup_watchdog(timeout_s=60)
         second = arm_startup_watchdog(timeout_s=60)
         assert first is second
+        disarm_startup_watchdog()
+
+    @pytest.mark.parametrize("raw", ["nan", "inf"])
+    def test_arm_with_nonfinite_env_timeout_uses_default(self, monkeypatch, exit_capture, raw):
+        monkeypatch.setenv(sw.ENV_STARTUP_WATCHDOG_TIMEOUT_S, raw)
+        handle = arm_startup_watchdog()
+        assert handle is not None
+        assert handle.timeout_s == sw.DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S
+        assert math.isfinite(handle._deadline)
+        disarm_startup_watchdog()
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_arm_with_nonfinite_explicit_timeout_uses_default(self, exit_capture, bad):
+        handle = arm_startup_watchdog(timeout_s=bad)
+        assert handle is not None
+        assert handle.timeout_s == sw.DEFAULT_STARTUP_WATCHDOG_TIMEOUT_S
+        assert math.isfinite(handle._deadline)
+        disarm_startup_watchdog()
+
+    def test_nan_env_timeout_does_not_fire_on_healthy_startup(self, monkeypatch, exit_capture):
+        """Pre-fix, NaN bypassed the `<= 0` check (NaN compares false), so the
+        deadline was NaN: `remaining > 0` read false on the first poll and the
+        watchdog hard-exited a live startup immediately."""
+        monkeypatch.setenv(sw.ENV_STARTUP_WATCHDOG_TIMEOUT_S, "nan")
+        handle = arm_startup_watchdog()
+        assert handle is not None
+        time.sleep(1.0)
+        assert not exit_capture.fired.is_set()
         disarm_startup_watchdog()
 
     def test_disarm_prevents_fire(self, exit_capture):
@@ -296,6 +332,14 @@ class TestKick:
     def test_kick_with_garbage_extra_is_safe(self):
         arm_startup_watchdog(timeout_s=60)
         kick_startup_watchdog(extra_s="nonsense")  # type: ignore[arg-type]
+        disarm_startup_watchdog()
+
+    @pytest.mark.parametrize("extra", [float("nan"), float("inf")])
+    def test_kick_with_nonfinite_extra_keeps_finite_deadline(self, exit_capture, extra):
+        handle = arm_startup_watchdog(timeout_s=0.3)
+        assert handle is not None
+        kick_startup_watchdog(extra_s=extra)
+        assert math.isfinite(handle._deadline)
         disarm_startup_watchdog()
 
 
@@ -425,6 +469,15 @@ class TestProgressLease:
         arm_startup_watchdog(timeout_s=60)
         report_startup_progress("nonsense")  # type: ignore[arg-type]
         report_startup_progress(-5)
+        disarm_startup_watchdog()
+
+    @pytest.mark.parametrize("expected", [float("nan"), float("inf")])
+    def test_lease_with_nonfinite_duration_is_ignored(self, expected):
+        handle = arm_startup_watchdog(timeout_s=60)
+        assert handle is not None
+        report_startup_progress(expected, phase="test")
+        assert handle._lease_until == 0.0
+        assert handle._lease_count == 0
         disarm_startup_watchdog()
 
     def test_lease_visible_in_dump_record(self, exit_capture, tmp_path):

@@ -107,8 +107,8 @@ export function VoiceProviderFields({
     }, 550)
 
     return () => window.clearTimeout(timeout)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; `profile` is keyed by scopeKey; avoid re-scheduling autosave on locale change
-  }, [config, scopeKey, saveVersion, writeConfigCache])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; `profile`/`baseline` are keyed by scopeKey; avoid re-scheduling autosave on locale change
+  }, [config, scopeKey, saveVersion, writeConfigCache, writeScope])
 
   // ElevenLabs cloned/library voices from the live account, when available —
   // mirrors the Settings → Voice dynamic voice list.

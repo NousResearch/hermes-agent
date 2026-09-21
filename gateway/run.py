@@ -3492,6 +3492,9 @@ class GatewayRunner(
         self._session_db_init_error: Optional[str] = None
         # Non-default profiles' adapters by profile then Platform; self.adapters stays the default's map.
         self._profile_adapters: Dict[str, Dict[Platform, BasePlatformAdapter]] = {}
+        # Each SERVED profile's gateway config, as loaded once by ``_load_secondary_profile_config``.
+        # ``self.config`` is only the launch profile's: anything host-wide (restart notices) needs these.
+        self._profile_configs: Dict[str, Any] = {}
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 

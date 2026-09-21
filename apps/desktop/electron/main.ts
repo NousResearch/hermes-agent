@@ -255,7 +255,12 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
-import { type AttachedBackend, attachOrReserveSpawn, spawnLedgerPath, type SpawnReservation } from './host-backend-attach'
+import {
+  type AttachedBackend,
+  attachOrReserveSpawn,
+  spawnLedgerPath,
+  type SpawnReservation
+} from './host-backend-attach'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -269,9 +274,10 @@ import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-import { linuxCrashDiagnostics } from './linux-crash-diagnostics'
+import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
+import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -907,7 +913,9 @@ const HERMES_HOME = resolveHermesHome()
       app.commandLine.appendSwitch(planned.name, planned.value)
     }
 
-    console.log(`[hermes] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`)
+    console.log(
+      `[hermes] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`
+    )
   }
 }
 
@@ -973,36 +981,27 @@ const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
 // (version-skew crash -> backend exits instantly -> renderer keeps hitting
 // Retry) appends the full bootstrap transcript every attempt and grows without
 // bound — we have seen it reach ~326 GB and exhaust the disk, which then breaks
-// update/install (no room for git/venv/npm temp files).
-//
-// Mirror the Python logs (hermes_logging.py RotatingFileHandler, maxBytes x
-// backupCount): cascade live -> .1 -> .2 -> .3, drop the oldest. Steady-state
-// stays bounded at ~(backupCount + 1) x cap however hard the app loops.
-//
-// Bounding alone never RECLAIMS an already-huge file: a plain rotation just
-// renames the monster to .1 and strands it for a cycle a healthy app may never
-// reach. A multi-GB boot-loop transcript has no diagnostic value, so anything
-// past the discard ceiling is deleted outright — the updated app self-heals a
-// disk a stale build filled, on the next launch.
-const DESKTOP_LOG_MAX_BYTES = 10 * 1024 * 1024
-const DESKTOP_LOG_BACKUP_COUNT = 3
-const DESKTOP_LOG_DISCARD_BYTES = DESKTOP_LOG_MAX_BYTES * 4
-const desktopLogBackupPath = n => `${DESKTOP_LOG_PATH}.${n}`
+// update/install (no room for git/venv/npm temp files). The cap, the cascade
+// and the discard ceiling live in log-rotation.ts, shared with the Chromium
+// log below.
 
 // #100573: keep the FATAL line and a local minidump for the next Linux SIGTRAP.
 // Both must be wired before `app` is ready; the log-file switch is inherited by
 // every child process, so a zygote or GPU CHECK lands in the same file.
-const CRASH_DIAGNOSTICS = linuxCrashDiagnostics(path.dirname(DESKTOP_LOG_PATH))
+// Chromium opens an explicit --log-file with APPEND_TO_OLD_LOG_FILE, so this
+// one accumulates across launches exactly like desktop.log: bound it the same
+// way, and never let optional diagnostics fail the shell's startup.
+const CRASH_DIAGNOSTICS_LOGS_DIR = path.dirname(DESKTOP_LOG_PATH)
 
-if (CRASH_DIAGNOSTICS) {
-  fs.mkdirSync(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
+const CRASH_DIAGNOSTICS = linuxCrashDiagnostics(CRASH_DIAGNOSTICS_LOGS_DIR)
+const CHROMIUM_LOG_PATH = path.join(CRASH_DIAGNOSTICS_LOGS_DIR, CHROMIUM_LOG_FILENAME)
 
-  for (const [name, value] of CRASH_DIAGNOSTICS.switches) {
-    app.commandLine.appendSwitch(name, value)
-  }
-
-  crashReporter.start(CRASH_DIAGNOSTICS.crashReporter)
-}
+enableLinuxCrashDiagnostics(CRASH_DIAGNOSTICS, CRASH_DIAGNOSTICS_LOGS_DIR, {
+  ensureLogsDir: dir => fs.mkdirSync(dir, { recursive: true }),
+  reclaimChromiumLog: file => rotateLogIfNeededSync(file),
+  appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
+  startCrashReporter: options => crashReporter.start(options)
+})
 
 const BOOT_FAKE_MODE = process.env.HERMES_DESKTOP_BOOT_FAKE === '1'
 const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
@@ -1278,7 +1277,8 @@ function getTitleBarOverlayOptions() {
     darwinMajor: DARWIN_MAJOR,
     titlebarHeight: TITLEBAR_HEIGHT,
     color: TITLEBAR_OVERLAY_COLOR,
-    foreground: rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
+    foreground:
+      rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground) ? rendererTitleBarTheme.foreground : null,
     dark: nativeTheme.shouldUseDarkColors
   })
 }
@@ -1838,43 +1838,45 @@ let bootProgressState = {
   timestamp: Date.now()
 }
 
-// Pure planner: ordered fs ops to bound a live log of `size`. [] = nothing.
-// Each step is ['rm', path] or ['mv', src, dst]; executed best-effort so a
-// missing chain link never aborts the rest.
-function planDesktopLogRotation(size) {
-  if (size < DESKTOP_LOG_MAX_BYTES) {
-    return []
+// Chromium owns its --log-file for the life of the process, so the startup
+// reclaim above cannot bound a shell that stays up for days writing errors.
+// Poll and truncate in place; renaming would leave Chromium appending to the
+// renamed inode. Unref'd so it never holds the process open.
+function startChromiumLogWatcher(file) {
+  const io = {
+    size: f => {
+      try {
+        return fs.statSync(f).size
+      } catch {
+        return null // Not created yet — nothing has been logged.
+      }
+    },
+    truncate: f => fs.truncateSync(f, 0)
   }
 
-  const backups = n => Array.from({ length: n }, (_, i) => desktopLogBackupPath(i + 1))
+  const timer = setInterval(() => {
+    try {
+      if (reclaimActiveLogIfOversized(file, io)) {
+        rememberLog(`[diagnostics] truncated oversized Chromium log ${file}`)
+      }
+    } catch {
+      // Best-effort — an unbounded log beats a crashed shell.
+    }
+  }, ACTIVE_LOG_POLL_MS)
 
-  // Pathological boot-loop log: reclaim live + every backup outright.
-  if (size > DESKTOP_LOG_DISCARD_BYTES) {
-    return [DESKTOP_LOG_PATH, ...backups(DESKTOP_LOG_BACKUP_COUNT)].map(p => ['rm', p])
-  }
-
-  // Cascade: drop oldest, shift each up, live -> .1.
-  const ops = [['rm', desktopLogBackupPath(DESKTOP_LOG_BACKUP_COUNT)]]
-
-  for (let i = DESKTOP_LOG_BACKUP_COUNT - 1; i >= 1; i--) {
-    ops.push(['mv', desktopLogBackupPath(i), desktopLogBackupPath(i + 1)])
-  }
-
-  ops.push(['mv', DESKTOP_LOG_PATH, desktopLogBackupPath(1)])
-
-  return ops
+  timer.unref?.()
 }
 
-function rotateDesktopLogIfNeededSync() {
+function rotateLogIfNeededSync(base) {
   let size
 
   try {
-    size = fs.statSync(DESKTOP_LOG_PATH).size
+    size = fs.statSync(base).size
   } catch {
     return // No live file yet — the append (re)creates it.
   }
 
-  for (const [op, src, dst] of planDesktopLogRotation(size)) {
+  for (const [op, src, dst] of planLogRotation(size, base)) {
     try {
       if (op === 'rm') {
         fs.rmSync(src, { force: true })
@@ -1896,7 +1898,7 @@ async function rotateDesktopLogIfNeededAsync() {
     return // No live file yet — the append (re)creates it.
   }
 
-  for (const [op, src, dst] of planDesktopLogRotation(size)) {
+  for (const [op, src, dst] of planLogRotation(size, DESKTOP_LOG_PATH)) {
     try {
       if (op === 'rm') {
         await fs.promises.rm(src, { force: true })
@@ -1919,7 +1921,7 @@ function flushDesktopLogBufferSync() {
 
   try {
     fs.mkdirSync(path.dirname(DESKTOP_LOG_PATH), { recursive: true })
-    rotateDesktopLogIfNeededSync()
+    rotateLogIfNeededSync(DESKTOP_LOG_PATH)
     fs.appendFileSync(DESKTOP_LOG_PATH, chunk)
   } catch {
     // Logging must never block app startup/shutdown.
@@ -3663,9 +3665,7 @@ function repairMacUpdaterHelper(updater) {
 function venvHermesShimPath(updateRoot) {
   const venvDir = resolveVenvDir(updateRoot)
 
-  return IS_WINDOWS
-    ? path.join(venvDir, 'Scripts', 'hermes.exe')
-    : path.join(venvDir, 'bin', 'hermes')
+  return IS_WINDOWS ? path.join(venvDir, 'Scripts', 'hermes.exe') : path.join(venvDir, 'bin', 'hermes')
 }
 
 // Best-effort lock probe mirroring the Rust updater's is_locked(): a running
@@ -4431,12 +4431,14 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         '-RelaunchExe',
         process.execPath
       ]
+
       // Same remote-ownership rule as the posix hand-off (#117529): a
       // remote-served Desktop must not let the update (re)start a local
       // messaging gateway that competes with the remote host's polling.
       if (globalRemoteActive()) {
         wrappedArgs.push('-NoGateway')
       }
+
       const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, wrappedArgs)
 
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
@@ -4821,6 +4823,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
+
   // A remote-served Desktop owns no local messaging gateway: `hermes update
   // --gateway` would (re)start one here anyway, and with the same channel
   // credentials as the remote host it becomes a competing long-poll consumer
@@ -4828,6 +4831,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
   if (globalRemoteActive()) {
     args.push('--no-gateway')
   }
+
   const updateStartedAt = Math.floor(Date.now() / 1000)
 
   // Relaunch target: the running .app bundle on mac (script swaps the
@@ -6276,13 +6280,12 @@ function fetchLinkTitle(rawUrl) {
     curl: () => fetchHtmlTitleWithCurl(url),
     renderer: () => fetchHtmlTitleWithRenderer(url),
     url
-  })
-    .then(clean => {
-      cacheTitle(key, clean)
-      titleInflight.delete(key)
+  }).then(clean => {
+    cacheTitle(key, clean)
+    titleInflight.delete(key)
 
-      return clean
-    })
+    return clean
+  })
 
   titleInflight.set(key, pending)
 
@@ -8672,14 +8675,15 @@ function resolvePortalBaseUrl() {
   return String(raw).trim().replace(/\/+$/, '')
 }
 
-const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow } = createPortalSession({
-  isReady: () => app.isReady(),
-  getOauthSession,
-  resolvePortalBaseUrl,
-  warmOauthCookieStore,
-  createWindow: options => new BrowserWindow(options),
-  rememberLog
-})
+const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow } =
+  createPortalSession({
+    isReady: () => app.isReady(),
+    getOauthSession,
+    resolvePortalBaseUrl,
+    warmOauthCookieStore,
+    createWindow: options => new BrowserWindow(options),
+    rememberLog
+  })
 
 // Discover the hosted (Hermes Cloud) agents the signed-in user can see. Calls
 // the NAS trimmed-summary endpoint over the partition-bound net, so the portal
@@ -8712,10 +8716,13 @@ async function discoverCloudAgents(org?: string) {
   const fetchAgents = () =>
     discoverWithTeamFallback(
       selectedOrg =>
-        fetchJsonViaOauthSession(`${portalBaseUrl}/api/agents${selectedOrg ? `?org=${encodeURIComponent(selectedOrg)}` : ''}`, {
-          method: 'GET',
-          timeoutMs: 15_000
-        }),
+        fetchJsonViaOauthSession(
+          `${portalBaseUrl}/api/agents${selectedOrg ? `?org=${encodeURIComponent(selectedOrg)}` : ''}`,
+          {
+            method: 'GET',
+            timeoutMs: 15_000
+          }
+        ),
       org
     )
 
@@ -12416,9 +12423,7 @@ function startPoolIdleReaper() {
       if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
         // Remote descriptors hold no child/slot. Local children require the
         // same admission authority as foreground and LRU reclamation.
-        const retiring = entry.process
-          ? poolRetirer.retireIdle(profile, poolIdleMs())
-          : stopPoolBackend(profile)
+        const retiring = entry.process ? poolRetirer.retireIdle(profile, poolIdleMs()) : stopPoolBackend(profile)
 
         void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
       }
@@ -15344,7 +15349,10 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const id = String(connectionId || '').trim() || registry.primary
   const spawnPriority = spawnPriorityFrom(priority)
 
-  return connectDesktopProfileRoute({ connectionId: id, profile: String(profile ?? '').trim() || 'default' }, spawnPriority)
+  return connectDesktopProfileRoute(
+    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
+    spawnPriority
+  )
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -17237,7 +17245,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 const ownsAmbientCue = createAmbientClaimArbiter()
 ipcMain.handle('hermes:ambient:claim', (_event, key) => ownsAmbientCue(String(key ?? '')))
 
-registerNativeNotifications({ getMainWindow: () => mainWindow, focusWindow })
+const nativeNotifications = registerNativeNotifications({ getMainWindow: () => mainWindow, focusWindow })
 
 // Data-URL file load cap (composer attach + local previews). Main owns the
 // persisted MB value so every IPC read honours Settings → Chat without the
@@ -17630,6 +17638,7 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   sshIsolatedKeepalives.stopAll()
   destroyKeepaliveAgents()
+  nativeNotifications.dispose()
   quitFinalization.arm()
 })
 
@@ -18568,6 +18577,10 @@ app.whenReady().then(() => {
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()
 
+  if (CRASH_DIAGNOSTICS) {
+    startChromiumLogWatcher(CHROMIUM_LOG_PATH)
+  }
+
   const systemCa = installWindowsSystemCaTrust(tls)
 
   if (systemCa.applied) {
@@ -18695,8 +18708,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 
   // A hidden aux window must never parent the quit prompt: the dialog would
   // be invisible and the held quit unanswerable (#116376 §E).
-  const parent =
-    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(window => window.isVisible())
+  const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows().find(window => window.isVisible())
 
   if (!prompt || !parent || parent.isDestroyed()) {
     return false

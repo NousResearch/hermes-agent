@@ -156,6 +156,11 @@ class GatewayProfileReconcileMixin:
             for name in transient_failed:
                 if isinstance(self._served_profile_signatures, dict):
                     self._served_profile_signatures.pop(name, None)
+                # A cached config with no live adapters is owed a home-channel notice nothing can
+                # deliver, and the planned-restart marker then never clears.
+                configs = getattr(self, "_profile_configs", None)
+                if isinstance(configs, dict):
+                    configs.pop(name, None)
             if added:
                 await self._after_profiles_added([(n, current[n]) for n in added])
             result["served_profiles"] = self.served_profile_names()
@@ -215,7 +220,7 @@ class GatewayProfileReconcileMixin:
             # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
             _write_runtime_status_quiet(drop_profile_platforms=name)
             for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
-                         "_busy_text_timing_by_profile", "_human_delay_by_profile"):
+                         "_busy_text_timing_by_profile", "_human_delay_by_profile", "_profile_configs"):
                 store = getattr(self, attr, None)
                 if isinstance(store, dict):
                     store.pop(name, None)

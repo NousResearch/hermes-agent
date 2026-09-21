@@ -466,7 +466,7 @@ class TestRunBackgroundTask:
 
             await runner._run_background_task("say hello", source, "bg_test")
 
-        mock_adapter.send.assert_called_once()
+        mock_adapter.emit_warning.assert_awaited()
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 

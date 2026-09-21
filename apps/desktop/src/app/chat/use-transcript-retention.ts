@@ -64,7 +64,7 @@ export function useTranscriptRetention({
       }
 
       // Nothing may be released until the rows are fetchable again.
-      if (!rewindTranscriptTail(storedSessionId, retention.releasedRows, profile)) {
+      if (!rewindTranscriptTail(storedSessionId, retention.releasedServerRows, profile)) {
         return state
       }
 

@@ -7,20 +7,23 @@ import { boundRetainedTranscript, TRANSCRIPT_RETAIN_BUDGET } from './transcript-
 
 interface RowOptions {
   group?: string
-  /** Persisted rows carry the store's only durable handle back to the backend. */
-  persisted?: boolean
+  /** Backend rows this message folds (the hydration fold merges tool rows). */
+  span?: number
+  /** A row still in flight: no backend row yet, so it can never be released. */
+  pendingRow?: boolean
   textUnits?: number
 }
 
 const row = (index: number, options: RowOptions = {}): ChatMessage => {
-  const { group, persisted = true, textUnits = 1 } = options
+  const { group, pendingRow = false, span, textUnits = 1 } = options
 
   return {
     ...(group ? { branchGroupId: group } : {}),
     id: `m${index}`,
     parts: [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * textUnits) }],
     role: 'assistant',
-    ...(persisted ? { rowId: index + 1 } : {})
+    ...(pendingRow ? { pending: true } : { rowId: index + 1 }),
+    ...(span ? { serverRowSpan: span } : {})
   }
 }
 
@@ -79,11 +82,11 @@ describe('boundRetainedTranscript', () => {
     expect(longRetention.messages.length).toBeLessThan(long.length / 2)
   })
 
-  it('leaves the transcript whole when a released row cannot be fetched back', () => {
-    // Rows 27-29 were never persisted: releasing the prefix around them would
-    // drop content nothing can restore, so nothing is released at all.
+  it('leaves the transcript whole when a released row is still in flight', () => {
+    // Rows 27-29 are in flight: releasing the prefix around them would drop
+    // content no fetch can restore.
     const messages = transcript(60, index =>
-      index >= 27 && index <= 29 ? row(index, { persisted: false, textUnits: 100 }) : heavy(index)
+      index >= 27 && index <= 29 ? row(index, { pendingRow: true, textUnits: 100 }) : heavy(index)
     )
 
     expect(untouched(messages, messages[40].id)).toEqual({ released: false })
@@ -115,13 +118,25 @@ describe('boundRetainedTranscript', () => {
     }
   })
 
-  it('releases nothing when a row older than the window cannot be fetched back', () => {
-    // Rows 0-19 were never persisted. The older-page fetch is a row offset from
-    // the newest, so a prefix holding an unpersisted row cannot be re-fetched in
-    // full — the transcript is left whole rather than released in part.
-    const messages = transcript(30, index => row(index, { persisted: index >= 20, textUnits: 100 }))
+  it('releases nothing when a row older than the window is still in flight', () => {
+    // Rows 0-19 were never persisted. Releasing them would drop content nothing
+    // can fetch back, so the transcript is left whole rather than released in
+    // part.
+    const messages = transcript(30, index => row(index, { pendingRow: index < 20, textUnits: 100 }))
 
     expect(untouched(messages, messages[25].id)).toEqual({ released: false })
+  })
+
+  it('reports the released rows in backend rows, not messages', () => {
+    // A tool-heavy turn folds its tool rows into one message: the older-page
+    // offset the caller rewinds is counted in those backend rows.
+    const messages = transcript(60, index => row(index, { span: 11, textUnits: 100 }))
+    const keep = slackRows(messages[40])
+
+    const retention = released(messages, messages[40].id)
+
+    expect(retention.releasedRows).toBe(40 - keep)
+    expect(retention.releasedServerRows).toBe((40 - keep) * 11)
   })
 
   it('does no work when there is nothing to release', () => {

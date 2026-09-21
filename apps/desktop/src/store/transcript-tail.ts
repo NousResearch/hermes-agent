@@ -205,12 +205,14 @@ export function recordTranscriptBackfillPage(
  * back instead of treating the in-memory store as the whole transcript.
  *
  * The offset is decremented RELATIVE to what the backend reported, never
- * recomputed from the store's own row count: the backend pages display history
- * (`include_compacted` reads are grouped by display order, and inactive rows are
- * not counted), so a locally counted row total is not guaranteed to be the same
- * unit. Subtracting from the backend's own number can only overlap a page that
- * is already in memory — which the merge dedupes — where an over-counted
- * absolute offset would skip rows the reader can then never reach.
+ * recomputed from the store's own row count, and it is decremented by BACKEND
+ * rows: the hydration fold merges a turn's tool rows into the assistant message
+ * they belong to (`ChatMessage.serverRowSpan` carries how many), and the backend
+ * pages display history (an `include_compacted` read is grouped by display
+ * order; inactive rows are not counted). Subtracting from the backend's own
+ * number can only overlap a page that is already in memory — which the merge
+ * dedupes — where an over-counted absolute offset would skip rows the reader
+ * can then never reach.
  *
  * Returns false when the session has no entry: without one there is no route
  * recorded to fetch a page from, so the caller must keep its rows rather than
@@ -218,10 +220,10 @@ export function recordTranscriptBackfillPage(
  */
 export function rewindTranscriptTail(
   storedSessionId: string,
-  releasedRows: number,
+  releasedServerRows: number,
   profile?: TranscriptProfileScope
 ): boolean {
-  if (!storedSessionId || releasedRows <= 0) {
+  if (!storedSessionId || releasedServerRows <= 0) {
     return false
   }
 
@@ -232,7 +234,7 @@ export function rewindTranscriptTail(
   }
 
   setTranscriptTailEntry(entry[0], {
-    nextOffset: Math.max(0, entry[1].nextOffset - releasedRows),
+    nextOffset: Math.max(0, entry[1].nextOffset - releasedServerRows),
     possiblyTruncated: true,
     profile: entry[1].profile
   })

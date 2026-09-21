@@ -28,15 +28,20 @@ const { getOlderSessionMessages } = await import('@/hermes')
 const { sessionTileDelegate } = await import('@/store/session-states')
 stubThreadEnvironment()
 
-/** A persisted row heavy enough that a dozen of them fill one window page. */
+/** A persisted row heavy enough that a dozen of them fill one window page.
+ *  `serverRowSpan` models the hydration fold: each message stands for three
+ *  backend rows, so the rewind has to convert. */
 const row = (index: number): ChatMessage => ({
   id: `m${index}`,
   parts: [{ type: 'text', text: 'x'.repeat(RENDER_WEIGHT_CHARS * 100) }],
   role: 'assistant',
-  rowId: index + 1
+  rowId: index + 1,
+  serverRowSpan: 3
 })
 
 const HYDRATED_ROWS = 120
+/** Backend rows each store message stands for (see `serverRowSpan` above). */
+const SERVER_ROWS_PER_MESSAGE = 3
 
 function sessionView(messages: ChatMessage[]) {
   const $messages = atom(messages)
@@ -112,8 +117,8 @@ describe('useTranscriptRetention — the store releases paged-through history', 
     // slack is released, and the released rows stay reachable over REST.
     const released = 60 - state.messages.length
     // Where the rewind points the next older page: the hydrated offset minus the
-    // rows the store gave up.
-    const rewoundOffset = HYDRATED_ROWS - released
+    // BACKEND rows the store gave up (three per message here).
+    const rewoundOffset = HYDRATED_ROWS - released * SERVER_ROWS_PER_MESSAGE
 
     expect(released).toBeGreaterThan(1)
     expect($messages.get()).toHaveLength(state.messages.length)
@@ -208,7 +213,7 @@ describe('useTranscriptRetention — direct', () => {
     expect(updateSession).toHaveBeenCalledTimes(1)
     expect(state.messages.length).toBeLessThan(60)
     expect($transcriptTailBySessionId.get().stored).toMatchObject({
-      nextOffset: HYDRATED_ROWS - (60 - state.messages.length),
+      nextOffset: HYDRATED_ROWS - (60 - state.messages.length) * SERVER_ROWS_PER_MESSAGE,
       possiblyTruncated: true
     })
   })

@@ -52,14 +52,32 @@ export type TranscriptRetention =
       released: true
       /** Transcript to keep in the store; everything before it was released. */
       messages: ChatMessage[]
-      /** Rows released this pass. Every one of them is persisted, so the
-       *  caller can subtract them from the session's older-page offset — the
-       *  offset the backend itself reported, which the release must stay in the
-       *  currency of (the backend pages display history, not raw store rows). */
+      /** Messages released this pass. */
       releasedRows: number
+      /** Backend rows those messages covered — the `transcript-tail` older-page
+       *  offset is counted in backend rows, so this is what the caller rewinds
+       *  it by. The hydration fold merges a turn's tool rows into one message,
+       *  so this is usually larger than `releasedRows`. */
+      releasedServerRows: number
     }
 
 const NOTHING_RELEASED: TranscriptRetention = { released: false }
+
+/**
+ * Backend rows the slice covers. The hydration fold merges a turn's tool rows
+ * into the assistant message they belong to, so a message is not one backend
+ * row; the older-page offset is counted in backend rows, so the released rows
+ * have to be converted before the offset can be rewound.
+ */
+function serverRowCount(messages: readonly ChatMessage[], end: number): number {
+  let rows = 0
+
+  for (let i = 0; i < end; i += 1) {
+    rows += messages[i].serverRowSpan ?? 1
+  }
+
+  return rows
+}
 
 /**
  * How much of `messages` the store must keep, given the live window's first
@@ -96,18 +114,20 @@ export function boundRetainedTranscript(
     return NOTHING_RELEASED
   }
 
-  // A released row must be fetchable again, so every row being released has to
-  // carry its durable id. A prefix holding a never-persisted row (an in-memory
-  // row the backend never wrote) is left whole rather than released in part:
-  // the older-page fetch is a row offset from the newest, and a prefix that
-  // cannot be re-fetched in full would leave a hole in the middle.
+  // Nothing in flight may be released: a `pending` row has no backend row yet,
+  // so it cannot be fetched back and dropping it would lose content outright.
   for (let i = 0; i < boundary; i += 1) {
-    if (messages[i].rowId === undefined) {
+    if (messages[i].pending) {
       return NOTHING_RELEASED
     }
   }
 
   const retained = messages.slice(boundary)
 
-  return { messages: retained, releasedRows: boundary, released: true }
+  return {
+    messages: retained,
+    releasedRows: boundary,
+    releasedServerRows: serverRowCount(messages, boundary),
+    released: true
+  }
 }

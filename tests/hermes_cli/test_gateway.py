@@ -1253,9 +1253,9 @@ def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
     ]
 
 
-def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypatch):
+@pytest.mark.windows_only
+def test_find_windows_gateway_services_ignores_task_scheduler_ancestor():
     """A Scheduled Task descendant is not owned by the Schedule service."""
-    monkeypatch.setattr(gateway.sys, "platform", "win32")
     profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
 
     class FakeService:

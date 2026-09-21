@@ -315,6 +315,7 @@ test('Linux update gate permits only the checkout-managed Desktop build', () => 
 test('Linux update gate compares canonical paths and does not gate other platforms', () => {
   const root = '/home/hermes/.hermes/hermes-agent'
   const executable = '/var/home/hermes/.hermes/hermes-agent/apps/desktop/release/linux-unpacked/hermes'
+
   const canonical = (candidate: string) =>
     candidate.startsWith('/home/hermes/') ? candidate.replace('/home/hermes/', '/var/home/hermes/') : candidate
 

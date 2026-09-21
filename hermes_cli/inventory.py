@@ -256,6 +256,10 @@ def build_model_options_payload(
             capabilities = client.probe(timeout=2.0)
     except Exception:
         capabilities = None
+    # The provider registry contains a metadata-only Antigravity definition so
+    # model switching can resolve it. Replace that static row with the live CLI
+    # inventory; otherwise the picker sees the empty registry row first.
+    payload["providers"] = _without_slug(payload["providers"], "google-antigravity")
     if current_antigravity or include_unconfigured or (capabilities is not None and capabilities.available):
         available = bool(capabilities is not None and capabilities.available)
         authenticated = bool(capabilities is not None and capabilities.authenticated)

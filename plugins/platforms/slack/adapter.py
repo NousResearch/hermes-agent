@@ -281,11 +281,20 @@ def _sdk_supports_agent_sessions() -> bool:
 
 
 def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
+    """Return a status setter adapted to the selected Slack API contract."""
     if _sdk_supports_agent_sessions():
         method = getattr(client, "agents_sessions_setStatus", None)
         if method is not None:
-            return method
+
+            async def set_lifecycle_status(*, channel_id, thread_ts, status):
+                # Agent Sessions accepts lifecycle enums, not legacy display text.
+                return await method(
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    status="processing" if status else "active",
+                )
+
+            return set_lifecycle_status
     return client.assistant_threads_setStatus
 
 

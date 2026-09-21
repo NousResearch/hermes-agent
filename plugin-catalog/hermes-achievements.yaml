@@ -1,0 +1,15 @@
+name: hermes-achievements
+repo: https://github.com/jangomango76/hermes-achievements
+sha: 9ad096f2571c4bcfc2c5e02259cf8314667cd1ce
+description: "Dashboard-only local achievements for Hermes sessions: collectible tiered badges generated from real session history, with no remote service or credentials."
+maintainer: jangomango76
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+docs_url: https://github.com/jangomango76/hermes-achievements#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

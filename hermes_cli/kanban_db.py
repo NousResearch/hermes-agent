@@ -3456,6 +3456,18 @@ def request_review(
                 summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
                 profile=implementer,
             )
+            # A review handoff is a successful implementer transition: clear any
+            # stale failure fingerprint (e.g. quota text stamped by a rate-limited
+            # requeue). Without this, the review lane's check_respawn_guard hits
+            # blocker_auth on the stale text every tick and the reviewer never
+            # spawns — the card sits in review until a human intervenes.
+            # consecutive_failures is deliberately PRESERVED (M2 contract): the
+            # breaker must still trip across review cycles for a flaky task; only
+            # complete_task's success resets the counter.
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = NULL WHERE id = ?",
+                (task_id,),
+            )
             payload: dict = {
                 "summary": _first_line(summary, 400) or None,
                 "implementer": implementer,

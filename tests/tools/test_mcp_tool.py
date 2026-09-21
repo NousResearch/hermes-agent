@@ -205,12 +205,17 @@ class TestLoadMCPConfig:
         assert server["env"]["PLUGIN_DATA"].startswith(str(home / "plugin-data"))
         assert "agent_plugin" not in server
 
+    @pytest.mark.parametrize("warm_cache", [False, True])
     def test_invalid_utf8_server_env_file_warns_and_falls_back(
-        self, tmp_path, monkeypatch, caplog
+        self, tmp_path, monkeypatch, caplog, warm_cache
     ):
         """Decode failures are visible without exposing file paths or secrets."""
         env_file = tmp_path / "invalid-secret.env"
         env_file.write_bytes(b"MCP_TEST_TOKEN=hidden-\xff-value\n")
+        if warm_cache:
+            from agent.secret_scope import load_env_file
+
+            assert load_env_file(env_file)["MCP_TEST_TOKEN"] == "hidden-\u00ff-value"
         monkeypatch.setenv("MCP_TEST_TOKEN", "process-token")
         servers = {
             "project": {
@@ -234,6 +239,7 @@ class TestLoadMCPConfig:
         assert "MCP env_file could not be read" in caplog.text
         assert str(env_file) not in caplog.text
         assert "process-token" not in caplog.text
+        assert "hidden-" not in caplog.text
 
     def test_env_file_cannot_hide_suspicious_stdio_arguments(self, tmp_path, caplog):
         """Spawn-time security validation also covers interpolated values."""

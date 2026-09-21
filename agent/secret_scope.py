@@ -300,7 +300,8 @@ def load_env_file(env_path: Path, *, strict: bool = False) -> Dict[str, str]:
             fingerprint = file_signature(os.fstat(handle.fileno()))
             with _ENV_FILE_CACHE_LOCK:
                 cached = _ENV_FILE_CACHE.get(key)
-                if cached is not None and cached[0] == fingerprint:
+                # Tolerant entries may contain latin-1: strict callers must validate the bytes.
+                if not strict and cached is not None and cached[0] == fingerprint:
                     _ENV_FILE_CACHE.move_to_end(key)
                     return dict(cached[1])
             raw = handle.read()

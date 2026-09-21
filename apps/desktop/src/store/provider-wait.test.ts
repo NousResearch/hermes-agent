@@ -26,6 +26,18 @@ describe('providerWaitText', () => {
 
     expect(providerWaitText(frame)).toBe(frame)
   })
+
+  it('accepts the reset-window retry notice minted by agent/turn_recovery.compute_error_backoff', () => {
+    // Exact shape of turn_recovery.py's `_live_reason` when a reset hint is available
+    // (_wait_reason is exactly "Rate limited" or "Provider overloaded", lowercased here) —
+    // rejecting it left Desktop's status row on stale/empty text while CLI/TUI (which render
+    // the raw diagnostic text with no regex gate) already showed the reset window.
+    const rateLimited = '⏳ rate limited — resets in ~13m, retrying in 30s (attempt 2/5)'
+    const overloaded = '⏳ provider overloaded — resets in ~5m, retrying in 60s (attempt 1/5)'
+
+    expect(providerWaitText(rateLimited)).toBe(rateLimited)
+    expect(providerWaitText(overloaded)).toBe(overloaded)
+  })
 })
 
 describe('parseModelLoadWait', () => {

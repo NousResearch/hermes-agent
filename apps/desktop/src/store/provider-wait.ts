@@ -45,7 +45,9 @@ export function clearAllProviderWaits(): void {
 export function providerWaitText(text: string): string {
   const value = text.trim()
 
-  return /^(?:⏳|⚠|↻|⚙)\s*(?:(?:still\s+)?waiting on|loading|processing prompt|no (?:output|response)|model returned)/i.test(value)
+  return /^(?:⏳|⚠|↻|⚙)\s*(?:(?:still\s+)?waiting on|loading|processing prompt|no (?:output|response)|model returned|rate limited|provider overloaded)/i.test(
+    value
+  )
     ? value
     : ''
 }

@@ -3486,6 +3486,10 @@ class GatewayRunner(
         # Secondary-profile busy modes snapshotted at multiplex startup; handlers never reread config.
         self._busy_input_modes_by_profile: Dict[str, str] = {}
         self._busy_text_modes_by_profile: Dict[str, str] = {}
+        self._busy_text_timing = self._busy_text_timing_from_config(_load_gateway_config())
+        self._busy_text_timing_by_profile: Dict[str, tuple[float, float]] = {}
+        self._human_delay = self._human_delay_from_config(_load_gateway_config())
+        self._human_delay_by_profile: Dict[str, Optional[tuple[int, int]]] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         # Live launchd ``ExitTimeOut`` for this job (None when not launchd-owned). Read once at
         # boot — launchd fixes it at load — and applied only to signal-driven stops, which are the
@@ -4590,7 +4594,12 @@ def _housekeeping_org_skill_sync() -> None:
 
 def _housekeeping_auto_archive() -> None:
     """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
-    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
+    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound.
+
+    Profile-scoped by its caller: ``acquire()`` and ``load_config()`` both resolve through
+    ``get_hermes_home()``, so an unscoped tick swept only the LAUNCH profile's store and a
+    multiplexed secondary was never archived by anyone — the dashboard/serve trigger defers to
+    the gateway for every profile a gateway owns (``web_server_sessions``)."""
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
@@ -4666,6 +4675,7 @@ def _start_gateway_housekeeping(
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
+    from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
     from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
@@ -4676,8 +4686,7 @@ def _start_gateway_housekeeping(
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
-        chores.append((1, "Cron durable delivery queue drain",
-                       lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
+        chores.append((1, DRAIN_LABEL, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
     chores += [
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
         (60, "Media cache cleanup", _housekeeping_media_caches),
@@ -4689,16 +4698,27 @@ def _start_gateway_housekeeping(
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
-        # Per served profile: each profile has its own skills tree, curator state and Nous login.
+        # Per served profile: each profile has its own skills tree, curator state, Nous login
+        # and state.db.
         (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
         (60, "Sync pull tick", profile_scoped_chore(runner, _housekeeping_skill_sync)),
         (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
-        (60, "Auto-archive tick", _housekeeping_auto_archive),
+        (60, "Auto-archive tick", profile_scoped_chore(runner, _housekeeping_auto_archive)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
+
+    # Between ticks the queue file is watched so a worker's send goes out when it is queued,
+    # not up to ``interval`` later (#117307); the tick's drain above remains the fallback.
+    queue_watch = None
+    if adapters is not None or runner is not None:
+        def served_homes() -> list:
+            return [home for _name, home in _handoff_watch_scopes(runner)] if runner is not None else [None]
+
+        queue_watch = DeliveryQueueWatch(
+            served_homes, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner))
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0
@@ -4707,7 +4727,7 @@ def _start_gateway_housekeeping(
         for every, label, fn in chores:
             if tick_count % every == 0:
                 _housekeeping_chore(label, fn)
-        stop_event.wait(timeout=interval)
+        wait_for_next_tick(stop_event, interval, queue_watch, _housekeeping_chore)
     logger.info("Gateway housekeeping stopped")
 
 
@@ -5056,6 +5076,19 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
             root.setLevel(_stderr_level)
 
 
+def _start_gateway_make_restart_signal_handler(runner):
+    """Build the SIGUSR1 handler: log what the signal means, then the drain-aware service restart."""
+    def restart_signal_handler():
+        # systemd's `reload` verb (ExecReload=kill -USR1) lands here too; say so, because operators
+        # expect `reload` to mean an in-process config reload, not a drain-and-relaunch (#117267).
+        logger.info(
+            "SIGUSR1 received (systemctl reload / hermes gateway restart): performing a graceful "
+            "gateway restart — drain active turns, exit, supervisor relaunches. Not an in-process "
+            "config reload.")
+        runner.request_restart(detached=False, via_service=True)
+    return restart_signal_handler
+
+
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     def shutdown_signal_handler(received_signal=None):
@@ -5366,8 +5399,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     shutdown_signal_handler = _start_gateway_make_shutdown_signal_handler(
         runner, _signal_initiated_shutdown)
 
-    def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+    restart_signal_handler = _start_gateway_make_restart_signal_handler(runner)
 
     loop = asyncio.get_running_loop()
 

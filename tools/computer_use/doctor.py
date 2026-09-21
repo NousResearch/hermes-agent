@@ -30,6 +30,10 @@ _IO_EXC = (OSError, subprocess.TimeoutExpired)
 _PRUNED_UNIT_MSG = "Exec targets {target} which no longer exists — a cua-driver upgrade pruned that release directory"
 _PRUNED_UNIT_HINT = ("Point the {kind} at ~/.cua-driver/packages/current/cua-driver — `current` survives upgrades; "
                      "versioned packages/releases/<version>/ dirs are pruned (only the last 5 are kept)")
+_DEAD_DAEMON_MSG = ("{unit} is configured to run `cua-driver serve` but no daemon is listening on {socket} — "
+                    "the unit is not running (crash loop, stopped, or never started)")
+_DEAD_DAEMON_HINT = ("Check `systemctl --user status {unit}` / `journalctl --user -u {unit}`; a driver reinstall does not "
+                     "start the daemon and cannot fix a broken unit")
 Report = Dict[str, Any]
 _Row = Tuple[str, str, Report]  # (status, message, extra {hint?, data?}) for one check
 
@@ -284,19 +288,14 @@ def _apply_display_count_guard(report: Report) -> Report:
                 report["overall"] = "degraded"
     return report
 
-def _stale_cua_exec_references(config_dir: Optional[str] = None) -> List[Tuple[str, str, str]]:
-    """(kind, unit, target) for systemd user units / XDG autostart entries whose cua-driver Exec points at a
-    pruned ``packages/releases/<version>/`` directory.
-
-    Linux has no managed cua-driver autostart (Windows-only), so daemon units are hand-written against a concrete
-    release dir. The installer prunes all but the last five, so a versioned reference crash-loops with 203/EXEC
-    after every upgrade while every binary-level check stays green (#114748). ``packages/current`` and
-    still-present release dirs are healthy by construction and never reported.
-    """
-    # systemd --user and XDG autostart both honour $XDG_CONFIG_HOME; a host that sets it keeps its units there.
+def cua_daemon_units(config_dir: Optional[str] = None) -> List[Tuple[str, str, str, bool, Optional[str]]]:
+    """(kind, unit, exec_target, runs_serve, --socket path or None) for every systemd user unit / XDG autostart
+    entry whose Exec runs cua-driver — the hand-written daemon units Linux relies on (there is no managed
+    autostart). ``%h`` is expanded in the socket path so it can be probed; the exec target is left as written."""
     home = os.path.expanduser("~")
+    # systemd --user and XDG autostart both honour $XDG_CONFIG_HOME; a host that sets it keeps its units there.
     base = config_dir or os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
-    findings: List[Tuple[str, str, str]] = []
+    units: List[Tuple[str, str, str, bool, Optional[str]]] = []
     sources = (("systemd user unit", os.path.join(base, "systemd", "user"), ".service", "ExecStart"),
                ("XDG autostart entry", os.path.join(base, "autostart"), ".desktop", "Exec"))
     for kind, directory, suffix, key in sources:
@@ -313,14 +312,49 @@ def _stale_cua_exec_references(config_dir: Optional[str] = None) -> List[Tuple[s
             for line in text.splitlines():
                 stripped = line.strip()
                 tokens = stripped.split("=", 1)[1].split() if stripped.startswith(key + "=") else []
-                if not tokens:
-                    continue
                 # first token = executable; systemd's prefix modifiers (-, +, !, :) never start a path
-                target = tokens[0].lstrip("-+:!")
-                resolved = os.path.expanduser(target.replace("%h", home))
-                if "/packages/releases/" in resolved and not os.path.exists(resolved):
-                    findings.append((kind, name, target))
+                if not tokens or "cua-driver" not in tokens[0]:
+                    continue
+                socket = next((tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t == "--socket"), None)
+                units.append((kind, name, tokens[0].lstrip("-+:!"), "serve" in tokens[1:],
+                              os.path.expanduser(socket.replace("%h", home)) if socket else None))
+    return units
+
+def _stale_cua_exec_references(config_dir: Optional[str] = None) -> List[Tuple[str, str, str]]:
+    """(kind, unit, target) for daemon units whose cua-driver Exec points at a pruned ``packages/releases/<version>/``
+    directory. The installer prunes all but the last five, so a versioned reference crash-loops with 203/EXEC after
+    every upgrade while every binary-level check stays green (#114748). ``packages/current`` and still-present
+    release dirs are healthy by construction and never reported."""
+    home = os.path.expanduser("~")
+    findings: List[Tuple[str, str, str]] = []
+    for kind, unit, target, _serve, _socket in cua_daemon_units(config_dir):
+        resolved = os.path.expanduser(target.replace("%h", home))
+        if "/packages/releases/" in resolved and not os.path.exists(resolved):
+            findings.append((kind, unit, target))
     return findings
+
+def _apply_daemon_liveness_guard(report: Report, binary: str) -> Report:
+    """Append one check per configured daemon unit whose ``cua-driver serve`` is not answering on its socket
+    (pass when it is). Only configured daemons are probed: on Linux the MCP runtime needs no daemon, so an
+    unconfigured, silent socket is not a finding. Unknown probe results add nothing (#114748)."""
+    from tools.computer_use.cua_backend import cua_daemon_listening
+
+    checks = report.get("checks")
+    if sys.platform != "linux" or not isinstance(checks, list):
+        return report
+    for _kind, unit, _target, serve, socket in cua_daemon_units():
+        listening = cua_daemon_listening(binary, socket) if serve else None
+        if listening is None:
+            continue
+        shown = socket or "the default socket"
+        if listening:
+            checks.append({"name": f"daemon ({unit})", "status": "pass", "message": f"cua-driver serve is listening on {shown}"})
+            continue
+        checks.append({"name": f"daemon ({unit})", "status": "fail", "message": _DEAD_DAEMON_MSG.format(unit=unit, socket=shown),
+                       "hint": _DEAD_DAEMON_HINT.format(unit=unit)})
+        if report.get("overall") == "ok":
+            report["overall"] = "degraded"
+    return report
 
 def _apply_stale_unit_guard(report: Report) -> Report:
     """Append a fail check per hand-written unit/autostart entry whose cua-driver Exec target was pruned — the
@@ -408,6 +442,7 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
         return 2
     report = _apply_display_count_guard(report)
     report = _apply_stale_unit_guard(report)
+    report = _apply_daemon_liveness_guard(report, binary)
     identity = _build_identity(binary, report)
     environment = _wayland_environment_context(report)
     if json_output:

@@ -91,7 +91,10 @@ describe('bounded direct history runtime', () => {
     await act(async () => { await mounted.window.revealRow(40, new AbortController().signal) })
     const historical = mounted.runtime.thread.getState().messages
     const snapshot = mounted.window
-    expect(mounted.runtime.thread.getState().capabilities.edit).toBe(false)
+    // `edit` is the one capability that survives on a bounded page: the rail
+    // jump is its only entry and it has no in-thread exit, so dropping it
+    // wedged the inline composer after every far jump (#117298).
+    expect(mounted.runtime.thread.getState().capabilities.edit).toBe(true)
     expect(mounted.runtime.thread.getState().capabilities.reload).toBe(false)
     expect(mounted.runtime.thread.getState().capabilities.switchToBranch).toBe(false)
     expect(mounted.runtime.thread.getState().isDisabled).toBe(true)
@@ -107,6 +110,29 @@ describe('bounded direct history runtime', () => {
     expect(mounted.window.isHistorical).toBe(false)
 
     for (const callback of Object.values(mounted.mutations)) {expect(callback).not.toHaveBeenCalled()}
+  })
+
+  it('keeps the edit composer available after a rail jump selects a history page', async () => {
+    vi.spyOn(window.hermesDesktop, 'api').mockResolvedValue(page(40))
+    const mounted = mount()
+    await act(async () => { await mounted.window.revealRow(40, new AbortController().signal) })
+
+    expect(mounted.window.isHistorical).toBe(true)
+    expect(mounted.runtime.thread.getState().capabilities.edit).toBe(true)
+
+    // The exact gesture that was dead: clicking a message on the bounded page
+    // the rail selected. With `onEdit` dropped on a history page this threw
+    // "Runtime does not support editing" (ExternalStoreThreadRuntimeCore
+    // .beginEdit) and left the composer unopenable for every message, healed
+    // only by the floating jump button's returnToLatest.
+    const composer = mounted.runtime.thread.getMessageByIndex(0).composer
+
+    expect(() => act(() => { composer.beginEdit() })).not.toThrow()
+    expect(composer.getState().isEditing).toBe(true)
+
+    act(() => { composer.cancel() })
+    act(() => { mounted.window.returnToLatest() })
+    expect(composer.getState().isEditing).toBe(false)
   })
 
   it('latest request wins even when the bridge ignores cancellation', async () => {

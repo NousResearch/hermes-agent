@@ -448,6 +448,36 @@ class TestMaybeAutoTitle:
                 runtime_validator=None,
             )
 
+    @pytest.mark.parametrize(
+        "main_runtime, title_cfg, deferred",
+        [
+            ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {}, True),
+            ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://127.0.0.1:8080/v1/"}, True),
+            ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"provider": "openrouter"}, False),
+            ({"provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {"base_url": "http://10.0.0.2:8080/v1"}, False),
+            ({"provider": "openrouter", "base_url": "https://openrouter.ai/api/v1"}, {}, False),
+        ],
+    )
+    def test_title_call_waits_for_the_turn_when_it_shares_a_custom_endpoint(self, main_runtime, title_cfg, deferred):
+        """#117296: a self-hosted server serving the main turn and the concurrent json_schema title request
+        can decode the title into the main reply. The upgrade must not go on the wire until the caller starts
+        it after the turn; every other route keeps the turn-start timing."""
+        import threading
+        from agent import title_generator as tg
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        started = threading.Event()
+        with patch.object(tg, "_title_config", return_value=title_cfg), \
+                patch.object(tg, "auto_title_session", side_effect=lambda *a, **k: started.set()):
+            upgrade = maybe_auto_title(db, "sess-1", "hello", [{"role": "user", "content": "hello"}], main_runtime=main_runtime)
+            assert isinstance(upgrade, threading.Thread)
+            if deferred:
+                assert upgrade.ident is None and not started.wait(0.3), "title request went out during the turn"
+                assert upgrade not in tg._UPGRADE_THREADS  # join-before-start would raise in wait_for_title_upgrades
+                tg.start_title_upgrade(upgrade)
+            assert started.wait(timeout=10), "auto_title thread never ran"
+            assert upgrade in tg._UPGRADE_THREADS
+
     def test_kanban_worker_is_named_after_its_card_without_the_llm_thread(self, tmp_path, monkeypatch):
         """A worker's session takes the board card's title synchronously; no auxiliary model call (#111166)."""
         from hermes_cli import kanban_db, kanban_db_connect

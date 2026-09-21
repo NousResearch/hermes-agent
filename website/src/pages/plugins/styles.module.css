@@ -250,6 +250,29 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Sort control: Most starred / Newest / Recently updated, same pill shape as the tier tabs. */
+.sortPills {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+}
+
+.sortLabel {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-500);
+  margin-right: 0.15rem;
+}
+
+.sortBtnActive {
+  border-color: rgba(255, 215, 0, 0.3);
+  background: rgba(255, 215, 0, 0.06);
+  color: #ffd700;
+}
+
 /* ── Category pills + grouped sections ─────────────────────────────────── */
 .categoryPills {
   display: flex;
@@ -565,6 +588,20 @@
   align-items: center;
   gap: 0.35rem;
   flex-wrap: wrap;
+}
+
+/* Added / Updated line from the catalog's git history. */
+.cardDates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--ifm-color-emphasis-500);
+}
+
+.cardDatesSep {
+  opacity: 0.5;
 }
 
 /* Capability chips: tools/hooks/middleware counts. */
@@ -916,5 +953,16 @@
 
 a.pickBtn {
   text-align: center;
+  text-decoration: none;
+}
+
+/* Card title doubles as the link to the plugin's own page. */
+.cardTitleLink {
+  color: inherit;
+  text-decoration: none;
+}
+
+.cardTitleLink:hover {
+  color: var(--ifm-color-primary);
   text-decoration: none;
 }

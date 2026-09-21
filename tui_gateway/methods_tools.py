@@ -1532,9 +1532,22 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands.")
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
+
+    def done(result):
+        redact = _tools_mod("agent.redact").redact_sensitive_text
+        # Unlike the interactive CLI, this output crosses the RPC boundary and can be persisted
+        # in the transcript. Redact before tailing so a credential crossing the slice boundary
+        # cannot survive as two unmatched fragments.
+        stdout = redact(result.stdout or "", force=True, redact_url_credentials=True)[-4000:]
+        stderr = redact(result.stderr or "", force=True, redact_url_credentials=True)[-2000:]
+        return _ok(rid, {"stdout": stdout, "stderr": stderr, "code": result.returncode})
+
+    # shell=True preserves the user-facing !cmd grammar (pipes, redirects and interpolation).
+    # The child must not inherit credentials held by the long-lived gateway process.
+    env = _tools_mod("tools.environments.local").build_subprocess_env()
     return _captured_exec(
-        rid, cmd, 30, shell=True, fail_code=5003, timeout_err=(5002, "command timed out (30s)"),
-        on_result=lambda r: _ok(rid, {"stdout": r.stdout[-4000:], "stderr": r.stderr[-2000:], "code": r.returncode}))
+        rid, cmd, 30, shell=True, env=env, fail_code=5003,
+        timeout_err=(5002, "command timed out (30s)"), on_result=done)
 
 
 def register(server) -> None:

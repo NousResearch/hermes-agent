@@ -39,18 +39,26 @@ export function registerFsIpc({
   ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
   // Reveal a path in the OS file manager (Finder / Explorer / Files).
+  // `showItemInFolder` silently no-ops on a missing item, and a remote
+  // backend's paths are missing here by construction — answer `false` so
+  // the renderer can say so instead of reporting a click that showed nothing.
   ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
     const target = String(targetPath || '').trim()
 
-    // `showItemInFolder` silently no-ops on a missing path, so a remote
-    // backend's workspace (not on this computer) would report success for a
-    // click that showed nothing. Report the miss so the renderer can toast.
-    if (!target || !fs.existsSync(target)) {
+    if (!target) {
       return false
     }
 
     try {
-      shell.showItemInFolder(target)
+      // Existence is checked on the tilde-expanded path — the one the file
+      // manager is shown — so `~/…` from the renderer is not a false miss.
+      const local = expandUserPath(target)
+
+      if (!fs.existsSync(local)) {
+        return false
+      }
+
+      shell.showItemInFolder(local)
 
       return true
     } catch {

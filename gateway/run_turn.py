@@ -1928,7 +1928,9 @@ class GatewayTurnMixin:
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.
         if agent_result.get("already_sent") and not agent_result.get("failed"):
-            if response and adapter:
+            # The queued-follow-up lane uploads this response's attachments itself; re-scanning here
+            # would upload every file a second time.
+            if response and adapter and not agent_result.get("media_already_delivered"):
                 await self._deliver_media_from_response(response, event, adapter)
             # Streaming delivered the body, but the footer was held back (`not already_sent` gate).
             if _footer_line and adapter:
@@ -2901,6 +2903,7 @@ class GatewayTurnMixin:
             _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
             _platform_config_key,
         )
+        from agent.secret_scope import get_secret
         from gateway.display_config import resolve_display_setting, resolve_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         user_config = _load_gateway_config()
@@ -2918,8 +2921,10 @@ class GatewayTurnMixin:
                 getattr(_agent_display, _setter)(_cast(_val))
 
         # Resolve the mode and its provenance together: null inherits, tier off is not intent.
+        # A raw os.getenv here reads whichever profile's env loaded last under multiplexing
+        # (#116898); get_secret resolves through the active profile's scope instead.
         progress_mode, _tool_progress_explicit = resolve_tool_progress(
-            user_config, platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"),
+            user_config, platform_key, get_secret("HERMES_TOOL_PROGRESS_MODE"),
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
@@ -3694,6 +3699,8 @@ class GatewayTurnMixin:
                 )
                 first_response = _UNEXPECTED_SILENCE_REPLY
                 _already_streamed = False
+        # Failed turns deliver their text but never their attachments (completed-turn parity).
+        _deliver_media = not _delivery_result.get("failed")
         if first_response:
             logger.info(
                 "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing."
@@ -3702,17 +3709,29 @@ class GatewayTurnMixin:
                 session_key or "?",
             )
             try:
-                await self._deliver_queued_first_response(
+                _text_delivered = await self._deliver_queued_first_response(
                     first_response, source=turn_ctx.source, adapter=adapter,
                     metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,
                     text_already_delivered=_already_streamed,
-                    deliver_media=not _delivery_result.get("failed"), stream_consumer=_sc,
+                    deliver_media=_deliver_media, stream_consumer=_sc,
                     # The text send records a delivery-ledger obligation under this key, keyed on
                     # the raw inbound id (the anchor above is only the reply target).
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
                 )
             except Exception as e:
                 logger.warning("Failed to send first response before queued message: %s", e)
+            else:
+                # One source of truth for "this turn's final already reached the chat": the normal
+                # completion path (`_hmwa_deliver_turn_response`) consults ``already_sent`` on the
+                # result the queued lane hands back. Every early `return result` after this point
+                # (follow-up text refused, stale goal continuation) otherwise re-sends the text the
+                # fallback just delivered — the #81052 duplicate. A REFUSED send reports False, and
+                # the completion send stays the fallback so the user is not left with nothing.
+                if _text_delivered and isinstance(result, dict):
+                    result["already_sent"] = True
+                    # The queued lane already uploaded this response's MEDIA: attachments; without
+                    # this the completion path's already_sent rescan uploads every file twice.
+                    result["media_already_delivered"] = _deliver_media
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):

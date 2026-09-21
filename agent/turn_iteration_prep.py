@@ -158,6 +158,9 @@ def prepare_iteration(
         messages, logger=request_logger, session_id=agent.session_id, cursor=_sanitize_cursor
     )
     if repaired_tool_calls > 0:
+        # In-place arg repair may have popped _DB_PERSISTED_MARKER off stamped live dicts;
+        # force a full flush scan so the repaired rows are rewritten.
+        agent._db_flush_scan_prefix = None
         request_logger.info(
             "Sanitized %s corrupted tool_call arguments before request (session=%s)",
             repaired_tool_calls,

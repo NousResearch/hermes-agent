@@ -158,6 +158,8 @@ _OVERLOADED_PATTERNS = (
     "service may be temporarily overloaded", "server is overloaded", "server overloaded",
     "server overload", "server_overload",
     "service overloaded", "service is overloaded", "upstream overloaded", "currently overloaded",
+    # CommandCode's 429 body for an unavailable upstream model — the key is healthy (#117111).
+    "upstream model provider is temporarily unavailable. please try again in a moment.",
     "at capacity", "over capacity",
 )
 

@@ -18,13 +18,13 @@ from typing import Dict, List, Optional, Tuple
 
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_constants import (
-    LOCAL_RUNTIME_ROOT_DIRS, clear_named_profile_deleted, mark_named_profile_deleted, named_profile_has_identity,
-    named_profile_is_deleted, named_profile_is_live,
+    LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
+    named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
 
 logger = logging.getLogger(__name__)
 
-_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PROFILE_ID_RE = PROFILE_ID_RE  # legacy alias; hermes_constants.PROFILE_ID_RE is canonical
 
 # Directories bootstrapped inside every new profile. ``home`` is the back-compat/Docker
 # HOME for tool subprocesses (host subprocesses keep the real HOME so CLI credentials
@@ -566,12 +566,52 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+# (path, kind) -> (file signature, the small derived value). `list_profiles` re-reads three YAML
+# files PER PROFILE, and it is the shared body of `GET /api/profiles` and `profiles.list`, which the
+# Bots roster polls every 5s per connection — so an installer-seeded config.yaml (the annotated
+# template, ~119KB) was re-parsed for every bot every five seconds to yield the same two strings.
+# Only DERIVED values are cached, never a document a caller could write back: the raw readers
+# (`read_user_config_raw`, `_load_yaml_dict`) keep their uncached contract. See #117378.
+_PROFILE_FILE_CACHE: Dict[tuple, tuple] = {}
+_PROFILE_FILE_CACHE_MAX = 512
+
+
+def _profile_file_signature(path: Path) -> Optional[tuple]:
+    """``(mtime_ns, size, inode)``, or None when the file is absent. The atomic writers rename a
+    temp file into place, so a rewrite always lands a new inode even within one mtime tick."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
+def _cached_profile_read(path: Path, kind: str, compute):
+    """``compute()``'s value, reused while *path* has not changed. A missing file is never cached:
+    reading it costs nothing, and one created later must be picked up."""
+    signature = _profile_file_signature(path)
+    if signature is None:
+        return compute()
+    key = (str(path), kind)
+    cached = _PROFILE_FILE_CACHE.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    value = compute()
+    if len(_PROFILE_FILE_CACHE) >= _PROFILE_FILE_CACHE_MAX:
+        _PROFILE_FILE_CACHE.clear()
+    _PROFILE_FILE_CACHE[key] = (signature, value)
+    return value
+
+
 def _read_distribution_meta(profile_dir: Path) -> tuple:
     """``(name, version, source)`` from ``distribution.yaml``; ``(None, None, None)`` if absent."""
-    data = _load_yaml_dict(profile_dir / "distribution.yaml")
-    if data is None:
-        return None, None, None
-    return data.get("name"), data.get("version"), data.get("source")
+    def _read() -> tuple:
+        data = _load_yaml_dict(profile_dir / "distribution.yaml")
+        if data is None:
+            return None, None, None
+        return data.get("name"), data.get("version"), data.get("source")
+
+    return _cached_profile_read(profile_dir / "distribution.yaml", "distribution", _read)
 
 
 def _read_config_model(profile_dir: Path) -> tuple:
@@ -579,17 +619,21 @@ def _read_config_model(profile_dir: Path) -> tuple:
     config_path = profile_dir / "config.yaml"
     if not config_path.exists():
         return None, None
-    try:
-        # load_config() targets the ACTIVE profile's home; read THIS profile's file raw.
-        from hermes_cli.config import read_user_config_raw
-        model_cfg = read_user_config_raw(config_path).get("model", {})
-        if isinstance(model_cfg, str):
-            return model_cfg, None
-        if isinstance(model_cfg, dict):
-            return model_cfg.get("default") or model_cfg.get("model"), model_cfg.get("provider")
-    except Exception:
-        pass
-    return None, None
+
+    def _read() -> tuple:
+        try:
+            # load_config() targets the ACTIVE profile's home; read THIS profile's file raw.
+            from hermes_cli.config import read_user_config_raw
+            model_cfg = read_user_config_raw(config_path).get("model", {})
+            if isinstance(model_cfg, str):
+                return model_cfg, None
+            if isinstance(model_cfg, dict):
+                return model_cfg.get("default") or model_cfg.get("model"), model_cfg.get("provider")
+        except Exception:
+            pass
+        return None, None
+
+    return _cached_profile_read(config_path, "config-model", _read)
 
 
 def launch_model_seed(source_cfg: dict) -> dict:
@@ -740,20 +784,27 @@ def read_profile_meta(profile_dir: Path) -> dict:
     """Read ``profile.yaml`` -> ``{description, description_auto, display_name,
     previous_names}`` (empty defaults when missing/unreadable). Never raises — a
     corrupt file on one profile must not break ``hermes profile list``."""
-    data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
-    ui_meta = data.get("ui_meta")
-    bot_title = ""
-    if isinstance(ui_meta, dict):
-        hermes_bots = ui_meta.get("hermes-bots")
-        if isinstance(hermes_bots, dict):
-            bot_title = str(hermes_bots.get("title") or "").strip()
-    return {
-        "description": str(data.get("description") or "").strip(),
-        "description_auto": bool(data.get("description_auto", False)),
-        "display_name": str(data.get("display_name") or "").strip(),
-        "bot_title": bot_title,
-        "previous_names": _clean_previous_names(data.get("previous_names")),
-    }
+    def _read() -> dict:
+        data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
+        ui_meta = data.get("ui_meta")
+        bot_title = ""
+        if isinstance(ui_meta, dict):
+            hermes_bots = ui_meta.get("hermes-bots")
+            if isinstance(hermes_bots, dict):
+                bot_title = str(hermes_bots.get("title") or "").strip()
+        return {
+            "description": str(data.get("description") or "").strip(),
+            "description_auto": bool(data.get("description_auto", False)),
+            "display_name": str(data.get("display_name") or "").strip(),
+            "bot_title": bot_title,
+            "previous_names": _clean_previous_names(data.get("previous_names")),
+        }
+
+    # A copy per caller (list included): the cached value is shared, and a caller that mutates
+    # its result must not poison the next reader.
+    meta = dict(_cached_profile_read(profile_dir / "profile.yaml", "profile-meta", _read))
+    meta["previous_names"] = list(meta["previous_names"])
+    return meta
 
 
 def _clean_previous_names(raw) -> List[str]:

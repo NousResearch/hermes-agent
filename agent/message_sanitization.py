@@ -82,10 +82,13 @@ def _sanitize_messages(messages: list, fix: Callable[[str], str], *, deep: bool)
     """Apply ``fix`` to the string fields of every message dict in-place (content / part text,
     name, tool_call arguments, non-core top-level str fields). ``deep=True`` adds tool_call ids,
     function names, and NESTED non-core fields (``reasoning_details`` from byte-level models)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
     found = False
     for msg in messages:
         if not isinstance(msg, dict):
             continue
+        msg_found = False
         content = msg.get("content")
         parts = [(p, "text") for p in content if isinstance(p, dict)] if isinstance(content, list) else None
         fields = parts if parts is not None else [(msg, "content")]
@@ -96,12 +99,17 @@ def _sanitize_messages(messages: list, fix: Callable[[str], str], *, deep: bool)
             fields += [(tc, "id")] if deep and isinstance(tc, dict) else []
             fields += ([(fn, "name")] if deep else []) + [(fn, "arguments")] if isinstance(fn, dict) else []
         for container, key in fields:
-            found |= _fix_str_field(container, key, fix)
+            msg_found |= _fix_str_field(container, key, fix)
         for key, value in [kv for kv in msg.items() if kv[0] not in _MESSAGE_CORE_KEYS]:
             if isinstance(value, str):
-                found |= _fix_str_field(msg, key, fix)
+                msg_found |= _fix_str_field(msg, key, fix)
             elif deep and isinstance(value, (dict, list)):
-                found |= _sanitize_structure(value, fix)
+                msg_found |= _sanitize_structure(value, fix)
+        if msg_found:
+            # In-place repair of a live dict stales its persisted row; pop the marker so the
+            # flush rewrites it (no-op on api_messages wire copies).
+            msg.pop(_DB_PERSISTED_MARKER, None)
+            found = True
     return found
 
 
@@ -320,6 +328,7 @@ def _strip_images_from_messages(messages: list) -> bool:
     orphans the paired ``tool_call_id`` → HTTP 400); other now-empty messages are dropped.
     Rewritten messages lose their ``api_content`` sidecar (it carries the removed images).
     """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.turn_context import drop_stale_api_content
 
     found = False
@@ -333,8 +342,11 @@ def _strip_images_from_messages(messages: list) -> bool:
             found = True
             if new_parts:
                 msg["content"] = new_parts
+                # Rewriting a stamped live dict stales its persisted row; pop the marker.
+                msg.pop(_DB_PERSISTED_MARKER, None)
             elif msg.get("role") == "tool" or msg.get("tool_calls"):
                 msg["content"] = "[image content removed — server does not support images]"
+                msg.pop(_DB_PERSISTED_MARKER, None)
             else:
                 to_delete.append(i)
             drop_stale_api_content(msg)

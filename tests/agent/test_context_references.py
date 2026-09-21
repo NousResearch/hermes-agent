@@ -103,6 +103,50 @@ def test_folder_listing_falls_back_when_rg_is_blocked(sample_repo: Path):
     assert not result.warnings
 
 
+def test_folder_listing_outside_cwd_inside_widened_allowed_root(tmp_path: Path):
+    """allowed_root may be widened beyond cwd; @folder: targets there must
+    still produce a listing rather than a ValueError-as-warning."""
+    from agent.context_references import preprocess_context_references
+
+    cwd = tmp_path / "proj"
+    cwd.mkdir()
+    shared = tmp_path / "shared"
+    (shared / "sub").mkdir(parents=True)
+    (shared / "a.txt").write_text("x\n", encoding="utf-8")
+    (shared / "sub" / "b.txt").write_text("y\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        "Review @folder:../shared",
+        cwd=cwd,
+        allowed_root=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    # Header is the allowed_root-relative display, never the absolute path.
+    assert "\nshared/\n" in result.message
+    assert str(tmp_path) not in result.message
+    assert "a.txt" in result.message
+    assert "b.txt" in result.message
+
+
+def test_folder_listing_inside_cwd_unchanged(sample_repo: Path):
+    """Control: in-cwd listings keep their cwd-relative display shape."""
+    from agent.context_references import preprocess_context_references
+
+    result = preprocess_context_references(
+        "Review @folder:src/",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert not result.warnings
+    assert "src/" in result.message
+    assert "main.py" in result.message
+
+
 
 
 
@@ -570,3 +614,36 @@ async def test_side_thread_expansion_guards_the_served_profile_home(tmp_path: Pa
 
     assert "HUB-CACHE-BODY" not in result.message
     assert any("internal Hermes path" in w for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_composer_paste_outside_workspace_is_attached_but_sibling_dir_is_not(tmp_path, monkeypatch):
+    """Desktop saves a large paste under <HERMES_HOME>/composer-pastes and attaches it
+    as `@file:`; the chat cwd is almost never an ancestor of that directory, so the
+    workspace guard must admit exactly that anchored root (#117149) — and nothing
+    that merely contains the substring next to it."""
+    from agent.context_references import preprocess_context_references_async
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    paste = hermes_home / "composer-pastes" / "pasted_content_1.txt"
+    paste.parent.mkdir(parents=True)
+    paste.write_text("PASTED-BODY-MARKER\n", encoding="utf-8")
+    lookalike = hermes_home / "my-composer-pastes-backup" / "secret.txt"
+    lookalike.parent.mkdir(parents=True)
+    lookalike.write_text("LOOKALIKE-SECRET\n", encoding="utf-8")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    result = await preprocess_context_references_async(
+        f"see @file:{paste} and @file:{lookalike}",
+        cwd=workspace,
+        allowed_root=workspace,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "PASTED-BODY-MARKER" in result.message
+    assert "LOOKALIKE-SECRET" not in result.message
+    assert "outside the allowed workspace" in "\n".join(result.warnings)

@@ -6105,7 +6105,7 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="is thinking...",
+            status="processing",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
@@ -6133,9 +6133,45 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="",
+            status="active",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_agent_sessions_rejection_degrades_to_legacy_for_set_and_clear(self):
+        class RejectedStatus(Exception):
+            def __init__(self):
+                super().__init__("Slack API rejected status")
+                self.response = {"ok": False, "error": "invalid_arguments"}
+
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock(side_effect=RejectedStatus())
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+
+        a._app.client.agents_sessions_setStatus.assert_awaited_once_with(
+            channel_id="C123", thread_ts="parent_ts", status="processing")
+        assert a._app.client.assistant_threads_setStatus.await_args_list == [
+            call(channel_id="C123", thread_ts="parent_ts", status="is thinking..."),
+            call(channel_id="C123", thread_ts="parent_ts", status=""),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_agent_sessions_transport_failure_does_not_retry_legacy(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock(
+            side_effect=RuntimeError("temporary transport failure"))
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+
+        a._app.client.agents_sessions_setStatus.assert_awaited_once()
+        a._app.client.assistant_threads_setStatus.assert_not_awaited()
+        assert not a._agent_sessions_status_degraded
 
     @pytest.mark.asyncio
     async def test_thread_title_uses_agents_sessions_rename(self):

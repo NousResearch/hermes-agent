@@ -149,10 +149,12 @@ def cancel_background_review_for_live_turn(agent: Any) -> None:
 # to a DIFFERENT model the cache is cold anyway, so the fork replays a compact digest instead.
 _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
-# ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
-# (both compression gates deferred until the first response); compaction then bounds each
-# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
-# review model's context window available and never exceeds the historical cloud-scale ceiling.
+# ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache
+# read (both compression gates deferred until the first response). Since #118438 a review
+# fork never owns a compression pass, so nothing bounds each INDIVIDUAL request — this
+# budget is the only cap, and it caps the SUM across the tool loop. The default leaves 25%
+# of the review model's context window available and never exceeds the historical
+# cloud-scale ceiling.
 # Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
 _REVIEW_MAX_INPUT_TOKENS_CAP = 600_000
 _REVIEW_INPUT_CONTEXT_FRACTION = 0.75
@@ -864,13 +866,16 @@ def _warn_ignored_reasoning_effort(agent: Any, task_cfg: Optional[Dict[str, Any]
 
 
 def _detach_fork_compression(review_agent: Any) -> None:
-    """Detached in-memory compaction for a fork sharing the parent's session_id. Disabling
-    compression (the old guard against compacting the parent's live session) removed the only
-    bound on the review's snapshot. Persistence is already off, so compaction can only rewrite the
-    fork's transcript — but the compressor's own SessionDB/session_id binding must be severed too,
-    or cooldown/streak counters land on the parent's row. Force in-place mode and re-enable
-    compression ONLY after the rebind succeeded (fail-closed); gates stay deferred until the first
-    response so request #1 is a warm cache read."""
+    """Detached in-memory compaction for a fork sharing the parent's session_id. Persistence
+    is off, so compaction can only rewrite the fork's transcript — but the compressor's own
+    SessionDB/session_id binding must be severed too, or cooldown/streak counters land on the
+    parent's row. Force in-place mode and re-enable compression ONLY after the rebind
+    succeeded (fail-closed). Since #118438 the fork is additionally marked
+    ``_review_fork_compression_disallowed``: compression owns the conversation lifecycle and a
+    superseded fork's in-flight pass is discarded whole, so every automatic compression gate
+    honors the marker for the fork's WHOLE lifetime (request #1 included — it replays the
+    snapshot as a warm cache read). The snapshot stays bounded by the aggregate input budget
+    and the deterministic tool-result prune, neither of which needs an LLM call."""
     bind = getattr(getattr(review_agent, "context_compressor", None), "bind_session_state", None)
     detached = False
     if callable(bind):
@@ -896,9 +901,9 @@ def _detach_fork_compression(review_agent: Any) -> None:
         # the fork with a hard interrupt, discarding an in-flight summary whole after
         # minutes of streaming, and the next turn's preflight restarts it from zero —
         # one superseded pass can white-burn 10+ minutes at the default 600s ceiling.
-        # Compression owns the conversation lifecycle; the replayed snapshot stays
-        # bounded by the aggregate input budget and the deterministic tool-result
-        # prune. All automatic compression gates honor this marker.
+        # Compression owns the conversation lifecycle; with no fork-owned pass, nothing
+        # bounds each individual replayed request — only the aggregate input budget
+        # caps the review as a whole. All automatic compression gates honor this marker.
         review_agent._review_fork_compression_disallowed = True
 
 

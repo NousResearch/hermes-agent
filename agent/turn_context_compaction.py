@@ -65,7 +65,8 @@ def _reset_retry_state_after_compaction(agent: Any) -> None:
 
 
 def _blocked_compress_reason(
-    compressor: Any, tokens: int, attempts_spent: Optional[int] = None
+    compressor: Any, tokens: int, attempts_spent: Optional[int] = None,
+    disallowed_reason: Optional[str] = None,
 ) -> Optional[str]:
     """Why an over-threshold request is blocked (``None`` below threshold or when the
     engine lacks ``should_compress_info`` / raises).
@@ -73,7 +74,11 @@ def _blocked_compress_reason(
     ``attempts_spent``: when given and the engine says compression SHOULD run
     (``(True, None)``) yet the caller skipped it, the per-turn attempt budget is
     spent — name it ``attempts_exhausted:<n>`` instead of dropping the
-    ``(True, None)`` on the floor (silent-lockout case, #101889)."""
+    ``(True, None)`` on the floor (silent-lockout case, #101889).
+
+    ``disallowed_reason``: when given, the caller skipped compression BY DESIGN
+    (e.g. a detached review fork, #118438) — name that gate instead of a false
+    ``attempts_exhausted`` lockout. Takes precedence over ``attempts_spent``."""
     _info = getattr(compressor, "should_compress_info", None)
     if not callable(_info):
         return None
@@ -81,8 +86,11 @@ def _blocked_compress_reason(
         _should_now, _reason = _info(tokens)
     except Exception:
         return None
-    if attempts_spent is not None and _should_now and not _reason:
-        return f"attempts_exhausted:{attempts_spent}"
+    if _should_now and not _reason:
+        if disallowed_reason is not None:
+            return disallowed_reason
+        if attempts_spent is not None:
+            return f"attempts_exhausted:{attempts_spent}"
     return _reason
 
 

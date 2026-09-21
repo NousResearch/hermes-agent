@@ -10,14 +10,16 @@ compression from zero — with the default 600s ceiling one "Summarizing thread"
 10+ minutes and produce nothing, and the attempt → abort → cooldown → re-fire loop repeats.
 
 Ownership boundary: compression owns the conversation lifecycle. A review fork never runs a
-compression pass at all; the fork's replayed snapshot stays bounded by the aggregate
-input-token budget (``_review_input_budget_exhausted``) and the deterministic tool-result
-prune, neither of which needs an LLM call. Foreground priority is unchanged — the fix removes
-the discardable work, not the supersede.
+compression pass at all; with no fork-owned pass, nothing bounds each individual replayed
+request — only the aggregate input-token budget (``_review_input_budget_exhausted``) caps the
+review as a whole. Foreground priority is unchanged — the fix removes the discardable work,
+not the supersede.
 
 These tests drive the REAL ``_run_review_in_thread`` + ``run_conversation`` path (the fork is
-built by the real fork-construction code) with only the compressor's LLM call stubbed, and the
-real ``turn_context_compaction._preflight_compression`` for the live-agent guard.
+built by the real fork-construction code) with only the compressor's LLM call stubbed, plus the
+real ``turn_preflight.compress_after_tool_results`` for the false-alarm-warning invariant. That
+the gate stays dormant without the marker (live agents still compress) is pinned by the
+mutation self-proof: forcing the marker off turns the gap test red.
 """
 
 from __future__ import annotations
@@ -191,6 +193,13 @@ def test_review_fork_never_owns_a_compression_pass(tmp_path: Path) -> None:
             "its snapshot stays bounded by the aggregate input budget and the deterministic "
             "tool-result prune."
         )
+        # The detachment seam must arm the marker so every automatic compression gate
+        # recognizes the fork for its whole lifetime.
+        assert captured["marker"] is True, (
+            "#118438: a detached review fork must carry "
+            "_review_fork_compression_disallowed=True for its whole lifetime "
+            f"(got {captured['marker']!r})"
+        )
         # The review itself is unharmed: tool call + final answer, snapshot replayed whole.
         assert captured["create_calls"] == 2, (
             f"expected a 2-request review (tool call + final), got {captured['create_calls']}"
@@ -209,74 +218,62 @@ def test_review_fork_never_owns_a_compression_pass(tmp_path: Path) -> None:
         db.close()
 
 
-def test_detach_marks_fork_compression_disallowed(tmp_path: Path) -> None:
-    """The detachment seam (``_detach_fork_compression``) must mark the fork so every
-    automatic compression gate can recognize it for the fork's whole lifetime."""
-    parent_sid = "REVIEW_FORK_COMPRESSION_MARKER_118438"
+def test_fork_over_threshold_warns_fork_disallowed_never_attempts_exhausted(
+    tmp_path: Path,
+) -> None:
+    """#118438 invariant: the post-tool gate must not let the "compression blocked" elif
+    misreport the fork's deliberate gate as an ``attempts_exhausted`` lockout — a false
+    FAILURE-class user warning emitted at the original incident site, contradicting the
+    fail-open contract. A marked fork over threshold names the REAL gate
+    (``fork_disallowed``), and the deterministic tool-result prune in the same elif is
+    still evaluated for the fork."""
+    from agent import turn_preflight
 
+    session_sid = "REVIEW_FORK_NO_FALSE_EXHAUSTED_WARN_118438"
     db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(parent_sid, source="discord")
-    parent = _build_parent_agent(db, parent_sid)
-    parent._cached_system_prompt = "stable parent prompt"
-
-    snapshot = [
-        {"role": "user" if i % 2 == 0 else "assistant", "content": f"review turn {i}"}
-        for i in range(8)
-    ]
-
-    captured: dict = {}
-    try:
-        _drive_review(parent, snapshot, captured)
-        assert captured["marker"] is True, (
-            "#118438: a detached review fork must carry "
-            "_review_fork_compression_disallowed=True for its whole lifetime "
-            f"(got {captured['marker']!r})"
-        )
-    finally:
-        db.close()
-
-
-def test_live_agent_preflight_still_compresses_over_threshold(tmp_path: Path) -> None:
-    """Behaviour guard (green before AND after): the gate is marker-based and dormant for
-    normal agents — a LIVE turn over threshold still runs its preflight compression pass.
-    Drives the real ``turn_context_compaction._preflight_compression``.
-    """
-    from agent import turn_context_compaction as tcc
-
-    session_sid = "LIVE_PREFLIGHT_STILL_COMPRESSES_118438"
-    db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_sid, source="cli")
+    db.create_session(session_sid, source="discord")
     agent = _build_parent_agent(db, session_sid)
+    agent._review_fork_compression_disallowed = True
+    agent.compression_enabled = True
 
-    messages = [
-        {"role": "user" if i % 2 == 0 else "assistant", "content": f"turn {i} " + "x" * 200}
-        for i in range(24)
-    ]
-    out = tcc.CompactionOutcome(
-        messages=list(messages),
-        active_system_prompt="sys",
-        conversation_history=None,
-        current_turn_user_idx=len(messages) - 1,
-    )
     compressor = agent.context_compressor
+    compressor.last_prompt_tokens = 50_000
     compressor.threshold_tokens = 1
-    compressor.protect_first_n = 1
-    compressor.protect_last_n = 1
-    compressor.compress = MagicMock(
-        return_value=[
-            {"role": "user", "content": "[CONTEXT COMPACTION] live summary"},
-            {"role": "assistant", "content": "ack"},
-        ]
-    )
-    compressor.get_active_compression_failure_cooldown = MagicMock(return_value=None)
-    compressor.should_defer_preflight_to_real_usage = MagicMock(return_value=False)
-    agent._compress_context = MagicMock(return_value=(compressor.compress.return_value, "sys"))
+    compressor.should_compress = MagicMock(return_value=True)
+    # Engine says RUN with no block reason: the exact shape the unguarded elif turns
+    # into a false "attempts_exhausted:0" lockout warning for a gated fork.
+    compressor.should_compress_info = MagicMock(return_value=(True, None))
+    agent._warn_context_overflow_blocked = MagicMock()
 
+    messages = [{"role": "user", "content": "review turn " + "x" * 200}]
+    compressor.prune_tool_results_only = MagicMock(return_value=(messages, 0))
     try:
-        tcc._preflight_compression(agent, out, "sys", "hello", effective_task_id="t")
-        assert agent._compress_context.call_count >= 1, (
-            "live-turn preflight compression must still fire over threshold — "
-            "the #118438 gate is marker-based and must stay dormant without the marker"
+        verdict = turn_preflight.compress_after_tool_results(
+            agent,
+            messages=messages,
+            system_message=None,
+            user_message=messages[-1],
+            active_system_prompt="sys",
+            conversation_history=None,
+            compression_attempts=0,
+            max_compression_attempts=3,
+            effective_task_id="t",
+            final_response=None,
+            turn_exit_reason=None,
         )
+        reasons = [str(c.args[0]) for c in agent._warn_context_overflow_blocked.call_args_list]
+        assert not any(r.startswith("attempts_exhausted") for r in reasons), (
+            "#118438: a fork-gated skip surfaced as a false attempts_exhausted lockout "
+            f"(reasons={reasons}). The fork's compression is disallowed BY DESIGN — the "
+            "gate must be named explicitly, not reported as a spent attempt budget."
+        )
+        assert reasons == ["fork_disallowed"], (
+            f"the deliberate fork gate must be named exactly once (got {reasons})"
+        )
+        # Same-elif prune logic must not be collateral damage: the deterministic
+        # tool-result prune is still evaluated for the fork.
+        assert compressor.prune_tool_results_only.call_count == 1
+        assert not verdict.end_turn
+        assert verdict.messages is messages
     finally:
         db.close()

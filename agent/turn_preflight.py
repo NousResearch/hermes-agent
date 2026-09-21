@@ -359,9 +359,15 @@ def compress_after_tool_results(
         # Over threshold but compression blocked (cooldown/anti-thrash): deduped
         # warning so context can't silently overflow. ``attempts_spent`` names the
         # attempts_exhausted lockout when the engine says RUN but the per-turn
-        # budget is spent (#101889).
+        # budget is spent (#101889). A detached review fork over threshold skipped
+        # compression BY DESIGN (#118438): name that gate explicitly so the
+        # deliberate skip never surfaces as a false attempts_exhausted lockout.
         _block_reason = _blocked_compress_reason(
-            _compressor, _real_tokens, attempts_spent=compression_attempts
+            _compressor, _real_tokens,
+            attempts_spent=compression_attempts,
+            disallowed_reason=(
+                "fork_disallowed" if _review_fork_compression_disallowed(agent) else None
+            ),
         )
         if _block_reason:
             agent._warn_context_overflow_blocked(

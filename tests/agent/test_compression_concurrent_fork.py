@@ -1419,13 +1419,13 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
     pinned turned out to be ownable by a fork that a live turn can supersede
     mid-stream — the minutes-long summary pass was discarded whole and the next
     turn's preflight restarted it from zero. Compression owns the conversation
-    lifecycle, so a review fork now NEVER runs a compression pass; the snapshot
-    stays bounded by the aggregate input-token budget
-    (``_review_input_budget_exhausted``) and the deterministic tool-result
-    prune. The detachment half of #93057 is unchanged: the compressor's
-    SessionDB/session_id binding is still severed so cooldown/streak counters
-    can never land on the parent's row, and ``compression_in_place`` stays
-    forced.
+    lifecycle, so a review fork now NEVER runs a compression pass; with no
+    fork-owned pass, nothing bounds each individual replayed request — only the
+    aggregate input-token budget (``_review_input_budget_exhausted``) caps the
+    review as a whole. The detachment half of #93057 is unchanged: the
+    compressor's SessionDB/session_id binding is still severed so
+    cooldown/streak counters can never land on the parent's row, and
+    ``compression_in_place`` stays forced.
 
     This test drives the REAL ``_run_review_in_thread`` + ``run_conversation``
     with a threshold-crossing snapshot across two provider requests and

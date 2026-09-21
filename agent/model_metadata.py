@@ -839,11 +839,27 @@ def _extract_flat_context_length(payload: Dict[str, Any]) -> Optional[int]:
     return next((c for c in map(_coerce_reasonable_int, (payload.get(k) for k in _CONTEXT_LENGTH_KEYS)) if c is not None), None)
 
 
+def _runtime_context_from_model_payload(payload: Dict[str, Any]) -> Optional[int]:
+    """Allocated window, limited to the model and its known llama.cpp meta object."""
+    for source in (payload, payload.get("meta")):
+        if isinstance(source, dict):
+            value = source.get("n_ctx")
+            if type(value) is int and value > 0:
+                return value
+    return None
+
+
 def _context_length_from_model_payload(payload: Dict[str, Any]) -> Optional[int]:
     """Context window from a ``/v1/models`` object: window keys first, ``max_tokens`` last (Anthropic
     payloads carry ``max_input_tokens`` = 1M window AND ``max_tokens`` = 128k OUTPUT cap)."""
     if not isinstance(payload, dict):
         return None
+    # Match the local /v1/models probe: allocated n_ctx wins over training
+    # limits or a proxy's aggregate context_length. Only the known meta object
+    # is consulted, never arbitrary nested payload sections (Part of #108638).
+    runtime_ctx = _runtime_context_from_model_payload(payload)
+    if runtime_ctx is not None:
+        return runtime_ctx
     ctx = _extract_flat_context_length(payload)
     if ctx is not None:
         return ctx
@@ -1048,7 +1064,10 @@ def _parse_models_payload(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     for model in payload.get("data", []):
         model_id = model.get("id") if isinstance(model, dict) else None
         if model_id:
-            _add_model_aliases(cache, model_id, _endpoint_model_entry(model, model_id, _extract_first_int(model, _CONTEXT_LENGTH_KEYS)))
+            context = _runtime_context_from_model_payload(model)
+            if context is None:
+                context = _extract_first_int(model, _CONTEXT_LENGTH_KEYS)
+            _add_model_aliases(cache, model_id, _endpoint_model_entry(model, model_id, context))
     return cache
 
 

@@ -227,8 +227,8 @@ class TestStripImagesDropsStaleApiContent:
     previously sent for a message, and the next turn substitutes it back into
     ``content``. Leaving it in place on a message this function rewrote would
     replay the images the strip just removed — and the recovery cannot re-fire,
-    because it sets ``_vision_supported = False`` and gates itself on that. The
-    session would then send rejected images on every subsequent turn.
+    because it records the model in ``_image_rejecting_models`` and gates itself
+    on that. The session would then send rejected images on every subsequent turn.
 
     Same contract the other content-rewrite paths follow (stale-confirmation
     redaction in ``replay_cleanup``, compression rewrites, merge-into-tail):
@@ -317,7 +317,7 @@ class TestRejectionNeverReachesPersistedHistory:
         from types import SimpleNamespace
 
         return SimpleNamespace(
-            provider=provider, model=model, _vision_supported=True, _force_ascii_payload=False,
+            provider=provider, model=model, _force_ascii_payload=False,
             _image_rejecting_models=set(), _db_flush_scan_prefix=7, log_prefix="",
             _vprint=lambda *a, **k: None,
         )

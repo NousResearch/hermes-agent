@@ -244,14 +244,13 @@ def recover_before_classification(
     _err_status = getattr(api_error, "status_code", None)
     # 4xx-only gate: 5xx/timeouts are transient and take the retry path.
     _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
-    # Guarded PER MODEL, not by the turn-global ``_vision_supported``: in a fallback chain the next
-    # model can reject images too, and a turn-wide flag would skip its recovery and fail the turn.
+    # Guarded PER MODEL, not by a turn-global flag: in a fallback chain the next model can reject
+    # images too, and a turn-wide flag would skip its recovery and fail the turn.
     _model_key = image_model_key(agent)
     _rejected = getattr(agent, "_image_rejecting_models", None)
     if not isinstance(_rejected, set):
         _rejected = agent._image_rejecting_models = set()
     if _model_key not in _rejected and _looks_like_image_content_rejection(_err_body) and _status_ok:
-        agent._vision_supported = False
         # Send-path only. A rejection says what THIS model accepts, not what the conversation
         # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every
         # image — and every image-only message — from state.db for good, so a later switch to a

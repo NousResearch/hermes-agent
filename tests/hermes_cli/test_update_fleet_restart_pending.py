@@ -688,6 +688,7 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
         (["hermes", "gateway", "--accept-hooks"], False),
         (["hermes_cli/main.py", "gateway", "run", "--replace"], False),
         (["hermes", "serve", "--host", "127.0.0.1"], False),
+        (["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119"], False),
         (["hermes", "gateway", "status", "--full"], True),
         (["hermes", "chat"], True),
     ],
@@ -698,6 +699,34 @@ def test_startup_pending_restart_hint_is_only_for_client_invocations(
     monkeypatch.setattr(sys, "argv", argv)
 
     assert hermes_main._startup_should_warn_pending_fleet_restart() is should_warn
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["hermes", "gateway", "run"],
+        ["hermes", "serve", "--host", "127.0.0.1"],
+        ["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119"],
+    ],
+)
+def test_daemon_startup_with_pending_restart_marker_has_empty_stderr(
+    monkeypatch, capsys, argv
+):
+    update_cmd._write_fleet_restart_pending_marker()
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(hermes_main, "_set_process_title", lambda: None)
+    monkeypatch.setattr(hermes_main, "_warn_if_unsupervised_pid1", lambda: None)
+    monkeypatch.setattr(hermes_main, "_advertise_agent_env", lambda: None)
+    monkeypatch.setattr(hermes_main, "_cleanup_quarantined_exes", lambda: None)
+    monkeypatch.setattr(
+        hermes_main, "_sweep_stale_bytecode_if_checkout_changed", lambda: None
+    )
+    monkeypatch.setattr(hermes_main, "_recover_from_interrupted_install", lambda: None)
+    monkeypatch.setattr(hermes_main, "_try_termux_fast_tui_launch", lambda: True)
+
+    hermes_main.main()
+
+    assert capsys.readouterr().err == ""
 
 
 # ── Self-heal: marker left behind by a supervisor-level restart (#105417 / #111272) ──

@@ -2752,12 +2752,14 @@ def _startup_should_warn_pending_fleet_restart() -> bool:
     """Whether this invocation can usefully surface the interactive update hint.
 
     Long-lived runtimes inherit stderr from their supervisor, so warning while a
-    freshly restarted gateway or serve backend is racing the updater's verification
+    freshly restarted gateway or web backend is racing the updater's verification
     records a false alarm in the service journal. Keep the marker and its checks
     intact for interactive commands; the updater still owns clearing it.
     """
     command = _first_positional_argv()
-    if command == "serve":
+    from hermes_cli.update_inventory import _SERVE_KINDS
+
+    if command in _SERVE_KINDS:
         return False
     if command != "gateway":
         return True

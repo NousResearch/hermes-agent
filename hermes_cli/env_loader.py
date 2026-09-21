@@ -324,68 +324,69 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     if not path.exists():
         return
     try:
-        from hermes_cli.config import _sanitize_env_lines
+        from hermes_cli.config import _sanitize_env_lines, env_store_lock_for_path
     except ImportError:
         return  # early bootstrap — config module not available yet
 
-    try:
-        raw = path.read_bytes()
-    except Exception:
-        return
-
-    # ORDER MATTERS: BOM_UTF32_LE (FF FE 00 00) startswith BOM_UTF16_LE (FF FE); UTF-16 first would mangle it.
-    force_utf8_rewrite = False
-    if raw.startswith(codecs.BOM_UTF32_LE) or raw.startswith(codecs.BOM_UTF32_BE):
-        # Lazy import keeps the module import block identical to #65124's codecs/io additions so the two PRs
-        # auto-merge either order.
-        path_key = str(path.resolve())
-        if path_key not in _WARNED_UTF32_PATHS:
-            _WARNED_UTF32_PATHS.add(path_key)
-            logger.warning("Skipping .env sanitize for %s: UTF-32 BOM detected; "
-                           "leaving file untouched to avoid corruption", path)
-        return
-    if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
-        # "utf-16" uses the BOM for endianness and strips it; newline=None matches open()'s universal
-        # newlines (not splitlines()'s extra boundaries like U+2028) so sanitize sees the same lines.
+    with env_store_lock_for_path(path):
         try:
-            with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-16", newline=None) as f:
-                original = f.readlines()
-        except UnicodeDecodeError:
-            return
-        force_utf8_rewrite = True  # always rewrite UTF-16 as UTF-8 so the dotenv load sees a canonical file
-    else:
-        # utf-8-sig strips a UTF-8 BOM; errors=replace so embedded NULs can be stripped below.
-        try:
-            with open(path, encoding="utf-8-sig", errors="replace") as f:
-                original = f.readlines()
+            raw = path.read_bytes()
         except Exception:
             return
+
+        # ORDER MATTERS: BOM_UTF32_LE (FF FE 00 00) startswith BOM_UTF16_LE (FF FE); UTF-16 first would mangle it.
+        force_utf8_rewrite = False
+        if raw.startswith(codecs.BOM_UTF32_LE) or raw.startswith(codecs.BOM_UTF32_BE):
+        # Lazy import keeps the module import block identical to #65124's codecs/io additions so the two PRs
+        # auto-merge either order.
+            path_key = str(path.resolve())
+            if path_key not in _WARNED_UTF32_PATHS:
+                _WARNED_UTF32_PATHS.add(path_key)
+                logger.warning("Skipping .env sanitize for %s: UTF-32 BOM detected; "
+                               "leaving file untouched to avoid corruption", path)
+            return
+        if raw.startswith(codecs.BOM_UTF16_LE) or raw.startswith(codecs.BOM_UTF16_BE):
+        # "utf-16" uses the BOM for endianness and strips it; newline=None matches open()'s universal
+        # newlines (not splitlines()'s extra boundaries like U+2028) so sanitize sees the same lines.
+            try:
+                with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-16", newline=None) as f:
+                    original = f.readlines()
+            except UnicodeDecodeError:
+                return
+            force_utf8_rewrite = True  # always rewrite UTF-16 as UTF-8 so the dotenv load sees a canonical file
+        else:
+        # utf-8-sig strips a UTF-8 BOM; errors=replace so embedded NULs can be stripped below.
+            try:
+                with open(path, encoding="utf-8-sig", errors="replace") as f:
+                    original = f.readlines()
+            except Exception:
+                return
         # errors=replace turns undecodable leading bytes into U+FFFD; persisting would glue them onto
         # the first key name permanently — leave the file untouched instead.
-        if original and original[0].startswith("\ufffd"):
-            return
+            if original and original[0].startswith("\ufffd"):
+                return
 
-    try:
+        try:
         # Strip NULs (os.environ raises ValueError on them); also repairs BOM-less UTF-16 (NUL-padded ASCII).
-        stripped = [line.replace("\x00", "") for line in original]
-        sanitized = _sanitize_env_lines(stripped)
-        if sanitized != original or force_utf8_rewrite:
-            import tempfile
-            fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".env_")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.writelines(sanitized)
-                    f.flush()
-                    os.fsync(f.fileno())
-                atomic_replace(tmp, path)
-            except BaseException:
+            stripped = [line.replace("\x00", "") for line in original]
+            sanitized = _sanitize_env_lines(stripped)
+            if sanitized != original or force_utf8_rewrite:
+                import tempfile
+                fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".env_")
                 try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
-    except Exception:
-        pass  # best-effort — don't block gateway startup
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.writelines(sanitized)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    atomic_replace(tmp, path)
+                except BaseException:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+        except Exception:
+            pass  # best-effort — don't block gateway startup
 
 
 def load_hermes_dotenv(

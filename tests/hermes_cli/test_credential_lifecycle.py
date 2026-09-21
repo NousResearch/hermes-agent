@@ -11,6 +11,8 @@ lands in the repo.
 """
 
 import json
+import threading
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -82,6 +84,106 @@ def _zai_pool_fixture():
     }
 
 
+def test_lifecycle_serializes_the_complete_env_transaction(hermes_home, monkeypatch):
+    from hermes_cli import config, credential_lifecycle
+
+    first_inside = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    second_loaded = threading.Event()
+    failures = []
+
+    def fake_load_env():
+        if threading.current_thread().name == "second-credential-write":
+            second_loaded.set()
+        return {"OPENAI_API_KEY": "old-value"}
+
+    def fake_save_env_value(_key, value):
+        if value == "first-value":
+            first_inside.set()
+            assert release_first.wait(timeout=5)
+        return True
+
+    monkeypatch.setattr(config, "load_env_strict", fake_load_env)
+    monkeypatch.setattr(config, "save_env_value", fake_save_env_value)
+    monkeypatch.setattr(
+        credential_lifecycle,
+        "_scrub_config_yaml_mirrors",
+        Mock(return_value=[]),
+    )
+    monkeypatch.setattr(credential_lifecycle, "_providers_for_env_var", lambda _key: [])
+
+    def run(value, *, started=None):
+        if started is not None:
+            started.set()
+        try:
+            credential_lifecycle.save_provider_env_credential("OPENAI_API_KEY", value)
+        except BaseException as exc:
+            failures.append(exc)
+
+    first = threading.Thread(target=run, args=("first-value",), name="first-credential-write")
+    second = threading.Thread(
+        target=run,
+        args=("second-value",),
+        kwargs={"started": second_started},
+        name="second-credential-write",
+    )
+    first.start()
+    assert first_inside.wait(timeout=5)
+    second.start()
+    assert second_started.wait(timeout=5)
+    assert not second_loaded.wait(timeout=2), "second transaction entered before the first completed"
+    release_first.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert failures == []
+    assert second_loaded.is_set()
+
+
+def test_update_rolls_back_env_when_config_mirror_write_fails(hermes_home, monkeypatch):
+    from hermes_cli import credential_lifecycle
+
+    old = "sk-rollback-" + "a" * 24
+    new = "sk-rollback-" + "b" * 24
+    _write_env(hermes_home, OPENAI_API_KEY=old)
+    _write_config(hermes_home, f"model:\n  api_key: {old}\n")
+    config_before = hermes_home.joinpath("config.yaml").read_bytes()
+
+    def fail_config_write(*_args, **_kwargs):
+        raise OSError("simulated config write failure")
+
+    monkeypatch.setattr("utils.atomic_yaml_write", fail_config_write)
+
+    with pytest.raises(OSError, match="simulated config write failure"):
+        credential_lifecycle.save_provider_env_credential("OPENAI_API_KEY", new)
+
+    assert hermes_home.joinpath(".env").read_text(encoding="utf-8") == f"OPENAI_API_KEY={old}\n"
+    assert hermes_home.joinpath("config.yaml").read_bytes() == config_before
+
+
+def test_delete_rolls_back_env_and_config_when_followup_fails(hermes_home, monkeypatch):
+    from hermes_cli import credential_lifecycle
+
+    old = "sk-rollback-" + "c" * 24
+    _write_env(hermes_home, OPENAI_API_KEY=old)
+    _write_config(hermes_home, f"model:\n  api_key: {old}\n")
+    env_before = hermes_home.joinpath(".env").read_bytes()
+    config_before = hermes_home.joinpath("config.yaml").read_bytes()
+
+    def fail_followup(_env_var):
+        raise OSError("simulated follow-up failure")
+
+    monkeypatch.setattr(credential_lifecycle, "purge_env_credential_references", fail_followup)
+
+    with pytest.raises(OSError, match="simulated follow-up failure"):
+        credential_lifecycle.remove_provider_env_credential("OPENAI_API_KEY")
+
+    assert hermes_home.joinpath(".env").read_bytes() == env_before
+    assert hermes_home.joinpath("config.yaml").read_bytes() == config_before
+
+
 # ---------------------------------------------------------------------------
 # DELETE — #51071 / #59761: stale credential_pool entries must be pruned
 # ---------------------------------------------------------------------------
@@ -141,6 +243,39 @@ def test_update_rotates_config_yaml_model_mirror(hermes_home):
     from hermes_cli.config import load_env
 
     assert load_env()["OPENAI_API_KEY"] == new
+
+
+def test_api_env_reports_managed_write_refusal(hermes_home, tmp_path, monkeypatch):
+    from hermes_cli import managed_scope
+
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    managed.joinpath(".env").write_text(
+        "OPENAI_API_KEY=managed-value\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    managed_scope.invalidate_managed_cache()
+
+    put_resp = client.put(
+        "/api/env",
+        json={"key": "OPENAI_API_KEY", "value": "replacement-value"},
+        headers=HEADERS,
+    )
+    delete_resp = client.request(
+        "DELETE",
+        "/api/env",
+        json={"key": "OPENAI_API_KEY"},
+        headers=HEADERS,
+    )
+
+    assert put_resp.status_code == 409
+    assert "managed" in put_resp.json()["detail"].lower()
+    assert delete_resp.status_code == 409
+    assert "managed" in delete_resp.json()["detail"].lower()
+    assert not hermes_home.joinpath(".env").exists()
+    assert managed.joinpath(".env").read_text(encoding="utf-8") == (
+        "OPENAI_API_KEY=managed-value\n"
+    )
 
 
 

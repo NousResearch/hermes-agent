@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -2422,6 +2422,13 @@ def load_env() -> Dict[str, str]:
     return load_env_file(get_env_path())
 
 
+def load_env_strict() -> Dict[str, str]:
+    """Load the active profile's ``.env``, raising when an existing file cannot be read."""
+    from agent.secret_scope import load_env_file
+
+    return load_env_file(get_env_path(), strict=True)
+
+
 def invalidate_env_cache() -> None:
     """Drop the ``.env`` memo so the next ``load_env()`` sees a write even on coarse-mtime filesystems
     (save_env_value / remove_env_value / sanitize_env_file call this)."""
@@ -2446,18 +2453,19 @@ def _sanitize_env_lines(lines: list) -> list:
 def sanitize_env_file() -> int:
     """Rewrite ~/.hermes/.env with normalized line formatting; returns the number of changed lines."""
     env_path = get_env_path()
-    if not env_path.exists():
-        return 0
-    with open(env_path, encoding="utf-8-sig", errors="replace") as f:
-        original_lines = f.readlines()
-    sanitized = _sanitize_env_lines(original_lines)
-    if sanitized == original_lines:
-        return 0
-    fixes = abs(len(sanitized) - len(original_lines)) or sum(
-        1 for a, b in zip(original_lines, sanitized) if a != b)
-    _write_env_lines(env_path, sanitized, preserve_mode=False)
-    invalidate_env_cache()
-    return fixes
+    with env_store_lock_for_path(env_path):
+        if not env_path.exists():
+            return 0
+        with open(env_path, encoding="utf-8-sig", errors="replace") as f:
+            original_lines = f.readlines()
+        sanitized = _sanitize_env_lines(original_lines)
+        if sanitized == original_lines:
+            return 0
+        fixes = abs(len(sanitized) - len(original_lines)) or sum(
+            1 for a, b in zip(original_lines, sanitized) if a != b)
+        _write_env_lines(env_path, sanitized, preserve_mode=False)
+        invalidate_env_cache()
+        return fixes
 
 
 def _read_env_lines(env_path: Path) -> list:
@@ -2581,6 +2589,38 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
             target[key] = value
 
 
+_ENV_STORE_LOCK_HOLDERS: Dict[str, threading.local] = {}
+_ENV_STORE_LOCK_HOLDERS_GUARD = threading.Lock()
+
+
+def _env_store_lock_holder(lock_path: Path) -> threading.local:
+    key = str(lock_path.resolve())
+    with _ENV_STORE_LOCK_HOLDERS_GUARD:
+        return _ENV_STORE_LOCK_HOLDERS.setdefault(key, threading.local())
+
+
+@contextmanager
+def env_store_lock_for_path(env_path: Path, timeout_seconds: float = 15.0):
+    """Serialize one ``.env`` target's mutation across threads and processes."""
+    from hermes_cli.auth import _file_lock
+
+    lock_path = Path(env_path).with_name(".env.lock")
+    with _file_lock(
+        lock_path,
+        _env_store_lock_holder(lock_path),
+        timeout_seconds,
+        "Timed out waiting for credential store lock",
+    ):
+        yield
+
+
+@contextmanager
+def env_store_lock(timeout_seconds: float = 15.0):
+    """Serialize the active profile's complete ``.env`` mutation."""
+    with env_store_lock_for_path(get_env_path(), timeout_seconds):
+        yield
+
+
 def _env_write_blocked(key: str, action: str) -> bool:
     """Shared write-lock check for ``.env`` writers; prints the refusal and returns True when blocked.
     Two distinct locks: ``is_managed()`` (package-manager install) and the managed *scope*
@@ -2603,13 +2643,20 @@ def _managed_source(filename: str):
     return (managed_dir / filename) if managed_dir else "the managed scope"
 
 
-def save_env_value(key: str, value: str):
+def save_env_value(key: str, value: str) -> bool:
     """Save or update a value in ~/.hermes/.env (also matching ``export KEY=`` lines, so a save
     never appends a second line that a later delete would resurrect)."""
+    with env_store_lock():
+        return _save_env_value_unlocked(key, value)
+
+
+def _save_env_value_unlocked(key: str, value: str) -> bool:
     if _env_write_blocked(key, "set"):
-        return
+        return False
     validate_env_var_name_for_write(key)
     value = value.replace("\n", "").replace("\r", "")
+    if "\0" in value:
+        raise ValueError("Environment variable values cannot contain NUL bytes.")
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
@@ -2628,6 +2675,7 @@ def save_env_value(key: str, value: str):
     _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
     _publish_env_value(key, value)
     invalidate_env_cache()
+    return True
 
 
 def custom_endpoint_key_env(identity: str) -> str:
@@ -2639,10 +2687,19 @@ def custom_endpoint_key_env(identity: str) -> str:
     return f"HERMES_CUSTOM_{slug}_API_KEY" if slug else "HERMES_CUSTOM_API_KEY"
 
 
-def remove_env_value(key: str) -> bool:
-    """Remove a key from ~/.hermes/.env and os.environ; True if it was found and removed."""
+def remove_env_value(key: str) -> Optional[bool]:
+    """Remove a key from ~/.hermes/.env and os.environ.
+
+    Return ``None`` when policy blocks the write, otherwise whether the key was found. Callers
+    coordinating additional destructive cleanup must distinguish refusal from ordinary absence.
+    """
+    with env_store_lock():
+        return _remove_env_value_unlocked(key)
+
+
+def _remove_env_value_unlocked(key: str) -> Optional[bool]:
     if _env_write_blocked(key, "remove"):
-        return False
+        return None
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
@@ -2691,8 +2748,12 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
     # Route through the unified credential lifecycle so a rotation via the secret-capture path also
     # refreshes any config.yaml mirror of the old value and lifts a prior env-source suppression (#62269 fix
     # family).
-    save_provider_env_credential(key, value)
-    return {"success": True, "stored_as": key, "validated": False}
+    result = save_provider_env_credential(key, value)
+    return {
+        "success": bool(result.get("ok")),
+        "stored_as": key,
+        "validated": False,
+    }
 
 
 def reload_env() -> int:
@@ -3463,7 +3524,9 @@ def set_config_value(key: str, value: str, force: bool = False):
 
         # Unified lifecycle: also rotates any config.yaml mirror of the old value so a stale
         # higher-precedence copy can't win (#62269).
-        save_provider_env_credential(key.upper(), value)
+        result = save_provider_env_credential(key.upper(), value)
+        if not result.get("ok"):
+            _exit_invalid(f"✗ Could not set {key}.")
         print(f"✓ Set {key} in {get_env_path()}")
         return
     from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
@@ -3630,7 +3693,10 @@ def unset_config_value(key: str):
         # See #51071.
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
-        if not remove_provider_env_credential(key.upper()).get("found"):
+        result = remove_provider_env_credential(key.upper())
+        if not result.get("ok"):
+            _exit_invalid(f"✗ Could not unset {key}.")
+        if not result.get("found"):
             _exit_invalid(f"Config key not set: {key}")
         print(f"✓ Unset {key} from {get_env_path()}")
         return

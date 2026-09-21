@@ -276,7 +276,7 @@ def _parse_env_text(text: str) -> Dict[str, str]:
     return secrets
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
+def load_env_file(env_path: Path, *, strict: bool = False) -> Dict[str, str]:
     """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
@@ -301,9 +301,14 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
             # Same descriptor: a rewrite that landed between the fstat and the read is parsed but not
             # stored under the pre-write fingerprint.
             settled = file_signature(os.fstat(handle.fileno())) == fingerprint
+    except FileNotFoundError:
+        invalidate_env_file_cache(env_path)
+        return {}
     except OSError:
         # Gone or unreadable: drop any entry so a stale map cannot outlive the file.
         invalidate_env_file_cache(env_path)
+        if strict:
+            raise
         return {}
 
     secrets = _parse_env_text(_decode_env_bytes(raw))

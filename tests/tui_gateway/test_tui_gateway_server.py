@@ -16948,7 +16948,7 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
         },
     )
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
-    save_credential = Mock()
+    save_credential = Mock(return_value={"ok": True})
     monkeypatch.setattr(
         "hermes_cli.credential_lifecycle.save_provider_env_credential",
         save_credential,
@@ -16983,16 +16983,145 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     )
 
 
-def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch):
+def test_model_save_key_reports_credential_write_refusal(monkeypatch):
+    env_var = "TEST_PROVIDER_API_KEY"
+    monkeypatch.setattr(
+        "hermes_cli.auth.PROVIDER_REGISTRY",
+        {
+            "test-provider": types.SimpleNamespace(
+                name="Test Provider",
+                auth_type="api_key",
+                api_key_env_vars=(env_var,),
+            )
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        Mock(return_value={"ok": False}),
+    )
+    build_payload = Mock()
+    monkeypatch.setattr("hermes_cli.inventory.build_models_payload", build_payload)
+    monkeypatch.setenv(env_var, "managed-value")
+
+    resp = server._methods["model.save_key"](
+        104,
+        {"slug": "test-provider", "api_key": "replacement-value"},
+    )
+
+    assert resp["error"]["code"] == 4006
+    assert os.environ[env_var] == "managed-value"
+    build_payload.assert_not_called()
+
+
+def test_model_save_key_scopes_writes_by_session_home(monkeypatch, tmp_path):
+    from hermes_constants import get_hermes_home
+
+    launch_home = tmp_path / "launch"
+    other_home = tmp_path / "other"
+    launch_home.mkdir()
+    other_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(
+        "hermes_cli.auth.PROVIDER_REGISTRY",
+        {"test-provider": types.SimpleNamespace(
+            name="Test Provider", auth_type="api_key",
+            api_key_env_vars=("TEST_PROVIDER_API_KEY",))},
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    seen = []
+
+    def save_credential(env_var, value):
+        home = get_hermes_home()
+        seen.append(str(home))
+        home.joinpath(".env").write_text(f"{env_var}={value}\n", encoding="utf-8")
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        save_credential,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory.build_models_payload",
+        Mock(return_value={"providers": []}),
+    )
+    monkeypatch.setattr("hermes_cli.free_tier_bootstrap.reconcile_record", Mock())
+    server._sessions["launch-save"] = _session(profile_home=str(launch_home))
+    server._sessions["other-save"] = _session(profile_home=str(other_home))
+    process_value = os.environ.get("TEST_PROVIDER_API_KEY")
+
+    try:
+        for sid, value in (
+            ("launch-save", "launch-first"),
+            ("other-save", "other-value"),
+            ("launch-save", "launch-final"),
+        ):
+            resp = server._methods["model.save_key"](
+                104,
+                {"slug": "test-provider", "api_key": value, "session_id": sid},
+            )
+            assert "result" in resp, resp
+    finally:
+        server._sessions.pop("launch-save", None)
+        server._sessions.pop("other-save", None)
+
+    assert seen == [str(launch_home), str(other_home), str(launch_home)]
+    assert launch_home.joinpath(".env").read_text(encoding="utf-8") == (
+        "TEST_PROVIDER_API_KEY=launch-final\n"
+    )
+    assert other_home.joinpath(".env").read_text(encoding="utf-8") == (
+        "TEST_PROVIDER_API_KEY=other-value\n"
+    )
+    assert os.environ.get("TEST_PROVIDER_API_KEY") == process_value
+
+
+def test_model_disconnect_reports_credential_write_refusal(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.auth.PROVIDER_REGISTRY",
+        {"test-provider": types.SimpleNamespace(
+            name="Test Provider", api_key_env_vars=("TEST_PROVIDER_API_KEY",))},
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr("hermes_cli.managed_scope.is_env_managed", lambda _key: False)
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.remove_provider_env_credential",
+        Mock(return_value={"ok": False, "found": False}),
+    )
+    clear_auth = Mock(return_value=True)
+    monkeypatch.setattr("hermes_cli.auth.clear_provider_auth", clear_auth)
+
+    resp = server._methods["model.disconnect"](
+        106, {"slug": "test-provider", "session_id": ""}
+    )
+
+    assert resp["error"]["code"] == 4006
+    clear_auth.assert_not_called()
+
+
+def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(
+        monkeypatch, tmp_path):
     """The gated picker's own chat waits on ``setup.status``, which answers from the boot record:
     a key saved for the launch profile must flip a ``False`` record (+ ``setup.ready``) at once;
-    a key saved for another profile (``profile`` param) must leave the launch record alone."""
+    a key saved for another profile's session must leave the launch record alone."""
     from hermes_cli import free_tier_bootstrap as fb
+
+    launch_home = tmp_path / "launch"
+    other_home = tmp_path / "other"
+    launch_home.mkdir()
+    other_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    server._sessions["launch-reconcile"] = _session(profile_home=str(launch_home))
+    server._sessions["other-reconcile"] = _session(profile_home=str(other_home))
 
     monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", {"test-provider": types.SimpleNamespace(
         name="Test Provider", auth_type="api_key", api_key_env_vars=("TEST_PROVIDER_API_KEY",))})
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
-    monkeypatch.setattr("hermes_cli.credential_lifecycle.save_provider_env_credential", Mock())
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        Mock(return_value={"ok": True}),
+    )
     monkeypatch.setattr("hermes_cli.inventory.build_models_payload", Mock(return_value={"providers": []}))
     monkeypatch.setenv("TEST_PROVIDER_API_KEY", "previous-value")  # save_key exports the new key
     monkeypatch.setattr(fb, "_inventory_other_providers", lambda: True)
@@ -17007,14 +17136,20 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
         fb._done.set()
     try:
         params = {"slug": "test-provider", "api_key": "k-" + "1"}
-        assert "result" in server._methods["model.save_key"](104, {**params, "profile": "other"})
+        assert "result" in server._methods["model.save_key"](
+            104, {**params, "session_id": "other-reconcile"}
+        )
         assert fb.current_record() is stale and broadcasts == [], "another profile's key is not ours"
-        assert "result" in server._methods["model.save_key"](105, params)
+        assert "result" in server._methods["model.save_key"](
+            105, {**params, "session_id": "launch-reconcile"}
+        )
         record = fb.current_record()
         assert record.provider_configured is True and record.inference_provider == "test-provider"
         assert broadcasts == [record]
     finally:
         fb.reset_for_tests()
+        server._sessions.pop("launch-reconcile", None)
+        server._sessions.pop("other-reconcile", None)
 
 
 # ---------------------------------------------------------------------------

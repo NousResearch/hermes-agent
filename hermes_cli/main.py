@@ -3496,6 +3496,16 @@ def _parse_cli_args(parser, subparsers, argv):
         sys.stderr = _saved_stderr
         if exc.code == 0:  # help/version already printed; don't print twice
             raise
+        if any(
+            left == "secrets" and right == "set"
+            for left, right in zip(_processed_argv, _processed_argv[1:])
+        ):
+            print(
+                "Error: invalid arguments for 'hermes secrets set'; secret values must use "
+                "hidden input or redirected stdin, never command arguments.",
+                file=sys.stderr,
+            )
+            raise
         # Subcommand consumed as a flag value (e.g. -c model): normal parse.
         subparsers.required = False
         args = parser.parse_args(_processed_argv)

@@ -54,7 +54,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
 | `hermes peer` | Register peer Hermes gateways on other machines and DM their agents' canonical Bot Chats (`hermes peer dm <peer>[/<agent>] "…"`). The transport behind cross-machine bot-to-bot messaging. |
-| `hermes secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.hermes/.env`. |
+| `hermes secrets` | Capture local API keys without exposing values in command arguments, list/delete them without revealing values, or configure external secret sources. |
 | `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
 | `hermes codex-runtime` | Noninteractive counterpart of `/codex-runtime`: `migrate [--dry-run] [--json]` regenerates the Hermes-managed block in `~/.codex/config.toml` for the selected profile. See [Codex app-server runtime](../user-guide/features/codex-app-server-runtime.md#running-the-migration-from-a-script). |
 | `hermes status` | Show agent, auth, and platform status. |
@@ -565,11 +565,17 @@ Exit codes: `0` on success, `1` on delivery/peer failure, `2` on usage errors.
 ## `hermes secrets`
 
 ```bash
+hermes secrets set OPENAI_API_KEY
+printf '%s' "$OPENAI_API_KEY" | hermes secrets set OPENAI_API_KEY --stdin
+hermes secrets list
+hermes secrets delete OPENAI_API_KEY
 hermes secrets bitwarden <subcommand>
 hermes secrets bw <subcommand>          # short alias
 ```
 
-Pull API keys from an external secret manager at process startup instead of storing them in `~/.hermes/.env`. Currently supports **Bitwarden Secrets Manager**. See the full guide: [Bitwarden integration](../user-guide/secrets/bitwarden.md).
+`set` prompts without echo and never accepts the value as a command argument, keeping it out of shell history and process listings. For automation, `--stdin` requires redirected input. It removes all trailing CR and LF characters; any other leading or trailing whitespace remains part of the secret. `list` prints names only, and `delete` removes the named credential from the active profile. Local values use the existing profile-scoped `.env` credential lifecycle; they do not enter a chat or LLM context.
+
+The provider subcommands pull API keys from an external secret manager at process startup instead of storing them in `~/.hermes/.env`. See the full guides for [Bitwarden](../user-guide/secrets/bitwarden.md) and [1Password](../user-guide/secrets/onepassword.md).
 
 `bitwarden` (alias `bw`) subcommands:
 

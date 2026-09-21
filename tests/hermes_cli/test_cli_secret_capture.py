@@ -101,6 +101,22 @@ def test_secret_capture_uses_masked_prompt_without_tui():
     assert result["skipped"] is False
 
 
+def test_secret_capture_reports_secure_write_refusal(capsys):
+    cli = _make_cli_stub()
+
+    with patch("hermes_cli.callbacks.masked_secret_prompt", return_value="secret-value"), patch(
+        "hermes_cli.callbacks.save_env_value_secure",
+        return_value={"success": False, "stored_as": "TENOR_API_KEY", "validated": False},
+    ):
+        result = prompt_for_secret(cli, "TENOR_API_KEY", "Tenor API key")
+
+    output = capsys.readouterr()
+    assert result["success"] is False
+    assert result["skipped"] is False
+    assert "could not be stored" in result["message"]
+    assert "Stored secret" not in output.out + output.err
+
+
 def test_secret_capture_timeout_clears_hidden_input_buffer():
     cli = _make_cli_stub(with_app=True)
     cleared = {"value": False}

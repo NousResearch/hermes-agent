@@ -9,12 +9,48 @@ provider credential should route through :func:`save_provider_env_credential` /
 
 from __future__ import annotations
 
+import os
+import stat
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List
+
+from utils import atomic_replace
 
 __all__ = [
     "save_provider_env_credential",
     "remove_provider_env_credential",
     "purge_env_credential_references"]
+
+
+def _snapshot_file(path: Path) -> tuple[bool, bytes, int | None]:
+    try:
+        return True, path.read_bytes(), stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        return False, b"", None
+
+
+def _restore_file(path: Path, snapshot: tuple[bool, bytes, int | None]) -> None:
+    existed, content, mode = snapshot
+    if not existed:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}_rollback_")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        atomic_replace(tmp_path, path)
+        if mode is not None:
+            os.chmod(path, mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _providers_for_env_var(env_var: str) -> List[str]:
@@ -89,57 +125,57 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
         return []
     from utils import atomic_yaml_write
 
-    from hermes_cli.config import get_config_path, read_user_config_raw, require_readable_config_before_write
+    from hermes_cli.config import (
+        _CONFIG_LOCK, get_config_path, read_user_config_raw,
+        require_readable_config_before_write,
+    )
 
     config_path = get_config_path()
-    if not config_path.exists():
-        return []
-    try:
+    with _CONFIG_LOCK:
+        if not config_path.exists():
+            return []
         user_config = read_user_config_raw(config_path)
-    except Exception:
-        return []
-    if not user_config:
-        return []
+        if not user_config:
+            return []
 
-    touched: List[str] = []
+        touched: List[str] = []
 
-    def _fix(section: Any, key_path: str, fields: tuple[str, ...] = ("api_key", "api")) -> None:
-        # "api" is the legacy alias for model.api_key in older configs. In the keyed ``providers``
-        # schema ``api`` means the base_url, not a credential, so that section passes
-        # ``fields=("api_key",)``.
-        if not isinstance(section, dict):
-            return
-        for field in fields:
-            current = section.get(field)
-            if isinstance(current, str) and current == old_value:
-                if new_value:
-                    section[field] = new_value
-                else:
-                    section.pop(field, None)
-                touched.append(f"{key_path}.{field}")
+        def _fix(section: Any, key_path: str, fields: tuple[str, ...] = ("api_key", "api")) -> None:
+            # "api" is the legacy alias for model.api_key in older configs. In the keyed ``providers``
+            # schema ``api`` means the base_url, not a credential, so that section passes
+            # ``fields=("api_key",)``.
+            if not isinstance(section, dict):
+                return
+            for field in fields:
+                current = section.get(field)
+                if isinstance(current, str) and current == old_value:
+                    if new_value:
+                        section[field] = new_value
+                    else:
+                        section.pop(field, None)
+                    touched.append(f"{key_path}.{field}")
 
-    def _items(value: Any, allow_list: bool):
-        if isinstance(value, dict):
-            return value.items()
-        return enumerate(value) if allow_list and isinstance(value, list) else ()
+        def _items(value: Any, allow_list: bool):
+            if isinstance(value, dict):
+                return value.items()
+            return enumerate(value) if allow_list and isinstance(value, list) else ()
 
-    _fix(user_config.get("model"), "model")
-    for task, slot_cfg in _items(user_config.get("auxiliary"), False):
-        _fix(slot_cfg, f"auxiliary.{task}")
-    for name, entry in _items(user_config.get("custom_providers"), True):
-        _fix(entry, f"custom_providers.{name}")
+        _fix(user_config.get("model"), "model")
+        for task, slot_cfg in _items(user_config.get("auxiliary"), False):
+            _fix(slot_cfg, f"auxiliary.{task}")
+        for name, entry in _items(user_config.get("custom_providers"), True):
+            _fix(entry, f"custom_providers.{name}")
 
-    # ``providers.<id>.api_key`` (v12+) is where dashboard/desktop write custom-endpoint
-    # credentials. It is a real inline secret with higher precedence than the env var, so a stale
-    # copy shadows a rotation (persistent 401 with a key the UI no longer shows) and survives a
-    # removal that promised to clear EVERY store.
-    for provider_id, entry in _items(user_config.get("providers"), False):
-        _fix(entry, f"providers.{provider_id}", fields=("api_key",))
+        # ``providers.<id>.api_key`` (v12+) is where dashboard/desktop write custom-endpoint
+        # credentials. It is a real inline secret with higher precedence than the env var, so a stale
+        # copy shadows a rotation and survives a removal that promised to clear EVERY store.
+        for provider_id, entry in _items(user_config.get("providers"), False):
+            _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
-    if touched:
-        require_readable_config_before_write(config_path)
-        atomic_yaml_write(config_path, user_config, sort_keys=False)
-    return touched
+        if touched:
+            require_readable_config_before_write(config_path)
+            atomic_yaml_write(config_path, user_config, sort_keys=False)
+        return touched
 
 
 def purge_env_credential_references(
@@ -179,14 +215,41 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     kept 401'ing until the user ran ``hermes auth add <provider> --type api-key`` separately. This makes the
     Desktop save's effect on disk match what ``hermes auth add`` does.
     """
-    from hermes_cli.config import load_env, save_env_value
+    from hermes_cli.config import _CONFIG_LOCK, env_store_lock
 
-    old_value = load_env().get(env_var)
-    save_env_value(env_var, value)
+    with env_store_lock():
+        with _CONFIG_LOCK:
+            return _save_provider_env_credential_locked(env_var, value)
 
-    config_updates: List[str] = []
-    if value and old_value and old_value != value:
-        config_updates = _scrub_config_yaml_mirrors(old_value, value)
+
+def _save_provider_env_credential_locked(env_var: str, value: str) -> Dict[str, Any]:
+    from hermes_cli.config import (
+        _publish_env_value, get_config_path, get_env_path, invalidate_env_cache,
+        load_env_strict, save_env_value,
+    )
+
+    env_path, config_path = get_env_path(), get_config_path()
+    env_snapshot, config_snapshot = _snapshot_file(env_path), _snapshot_file(config_path)
+    old_value = load_env_strict().get(env_var)
+    try:
+        written = save_env_value(env_var, value)
+        if written is False:
+            return {
+                "ok": False,
+                "key": env_var,
+                "written": False,
+                "config_updates": [],
+            }
+
+        config_updates: List[str] = []
+        if value and old_value and old_value != value:
+            config_updates = _scrub_config_yaml_mirrors(old_value, value)
+    except BaseException:
+        _restore_file(env_path, env_snapshot)
+        _restore_file(config_path, config_snapshot)
+        _publish_env_value(env_var, old_value)
+        invalidate_env_cache()
+        raise
 
     # A prior removal may have suppressed this env source; a fresh save is an explicit re-add.
     providers = _providers_for_env_var(env_var)
@@ -196,18 +259,53 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     # the pool already had this entry. Best-effort: never masks the successful .env write above.
     _for_each_provider(providers, "agent.credential_pool.load_pool")
 
-    return {"ok": True, "key": env_var, "config_updates": config_updates}
+    return {
+        "ok": True,
+        "key": env_var,
+        "written": True,
+        "config_updates": config_updates,
+    }
 
 
 def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
     """Remove a credential from EVERY store: ``.env`` (and process env), env-seeded
     ``credential_pool`` entries, model-cache rows, config.yaml mirrors of the same value."""
-    from hermes_cli.config import load_env, remove_env_value
+    from hermes_cli.config import _CONFIG_LOCK, env_store_lock
 
-    old_value = load_env().get(env_var)
-    removed_from_env = remove_env_value(env_var)
-    refs = purge_env_credential_references(env_var)
-    config_scrubbed = _scrub_config_yaml_mirrors(old_value, None) if old_value else []
+    with env_store_lock():
+        with _CONFIG_LOCK:
+            return _remove_provider_env_credential_locked(env_var)
+
+
+def _remove_provider_env_credential_locked(env_var: str) -> Dict[str, Any]:
+    from hermes_cli.config import (
+        _publish_env_value, get_config_path, get_env_path, invalidate_env_cache,
+        load_env_strict, remove_env_value,
+    )
+
+    env_path, config_path = get_env_path(), get_config_path()
+    env_snapshot, config_snapshot = _snapshot_file(env_path), _snapshot_file(config_path)
+    old_value = load_env_strict().get(env_var)
+    try:
+        removed_from_env = remove_env_value(env_var)
+        if removed_from_env is None:
+            return {
+                "ok": False,
+                "key": env_var,
+                "removed": False,
+                "pool_pruned": [],
+                "providers": [],
+                "config_scrubbed": [],
+                "found": False,
+            }
+        config_scrubbed = _scrub_config_yaml_mirrors(old_value, None) if old_value else []
+        refs = purge_env_credential_references(env_var)
+    except BaseException:
+        _restore_file(env_path, env_snapshot)
+        _restore_file(config_path, config_snapshot)
+        _publish_env_value(env_var, old_value)
+        invalidate_env_cache()
+        raise
 
     return {
         "ok": True,

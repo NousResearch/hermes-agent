@@ -26,6 +26,15 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).")
 
+    sessions_active = sessions_subparsers.add_parser(
+        "active", help="Show registered active Action Sessions across profiles",
+        description="Read-only terminal view of registered active tasks, their owning sessions, "
+            "turn leases, and child agents across every local profile.")
+    add_json_flag(sessions_active, "Emit the full read model as JSON")
+    sessions_active.add_argument(
+        "--stale-after", type=int, default=900, metavar="SECONDS",
+        help="Mark activity stale after this many seconds without a live turn lease (default: 900)")
+
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "
             "(e.g. '5h', '2d') or after an ISO timestamp")),

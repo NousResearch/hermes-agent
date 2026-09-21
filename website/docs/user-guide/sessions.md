@@ -347,6 +347,32 @@ Help me refactor the auth module please             2h ago        cli    2025030
 What's the weather in Las Vegas?                    3d ago        tele   20250303_101500_f
 ```
 
+### Active Action Sessions
+
+```bash
+# Read-only cross-profile terminal view
+hermes sessions active
+
+# Machine-readable projection, or refresh it in a tmux pane
+hermes sessions active --json
+watch -n 2 hermes sessions active
+```
+
+`active` is intentionally narrower than `list`: it shows only active Kanban tasks
+that carry an originating `session_id`, plus descendant sessions and delegated
+child work. Unregistered conversations, cron jobs, webhooks, and internal tool
+sessions do not appear merely because they are recent. This registration boundary
+will also prevent a future process scanner from turning background noise into
+operator-visible Action Sessions.
+
+Each card includes phase, actor/model, current activity, workspace/branch,
+elapsed time, blocker, child state, and the owning profile/route. Activity marked
+`stale` means no fresh activity was observed within 15 minutes (override with
+`--stale-after SECONDS`); `leased` means the persisted turn lease is still valid,
+even if the session metadata otherwise looks stale or ended. The command opens
+profile session stores, Kanban boards, leases, and delegation records read-only
+and provides no pause, stop, resume, or retry controls.
+
 ### Export Sessions
 
 `hermes sessions export` is one surface for every export format, selected with `--format`:

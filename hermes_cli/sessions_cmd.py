@@ -971,7 +971,28 @@ def _cmd_repair_profiles(args):
     return cmd_repair_profiles(args)
 
 
+def _cmd_active(args):
+    """Print the cross-profile Action Session projection.
+
+    This is a pre-DB handler because the projection opens every relevant store
+    itself, in read-only mode.  Opening the current profile's regular SessionDB
+    first would be both redundant and an accidental writer path.
+    """
+    from hermes_cli.action_sessions import collect_active_actions, render_action_cards
+
+    stale_after = int(getattr(args, "stale_after", 900))
+    if stale_after < 0:
+        print("Error: --stale-after must be zero or greater")
+        return 2
+    cards = collect_active_actions(stale_after_seconds=stale_after)
+    if getattr(args, "json", False):
+        print(json.dumps(cards, indent=2, ensure_ascii=False))
+    else:
+        print(render_action_cards(cards))
+
+
 _PRE_DB_HANDLERS = {
+    "active": _cmd_active,
     "repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import,
     "repair-profiles": _cmd_repair_profiles,  # opens every profile's store itself
 }

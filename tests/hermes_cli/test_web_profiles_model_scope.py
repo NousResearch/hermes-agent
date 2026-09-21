@@ -140,3 +140,41 @@ def test_model_set_without_a_profile_pins_to_the_launch_home(client, homes):
         assert (load_config().get("model") or {}).get("default") == "acme/mini"
     with _hermes_home_scope(demo):
         assert (load_config().get("model") or {}).get("default") is None
+
+
+def test_model_set_names_target_from_a_backend_launched_as_another_profile(homes, probe, monkeypatch):
+    """A→B→A under one host backend (#118431/#118432): a backend launched under profile A
+    serving ``POST /api/model/set?profile=B`` writes B's config.yaml and leaves A's (and the
+    root's) untouched; the follow-up for A lands on A only. This is the server half the
+    Desktop relies on once every Settings request names the profile its page displays."""
+    root, demo = homes
+    from hermes_cli import profiles as profiles_mod
+    from hermes_cli.config import invalidate_env_cache, load_config
+    from hermes_cli.web_server_profiles import _hermes_home_scope
+
+    other = profiles_mod.get_profile_dir("other")
+    other.mkdir(parents=True, exist_ok=True)
+    (other / "config.yaml").write_text(ACME_YAML, encoding="utf-8")
+    (other / ".env").write_text("ACME_RELAY_KEY=other-key\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(demo))  # launched as A = demo
+    invalidate_env_cache()
+    from hermes_cli import web_server
+
+    body = {"scope": "main", "provider": "acme", "model": "acme/mini", "confirm_expensive_model": True}
+
+    def model_of(home):
+        with _hermes_home_scope(home):
+            return (load_config().get("model") or {}).get("default")
+
+    with TestClient(web_server.app, raise_server_exceptions=False) as client:
+        client.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
+        resp = client.post("/api/model/set", params={"profile": "other"}, json=body)
+        assert resp.status_code == 200, resp.text
+        assert probe["api_key"] == "other-key"  # validated under B's secret scope, not A's
+        assert model_of(other) == "acme/mini"
+        assert model_of(demo) is None and model_of(root) is None
+
+        resp = client.post("/api/model/set", params={"profile": "demo"}, json={**body, "model": "acme/mini"})
+        assert resp.status_code == 200, resp.text
+        assert probe["api_key"] == "profile-key"
+        assert model_of(demo) == "acme/mini" and model_of(root) is None

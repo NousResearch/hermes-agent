@@ -154,6 +154,24 @@ def test_named_profile_restart_all_reaches_the_all_aware_branch(monkeypatch):
     assert called == [True]
 
 
+@pytest.mark.parametrize("command", [gw._cmd_start, gw._cmd_restart], ids=["start", "restart"])
+def test_named_profile_host_owner_can_manage_its_own_gateway(
+        command, host_owner, monkeypatch):
+    """A named profile can own the host multiplexer and must not guard itself out."""
+    monkeypatch.setattr(gw, "_current_profile_name", lambda: "ops")
+    monkeypatch.setattr(
+        "gateway.status._get_process_hermes_home", lambda: host_owner.home)
+    monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        gw, "_dispatch_via_service_manager_if_s6",
+        lambda verb: dispatched.append(verb) or True)
+
+    command(SimpleNamespace(system=False, all=False, force=False))
+
+    assert dispatched == [command.__name__.removeprefix("_cmd_")]
+
+
 def test_a_supervised_attach_is_retried_not_parked(monkeypatch, capsys):
     """78 parks the unit for good; "someone serves me right now" is a transient observation."""
     owner = host_attach.HostGateway(4321, Path("/somewhere"), ("default", "other"))

@@ -165,6 +165,7 @@ class TestPoolRotationCycle:
         for i in range(pool_entries):
             e = MagicMock(name=f"entry_{i}")
             e.id = f"cred-{i}"
+            e.priority = i
             entries.append(e)
 
         pool = MagicMock()

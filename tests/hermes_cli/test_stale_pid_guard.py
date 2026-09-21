@@ -240,6 +240,66 @@ class TestKillStaleDashboardProcesses:
         assert kill.call_args.args[0] == [12345]
         assert result["matched"] == [12345]
 
+    def test_scoped_reap_fails_closed_when_main_dashboard_predates_scope_home(self):
+        """#118154: a self-updater runs this module (post-pull) against the pre-pull
+        main_dashboard still in sys.modules. When that definition predates scope_home,
+        a scoped reap must fail closed (skip, no call) instead of raising TypeError
+        and failing the whole update receipt."""
+        from hermes_cli import main_dashboard
+
+        calls = []
+
+        def _pre_scope_home(*, exclude_pids=None):
+            calls.append(exclude_pids)
+            return [12345]
+
+        with mock.patch.object(
+            main_dashboard, "_find_stale_dashboard_pids", _pre_scope_home
+        ):
+            result = dashboard_procs._kill_stale_dashboard_processes(
+                scope_home="/tmp/hermes-own"
+            )
+
+        assert calls == []
+        assert result == {"matched": [], "killed": [], "failed": []}
+
+    def test_unscoped_reap_keeps_working_across_the_mixed_version_window(self):
+        """An unscoped reap has no home filter to lose, so the pre-scope_home
+        definition still serves it — called without the kwarg it does not accept."""
+        from hermes_cli import main_dashboard
+
+        calls = []
+
+        def _pre_scope_home(*, exclude_pids=None):
+            calls.append(exclude_pids)
+            return []
+
+        with mock.patch.object(
+            main_dashboard, "_find_stale_dashboard_pids", _pre_scope_home
+        ):
+            result = dashboard_procs._kill_stale_dashboard_processes()
+
+        assert calls == [None]
+        assert result == {"matched": [], "killed": [], "failed": []}
+
+    def test_scoped_reap_still_forwards_scope_home_to_a_current_definition(self):
+        """The compatibility shim must not weaken the normal path: a definition
+        that does accept scope_home still receives it (#113978)."""
+        from hermes_cli import main_dashboard
+
+        calls = []
+
+        def _current(*, exclude_pids=None, scope_home=None):
+            calls.append((exclude_pids, scope_home))
+            return []
+
+        with mock.patch.object(main_dashboard, "_find_stale_dashboard_pids", _current):
+            dashboard_procs._kill_stale_dashboard_processes(
+                scope_home="/tmp/hermes-own"
+            )
+
+        assert calls == [(None, "/tmp/hermes-own")]
+
 
 class TestHermesHomeForPid:
     """Tri-state owner resolution: a readable environment always names a home."""

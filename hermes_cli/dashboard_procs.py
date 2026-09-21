@@ -5,6 +5,7 @@ call time so imports stay one-way (both of those modules import this one lazily)
 """
 
 import contextlib
+import inspect
 import os
 import subprocess
 import sys
@@ -605,7 +606,25 @@ def _kill_stale_dashboard_processes(
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
-    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
+    # The updater runs this module (lazy-imported from the post-pull tree) against the
+    # pre-pull main_dashboard still in sys.modules. When that in-memory definition
+    # predates scope_home (#113978), forwarding the kwarg raises TypeError and fails the
+    # whole update receipt although the update itself succeeded (#118154).
+    _stale_pids = _dash._find_stale_dashboard_pids
+    if "scope_home" in inspect.signature(_stale_pids).parameters:
+        pids = _stale_pids(exclude_pids=exclude or None, scope_home=scope_home)
+    elif scope_home is None:
+        pids = _stale_pids(exclude_pids=exclude or None)
+    else:
+        # Scoped reap, pre-scope_home definition: it cannot filter by home, and an
+        # unscoped reap could kill another install's backend — fail closed. A backend
+        # left on pre-update code is still caught by the survivor probe → reconciliation.
+        print(
+            "  ⚠ Skipped the stale-dashboard reap: the running updater mixes versions and "
+            "its in-memory dashboard helpers predate scoped targeting; any pre-update "
+            "backend is left for the survivor probe to report."
+        )
+        return _empty_result()
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).

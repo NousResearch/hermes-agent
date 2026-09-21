@@ -31,6 +31,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
+    # Reply to send when a hidden-reasoning-only incomplete turn is suppressed (the agent produced
+    # no visible text, so the loop's sentinel must not be delivered). Empty = stay silent, the
+    # default for peer-agent threads; a customer-facing line sets it so a human is not left with no
+    # answer at all (#102338).
+    "incomplete_turn_reply": "",
 }
 
 # Tiers: HIGH = editing, personal/team use; MEDIUM = editing but customer-facing;
@@ -182,6 +187,11 @@ def _norm_int(value: Any) -> int:
         return 0
 
 
+def _norm_text_or_empty(value: Any) -> str:
+    """Free-form operator text; anything that is not a string reads as unset."""
+    return value.strip() if isinstance(value, str) else ""
+
+
 _NORMALISERS: dict[str, Any] = {
     "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log"}),
     "show_reasoning": _norm_bool,
@@ -197,6 +207,7 @@ _NORMALISERS: dict[str, Any] = {
     "tool_progress_grouping": _norm_choice(("accumulate", "separate")),
     "reasoning_style": _norm_choice(("code", "blockquote", "subtext")),
     "tool_preview_length": _norm_int,
+    "incomplete_turn_reply": _norm_text_or_empty,
 }
 
 

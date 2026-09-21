@@ -1494,6 +1494,20 @@ class GatewayTurnMixin:
             elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
                 await _typing_adapter.stop_typing(source.chat_id)
 
+    def _configured_incomplete_turn_reply(self, source) -> str:
+        """``display.incomplete_turn_reply`` for this platform ('' = stay silent)."""
+        try:
+            from gateway.display_config import resolve_display_setting
+            from gateway.run import _load_gateway_config, _platform_config_key
+            value = resolve_display_setting(
+                _load_gateway_config(), _platform_config_key(source.platform),
+                "incomplete_turn_reply", "",
+            )
+            return value.strip() if isinstance(value, str) else ""
+        except Exception:
+            logger.debug("incomplete_turn_reply lookup failed", exc_info=True)
+            return ""
+
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
@@ -1510,7 +1524,8 @@ class GatewayTurnMixin:
         response = agent_result.get("final_response") or ""
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
-        if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
+        _hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(agent_result)
+        if _hidden_reasoning_incomplete:
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
@@ -1523,6 +1538,14 @@ class GatewayTurnMixin:
             )
             _intentional_silence = False
             response = _UNEXPECTED_SILENCE_REPLY
+
+        # A suppressed hidden-reasoning-only turn is silent to peer agents but not to a human: on a
+        # user turn an operator can opt into a configured line (display.incomplete_turn_reply) which
+        # then rides the normal final-response path below. Empty (the default) keeps #51628's
+        # peer-agent silence byte-for-byte (#102338).
+        if (_hidden_reasoning_incomplete and not response and not _intentional_silence
+                and not is_machinery_display_kind(_silence_kind)):
+            response = self._configured_incomplete_turn_reply(source)
 
         # "(empty)" = the model produced no visible content after exhausting all retries. One
         # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user

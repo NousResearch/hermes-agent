@@ -277,6 +277,13 @@ def _sync_session_key_after_compress(
             "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
             sid, old_key, new_session_id,
         )
+        # The active-session registry gates Bot Chat's live-delivery owner.
+        # Publishing the child key while that lease still names the parent
+        # splits one conversation between two identities: replies can commit to
+        # the child state.db row but no live owner is allowed to deliver them.
+        # Keep the old key until a later safe synchronization can transfer the
+        # lease; this fails closed instead of advertising a tip we do not own.
+        return
     # Even if the approval module fails to import, anchor session_key on the continuation id.
     session["session_key"] = new_session_id
     with contextlib.suppress(Exception):

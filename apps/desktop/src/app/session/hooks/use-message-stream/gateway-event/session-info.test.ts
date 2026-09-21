@@ -146,4 +146,40 @@ describe('handleSessionInfoEvent workspace ownership', () => {
 
     expect(next).toBe(original)
   })
+
+  it('adopts a compression tip and backfills its persisted transcript once', () => {
+    const root = {
+      ...createClientSessionState('stored-root'),
+      cwd: '/repo/mine'
+    }
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-1',
+      cwd: '/repo/mine',
+      explicitSid: 'runtime-1',
+      storedSessionId: 'stored-tip'
+    })
+    const states = ctx.deps.sessionStateByRuntimeIdRef.current
+    states.set('runtime-1', root)
+    ctx.deps.updateSessionState = vi.fn(
+      (sessionId: string, updater: (state: ClientSessionState) => ClientSessionState, storedSessionId?: string) => {
+        const next = updater({ ...states.get(sessionId)!, storedSessionId: storedSessionId ?? null })
+        states.set(sessionId, next)
+
+        return next
+      }
+    )
+
+    handleSessionInfoEvent(ctx)
+
+    expect(ctx.deps.hydrateFromStoredSession).toHaveBeenCalledWith(3, 'stored-tip', 'runtime-1')
+    expect(states.get('runtime-1')?.storedSessionId).toBe('stored-tip')
+
+    ctx.payload = { ...ctx.payload, stored_session_id: 'stored-tip-2' }
+    handleSessionInfoEvent(ctx)
+    handleSessionInfoEvent(ctx)
+
+    expect(ctx.deps.hydrateFromStoredSession).toHaveBeenCalledTimes(2)
+    expect(ctx.deps.hydrateFromStoredSession).toHaveBeenLastCalledWith(3, 'stored-tip-2', 'runtime-1')
+    expect(states.get('runtime-1')?.storedSessionId).toBe('stored-tip-2')
+  })
 })

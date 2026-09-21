@@ -1192,6 +1192,20 @@ def test_sync_session_key_after_compress_reanchors_active_session_lease(
     lease.release()
 
 
+def test_sync_session_key_after_compress_keeps_parent_tip_when_lease_reanchor_fails(server, monkeypatch):
+    """A failed Desktop liveness transfer must not publish a child the lease cannot own."""
+    session = {
+        "active_session_lease": object(),
+        "agent": types.SimpleNamespace(session_id="session-child"),
+        "session_key": "session-parent",
+    }
+    monkeypatch.setattr(server, "_transfer_active_session_slot", lambda *_args, **_kwargs: False)
+
+    server._sync_session_key_after_compress("desktop-runtime", session)
+
+    assert session["session_key"] == "session-parent"
+
+
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     captured = {}
 

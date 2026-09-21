@@ -260,12 +260,31 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       }
     }
 
-    if (sessionId && hasStatePatch) {
+    const previousStoredSessionId = sessionId
+      ? sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId
+      : null
+    const rotatedToStoredTip =
+      Boolean(sessionId) &&
+      typeof payload?.stored_session_id === 'string' &&
+      Boolean(previousStoredSessionId) &&
+      previousStoredSessionId !== payload.stored_session_id
+
+    if (sessionId && (hasStatePatch || rotatedToStoredTip)) {
       updateSessionState(
         sessionId,
         state => applySessionInfoStatePatch(state, statePatch),
         payload?.stored_session_id || undefined
       )
+
+      // Compression can persist the completed assistant row on its child tip
+      // before the Desktop has seen the terminal stream event. Rehydrate that
+      // same runtime from the authoritative child lineage immediately; the
+      // transcript reconciler is idempotent, so a later complete event cannot
+      // render the reply twice.
+      const storedTip = typeof payload?.stored_session_id === 'string' ? payload.stored_session_id : null
+      if (rotatedToStoredTip && storedTip && isActiveEvent) {
+        void hydrateFromStoredSession(3, storedTip, sessionId)
+      }
     }
 
     // The running→busy transition must reach EVERY session, not just the
@@ -398,7 +417,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         // history for the session actually on screen; a background session
         // reads its history when the user opens it, and hydrating every one
         // of them here would fan a REST call out per idle session.
-        if (isActiveEvent) {
+        if (isActiveEvent && !rotatedToStoredTip) {
           void hydrateFromStoredSession(3, nextState.storedSessionId, sessionId)
         }
       }

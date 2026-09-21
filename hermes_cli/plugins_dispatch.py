@@ -29,8 +29,9 @@ logger = logging.getLogger("hermes_cli.plugins")
 # pre/post_approval_* (approval UX has its own timeout); kanban_* (own heartbeat/stale reclaim).
 # The goal is to stop a hung Python plugin callback from wedging the conversation loop (#76821) without
 # joining the worker (avoids the #6622 ThreadPoolExecutor shutdown hang). Hooks not listed below run
-# synchronously to completion. (on_session_start/end stay bounded — they sit on the common session-boundary
-# path.) - subagent_start — observer only; blocking delegation belongs in pre_tool_call. Lower frequency
+# synchronously to completion. (on_session_start/end and on_turn_interrupted stay bounded — they sit on
+# the common session-boundary path.) - subagent_start — observer only; blocking delegation belongs in
+# pre_tool_call. Lower frequency
 # than tool/LLM hooks. Abandoning is unsafe either way (fail-open skips auth-like checks; fail-closed can
 # drop legitimate messages). Prefer finish-or-exception fallthrough. - pre_approval_request /
 # post_approval_response — observers only (cannot veto); the approval UX already has its own timeout; not on

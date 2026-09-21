@@ -628,6 +628,19 @@ class TestReaperIdentityGuard:
             terminate.assert_not_called()
             assert d.exists()
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows path comparison is case-insensitive")
+    @pytest.mark.parametrize("binding", ["argv", "environment"])
+    def test_socket_binding_preserves_posix_path_case(self, fake_tmpdir, binding):
+        """A differently cased socket path must not authorize this session's kill."""
+        socket_dir = str(_make_socket_dir(fake_tmpdir, "h_case_binding", pid=12345))
+        different = str(Path(socket_dir).with_name("agent-browser-H_CASE_BINDING"))
+        proc = self._FakeProc(
+            name="agent-browser",
+            cmdline=["agent-browser", "daemon"] + ([different] if binding == "argv" else []),
+            environ={"AGENT_BROWSER_SOCKET_DIR": different} if binding == "environment" else {},
+        )
+        assert self._run(proc, socket_dir) is None
+
     def test_planted_pid_survives_full_reaper_path(self, fake_tmpdir):
         """End-to-end through the reaper: a planted non-browser PID is spared.
 

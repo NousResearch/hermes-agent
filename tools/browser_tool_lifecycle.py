@@ -223,9 +223,9 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
 
 def _argv_token_is_path(token: str, path: str) -> bool:
     """True when ``token`` (or its ``--flag=VALUE`` value) names exactly ``path``."""
-    want = os.path.normpath(path).lower()
+    want = os.path.normcase(os.path.normpath(path))
     candidate = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
-    return bool(candidate) and os.path.normpath(candidate).lower() == want
+    return bool(candidate) and os.path.normcase(os.path.normpath(candidate)) == want
 
 
 def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,

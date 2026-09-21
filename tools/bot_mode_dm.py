@@ -48,6 +48,9 @@ REPLY_COMPLETION_CHARS = MESSAGE_MAX_CHARS + 2000
 # the machine dies between spawn ack and the runner's finally.
 _DM_DIR_NAME = "hermes-dm"
 _DM_STALE_SECONDS = 24 * 60 * 60
+# Foreground relay RPCs return a pending receipt after this budget. Background
+# completion owners in _wait_live_dm keep waiting until the receipt settles.
+_LIVE_WAIT_SECONDS = 300
 
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")

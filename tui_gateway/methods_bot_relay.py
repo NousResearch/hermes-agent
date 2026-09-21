@@ -139,9 +139,9 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
         # here. The subprocess transport would then be refused SESSION_NOT_OWNED by that owner's
         # lease (#113753). Hand the DM to the live owner — this process or a sibling — through the
         # same mailbox local DMs use (tools/bot_mode_dm.py::_run_delivery); its poller admits it at
-        # the next idle boundary and settles a receipt carrying the reply. Local DMs wait on that
-        # receipt (_wait_live_dm); so does this relay, on the same budget, so the sender gets the
-        # target's answer rather than a receipt when its Bot Chat happens to be open.
+        # the next idle boundary and settles a receipt carrying the reply. Local background DMs
+        # wait until settlement (_wait_live_dm); this foreground RPC waits on a bounded budget,
+        # then returns a pending receipt if the target's Bot Chat is still busy.
         from tools.bot_live_delivery import await_delivery, deliver_to_live_owner, find_canonical_live_owner
         from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
         owner_home = live_home if live_home is not None else Path(_hermes_home)

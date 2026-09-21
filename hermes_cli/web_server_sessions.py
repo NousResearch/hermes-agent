@@ -9,16 +9,25 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
+from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
+
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
 
-_DESCENDANTS_SQL = """
+_DESCENDANTS_SQL = f"""
             WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
                 SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
                 UNION
                 SELECT s.id, s.parent_session_id, s.started_at
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
+                -- Continuation edges only (same predicate as the session list's chain CTE): a subagent run,
+                -- a /branch fork, a /new reset child or a tool-owned row is its own conversation, and resuming
+                -- INTO one parks the user's chat in a row the sidebar never lists (#115092).
+                WHERE {_sql_json_extract('s.model_config', '$._delegate_from')} IS NULL
+                  AND {_sql_json_extract('s.model_config', '$._branched_from')} IS NULL
+                  AND NOT ({_RESET_CHILD_SQL.format(a='s')})
+                  AND COALESCE(s.source, '') != 'tool'
             )
             SELECT id, parent_session_id, started_at FROM descendants
             """

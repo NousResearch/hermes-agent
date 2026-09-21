@@ -10,6 +10,9 @@ import { cookiesHavePortalAccessToken, cookiesHavePortalSession } from './portal
 test('either portal credential family signs in, and refresh-only material is a session without access', () => {
   for (const [access, refresh] of [
     ['privy-token', 'privy-refresh-token'],
+    // Secured-prefix forms and the legacy `privy-session` renewal cookie (#73495).
+    ['__Host-privy-token', 'privy-session'],
+    ['__Secure-privy-token', 'privy-session'],
     ['nas-session', 'nas-refresh']
   ]) {
     const accessJar = [{ name: access, value: 'jwt' }]

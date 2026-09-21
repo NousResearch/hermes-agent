@@ -233,7 +233,7 @@ What happens:
 1. The CLI validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
 2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
 3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
-   - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
+   - **Telegram** — opens a new forum topic (DM topics if the bot owner has enabled Threaded Mode via BotFather, or a forum supergroup topic).
    - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
    - **Matrix** — posts a seed message and uses its event id as the thread root (`m.thread` relation).
@@ -585,7 +585,10 @@ hermes sessions archive --title "dry run" --yes
 ```
 
 At least one filter is required — a bare `hermes sessions archive` refuses to
-archive your entire history. Archived sessions are hidden from
+archive your entire history. A compacted conversation is archived as a unit
+through its live tip: an old compression segment never matches on its own age,
+so a chat that is still active is never hidden because its history is long.
+Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
 unarchived from the Desktop/Dashboard session list.
 
@@ -606,7 +609,7 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/reference/cli-commands#hermes-insights).
+For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](../reference/cli-commands.md#hermes-insights).
 
 ### Repair Stranded Gateway Sessions
 
@@ -649,6 +652,52 @@ second history, choosing which thread it continues is your call. The stranded
 conversation stays readable via `/resume` and session search either way —
 routing is the only thing the repair changes. Back up first
 (`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
+
+### Repair State Crossed Between Profiles
+
+Every profile owns one `state.db`, and every gateway session key names the
+profile that owns the conversation (`agent:main:…` for the default profile,
+`agent:<name>:…` for a named one). Older releases could leave the two
+disagreeing — a named profile's rows written into the default store, a child
+session inheriting from another profile's row, a routing row copied into the
+wrong store, a Telegram topic or `/voice` setting saved without the bot's
+profile. Current versions put new state in the right place; `hermes sessions
+repair-profiles` settles what is already crossed.
+
+```bash
+# Report only — every store is scanned, nothing is written
+hermes sessions repair-profiles
+
+# Perform the repairs (stop the gateway first; a snapshot of every store is taken)
+hermes sessions repair-profiles --apply
+
+# Machine-readable report
+hermes sessions repair-profiles --json
+```
+
+What it finds and does:
+
+| Finding | Repair |
+|---|---|
+| `profile_name` disagrees with the row's own session key | relabel from the key |
+| rows sitting in another profile's store | move (with all messages) to the owning profile's store |
+| `parent_session_id` pointing at another profile's row | sever the link; the row's own identity is kept |
+| routing rows outside the default store (under multiplexing) | move to the default store; an existing row there wins |
+| routing rows / `sessions.json` entries for a profile that no longer exists | delete |
+| Telegram topic bindings and voice-mode entries missing their bot's profile | relabel from the sessions that hold the chat |
+
+Two cases are reported but never repaired without being told what they are:
+rows keyed to a profile that does not exist (create the profile, or
+`hermes profile migrate-identity <old> <new>`), and `agent:main:…` rows inside
+a named profile's store. The latter are either the history of a gateway that
+used to run standalone for that profile (`--legacy-main rekey` gives them the
+profile's namespace) or default-profile chats that leaked in under a scoped
+write (`--legacy-main move` sends them to the default store) — the rows
+themselves cannot tell the two apart.
+
+`--apply` refuses while a gateway owns any of the stores (it holds the routing
+index in memory and would write it back), and is safe to re-run: a second run
+finds nothing.
 
 
 ## Importing Sessions from Claude Code and Codex CLI
@@ -796,15 +845,15 @@ By default, Hermes uses `group_sessions_per_user: true` in `config.yaml`. That m
 
 - Alice and Bob can both talk to Hermes in the same Discord channel without sharing transcript history
 - one user's long tool-heavy task does not pollute another user's context window
-- a running turn is interrupted under its own key, so `/stop` in the room finds a turn that
-  started under a different sender's key (a peer's or a bot's message) — see below
+- a running turn is keyed to the sender that started it, but `/stop` still reaches it — see below
 
 `/stop` means "stop what is running in this chat": it first tries the caller's own session key,
-then other participants' runs in the caller's own thread, then any live turn in the same room —
+then any live turn in this chat — other participants' runs in the caller's own thread included —
 authorization-gated, and never another room, workspace or profile. So an idle Alice's `/stop` can
 end a turn Bob (or a bot) started in the room she is in. A `/stop` sent from *inside* a thread is
-narrower: it only reaches runs belonging to that thread (or to no thread at all), never a turn in
-another thread of the same channel.
+narrower: it reaches runs belonging to that thread and a room-wide run that carries no thread slot
+(the rolling-DM shape), but never another thread of the same channel and never a peer's per-sender
+top-level run.
 
 If you want one shared "room brain" instead, set:
 
@@ -922,6 +971,7 @@ Key tables in `state.db`:
 - Gateway conversations persist across inactivity; use `/new` or `/reset` for an explicit boundary
 - Before reset, the agent saves memories and skills from the expiring session
 - Auto-pruning (**on by default** since #54189): when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway/cron startup
+- `sessions.retention_days` must be a whole number of days `>= 0`. A negative value (or a missing one) is rejected: startup maintenance logs a warning naming the allowed range and skips the sweep instead of treating the future cutoff as "everything" — `sessions.auto_prune: false` is the switch that disables pruning
 - After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space only when **both** gates pass: at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM`, **and** more than 25% of the file's pages are reclaimable (`PRAGMA freelist_count / page_count`). A dense database never pays for a full rewrite to reclaim a few MB (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
@@ -950,7 +1000,9 @@ workers, subagents, one-shot CLI runs — can die without ever marking their
 session ended, and pruning only deletes *ended* rows. To keep those from
 accumulating forever, each auto-prune pass also *closes* open sessions from
 those state-owned sources (`cli`, `cron`, `kanban`, `acp`, `api_server`,
-`subagent`, `tool`) whose last activity is older than `retention_days`
+`subagent`, `tool`, plus the `recovered` placeholders that
+`hermes sessions recover` synthesizes for orphaned messages) whose last
+activity is older than `retention_days`
 (`end_reason: startup_orphan_reap`). Closing is non-destructive — the
 session stays resumable — and the row is aged from its close, so it is only
 deleted by a *later* pass after a further full retention window. Messaging

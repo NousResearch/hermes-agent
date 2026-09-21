@@ -366,7 +366,13 @@ def get_board(
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
             columns[t.status if t.status in columns else "todo"].append(d)
 
-        # Per-column ordering (priority DESC, created_at ASC) comes from list_tasks.
+        # Queue lanes keep the list_tasks dispatch order; the done column is
+        # history, so order it newest-completed-first. Two stable sorts compose
+        # into the "completed_at DESC NULLS LAST, id DESC" SQL key.
+        columns["done"].sort(key=lambda d: d["id"], reverse=True)
+        columns["done"].sort(key=lambda d: (d["completed_at"] is None, -(d["completed_at"] or 0)))
+
+        # Queue columns keep list_tasks' dispatch order (priority DESC, created_at ASC).
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
         assignees = [r["assignee"] for r in conn.execute(
             "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND status != 'archived' ORDER BY assignee")]
@@ -632,13 +638,7 @@ def _apply_status(conn, task_id: str, s: str, p, unknown_detail: str) -> bool:
 
 
 def _set_priority(conn, task_id: str, priority: int, board: Optional[str]) -> None:
-    with kanban_db.write_txn(conn):
-        conn.execute("UPDATE tasks SET priority = ? WHERE id = ?", (int(priority), task_id))
-        conn.execute(
-            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'reprioritized', ?, ?)",
-            (task_id, json.dumps({"priority": int(priority)}), int(time.time())))
-    # Mutation-boundary observer (post-commit): this direct-SQL write bypasses every kanban_db mutator.
-    kanban_db.notify_task_updated(conn, task_id, ("priority",), board=board)
+    kanban_db.edit_task(conn, task_id, priority=int(priority), board=board)
 
 
 def _apply_model_override(conn, task_id: str, p) -> bool:
@@ -660,7 +660,7 @@ _OVERRIDE_OPS = (
 
 def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_deferred: bool) -> None:
     """PATCH status phase: 400 on a rejected verb, 409 when the transition is refused
-    (naming the blocking parent(s) for ``ready`` so the UI renders an actionable toast)."""
+    (naming the blocking parent(s) for ``ready``/``done``/``review`` so the UI renders an actionable toast)."""
     s = payload.status
     if s == "archived":
         ok = kanban_db.archive_task(conn, task_id)
@@ -675,7 +675,19 @@ def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_d
     if blockers:
         names = ", ".join(f"{p['title']!r} ({p['id']}, status={p['status']})" for p in blockers)
         raise _conflict(f"Cannot move to 'ready': blocked by parent(s) not done — {names}")
-    raise _conflict(f"status transition to {s!r} not valid from current state")
+    raise _conflict(_open_parent_refusal(conn, task_id, s) or f"status transition to {s!r} not valid from current state")
+
+
+def _open_parent_refusal(conn, task_id: str, s: str) -> Optional[str]:
+    """complete_task/request_review return bare False for a dependency refusal too;
+    for a refused ``done``/``review`` name the open parents instead of the generic text."""
+    if s not in ("done", "review"):
+        return None
+    blockers = kanban_db.unsatisfied_parents(conn, task_id)
+    if not blockers:
+        return None
+    detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
+    return f"cannot move {task_id} to {s!r}: unsatisfied parent dependencies: {detail}; complete the parents first (done or archived)"
 
 
 def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Optional[str]) -> None:
@@ -844,7 +856,7 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
     if payload.status is not None and not payload.archive:
         s = payload.status
         if not _apply_status(conn, tid, s, payload, f"unknown status {s!r}"):
-            entry.update(ok=False, error=f"transition to {s!r} refused")
+            entry.update(ok=False, error=_open_parent_refusal(conn, tid, s) or f"transition to {s!r} refused")
     if payload.assignee is not None:
         try:
             ok = (kanban_db.reassign_task(conn, tid, payload.assignee or None, reclaim_first=True) if payload.reclaim_first
@@ -1634,7 +1646,9 @@ _PROFILE_SETTINGS = ("orchestrator_profile", "default_assignee")
 @router.get("/orchestration")
 def get_orchestration_settings():
     """Current orchestration knobs from config.yaml plus the resolved effective
-    values (fallbacks filled the same way the decomposer does)."""
+    values. An unset/unknown profile resolves to the active profile here; the
+    decomposer prefers the root card's assignee in that case and uses the active
+    profile only for cards with no assignee."""
     cfg = _load_config_or_empty()
     kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
     explicit = {k: (kanban_cfg.get(k) or "").strip() for k in _PROFILE_SETTINGS}

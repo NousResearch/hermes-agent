@@ -383,11 +383,13 @@ describe('default-route profile adoption', () => {
     async connectionId => {
       const base = fakeDesktop()
       const route = { connectionId, profile: 'coder' }
+
       const desktop = {
         ...base,
         getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
         profile: { ...base.profile, getDefault: vi.fn(async () => route) }
       }
+
       ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
       render(<Harness />)
       await flushAsync()
@@ -398,6 +400,7 @@ describe('default-route profile adoption', () => {
         expect(desktop.getConnection).toHaveBeenCalledWith('coder')
         expect(desktop.getConnectionFor).not.toHaveBeenCalled()
       }
+
       expect($connection.get()?.profile).toBe('coder')
       expect($desktopBoot.get().running).toBe(false)
     }
@@ -512,6 +515,42 @@ describe('primary failure foreground isolation', () => {
       expect($desktopBoot.get().visible).toBe(false)
     }
   )
+  it('a rejected background primary offers Settings instead of parking silently', async () => {
+    const desktop = Object.assign(fakeDesktop(), {
+      getConnectionFor: vi.fn(async () => ({
+        ...coderConn,
+        connectionId: 'local',
+        profile: 'default',
+        mode: 'local',
+        baseUrl: 'http://127.0.0.1:9191',
+        wsUrl: 'ws://127.0.0.1:9191/api/ws?token=c'
+      }))
+    })
+
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, mode: 'remote', remoteKind: 'cloud', authMode: 'oauth' } as typeof primaryConn)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    let opening!: Promise<boolean>
+    act(() => {
+      opening = ensureGatewayForAgent('local', 'default')
+    })
+    await flushAsync()
+    expect(await opening).toBe(true)
+
+    desktop.getGatewayWsUrl.mockRejectedValue(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    // The parked primary no longer retries by itself, so the user must learn
+    // about it from where they are — without the foreground being hijacked.
+    expect(isActivePrimary()).toBe(false)
+    expect($desktopBoot.get().error).toBeNull()
+    const toasts = $notifications.get().filter(entry => entry.kind === 'error')
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].action?.label).toBe('Open Gateways')
+  })
+
   it.each(['progress', 'reconnect'] as const)(
     'primary auth via %s follows the foreground, including a latched error',
     async path => {
@@ -1337,6 +1376,36 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).not.toBe('open')
     // Still retrying.
     expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
+  })
+
+  it('#83134: a proxy that accepts then immediately closes every socket does not reset the backoff to attempt 0', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    // Deterministic full jitter: every delay is exactly half its ceiling, so
+    // attempt 0 costs 150ms and the ladder is 150, 300, 600, 1200, 2400, ...
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+    // 12s of a proxy that ACCEPTS the upgrade and closes on the first frame:
+    // every socket opens and is dropped ~100ms later, never a stable 5s open.
+    for (let elapsed = 0; elapsed < 12_000; elapsed += 100) {
+      const latest = FakeWebSocket.instances.at(-1)
+
+      if (latest?.readyState === FakeWebSocket.OPEN) {
+        act(() => latest.drop())
+      }
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+    }
+
+    // Attempt 0 forever redials every 150ms (~80 sockets / 12s — the reporter's
+    // 55 opens / 12s). A climbing ladder reaches the 15s cap in ~7 dials.
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(5)
+    expect(FakeWebSocket.instances.length).toBeLessThanOrEqual(10)
   })
 
   it('FIX: a successful reconnect after a prolonged drop restores the open gateway', async () => {

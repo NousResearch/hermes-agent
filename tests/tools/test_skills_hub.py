@@ -199,6 +199,32 @@ class TestSkillsShSource:
         auth = MagicMock(spec=GitHubAuth)
         return SkillsShSource(auth=auth)
 
+    def test_sitemap_fetches_go_through_guarded_get_and_ask_for_gzip_only(self, monkeypatch):
+        """Sitemap hops use the hub's guarded GET *and* keep the explicit
+        ``Accept-Encoding: gzip`` pin: skills.sh serves sitemaps brotli-compressed and
+        httpx's optional brotlicffi backend has a streaming-decode bug on them, so the
+        default ``gzip, deflate, br`` negotiation must never reach the server."""
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cached_metas", lambda _key: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
+        calls = []
+
+        def fake_get(url, *, timeout, headers=None):
+            calls.append((url, headers))
+            body = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap></sitemapindex>"
+                    if url.endswith("/sitemap.xml") else
+                    "<urlset><url><loc>https://skills.sh/acme/repo/my-skill</loc></url></urlset>")
+            return MagicMock(status_code=200, headers={}, text=body)
+
+        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+
+        results = self._source()._sitemap_catalog(limit=5)
+
+        assert [r.identifier for r in results] == ["skills-sh/acme/repo/my-skill"]
+        assert [u for u, _ in calls] == ["https://www.skills.sh/sitemap.xml", "https://www.skills.sh/sitemap-skills-0.xml"]
+        assert all(h == {"Accept-Encoding": "gzip"} for _, h in calls), calls
+
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
     @patch("tools.skills_hub.httpx.get")
@@ -228,6 +254,37 @@ class TestSkillsShSource:
         assert results[0].path == "vercel-react-best-practices"
         assert results[0].extra["installs"] == 207679
 
+    @patch("tools.skills_hub_skillssh.time.sleep")
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    def test_sitemap_catalog_retries_failed_shard_and_never_caches_partial(
+        self, _mock_read_cache, mock_write_cache, _mock_sleep, monkeypatch,
+    ):
+        """A per-skill sitemap shard that keeps failing is a hole in the catalog, not an
+        empty shard: retry it, and never publish the partial slice to the shared cache."""
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cached_metas", lambda _key: None)
+        monkeypatch.setattr("tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
+        index = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap>"
+                 "<sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap></sitemapindex>")
+        shard0 = "<urlset><url><loc>https://www.skills.sh/o/r/skill-a</loc></url></urlset>"
+        calls: List[str] = []
+
+        def fake_get(url, *, timeout, headers=None):
+            calls.append(url)
+            if url.endswith("sitemap.xml"):
+                return MagicMock(status_code=200, headers={}, text=index)
+            if url.endswith("sitemap-skills-0.xml"):
+                return MagicMock(status_code=200, headers={}, text=shard0)
+            return MagicMock(status_code=503, headers={}, text="")
+
+        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+        results = self._source()._sitemap_catalog(0)
+
+        assert [m.identifier for m in results] == ["skills-sh/o/r/skill-a"]
+        assert calls.count("https://www.skills.sh/sitemap-skills-1.xml") == SkillSource.CATALOG_PAGE_RETRIES
+        mock_write_cache.assert_not_called()
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -329,6 +386,92 @@ class TestFindSkillInRepoTree:
         mock_get.return_value = MagicMock(status_code=404)
         result = self._source()._find_skill_in_repo_tree("owner/repo", "my-skill")
         assert result is None
+
+
+class TestRepoRootSkillLayout:
+    """Regression for #115028: skills.sh repos whose SKILL.md sits at the repo ROOT (no skill
+    directory, e.g. orzcls/win-disk-cleaner) are listed by search but could not be resolved by
+    inspect/install — the discovery root scan skipped non-directory entries by construction and
+    no identifier form expressed "the skill directory IS the repo root"."""
+
+    IDENTIFIER = "skills-sh/orzcls/win-disk-cleaner/win-disk-cleaner"
+    REPO = "orzcls/win-disk-cleaner"
+    SKILL_MD = (
+        "---\nname: win-disk-cleaner\ndescription: Clean a Windows disk safely.\n---\n\n"
+        "# Win Disk Cleaner\n\nSee references/free_tools.md\n"
+    )
+    ROOT_TREE = [
+        {"path": "LICENSE", "type": "blob"},
+        {"path": "README.md", "type": "blob"},
+        {"path": "SKILL.md", "type": "blob"},
+        {"path": "references/free_tools.md", "type": "blob"},
+    ]
+
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {"Accept": "application/vnd.github.v3+json"}
+        return SkillsShSource(auth=auth)
+
+    def _github_stub(self, tree):
+        """Minimal GitHub API: repo info, one git tree, and root-level file contents only —
+        every candidate ``<repo>/<base>/<skill>/SKILL.md`` path 404s, as in the real repo."""
+        def _side_effect(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 404
+            if url.rstrip("/").endswith(self.REPO):
+                resp.status_code, resp.json = 200, (lambda: {"default_branch": "main"})
+            elif "/git/trees/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {"sha": "b" * 40, "truncated": False, "tree": tree}
+            elif url.endswith("/contents/SKILL.md"):
+                resp.status_code, resp.content = 200, self.SKILL_MD.encode()
+            elif url.endswith("/contents/references/free_tools.md"):
+                resp.status_code, resp.content = 200, b"# Free tools\n"
+            elif url.endswith("/contents/LICENSE") or url.endswith("/contents/README.md"):
+                # Every blob in the pinned tree must fetch, or the bundle is "incomplete" and
+                # deliberately left unpinned (empty revision) for the next update check to fill.
+                resp.status_code, resp.content = 200, b"root-level file\n"
+            return resp
+        return _side_effect
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_resolves_skill_md_at_repo_root(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE)
+
+        meta = self._source().inspect(self.IDENTIFIER)
+
+        assert meta is not None
+        assert meta.name == "win-disk-cleaner"
+        assert meta.repo == self.REPO
+        assert meta.identifier == self.IDENTIFIER
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_resolves_and_names_bundle_for_repo_root_skill(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE)
+
+        bundle = self._source().fetch(self.IDENTIFIER)
+
+        assert bundle is not None
+        # Repo-root skill has no directory to name itself after; fall back to the repo name.
+        assert bundle.name == "win-disk-cleaner"
+        assert bundle.files["SKILL.md"] == self.SKILL_MD
+        # Support files sit directly under the repo root, so the root is the skill directory.
+        assert bundle.files["references/free_tools.md"] == b"# Free tools\n"
+        assert bundle.identifier == self.IDENTIFIER
+        assert bundle.metadata["source_url"] == f"https://github.com/{self.REPO}/tree/{'b' * 40}"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_root_layout_does_not_resolve_as_a_multi_skill_repo(self, mock_get, _mock_read_cache, _mock_write_cache):
+        """A repo with a root SKILL.md AND another skill dir is not a root-layout single skill."""
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE + [{"path": "skills/other/SKILL.md", "type": "blob"}])
+
+        assert self._source().inspect(self.IDENTIFIER) is None
 
 
 class TestWellKnownSkillSource:
@@ -621,6 +764,66 @@ class TestCheckForSkillUpdates:
         assert results[0]["status"] == expected
         assert "bundle" not in results[0]
         source.fetch.assert_not_called()
+
+    @staticmethod
+    def _github_source_with_tree(tree_sha: str, calls: dict) -> GitHubSource:
+        """Real ``GitHubSource`` whose API is stubbed: one tree at ``tree_sha`` holding SKILL.md
+        plus two support blobs; every file GET is counted in ``calls``."""
+        src = GitHubSource(auth=MagicMock())
+        entries = [{"path": f"demo-skill/{p}", "type": "blob", "sha": f"sha-{p}", "size": 3}
+                   for p in ("SKILL.md", "scripts/run.sh", "references/notes.md")]
+        api = {"/repos/owner/repo": {"default_branch": "main"},
+               "/repos/owner/repo/git/trees/main": {"sha": tree_sha, "tree": entries}}
+        src._github_json = lambda url, **kw: api[url.split("api.github.com", 1)[1]]
+        def _file(repo, path, **kw):
+            calls["files"] = calls.get("files", 0) + 1
+            return "---\nname: demo-skill\n---\nSee scripts/run.sh and references/notes.md\n"
+        src._fetch_file_content = _file
+        src._fetch_file_bytes = lambda repo, path, **kw: _file(repo, path, **kw).encode()
+        return src
+
+    @pytest.mark.parametrize("recorded, expected_status, expected_gets",
+                             [("a" * 40, "up_to_date", 0), ("b" * 40, "update_available", 3)])
+    def test_unchanged_upstream_revision_skips_bundle_download(
+            self, tmp_path, monkeypatch, recorded, expected_status, expected_gets):
+        """A lock entry whose recorded ``source_revision`` still matches the upstream tree
+        sha is reported ``up_to_date`` with zero file GETs; a moved tree pays the full fetch (#101454)."""
+        import tools.skills_hub as hub
+        (tmp_path / "skills" / "demo-skill").mkdir(parents=True)
+        monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "demo-skill", "source": "github", "identifier": "owner/repo/demo-skill",
+            "content_hash": "installed-hash", "install_path": "demo-skill",
+            "metadata": {"source_revision": recorded},
+        }]
+        calls: dict = {}
+        source = self._github_source_with_tree("a" * 40, calls)
+
+        results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert [r["status"] for r in results] == [expected_status]
+        assert calls.get("files", 0) == expected_gets
+        assert ("bundle" in results[0]) == (expected_status == "update_available")
+        if expected_status == "up_to_date":
+            assert results[0]["current_hash"] == results[0]["latest_hash"] == "installed-hash"
+
+    def test_bundle_with_a_failed_blob_fetch_records_no_revision(self):
+        """A transient blob failure installs with a gap; the lock must NOT carry the tree sha, or the
+        revision short-circuit would report the gap ``up_to_date`` forever instead of re-fetching."""
+        calls: dict = {}
+        source = self._github_source_with_tree("a" * 40, calls)
+        good_bytes = source._fetch_file_bytes
+        source._fetch_file_bytes = (
+            lambda repo, path, **kw: None if path.endswith("notes.md") else good_bytes(repo, path, **kw))
+
+        bundle = source.fetch("owner/repo/demo-skill")
+
+        assert bundle is not None and "references/notes.md" not in bundle.files
+        assert bundle.metadata["source_revision"] == ""
+        # and a clean fetch of the same tree does record it
+        source._fetch_file_bytes = good_bytes
+        assert source.fetch("owner/repo/demo-skill").metadata["source_revision"] == "a" * 40
 
 class TestCreateSourceRouter:
 
@@ -1109,6 +1312,77 @@ class TestQuarantineBundleBinaryAssets:
 
         assert (q_path / "SKILL.md").read_text(encoding="utf-8").startswith("---")
         assert (q_path / "assets" / "neutts-cli" / "samples" / "jo.wav").read_bytes() == b"RIFF\x00\x01fakewav"
+
+    def test_quarantine_bundle_writes_text_files_without_newline_translation(self, tmp_path, monkeypatch):
+        """Text members must land on disk byte-for-byte as the bundle carries them.
+
+        Path.write_text(newline=None) translates "\\n" to os.linesep on Windows, so a
+        CRLF copy became the installed content while bundle_content_hash re-encodes
+        the str as LF — every hub skill then reported update_available forever (#117181).
+        """
+        import pathlib
+
+        import tools.skills_hub as hub
+        from tools.skills_guard import content_hash
+
+        def windows_text_mode_write_text(self, data, encoding=None, errors=None, newline=None):
+            # Emulate the platform translation newline=None performs on Windows;
+            # newline="" is the documented opt-out quarantine must rely on.
+            if newline != "":
+                data = data.replace("\n", "\r\n")
+            self.write_bytes(data.encode(encoding or "utf-8"))
+
+        monkeypatch.setattr(pathlib.Path, "write_text", windows_text_mode_write_text)
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="crlfskill",
+                files={
+                    "SKILL.md": "---\nname: crlfskill\n---\n\nBody line one.\nBody line two.\n",
+                    "assets/binary.bin": b"\x00\x01raw",
+                },
+                source="official",
+                identifier="official/mlops/models/crlfskill",
+                trust_level="builtin",
+            )
+
+            q_path = quarantine_bundle(bundle)
+
+        assert (q_path / "SKILL.md").read_bytes() == bundle.files["SKILL.md"].encode("utf-8")
+        assert content_hash(q_path) == bundle_content_hash(bundle)
+
+    @pytest.mark.windows_only
+    def test_quarantine_bundle_hash_matches_bundle_on_windows(self, tmp_path):
+        """Real Windows text mode: the quarantined SKILL.md hashes like the fetched bundle (#117181)."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import content_hash
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="crlfskill",
+                files={"SKILL.md": "---\nname: crlfskill\n---\n\nBody line one.\nBody line two.\n"},
+                source="official",
+                identifier="official/mlops/models/crlfskill",
+                trust_level="builtin",
+            )
+            q_path = quarantine_bundle(bundle)
+
+        assert b"\r\n" not in (q_path / "SKILL.md").read_bytes()
+        assert content_hash(q_path) == bundle_content_hash(bundle)
 
     def test_quarantine_bundle_rejects_traversal_file_paths(self, tmp_path):
         import tools.skills_hub as hub

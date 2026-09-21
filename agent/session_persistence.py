@@ -13,6 +13,8 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _DB_PERSISTED_MARKER,
     ContextCompressor,
+    _newest_checkpoint_carrier,
+    drop_shadowed_checkpoints,
     user_originated_turn_view,
 )
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
@@ -127,6 +129,42 @@ def _persist_lock(agent):
     return nullcontext() if lock is None else lock
 
 
+def adopt_unanswered_turn(history: List[Dict[str, Any]], query: Any, agent: Any) -> bool:
+    """Re-stage the transcript's unanswered tail row as THIS turn's user message; True when adopted.
+
+    A dispatcher's re-run of a failed delivery turn resumes the DM its first attempt already persisted
+    instead of appending it again. Rows loaded from the store are born durable (``_rows_to_conversation``),
+    so handing the tail row back as ``agent._pending_cli_user_message`` makes ``_stage_turn_user_message``
+    reuse it as this turn's user dict and the flush writes no second row. What differs per lane is only HOW
+    the dispatcher knows the DM is unanswered:
+
+    * ``hermes_cli.quiet_single_query.adopt_unanswered_turn`` — the delivery lanes' re-run is a fresh CLI
+      process, told so through ``tools.bot_relay.RESUME_UNANSWERED_TURN_ENV``.
+    * ``gateway.platforms.api_server`` — the peer-DM lane re-runs the turn in-process and calls this
+      directly on the agent it just built for the re-run (#115325).
+
+    The DM is not always the literal tail: a turn that died mid-way persisted its tool scaffolding — assistant
+    ``tool_calls`` rows and their ``tool`` results — behind the DM before the failure text was built, and the
+    dispatcher retries that too. The DM is still unanswered while nothing after it is a plain assistant reply,
+    so it is adopted and the failed attempt's scaffolding leaves the in-memory transcript: the re-run starts
+    the turn over from the DM (the rows stay in the DB as the record of the failed attempt; the re-run's
+    answer lands after them as a valid continuation). Anything else declines — no user row at the tail, or a
+    different text there — so a person's deliberate re-send of the same text is never swallowed.
+    """
+    idx = next((i for i in range(len(history) - 1, -1, -1)
+                if isinstance(history[i], dict) and history[i].get("role") == "user"), None)
+    if idx is None or history[idx].get("content") != query:
+        return False
+    if not all(isinstance(row, dict) and (row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls")))
+               for row in history[idx + 1:]):
+        return False
+    tail = history[idx]
+    del history[idx:]
+    tail[_DB_PERSISTED_MARKER] = True
+    agent._pending_cli_user_message = tail
+    return True
+
+
 # --- flush phases (module-level so the flush also works bound onto duck-typed agents) ---
 
 def _db_flush_seed_ids(agent) -> set:
@@ -217,7 +255,7 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
     return batch_rows, batch_msgs
 
 
-def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict]) -> None:
+def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict], messages: List[Dict]) -> None:
     """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
     if not batch_rows:
         return
@@ -228,6 +266,11 @@ def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Di
         turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
     )
     sync_flushed_message_markers(batch_msgs, batch_rows)
+    if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
+        # The insert already rewrote the older rows (SessionDB._drop_shadowed_checkpoint_rows); mirror it on
+        # the live transcript so forks/compaction built from memory carry one checkpoint too. Markers stay:
+        # the rows are durable exactly as the dicts now read.
+        drop_shadowed_checkpoints(messages)
 
 
 def _db_flush_adopt_compression_tip(agent) -> bool:
@@ -371,7 +414,7 @@ class SessionPersistenceMixin:
             if not self._session_db_created:  # retry row creation if the earlier attempt failed transiently
                 self._ensure_db_session()
             batch_rows, batch_msgs = _db_flush_collect(self, messages, conversation_history)
-            _db_flush_write(self, batch_rows, batch_msgs)
+            _db_flush_write(self, batch_rows, batch_msgs, messages)
             # Markers are now the sole truth; reset the one-shot seed so no id() outlives this flush.
             self._flushed_db_message_ids = set()
             self._last_flushed_db_idx = len(messages)

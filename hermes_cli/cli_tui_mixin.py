@@ -23,7 +23,6 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     ConditionalContainer,
     FormattedTextControl,
-    HSplit,
     Layout,
     Window,
     WindowAlign)
@@ -37,6 +36,8 @@ from prompt_toolkit.layout.processors import (
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
+
+from hermes_cli.cli_footer_split import FooterSplit
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
@@ -91,6 +92,20 @@ class _Panel:
 def _wrap_rows(wrap, items, width, indent) -> list[tuple[int, str]]:
     """``(index, wrapped_line)`` pairs so selected styling can be re-applied per row."""
     return [(i, w) for i, label in enumerate(items) for w in wrap(label, width, subsequent_indent=indent)]
+
+
+def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
+    """Wrap ``label``, then prefix the rows with ``first_prefix`` / ``indent``.
+
+    The prefix is applied *after* wrapping on purpose. Folding it into the
+    string handed to the wrapper charges those columns against the label's own
+    width budget — so a selected row wraps one line early and strands the ``❯``
+    cursor on a row of its own — and whitespace-trimming wrappers drop the
+    leading indent entirely, leaving long unselected labels flush against the
+    panel border, out of alignment with every other row.
+    """
+    rows = wrap(label, width)
+    return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
 
 
 class CLITuiMixin:
@@ -595,7 +610,12 @@ class CLITuiMixin:
         """
         from cli import HermesCLI, _panel_box_width, _wrap_panel_text
         box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
-        inner_text_width = max(8, box_width - 6)
+        # ``_Panel.row`` pads every row to ``box_width - 2``, so that is the real
+        # body width. Keep the wrap budget in sync with it and reserve the
+        # leading cell for the cursor/indent applied below, rather than the old
+        # blanket ``- 6`` which wrapped long labels two columns early.
+        inner_text_width = max(8, box_width - 2)
+        label_width = max(8, inner_text_width - max(2, len(indent)))
         selected = state.get("selected", 0)
         try:
             from prompt_toolkit.application import get_app
@@ -612,8 +632,13 @@ class CLITuiMixin:
         panel.blank()
         for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
-            prefix = '❯ ' if idx == selected else '  '
-            for wrapped in _wrap_panel_text(prefix + labels[idx], inner_text_width, subsequent_indent=indent):
+            # The cursor cell is always two columns wide, so unselected rows get two spaces
+            # regardless of ``indent`` (the palette's continuation indent is four) — otherwise
+            # the selected label starts two columns left of its neighbours.
+            lead = '❯ ' if idx == selected else '  '
+            for wrapped in _prefix_wrapped_rows(
+                _wrap_panel_text, labels[idx], label_width, lead, indent
+            ):
                 panel.row(style, wrapped)
         panel.blank()
         return panel.close()
@@ -2132,7 +2157,7 @@ class CLITuiMixin:
             filter=Condition(lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))),
         )
         self._register_extra_tui_keybindings(kb, input_area=input_area)
-        layout = Layout(HSplit(self._build_tui_layout_children(
+        layout = Layout(FooterSplit(self._build_tui_layout_children(
             sudo_widget=sudo_widget,
             secret_widget=secret_widget,
             approval_widget=approval_widget,

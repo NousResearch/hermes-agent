@@ -39,6 +39,22 @@ def test_auth_failure_points_at_login_and_a_retry_command(monkeypatch):
     assert "401" not in msg
 
 
+def test_auth_failure_names_the_pinned_provider_and_the_failing_profile(monkeypatch, tmp_path):
+    """A profile's credentials are its own (93889b770da): the notice must send the operator to
+    THIS profile's sign-in for the job's pinned provider, never a bare placeholder (#114012)."""
+    _no_chain(monkeypatch)
+    profile_home = tmp_path / ".hermes" / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    msg = _summarize_cron_failure_for_delivery(
+        {**JOB, "provider": "openai-codex"}, "Error code: 401 - Unauthorized")
+    assert "`hermes -p ops auth add openai-codex --type oauth`" in msg, msg
+    assert "<provider>" not in msg
+    unpinned = _summarize_cron_failure_for_delivery(JOB, "Error code: 401 - Unauthorized")
+    assert "`hermes -p ops auth add <provider>`" in unpinned, unpinned
+
+
 def test_rate_and_usage_limit_phrases_still_yield_a_provider_notice(monkeypatch):
     """The old cron regex ladder matched these substrings; the shared classifier must too, or a
     Nous Portal limit turns into a raw generic notice."""
@@ -64,6 +80,16 @@ def test_cron_cause_gloss_is_the_shared_table():
         notice = provider_failure_notice("Morning brief", "ab12cd34", reason, backup_provider_phrase="x.")
         assert notice is not None and "`hermes cron" in notice, reason
     assert provider_failure_notice("Morning brief", "ab12cd34", "unknown", backup_provider_phrase="x.") is None
+
+
+def test_waf_block_names_the_header_fix_not_a_bare_rerun(monkeypatch):
+    """A firewall refusing the SDK's User-Agent is healed by a header or another provider,
+    never by `hermes cron run` alone — the action must say so (#53099, #70566)."""
+    _no_chain(monkeypatch)
+    msg = _summarize_cron_failure_for_delivery(JOB, "Error code: 403 - Sorry, you have been blocked")
+    assert "extra_headers" in msg and "`hermes cron edit ab12cd34 --provider <name>`" in msg, msg
+    assert "Run it again with" not in msg, msg
+    assert "rejected" not in msg.lower(), msg  # not read as a key rejection
 
 
 def test_transient_provider_failures_never_lead_with_jargon(monkeypatch):

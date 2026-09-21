@@ -216,3 +216,33 @@ def test_curator_prompt_consolidates_by_distilling():
     lower = CURATOR_REVIEW_PROMPT.lower()
     assert "distill" in lower, "curator must distill absorbed content, not file it"
     assert "verbatim" in lower and "per-incident" in lower, "curator must not copy siblings verbatim into references/"
+
+
+# ---------------------------------------------------------------------------
+# Memory store routing. The memory tool writes to two files — USER.md
+# (target='user': who the user is) and MEMORY.md (target='memory': environment
+# facts). A prompt that just says "save it using the memory tool" lets
+# user-profile data land in the environment store and vice versa, and the
+# combined prompt used to instruct writing preference lessons to BOTH a skill
+# and memory, which is how MEMORY.md ends up restating SKILL.md content until
+# both stores hit their size limits.
+# ---------------------------------------------------------------------------
+
+
+def test_memory_prompts_name_both_memory_targets():
+    """Both memory-writing prompts must name the two targets so facts are routed, not defaulted."""
+    for label, prompt in (
+        ("_MEMORY_REVIEW_PROMPT", AIAgent._MEMORY_REVIEW_PROMPT),
+        ("_COMBINED_REVIEW_PROMPT", AIAgent._COMBINED_REVIEW_PROMPT),
+    ):
+        assert "target='user'" in prompt, f"{label}: must name the USER.md target"
+        assert "target='memory'" in prompt, f"{label}: must name the MEMORY.md target"
+
+
+def test_combined_review_prompt_forbids_dual_store_writes():
+    """A user-preference lesson lives in one place; the prompt must not ask for both."""
+    prompt = AIAgent._COMBINED_REVIEW_PROMPT
+    assert "Both should carry" not in prompt, (
+        "must not instruct writing the same preference lesson to both a skill and memory"
+    )
+    assert "never both" in prompt, "must state the one-store rule for preference lessons"

@@ -12,7 +12,6 @@ import {
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
-import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 import { isSessionRemovalPending } from './session-removal'
@@ -362,7 +361,14 @@ export async function ensureDefaultWorkspaceCwd(shouldPublish: () => boolean = (
   const remembered = getRememberedWorkspaceCwd()
 
   if ($connection.get()?.mode === 'remote') {
-    seedLiveCwd(remembered)
+    // Unlike the local branches below, an empty `remembered` here is meaningful:
+    // it means the incoming gateway has no memory of its own, so any workspace
+    // still live from the outgoing gateway is stale and must be cleared rather
+    // than left in place (seedLiveCwd's cwd-truthy guard would otherwise skip
+    // publishing and leave the old path looking valid — #114306).
+    if (shouldPublish() && !$activeSessionId.get()) {
+      setCurrentCwdTransient(remembered)
+    }
 
     return
   }
@@ -649,6 +655,10 @@ export function mergeSessionPage(
 
   const survivors = previous.filter(
     session =>
+      // The keep-list answers "live, not listed yet" — a hidden row (canonical
+      // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
+      // open tab must not resurrect it into the sidebar (#113273).
+      !session.hidden &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
@@ -723,7 +733,13 @@ export function carryForwardFailedProfileSessions(
   const carried: SessionInfo[] = []
 
   for (const session of previous) {
-    if (!failed.has(sidebarProfileKey(session)) || incomingIds.has(sessionListIdentity(session))) {
+    // A hidden row (canonical Bot Chat) is LISTED-NEVER by design: the
+    // failed-slice carry must not ride it back into the sidebar (#113273).
+    if (
+      session.hidden ||
+      !failed.has(sidebarProfileKey(session)) ||
+      incomingIds.has(sessionListIdentity(session))
+    ) {
       continue
     }
 
@@ -1259,7 +1275,6 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
   // consumer reconciles against it. A null descriptor (reconnect blip)
   // keeps the current scope.
   rescopeConnectionScopedStores($connection.get())
-  syncCronModelImpactConnection($connection.get())
 
   // Null descriptor = reconnect blip; keep the last resolved mode (same
   // contract as rescopeConnectionScopedStores above).
@@ -1458,6 +1473,19 @@ export const markComposerSelectionManual = (): void => {
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+  // The wire level is only meaningful for the effort the gateway computed it
+  // for; an optimistic pick clears it until the next session.info re-stamps.
+  $currentReasoningEffortWire.set('')
+}
+
+/** The level the route actually sends for `$currentReasoningEffort`
+ *  (`session.info.reasoning_effort_wire`): '' when unknown, equal when verbatim,
+ *  weaker when the route clamps a Hermes-internal step such as `ultra`. Never
+ *  persisted — it describes the live route, not a user preference. */
+export const $currentReasoningEffortWire = atom('')
+
+export const setCurrentReasoningEffortWire = (next: string) => {
+  $currentReasoningEffortWire.set(next)
 }
 
 // The profile's `agent.reasoning_effort`, mirrored from config so surfaces that

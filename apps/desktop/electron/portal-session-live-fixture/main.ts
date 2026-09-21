@@ -122,10 +122,9 @@ async function run() {
       await jar.cookies.remove(base, accessName())
       mode = 'renew'
       const before = refreshes
-      const first = portal.renewPortalAccessSilently()
-      const second = portal.renewPortalAccessSilently()
-      assert.equal(first, second)
-      assert.equal(await first, true)
+      const [first, second] = await Promise.all([portal.renewPortalAccessSilently(), portal.renewPortalAccessSilently()])
+      assert.equal(first, true)
+      assert.equal(second, true)
       assert.equal(refreshes, before + 1)
       assert.equal((await jar.fetch(`${base}/api/agents`)).status, 200)
     }
@@ -147,6 +146,45 @@ async function run() {
     assert.equal((await jar.fetch(`${base}/api/agents`)).status, 401)
     assert.equal(await portal.renewPortalAccessSilently({ force: true }), false)
     assert.equal(BrowserWindow.getAllWindows().length, 0)
+
+    // The same rejected cookie must not close the interactive login before the
+    // portal issues a new one; a forced renewal requested while an unforced one
+    // is short-circuiting must still drive the portal.
+    mode = 'login'
+    loginGate = new Promise(resolve => {
+      releaseLogin = resolve
+    })
+
+    const requestedAgain = new Promise<void>(resolve => {
+      completeRequested = resolve
+    })
+
+    let completedAgain = false
+
+    const loginAgain = portal.openPortalLoginWindow().then(() => {
+      completedAgain = true
+    })
+
+    // A premature completion destroys the window before its page can reach
+    // /complete, so race the two instead of waiting on the request alone.
+    await Promise.race([requestedAgain, loginAgain])
+    assert.equal(await portal.hasPortalAccessToken(), true)
+    assert.equal(completedAgain, false)
+    releaseLogin()
+    await loginAgain
+    assert.equal((await jar.fetch(`${base}/api/agents`)).status, 200)
+
+    mode = 'renew'
+    const beforeForced = refreshes
+
+    const [unforced, forced] = await Promise.all([
+      portal.renewPortalAccessSilently(),
+      portal.renewPortalAccessSilently({ force: true })
+    ])
+
+    assert.equal(unforced, true)
+    assert.equal(forced, true)
+    assert.equal(refreshes, beforeForced + 1)
 
     await jar.clearStorageData()
     await jar.cookies.set({ url: base, name: 'next-auth-provider', value: 'workos' })

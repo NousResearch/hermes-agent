@@ -20,7 +20,8 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
-from typing import Any, Dict, Optional, Tuple, Union
+from gateway.whatsapp_identity import canonical_whatsapp_identifier
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -30,40 +31,44 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
-def _key_namespace(key: str) -> str:
-    """``agent:<profile>`` prefix of a session key (``build_session_key``'s first two slots)."""
-    return ":".join(key.split(":")[:2])
+def _strip_slot(text: str, slot: str) -> Optional[str]:
+    """Remainder after ``slot`` when ``text`` starts with it as a WHOLE slot, else None.
+
+    The ``:``-delimited slot layout is ``build_session_key``'s: an id that merely starts with another
+    must never match, so a whole-slot comparison is what every caller here uses. A text that IS the
+    slot yields ``""``."""
+    if text == slot:
+        return ""
+    if text.startswith(slot + ":"):
+        return text[len(slot) + 1:]
+    return None
 
 
 def _tail_has_slot(tail: str, slot: str) -> bool:
     """True when ``tail``'s FIRST slot is ``slot`` (``tail`` is ``""`` when the key ends at the
-    chat id). Mirrors ``build_session_key``'s ``key == prefix or key.startswith(prefix + ":")``
-    discipline, so an id that merely starts with another never matches."""
-    return tail == slot or tail.startswith(slot + ":")
+    chat id)."""
+    return _strip_slot(tail, slot) is not None
 
 
 def _same_chat_key_slots(
-    key: str, *, namespace: str, platform: str, chat_id: str, scope_id: Optional[str],
+    key: str, *, prefix: str, chat_id: str, scope_id: Optional[str],
 ) -> Optional[Tuple[str, str]]:
-    """``(chat_type, tail)`` when ``key`` names the SAME chat, else None.
+    """``(chat_type, tail)`` when ``key`` names the SAME chat as ``prefix`` + ``chat_id``, else None.
 
-    Key layout: ``agent:<profile>:<platform>:<chat_type>[:<scope_id>][:<chat_id>][:<thread_id>][:<user>]``.
-    Only that fixed-shape head is split into slots (the namespace is always the first two); the chat
-    id and everything after it are matched as TEXT, because ids may themselves contain ``:`` (Matrix
-    ``!room:example.org``). ``scope_id`` is Slack's workspace slot — ``build_session_key`` emits it
-    there alone — and it may be absent from either side, since a key without it still names the same
-    chat; a key carrying a DIFFERENT known scope is another workspace's chat. ``tail`` is ``""`` when
-    the key ends at the chat id.
+    ``prefix`` is the key's fixed-shape head, ``agent:<profile>:<platform>:``. Everything after it is
+    matched as TEXT, because ids may themselves contain ``:`` (Matrix ``!room:example.org``).
+    ``scope_id`` is Slack's workspace slot — ``build_session_key`` emits it there alone — and a key
+    without it still names the same chat; a key carrying a DIFFERENT known scope is another
+    workspace's chat. ``tail`` is ``""`` when the key ends at the chat id.
     """
-    head = key.split(":", 3)
-    if len(head) < 4 or ":".join(head[:2]) != namespace or head[2] != platform:
+    if not key.startswith(prefix):
         return None
-    chat_type, _, rem = head[3].partition(":")
-    for prefix in ((f"{scope_id}:{chat_id}", chat_id) if scope_id else (chat_id,)):
-        if rem == prefix:
-            return chat_type, ""
-        if rem.startswith(prefix + ":"):
-            return chat_type, rem[len(prefix) + 1:]
+    chat_type, _, rem = key[len(prefix):].partition(":")
+    candidates = (f"{scope_id}:{chat_id}", chat_id) if scope_id else (chat_id,)
+    for candidate in candidates:
+        tail = _strip_slot(rem, candidate)
+        if tail is not None:
+            return chat_type, tail
     return None
 
 
@@ -352,7 +357,7 @@ class GatewayBusySessionMixin:
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         from gateway.platforms.base import merge_pending_message_event
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
@@ -372,13 +377,20 @@ class GatewayBusySessionMixin:
                 for key in self._SECURITY_METADATA_KEYS
             )
         )
-        if same_security_context and (
-            getattr(existing, "message_type", None) == MessageType.PHOTO
-            or event.message_type == MessageType.PHOTO
-            or bool(getattr(existing, "media_urls", None))
-            or bool(getattr(event, "media_urls", None))
+        # Only a photo burst (PHOTO on either side, the other side TEXT or PHOTO) merges into the
+        # head slot. Every other media follow-up — voice, audio, video, document — is an
+        # independent message and takes its own FIFO turn like text does; merging on *any*
+        # ``media_urls`` collapsed three voice notes into one turn (#114363). Telegram albums
+        # (``media_group_id``, photos and videos) are already coalesced by the adapter upstream.
+        merge_types = {
+            getattr(existing, "message_type", None),
+            getattr(event, "message_type", None),
+        }
+        if (
+            same_security_context
+            and MessageType.PHOTO in merge_types
+            and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
         ):
-            # Preserve photo-burst / media-merge semantics for the head slot.
             merge_pending_message_event(
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
@@ -406,7 +418,7 @@ class GatewayBusySessionMixin:
         if not self._pending_event_audio_paths(event):
             return text
         enriched_text, successful_transcripts = await self._transcribe_and_echo_pending_voice(
-            event, self._adapter_for_source(event.source), event.source, text, log_context="Busy-steer"
+            event, self._delivery_adapter_for(event.source), event.source, text, log_context="Busy-steer"
         )
         return (enriched_text or text).strip() if successful_transcripts else text
 
@@ -474,7 +486,7 @@ class GatewayBusySessionMixin:
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:
         """Busy path while the gateway is restarting/stopping: queue (if allowed) and tell the user."""
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return
         if self._queue_during_drain_enabled(effective_mode):
@@ -531,7 +543,7 @@ class GatewayBusySessionMixin:
                         "Approval response via plain text: session=%s verb=%s args=%r",
                         session_key, _verb, _normalized_args,
                     )
-                    _adapter = self._adapter_for_source(event.source)
+                    _adapter = self._delivery_adapter_for(event.source)
                     if _adapter and _reply:
                         _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
                         if _text:
@@ -588,8 +600,8 @@ class GatewayBusySessionMixin:
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
             and hasattr(running_agent, "redirect")
         ):
-            redirected = self._try_agent_verb(
-                running_agent, "redirect", (event.text or "").strip(), session_key, event=event
+            redirected = self._redirect_active_turn(
+                running_agent, (event.text or "").strip(), session_key, event
             )
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
@@ -613,6 +625,29 @@ class GatewayBusySessionMixin:
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False
+
+    def _redirect_active_turn(self, running_agent, text: str, session_key: str, event: MessageEvent) -> bool:
+        """``redirect()`` the running turn onto *event* and re-anchor its delivery to that message.
+
+        The turn's reply anchor and ledger identity were bound to the message that OPENED it, and
+        the final send is bracketed against that event; after a successful redirect the answer is
+        to *event*, so the reply must quote it (#115001). Both redirect entry points (busy
+        interrupt mode and the priority path) go through here.
+        """
+        if not self._try_agent_verb(running_agent, "redirect", text, session_key, event=event):
+            return False
+        turn = self._session_state(session_key).turn
+        if turn.agent is not running_agent:
+            return True  # a newer turn already owns the slot; never re-anchor it
+        anchor = self._reply_anchor_for_event(event)
+        inbound_id = str(event.message_id) if event.message_id else None
+        if turn.event is not None and turn.event is not event:
+            turn.event.reply_anchor_override = anchor
+            turn.event.ledger_message_id = inbound_id
+        if turn.ctx is not None:
+            turn.ctx.event_message_id = anchor
+            turn.ctx.inbound_message_id = inbound_id
+        return True
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""
@@ -733,7 +768,7 @@ class GatewayBusySessionMixin:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
         if event.internal and event.allow_gateway_control:
-            adapter = self._adapter_for_source(event.source)
+            adapter = self._delivery_adapter_for(event.source)
             if adapter and session_key in getattr(adapter, "_pending_messages", {}):
                 self._queue_or_replace_pending_event(session_key, event)
                 return True
@@ -762,7 +797,7 @@ class GatewayBusySessionMixin:
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):
             return True
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if not adapter:
             return False  # let default path handle it
         # Internal synthetic events (delegation / background completions) must never interrupt or
@@ -861,7 +896,7 @@ class GatewayBusySessionMixin:
     async def _send_command_ack(self, source, text: str, label: str) -> None:
         """Best-effort acknowledgment for a slash command that falls through to agent processing."""
         try:
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             if adapter:
                 await adapter.send(
                     str(source.chat_id), text, metadata=self._thread_metadata_for_source(source)
@@ -972,7 +1007,7 @@ class GatewayBusySessionMixin:
         has_media = bool(getattr(event, "media_urls", None))
         if not queued_text and not has_media:
             return "Usage: /queue <prompt>"
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         if adapter:
             self._enqueue_fifo(quick_key, MessageEvent(
                 text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
@@ -1002,7 +1037,7 @@ class GatewayBusySessionMixin:
 
         def _queue_fallback(reply: str) -> str:
             # Turn-boundary fallback: queue the steer text as its own follow-up turn.
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             if adapter:
                 self._enqueue_fifo(quick_key, MessageEvent(
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
@@ -1068,65 +1103,69 @@ class GatewayBusySessionMixin:
             )
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
-    def _same_chat_runs(self, source: SessionSource, own_key: str) -> list:
+    def _same_chat_runs(self, source: SessionSource, own_key: str) -> List[Tuple[str, str, str]]:
         """``(key, chat_type, tail)`` for every OTHER running turn in the caller's chat (``tail`` is
         the key text after the chat id, ``""`` when the key ends there).
 
         The namespace comes from ``own_key`` — the session store's own answer, so a named-profile
         stop matches that profile's runs and never a literal. ``_snapshot_running_agents`` already
         drops the pending sentinel (a session still being set up has no agent). Callers gate on
-        authorization; ``own_key`` is excluded.
+        authorization; ``own_key`` is excluded. Both tiers share one call.
         """
         chat_id = str(getattr(source, "chat_id", None) or "")
         if not chat_id:
             return []
-        namespace = _key_namespace(own_key)
-        platform = source.platform.value
-        scope_id = getattr(source, "scope_id", None)
+        if source.chat_type == "dm" and source.platform == Platform.WHATSAPP:
+            # Match the same text build_session_key keyed: WhatsApp DM chat ids are canonicalised
+            # there, so a raw JID/LID alias would never line up with the stored key.
+            chat_id = canonical_whatsapp_identifier(chat_id) or chat_id
+        namespace = ":".join(own_key.split(":", 2)[:2])
+        prefix = f"{namespace}:{source.platform.value}:"
+        scope_id = str(getattr(source, "scope_id", None) or "") or None
         runs = []
         for key in self._snapshot_running_agents():
             if key == own_key:
                 continue
-            parsed = _same_chat_key_slots(
-                key, namespace=namespace, platform=platform, chat_id=chat_id, scope_id=scope_id,
-            )
+            parsed = _same_chat_key_slots(key, prefix=prefix, chat_id=chat_id, scope_id=scope_id)
             if parsed is not None:
                 runs.append((key, parsed[0], parsed[1]))
         return runs
 
-    def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
-        """Running-agent keys of OTHER participants in the caller's own thread (per-user thread mode
-        keys are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the caller's
-        own ``/stop``). Callers still gate on authz."""
+    def _sibling_thread_run_keys(
+        self, source: SessionSource, runs: List[Tuple[str, str, str]],
+    ) -> List[str]:
+        """Keys from ``runs`` belonging to OTHER participants in the caller's own thread (per-user
+        thread mode keys are ``...:{thread_id}:{user_id}``, so another user's run is invisible to the
+        caller's own ``/stop``). Callers still gate on authz."""
         thread_id = str(getattr(source, "thread_id", None) or "")
         chat_type = getattr(source, "chat_type", None) or ""
         if not thread_id or not chat_type:
             return []
         return [
             key
-            for key, key_chat_type, tail in self._same_chat_runs(source, own_key)
+            for key, key_chat_type, tail in runs
             if key_chat_type == chat_type and _tail_has_slot(tail, thread_id)
         ]
 
-    def _chat_scoped_run_keys(self, source: SessionSource, own_key: str) -> list:
-        """Running-agent keys for ANY session of the same chat, regardless of the chat_type/thread/
+    def _chat_scoped_run_keys(
+        self, source: SessionSource, runs: List[Tuple[str, str, str]],
+    ) -> List[str]:
+        """Keys from ``runs`` for ANY session of the same chat, whatever the chat_type/thread/
         participant slots. Two supported shapes make a /stop key miss a run in the same chat (found
         via Slack's native stop button, gateway-gateway#286): a top-level channel turn keys
         ``channel`` while an in-thread /stop normalizes to ``thread``, and rolling-DM configs key
         without the thread slot the stop carries. "/stop" means "stop what's running in THIS chat",
-        so the handler falls back chat-wide on an exact + thread-sibling miss — which is also what
-        lets a human stop a peer's per-sender group run (see ``_same_chat_runs``).
+        which is also what lets a human stop a peer's per-sender group run (see ``_same_chat_runs``).
 
         A stop sent from INSIDE a thread only reaches runs whose own thread slot is that thread (or
-        that carry no thread slot at all — a top-level channel turn's relay-stamped slot is the
-        reply thread it belongs to, the rolling-DM shape is slotless). Anything else in the channel
-        is a different conversation: another reply thread, or a peer's top-level run. Callers gate
-        on authz.
+        that carry no thread slot at all — the rolling-DM shape). Anything else in the channel is a
+        different conversation: another reply thread, or a peer's top-level run. Callers gate on
+        authz.
         """
         thread_id = str(getattr(source, "thread_id", None) or "")
         return [
             key
-            for key, _key_chat_type, tail in self._same_chat_runs(source, own_key)
+            for key, _key_chat_type, tail in runs
             if not thread_id or not tail or _tail_has_slot(tail, thread_id)
         ]
 
@@ -1316,7 +1355,7 @@ class GatewayBusySessionMixin:
         # Register FIRST so a fast button click cannot race the send_slash_confirm return.
         _slash_confirm_mod.register(session_key, confirm_id, command, handler)
 
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
         if adapter is not None:

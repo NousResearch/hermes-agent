@@ -60,7 +60,7 @@ import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
-import { ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
+import { ComposerScopeProvider, ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
@@ -261,6 +261,20 @@ export function ChatRuntimeBoundary({
     ? { connectionId: ownerConnection, profile: ownerProfile }
     : undefined, [ownerConnection, ownerProfile])
 
+  // A Bot chat opened IN PLACE in the main pane (openStoredBotChat) keeps the
+  // active profile, so the ambient scope carries no owner. Publish the session
+  // owner hint's (connection, profile) here so voice playback speaks with the
+  // Bot's own voice; a tile's scope already names its owner and is kept as is.
+  const parentScope = useComposerScope()
+
+  const composerScope = useMemo(
+    () =>
+      parentScope.profile || !ownerProfile
+        ? parentScope
+        : { ...parentScope, connectionId: ownerConnection || undefined, profile: ownerProfile },
+    [ownerConnection, ownerProfile, parentScope]
+  )
+
   const history = useHistoryWindow({
     scopeKey: JSON.stringify([runtimeId, storedId, tailProfile, connectionId, activeProfile, suppressMessages]),
     storedId,
@@ -320,8 +334,9 @@ export function ChatRuntimeBoundary({
 
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {
-      // A historical page is not the live tail: never backfill into its store.
-      if (history.page) {return false}
+      // A historical page is not the live tail: its older neighbours come from
+      // the prompt range the rail already draws, never from store backfill.
+      if (history.page) {return history.revealOlder(beforePrepend)}
 
       // Network latency is not scroll intent. Capture at arrival, immediately
       // before the store prepend, and only grow a window that has a page to show.
@@ -367,12 +382,14 @@ export function ChatRuntimeBoundary({
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view, history.page]
+    [runtimeId, storedId, tailProfile, view, history.page, history.revealOlder]
   )
 
-  // Page navigation stays on the timeline while inspecting history; the
-  // existing prepend action is specifically a live-tail operation.
-  const olderAvailable = !history.page && (windowed || restBackfillAvailable)
+  // An open history page carries its own reach: its first prompt is the anchor,
+  // and the around window reports whether rows precede it. Reading that as
+  // "nothing earlier" (the live-tail flags) retired every way back — the rail
+  // still names older marks, so the entry point must stay live here too.
+  const olderAvailable = history.page ? history.page.olderAvailable : windowed || restBackfillAvailable
   const isHistorical = Boolean(history.page)
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history
@@ -396,9 +413,11 @@ export function ChatRuntimeBoundary({
   })
 
   return (
-    <TranscriptWindowProvider value={transcriptWindow}>
-      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
-    </TranscriptWindowProvider>
+    <ComposerScopeProvider value={composerScope}>
+      <TranscriptWindowProvider value={transcriptWindow}>
+        <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+      </TranscriptWindowProvider>
+    </ComposerScopeProvider>
   )
 }
 

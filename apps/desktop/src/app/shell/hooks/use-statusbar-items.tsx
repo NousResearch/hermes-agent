@@ -34,7 +34,7 @@ import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usa
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
-import { copyFilePath, revealFile } from '@/store/file-actions'
+import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
@@ -55,7 +55,13 @@ import {
   idsShareLineage,
   sessionMatchesStoredId
 } from '@/store/session'
-import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId,
+  $sessionTiles,
+  isSessionRemote
+} from '@/store/session-states'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
@@ -162,6 +168,11 @@ export function useStatusbarItems({
   // clicking into a tile makes the statusbar describe THAT session.
   const focusedStoredSessionId = useStore($focusedStoredSessionId)
   const focusedRuntimeId = useStore($focusedRuntimeId)
+  // Whether the FOCUSED session's workspace lives on another machine: a
+  // Connections-tagged tile on a remote gateway inside a local-primary window
+  // (and vice versa) is decided by the tile's owner route, falling back to the
+  // ambient connection only when no owner is known (#115167).
+  const focusedWorkspaceRemote = useStoreSelector($sessionTiles, () => isSessionRemote(focusedStoredSessionId))
   // `$focusedSessionState` is a projection of `$sessionStates`, which is
   // republished on EVERY message delta — tens of times a second during a turn.
   // Only the fields read here are selected, so an unchanged readout bails out
@@ -212,6 +223,17 @@ export function useStatusbarItems({
 
     return row?.cwd?.trim() || ''
   })
+
+  // Which backend the focused row runs on: a Connections-tagged row names its
+  // gateway; an untagged one is the window's primary. Decides whether the OS
+  // file manager on this computer can show its workspace at all.
+  const focusedRowConnectionId = useStoreSelector($sessions, sessions =>
+    focusedStoredSessionId
+      ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.connection_id?.trim() || '')
+      : ''
+  )
+
+  const offerLocalReveal = shouldOfferLocalReveal(focusedRowConnectionId, connection?.mode === 'remote')
 
   // Live runtime cwd is authoritative once it belongs to the focused chat
   // (agent can relocate mid-turn). Until then — cold tabs, mid-switch lag —
@@ -521,12 +543,20 @@ export function useStatusbarItems({
                 onSelect: () => void copyFilePath(currentCwd),
                 title: displayPath(currentCwd)
               },
-              {
-                id: 'reveal-workspace-finder',
-                label: fileMenu.revealFileManager,
-                onSelect: () => void revealFile(currentCwd),
-                title: displayPath(currentCwd)
-              },
+              // The OS file manager needs the local filesystem; a remote
+              // backend's workspace is not on this computer (the sidebar
+              // trees already hide reveal the same way), and a row tagged
+              // with another gateway is never local either.
+              ...(focusedWorkspaceRemote || !offerLocalReveal
+                ? []
+                : [
+                    {
+                      id: 'reveal-workspace-finder',
+                      label: fileMenu.revealFileManager,
+                      onSelect: () => void revealFile(currentCwd),
+                      title: displayPath(currentCwd)
+                    }
+                  ]),
               {
                 id: 'reveal-workspace-sidebar',
                 label: fileMenu.revealInSidebar,
@@ -588,10 +618,12 @@ export function useStatusbarItems({
       commandCenterOpen,
       copy,
       currentCwd,
+      focusedWorkspaceRemote,
       freeTierCopy,
       fileMenu.copyPath,
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
+      offerLocalReveal,
       freeTier?.available,
       freeTier?.model,
       guideOwnsSignIn,

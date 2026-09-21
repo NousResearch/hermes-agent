@@ -4,6 +4,11 @@ const focusOpenSession = vi.fn()
 const openSessionTile = vi.fn()
 const reuseBlankDraftTile = vi.fn()
 const setSessionTileWorkspaceScope = vi.fn()
+
+const focusedSessionWorkspaceScope = vi.fn<
+  () => { workspaceMode: 'bots' | 'sessions'; workspaceOwnerKey?: string }
+>(() => ({ workspaceMode: 'sessions' }))
+
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)
 const workspaceIsPageGet = vi.fn(() => false)
@@ -11,6 +16,7 @@ const workspaceIsPageGet = vi.fn(() => false)
 vi.mock('@/store/session-states', () => ({
   focusedSessionNeedsRoute: (focused: 'main' | 'tile' | null, workspaceIsPage: boolean) =>
     !focused || (focused === 'main' && workspaceIsPage),
+  focusedSessionWorkspaceScope: () => focusedSessionWorkspaceScope(),
   focusOpenSession: (...args: unknown[]) => focusOpenSession(...args),
   openSessionTile: (...args: unknown[]) => openSessionTile(...args),
   reuseBlankDraftTile: (...args: unknown[]) => reuseBlankDraftTile(...args),
@@ -29,7 +35,7 @@ vi.mock('./routes', () => ({
 
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
-import { mainChatOccupied, openSession, openSessionIntentFromModifiers } from './open-session'
+import { mainChatOccupied, openSession, openSessionFromPicker, openSessionIntentFromModifiers } from './open-session'
 
 /**
  * The question behind both the sidebar "+" and a palette open: is there a
@@ -92,6 +98,8 @@ describe('openSession', () => {
     workspaceIsPageGet.mockReturnValue(false)
     reuseBlankDraftTile.mockReset()
     setSessionTileWorkspaceScope.mockReset()
+    focusedSessionWorkspaceScope.mockReset()
+    focusedSessionWorkspaceScope.mockReturnValue({ workspaceMode: 'sessions' })
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
   })
@@ -215,6 +223,33 @@ describe('openSession', () => {
     openSession('s1', navigate, 'stack')
     expect(navigate).toHaveBeenCalledWith('/c/s1')
     expect(openSessionTile).not.toHaveBeenCalled()
+  })
+
+  it('picker doors resume into the focused Bot workspace and stay in-place in Sessions', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'connection-a::default' }
+
+    // /resume overlay and an artifact's "open chat" (unmodified = in-place) from a Bot tab.
+    focusedSessionWorkspaceScope.mockReturnValue(scope)
+    focusOpenSession.mockReturnValue(null)
+    reuseBlankDraftTile.mockReturnValue(true)
+    openSessionFromPicker('s1', navigate)
+
+    expect(reuseBlankDraftTile).toHaveBeenCalledWith('s1', scope)
+    expect(navigate).not.toHaveBeenCalled()
+
+    // ⌘K session search (unmodified = stack) from the same Bot tab lands in the Bot workspace too.
+    reuseBlankDraftTile.mockReturnValue(false)
+    openSessionFromPicker('s2', navigate, 'stack')
+
+    expect(openSessionTile).toHaveBeenCalledWith('s2', 'center', undefined, undefined, scope)
+    expect(navigate).not.toHaveBeenCalled()
+
+    // Control: the same doors in the Sessions workspace keep their in-place behaviour.
+    $activeSessionId.set('runtime-current')
+    focusedSessionWorkspaceScope.mockReturnValue({ workspaceMode: 'sessions' })
+    openSessionFromPicker('s3', navigate)
+
+    expect(navigate).toHaveBeenCalledWith('/c/s3')
   })
 
   it('window pops out when the bridge supports it', () => {

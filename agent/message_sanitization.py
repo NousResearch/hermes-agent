@@ -378,9 +378,8 @@ _IMAGE_REJECTION_PHRASES = (
     # Some OpenAI-compatible endpoints (e.g. (issue #57948)
     "unexpected item type in content",
     # ChatGPT-account Codex backend rejects data:image URLs in input_image; keyed on the
-    # field-path apostrophe so other URL errors don't false-trip. Second: its wording for
-    # corrupt/unsupported native image payloads.
-    "image_url'. expected", "image data you provided does not represent a valid image",
+    # field-path apostrophe so other URL errors don't false-trip.
+    "image_url'. expected",
     # DeepSeek's text-only request-body variant error.
     "unknown variant `image_url`, expected `text`", "unknown variant image_url, expected text",
     # OpenRouter HTTP 404 when no upstream endpoint accepts image input (passes the 4xx
@@ -389,6 +388,16 @@ _IMAGE_REJECTION_PHRASES = (
     # request until exhaustion, and the gateway leaves every subsequent message queued behind the stuck turn
     # — the P1 in issue #21160.
     "no endpoints found that support image input",
+)
+
+# Provider error bodies meaning "this particular image payload is bad" — the model CAN see, it
+# just could not decode what it was sent. Matched by ``_looks_like_image_content_rejection`` too
+# (the turn recovers the same way: strip and retry), but the recovery must NOT remember the
+# model as image-rejecting for the session on their account: the next request with a good image
+# would be needlessly stripped for the rest of the session.
+_IMAGE_CORRUPT_PHRASES = (
+    # ChatGPT-account Codex backend's wording for corrupt/unsupported native image payloads.
+    "image data you provided does not represent a valid image",
     # Kimi/Moonshot et al. reject truncated/corrupt image bytes baked into history.
     # Kimi / Moonshot / other OpenAI-compatible Chinese providers reject truncated or corrupt image bytes
     # with HTTP 400 "Invalid request: prepare image failed ... failed to decode image: invalid or
@@ -398,6 +407,8 @@ _IMAGE_REJECTION_PHRASES = (
     # validation in tools/vision_tools._normalize_to_supported_image)
     "failed to decode image",
 )
+
+_IMAGE_REJECTION_PHRASES = _IMAGE_REJECTION_PHRASES + _IMAGE_CORRUPT_PHRASES
 
 
 def image_model_key(agent: Any) -> tuple:
@@ -425,6 +436,12 @@ def _looks_like_image_content_rejection(error_body: str) -> bool:
     """Return True when a provider error says image/multimodal input is unsupported."""
     body = str(error_body or "").lower()
     return any(phrase in body for phrase in _IMAGE_REJECTION_PHRASES)
+
+
+def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
+    """Return True when the rejection is about a bad image payload, not the model's capability."""
+    body = str(error_body or "").lower()
+    return any(phrase in body for phrase in _IMAGE_CORRUPT_PHRASES)
 
 
 __all__ = [

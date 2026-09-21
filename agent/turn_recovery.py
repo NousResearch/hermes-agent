@@ -22,7 +22,7 @@ from agent.model_metadata import is_output_cap_error, parse_available_output_tok
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
-    _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
+    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
     _strip_images_from_messages, _strip_non_ascii, image_model_key,
     close_interrupted_tool_sequence,
@@ -254,17 +254,26 @@ def recover_before_classification(
         # Send-path only. A rejection says what THIS model accepts, not what the conversation
         # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every
         # image — and every image-only message — from state.db for good, so a later switch to a
-        # vision model found them gone. Same failure as the ASCII strip in #117802. Record the
-        # model; build_api_request strips images from each request to it instead.
-        _rejected.add(_model_key)
-        if isinstance(api_messages, list):
-            _strip_images_from_messages(api_messages)
-        _vlines(
-            agent,
-            "⚠️  Server rejected image content — sending text only to this model; "
-            "images stay in the session history.",
-        )
-        return True, active_system_prompt
+        # vision model found them gone. Same failure as the ASCII strip in #117802.
+        if _looks_like_corrupt_image_rejection(_err_body):
+            # A bad payload says nothing about the model's capability: strip this attempt only
+            # (like the image_corrupt branch below) and leave the model unmarked so a later good
+            # image still reaches it. Retry only if something was stripped, or a text-only
+            # request would loop on the same error.
+            if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
+                _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+                return True, active_system_prompt
+        else:
+            # Record the model; build_api_request strips images from each request to it instead.
+            _rejected.add(_model_key)
+            if isinstance(api_messages, list):
+                _strip_images_from_messages(api_messages)
+            _vlines(
+                agent,
+                "⚠️  Server rejected image content — sending text only to this model; "
+                "images stay in the session history.",
+            )
+            return True, active_system_prompt
 
     # AnthropicBedrock SDK raises "Unexpected event order" when Bedrock errors before
     # message_start; fall back to native Converse for this session.

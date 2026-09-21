@@ -411,6 +411,36 @@ class TestRejectionNeverReachesPersistedHistory:
         assert strip_images_for_rejecting_model(agent, api_messages) is False
         assert str(api_messages).count("data:image/png") == 2
 
+    def test_a_corrupt_image_does_not_mark_the_model_image_rejecting(self):
+        """'failed to decode image' says the PAYLOAD is bad, not that the model is text-only.
+        The attempt is stripped and retried, but the model stays unmarked so a later request
+        with a good image still reaches it — otherwise one bad screenshot blinds the model for
+        the rest of the session."""
+        import copy
+
+        from agent.message_sanitization import strip_images_for_rejecting_model
+
+        class _CorruptErr(Exception):
+            status_code = 400
+            body = "Invalid request: prepare image failed: failed to decode image: invalid or unsupported image format"
+
+        from agent.turn_recovery import recover_before_classification
+
+        agent, history = self._agent(), self._history()
+        before, wire = copy.deepcopy(history), copy.deepcopy(history)
+        retry, _ = recover_before_classification(
+            agent, _CorruptErr(), messages=history, api_messages=wire,
+            api_kwargs={}, active_system_prompt="sys",
+        )
+
+        assert retry is True
+        assert "image_url" not in str(wire), "the retry payload should be text-only"
+        assert history == before
+        assert agent._image_rejecting_models == set()
+        api_messages = self._history()
+        assert strip_images_for_rejecting_model(agent, api_messages) is False
+        assert str(api_messages).count("data:image/png") == 2
+
     def test_a_repeat_rejection_from_the_same_model_does_not_loop(self):
         """The per-model guard still stops re-entry: a second rejection from a model already
         known to reject images falls through to normal error handling instead of retrying forever."""

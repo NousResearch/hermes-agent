@@ -394,10 +394,23 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
         except Exception:
             pass  # transient DB failure — keep pending_title for retry
     # Voice fallback when the streaming pipeline couldn't start (tts_queue already spoke
-    # everything otherwise); barge-aware.
-    if st.tts_queue is None and isinstance(raw, str) and raw.strip() and _voice_tts_enabled():
+    # everything otherwise); barge-aware. Also covers a turn that produced visible text
+    # which never entered the pipeline (e.g. the iteration-budget summary is requested
+    # toolless and returned unstreamed): without this a voice user hears silence while
+    # the screen shows the answer.
+    previewed = (
+        bool(st.result.get("response_previewed"))
+        if isinstance(st.result, dict)
+        else False
+    )
+    unspoken = st.tts_queue is None or (
+        not st.tts_fed and isinstance(raw, str) and raw.strip() and not previewed
+    )
+    if unspoken and isinstance(raw, str) and raw.strip() and _voice_tts_enabled():
         try:
-            threading.Thread(target=_speak_text_with_barge, args=(raw,), daemon=True).start()
+            threading.Thread(
+                target=_speak_text_with_barge, args=(raw,), daemon=True
+            ).start()
         except ImportError:
             logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
         except Exception as e:
@@ -476,6 +489,7 @@ class _TurnRun:
     scopes: _TurnScopes = dataclasses.field(default_factory=_TurnScopes)
     result: Any = None  # read after the finally for leftover /steer
     tts_queue: Any = None
+    tts_fed: bool = False
     thinking_started: bool = False
     history: list = dataclasses.field(default_factory=list)
     history_version: int = 0
@@ -637,6 +651,7 @@ def _invoke_agent(
             payload["rendered"] = r
         if st.tts_queue is not None and isinstance(delta, str):
             st.tts_queue.put(delta)
+            st.tts_fed = True
         _emit("message.delta", sid, payload)
 
     # Interim assistant text (commentary beside tool calls, pre-nudge final answer) is sealed

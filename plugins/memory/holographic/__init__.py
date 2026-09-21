@@ -128,9 +128,13 @@ class HolographicMemoryProvider(MemoryProvider):
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
+        from tools.memory_tool import get_memory_dir, resolve_memory_scope
         from hermes_constants import get_hermes_home
         _hermes_home = str(get_hermes_home())
+        scope_id = resolve_memory_scope(kwargs.get("gateway_session_key"))
         db_path = self._config.get("db_path", _hermes_home + "/memory_store.db")
+        if scope_id:
+            db_path = str(get_memory_dir() / "conversations" / scope_id / "memory_store.db")
         if isinstance(db_path, str):  # expand $HERMES_HOME so paths resolve to the active profile
             db_path = db_path.replace("$HERMES_HOME", _hermes_home).replace("${HERMES_HOME}", _hermes_home)
         hrr_dim = int(self._config.get("hrr_dim", 1024))

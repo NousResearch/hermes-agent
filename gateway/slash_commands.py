@@ -885,10 +885,12 @@ class GatewaySlashCommandsMixin(
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
         from tools.memory_tool import load_on_disk_store
+        session_key = self._session_key_for_source(event.source)
         # Apply approved writes against a fresh on-disk store (the gateway has no long-lived agent;
         # the store persists to the same MEMORY/USER.md and honors the configured char limits).
+        store = load_on_disk_store(gateway_session_key=session_key)
         out = handle_pending_subcommand(
-            wa.MEMORY, event.get_command_args().strip().split(), memory_store=load_on_disk_store(),
+            wa.MEMORY, event.get_command_args().strip().split(), memory_store=store,
             set_mode_fn=self._write_approval_setter("memory", event))
         return out if out is not None else (
             "Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>."

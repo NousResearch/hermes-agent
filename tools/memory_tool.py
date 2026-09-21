@@ -5,6 +5,7 @@ mid-session writes hit disk but never change the prompt (prefix cache intact).
 Single `memory` tool: add/replace/remove or a batch `operations` list."""
 
 import copy
+import hashlib
 import json
 import logging
 from contextvars import ContextVar
@@ -40,11 +41,25 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 
+def resolve_memory_scope(gateway_session_key: Optional[str] = None) -> Optional[str]:
+    """Return a stable conversation directory name when conversation scope is enabled."""
+    from hermes_cli.config import load_config_readonly
+
+    scope = (load_config_readonly().get("memory") or {}).get("scope", "profile")
+    if scope == "profile":
+        return None
+    if scope != "conversation":
+        raise ValueError("memory.scope must be profile or conversation")
+    if not isinstance(gateway_session_key, str) or not gateway_session_key.strip():
+        raise ValueError("Conversation memory requires a trusted gateway session key")
+    return hashlib.sha256(gateway_session_key.encode("utf-8")).hexdigest()
+
+
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
     ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
 
 
-def load_on_disk_store() -> "MemoryStore":
+def load_on_disk_store(*, gateway_session_key: Optional[str] = None) -> "MemoryStore":
     """Fresh on-disk MemoryStore with configured limits/flags for contexts with no live
     agent (gateway, Desktop, ``/memory``) so approvals enforce the SAME caps as
     ``agent_init``. Falls back to defaults if config can't load; never raises."""
@@ -54,9 +69,10 @@ def load_on_disk_store() -> "MemoryStore":
         mem_cfg = get_builtin_memory_config(config)
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
         store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
-                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
+                            memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled,
+                            gateway_session_key=gateway_session_key)
     except Exception:
-        store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
+        store = MemoryStore(gateway_session_key=gateway_session_key)  # config optional — fall back to defaults
     store.load_from_disk()
     return store
 
@@ -100,15 +116,20 @@ def _batch_op_line(op: Dict[str, Any]) -> str:
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str], old_text: Optional[str],
-                      operations: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                      operations: Optional[List[Dict[str, Any]]] = None,
+                      *, scope_id: Optional[str] = None) -> Optional[str]:
     """Gate one mutating op, or (``operations`` set) a whole batch as a single unit."""
     label = "user profile" if target == "user" else "memory"
     if operations is not None:
+        payload = {"action": "batch", "target": target, "operations": operations}
+        if scope_id:
+            payload["scope_id"] = scope_id
         return _gate_or_stage(f"apply {len(operations)} op(s) to {label}",
-                              "\n".join(_batch_op_line(op) for op in operations),
-                              {"action": "batch", "target": target, "operations": operations})
-    return _gate_or_stage(*_STORE_ACTIONS[action][1](label, content, old_text),
-                          {"action": action, "target": target, "content": content, "old_text": old_text})
+                              "\n".join(_batch_op_line(op) for op in operations), payload)
+    payload = {"action": action, "target": target, "content": content, "old_text": old_text}
+    if scope_id:
+        payload["scope_id"] = scope_id
+    return _gate_or_stage(*_STORE_ACTIONS[action][1](label, content, old_text), payload)
 
 
 def _validate_single_op(store, action, target, content, old_text) -> Optional[str]:
@@ -198,7 +219,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
         if denied is not None:
             return denied
         # Approval gate: stages (background/gateway) or prompts inline (CLI); off by default.
-        gate_result = _apply_write_gate("batch", target, None, None, operations)
+        gate_result = _apply_write_gate("batch", target, None, None, operations, scope_id=store.scope_id)
         if gate_result is not None:
             return gate_result
         return json.dumps(store.apply_batch(target, operations), ensure_ascii=False)
@@ -206,7 +227,7 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
     invalid = (_validate_single_op(store, action, target, content, old_text)
                or _background_delete_gate(action, None, target, content, old_text)
-               or _apply_write_gate(action, target, content, old_text))
+               or _apply_write_gate(action, target, content, old_text, scope_id=store.scope_id))
     if invalid is not None:
         return invalid
     return json.dumps(_STORE_ACTIONS[action][0](store, target, content, old_text), ensure_ascii=False)
@@ -255,6 +276,8 @@ def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str
 
 def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
     """Replay a staged write against the store, bypassing the gate (/memory approve)."""
+    if payload.get("scope_id") != store.scope_id:
+        return {"success": False, "error": "Pending memory belongs to a different conversation"}
     action, target = payload.get("action"), payload.get("target", "memory")
     target_error = _memory_target_error(store, target)
     if target_error is not None:

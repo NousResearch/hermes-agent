@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { type ProfileScope, profileScopeKey } from '@/api/client'
-import { bindConfigReadOrigin, peekConfigReadOrigin } from '@/api/config'
+import { peekConfigReadOrigin, retainConfigReadOrigin } from '@/api/config'
 import { getHermesConfigRecord } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type { HermesConfigRecord } from '@/types/hermes'
@@ -66,13 +66,8 @@ const writeHermesConfigCache = (key: ReturnType<typeof hermesConfigKey>) =>
   (next: HermesConfigRecord | undefined | ((previous: HermesConfigRecord | undefined) => HermesConfigRecord | undefined)) =>
     void queryClient.setQueryData<HermesConfigRecord>(key, previous => {
       const record = typeof next === 'function' ? next(previous) : next
-      const origin = peekConfigReadOrigin(previous)
 
-      if (record && origin) {
-        bindConfigReadOrigin(record, origin)
-      }
-
-      return record
+      return record ? retainConfigReadOrigin(record, previous) : record
     })
 
 export const setHermesConfigCache = writeHermesConfigCache(HERMES_CONFIG_KEY)

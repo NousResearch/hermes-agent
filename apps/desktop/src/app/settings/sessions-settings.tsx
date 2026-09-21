@@ -5,11 +5,11 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
 import {
-  bindConfigReadOrigin,
   deleteSession,
   getHermesConfigRecord,
   listAllProfileSessions,
   peekConfigReadOrigin,
+  retainConfigReadOrigin,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -258,13 +258,8 @@ function AutoArchiveSetting() {
       // the replacement snapshot so the next save still targets the gateway
       // that served the original GET.
       const writeScope = peekConfigReadOrigin(config)
-      const updated = { ...config, sessions }
 
-      if (writeScope) {
-        bindConfigReadOrigin(updated, writeScope)
-      }
-
-      setConfig(updated)
+      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
 
       try {
         // Sparse patch: PUT /api/config deep-merges, and echoing the cached

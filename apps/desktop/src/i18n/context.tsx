@@ -2,10 +2,10 @@ import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
-  bindConfigReadOrigin,
   getHermesConfigRecord,
   type HermesConfigRecord,
   peekConfigReadOrigin,
+  retainConfigReadOrigin,
   saveHermesConfig
 } from '@/hermes'
 
@@ -53,20 +53,16 @@ export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
 export function withConfigDisplayLanguage(config: HermesConfigRecord, locale: Locale): HermesConfigRecord {
   const display = isRecord(config.display) ? config.display : {}
 
-  const next = {
-    ...config,
-    display: {
-      ...display,
-      language: localeConfigValue(locale)
-    }
-  }
-  const origin = peekConfigReadOrigin(config)
-
-  if (origin) {
-    bindConfigReadOrigin(next, origin)
-  }
-
-  return next
+  return retainConfigReadOrigin(
+    {
+      ...config,
+      display: {
+        ...display,
+        language: localeConfigValue(locale)
+      }
+    },
+    config
+  )
 }
 
 function toError(error: unknown): Error {

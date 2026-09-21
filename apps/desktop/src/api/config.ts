@@ -29,6 +29,17 @@ export function peekConfigReadOrigin(record: object | undefined | null): ConfigR
   return record ? configReadOrigins.get(record) : undefined
 }
 
+/** Carry `source`'s read origin onto a record derived from it, so the next write still routes to the gateway that served the GET. */
+export function retainConfigReadOrigin<T extends object>(next: T, source: object | null | undefined): T {
+  const origin = peekConfigReadOrigin(source)
+
+  if (origin) {
+    bindConfigReadOrigin(next, origin)
+  }
+
+  return next
+}
+
 /**
  * Route a config write to the identity that served the matching read.
  * An explicit `{ connectionId, profile }` pin wins. A GET-derived record

@@ -1,6 +1,8 @@
 import httpx
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
+import tempfile
+import os
 
 from plugins.platforms.rubika.client import RubikaClient, RubikaAPIError
 
@@ -45,3 +47,34 @@ async def test_call_raises_rubikaapierror_on_http_error():
             await client.call("sendMessage", chat_id="c1", text="hi")
     assert exc_info.value.status == "429"
     assert "HTTP error" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_upload_file_returns_file_id():
+    client = RubikaClient(token="TESTTOKEN")
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(b"fake-image-bytes")
+        tmp_path = f.name
+    try:
+        request_response = AsyncMock()
+        request_response.json = lambda: {
+            "status": "OK", "data": {"upload_url": "https://upload.rubika.ir/xyz"}}
+        request_response.raise_for_status = lambda: None
+
+        upload_response = AsyncMock()
+        upload_response.json = lambda: {"status": "OK", "data": {"file_id": "file123"}}
+        upload_response.raise_for_status = lambda: None
+
+        with patch.object(
+            httpx.AsyncClient, "post",
+            AsyncMock(side_effect=[request_response, upload_response]),
+        ) as mock_post:
+            file_id = await client.upload_file(tmp_path, file_type="Image")
+        assert file_id == "file123"
+        assert mock_post.await_count == 2
+        first_call, second_call = mock_post.call_args_list
+        assert first_call.args[0] == "https://botapi.rubika.ir/v3/TESTTOKEN/requestSendFile"
+        assert first_call.kwargs["json"] == {"type": "Image"}
+        assert second_call.args[0] == "https://upload.rubika.ir/xyz"
+    finally:
+        os.unlink(tmp_path)

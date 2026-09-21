@@ -49,3 +49,31 @@ class RubikaClient:
             logger.warning(message)
             raise RubikaAPIError(message, status=str(status))
         return body.get("data", {})
+
+    async def upload_file(self, file_path: str, file_type: str) -> str:
+        """Two-step upload: requestSendFile -> POST bytes to upload_url -> file_id.
+        file_type is one of Rubika's requestSendFile type strings (e.g. "Image",
+        "Video", "Voice", "Music", "File", "Gif")."""
+        request_data = await self.call("requestSendFile", type=file_type)
+        upload_url = request_data.get("upload_url")
+        if not upload_url:
+            raise RubikaAPIError("requestSendFile returned no upload_url", status="NO_UPLOAD_URL")
+        with open(file_path, "rb") as fh:
+            file_bytes = fh.read()
+        async with httpx.AsyncClient(timeout=self._timeout) as http_client:
+            response = await http_client.post(
+                upload_url, files={"file": (file_path.rsplit("/", 1)[-1], file_bytes)})
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                message = f"Rubika file upload HTTP error: {exc}"
+                logger.warning(message)
+                raise RubikaAPIError(message, status=str(response.status_code)) from exc
+            body = response.json()
+        if body.get("status") != "OK":
+            raise RubikaAPIError(
+                f"File upload failed: status={body.get('status')}", status=str(body.get("status")))
+        file_id = (body.get("data") or {}).get("file_id")
+        if not file_id:
+            raise RubikaAPIError("Upload response missing file_id", status="NO_FILE_ID")
+        return file_id

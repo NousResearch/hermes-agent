@@ -146,16 +146,19 @@ def test_spawn_resolves_claimed_task_policy(
                          workspace_kind="dir", workspace_path=str(workspace), **overrides)
     task = kb.claim_task(conn, tid)
     assert task is not None
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, cmd: cmd)
     captured = {}
 
     def fake_popen(cmd, **kwargs):
         captured.update(cmd=list(cmd), env=kwargs["env"])
-        kwargs["stdout"].close()
+        assert kwargs["stdout"] == subprocess.DEVNULL
         return SimpleNamespace(pid=4245)
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     kbd._default_spawn(task, str(workspace))
-    assert captured["cmd"] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    wrapper_index = captured["cmd"].index("hermes_cli.kanban_worker_log")
+    cmd = captured["cmd"][captured["cmd"].index("--", wrapper_index) + 1 :]
+    assert cmd == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
     assert captured["env"]["HERMES_HOME"] == str(profile)
     actor = Principal("owner", str(profile), frozenset({"session:create"}), "transport")
     connection = SimpleNamespace(

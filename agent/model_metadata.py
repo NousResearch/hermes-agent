@@ -458,6 +458,93 @@ def _auth_headers(api_key: object = "") -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def _custom_entry_probe_key(entry: Dict[str, Any], base_url: str) -> str:
+    """Materialized probe credential for one custom-provider entry ("" when none).
+
+    Mirrors the request path's precedence (``auxiliary_client._named_custom_api_key``):
+    inline ``api_key`` → ``key_env`` → ``key_cmd`` → credential pool. Differs where the probe
+    path needs it: the result is always a plain string (never a callable token provider), and
+    an unresolved entry yields "" rather than the request path's ``no-key-required``
+    placeholder — sending a bogus bearer would turn an unkeyed server's 200 into a 401.
+    Never logs the resolved value.
+    """
+    inline = str(entry.get("api_key") or "").strip()
+    if inline:
+        return inline
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    if key_env:
+        # Same scoped read as auxiliary_client._scoped_key_env: the scope's verdict is
+        # authoritative, with os.environ as the unscoped fallback (systemd/op run injection).
+        try:
+            from agent.secret_scope import get_secret_str
+            resolved = (get_secret_str(key_env) or "").strip()
+        except Exception:
+            resolved = ""
+        if resolved:
+            return resolved
+        resolved = (os.getenv(key_env) or "").strip()
+        if resolved:
+            return resolved
+    key_cmd = str(entry.get("key_cmd", "") or "").strip()
+    if key_cmd:
+        try:
+            from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
+            # The provider caches minted tokens until near expiry; materializing here pays
+            # the same cost the request path pays, not a subprocess per probe leg.
+            token = materialize_probe_api_key(build_command_token_provider(key_cmd, str(entry.get("name") or "")))
+            if token:
+                return token
+        except Exception:
+            pass
+    try:
+        from agent.credential_pool import custom_provider_pool_key_candidates, load_pool
+        pool_name = entry.get("provider_key") or entry.get("name") or ""
+        for pool_key in custom_provider_pool_key_candidates(base_url, pool_name):
+            try:
+                pool = load_pool(pool_key)
+            except Exception:
+                continue
+            if not pool.has_credentials():
+                continue
+            pool_entry = pool.select()
+            if pool_entry is None:
+                continue
+            pool_api_key = getattr(pool_entry, "runtime_api_key", None) or getattr(pool_entry, "access_token", "") or ""
+            if str(pool_api_key).strip():
+                return str(pool_api_key).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _resolve_route_probe_api_key(base_url: str, api_key: object = "", custom_providers: Optional[list] = None) -> str:
+    """Probe credential for *base_url*: a truthy caller key wins; otherwise the route-matching
+    custom-provider entry supplies one (see ``_custom_entry_probe_key``), materialized to a str.
+
+    Keyed local servers (llama.cpp ``--api-key``, oMLX) answer every unauthenticated probe leg
+    with a 401, so detection can never succeed and re-fails per TTL expiry while inference on
+    the same route authenticates fine (#105379) — the same class #89863 fixed for the Ollama
+    vision probe: forward the credential the request path already sends.
+    """
+    from agent.command_token_source import materialize_probe_api_key
+    token = materialize_probe_api_key(api_key)
+    if token:
+        return token
+    if not str(base_url or "").strip():
+        return ""
+    try:
+        from hermes_cli.config_providers import _entries_for_route
+        for entry in _entries_for_route(base_url, custom_providers, None):
+            if not isinstance(entry, dict):
+                continue
+            key = _custom_entry_probe_key(entry, _normalize_base_url(base_url))
+            if key:
+                return key
+    except Exception:
+        pass
+    return ""
+
+
 def _is_custom_endpoint(base_url: str) -> bool:
     normalized = _normalize_base_url(base_url)
     return bool(normalized) and not base_url_host_matches(normalized, "openrouter.ai")
@@ -765,6 +852,10 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     if isinstance(disk_hit, str):
         _endpoint_probe_path_cache[server_url] = (disk_hit, time.monotonic())
         return disk_hit
+    # Keyed local servers 401 every unauthenticated leg; a route credential the request
+    # path already sends must reach the waterfall too (#105379). Resolved after the caches
+    # so hot paths never pay credential resolution.
+    api_key = _resolve_route_probe_api_key(base_url, api_key)
     # Most specific first: (name, paths tried until one answers 200, body check). LM Studio answers /api/tags
     # with {"error": ...} and 200, so Ollama's body must carry "models"; older llama.cpp builds have no /v1 prefix.
     waterfall = (
@@ -1059,6 +1150,9 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         return {}
     _ensure_requests()
     local = is_local_endpoint(normalized)
+    # A blank caller key must not condemn a keyed server's /models to 401 forever — resolve
+    # the route credential BEFORE the memo key so caches fingerprint the real credential (#105379).
+    api_key = _resolve_route_probe_api_key(normalized, api_key)
     memo_key = _endpoint_memo_key(normalized, api_key)
     if not force_refresh:
         cached = _endpoint_model_metadata_cache.get(memo_key)
@@ -2204,6 +2298,10 @@ def get_model_context_length(
     # a generic family default. Mirrors the validation path's base/suffix split
     # in hermes_cli.models.validate_requested_model.
     model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
+    # A blank caller key must not send every downstream probe (/models, server-type waterfall,
+    # local context probe) out unauthenticated against a keyed server the request path
+    # authenticates to — resolve the route credential once, here (#105379).
+    api_key = _resolve_route_probe_api_key(base_url, api_key, custom_providers)
     # Endpoint-scoped metadata goes AHEAD of the persistent cache so a value learned on a
     # multiplexed provider's other endpoint cannot override it.
     endpoint_context = _endpoint_scoped_context_length(model, base_url)

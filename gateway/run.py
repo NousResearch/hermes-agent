@@ -36,6 +36,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance
@@ -614,25 +615,22 @@ def _format_exec_approval_fallback(
 # never fix a quota, so text with both signals must fail safe toward the quota reply (#89401). Copy
 # names the slash command the chat user can run; raw provider text stays in the gateway log.
 #
+# The second element is an i18n catalog key, resolved at reply time by ``agent.i18n.t`` — so the
+# wording follows ``display.language`` and a profile can restyle any row from
+# ``<HERMES_HOME>/locales/<lang>.yaml`` without patching this file (#102336).
+#
 # The three connection rows are not interchangeable (#116323): a RESET/EOF on an established
 # connection says nothing about whether the endpoint is up (an earlier call in the same turn may have
 # been answered by it), a REFUSED/unroutable connect is the endpoint-down case #86570 wrote the
 # wording for, and a cause-free SDK ``APIConnectionError: Connection error.`` supports neither
 # diagnosis, so the catch-all names the failure without asserting a cause.
 _PROVIDER_ERROR_REPLIES = (
-    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
-    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
-                             "or ask whoever runs this bot to run `hermes doctor` on the host."),
-    (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
-                                  "message, or use /model to switch models."),
-    (_GATEWAY_CONNECTION_INTERRUPTED_RE, "⚠️ The connection to the AI model service was interrupted mid-request — "
-                                         "usually transient. Use /retry to try again; if it keeps happening, run "
-                                         "`hermes doctor` on the host."),
-    (_GATEWAY_ENDPOINT_UNREACHABLE_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
-                                       "endpoint is not running or is unreachable. Wait a moment and use /retry; "
-                                       "if it persists, run `hermes doctor` on the host."),
-    (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ Hermes could not reach the AI model service (no further detail from the "
-                                   "SDK). Use /retry to try again; if it persists, run `hermes doctor` on the host."))
+    (_GATEWAY_RATE_LIMIT_RE, "gateway.provider_error.rate_limit"),
+    (_GATEWAY_AUTH_ERROR_RE, "gateway.provider_error.auth"),
+    (_GATEWAY_PROVIDER_POLICY_RE, "gateway.provider_error.policy"),
+    (_GATEWAY_CONNECTION_INTERRUPTED_RE, "gateway.provider_error.connection_interrupted"),
+    (_GATEWAY_ENDPOINT_UNREACHABLE_RE, "gateway.provider_error.endpoint_unreachable"),
+    (_GATEWAY_CONNECTION_ERROR_RE, "gateway.provider_error.connection"))
 
 
 # Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
@@ -649,19 +647,21 @@ def _rate_limit_reply(text: str) -> str:
     from agent.retry_utils import format_reset_window, reset_delay_from_message
     seconds = reset_delay_from_message(text) or 0
     if seconds < 120:
-        return "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
-    return (f"⏱️ The AI model service's usage limit is reached; it resets in {format_reset_window(seconds)}. "
-            "Use /retry after that, or /model to switch models.")
+        return t("gateway.provider_error.rate_limit")
+    return t("gateway.provider_error.rate_limit_reset", window=format_reset_window(seconds))
 
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
-    for pattern, reply in _PROVIDER_ERROR_REPLIES:
+    """Map raw provider/API errors to a short user-safe Telegram reply.
+
+    Wording lives in the i18n catalog (``gateway.provider_error.*``), so it follows
+    ``display.language`` and a profile can restyle it in ``<HERMES_HOME>/locales/<lang>.yaml``
+    without patching this file; the defaults are unchanged (#102336).
+    """
+    for pattern, key in _PROVIDER_ERROR_REPLIES:
         if pattern.search(text):
-            return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else reply
-    return (
-        "⚠️ The AI model service kept failing. Use /retry to try again, or /model to switch "
-        "models. Details are in the gateway log (`hermes logs`).")
+            return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else t(key)
+    return t("gateway.provider_error.generic")
 
 
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.

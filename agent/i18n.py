@@ -3,6 +3,10 @@
 Catalogs are ``locales/<lang>.yaml`` flattened to dotted keys. Missing keys
 fall back to English, then to the key itself, so a broken catalog never crashes.
 Language resolution: explicit ``lang=`` > ``HERMES_LANGUAGE`` > ``display.language`` > ``en``.
+
+A profile may overlay the bundled catalog with ``<HERMES_HOME>/locales/<lang>.yaml``
+(partial -- only the keys present are overridden), so operators can restyle a message
+without editing the install; everything they leave out keeps falling through.
 """
 
 from __future__ import annotations
@@ -49,7 +53,7 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
 }
 
-_catalog_cache: dict[str, dict[str, str]] = {}
+_catalog_cache: dict[tuple[str, str], dict[str, str]] = {}
 _catalog_lock = threading.Lock()
 
 
@@ -81,32 +85,77 @@ def _normalize_lang(value: Any) -> str:
     return base if base in SUPPORTED_LANGUAGES else DEFAULT_LANGUAGE
 
 
-def _cache_catalog(lang: str, flat: dict[str, str]) -> dict[str, str]:
+def _profile_home_key() -> str:
+    """Path of the active Hermes home as a string (``""`` when it cannot be resolved).
+
+    Overlays are profile-scoped, so the *cache key* must be too: a multiplexed gateway serves
+    several profiles from one process, and one profile's overlay must never answer for another
+    (same reason ``_config_language_cached`` is keyed by home rather than resolved once).
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        return str(get_hermes_home())
+    except Exception as exc:  # pragma: no cover - environment/import failure only
+        logger.debug("i18n: could not resolve HERMES_HOME for overlay lookup: %s", exc)
+        return ""
+
+
+def _overlay_path(lang: str, home_key: str) -> Path | None:
+    """``<HERMES_HOME>/locales/<lang>.yaml`` when an operator put one there, else ``None``.
+
+    Partial by design -- only the keys present in the file are merged over the bundled catalog,
+    so restyling one message costs three lines and cannot lose the rest of the catalog.
+    ``HERMES_BUNDLED_LOCALES`` *replaces* the whole directory, which is a packaging hook
+    (sealed/Nix installs), not something an operator can use per profile.
+    """
+    if not home_key:
+        return None
+    path = Path(home_key) / "locales" / f"{lang}.yaml"
+    return path if path.is_file() else None
+
+
+def _cache_catalog(cache_key: tuple[str, str], flat: dict[str, str]) -> dict[str, str]:
     with _catalog_lock:
-        _catalog_cache[lang] = flat
+        _catalog_cache[cache_key] = flat
     return flat
 
 
 def _load_catalog(lang: str) -> dict[str, str]:
-    """Load one locale YAML flattened to dotted keys; cached per language (empty dict on any failure)."""
+    """Load one locale YAML flattened to dotted keys; cached per (home, language).
+
+    The bundled catalog is the base; the profile overlay wins on the keys it defines. A missing
+    or unparsable overlay is logged and ignored -- catalogs are read-only input, never a crash.
+    """
+    home_key = _profile_home_key()
+    cache_key = (home_key, lang)
     with _catalog_lock:
-        cached = _catalog_cache.get(lang)
+        cached = _catalog_cache.get(cache_key)
         if cached is not None:
             return cached
 
-    path = _locales_dir() / f"{lang}.yaml"
     flat: dict[str, str] = {}
+    path = _locales_dir() / f"{lang}.yaml"
     if not path.is_file():
         logger.debug("i18n catalog missing for %s at %s", lang, path)
-        return _cache_catalog(lang, flat)
-    try:
-        import yaml
-        with path.open("r", encoding="utf-8") as f:
-            _flatten_into(yaml.safe_load(f) or {}, "", flat)
-    except Exception as exc:
-        logger.warning("Failed to load i18n catalog %s: %s", path, exc)
-        flat = {}
-    return _cache_catalog(lang, flat)
+    else:
+        try:
+            import yaml
+            with path.open("r", encoding="utf-8") as f:
+                _flatten_into(yaml.safe_load(f) or {}, "", flat)
+        except Exception as exc:
+            logger.warning("Failed to load i18n catalog %s: %s", path, exc)
+            flat = {}
+
+    overlay = _overlay_path(lang, home_key)
+    if overlay is not None:
+        try:
+            import yaml
+            with overlay.open("r", encoding="utf-8") as f:
+                _flatten_into(yaml.safe_load(f) or {}, "", flat)
+        except Exception as exc:
+            logger.warning("Failed to load i18n overlay %s: %s", overlay, exc)
+
+    return _cache_catalog(cache_key, flat)
 
 
 def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:

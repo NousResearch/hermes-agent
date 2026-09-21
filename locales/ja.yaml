@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"
   config_save_failed: "⚠️ 設定を保存できませんでした: {error}"
 
+  provider_error:
+    # Canned provider-failure replies (gateway/run.py::_PROVIDER_ERROR_REPLIES).
+    # Defaults keep the bundled wording; override any key per profile in
+    # <HERMES_HOME>/locales/<lang>.yaml (partial file -- only what you list changes).
+    # (Untranslated: English source wording.)
+    rate_limit: "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
+    rate_limit_reset: "⏱️ The AI model service's usage limit is reached; it resets in {window}. Use /retry after that, or /model to switch models."
+    auth: "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, or ask whoever runs this bot to run `hermes doctor` on the host."
+    policy: "⚠️ The AI model service rejected this request. Try rephrasing your message, or use /model to switch models."
+    connection_interrupted: "⚠️ The connection to the AI model service was interrupted mid-request — usually transient. Use /retry to try again; if it keeps happening, run `hermes doctor` on the host."
+    endpoint_unreachable: "⚠️ The AI model service isn't reachable right now — the configured model endpoint is not running or is unreachable. Wait a moment and use /retry; if it persists, run `hermes doctor` on the host."
+    connection: "⚠️ Hermes could not reach the AI model service (no further detail from the SDK). Use /retry to try again; if it persists, run `hermes doctor` on the host."
+    generic: "⚠️ The AI model service kept failing. Use /retry to try again, or /model to switch models. Details are in the gateway log (`hermes logs`)."
+
   model:
     error_prefix:           "エラー: {error}"
     switched:               "モデルを `{model}` に切り替えました"

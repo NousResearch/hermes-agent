@@ -482,6 +482,8 @@ const PAGE_SIZE = 60;
 // place that needs to follow.
 const SKILLS_URL = "/docs/api/skills.json";
 const META_URL = "/docs/api/skills-meta.json";
+/** Mirrors the `max-width: 600px` blocks in styles.module.css. */
+const MOBILE_FILTER_QUERY = "(max-width: 600px)";
 
 function buildSearchHaystack(s: Skill): string {
   // Pre-compute the lowercase blob the search filter scans. Done once at
@@ -614,8 +616,14 @@ export default function SkillsDashboard() {
   }, []);
 
   useEffect(() => {
-    const media = window.matchMedia("(max-width: 600px)");
-    const sync = () => setMobileFiltersActive(media.matches);
+    const media = window.matchMedia(MOBILE_FILTER_QUERY);
+    const sync = () => {
+      setMobileFiltersActive(media.matches);
+      // Leaving the mobile band hides the drawer, so its state has to go with
+      // it: otherwise a resize leaves aria-expanded="true" on a hidden toggle
+      // and coming back reopens the drawer and re-locks body scroll.
+      if (!media.matches) setSidebarOpen(false);
+    };
     sync();
     media.addEventListener("change", sync);
     return () => media.removeEventListener("change", sync);

@@ -22,22 +22,30 @@ MEMORY_BLOCK_HEADERS = {
 
 ENTRY_DELIMITER = "\n§\n"
 
-# Failure payloads carry entry PREVIEWS, not the full store. The full text already
-# lives in the model's context (frozen memory block in the system prompt, or a
-# prior tool result in-session), so echoing it back in every consolidation error
-# was pure waste: ~20k chars per retry, 2.8M chars over 48h of observed traffic.
-# The preview keeps the distinctive head of each entry plus its char size, which
-# is what the model needs to pick what to consolidate and budget how much it frees.
+
+def _scan_memory_content(content: str) -> Optional[str]:
+    """Error string if *content* matches injection/exfil patterns. Strict scope:
+    memory enters the system prompt, so a poisoned entry persists across sessions."""
+    return _first_threat_message(content, scope="strict")
+
+
+def _error(message: str, **extra) -> Dict[str, Any]:
+    if "current_entries" in extra:
+        extra["current_entries"] = _previews(extra["current_entries"])  # bounded, never a full-store echo
+    return {"success": False, "error": message, **extra}
+
+
+# --- Local hardening (carried): bounded failure payloads + nearest-entry guidance ---
+# state.db forensics (48h): failure payloads echoing the FULL store blow the turn
+# budget, and 12/23 no-match failures were >=95% similar (stale-snapshot old_text).
 ENTRY_PREVIEW_CHARS = 120
-# Cap for the whole preview list: with dozens of entries even previews add up,
-# so past this budget the list is cut and the model is pointed at its memory block.
 PREVIEW_LIST_BUDGET = 2400
 
 
 def _entry_preview(entry: str, cap: int = ENTRY_PREVIEW_CHARS) -> str:
     if len(entry) <= cap:
         return entry
-    return f"{entry[:cap]} …[{len(entry)} chars total]"
+    return f"{entry[:cap]} ...[{len(entry)} chars total]"
 
 
 def _previews(entries: List[str]) -> List[str]:
@@ -45,14 +53,13 @@ def _previews(entries: List[str]) -> List[str]:
     total = sum(len(p) + 3 for p in previews)
     if total <= PREVIEW_LIST_BUDGET or not previews:
         return previews
-    # Keep whole entries until the budget, then point at the system-prompt block.
     kept, used = [], 0
     for p in previews:
         if used + len(p) + 3 > PREVIEW_LIST_BUDGET:
             break
         kept.append(p)
         used += len(p) + 3
-    kept.append(f"[+{len(previews) - len(kept)} more entries — full text in your memory block in the system prompt]")
+    kept.append(f"[+{len(previews) - len(kept)} more entries -- full text in your memory block in the system prompt]")
     return kept
 
 
@@ -72,14 +79,8 @@ def _nearest_entry_hint(entries: List[str], old_text: str) -> Optional[str]:
 
 def _retry_old_text(entries: List[str], old_text: str) -> Optional[str]:
     """A short, word-aligned prefix of the entry nearest to a non-matching
-    *old_text*, verified to uniquely match that one entry — copy-able verbatim
-    into a retry's ``old_text``. None when nothing is similar (ratio < 0.4).
-
-    state.db forensics (48h): 12/23 hinted no-match failures were >=95% similar —
-    the entry EXISTS but the caller wrote ``old_text`` from a stale session-start
-    snapshot, so retries on the caller's own text can never match. The loop only
-    converges when the retry uses OUR text: the preview is truncated (120 chars,
-    not copy-able), so hand back a verified-unique prefix instead."""
+    *old_text*, verified to uniquely match that one entry -- copy-able verbatim
+    into a retry's ``old_text``. None when nothing is similar (ratio < 0.4)."""
     if not entries:
         return None
     import difflib
@@ -93,16 +94,6 @@ def _retry_old_text(entries: List[str], old_text: str) -> Optional[str]:
         if idx is not None and not ambiguous and entries[idx] is best:
             return cand
     return best  # whole entry: unique after load-time dedup
-
-
-def _scan_memory_content(content: str) -> Optional[str]:
-    """Error string if *content* matches injection/exfil patterns. Strict scope:
-    memory enters the system prompt, so a poisoned entry persists across sessions."""
-    return _first_threat_message(content, scope="strict")
-
-
-def _error(message: str, **extra) -> Dict[str, Any]:
-    return {"success": False, "error": message, **extra}
 
 
 def _drift_error(path: Path, bak_path: str) -> Dict[str, Any]:
@@ -128,12 +119,22 @@ def _read_failed_error(path: Path) -> Dict[str, Any]:
 
 
 def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int], bool]:
-    """``(index, ambiguous)`` for entries containing *old_text*. Exact-duplicate
+    """``(index, ambiguous)`` for entries matching *old_text*. A whole-entry
+    EXACT match (``old_text == entry``) takes absolute priority — substring
+    matches are only considered when no entry equals *old_text*, so a short
+    entry stays addressable even when its full text is contained inside a
+    longer sibling entry (remove('test') vs '...tests pass...'). Exact-duplicate
     matches are safe (first wins); distinct matches → ``(None, True)``."""
-    matches = [i for i, e in enumerate(entries) if old_text in e]
+    exact = [i for i, e in enumerate(entries) if e == old_text]
+    matches = exact if exact else [i for i, e in enumerate(entries) if old_text in e]
     if len({entries[i] for i in matches}) > 1:
         return None, True
     return (matches[0] if matches else None), False
+
+
+# Optional third value of an _apply closure: a dict merged into the success payload —
+# e.g. the full text an entry-level replace overwrote, so a whole-entry write is never
+# silent about the loss (#117952). Same convention as _error(**extra).
 
 
 class MemoryStore:
@@ -282,11 +283,9 @@ class MemoryStore:
         return f"{min(100, int((current / limit) * 100)) if limit > 0 else 0}% — {current:,}/{limit:,} chars"
 
     def _failure_with_entries(self, target: str, message: str) -> Dict[str, Any]:
-        """Consolidation failure carrying entry previews (head + char size) so the
-        model can pick what to consolidate without echoing the whole store — the
-        full text is already in its system prompt / this session's context."""
+        """Consolidation failure carrying the live entries so the model can consolidate."""
         return self._consolidation_failure(
-            _error(message, current_entries=_previews(self._entries_for(target)), usage=self._usage(target)))
+            _error(message, current_entries=self._entries_for(target), usage=self._usage(target)))
 
     def _batch_failure(self, target: str, message: str) -> Dict[str, Any]:
         """Batch-abort failure WITHOUT ``current_entries``: the store did not change and the
@@ -297,12 +296,13 @@ class MemoryStore:
 
     def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
-        or ``(new_entries, message, extra)`` or an error dict, then persist and return the
-        success response. The reload aborts
+        or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
         file) and, unless *skip_drift*, on external drift (flushing would discard
         un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
-        a failed second read used to count as "no drift"."""
+        a failed second read used to count as "no drift". The closure may return a
+        third value, a dict merged into the success payload (``_error``'s ``**extra``
+        convention) — e.g. the full text a replace overwrote (#117952)."""
         path = self._path_for(target)
         with self._file_lock(path):
             raw, read_ok = self._read_raw_checked(path)
@@ -315,13 +315,13 @@ class MemoryStore:
             result = mutate(self._entries_for(target), self._char_limit(target))
             if isinstance(result, dict):
                 return result
-            extra = result[2] if len(result) > 2 else {}
             self._set_entries(target, result[0])
             from hermes_constants import mkdir_under_hermes_home
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            return self._success_response(target, result[1], extra=extra)
+            extra_fields = result[2] if len(result) > 2 else {}
+            return self._success_response(target, result[1], **extra_fields)
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -346,7 +346,9 @@ class MemoryStore:
         return self._mutate(target, _add, skip_drift=True)
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+        """Find the entry containing old_text (whole-entry exact match first) and
+        replace the WHOLE entry with new_content — old_text only locates the entry;
+        the matched span is not spliced into it."""
         new_content = new_content.strip()
         if not old_text.strip():
             return _error("old_text cannot be empty.")
@@ -371,84 +373,54 @@ class MemoryStore:
                               matches=[e[:80] + ("..." if len(e) > 80 else "") for e in entries if old_text in e])
             if idx is None:
                 hint = _nearest_entry_hint(entries, old_text)
-                hint_text = f" {hint}." if hint else ""
                 retry = _retry_old_text(entries, old_text)
-                retry_fields = ({"retry_old_text": retry} if retry else {})
-                return self._consolidation_failure(_error(
-                    f"No entry matched '{old_text[:160]}'. Check current_entries below and retry with the exact text "
-                    f"of the entry you want to {'replace' if new_content else 'remove'}.{hint_text}"
-                    + (" Use retry_old_text verbatim as your next old_text." if retry else ""),
-                    current_entries=_previews(entries), **retry_fields))
+                msg = (f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
+                       f"of the entry you want to {'replace' if new_content else 'remove'}.")
+                if hint:
+                    msg += f" {hint}"
+                if retry:
+                    msg += " Use retry_old_text verbatim as your next old_text."
+                extra = ({"retry_old_text": retry} if retry else {})
+                return self._consolidation_failure(_error(msg, current_entries=entries, **extra))
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
             if new_content is None:
                 return replaced, "Entry removed."
             new_total = len(ENTRY_DELIMITER.join(replaced))
             if new_total > limit:
                 return self._failure_with_entries(target, (
-                    f"Replacement would put memory at {new_total:,}/{limit:,} chars "
-                    f"(over by {new_total - limit:,}). Shorten the new content, "
+                    f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))
-            return replaced, "Entry replaced."
+            return replaced, "Entry replaced.", {"replaced_entry": entries[idx]}
         return self._mutate(target, _apply)
 
     @staticmethod
-    def _infer_batch_action(op: Dict[str, Any], pos: str) -> Optional[str]:
-        """Observed traffic: models emit patch-tool-shaped batch ops — {old_text,
-        new_string/new_text} or bare {content} — with no ``action``. Infer it from
-        the shape instead of failing the batch (48 'unknown action' failures, each
-        echoing the full store, in a 48h window). None when the shape is ambiguous."""
-        if old := op.get("old_text"):
-            content = op.get("content") or op.get("new_text") or op.get("new_string")
-            return "replace" if content else "remove"
-        if op.get("content") or op.get("new_text") or op.get("new_string"):
-            return "add"
-        return None
-
-    @staticmethod
-    def _apply_batch_op(working: List[str], act: Optional[str], content: str, old_text: str, pos: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-        """Apply one batch op to *working* in place.
-
-        Returns ``(None, None)`` when applied, ``(None, info)`` when SKIPPED
-        (recoverable: the op could not apply but the batch continues — info
-        describes the skip for the result report), or ``(msg, None)`` when
-        FATAL (malformed op: unknown action, missing old_text, ambiguous or
-        add-without-content — the whole batch is refused)."""
+    def _apply_batch_op(working: List[str], act: str, content: str, old_text: str,
+                        pos: str) -> Tuple[Optional[str], Optional[str]]:
+        """Apply one batch op to *working* in place; return ``(error message, replaced
+        entry text)``. The first element is None on every success path; the second is
+        the full entry a 'replace' overwrote (None on non-replace paths and on every
+        error path), surfaced so the caller can show what was lost (#117952)."""
         if act == "add":
             if not content:
                 return f"{pos}: content is required.", None
             if content not in working:  # idempotent -- skip duplicate, don't fail the batch
                 working.append(content)
             return None, None
-        if act == "replace" and not content:
-            # state.db forensics (48h): 23 replace-ops-without-content, each failing
-            # its whole batch atomically, in consolidation retries. The caller means
-            # "delete this entry" (patch-tool shape: an edit to empty IS a delete).
-            # Apply it as a remove instead of killing the batch.
-            act = "remove"
         if act not in ("replace", "remove"):
-            return f"{pos}: unknown action '{act}'. Use add, replace, or remove.", None
+            return f"{pos}: unknown action. Use add, replace, or remove.", None
         if not old_text:
             return f"{pos}: old_text is required.", None
+        if act == "replace" and not content:
+            return f"{pos}: content is required (use action='remove' to delete).", None
         idx, ambiguous = _find_unique_match(working, old_text)
         if ambiguous:
-            return f"{pos}: '{old_text[:160]}' matched multiple distinct entries -- be more specific.", None
+            return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None
         if idx is None:
-            # SKIPPED, not fatal. state.db forensics (48h): 47 no-entry-matched
-            # batch failures — typically a sibling session already consolidated
-            # the entry (idempotent re-run) or the caller holds a stale snapshot.
-            # Failing the whole batch atomically made identical resubmits fail
-            # identically forever. An unmatched remove = already gone (success);
-            # an unmatched replace = skip and report, with copy-able retry text.
-            info: Dict[str, Any] = {"pos": pos, "action": act,
-                                    "old_text": old_text[:160],
-                                    "reason": "no entry matched (already removed by a sibling session, or old_text drifted)"}
-            retry = _retry_old_text(working, old_text)
-            if retry:
-                info["retry_old_text"] = retry[:160]
-            return None, info
+            return f"{pos}: no entry matched '{old_text}'.", None
+        replaced_text = working[idx] if act == "replace" else None
         working[idx:idx + 1] = [content] if act == "replace" else []
-        return None, None
+        return None, replaced_text
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
@@ -466,20 +438,18 @@ class MemoryStore:
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
-            skipped: List[Dict[str, Any]] = []
+            replaced = {}  # op index -> full entry text its replace overwrote (#117952)
             for i, op in enumerate(ops):
                 act = op.get("action")
-                if not op.get("action"):
-                    inferred = self._infer_batch_action(op, f"Operation {i + 1}")
-                    if inferred is not None:
-                        act = inferred
-                msg, skip_info = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or op.get("new_string") or "").strip(),
-                                                      (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
-                if skip_info is not None:
-                    skipped.append(skip_info)
-                    continue
+                msg, replaced_text = self._apply_batch_op(
+                    working, act, (op.get("content") or op.get("new_text") or "").strip(),
+                    (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._batch_failure(target, msg)
+                if replaced_text is not None:
+                    # 1-based op position, matching the "Operation N" error numbering the
+                    # model sees for failed ops in the same batch.
+                    replaced[i + 1] = replaced_text
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single
@@ -494,23 +464,10 @@ class MemoryStore:
             if new_total > limit:
                 return self._batch_failure(target, (
                     f"After applying all {len(operations)} operations, memory would be at "
-                    f"{new_total:,}/{limit:,} chars -- over by {new_total - limit:,}. Remove or shorten "
-                    f"more entries in the same batch (see current_entries below), then retry."))
-            extra: Dict[str, Any] = {}
-            message = f"Applied {len(operations)} operation(s)."
-            if skipped:
-                # Skips ride the SUCCESS response but must not read as "complete":
-                # a skipped replace left the intended consolidation undone.
-                extra["skipped"] = skipped[:8]
-                if len(skipped) > 8:
-                    extra["skipped_truncated"] = len(skipped) - 8
-                extra["note"] = (
-                    f"{len(skipped)} of {len(operations)} operation(s) were skipped (no entry matched — "
-                    "likely already applied by a sibling session, or old_text drifted). "
-                    "If a skipped operation is still needed, reissue it with old_text from "
-                    "retry_old_text. Do not reissue skipped removes whose entry is already gone.")
-                message = f"Applied {len(operations)} operation(s); {len(skipped)} skipped (see skipped)."
-            return working, message, extra
+                    f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
+                    f"entries in the same batch, then retry."))
+            replaced_fields = {"replaced_entries": replaced} if replaced else {}
+            return working, f"Applied {len(operations)} operation(s).", replaced_fields
         return self._mutate(target, _apply)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
@@ -518,19 +475,20 @@ class MemoryStore:
         it, preserving the prefix cache); None if empty."""
         return self._system_prompt_snapshot.get(target, "") or None
 
-    def _success_response(self, target: str, message: str = None, *, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _success_response(self, target: str, message: str = None, **extra) -> Dict[str, Any]:
         """TERMINAL and WITHOUT the entries list: echoing entries invites the model to
         "find more to fix" and re-issue the same ops. A successful write resets the
-        per-turn failure budget."""
+        per-turn failure budget. ``**extra`` mirrors ``_error``'s convention — e.g. the
+        full text a replace overwrote (#117952), deliberately visible despite the
+        no-entries rule: silent data loss is the failure this field exists to prevent."""
         # A successful write means the consolidation loop made progress, so the per-turn failure budget
         # resets (the cap counts consecutive failures, not lifetime ones within a turn) (#42405).
         self._consolidation_failures = 0
-        resp = {"success": True, "done": True, "target": target,
+        return {"success": True, "done": True, "target": target,
                 "usage": self._usage_pct(target, self._char_count(target)),
-                "entry_count": len(self._entries_for(target)), **({**extra, "note": "Write saved. This update is complete — do not repeat it."} if extra else {"note": "Write saved. This update is complete — do not repeat it."})}
-        if message:
-            resp["message"] = message
-        return resp
+                "entry_count": len(self._entries_for(target)), **({"message": message} if message else {}),
+                **extra,
+                "note": "Write saved. This update is complete — do not repeat it."}
 
     def _render_block(self, target: str, entries: List[str]) -> str:
         """System prompt block: header + usage indicator + entries ("" when empty)."""

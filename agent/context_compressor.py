@@ -930,6 +930,10 @@ def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
 # 2.5% of the context window, clamped; floor keeps small models workable.
 LEAN_TAIL_FLOOR_TOKENS = 10_000
 LEAN_TAIL_CAP_TOKENS = 25_000
+# Hard share of the window the verbatim tail may occupy, applied after either formula. The lean
+# floor alone is 61% of a 16K window and 122% of an 8K one, so on a local 27B the "protected"
+# tail WAS the whole request and every compaction pass summarised six rows and reclaimed nothing.
+TAIL_MAX_CONTEXT_FRACTION = 0.20
 # Newest-first budget, straddler truncated; lives inside the single summary message.
 _LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
 _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
@@ -2164,9 +2168,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if self._tail_token_budget is None:
             if getattr(self, "tail_mode", "lean") == "lean":
                 # Lean mode: tail is a small clamped recency window; the summary carries continuity.
-                self._tail_token_budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
+                budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
             else:
-                self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+                budget = int(self.threshold_tokens * self.summary_target_ratio)
+            if self.context_length > 0:
+                budget = min(budget, int(self.context_length * TAIL_MAX_CONTEXT_FRACTION))
+            self._tail_token_budget = max(1, budget)
         return self._tail_token_budget
 
     @tail_token_budget.setter
@@ -3094,6 +3101,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
         return True
 
+    def _tail_soft_ceiling(self, token_budget: int) -> int:
+        """Optional tail rows may overrun the budget by 1.5x so whole rows are kept, but never past
+        ``TAIL_MAX_CONTEXT_FRACTION`` of the window — on a small window the overrun alone was a third
+        of the request. Required anchors and atomic tool groups may still exceed it."""
+        ceiling = int(token_budget * 1.5)
+        ctx = getattr(self, "context_length", 0) or 0
+        if ctx > 0:
+            ceiling = min(ceiling, int(ctx * TAIL_MAX_CONTEXT_FRACTION))
+        return max(ceiling, token_budget)
+
     def _pressure_demote_tail(
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int,
@@ -3101,7 +3118,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
         Keeps a short recent floor verbatim; overrides the skill guard (else the dead-end recurs).
         Returns the number of tool results demoted (arg truncations are logged but not counted)."""
-        soft_ceiling = int(protect_tail_tokens * 1.5)
+        soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
 
@@ -4719,7 +4736,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Keep >= 2 non-head messages summarizable so a tiny middle still saves messages.
         compressible_tail_cap = max(3, available_tail - 2)
         min_tail = min(min_tail_floor, compressible_tail_cap, available_tail) if available_tail > 1 else 0
-        soft_ceiling = int(token_budget * 1.5)
+        soft_ceiling = self._tail_soft_ceiling(token_budget)
         # The count floor is opportunistic: oversized optional rows must not ride it past the token
         # ceiling (#108647), so the walk runs floorless whenever the ceiling can hold at least the wire
         # overhead of that many empty rows. Only when it cannot does the continuity floor win — no

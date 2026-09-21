@@ -873,8 +873,8 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     from hermes_constants import profile_cli_selector
     _sel = profile_cli_selector()
     raise RuntimeError(
-        f"No LLM provider configured. Run `hermes {_sel}model` to "
-        f"select a provider, or run `hermes {_sel}setup` for first-time "
+        "No LLM provider configured. Run `hermes model` to "
+        "select a provider, or run `hermes setup` for first-time "
         "configuration."
     )
 
@@ -2403,6 +2403,9 @@ def init_agent(
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
+    # Every (provider, model) that rejected image content this session. build_api_request strips
+    # images from requests to those models only, so history keeps them for any model that can see.
+    agent._image_rejecting_models = set()
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)

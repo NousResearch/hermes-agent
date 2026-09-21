@@ -41,7 +41,7 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
-    ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content, _previews)
+    ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
 
 
 def load_on_disk_store() -> "MemoryStore":
@@ -83,7 +83,8 @@ _STORE_ACTIONS = {
     "add": (lambda store, target, content, old_text: store.add(target, content),
             lambda label, content, old_text: (f"add to {label}", content or "")),
     "replace": (lambda store, target, content, old_text: store.replace(target, old_text, content),
-                lambda label, content, old_text: (f"replace in {label}", f"old: {old_text}\nnew: {content}")),
+                lambda label, content, old_text: (f"replace in {label}",
+                                                  f"entry matching: {old_text}\nwhole entry becomes: {content}")),
     "remove": (lambda store, target, content, old_text: store.remove(target, old_text),
                lambda label, content, old_text: (f"remove from {label}", old_text or ""))}
 
@@ -93,7 +94,9 @@ def _batch_op_line(op: Dict[str, Any]) -> str:
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
         return f"- remove: {old}"
-    return f"- replace: {old} -> {content}" if act == "replace" else f"- {act}: {content}"
+    # Whole-entry contract (#117952): the approver must not read this as a span patch.
+    return (f"- replace entry matching '{old}' -> whole entry becomes: {content}" if act == "replace"
+            else f"- {act}: {content}")
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str], old_text: Optional[str],
@@ -115,12 +118,15 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     if action == "add" and not content:
         return tool_error("Content is required for 'add' action.", success=False)
     if action in ("replace", "remove") and not old_text:
+        replace_hint = (" For 'replace', content is the COMPLETE new entry -- the whole "
+                        "matched entry is overwritten, not just the old_text span."
+                        if action == "replace" else "")
         return json.dumps({
             "success": False,
             "error": (f"'{action}' needs old_text -- a short unique substring of the entry "
                       f"to {action}. None was provided. Reissue the {action} with old_text "
-                      f"set to part of one of the current_entries below."),
-            "current_entries": _previews(store._entries_for(target)), "usage": store._usage(target)}, ensure_ascii=False)
+                      f"set to part of one of the current_entries below.{replace_hint}"),
+            "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
     if action == "replace" and not content:
         return tool_error("content is required for 'replace' action.", success=False)
     return None
@@ -174,7 +180,8 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
                 store: Optional[MemoryStore] = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
-    aliases ``content`` — callers mirror ``old_text`` with it (patch-tool shape)."""
+    aliases ``content`` -- for 'replace' both mean the COMPLETE new entry (the
+    whole matched entry is overwritten; old_text only locates it)."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     if content is None and new_text is not None:
@@ -186,13 +193,13 @@ def memory_tool(action: str = None, target: str = "memory", content: str = None,
         return json.dumps(target_error)
     if operations:
         if isinstance(operations, str):
-            # Observed traffic (state.db, 48h): callers send a JSON-encoded list
-            # in the string slot. Unwrap instead of rejecting — the model can't
+            # Local hardening (state.db, 48h): callers send a JSON-encoded list
+            # in the string slot. Unwrap instead of rejecting -- the model can't
             # see the difference and just resubmits the same shape.
             try:
                 operations = json.loads(operations)
             except (ValueError, TypeError):
-                # Observed shape: '[{"replace", "content": ...' — action VALUE
+                # Observed shape: '[{"replace", "content": ...' -- action VALUE
                 # present, action KEY missing. Repairable, so repair; a valid
                 # ops string can never contain this (it'd be invalid JSON).
                 import re
@@ -281,30 +288,21 @@ MEMORY_SCHEMA = {
     "description": (
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes in ONE call via an 'operations' array. The batch applies "
-        "atomically against the final char budget — the limit is checked only on the FINAL result — "
-        "so a single call can remove/replace stale entries to free room AND add new ones, even when "
-        "an add alone would overflow. Ops that cannot apply are SKIPPED and reported (an unmatched "
-        "remove = the entry is already gone — treat as done; an unmatched replace comes back with "
-        "'retry_old_text' — reissue that one op with it verbatim). The response reports current/limit "
-        "chars and confirms completion; one batch call finishes the update, so don't repeat it. Use "
-        "the bare action/content/old_text fields only for a single lone change.\n\n"
-        "OPERATIONS FORMAT — each item MUST be an object with an explicit 'action' field:\n"
-        "[{\"action\": \"add\", \"content\": \"new entry text\"},\n"
-        " {\"action\": \"replace\", \"old_text\": \"unique substring of existing entry\", \"content\": \"replacement text\"},\n"
-        " {\"action\": \"remove\", \"old_text\": \"unique substring of existing entry\"}]\n"
-        "Every item needs 'action'. For replace/remove, 'old_text' is a short unique substring of "
-        "the EXISTING entry (use the text shown in current_entries or your memory block, not text "
-        "you are adding). Missing 'action' is the most common batch failure.\n\n"
-        "IF FULL: an add is rejected with the current entries shown (previews). Reissue as ONE batch "
-        "that removes or shortens enough stale entries and adds the new one together; the error tells "
-        "you how many chars over you are.\n\n"
+        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
+        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "checked only on the FINAL result — so a single call can remove/replace stale entries "
+        "to free room AND add new ones, even when an add alone would overflow. The response "
+        "reports current/limit chars and confirms completion; one batch call finishes the "
+        "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
+        "single lone change.\n\n"
         "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
         "is, stable environment facts, standing conventions with no task home. Anything "
         "learned while doing a task (procedures, pitfalls, and the user's preferences and "
         "corrections for that kind of work) belongs in the task's skill via skill_manage, "
         "where it loads only when relevant; memory is injected into every turn and must "
         "stay small.\n\n"
+        "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
+        "removes or shortens enough stale entries and adds the new one together.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
@@ -326,32 +324,28 @@ MEMORY_SCHEMA = {
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace' (single-op shape). Alias: 'new_text' is also accepted (mirrors old_text)."
+                "description": "The entry content. Required for 'add' and 'replace'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. Alias: 'new_text' is also accepted (same full-entry meaning)."
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry, it is not spliced out. Omit only for 'add'."
             },
             "new_text": {
                 "type": "string",
-                "description": "Alias for 'content' (single-op shape). Provided so the replace/remove old_text/new_text pairing works; if both are set, 'content' wins."
+                "description": "Alias for 'content' (single-op shape): the COMPLETE new entry for 'replace', not a patch of old_text. If both are set, 'content' wins."
             },
             "operations": {
                 "type": "array",
                 "description": (
                     "Batch shape: a list of operations applied atomically in one call "
                     "against the final char budget. Preferred when making multiple changes "
-                    "or consolidating to make room. Each item MUST have 'action' "
-                    "(add|replace|remove); replace/remove also need 'old_text' (unique "
-                    "substring of the EXISTING entry). Example: "
-                    "[{\"action\":\"remove\",\"old_text\":\"stale entry substring\"},"
-                    "{\"action\":\"add\",\"content\":\"new durable fact\"}]"
+                    "or consolidating to make room. Each item is {action, content?, old_text?}."
                 ),
                 "items": {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string", "description": "Entry content for add/replace. Alias: 'new_text'."},
+                        "content": {"type": "string", "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten). Alias: 'new_text'."},
                         "new_text": {"type": "string", "description": "Alias for 'content' in a batch op."},
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
                     },

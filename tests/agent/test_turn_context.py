@@ -90,7 +90,6 @@ class _FakeAgent:
         self._stream_think_scrubber = None
         # Attributes the prologue assigns; recorded for assertions.
         self._invalid_tool_retries = -1
-        self._vision_supported = None
         self._persist_calls = 0
         self._session_messages = []
         self._pending_cli_user_message = None
@@ -383,10 +382,9 @@ def test_turn_start_replaces_stale_parent_history_with_compression_child():
 def test_applies_agent_side_effects():
     agent = _FakeAgent()
     _build(agent)
-    # Retry counters reset, guardrails reset, vision re-armed, turn counted.
+    # Retry counters reset, guardrails reset, turn counted.
     assert agent._invalid_tool_retries == 0
     assert agent._tool_guardrails.reset_called is True
-    assert agent._vision_supported is True
     assert agent._user_turn_count == 1
     # Crash-resilience persistence fired once.
     assert agent._persist_calls == 1

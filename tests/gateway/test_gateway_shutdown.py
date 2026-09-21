@@ -407,7 +407,7 @@ async def test_shutdown_mcp_servers_nonblocking_keeps_loop_responsive():
     started = asyncio.Event()
     loop = asyncio.get_running_loop()
 
-    def wedged_shutdown():
+    def wedged_shutdown(**_kwargs):  # the caller divides its budget across per-profile passes
         loop.call_soon_threadsafe(started.set)
         import time as _time
 
@@ -440,7 +440,7 @@ async def test_shutdown_mcp_servers_nonblocking_keeps_loop_responsive():
 @pytest.mark.asyncio
 async def test_shutdown_mcp_servers_nonblocking_completes_fast_path():
     calls = []
-    with patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: calls.append(1)):
+    with patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda **_kw: calls.append(1)):
         done = await gateway_run._shutdown_mcp_servers_nonblocking(timeout=5)
     assert done is True
     assert calls == [1]

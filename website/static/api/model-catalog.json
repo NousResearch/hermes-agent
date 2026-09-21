@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-20T18:57:41Z",
+  "updated_at": "2026-09-21T20:20:54Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -117,6 +117,10 @@
           "description": ""
         },
         {
+          "id": "x-ai/grok-4.7",
+          "description": ""
+        },
+        {
           "id": "x-ai/grok-4.6",
           "description": ""
         },
@@ -168,6 +172,18 @@
           "id": "z-ai/glm-5.2",
           "description": "default",
           "default": true
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-pro",
+          "description": ""
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-flash",
+          "description": ""
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-pro-ultraspeed",
+          "description": ""
         },
         {
           "id": "xiaomi/mimo-v2.5-pro",
@@ -261,6 +277,9 @@
         "note": "The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
+        {
+          "id": "x-ai/grok-4.7"
+        },
         {
           "id": "anthropic/claude-fable-5.1"
         },
@@ -372,6 +391,18 @@
         {
           "id": "z-ai/glm-5.2",
           "default": true
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-pro",
+          "description": ""
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-flash",
+          "description": ""
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-pro-ultraspeed",
+          "description": ""
         },
         {
           "id": "xiaomi/mimo-v2.5-pro"

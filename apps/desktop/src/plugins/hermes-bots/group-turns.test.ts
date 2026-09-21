@@ -380,6 +380,17 @@ describe('per-turn socket lease', () => {
     expect(reply).toBe('routed reply')
     // The retain landed before the first session-scoped RPC on the route.
     expect(room.gateway.timeline[0]).toBe('retain')
+    expect(room.gateway.retains).toEqual([{ spawnPriority: 'foreground' }])
+
+    const resumes = room.gateway.rpcFor('session.resume')
+
+    expect(resumes.length).toBeGreaterThan(0)
+
+    for (const resume of resumes) {
+      expect(resume).toMatchObject({ spawnPriority: 'foreground', timeoutMs: 180_000 })
+    }
+
+    expect(room.gateway.rpcFor('session.create')).toEqual([expect.objectContaining({ spawnPriority: 'foreground' })])
 
     // The socket was NEVER disposed mid-turn: after every per-request lease
     // released, the turn lease still held the refcount above zero.
@@ -1086,7 +1097,7 @@ describe('in-flight marker', () => {
     expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
   })
 
-  it('harvests a remote member\'s turn that a previous Desktop process left in flight', async () => {
+  it("harvests a remote member's turn that a previous Desktop process left in flight", async () => {
     const room = await loadRoom()
     const { groupSessionKey } = await import('./group-membership')
 
@@ -1136,9 +1147,7 @@ describe('stranded harvest', () => {
     const activity = await import('./group-activity')
 
     try {
-      expect(await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'deploy', 't1', [])).toBe(
-        'long deploy done'
-      )
+      expect(await room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'deploy', 't1', [])).toBe('long deploy done')
       expect(room.chat.$groupChats.get().Room?.stranded?.helper).toBeUndefined()
       expect(activity.$groupActivity.get().Room?.events.map(event => event.kind)).not.toContain('timed-out')
     } finally {
@@ -1256,7 +1265,9 @@ describe('stranded harvest', () => {
     await room.turns.harvestStrandedGroupReply('Dead', member)
 
     expect(room.chat.$groupChats.get().Dead.stranded?.[key]).toBeUndefined()
-    expect(activity.$groupActivity.get().Dead?.events.map(event => [event.kind, event.member])).toEqual([['failed', key]])
+    expect(activity.$groupActivity.get().Dead?.events.map(event => [event.kind, event.member])).toEqual([
+      ['failed', key]
+    ])
   })
 
   it('never re-submits into a member the harvest just confirmed is still running', async () => {

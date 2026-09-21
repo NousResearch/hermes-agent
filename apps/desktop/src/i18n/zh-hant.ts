@@ -334,6 +334,7 @@ export const zhHant = defineLocale({
       gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',
       gatewayManagedUpdatesEmpty: '請在已儲存的連線中新增 SSH 連線，即可在此管理更新。',
       keyboardShortcuts: '按鍵繫結',
+      hudGesture: 'HUD 手勢',
       screenCapture: '螢幕擷取',
       notificationAlerts: '桌面通知',
       notificationSounds: '聲音',
@@ -663,7 +664,8 @@ export const zhHant = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
-      modelContextLength: '僅覆寫主聊天模型偵測到的上下文視窗（以 token 計）。保留 0 會使用所選模型偵測到的值。不影響輔助模型/MoA 模型。',
+      modelContextLength:
+        '僅覆寫主聊天模型偵測到的上下文視窗（以 token 計）。保留 0 會使用所選模型偵測到的值。不影響輔助模型/MoA 模型。',
       fallbackProviders: '備用模型',
       toolsets: '已啟用工具集',
       timezone: '時區',
@@ -997,6 +999,10 @@ export const zhHant = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      minimizeToTrayTitle: '最小化至系統匣',
+      minimizeToTrayDesc:
+        '將最小化的視窗隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。關閉視窗、Alt+F4 和 Cmd+Q 的行為不變。預設關閉，僅適用於此裝置。',
+      minimizeToTrayUnavailable: '系統匣無法使用。視窗將正常最小化和關閉。關閉此選項後重新開啟即可重試。',
       none: '無',
       noneParen: '(無)',
       builtinOnly: '僅內建',
@@ -1015,6 +1021,14 @@ export const zhHant = defineLocale({
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
       showOptions: '顯示選項'
+    },
+    hudModifier: {
+      title: '輕按叫出 HUD',
+      description:
+        '在 Mac 上按下並放開 ⌘ + Option，在 Windows/Linux 上按下並放開 Ctrl + Alt，即可從任何應用程式將 HUD 帶到前景。預設關閉，僅適用於此裝置。',
+      permission: '請在系統設定 → 隱私權與安全性 → 輸入監控中允許 Hermes，然後重試。此手勢不會記錄按鍵或擷取畫面。',
+      unavailable:
+        '此處無法使用這個手勢。Linux 需要 X11 工作階段；Wayland 不提供全域修飾鍵輕按事件。Hermes 內原有的 HUD 快速鍵仍可使用。'
     },
     screenshot: {
       enabledTitle: '螢幕截圖快速鍵',
@@ -1510,8 +1524,10 @@ export const zhHant = defineLocale({
         failedSelect: backend => `選擇 ${backend} 失敗`,
         needsSetupHint: '此後端已選取但尚未完成設定——在設定完成前命令將會失敗。',
         needsSetupConfirmTitle: backend => `仍要選擇 ${backend} 嗎？`,
-        needsSetupConfirmDescription: detail => `${detail} 此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。`,
-        needsSetupConfirmDescriptionGeneric: '此後端尚未完成設定。此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。',
+        needsSetupConfirmDescription: detail =>
+          `${detail} 此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。`,
+        needsSetupConfirmDescriptionGeneric:
+          '此後端尚未完成設定。此變更生效後啟動的工作階段在設定完成前將沒有終端或檔案工具。',
         needsSetupConfirmAction: '仍然選擇'
       },
       browserRealProfile: {
@@ -2586,6 +2602,8 @@ export const zhHant = defineLocale({
   },
 
   statusStack: {
+    hideStack: '隱藏狀態面板',
+    showStack: '顯示狀態面板',
     agents: '代理',
     background: count => `${count} 個背景任務`,
     goalActive: '目標進行中',

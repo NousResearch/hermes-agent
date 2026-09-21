@@ -778,10 +778,17 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if rendered := render_message(raw, cols):
         payload["rendered"] = rendered
     error_value = result.get("error")
+    final_text = result.get("final_response")
+    has_partial_text = bool(
+        result.get("partial") and isinstance(final_text, str)
+        and final_text.strip() and final_text.strip() != str(error_value or "").strip())
     with session["history_lock"]:
         if status == "error":
             # Retain the failed turn: resume's inflight payload is the only carrier of the
             # failure if this frame is lost to a disconnect.
+            if has_partial_text and not (session.get("inflight_turn") or {}).get("assistant"):
+                # Non-streaming results need a replay body too; keep existing streamed segments intact.
+                _append_inflight_delta(session, raw)
             _fail_inflight_turn(session, error_value, error_surface=_error_surface)
             st.error_retained = True
             st.error_detail = _turn_failure_detail(
@@ -791,6 +798,9 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if status == "error":
         payload["error"] = str(error_value or raw)
         payload["recoverable"] = True
+        # Desktop distinguishes retained answer text from error copy using this flag.
+        if has_partial_text:
+            payload["partial"] = True
         if _error_surface:
             payload["error_surface"] = _error_surface
     if st.terminal_callback is not None:

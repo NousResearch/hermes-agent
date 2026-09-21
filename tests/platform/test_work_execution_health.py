@@ -240,9 +240,13 @@ def test_the_deployment_can_start_a_dispatcher():
     assert "nova-worker.service" in body, (
         "the deployment ships no dispatcher unit, so tasks it creates are never claimed"
     )
-    assert "kanban daemon --force" in body, (
-        "the worker unit does not run the dispatcher; a container that starts and idles "
-        "looks healthy and claims nothing"
+    # The dispatcher is not the container command — it is embedded in the gateway the
+    # image supervises. What the deployment must do is run that image with its supervision
+    # intact and tell the gateway slot to come up; see the two tests at the end of this
+    # file for the pair of conditions that makes it actually dispatch.
+    assert "HERMES_GATEWAY_BOOTSTRAP_STATE=running" in body, (
+        "the worker container supervises a gateway that is never started, so the embedded "
+        "dispatcher never runs and the board is never claimed"
     )
 
 
@@ -286,3 +290,168 @@ def test_a_control_plane_only_bootstrap_does_not_fail_the_script():
     body = _user_data()
     assert "[ -f /etc/systemd/system/nova-worker.service ] &&" not in body
     assert "if [ -f /etc/systemd/system/nova-worker.service ]; then" in body
+
+
+# ---------------------------------------------------------------------------
+# The gateway actually dispatching
+#
+# The worker container came up, the gateway ran, and `ready` tasks were never
+# claimed. The dispatcher integration was never the problem: the watcher is
+# spawned unconditionally and `dispatch_once` claims a NOVA board correctly (the
+# test below proves it end to end). The problem was the container command.
+#
+# `gateway run` as the container command starts TWO gateways. `main-wrapper.sh`
+# routes a non-executable first argument to `hermes <args>`, and
+# `container_boot._is_legacy_gateway_run_request` separately treats that exact
+# argv as a pre-s6 container and seeds `gateway_state.json` so the s6 slot starts
+# as well. They race for the PID file; the loser exits. When the loser is the
+# container's main program, the container goes with it and systemd restarts the
+# whole thing — so the gateway never survives to `_start_spawn_background_watchers()`,
+# the last statement of `start()` and the only place the watcher is spawned.
+# ---------------------------------------------------------------------------
+
+
+def test_the_dispatcher_watcher_is_spawned_unconditionally_at_startup():
+    """Pins the integration the deployment depends on: no platform, no adapter and no
+    config makes the gateway skip the dispatcher — only `dispatch_in_gateway` does."""
+    from gateway.run_startup import GatewayStartupMixin
+
+    assert "_kanban_dispatcher_watcher" in GatewayStartupMixin._PRE_RECONNECT_WATCHERS, (
+        "the embedded dispatcher is no longer spawned with the gateway's background "
+        "watchers; a headless deployment would run a gateway that claims nothing"
+    )
+
+
+def test_a_headless_gateway_keeps_running_with_no_messaging_platforms():
+    """NOVA's worker configures no Telegram, Discord or Slack. If zero enabled platforms
+    aborted startup, `start()` would return before ever reaching the watcher spawn."""
+    import inspect
+
+    from gateway.run_startup import GatewayStartupMixin
+
+    source = inspect.getsource(GatewayStartupMixin._start_handle_no_connections)
+    branch = source[source.index("if enabled_platform_count <= 0:"):]
+    branch = branch[: branch.index("if startup_retryable_errors:")]
+    assert "return False" in branch, (
+        "a gateway with no messaging platforms now aborts startup, so the background "
+        "watchers — including the kanban dispatcher — are never spawned"
+    )
+
+
+def test_dispatch_in_gateway_is_what_gates_the_dispatcher(tmp_path, monkeypatch):
+    """The one switch, proven both ways against the real boot function."""
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DISPATCH_IN_GATEWAY", raising=False)
+
+    class _Gateway(GatewayKanbanWatchersMixin):
+        _running = True
+
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8"
+    )
+    assert _Gateway()._kanban_dispatcher_boot() is not None, (
+        "dispatch_in_gateway: true did not start the dispatcher"
+    )
+
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: false\n", encoding="utf-8"
+    )
+    assert _Gateway()._kanban_dispatcher_boot() is None, (
+        "dispatch_in_gateway: false must hand dispatch to an external daemon"
+    )
+
+
+def test_the_gateway_dispatcher_claims_a_nova_submitted_task(deployment, monkeypatch):
+    """End to end, through the gateway's own boot and tick — not `dispatch_once` directly.
+
+    This is the claim the outage was missing: NOVA submits, the gateway's embedded
+    dispatcher resolves its settings and board, and the `ready` rows come back `running`
+    with a worker pid.
+    """
+    import sqlite3
+
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+    from gateway.kanban_watchers_dispatcher import (
+        _KanbanDispatcher, _resolve_dispatcher_settings,
+    )
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    _, runtime, _ = deployment
+    home = runtime.paths.home
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8"
+    )
+    submit(deployment)
+
+    class _Gateway(GatewayKanbanWatchersMixin):
+        _running = True
+
+    boot = _Gateway()._kanban_dispatcher_boot()
+    assert boot is not None, "the gateway refused to start its dispatcher"
+    _load_config, _kb, kanban_cfg = boot
+    settings = _resolve_dispatcher_settings(kanban_cfg, _kb)
+    dispatcher = _KanbanDispatcher(_kb, settings)
+
+    assert str(_kb.kanban_db_path("default")) == str(home / "kanban.db"), (
+        "the gateway's default board is not the database NOVA writes to; the dispatcher "
+        "would tick against an empty board forever"
+    )
+
+    spawned: list[str] = []
+    monkeypatch.setattr(
+        kbd, "_default_spawn",
+        lambda task, workspace, *, board=None: (spawned.append(task.id), 424242)[1],
+    )
+    results = dispatcher.tick_once()
+
+    assert spawned, f"the gateway dispatcher claimed nothing; tick returned {results}"
+    connection = sqlite3.connect(home / "kanban.db")
+    try:
+        rows = connection.execute(
+            "SELECT status, started_at, worker_pid FROM tasks WHERE id IN "
+            f"({','.join('?' * len(spawned))})", spawned,
+        ).fetchall()
+    finally:
+        connection.close()
+    for status, started_at, worker_pid in rows:
+        assert status == "running" and started_at and worker_pid, (
+            f"a claimed task was left as {status!r} with started_at={started_at!r}"
+        )
+
+
+def test_the_worker_container_does_not_start_a_second_gateway():
+    """The root cause, refused in the deployment that caused it."""
+    body = _user_data()
+    worker = body[body.index("nova-worker.service"):]
+    exec_start = worker[worker.index("ExecStart=") : worker.index("[Install]")]
+    assert "gateway run" not in exec_start, (
+        "the container command starts a gateway of its own. The image already supervises "
+        "one in the gateway-default s6 slot; the two race for the PID file and the loser "
+        "exits, taking the container with it when the loser is the main program"
+    )
+    assert "sleep infinity" in exec_start, (
+        "the container needs a main program that never exits, so s6 restarts a failing "
+        "gateway in place instead of the container dying with it"
+    )
+
+
+def test_the_supervised_gateway_is_told_to_come_up_on_a_fresh_volume():
+    """Without this the boot reconciler registers the slot DOWN and waits forever."""
+    body = _user_data()
+    assert "HERMES_GATEWAY_BOOTSTRAP_STATE=running" in body, (
+        "on a blank state volume the gateway-default slot is registered but not started, "
+        "so nothing dispatches until somebody starts it by hand"
+    )
+
+
+def test_no_standalone_dispatcher_races_the_gateways():
+    """`hermes kanban daemon` is deprecated precisely because two dispatchers double the
+    reclaim frequency and race for claims on one kanban.db."""
+    body = _user_data()
+    assert "kanban daemon" not in body, (
+        "the deployment runs a standalone dispatcher as well as the gateway-embedded one"
+    )

@@ -761,3 +761,44 @@ built or run on AWS from this repository, so the unit is validated at the templa
 and by the architecture it follows, not by a live claim on EC2. Step 30 — a real model
 provider call — is still the blocker it has always been, and is now one `terraform apply`
 and one image build away rather than an unanswered question.
+
+### D2. The worker ran a gateway the image was already running
+
+With `nova-worker.service` deployed, the board still never moved: four tasks, two `ready`,
+no `started_at`, no `worker_pid`, and not one dispatcher line in the gateway log.
+
+The dispatcher integration was never at fault. `_kanban_dispatcher_watcher` is in
+`GatewayStartupMixin._PRE_RECONNECT_WATCHERS`, spawned unconditionally; a gateway with zero
+messaging platforms is explicitly supported (`_start_handle_no_connections` returns False
+and logs "Gateway will continue running for cron job execution"); and `dispatch_once`
+claims a NOVA-written board correctly — reproduced here, both rows to `running` with pids.
+
+The container command was. The runtime image supervises its own gateway in the
+`gateway-default` s6 slot. `gateway run` as the container command starts a second one two
+different ways at once: `main-wrapper.sh` routes a non-executable first argument to
+`hermes <args>`, and `container_boot._is_legacy_gateway_run_request` treats that exact argv
+as a pre-s6 container and seeds `gateway_state.json` so the slot starts as well. Both race
+for the PID file in `_start_gateway_claim_pid_file`; the loser logs "Exiting to avoid
+double-running" and exits. When the loser is the container's main program the container
+exits with it, systemd restarts it, and the gateway never lives long enough to reach
+`_start_spawn_background_watchers()` — the last statement of `start()`, and the only place
+the watcher is spawned. Repeated startup banners with no dispatcher line is exactly that
+shape.
+
+*Fixed:* the container runs `sleep infinity` — the image's documented "just supervise"
+form — and `HERMES_GATEWAY_BOOTSTRAP_STATE=running` brings the slot up on a blank volume.
+One gateway, supervised by s6, restarted in place instead of taking the container down.
+
+### Pinned by tests
+
+`tests/platform/test_work_execution_health.py`:
+
+- `test_the_gateway_dispatcher_claims_a_nova_submitted_task` — through the gateway's own
+  boot and tick, not `dispatch_once` directly: rows come back `running` with a pid.
+- `test_dispatch_in_gateway_is_what_gates_the_dispatcher` — proven both ways.
+- `test_the_dispatcher_watcher_is_spawned_unconditionally_at_startup` and
+  `test_a_headless_gateway_keeps_running_with_no_messaging_platforms` — the two
+  integration facts the deployment relies on.
+- `test_the_worker_container_does_not_start_a_second_gateway`,
+  `test_the_supervised_gateway_is_told_to_come_up_on_a_fresh_volume`,
+  `test_no_standalone_dispatcher_races_the_gateways` — the deployment, proven red.

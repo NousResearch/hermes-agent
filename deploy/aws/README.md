@@ -48,6 +48,15 @@ returns a warning saying so. An intentionally control-plane-only deployment is a
 legitimate configuration — planning and routing are useful on their own — it just has to
 be a choice somebody made rather than one they inherited.
 
+**The worker container runs `sleep infinity`, and that is deliberate.** The runtime image
+supervises its own gateway in an s6 slot (`gateway-default`), and the kanban dispatcher is
+embedded in that gateway. Passing `gateway run` as the container command starts a *second*
+gateway — `main-wrapper.sh` routes it to `hermes gateway run`, and the boot reconciler
+separately reads that same argv as a pre-s6 container and starts the slot too. They race
+for the PID file, the loser exits, and when the loser is the main program the container
+exits with it. `HERMES_GATEWAY_BOOTSTRAP_STATE=running` is what brings the slot up on a
+blank volume; without it the reconciler registers it DOWN and waits.
+
 Both units share `/var/lib/nova`, and the worker runs with `HERMES_UID=10001` so it
 matches the owner the bootstrap chowns the volume to, and `HERMES_HOME` pointed at the
 same home the control plane serves. Its agents reach Bedrock through the instance role —

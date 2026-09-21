@@ -79,9 +79,33 @@ UNITEOF
 # here or in the tenant bundle: an agent reaches Bedrock through the instance role, which
 # iam.tf already scopes to the declared models.
 #
-# `--force` runs the dispatcher standalone rather than inside a gateway. The gateway
-# hosts it by default, but a gateway also starts every configured channel adapter, and a
-# deployment that only needs work to execute should not also open inbound channels.
+# **The container runs no command.** The runtime image supervises its own gateway: the
+# boot reconciler (`hermes_cli/container_boot.reconcile_profile_gateways`) registers an s6
+# slot named `gateway-default`, and s6 runs `hermes gateway run --replace` inside it. The
+# embedded kanban dispatcher lives in that gateway
+# (`gateway/kanban_watchers.py::_kanban_dispatcher_watcher`, gated on
+# `kanban.dispatch_in_gateway`, default true), so supervising the gateway is all that is
+# needed to execute work.
+#
+# Passing `gateway run` as the container command starts a SECOND one. `main-wrapper.sh`
+# routes any non-executable first argument to `hermes <args>`, and
+# `container_boot._is_legacy_gateway_run_request` separately treats that exact argv as a
+# pre-s6 container and seeds `gateway_state.json` so the s6 slot starts too. Both then race
+# for the PID file in `gateway/run.py::_start_gateway_claim_pid_file`; the loser logs
+# "Exiting to avoid double-running" and exits. When the loser is the container's main
+# program, the container exits with it, systemd restarts it, and the gateway never survives
+# long enough to reach `_start_spawn_background_watchers()` — which is the LAST thing
+# `start()` does, and the only place the dispatcher watcher is spawned.
+#
+# `sleep infinity` is the image's documented "just supervise" form: `main-wrapper.sh` execs
+# a first argument that is a real executable, so the main program is a process that does
+# nothing and never exits, and s6 restarts a failing gateway in place instead of taking the
+# container down with it.
+#
+# HERMES_GATEWAY_BOOTSTRAP_STATE=running is how the slot comes UP on a blank volume. Without
+# it the reconciler registers the slot DOWN and waits for someone to start it, because a
+# gateway an operator deliberately stopped must stay stopped across restarts. Declaring the
+# intent here is also what lets us stop relying on the legacy-argv compatibility path above.
 if [ -n "${worker_image_uri}" ]; then
   docker pull "${worker_image_uri}"
 
@@ -100,13 +124,14 @@ ExecStart=/usr/bin/docker run --rm --name nova-worker \
   --env-file /etc/nova.env \
   --env HERMES_HOME=${state_mount}/home \
   --env HERMES_UID=10001 \
+  --env HERMES_GATEWAY_BOOTSTRAP_STATE=running \
   --env AWS_REGION=${region} \
   --network host \
   --volume ${state_mount}:${state_mount} \
   --log-driver awslogs \
   --log-opt awslogs-region=${region} \
   --log-opt awslogs-group=${log_group} \
-  ${worker_image_uri} kanban daemon --force --interval 60
+  ${worker_image_uri} sleep infinity
 
 [Install]
 WantedBy=multi-user.target

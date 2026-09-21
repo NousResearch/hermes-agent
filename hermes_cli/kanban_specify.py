@@ -67,6 +67,49 @@ Current body:
 {body}
 """
 
+# Fleet rule: every kanban card carries an exact ``task_type:`` marker on the
+# first line of its body (research|code|review|ops); the dispatcher refuses
+# cards without one. The aux LLM rewrites the body and used to silently drop
+# the marker, looping the card back into triage — so the old body's marker is
+# authoritative and is reconciled into the new body deterministically.
+_TASK_TYPE_RE = re.compile(
+    r"^\s*task_type\s*:\s*(research|code|review|ops)\s*$", re.IGNORECASE)
+
+
+def _task_type_of(body: Optional[str]) -> Optional[str]:
+    """Canonical task type from a first-line ``task_type:`` marker, else None."""
+    if not body:
+        return None
+    first_line = body.split("\n", 1)[0]
+    m = _TASK_TYPE_RE.match(first_line)
+    return m.group(1).lower() if m else None
+
+
+def _reconcile_task_type(old_body: Optional[str], new_body: Optional[str]) -> Optional[str]:
+    """Carry the old body's line-1 ``task_type:`` marker into the new body.
+
+    Deterministic, LLM-free: a first-line marker in the reply (canonical or
+    drifted) is replaced by the old body's canonical form; a missing marker is
+    prepended without touching any reply content. No old marker → the new body
+    is never decorated (the specifier does not invent facts the card didn't
+    carry).
+    """
+    if new_body is None:
+        return None
+    task_type = _task_type_of(old_body)
+    if task_type is None:
+        return new_body
+    marker_line = f"task_type: {task_type}"
+    first_line, sep, rest = new_body.partition("\n")
+    if _TASK_TYPE_RE.match(first_line):
+        # Drifted or canonical marker on line 1 → normalized canonical form.
+        if first_line == marker_line:
+            return new_body
+        return f"{marker_line}{sep}{rest}"
+    # No marker in the reply → prepend; not a single reply line is consumed.
+    return f"{marker_line}\n{new_body}"
+
+
 
 @dataclass
 class SpecifyOutcome:
@@ -219,6 +262,7 @@ def specify_task(
         if new_body is None and new_title is None:
             return SpecifyOutcome(task_id, False, "LLM response missing title and body")
 
+    new_body = _reconcile_task_type(task.body, new_body)
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn,

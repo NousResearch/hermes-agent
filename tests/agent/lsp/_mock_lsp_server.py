@@ -15,8 +15,13 @@ Behaviour (all behaviours selectable via env var ``MOCK_LSP_SCRIPT``):
   carry one severity-1 entry pointing at line 0:0.
 - ``"crash"`` — exit immediately after responding to ``initialize``
   (simulates a crashing server).
+- ``"oom_abort"`` — prints a V8-style out-of-memory trace to stderr and
+  aborts (SIGABRT) before answering ``initialize`` — models a Node
+  language-server whose heap ceiling is too small for the workspace.
 - ``"slow"`` — same as ``clean`` but sleeps 1s before responding to
   ``initialize`` (lets us test timeout behaviour).
+- ``"slow_tree"`` — like ``slow``, with a child that ignores SIGTERM and
+  a launcher that exits on SIGTERM (tests hard process-tree cleanup).
 - ``"stale"`` — pushes one error on ``didOpen``, then goes SILENT on
   ``didChange`` (no push) and rejects the pull endpoint with
   method-not-found.  Models a slow tsserver that hasn't re-checked
@@ -44,6 +49,8 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 
@@ -75,6 +82,31 @@ def write_message(obj):
 def main():
     script = os.environ.get("MOCK_LSP_SCRIPT", "clean")
     documents = {}
+    if script == "slow_tree":
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import os, pathlib, signal, time; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "pathlib.Path(os.environ['MOCK_LSP_CHILD_PID']).write_text(str(os.getpid())); "
+                "time.sleep(60)",
+            ],
+            env=os.environ,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    if script == "oom_abort":
+        sys.stderr.write(
+            "<oproject>:28982 ms: Mark-Compact 2041.4 (2055.6) -> 2038.4 (2058.4) MB\n"
+            "  1317.07 ms (average mu = 0.307, current mu = 0.134)\n"
+            "<--- Last few GCs --->\n"
+            "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n"
+        )
+        sys.stderr.flush()
+        os.abort()
 
     while True:
         msg = read_message()
@@ -82,7 +114,13 @@ def main():
             return 0
 
         if "id" in msg and msg.get("method") == "initialize":
-            if script == "slow":
+            if script == "init_error":
+                # A conformant JSON-RPC error to `initialize`, then exit: the client must
+                # surface it as an LSPRequestError carrying the exit details.
+                write_message({"jsonrpc": "2.0", "id": msg["id"],
+                               "error": {"code": -32602, "message": "bad init"}})
+                return 0
+            if script in {"slow", "slow_tree"}:
                 time.sleep(1.0)
             write_message(
                 {

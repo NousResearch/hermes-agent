@@ -1693,9 +1693,13 @@ def _normalize_model_version(model: str) -> str:
     return model.replace(".", "-")
 
 
-def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> Optional[int]:
-    """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped."""
-    if not api_key or api_key.startswith("sk-ant-oat"):
+def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> Optional[int]:
+    """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped.
+
+    ``api_key`` may be a ``key_cmd`` callable token source; the metadata probe never mints — a
+    callable is not a Console key, so the lookup is skipped like an OAuth token (#114967).
+    """
+    if not api_key or not isinstance(api_key, str) or api_key.startswith("sk-ant-oat"):
         return None
     try:
         base = base_url.rstrip("/").removesuffix("/v1")
@@ -2205,6 +2209,13 @@ def get_model_context_length(
     endpoint_context = _endpoint_scoped_context_length(model, base_url)
     if endpoint_context is not None:
         return endpoint_context
+    # A profile that qualifies its own bound (external processes have no /models probe) wins
+    # over the generic caches below; explicit user/endpoint overrides above still take precedence.
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider)
+    context = profile.get_model_context_length(model) if profile else None
+    if type(context) is int and context > 0:
+        return context
     is_bedrock_context = _is_bedrock_context(base_url, provider)
     # A Codex Responses route is keyed on its transport, not its host: behind a proxy
     # (HERMES_CODEX_BASE_URL, model.base_url, custom api_mode: codex_responses) the URL looks

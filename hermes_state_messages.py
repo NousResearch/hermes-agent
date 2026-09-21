@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,6 +29,12 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+# Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
+# owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
+# key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
+_MESSAGE_SCHEMA_KEYS = frozenset(
+    re.findall(r"\w+", _INSERT_MESSAGE_SQL.split("(", 1)[1].split(")", 1)[0])
+) | {"id", "compacted", "display_order"}
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -508,6 +515,11 @@ class SessionMessagesMixin:
             message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
+            # Keep the caller's live row aligned with the durable identity. Rows created without an explicit
+            # timestamp (notably mid-turn steers) may be carried through several compaction generations; if
+            # the generated timestamp exists only in SQLite, every copy receives a new identity and renders
+            # as another logical message.
+            msg["timestamp"] = message_timestamp
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
             inserted += 1
@@ -914,9 +926,11 @@ class SessionMessagesMixin:
             msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
         # A `SELECT *` picks up every column, including any BLOB added to the schema later; the
         # JSON encoder that serves these dicts over HTTP fails outright on raw bytes. Drop them
-        # here, once, rather than needing a new named pop for each future binary column.
+        # here, once, rather than needing a new named pop for each future binary column. Known
+        # columns are exempt: popping `content` because a row holds bytes turns a decode problem
+        # into a KeyError for every msg["content"] reader downstream.
         for key, value in list(msg.items()):
-            if isinstance(value, (bytes, bytearray)):
+            if key not in _MESSAGE_SCHEMA_KEYS and isinstance(value, (bytes, bytearray)):
                 msg.pop(key)
         return msg
 

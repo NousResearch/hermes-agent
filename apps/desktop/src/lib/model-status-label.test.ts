@@ -1,19 +1,32 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts } from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts, providerDisplayName } from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
+  it('uses the canonical provider label for xAI OAuth model picks', () => {
+    expect(providerDisplayName('xai-oauth')).toBe('xAI Grok')
+    expect(providerDisplayName('xai')).toBe('xAI')
+    expect(providerDisplayName('openai-codex')).toBe('ChatGPT or Codex Subscription')
+  })
   it('formats display names consistently', () => {
     expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
     expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
+    expect(displayModelName('deepseek/deepseek-flash')).toBe('DeepSeek V4.1 Flash')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
   })
 
-  it('strips trailing date-pin snapshots from the display name', () => {
-    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
-    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
+  it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {
+    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5')
+    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
+    expect(displayModelName('claude-fable-5-1')).toBe('Fable 5.1')
+  })
+
+  it('renders the Anthropic 1M-context route suffix as a tag, never raw brackets', () => {
+    expect(modelDisplayParts('claude-sonnet-5[1m]')).toEqual({ name: 'Sonnet 5', tag: '1M' })
+    expect(modelDisplayParts('claude-fable-5-1[1m]')).toEqual({ name: 'Fable 5.1', tag: '1M' })
+    expect(displayModelName('claude-opus-5[1m]')).not.toContain('[')
   })
 
   it('renders local GGUF ids as a clean name with a quant tag', () => {

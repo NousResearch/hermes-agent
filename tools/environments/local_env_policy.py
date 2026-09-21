@@ -81,6 +81,16 @@ def _build_provider_env_blocklist() -> frozenset:
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
+
+def _is_provider_env_blocklisted(name: str) -> bool:
+    """``name`` is a blocklisted provider/tool credential, matched the way the
+    platform's environment resolves names: exact plus case-folded. On Windows
+    the environment block is case-insensitive, so ``openai_api_key`` IS
+    ``OPENAI_API_KEY``; consistent with ``_is_hermes_internal_secret``, which
+    already folds (``key.upper()``)."""
+    return (name in _HERMES_PROVIDER_ENV_BLOCKLIST
+            or name.upper() in _HERMES_PROVIDER_ENV_BLOCKLIST)
+
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,
 # ``_sanitize_subprocess_env``); execute_code, hermes_subprocess_env, docker and
@@ -122,8 +132,11 @@ _TERMINAL_FIRST_PARTY_ENV_PREFIXES = ("BUZZ_",)
 
 def _matches_terminal_first_party_prefix(name: str) -> bool:
     """Pure name check (``BUZZ_*``), regardless of session context — the snapshot
-    exclusion must stay conservative even when the carve-out is inactive."""
-    return name.startswith(_TERMINAL_FIRST_PARTY_ENV_PREFIXES)
+    exclusion must stay conservative even when the carve-out is inactive.
+    Case-folded: on Windows the env block is case-insensitive, so a
+    lowercase-stored ``buzz_private_key`` IS the credential; it needs the
+    carve-out (and the snapshot exclusion) just like the canonical name."""
+    return name.upper().startswith(_TERMINAL_FIRST_PARTY_ENV_PREFIXES)
 
 
 def _buzz_terminal_context_active() -> bool:

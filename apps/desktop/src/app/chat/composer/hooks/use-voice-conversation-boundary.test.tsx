@@ -19,13 +19,18 @@ const mocks = vi.hoisted(() => ({
   }
 }))
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   getApiRequestConnection: () => null,
   getApiRequestProfile: () => null,
   hermesApi: mocks.config,
   speakText: vi.fn()
 }))
-vi.mock('@/api/client', () => ({ profileScoped: (value: unknown) => value }))
+vi.mock('@/api/client', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ownerScoped: (value: unknown) => value ?? {},
+  profileScoped: (value: unknown) => value
+}))
 vi.mock('./use-mic-recorder', () => ({ useMicRecorder: () => ({ handle: mocks.mic, level: 0 }) }))
 vi.mock('@/lib/voice-barge-in', () => ({ monitorSpeechDuringPlayback: () => vi.fn() }))
 vi.mock('@/lib/thinking-sound', () => ({ startThinkingSound: vi.fn(), stopThinkingSound: vi.fn() }))

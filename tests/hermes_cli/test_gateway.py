@@ -15,6 +15,19 @@ import hermes_cli.gateway as gateway
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
+@pytest.fixture(autouse=True)
+def inert_task_scheduler_probe():
+    """Tests that fake ``is_windows()`` send the reaper through ``_windows_scheduled_task_state``,
+    which spawns ``pwsh`` whenever one is on PATH (GitHub's ubuntu runners ship it). On a loaded
+    runner that spawn outlives its 10 s timeout and ``subprocess.run`` kills it through the test's
+    globally patched ``os.kill`` — a foreign PID lands in ``killed_pids``. Tests of the probe itself
+    call ``.undo()`` on this fixture to reach the real function."""
+    mp = pytest.MonkeyPatch()
+    mp.setattr(gateway, "_windows_scheduled_task_state", lambda name: None)
+    yield mp
+    mp.undo()
+
+
 def _install_fake_gateway_run(monkeypatch, start_gateway):
     module = ModuleType("gateway.run")
     module.start_gateway = start_gateway
@@ -65,7 +78,7 @@ def _run_native_windows_gateway_start_diag(
 
         import hermes_cli.gateway as gateway_cli
 
-        async def start_gateway(*, replace, verbosity):
+        async def start_gateway(**kwargs):
             assert "_HERMES_GATEWAY_BREAKAWAY" not in os.environ
             return True
 
@@ -76,6 +89,7 @@ def _run_native_windows_gateway_start_diag(
 
         gateway_cli._guard_official_docker_root_gateway = lambda: None
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
+        gateway_cli._attach_to_host_gateway_or_guard = lambda **kwargs: None
         gateway_cli._guard_supervised_gateway_conflict = lambda force=False: None
         gateway_cli._guard_existing_gateway_process_conflict = lambda replace=False: None
         gateway_cli.supports_systemd_services = lambda: False
@@ -179,7 +193,7 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
 
         outcome = os.environ["HERMES_TEST_GATEWAY_OUTCOME"]
 
-        async def start_gateway(*, replace, verbosity):
+        async def start_gateway(**kwargs):
             if outcome == "failure":
                 return False
             raise SystemExit(int(outcome.split(":", 1)[1]))
@@ -191,6 +205,7 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
 
         gateway_cli._guard_official_docker_root_gateway = lambda: None
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
+        gateway_cli._attach_to_host_gateway_or_guard = lambda **kwargs: None
         gateway_cli._guard_supervised_gateway_conflict = lambda force=False: None
         gateway_cli._guard_existing_gateway_process_conflict = lambda replace=False: None
         gateway_cli.supports_systemd_services = lambda: False
@@ -1211,8 +1226,11 @@ class TestWindowsScheduledTaskSupervisorGuard:
         assert marked_pids == [orphan_pid]
         assert killed_pids == []
 
-    def test_windows_scheduled_task_running_returns_false_off_windows(self, monkeypatch):
+    def test_windows_scheduled_task_running_returns_false_off_windows(
+        self, monkeypatch, inert_task_scheduler_probe
+    ):
         """The state helper is inert on POSIX (no subprocess spawned)."""
+        inert_task_scheduler_probe.undo()  # exercise the real probe, not the module-wide stand-in
         monkeypatch.setattr(gateway, "is_windows", lambda: False)
 
         def _boom_run(*_a, **_k):

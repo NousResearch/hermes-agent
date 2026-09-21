@@ -390,12 +390,24 @@ Hermes Desktop registers the `hermes://` URL scheme, so a website, README, or
 chat message can link straight to a plugin install:
 
 ```
-hermes://plugin/install?repo=owner/repo            # main install link
+hermes://plugin/install?catalog=NAME               # catalog entry, installs the reviewed pin
+hermes://plugin/install?repo=owner/repo            # any git repo
 hermes://plugin/install?repo=owner/repo&enable=1   # enable the agent plugin after install
 hermes://plugin/install?repo=owner/repo&force=1    # replace an existing install
+hermes://plugin/install?catalog=<name>             # reviewed catalog entry at its pinned commit
 ```
 
-Clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
+The `catalog=<name>` form is what the **Open in Hermes Desktop** button on
+every [Plugin Catalog](./plugin-catalog.md) card uses. Desktop resolves the
+name against the live catalog (the same feed the **Capabilities → Plugins**
+picker shows) and opens the same **reviewed catalog entry** dialog an in-app
+pick does: the agent half installs at the catalog's pinned commit, never the
+branch tip. The link carries no repo URL, and a name that is not in the
+catalog shows an error toast and nothing else — it is never reinterpreted as a
+git path, so a link cannot smuggle an unreviewed repo behind a
+familiar-looking name.
+
+For a `repo=` link, clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
 a "Before you install" note, and GitHub browse + clone links — then
 shallow-clones the repo to detect what it ships (an **agent plugin** —
 backend Python, a **desktop plugin** — app UI, or both). You pick the

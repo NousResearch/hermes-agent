@@ -29,6 +29,7 @@ import {
   queryClient,
   relativeTime,
   RowButton,
+  Switch,
   Tip,
   useI18n,
   useValue
@@ -66,6 +67,7 @@ import {
   groupThreadOf,
   rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
+  setGroupChatHoldDetection,
   setGroupChatImage,
   updateGroupChat
 } from './group-chat'
@@ -74,6 +76,7 @@ import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group
 import type { GroupRoomPrompt } from './group-chat-parts'
 import { GroupMemberPicker } from './group-chat-view-members'
 import { compressGroupMemberHistory } from './group-compress'
+import { sweepExternalGroupWrites } from './group-external-writes'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
@@ -386,13 +389,16 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const current = (rooms[group] || {}).image || null
+  const currentHoldDetection = (rooms[group] || {}).holdDetection !== false
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const [holdDetection, setHoldDetection] = useState(currentHoldDetection)
   const [compressing, setCompressing] = useState<null | string>(null)
   useEffect(() => {
     if (open) {
       setName(group)
       setImage(current)
+      setHoldDetection(currentHoldDetection)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
@@ -438,6 +444,10 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
       setGroupChatImage(finalName, image)
     }
 
+    if (holdDetection !== currentHoldDetection) {
+      setGroupChatHoldDetection(finalName, holdDetection)
+    }
+
     onClose()
 
     if (finalName !== group) {
@@ -479,6 +489,13 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onManageMember
             value={name}
           />
         </form>
+        <label className="flex items-center justify-between gap-3 text-sm">
+          <span>
+            <span className="block">{b.group.holdDetection}</span>
+            <span className="block text-xs text-(--ui-text-tertiary)">{b.group.holdDetectionHint}</span>
+          </span>
+          <Switch checked={holdDetection} onCheckedChange={setHoldDetection} />
+        </label>
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">
             {(members || []).map(member => {
@@ -1473,6 +1490,10 @@ export function openGroupChat(group: string): void {
   })
   const ownerKey = groupWorkspaceOwnerKey(group)
   setBotsWorkspaceOwner(ownerKey, null, 'New group conversations start in the group composer.')
+  // #93813: what reached the members' room sessions while nobody drove them
+  // (a Bot posting reports into its own session, a CLI resume) is posted as
+  // the room opens, not only once the room next drives that member.
+  void sweepExternalGroupWrites(group, groupChatMemberBots(group, $lastRoster.get(), $botMeta.get()))
 
   if (typeof host.openWorkspace === 'function') {
     try {

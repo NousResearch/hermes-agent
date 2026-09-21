@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import shutil
 import sys
@@ -291,7 +292,7 @@ def test_reopening_parent_demotes_ready_child(client):
 
     r = client.patch(
         f"/api/plugins/kanban/tasks/{parent['id']}",
-        json={"status": "done"},
+        json={"status": "done", "result": "done", "summary": "done"},
     )
     assert r.status_code == 200
 
@@ -315,7 +316,7 @@ def test_reopening_parent_demotes_ready_child(client):
 def test_reopening_parent_retracts_review_and_blocks_approval(client):
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="parent", assignee="planner")
-        assert kb.complete_task(conn, parent_id)
+        assert kb.complete_task(conn, parent_id, result="done")
         child_id = kb.create_task(
             conn,
             title="child in review",
@@ -360,7 +361,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
 
     response = client.patch(
         f"/api/plugins/kanban/tasks/{parent_id}",
-        json={"status": "done"},
+        json={"status": "done", "result": "done", "summary": "done"},
     )
     assert response.status_code == 200, response.text
 
@@ -384,14 +385,14 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
 def test_reopening_parent_recursively_retracts_done_and_running_descendants(client):
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="root", assignee="planner")
-        assert kb.complete_task(conn, parent_id)
+        assert kb.complete_task(conn, parent_id, result="done")
         child_id = kb.create_task(
             conn,
             title="accepted child",
             assignee="builder",
             parents=[parent_id],
         )
-        assert kb.complete_task(conn, child_id)
+        assert kb.complete_task(conn, child_id, result="done")
         grandchild_id = kb.create_task(
             conn,
             title="running grandchild",
@@ -420,7 +421,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
 
     response = client.patch(
         f"/api/plugins/kanban/tasks/{parent_id}",
-        json={"status": "done"},
+        json={"status": "done", "result": "done", "summary": "done"},
     )
     assert response.status_code == 200, response.text
     with kbc.connect() as conn:
@@ -1304,3 +1305,37 @@ def test_touch_card_tap_opens_instead_of_dragging():
     )
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "PASS" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic severity colours follow the dashboard theme
+# ---------------------------------------------------------------------------
+
+
+def test_diag_severity_tokens_route_through_host_theme_tokens():
+    """The three ``--hermes-diag-*`` rungs must resolve through the host's
+    ``--color-warning`` / ``--color-destructive`` tokens (#115118). They were
+    literals declared on the consuming elements, which no theme override can
+    reach (the theme engine writes custom properties on ``<html>`` and an
+    element-level declaration always wins), so light themes rendered the
+    amber badge at 1.8:1 contrast with no way to fix it. Headless-Chrome
+    receipt: with the tokens set on ``<html>`` the computed colours follow;
+    with none set the shipped literals render unchanged.
+    """
+    css = (Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
+    block = css[css.index("--hermes-diag-warning"):]
+    block = block[: block.index("}")]
+    # Parse the declarations rather than matching whitespace-exact substrings, so a
+    # reformat that keeps the computed value passes and a wrong token/fallback fails.
+    declared = {
+        name: (token, fallback)
+        for name, token, fallback in re.findall(
+            r"--hermes-diag-(warning|error|critical)\s*:\s*var\(\s*(--color-[\w-]+)\s*,\s*(#[0-9a-fA-F]{6})\s*\)\s*;",
+            block,
+        )
+    }
+    assert declared == {
+        "warning": ("--color-warning", "#ff9e3b"),
+        "error": ("--color-destructive", "#ff6b3d"),
+        "critical": ("--color-destructive", "#ff4d4d"),
+    }

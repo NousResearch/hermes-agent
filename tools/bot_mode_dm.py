@@ -504,15 +504,10 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
 
 def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
-    from tools.bot_live_delivery import read_delivery_result
+    from tools.bot_live_delivery import await_delivery
 
-    deadline = time.monotonic() + _LIVE_WAIT_SECONDS
-    while True:
-        record = read_delivery_result(home, delivery_id)
-        status = record["status"] if record else "ambiguous"
-        if status not in ("queued", "claimed") or time.monotonic() >= deadline:
-            break
-        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+    record = await_delivery(home, delivery_id, _LIVE_WAIT_SECONDS)
+    status = record["status"] if record else "ambiguous"
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
     payload.update(status=status, delivery_id=delivery_id)
     if status in ("queued", "claimed", "ambiguous"):

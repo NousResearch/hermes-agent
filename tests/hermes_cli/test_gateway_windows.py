@@ -440,6 +440,93 @@ def test_uninstall_and_reinstall_sweep_stale_startup_staging_file(monkeypatch, t
     assert not staging.exists()
 
 
+def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tmp_path, capsys):
+    """#116157: a Scheduled Task ``Hermes_Gateway`` and a Startup ``Hermes_Gateway.vbs`` left from before
+    per-profile suffixes are invisible to every ``get_task_name()``-keyed operation. ``status`` must name
+    them and ``uninstall`` must remove them (files unlinked, ``schtasks /Delete`` issued for the task)."""
+    startup, home = tmp_path / "Startup", tmp_path / "home"
+    (home / "gateway-service").mkdir(parents=True)
+    startup.mkdir()
+    legacy_vbs = startup / "Hermes_Gateway.vbs"
+    legacy_vbs.write_text(gateway_windows._build_startup_launcher(home / "gateway-service" / "Hermes_Gateway.cmd"), encoding="utf-8")
+    legacy_pair = home / "gateway-service" / "Hermes_Gateway.cmd"
+    legacy_pair.write_text("legacy", encoding="utf-8")
+    schtasks_calls = []
+    registered = {"Hermes_Gateway"}
+    task_xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", home / "gateway-service" / "Hermes_Gateway.vbs", None)
+
+    def fake_schtasks(args):
+        schtasks_calls.append(args)
+        name = args[args.index("/TN") + 1]
+        if args[0] == "/Delete":
+            registered.discard(name)
+            return (0, "SUCCESS", "")
+        return (0, task_xml, "") if name in registered else (1, "", "ERROR: The system cannot find the file specified.")
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: home / "gateway-service" / "Hermes_Gateway_alice.cmd")
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.vbs")
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.cmd")
+    monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
+    monkeypatch.setattr(gateway_windows, "_hermes_home", lambda: home)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+
+    gateway_windows.status()
+    out = capsys.readouterr().out
+    assert f"legacy pre-suffix Windows login item still installed: {legacy_vbs}" in out
+    assert f"legacy pre-suffix task script still installed: {legacy_pair}" in out
+    assert "legacy pre-suffix Scheduled Task still installed: Hermes_Gateway" in out
+
+    gateway_windows.uninstall()
+    out = capsys.readouterr().out
+    assert "Removed legacy pre-suffix Scheduled Task 'Hermes_Gateway'" in out
+    assert not legacy_vbs.exists() and not legacy_pair.exists()
+    assert ["/Delete", "/F", "/TN", "Hermes_Gateway"] in schtasks_calls
+    gateway_windows.status()
+    assert "legacy pre-suffix" not in capsys.readouterr().out
+
+
+def test_secondary_profile_leaves_default_profiles_bare_launchers_alone(monkeypatch, tmp_path, capsys):
+    """The bare ``Hermes_Gateway`` task and Startup entry are the LIVE identity of the default ``~/.hermes``
+    profile. From a secondary profile they are a sibling install, not this home's pre-suffix stray:
+    ``uninstall`` / ``install --force`` must issue no ``schtasks /Delete`` and unlink nothing."""
+    startup, home, default_home = tmp_path / "Startup", tmp_path / "profiles" / "work", tmp_path / "default"
+    (home / "gateway-service").mkdir(parents=True)
+    (default_home / "gateway-service").mkdir(parents=True)
+    startup.mkdir()
+    default_vbs = startup / "Hermes_Gateway.vbs"
+    default_vbs.write_text(gateway_windows._build_startup_launcher(default_home / "gateway-service" / "Hermes_Gateway.cmd"), encoding="utf-8")
+    task_xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", default_home / "gateway-service" / "Hermes_Gateway.vbs", None)
+    schtasks_calls = []
+
+    def fake_schtasks(args):
+        schtasks_calls.append(args)
+        if args[0] == "/Query" and args[args.index("/TN") + 1] == "Hermes_Gateway":
+            return (0, task_xml, "")
+        return (1, "", "ERROR: The system cannot find the file specified.")
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_work")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: home / "gateway-service" / "Hermes_Gateway_work.cmd")
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup / "Hermes_Gateway_work.vbs")
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_work.cmd")
+    monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
+    monkeypatch.setattr(gateway_windows, "_hermes_home", lambda: home)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda *a, **k: [])
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+
+    gateway_windows.status()
+    assert "legacy pre-suffix" not in capsys.readouterr().out
+    gateway_windows.uninstall()
+    capsys.readouterr()
+    assert default_vbs.exists()
+    assert not any(call[0] == "/Delete" and "Hermes_Gateway" in call for call in schtasks_calls)
+
+
 # Reporter's `Export-ScheduledTask` of a task registered before the hardened template (#113670).
 _PRE_HARDENING_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">

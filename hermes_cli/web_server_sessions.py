@@ -308,9 +308,32 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _last_auto_archive_check[key] = now
 
         from hermes_cli.config import load_config as _load_full_config
-        cfg = (_load_full_config().get("sessions") or {})
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        # The config that governs a store is the one in that store's OWN home. A zero-arg
+        # load_config() resolves through the PROCESS HERMES_HOME, so the dashboard swept every
+        # profile's sessions with the launch profile's sessions.auto_archive/auto_archive_days —
+        # one profile's retention silently decided another's.
+        profile_home = _session_db_path_for_profile(profile).parent
+        _home_token = set_hermes_home_override(str(profile_home))
+        try:
+            cfg = (_load_full_config().get("sessions") or {})
+        finally:
+            reset_hermes_home_override(_home_token)
         if not cfg.get("auto_archive", False):
             return
+        # A live gateway owns this profile's store and runs the same sweep on its own
+        # housekeeping tick ("state.db maintenance tick" in gateway/run.py, profile-scoped so a
+        # multiplexed secondary's store is swept too). Opening it WRITABLE from `hermes serve`
+        # adds a second writer to a database another process is already archiving, for zero
+        # extra coverage (#110405).
+        #
+        # Deliberately NOT `_check_gateway_running`: that exposes only `GatewayLiveness.running`
+        # and drops `probe_error`, and `_served_by_running_multiplexer` turns probe failures into
+        # False. So an unreadable gateway.pid or a malformed gateway_state.json under a LIVE
+        # gateway reads as "no owner" and the second writer is opened anyway — both reproduced in
+        # review on #110405. This gate resolves the liveness itself, keeps the unknown state, and
+        # treats unknown as owned.
         if _auto_archive_owned_by_gateway(profile):
             _log.debug("auto-archive stood down: gateway owns profile %r", profile or "default")
             return

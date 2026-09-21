@@ -250,6 +250,29 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Sort control: Most starred / Newest / Recently updated, same pill shape as the tier tabs. */
+.sortPills {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+}
+
+.sortLabel {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-500);
+  margin-right: 0.15rem;
+}
+
+.sortBtnActive {
+  border-color: rgba(255, 215, 0, 0.3);
+  background: rgba(255, 215, 0, 0.06);
+  color: #ffd700;
+}
+
 /* ── Category pills + grouped sections ─────────────────────────────────── */
 .categoryPills {
   display: flex;
@@ -451,10 +474,6 @@
   transform: translateY(-1px);
 }
 
-.cardExpanded {
-  border-color: rgba(255, 215, 0, 0.2);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 215, 0, 0.08);
-}
 
 .cardAccent {
   position: absolute;
@@ -550,21 +569,28 @@
   line-height: 1.55;
   color: var(--ifm-font-color-secondary, #9a968e);
   margin: 0 0 0.6rem;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
-.cardDescFull {
-  -webkit-line-clamp: unset;
-}
 
 .cardMeta {
   display: flex;
   align-items: center;
   gap: 0.35rem;
   flex-wrap: wrap;
+}
+
+/* Added / Updated line from the catalog's git history. */
+.cardDates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--ifm-color-emphasis-500);
+}
+
+.cardDatesSep {
+  opacity: 0.5;
 }
 
 /* Capability chips: tools/hooks/middleware counts. */
@@ -602,7 +628,6 @@
   margin-top: 0.75rem;
   padding-top: 0.7rem;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
-  animation: cardIn 0.2s ease both;
 }
 
 .metaRow {
@@ -911,4 +936,23 @@
 .pickBtn:hover {
   background: var(--ifm-color-primary);
   color: #fff;
+  text-decoration: none;
+}
+
+a.pickBtn {
+  text-align: center;
+  text-decoration: none;
+}
+
+/* Card title doubles as the link to the plugin's own page. */
+.cardTitleLink {
+  color: inherit;
+  text-decoration: none;
+}
+
+.cardTitleLink:hover,
+.card:hover .cardTitleLink {
+  color: var(--ifm-color-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }

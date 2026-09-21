@@ -535,11 +535,11 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
             api_mode = _parse_api_mode(model_cfg.get("api_mode")) or api_mode
         api_mode = _azure_inferred_api_mode(effective_model, api_mode)
         return api_mode, (re.sub(r"/v1/?$", "", base_url) if api_mode == "anthropic_messages" else base_url)
-    # Honour model.base_url only when the pool entry carries no explicit base_url (i.e. it fell
-    # back to the registry default). Env var overrides win.
+    # Missing and registry-default endpoints may use this provider's configured URL.
+    # An explicit per-credential endpoint remains authoritative.
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/"):
-        base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
+    if pconfig and (not base_url or base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")):
+        base_url = _config_base_url_for_provider(model_cfg, provider) or base_url or pconfig.inference_base_url
     return _configured_or_fallback_api_mode(provider, model_cfg, base_url, effective_model, opencode_by_model=True), base_url
 
 
@@ -590,6 +590,27 @@ def _refresh_nous_pool_entry(pool: CredentialPool, entry: Any, pool_api_key: str
     return entry, pool_api_key
 
 
+def _exchange_copilot_pool_entry(entry: Any, pool_api_key: str) -> str:
+    """Exchange a copilot pool entry that still carries the RAW GitHub token.
+
+    The seeder skips the exchange while copilot is merely discovered (ambient gh login, not in
+    config); here copilot IS the runtime target (`/model copilot/… --session`, `--provider copilot`,
+    delegation/cron overrides), and a raw token routes to the language-server integrator whose
+    allowlist omits enterprise-only models (400 model_not_available_for_integrator)."""
+    from hermes_cli.copilot_auth import get_copilot_api_token, validate_copilot_token
+    if not pool_api_key or not validate_copilot_token(pool_api_key)[0]:
+        return pool_api_key  # already an exchanged API token
+    api_token, enterprise_base_url = get_copilot_api_token(pool_api_key)
+    if api_token == pool_api_key and not enterprise_base_url:
+        from agent.credential_pool import _warn_copilot_raw_degradation_once
+        _warn_copilot_raw_degradation_once(pool_api_key)
+        return pool_api_key
+    entry.access_token = api_token
+    if enterprise_base_url:
+        entry.base_url = enterprise_base_url
+    return api_token
+
+
 def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[str, Any], explicit_api_key, explicit_base_url,
                        target_model) -> Optional[Dict[str, Any]]:
     """Runtime from the provider's credential pool, or None to continue down the ladder."""
@@ -607,6 +628,8 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
     pool_api_key = _pool_entry_api_key(entry)
     if provider == "nous":
         entry, pool_api_key = _refresh_nous_pool_entry(pool, entry, pool_api_key)
+    elif provider == "copilot":
+        pool_api_key = _exchange_copilot_pool_entry(entry, pool_api_key)
     if not has_usable_secret(pool_api_key):
         return None
     if pool_api_key and credential_pool_matches_provider(pool, provider, base_url=_pool_entry_base_url(entry)):
@@ -1084,7 +1107,7 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
     ``model`` is the model the caller must send.
     """
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.auth import AuthError, primary_failure_wording
     try:
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
@@ -1113,10 +1136,7 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
             runtime["provider"] = effective_runtime_provider(entry, runtime)
             # A rate-limit/quota cap is transient (credentials are fine, re-auth cannot help); the log must not
             # mislabel it as an auth failure (#32790).
-            if is_rate_limited_auth_error(primary_exc):
-                logger.warning("Primary provider rate-limited (429): %s. Falling back to %s/%s",
-                               primary_exc, provider, model)
-            else:
-                logger.warning("Primary provider auth failed (%s). Falling back to %s/%s", primary_exc, provider, model)
+            logger.warning("Primary provider %s (%s). Falling back to %s/%s",
+                           primary_failure_wording(primary_exc)[0], primary_exc, provider, model)
             return runtime, entry
         raise primary_exc

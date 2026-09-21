@@ -1,4 +1,5 @@
-"""`hermes computer-use doctor` names a daemon unit whose cua-driver Exec target was pruned (#114748).
+"""`hermes computer-use doctor` names a daemon unit whose cua-driver Exec target was pruned, and a configured
+`cua-driver serve` unit whose daemon is not listening (#114748).
 
 Linux has no managed cua-driver autostart, so users hand-write systemd user units / XDG
 autostart entries against a concrete ``packages/releases/<version>/`` directory. The installer
@@ -37,10 +38,12 @@ def _fake_health_report_proc() -> MagicMock:
     return proc
 
 
-def _run_doctor_json(monkeypatch, home):
+def _run_doctor_json(monkeypatch, home, daemon_probe=lambda *_a, **_kw: None):
+    """``daemon_probe`` stands in for ``cua_daemon_listening`` (the Popen double below breaks ``subprocess.run``)."""
     monkeypatch.setenv("HOME", str(home))
     if "XDG_CONFIG_HOME" in os.environ and not os.environ["XDG_CONFIG_HOME"].startswith(str(home)):
         monkeypatch.delenv("XDG_CONFIG_HOME")  # the host's own config dir must not leak into the scan
+    monkeypatch.setattr("tools.computer_use.cua_backend.cua_daemon_listening", daemon_probe)
     monkeypatch.setattr(doctor, "_read_cli_version", lambda binary, timeout=5.0: "cua-driver 0.28.2")
     out = StringIO()
     with patch("shutil.which", return_value="/fake/cua-driver"), \
@@ -97,3 +100,36 @@ def test_doctor_is_silent_for_current_and_live_release_references(tmp_path, monk
 
     assert code == 0 and report["overall"] == "ok"
     assert not [c for c in report["checks"] if c["name"].startswith("daemon unit")]
+
+
+def _write_current_serve_unit(home):
+    unit_dir = home / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "cua-driver-screenshot.service").write_text(
+        "[Service]\nExecStart=%h/.cua-driver/packages/current/cua-driver serve --socket %h/.cache/cua-driver/cua-driver.sock\n",
+        encoding="utf-8")
+
+
+def test_doctor_fails_a_configured_daemon_unit_whose_serve_is_not_listening(tmp_path, monkeypatch):
+    """#114748: a healthy binary + a dead `serve` daemon used to be reported as ok; the probe runs against the
+    unit's own --socket path (%h expanded), and a reinstall is named as the wrong remedy."""
+    _write_current_serve_unit(tmp_path)
+    probes = []
+
+    code, report = _run_doctor_json(monkeypatch, tmp_path,
+                                    lambda binary, socket=None, **_kw: probes.append((binary, socket)) or False)
+
+    rows = [c for c in report["checks"] if c["name"] == "daemon (cua-driver-screenshot.service)"]
+    assert code == 1 and report["overall"] == "degraded"
+    assert rows[0]["status"] == "fail" and "no daemon is listening" in rows[0]["message"]
+    assert "reinstall" in rows[0]["hint"]
+    assert probes == [("/fake/cua-driver", str(tmp_path / ".cache" / "cua-driver" / "cua-driver.sock"))]
+
+
+def test_doctor_passes_a_configured_daemon_unit_whose_serve_answers(tmp_path, monkeypatch):
+    _write_current_serve_unit(tmp_path)
+    code, report = _run_doctor_json(monkeypatch, tmp_path, lambda *_a, **_kw: True)
+
+    rows = [c for c in report["checks"] if c["name"] == "daemon (cua-driver-screenshot.service)"]
+    assert code == 0 and report["overall"] == "ok"
+    assert rows[0]["status"] == "pass" and "listening" in rows[0]["message"]

@@ -633,6 +633,40 @@ class TestTerminatePid:
         assert calls == []
 
 
+class TestPidExistsZombieProbe:
+    """#115578: the psutil ``status()`` zombie probe is POSIX-only. On Windows it costs ~7 ms per
+    pid, runs once per registry entry inside the session-registry file lock, and can never
+    report a zombie (Windows has no such state), so pollers starve at a handful of leases."""
+
+    @staticmethod
+    def _spy_status(monkeypatch):
+        psutil = pytest.importorskip("psutil")
+        calls = []
+        real_status = psutil.Process.status
+
+        def spy(self):
+            calls.append(self.pid)
+            return real_status(self)
+
+        monkeypatch.setattr(psutil.Process, "status", spy)
+        return calls
+
+    @pytest.mark.windows_only
+    def test_windows_skips_zombie_status_probe(self, monkeypatch):
+        # Faking os.name on POSIX proves nothing about the cost on the real host; the wine2e
+        # runner receipt (red on main, green on the fix) is the live repro for this test.
+        calls = self._spy_status(monkeypatch)
+        assert status._pid_exists(os.getpid()) is True
+        assert calls == []
+
+    @pytest.mark.linux_only
+    def test_posix_still_probes_zombie_status(self, monkeypatch):
+        # Control: on POSIX a zombie still answers pid_exists(), so the probe must survive.
+        calls = self._spy_status(monkeypatch)
+        assert status._pid_exists(os.getpid()) is True
+        assert calls == [os.getpid()]
+
+
 class TestScopedLocks:
     @pytest.mark.windows_only
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
@@ -1573,12 +1607,15 @@ class TestResolveGatewayLiveness:
         assert calls == {"health": 0, "runtime_pid": 0}
 
 
-    def test_probe_exception_degrades_instead_of_raising(self):
+    def test_probe_exception_degrades_instead_of_raising(self, tmp_path, monkeypatch):
         """A raising rung must fall through, never propagate.
 
         Status endpoints poll this constantly; an exotic /proc or a
         permissions error must not turn into a 500.
         """
+        # Empty rendezvous dir: no host gateway owns the role, so the multiplexer rung stays quiet.
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path))
+
         def _boom(*a, **k):
             raise RuntimeError("probe exploded")
 

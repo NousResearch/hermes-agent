@@ -16,6 +16,12 @@ def serve_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         "sessions:\n  auto_archive: true\n  auto_archive_days: 3\n", encoding="utf-8")
+    # The gate derives the profile home from _default_db_path(), which honours a re-pointed
+    # hermes_state.DEFAULT_DB_PATH. A sibling test that re-points it would otherwise send this
+    # one's config lookup to another directory, so pin it to this tmp home.
+    import hermes_state
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     import hermes_cli.web_server_sessions as wss
 
     wss._last_auto_archive_check.clear()

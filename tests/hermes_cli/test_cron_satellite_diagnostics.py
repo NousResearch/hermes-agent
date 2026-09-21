@@ -15,6 +15,9 @@ def served_root(tmp_path, monkeypatch):
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "probe")
+    # Never read the real host rendezvous record of the developer's live gateway.
+    (tmp_path / "locks").mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
     monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
@@ -54,7 +57,10 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
 
     cron.cron_status()
     output = capsys.readouterr().out
-    assert ("Scheduler host: default-profile multiplexer" in output) == (mode in {"missing", "fresh", "stale"})
+    # This fixture leaves the rendezvous dir EMPTY, so the config-derived multiplexer rung is what
+    # answers here — assert its exact line, never a prefix the host-record rung also prints.
+    assert ("Scheduler host: the host gateway (multiplexing this profile)" in output) == (
+        mode in {"missing", "fresh", "stale"})
     assert ("will fire automatically" in output) == (mode in {"fresh", "local"})
     if mode in {"missing", "stale"}:
         assert "hermes --profile default gateway restart" in output
@@ -63,14 +69,39 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
     if mode == "stale":
         assert "STALLED" in output
     if mode in {"disabled", "excluded", "unrelated_pid"}:
-        assert "Gateway is not running" in output
-        assert "hermes gateway install" in output
-        assert "sudo hermes gateway install --system" in output
-        assert "hermes gateway run" in output
+        assert "No gateway is running on this host" in output
+        assert "hermes --profile default gateway install" in output
+        assert "sudo hermes --profile default gateway install --system" in output
+        assert "hermes --profile default gateway run" in output
         assert "hermes --profile default gateway restart" in output
+        # The per-profile service is offered only as the LEGACY second-process topology.
+        assert "LEGACY (pre-multiplex topology, not recommended)" in output
     if mode == "external":
         assert "managed scheduler" in output
         assert "STALLED" not in output
+
+
+def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, capsys, monkeypatch):
+    """The OTHER rung: a published host record answers before the config-derived one.
+
+    Both rungs print a "Scheduler host: the host gateway…" line, so they are only distinguishable
+    by their full text — and the remediation they print must actually run for THIS audience:
+    `hermes gateway restart` exits 78 for a served named profile.
+    """
+    import os
+
+    from gateway import host_rendezvous as hr
+    from hermes_cli import cron
+
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "probe"))
+
+    cron.cron_status()
+    output = capsys.readouterr().out
+
+    assert f"Scheduler host: the host gateway (PID {os.getpid()}) serving profiles default, probe" in output
+    assert "Scheduler host: the host gateway (multiplexing this profile)" not in output
+    assert "hermes --profile default gateway restart" in output
+    assert "\n  If heartbeat never appears, restart: hermes gateway restart" not in output
 
 
 @pytest.mark.parametrize("heartbeat", ["missing", "fresh", "stale"])
@@ -111,8 +142,10 @@ def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch
     monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
     cron_status()
     output = capsys.readouterr().out
-    assert "hermes gateway install" in output
+    assert "hermes --profile default gateway install" in output
     assert ("hermes --profile default gateway restart" in output) == (home_kind == "named")
+    # A served/named profile is never told to start a SECOND host process except as LEGACY.
+    assert ("LEGACY (pre-multiplex topology, not recommended)" in output) == (home_kind == "named")
 
 
 @pytest.mark.parametrize("detail", ["unreachable " * 30 + "\nsecret second line", ""])

@@ -76,16 +76,17 @@ def implicit_multiplex_blocker() -> Optional[str]:
     """Why THIS process must not multiplex on the implicit default, or None when it may.
 
     Mirrors what makes ``hermes gateway migrate --multiplex`` refuse or leave a per-profile gateway
-    in place: a named-profile gateway serves only itself; hosts whose per-profile gateways the
-    preflight cannot see (s6 slots, Windows scheduled tasks) stay standalone; a secondary that still
-    runs its own gateway (live process or installed service) or a preflight blocker (duplicate bot
-    credential, port binder without a ``/p/<profile>/`` ingress) keeps the default standalone.
+    in place: hosts whose per-profile gateways the preflight cannot see (s6 slots, Windows
+    scheduled tasks) stay standalone; a secondary that still runs its own gateway (live process or
+    installed service) or a preflight blocker (duplicate bot credential, port binder without a
+    ``/p/<profile>/`` ingress) keeps this gateway standalone.
+
+    The launching profile's IDENTITY is deliberately not a blocker: multiplex-only means "the one
+    host process", whichever profile started it. Gating on ``active == 'default'`` made a host
+    whose only gateway runs under a named profile permanently standalone — and every lifecycle
+    verb built on "the default's multiplexer" blind to the process actually serving the host.
     """
-    from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
-    active = get_active_profile_name() or "default"
-    if active != "default":
-        return (f"this is profile '{active}'s own gateway; only the default profile's gateway "
-                f"multiplexes (hermes gateway migrate --multiplex folds the fleet onto it)")
+    from hermes_cli.profiles import profiles_to_serve
     # Cheap and first: a single-profile install has nothing to multiplex, and the fail-closed secret
     # scope the multiplexer arms buys it nothing. (Also keeps every embedded/test runner off the
     # service-manager probes below.) Create a second profile and restart to start serving it.

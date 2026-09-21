@@ -14,6 +14,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEff
 import { useLocation, useNavigate } from 'react-router'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -500,9 +501,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             state => ({
               ...state,
               // Post-turn rehydrate reads only the newest tail page — graft it
-              // onto any backfilled older pages instead of dropping them.
+              // onto any backfilled older pages instead of dropping them, and
+              // keep any un-acked optimistic `user-*` row, which lives nowhere
+              // else (a reconnect-triggered rehydrate would otherwise lose a
+              // message the user then has to retype). Same composition order
+              // as reconcileAuthoritativeChatMessages.
               messages: preserveLocalAssistantErrors(
-                graftRefreshedTailOntoBackfill(messages, state.messages),
+                preserveLocalPendingTurnMessages(
+                  graftRefreshedTailOntoBackfill(messages, state.messages),
+                  state.messages
+                ),
                 state.messages
               )
             }),

@@ -296,3 +296,38 @@ def test_peer_dm_reports_a_turn_queued_in_the_open_bot_chat_as_delivered(monkeyp
                                    "status": "claimed", "delivery_id": "d" * 32}
     else:
         assert "went into that chat (session bot-chat)" in out and "Do NOT resend" in out
+
+
+@pytest.mark.asyncio
+async def test_gateway_shutdown_reports_a_live_owned_run_as_interrupted(tmp_path):
+    """A `peer run` whose turn is a live Bot Chat's is still a run of THIS gateway: shutdown publishes
+    ``interrupted`` and the task cancel that follows must not rewrite it as a bare ``cancelled``."""
+    from gateway.platforms import api_server_runs as runs_mod
+
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    queue: asyncio.Queue = asyncio.Queue()
+    adapter._run_streams["run-1"] = queue
+    launch = runs_mod._RunLaunch(
+        adapter, "run-1", queue, "bot-chat", None, True, "ping", [], False, agent_kwargs={},
+        request_profile=None, browser_control_principal=None, browser_control_transport_family=None)
+    waiting = asyncio.Event()
+
+    async def _receipt_never_arrives(*_a, **_k):
+        waiting.set()
+        await asyncio.sleep(3600)
+
+    with patch("tools.bot_live_delivery.await_delivery_async", _receipt_never_arrives):
+        task = asyncio.create_task(runs_mod._execute_run_via_live_owner(
+            adapter, launch, tmp_path, {"delivery_id": "d" * 32, "status": "queued"}, _api_server=None))
+        adapter._active_run_tasks["run-1"] = task
+        await asyncio.wait_for(waiting.wait(), 5)
+        runs_mod._mark_shutdown_interrupted_runs(adapter, ["run-1"])
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    status = adapter._run_statuses["run-1"]
+    assert status["status"] == "interrupted"
+    assert status["error"] == "Gateway shutdown interrupted the run."
+    events = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert [e["event"] for e in events if e] == ["run.interrupted"]

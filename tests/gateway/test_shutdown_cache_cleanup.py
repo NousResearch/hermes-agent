@@ -69,6 +69,11 @@ class _FakeGateway:
         # No API server adapter -> no durable runs to stamp with the drain boundary (#115133).
         return 0
 
+    def _active_api_worker_count(self):
+        # Worker-scoped API count the SessionDB close gate reads live (#116535).
+        # This fake runs no executor turns, so it is always idle.
+        return 0
+
     def _update_runtime_status(self, *_a, **_kw):
         pass
 

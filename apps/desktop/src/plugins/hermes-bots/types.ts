@@ -186,8 +186,14 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** Whether user text may create sticky member holds. Defaults to true for
+   *  rooms written by older builds; the room settings switch can disable it. */
+  holdDetection?: boolean
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
+  /** Room-entry ids consumed while a member was held, replayed into that
+   *  member's next visible turn. Keyed by the durable member key. */
+  heldMessages?: Record<string, string[]>
   holds?: Record<string, GroupHold>
   image?: null | string
   log: GroupMessage[]
@@ -203,6 +209,11 @@ export interface GroupChat {
   /** A member turn this Desktop is not (or no longer) polling: the message-count baseline to
    *  harvest its late reply from. `turn` names the poll that owns it while that poll runs. */
   stranded?: Record<string, number | { before: number; thread?: string; turn?: string }>
+  /** #93813: how far each member's external-write reconcile sweep has read
+   *  into that member's per-group session transcript (absolute row index of
+   *  the last mirrored row + 1). Persisted so external posts aren't rescanned
+   *  (or re-mirrored) after a window restart. */
+  externalCursors?: Record<string, number>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean
@@ -278,8 +289,9 @@ export interface GroupActivityEvent {
   kind: GroupActivityKind
   member?: string
   preview?: string
-  /** Typed failure cause (gateway `data.reason` or the normalized
-   *  `slot_wait_timeout`); absent on non-failures and untyped failures. */
+  /** Failure cause: the gateway's typed `data.reason`, the normalized
+   *  `slot_wait_timeout`, or the error's redacted first line (#117366);
+   *  absent on non-failures. */
   reason?: string
 }
 

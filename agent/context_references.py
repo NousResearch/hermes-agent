@@ -104,6 +104,7 @@ _LINE_COUNT_MAX_BYTES = 4 * 1024 * 1024
 # Per-command stdout/stderr ceiling for the ``git``/``rg`` helpers; past it the child is
 # killed and the nonzero returncode routes the caller to its fallback path.
 _MAX_QUIET_OUTPUT_BYTES = 4 * 1024 * 1024
+_OUTPUT_CAP_EXCEEDED_RETURNCODE = 137  # 128 + SIGKILL, the code a shell reports for a killed child
 _FENCE_LANGUAGES = {
     ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".jsx": "jsx",
     ".json": "json", ".md": "markdown", ".sh": "bash", ".yml": "yaml", ".yaml": "yaml", ".toml": "toml",
@@ -293,7 +294,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
     if not (path.is_dir() if is_folder else path.is_file()):
         return f"{ref.raw}: path is not a {ref.kind}", None
     if is_folder:
-        listing = _build_folder_listing(path, cwd)
+        listing = _build_folder_listing(path, cwd, display_base=allowed_root)
         return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
     if _is_binary_file(path):
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
@@ -365,13 +366,17 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
 
     ``capture_output=True`` buffers the child's entire stdout — an unbounded ``git diff``
     or ``rg --files`` would materialize a hostile-size stream in memory. Each pipe is
-    drained up to ``_MAX_QUIET_OUTPUT_BYTES``; past it the child is killed and its
-    nonzero returncode routes callers to their existing fallback paths.
+    drained up to ``_MAX_QUIET_OUTPUT_BYTES``; past it the child is killed and the result
+    carries a nonzero returncode that routes callers to their existing fallback paths. Set
+    explicitly: a child that flushed everything and exited 0 before the drain thread crossed
+    the cap is not killable and would otherwise report success with truncated output.
     """
     popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     proc = subprocess.Popen(
         cmd, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         **popen_kwargs, **({} if env is None else {"env": env}))
+
+    truncated = threading.Event()
 
     def _drain(stream, sink: list[bytes]) -> None:
         total = 0
@@ -383,6 +388,7 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
             if total <= _MAX_QUIET_OUTPUT_BYTES:
                 sink.append(chunk)
             else:
+                truncated.set()
                 proc.kill()
                 return
 
@@ -402,7 +408,10 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
     for thread in threads:
         thread.join()
     stdout, stderr = (b"".join(sink).decode("utf-8", "replace") for sink in sinks)
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    returncode = proc.returncode
+    if truncated.is_set() and returncode == 0:
+        returncode = _OUTPUT_CAP_EXCEEDED_RETURNCODE
+    return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
@@ -438,12 +447,28 @@ def _is_under(path: Path, root: Path) -> bool:
     return True
 
 
+# Desktop persists a large plain-text paste as a `.txt` under this Hermes-managed
+# directory (apps/desktop/electron/composer-paste.ts) and attaches it as `@file:`.
+# The chat's cwd is rarely an ancestor of it, so it is the one anchored root the
+# workspace guard admits besides `allowed_root` itself.
+COMPOSER_PASTES_DIRNAME = "composer-pastes"
+
+
+def _composer_paste_roots() -> list[Path]:
+    from agent.file_safety import _hermes_dirs
+    return [hermes_dir / COMPOSER_PASTES_DIRNAME for hermes_dir in _hermes_dirs()]
+
+
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
     from agent.file_safety import is_nt_namespace_path
     if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
         raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
-    if allowed_root is not None and not _is_under(resolved, allowed_root):
+    if (
+        allowed_root is not None
+        and not _is_under(resolved, allowed_root)
+        and not any(_is_under(resolved, root) for root in _composer_paste_roots())
+    ):
         raise ValueError("path is outside the allowed workspace")
     return resolved
 
@@ -502,12 +527,24 @@ def _is_binary_file(path: Path) -> bool:
         return b"\x00" in fh.read(4096)
 
 
-def _build_folder_listing(path: Path, cwd: Path, limit: int = 200) -> str:
-    lines = [f"{path.relative_to(cwd)}/"]
+def _build_folder_listing(path: Path, cwd: Path, limit: int = 200, display_base: Path | None = None) -> str:
+    # The target may sit outside cwd when the caller widened allowed_root: show it relative to
+    # cwd when possible, else relative to the allowed root, else the absolute path.
+    shown: str | None = None
+    for base in (cwd, display_base):
+        if base is None:
+            continue
+        try:
+            shown = f"{path.relative_to(base)}/"
+            break
+        except ValueError:
+            continue
+    if shown is None:
+        shown = f"{path}/"
+    lines = [shown]
     entries = _iter_visible_entries(path, cwd, limit=limit)
-    base_depth = len(path.relative_to(cwd).parts)
     for entry in entries:
-        indent = "  " * max(len(entry.relative_to(cwd).parts) - base_depth - 1, 0)
+        indent = "  " * max(len(entry.relative_to(path).parts) - 1, 0)
         lines.append(f"{indent}- {entry.name}/" if entry.is_dir() else f"{indent}- {entry.name} ({_file_metadata(entry)})")
     if len(entries) >= limit:
         lines.append("- ...")
@@ -517,16 +554,18 @@ def _build_folder_listing(path: Path, cwd: Path, limit: int = 200) -> str:
 def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
     """Files under ``path`` via ``rg --files`` (honours ignore files), else an os.walk fallback."""
     try:
-        rg = _run_quiet(["rg", "--files", str(path.relative_to(cwd))], cwd, 10)
+        # Absolute path arg: rg echoes it as the output prefix, so results stay correct even
+        # when the folder is outside cwd (a widened allowed_root target).
+        rg = _run_quiet(["rg", "--files", str(path)], cwd, 10)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         rg = None
     if rg is not None and rg.returncode == 0:
         output: list[Path] = []
         seen_dirs: set[Path] = set()
         for line in [ln.strip() for ln in rg.stdout.splitlines() if ln.strip()][:limit]:
-            full = cwd / Path(line)
+            full = cwd / Path(line)  # absolute lines pass through unchanged; defensive for relative
             for parent in full.parents:
-                if parent == cwd or parent in seen_dirs or path not in {parent, *parent.parents}:
+                if parent in seen_dirs or path not in {parent, *parent.parents}:
                     continue
                 seen_dirs.add(parent)
                 output.append(parent)

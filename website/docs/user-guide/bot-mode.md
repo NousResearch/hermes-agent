@@ -106,14 +106,21 @@ word sits next to its @mention (`stop @bot`, `@bot please pause`); the same word
 elsewhere in the sentence is read as ordinary prose, so a German `halt` no longer
 silences the bot it was sent to — but such a message does not release a held
 member either (`@bot please just stop now` never wakes it; repeat the stop next
-to the mention to hold it). A member that is visibly still working keeps its turn for up to three
+to the mention to hold it). Stop words inside fenced code, inline code, quotes or
+blockquote lines are content, not directives, and never hold anyone. A held member
+still receives the messages its hold skipped — including the one that triggered it —
+on its first turn after release, so nothing addressed to it is lost. Rooms that never
+use "stop" as a command can turn off **Detect stop directives** in the group settings
+dialog; the Stop button keeps cancelling the active run either way. A member that is visibly still working keeps its turn for up to three
 hours (a member that stops reporting work expires after three minutes of silence regardless); a quiet
 room then watches timed-out members for another three hours after the foreground wait ends, and this
 observation window does not extend the turn itself.
 Unresolved member failures remain visible in the collapsed Activity summary after
 the room settles — including a turn the member's backend itself failed (bad
 credentials, provider errors), which is reported the moment the gateway
-reports it instead of looking like twenty minutes of thinking. Expand Activity for the turn sequence; re-address the member to
+reports it instead of looking like twenty minutes of thinking. A failure row names its cause: `builder hit an error — <first line of
+the error>` (secret-shaped tokens redacted, long lines truncated), or `builder couldn't start — too many bots running` when the local
+backend pool had no free slot. Expand Activity for the turn sequence; re-address the member to
 try again. An ambiguous submit failure is not automatically resubmitted.
 
 
@@ -154,6 +161,7 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **Rooms can span machines.** **New Group Chat** is available as soon as two Bots are selectable across all your registered connections — one Bot on this device plus one on another gateway is enough. The picker seats Bots from any registered connection; each member's turns run on its own machine, in its own room session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together. A member's turn that outlives this Desktop — you quit or it crashed mid-turn — finishes on the member's own machine: the room posts that reply the next time it is driven, and does not re-drive the member while it is still working.
 - **Rooms show the same identity as the roster.** Transcript rows, the “X is thinking…” line and Activity rows resolve each member's title and avatar by its owning connection and profile — re-titling a Bot or changing its picture updates every room it sits in, remote members keep their own titles, and two same-named Bots on different connections never borrow each other's avatar. When two members would still read identically, Activity appends the connection label (`Reviewer · Mac Mini`).
 - **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
+- **What a member says outside the room still reaches it.** Each member's room session is an ordinary Hermes session (titled `Group: <room> · <thread>`), so you can resume it from the CLI, a routine can post into it, or the Bot's own tools can write to it. When you open the room, and again each time the room drives that member, whatever those writers added since the room last looked — your questions and the member's answers — is posted into the room log under that member's name, once, in the thread the session belongs to; a window restart does not repeat it. The room's own turn prompts and their replies are never duplicated this way, and neither are the agent's housekeeping rows (context compaction notes, routine deliveries, delegation results) or the member's reactions to them. The room starts watching a session the first time it sees it: what was already in that session by then is not replayed, so a room restored on a second Desktop does not re-post its members' history.
 
 ## Bot-to-bot messaging
 

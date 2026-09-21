@@ -462,6 +462,66 @@ class TestRetiredSocketGenerationReaping:
         live.cancel()
 
     @pytest.mark.asyncio
+    async def test_reap_keeps_generations_retired_during_its_own_awaits(self, adapter, caplog):
+        """A generation retired mid-reap must survive the reap pass.
+
+        ``connect()``/``disconnect()`` can retire a generation while the reap is
+        suspended inside ``_cancel_socket_tasks()``. If the pass rebuilt the
+        registry from its entry snapshot, that fresh append would be overwritten
+        and the new orphan would never be reaped or reported.
+        """
+        slow_gen_handler = _FakeHandler()
+        release = asyncio.Event()
+
+        async def _stalled_orphan() -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                # Unwinding takes a yield, so the reap stays suspended inside
+                # _cancel_socket_tasks() while the concurrent retire lands.
+                release.set()
+                await asyncio.sleep(0.05)
+                raise
+
+        stalled_orphan = asyncio.create_task(_stalled_orphan())
+        await asyncio.sleep(0.01)
+        slow_gen_handler.client.message_receiver = stalled_orphan
+        slow_gen = _slack_mod._RetiredSocketGeneration(
+            slow_gen_handler, None, slow_gen_handler.client)
+        adapter._retired_socket_generations.append(slow_gen)
+
+        fresh_handler = _FakeHandler()
+        fresh_task = asyncio.create_task(_spin())
+
+        async def _retire_mid_cancel() -> None:
+            await release.wait()
+            adapter._retire_socket_generation(fresh_handler, fresh_task, fresh_handler.client)
+
+        retire_helper = asyncio.create_task(_retire_mid_cancel())
+
+        with caplog.at_level("WARNING"):
+            await adapter._reap_retired_socket_generations()
+        await retire_helper
+
+        survivors = [g for g in adapter._retired_socket_generations if g is not slow_gen]
+        assert len(survivors) == 1 and survivors[0].handler is fresh_handler, (
+            "a generation retired while the reap was suspended in _cancel_socket_tasks() "
+            "was dropped from the registry"
+        )
+        assert not survivors[0].warned, "the concurrent generation was reported by the wrong pass"
+        assert stalled_orphan.cancelled(), "the suspended orphan was not reaped"
+        warnings = [r for r in caplog.records if "Reaped" in r.getMessage()]
+        assert len(warnings) == 1, "only the snapshot generation may be reported by this pass"
+
+        # The fresh generation is reaped and reported on the next tick like any other.
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            await adapter._reap_retired_socket_generations()
+        assert adapter._retired_socket_generations == []
+        warnings = [r for r in caplog.records if "Reaped" in r.getMessage()]
+        assert len(warnings) == 1, "the fresh orphan was never reaped and reported"
+
+    @pytest.mark.asyncio
     async def test_retired_generations_are_pruned(self, adapter):
         """Repeated start/stop cycles leave a bounded, self-cleaning registry."""
         for _ in range(_slack_mod._MAX_RETIRED_SOCKET_GENERATIONS + 4):

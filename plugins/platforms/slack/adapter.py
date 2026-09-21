@@ -1387,10 +1387,15 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._retired_socket_generations:
             return
 
-        survivors: List[_RetiredSocketGeneration] = []
-        for generation in self._retired_socket_generations:
+        # Snapshot the registry up front: connect()/disconnect() can retire a new generation while
+        # this pass is suspended inside ``_cancel_socket_tasks()``. Removing the snapshot's
+        # resolved entries by identity (instead of rebinding the attribute from a snapshot-derived
+        # list) leaves such late appends in place for the next tick, warning included.
+        snapshot = list(self._retired_socket_generations)
+        for generation in snapshot:
             leaked = _socket_generation_tasks(generation.handler, generation.task)
             if not leaked:
+                self._retired_socket_generations.remove(generation)
                 continue
             if not generation.warned:
                 generation.warned = True
@@ -1399,9 +1404,8 @@ class SlackAdapter(BasePlatformAdapter):
                     len(leaked))
             await _cancel_socket_tasks(leaked)
             if _socket_generation_tasks(generation.handler, generation.task):
-                survivors.append(generation)
-
-        self._retired_socket_generations = survivors
+                continue
+            self._retired_socket_generations.remove(generation)
 
     async def _socket_transport_connected(self) -> Optional[bool]:
         """Best-effort check of current Socket Mode transport state."""

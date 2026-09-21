@@ -480,6 +480,7 @@ export function AppearanceSettings() {
 
   const toolOptions = [
     { id: 'product', label: a.product },
+    { id: 'cards', label: a.cards },
     { id: 'technical', label: a.technical }
   ] as const
 

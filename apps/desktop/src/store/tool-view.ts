@@ -1,23 +1,36 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
-import { persistBoolean, storedBoolean } from '@/lib/storage'
+import { readKey, storedBoolean, writeKey } from '@/lib/storage'
 
-export type ToolViewMode = 'product' | 'technical'
+export type ToolViewMode = 'product' | 'cards' | 'technical'
 
 type ToolDisclosureStates = Record<string, boolean>
 
-const TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
+const TOOL_VIEW_MODE_STORAGE_KEY = 'hermes.desktop.toolView.mode'
+// Pre-cards installs persisted only the technical boolean; kept as a fallback
+// so a fresh mode write does not leave upgraded users on the default.
+const LEGACY_TOOL_VIEW_TECHNICAL_STORAGE_KEY = 'hermes.desktop.toolView.technical'
 const TOOL_DISCLOSURE_STORAGE_KEY = 'hermes.desktop.toolDisclosure.v1'
 const MAX_DISCLOSURE_STATES = 240
 
-export const $toolViewMode = atom<ToolViewMode>(
-  storedBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, false) ? 'technical' : 'product'
-)
+const TOOL_VIEW_MODES: readonly ToolViewMode[] = ['product', 'cards', 'technical']
+
+function loadToolViewMode(): ToolViewMode {
+  const stored = readKey(TOOL_VIEW_MODE_STORAGE_KEY)
+
+  if (stored !== null && (TOOL_VIEW_MODES as readonly string[]).includes(stored)) {
+    return stored as ToolViewMode
+  }
+
+  return storedBoolean(LEGACY_TOOL_VIEW_TECHNICAL_STORAGE_KEY, false) ? 'technical' : 'product'
+}
+
+export const $toolViewMode = atom<ToolViewMode>(loadToolViewMode())
 export const $toolDisclosureStates = atom<ToolDisclosureStates>(loadToolDisclosureStates())
 const disclosureOpenCache = new Map<string, ReadableAtom<boolean | undefined>>()
 const anyDisclosureOpenCache = new Map<string, ReadableAtom<boolean>>()
 
-$toolViewMode.subscribe(mode => persistBoolean(TOOL_VIEW_TECHNICAL_STORAGE_KEY, mode === 'technical'))
+$toolViewMode.subscribe(mode => writeKey(TOOL_VIEW_MODE_STORAGE_KEY, mode))
 $toolDisclosureStates.subscribe(persistToolDisclosureStates)
 
 export function setToolViewMode(mode: ToolViewMode) {

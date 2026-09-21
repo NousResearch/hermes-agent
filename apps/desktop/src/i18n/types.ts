@@ -693,6 +693,7 @@ export interface Translations {
       resumeLastSessionDesc: string
       product: string
       productDesc: string
+      cards: string
       technical: string
       technicalDesc: string
       themeTitle: string

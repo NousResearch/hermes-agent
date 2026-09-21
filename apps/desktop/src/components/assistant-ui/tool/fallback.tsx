@@ -378,8 +378,6 @@ function ToolEntry({ part }: ToolEntryProps) {
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(toolResultRecord(stablePart))
   const isFileEdit = isFileEditTool(toolName)
-  const defaultOpen = Boolean(inlineDiff)
-  const open = useDisclosureOpen(disclosureId, defaultOpen)
   const canDismiss = !isPending && !embedded
   // Only animate entries that mount while their message is actively
   // streaming — historical sessions mount with `messageRunning === false`,
@@ -473,6 +471,12 @@ function ToolEntry({ part }: ToolEntryProps) {
     view.terminalExitCode !== undefined ||
     toolViewMode === 'technical'
   )
+
+  // Cards mode opens every row that has something to show by default: the
+  // details stream in expanded instead of hiding behind a click. A persisted
+  // disclosure (the user's own toggle) still wins over the mode default.
+  const defaultOpen = Boolean(inlineDiff) || (toolViewMode === 'cards' && hasExpandableContent)
+  const open = useDisclosureOpen(disclosureId, defaultOpen)
 
   // copyAction reads the uncapped view.detail; clampForDisplay below only bounds
   // what's painted, so the row's Copy button still yields the full output.
@@ -962,9 +966,14 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   const disclosureId = `tool-run:${key}`
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
   const rowOpen = useStore(useMemo(() => $anyToolDisclosureOpen(entryIds), [entryIds]))
+
+  // Cards mode streams the run expanded by default; an explicit user toggle
+  // (persistedOpen) still wins, so the collapse affordance keeps working.
+  const toolViewMode = useStore($toolViewMode)
+
   const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
   const representedByApproval = !!approval && currentTurn && approvalActivity
-  const expanded = count < 2 || (persistedOpen ?? rowOpen)
+  const expanded = count < 2 || (persistedOpen ?? (toolViewMode === 'cards' || rowOpen))
   const collapsed = representedByApproval && !rowOpen && !persistedOpen
   const reduced = useReducedMotion()
 

@@ -127,6 +127,7 @@ function renderSubmitHook({
 
   return {
     clearDraft,
+    editorRef,
     hook,
     onCancel,
     onSteer,
@@ -332,6 +333,40 @@ describe('useComposerSubmit external request routing', () => {
     requestComposerSubmit('do not send this', { target: 'main' })
 
     expect(disabled.onSubmit).not.toHaveBeenCalled()
+  })
+})
+
+describe('useComposerSubmit stale-DOM prefix guard', () => {
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('keeps the longer draft when the editor DOM holds a stale prefix (live clip: `It`)', () => {
+    const { editorRef, hook, onSubmit } = renderSubmitHook({ text: "It's broken again, look at the terminal" })
+
+    const editor = editorRef.current!
+    // Simulate a mid-commit DOM: only the first two characters painted.
+    editor!.textContent = "It"
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith("It's broken again, look at the terminal", expect.anything())
+  })
+
+  it('still lets the DOM win when it is not a strict prefix (deletions, fresh edits)', () => {
+    const { editorRef, hook, onSubmit } = renderSubmitHook({ text: 'old long draft text' })
+
+    const editor = editorRef.current!
+    editor!.textContent = 'totally different'
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('totally different', expect.anything())
   })
 })
 

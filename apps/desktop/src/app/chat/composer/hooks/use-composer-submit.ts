@@ -208,8 +208,22 @@ export function useComposerSubmit({
       const domText = composerPlainText(editor)
 
       if (domText !== draftRef.current) {
-        draftRef.current = domText
-        setComposerText(domText)
+        // A mid-commit DOM can hold only a PREFIX of the typed text: Chromium
+        // splits contenteditable text across text nodes and a serialization
+        // racing the final keystroke stops early (observed live: a message
+        // submitted as `It'` — two chars of a longer sentence, cut exactly at
+        // the apostrophe's node boundary). In that state the DOM is the stale
+        // side, not the draft: keep the longer text so Enter can never submit
+        // a truncation of what the user typed. The DOM still wins whenever it
+        // is not a strict prefix (fresh typing, chip edits, deletions).
+        const domIsStalePrefix =
+          domText.length < draftRef.current.length &&
+          draftRef.current.startsWith(domText)
+
+        if (!domIsStalePrefix) {
+          draftRef.current = domText
+          setComposerText(domText)
+        }
       }
     }
 

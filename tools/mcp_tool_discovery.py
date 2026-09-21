@@ -22,9 +22,25 @@ from tools.mcp_tool_scope import _key_name, _key_scope, _key_visible_in_scope, _
 
 logger = logging.getLogger("tools.mcp_tool")
 
-# Max concurrent MCP server connections per discovery pass (one unbounded
-# `asyncio.gather` spawned every server's subprocess tree simultaneously).
-_DISCOVERY_CONNECT_CONCURRENCY = 3
+# Default max concurrent MCP server connections per discovery pass (one unbounded
+# `asyncio.gather` spawned every server's subprocess tree simultaneously); config.yaml
+# ``mcp.discovery_concurrency`` overrides it, 0 = unlimited (#117373).
+_DISCOVERY_CONNECT_CONCURRENCY = 4
+
+
+def _discovery_connect_concurrency() -> int:
+    """``mcp.discovery_concurrency`` from config (0 = unlimited); a non-integer or negative value
+    warns and falls back to the default rather than silently running unbounded."""
+    try:
+        from hermes_cli.config import load_config
+        raw = (load_config().get("mcp") or {}).get("discovery_concurrency", _DISCOVERY_CONNECT_CONCURRENCY)
+    except Exception:
+        return _DISCOVERY_CONNECT_CONCURRENCY
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        logger.warning("mcp.discovery_concurrency=%r is not a non-negative integer; using %d",
+                       raw, _DISCOVERY_CONNECT_CONCURRENCY)
+        return _DISCOVERY_CONNECT_CONCURRENCY
+    return raw
 
 
 def _record_connect_failure(server_name: str) -> None:
@@ -382,10 +398,13 @@ async def _discover_all(new_servers: Dict[str, dict]) -> None:
     unbounded gather turns a config with many servers into a simultaneous
     N-process spawn burst (RAM/CPU spike, EMFILE risk) on every backend boot.
     """
-    # ponytail: flat cap for all transports; a per-transport cap only if stdio+HTTP mixes ever matter
-    semaphore = asyncio.Semaphore(_DISCOVERY_CONNECT_CONCURRENCY)
+    # Flat cap for all transports; 0 (unlimited) keeps the original unbounded gather.
+    cap = _discovery_connect_concurrency()
+    semaphore = asyncio.Semaphore(cap) if cap > 0 else None
 
     async def _connect_bounded(name: str, cfg: dict):
+        if semaphore is None:
+            return await _discover_and_register_server(name, cfg)
         async with semaphore:
             return await _discover_and_register_server(name, cfg)
 
@@ -418,7 +437,8 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
         # _MCP_DISCOVERY_PASS_MAX_SEC so one stuck connect cannot pin the
         # calling thread (and the cross-process discovery lock) for tens of
         # minutes; the lock waiter's budget is derived from the same ceiling.
-        waves = max(1, -(-len(new_servers) // _DISCOVERY_CONNECT_CONCURRENCY))
+        cap = _discovery_connect_concurrency() or len(new_servers) or 1
+        waves = max(1, -(-len(new_servers) // cap))
         timeout = min(120 * waves, _core._MCP_DISCOVERY_PASS_MAX_SEC)
         _loop._run_on_mcp_loop(lambda: _discover_all(new_servers), timeout=timeout)
     except (TimeoutError, InterruptedError) as _e:

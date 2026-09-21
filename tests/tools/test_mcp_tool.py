@@ -2773,17 +2773,18 @@ class TestDiscoveryFailedCount:
 class TestDiscoveryConnectConcurrency:
     """MCP discovery bounds how many servers connect at once (#117373)."""
 
-    def test_concurrent_connects_never_exceed_cap(self):
-        """With more servers than the cap, in-flight connects stay capped."""
+    @staticmethod
+    def _run_pass(server_names, cap):
+        """Run a discovery pass with ``mcp.discovery_concurrency=cap``; return (peak in-flight, connected)."""
         import asyncio as _asyncio
 
         from tools import mcp_tool_discovery as _discovery
         from tools.mcp_tool import _servers
         from tools.mcp_tool_loop import _ensure_mcp_loop
 
-        server_names = {f"srv{i}": {"command": "npx", "args": [f"s{i}"]} for i in range(8)}
         in_flight = 0
         max_in_flight = 0
+        connected = []
 
         async def tracked_register(name, cfg):
             nonlocal in_flight, max_in_flight
@@ -2792,50 +2793,34 @@ class TestDiscoveryConnectConcurrency:
             # Yield real control so gathers genuinely overlap.
             await _asyncio.sleep(0.05)
             in_flight -= 1
-            return []
-
-        with patch("tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
-             patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=tracked_register), \
-             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
-            _ensure_mcp_loop()
-            _discovery._run_discovery_pass(server_names)
-
-        try:
-            assert max_in_flight > 1, "connects should still run concurrently"
-            assert max_in_flight <= _discovery._DISCOVERY_CONNECT_CONCURRENCY, (
-                f"in-flight connects peaked at {max_in_flight}, "
-                f"cap is {_discovery._DISCOVERY_CONNECT_CONCURRENCY}"
-            )
-        finally:
-            for name in server_names:
-                _servers.pop(name, None)
-
-    def test_cap_lower_than_server_count_still_connects_all(self):
-        """A capped pass still connects every server, not just the first N."""
-        from tools import mcp_tool_discovery as _discovery
-        from tools.mcp_tool import _servers
-        from tools.mcp_tool_loop import _ensure_mcp_loop
-
-        server_names = {f"srv{i}": {"command": "npx", "args": [f"s{i}"]} for i in range(5)}
-        connected = []
-
-        async def recording_register(name, cfg):
             connected.append(name)
             return []
 
         with patch("tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
-             patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=recording_register), \
+             patch("hermes_cli.config.load_config", return_value={"mcp": {"discovery_concurrency": cap}}), \
+             patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=tracked_register), \
              patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
             _ensure_mcp_loop()
-            _discovery._run_discovery_pass(server_names)
+            try:
+                _discovery._run_discovery_pass(server_names)
+            finally:
+                for name in server_names:
+                    _servers.pop(name, None)
+        return max_in_flight, connected
 
-        try:
-            assert sorted(connected) == sorted(server_names)
-        finally:
-            for name in server_names:
-                _servers.pop(name, None)
+    def test_configured_cap_bounds_in_flight_connects_and_zero_means_unlimited(self):
+        """``mcp.discovery_concurrency`` caps simultaneous connects (still concurrent, every server
+        still connected — no head-of-line starvation); 0 restores the unbounded gather."""
+        server_names = {f"srv{i}": {"command": "npx", "args": [f"s{i}"]} for i in range(8)}
+
+        peak, connected = self._run_pass(server_names, cap=3)
+        assert 1 < peak <= 3, f"in-flight connects peaked at {peak}, cap is 3"
+        assert sorted(connected) == sorted(server_names)
+
+        peak_unlimited, connected = self._run_pass(server_names, cap=0)
+        assert peak_unlimited == len(server_names), f"0 must mean unlimited, peaked at {peak_unlimited}"
+        assert sorted(connected) == sorted(server_names)
 
     def test_pass_timeout_capped_by_waiter_budget(self):
         """The discovery pass timeout is capped so a slow pass cannot outlive the

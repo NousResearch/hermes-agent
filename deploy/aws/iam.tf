@@ -56,6 +56,14 @@ data "aws_iam_policy_document" "runtime_boundary" {
       "secretsmanager:GetSecretValue",
       "ssm:GetParameter",
       "ssm:GetParameters",
+      # Registration and the five-minute heartbeat. The SSM Agent's health module
+      # calls exactly this one API, and an instance whose heartbeat is denied never
+      # becomes a managed node — so `aws ssm start-session` fails and the deployment
+      # has no way in at all, this being the only route (no inbound port, no key).
+      # AmazonSSMManagedInstanceCore grants it; a boundary that omits it caps the
+      # grant away, which is what happened on the first deployment.
+      "ssm:UpdateInstanceInformation",
+      # Session Manager's control and data channels — the session itself.
       "ssmmessages:*",
       "ec2messages:*",
       "kms:Decrypt",

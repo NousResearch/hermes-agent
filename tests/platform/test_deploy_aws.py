@@ -543,3 +543,87 @@ def test_the_log_group_name_is_defined_once():
     assert "name              = local.log_group_name" in main, (
         "the log group no longer derives its name from the local the key policy scopes to"
     )
+
+
+# ---------------------------------------------------------------------------
+# The SSM ceiling
+#
+# The first real deployment came up with AmazonSSMManagedInstanceCore attached
+# and the instance never appeared in Systems Manager. A permissions boundary is
+# an intersection, not a grant: the managed policy allowed
+# ssm:UpdateInstanceInformation and the boundary did not, so the effective
+# permission was deny and the agent could not register. With no inbound rule and
+# no SSH key, Session Manager is the only route in, so that is the whole
+# deployment unreachable.
+# ---------------------------------------------------------------------------
+
+
+def _boundary_ceiling_actions() -> set[str]:
+    """The actions inside the boundary's ``ServicesThisDeploymentUses`` statement.
+
+    Parsed rather than grepped so a mention in a comment cannot pass for a grant — the
+    reason this fix needed making is that the list, not the prose, is what AWS reads.
+    """
+    iam = (MODULE / "iam.tf").read_text(encoding="utf-8")
+    start = iam.index('sid    = "ServicesThisDeploymentUses"')
+    block = iam[start : iam.index("]", iam.index("actions = [", start))]
+    body = "\n".join(line.split("#")[0] for line in block.splitlines())
+    return set(re.findall(r'"([a-z0-9-]+:[A-Za-z*]+)"', body))
+
+
+def _permits(ceiling: set[str], action: str) -> bool:
+    return action in ceiling or f"{action.split(':')[0]}:*" in ceiling
+
+
+def test_the_boundary_permits_the_ssm_agent_to_register():
+    """Without this the instance is never a managed node and there is no way in.
+
+    The SSM Agent's health module calls exactly one API — ``UpdateInstanceInformation``
+    — to register and to hold the five-minute heartbeat that keeps the node Online.
+    Denied, ``aws ssm start-session --target <id>`` fails against an instance whose
+    security group has no ingress rule.
+    """
+    assert _permits(_boundary_ceiling_actions(), "ssm:UpdateInstanceInformation"), (
+        "the permissions boundary does not allow ssm:UpdateInstanceInformation, so the "
+        "SSM Agent cannot register. AmazonSSMManagedInstanceCore allows it, but a "
+        "boundary is a ceiling: the attached policy cannot exceed it"
+    )
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+    ],
+)
+def test_the_boundary_permits_the_session_manager_channels(action):
+    """Registration gets the node listed; these four carry the session itself."""
+    assert _permits(_boundary_ceiling_actions(), action), (
+        f"the boundary no longer permits {action}; Session Manager cannot open a "
+        "session, and it is the only route into this instance"
+    )
+
+
+def test_the_boundary_does_not_widen_to_all_of_ssm():
+    """The shape of the five-o'clock fix this whole file exists to prevent.
+
+    The boundary carries the Session Manager path and the parameter reads this
+    deployment makes, named one at a time. ``ssm:*`` would also lift the ceiling on
+    Run Command, Inventory, Patch Manager and every parameter in the account.
+    """
+    assert "ssm:*" not in _boundary_ceiling_actions(), (
+        "the boundary now allows ssm:*. Add the specific actions the agent needs "
+        "instead — a boundary that names a whole service stops being a ceiling"
+    )
+
+
+def test_the_session_manager_grant_still_comes_from_the_managed_policy():
+    """The boundary permits; something still has to grant. Both halves are load-bearing."""
+    iam = (MODULE / "iam.tf").read_text(encoding="utf-8")
+    assert "iam::aws:policy/AmazonSSMManagedInstanceCore" in iam, (
+        "the managed policy attachment is gone. The boundary only caps permissions; "
+        "with nothing attached that grants them, the agent still cannot register"
+    )

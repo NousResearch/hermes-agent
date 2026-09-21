@@ -348,8 +348,12 @@ export INSTANCE_ID="$(terraform output -raw instance_id)"
 aws ssm start-session --target "$INSTANCE_ID" --region eu-west-2
 ```
 
-`TargetNotConnected` usually means the instance is still booting (wait two minutes) or the
-subnet cannot reach the SSM service (check the route or the VPC endpoints).
+`TargetNotConnected` means the instance is not a registered managed node. Three causes, in
+the order worth checking: it is still booting (wait two minutes); the subnet cannot reach
+the SSM service (check the route or the VPC endpoints); or the runtime role's permissions
+boundary does not allow `ssm:UpdateInstanceInformation`, which is defect C1 below. Confirm
+with `aws ssm describe-instance-information --region eu-west-2` — an instance that never
+registered is simply absent from that list rather than listed as offline.
 
 This is the only way in. No SSH key exists. **Do not "temporarily" add an ingress rule.**
 
@@ -667,3 +671,40 @@ closed when the playbook is next regenerated.
 The other three blockers are untouched and still stand: **no AWS field validation**, **no
 real model provider has ever been called**, and **scheduled execution has never been
 observed firing**. Those are steps 17, 30 and 29 of this runbook, in that order.
+
+---
+
+## C. A third defect, found in a real AWS account
+
+B1 and B2 came out of the local dry run. This one could not: it needs a real IAM evaluation,
+and it is the first thing this runbook has cost a live deployment.
+
+### C1. The permissions boundary capped the SSM Agent away from registering
+
+`terraform apply` succeeded. `AmazonSSMManagedInstanceCore` was attached to the runtime role,
+exactly as step 17 renders it. The instance still never appeared in Systems Manager, so step
+18 could not open a shell — and with no ingress rule and no SSH key, that is the whole
+deployment unreachable.
+
+A **permissions boundary is an intersection, not a grant.** The managed policy allowed
+`ssm:UpdateInstanceInformation`; `nova-test-runtime-boundary` did not list it; the effective
+permission was therefore deny, and the SSM Agent's health module — which calls exactly that
+one API to register and to hold its five-minute heartbeat — could not register the node. The
+attachment looked right in the console, which is what made it slow to find.
+
+*Fixed:* `ssm:UpdateInstanceInformation` added to the boundary's `ServicesThisDeploymentUses`
+statement in `deploy/aws/iam.tf`. One action. The managed-policy attachment is unchanged, and
+the boundary still does not permit Run Command, Inventory, Patch Manager or State Manager —
+the rest of that managed policy stays capped off, deliberately.
+
+### Pinned by tests
+
+`tests/platform/test_deploy_aws.py`:
+
+- `test_the_boundary_permits_the_ssm_agent_to_register` — proven red against the boundary as
+  deployed.
+- `test_the_boundary_permits_the_session_manager_channels` — the four `ssmmessages` actions
+  the session itself rides on.
+- `test_the_boundary_does_not_widen_to_all_of_ssm` — the five-o'clock fix, refused in advance.
+- `test_the_session_manager_grant_still_comes_from_the_managed_policy` — the other half:
+  a ceiling permits, it never grants.

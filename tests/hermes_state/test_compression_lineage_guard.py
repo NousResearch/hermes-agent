@@ -279,6 +279,34 @@ def test_publish_compression_child_exposes_complete_child(db: SessionDB) -> None
     assert [m["content"] for m in db.get_messages("atomic-child")] == ["summary"]
 
 
+def test_publish_compression_child_unarchives_resumed_lineage(db: SessionDB) -> None:
+    db.create_session("archived-root", source="telegram")
+    db.end_session("archived-root", "compression")
+    db.create_session(
+        "archived-tip", source="telegram", parent_session_id="archived-root"
+    )
+    assert db.set_session_archived("archived-tip", True)
+    assert db.list_sessions_rich(source="telegram") == []
+    assert db.try_acquire_compression_lock("archived-tip", "winner", ttl_seconds=60)
+
+    db.publish_compression_child(
+        parent_session_id="archived-tip",
+        child_session_id="resumed-tip",
+        source="telegram",
+        messages=[{"role": "user", "content": "summary"}],
+        compression_lock_holder="winner",
+    )
+
+    assert all(
+        not db.get_session(session_id)["archived"]
+        for session_id in ("archived-root", "archived-tip", "resumed-tip")
+    )
+    rows = db.list_sessions_rich(source="telegram")
+    assert [(row["id"], row["_lineage_root_id"]) for row in rows] == [
+        ("resumed-tip", "archived-root")
+    ]
+
+
 def test_publish_compression_child_rejects_lost_or_expired_lease(db: SessionDB) -> None:
     db.create_session("lease-parent", source="webui")
     db.append_message("lease-parent", "user", "new durable turn")

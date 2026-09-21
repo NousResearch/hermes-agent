@@ -320,6 +320,44 @@ def test_same_target_branch_update_merges_and_preserves_carried_commit(tmp_path,
     assert (clone / "upstream.txt").read_text() == "upstream advance\n"
 
 
+def test_same_target_branch_conflict_aborts_without_dropping_carried_commit(tmp_path, monkeypatch, capsys):
+    """A conflicting same-branch update leaves the carried patch exactly in place."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "test@example.com")
+    _git(origin, "config", "user.name", "Test")
+    (origin / "shared.txt").write_text("base\n")
+    _git(origin, "add", "shared.txt")
+    _git(origin, "commit", "-qm", "base")
+
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(origin), str(clone))
+    _git(clone, "config", "user.email", "test@example.com")
+    _git(clone, "config", "user.name", "Test")
+    (clone / "shared.txt").write_text("carried patch\n")
+    _git(clone, "commit", "-am", "carry conflicting patch")
+    carried_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+
+    (origin / "shared.txt").write_text("upstream advance\n")
+    _git(origin, "commit", "-am", "upstream conflicting advance")
+    _git(clone, "fetch", "-q", "origin", "main")
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", clone)
+    with pytest.raises(SystemExit) as exc_info:
+        update_cmd._pull_updates(
+            GIT, "main", None, prompt_for_restore=False, gw_input_fn=None,
+            discard_local_changes=False, keep_stash=False,
+        )
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "Merge conflict between local commits and upstream" in out
+    assert _git(clone, "rev-parse", "HEAD").stdout.strip() == carried_sha
+    assert (clone / "shared.txt").read_text() == "carried patch\n"
+    assert _git(clone, "status", "--porcelain").stdout.strip() == ""
+
+
 def test_update_skips_and_warns_on_dirty_parked_branch(
     repo_pair, monkeypatch, capsys
 ):

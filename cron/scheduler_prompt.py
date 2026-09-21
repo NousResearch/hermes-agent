@@ -63,6 +63,31 @@ _UPSTREAM_CONTEXT_INTRO = (
 )
 
 
+_RESPONSE_SECTION_MARKER = "\n## Response\n\n"
+
+
+def _extract_continuity_payload(raw_doc: str) -> str:
+    """Continuity should carry forward what a run PRODUCED, not the persisted
+    document's ``## Prompt`` section (kept for human debugging), which already
+    embeds that run's own injected skill body and, for self-continuity, a full
+    copy of the run-before-that's entire prompt. Feeding the whole document
+    back in on every run compounds: each generation's ``## Prompt`` nests the
+    previous generation's ``## Prompt`` inside it, so most of what gets
+    re-sent is duplicate scaffolding rather than new information (observed:
+    91% of a real persisted doc was nested ``## Prompt`` reruns, 9% was the
+    actual answer). ``rfind`` — never ``find`` — because the header's own
+    ``## Prompt`` content can legitimately contain the literal string
+    ``## Response`` (a model writing markdown with that heading); the FINAL
+    occurrence is always the true section boundary since ``_run_doc_header``
+    + ``## Response`` is appended exactly once, at the end, after everything
+    else. Falls back to the full doc when no marker exists (FAILED-run docs
+    have no ``## Response`` section — keep their error text as context)."""
+    idx = raw_doc.rfind(_RESPONSE_SECTION_MARKER)
+    if idx == -1:
+        return raw_doc
+    return raw_doc[idx + len(_RESPONSE_SECTION_MARKER):]
+
+
 def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     """Prepend the latest output of each ``context_from`` job; returns ``(prompt, injected)``."""
     context_from = job.get("context_from")
@@ -103,7 +128,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                     for line in header.splitlines()
                 )
                 if candidate and not silent_audit:
-                    latest_output = candidate
+                    latest_output = _extract_continuity_payload(candidate)
                     break
             if len(latest_output) > _MAX_CONTEXT_CHARS:
                 latest_output = (

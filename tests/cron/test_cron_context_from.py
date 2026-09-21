@@ -440,3 +440,130 @@ class TestContinuityFlag:
         assert "previous run" in prompt.lower()
 
 
+class TestContinuityStripsPersistedPromptScaffolding:
+    """Regression for the learn-daily 413 incident (2026-09-21).
+
+    ``context_from: self`` used to feed the WHOLE persisted run document back
+    in — including that run's own ``## Prompt`` section (skill body + any
+    context it itself injected). Since each generation's document embeds the
+    document before it, size compounds every run: a real production doc
+    measured 15255 bytes, of which only 1353 (9%) was the actual response —
+    the rest was N nested copies of the same injected skill text. This
+    starved a job's real per-minute token budget for zero new information,
+    and was the proximate trigger for a Groq 413 (\"tokens per minute limit
+    8000, requested 16885\") that then hit a SEPARATE classifier bug (see
+    #118274) and aborted the whole cron run instead of falling back.
+
+    Continuity should carry forward only what the run actually produced.
+    """
+
+    @staticmethod
+    def _run_doc(prompt_body: str, response_body: str) -> str:
+        """Build a realistic persisted doc, same shape as
+        ``cron.scheduler._run_doc_header`` + ``## Response`` produces."""
+        return (
+            "# Cron Job: learn-daily\n\n"
+            "**Job ID:** abc123\n"
+            "**Run Time:** 2026-09-21 08:30:47\n"
+            "**Schedule:** 30 08 * * *\n\n"
+            f"## Prompt\n\n{prompt_body}\n\n"
+            f"## Response\n\n{response_body}\n"
+        )
+
+    def test_self_continuity_carries_only_the_response(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(
+            prompt="Scan for news", schedule="every 1h", context_from="self"
+        )
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        big_skill_text = "SKILL INSTRUCTIONS " * 200  # stand-in for an injected skill
+        (out_dir / "2026-08-01_10-00-00.md").write_text(
+            self._run_doc(prompt_body=big_skill_text, response_body="Reported: story A"),
+            encoding="utf-8",
+        )
+
+        prompt = _build_job_prompt(job)
+        assert "Reported: story A" in prompt
+        assert "SKILL INSTRUCTIONS" not in prompt
+
+    def test_nested_prompts_across_runs_do_not_compound(self, cron_env):
+        """The core reproduction: generation N's persisted doc already embeds
+        generation N-1's whole doc (because continuity fed it into N's own
+        ## Prompt). Confirm generation N+1 does not inherit that nesting."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(
+            prompt="Daily lesson", schedule="every 1d", context_from="self"
+        )
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        skill_body = "SKILL: automation/newton-bot instructions here"
+        gen1_response = "Day 1 lesson: X"
+        gen1_doc = self._run_doc(prompt_body=skill_body, response_body=gen1_response)
+
+        # Generation 2's prompt (as actually built) nests generation 1's WHOLE
+        # doc under "## Your previous run's output" plus its own fresh skill
+        # injection — this is what a real second run's persisted doc looks like.
+        gen2_prompt_body = (
+            f"{skill_body}\n\n## Your previous run's output\n```\n{gen1_doc}\n```"
+        )
+        gen2_response = "Day 2 lesson: Y"
+        gen2_doc = self._run_doc(prompt_body=gen2_prompt_body, response_body=gen2_response)
+        (out_dir / "2026-08-02_10-00-00.md").write_text(gen2_doc, encoding="utf-8")
+
+        # Generation 3's prompt should carry forward ONLY "Day 2 lesson: Y" —
+        # not gen2's skill text, not gen1's doc nested two levels deep inside it.
+        prompt = _build_job_prompt(job)
+        assert "Day 2 lesson: Y" in prompt
+        assert "Day 1 lesson: X" not in prompt
+        assert skill_body not in prompt
+        assert "## Prompt" not in prompt
+
+    def test_failed_run_doc_has_no_response_section_keeps_full_doc(self, cron_env):
+        """A FAILED-run doc has no '## Response' — the error text itself is
+        the useful continuity signal, so the fallback keeps the whole doc."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job = create_job(
+            prompt="Scan for news", schedule="every 1h", context_from="self"
+        )
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        failed_doc = (
+            "# Cron Job: learn-daily (FAILED)\n\n"
+            "**Job ID:** abc123\n**Run Time:** 2026-09-21 08:30:47\n"
+            "**Schedule:** 30 08 * * *\n\n## Prompt\n\nSome prompt\n\n"
+            "RateLimitError: tokens per minute limit exceeded"
+        )
+        (out_dir / "2026-08-01_10-00-00.md").write_text(failed_doc, encoding="utf-8")
+
+        prompt = _build_job_prompt(job)
+        assert "RateLimitError: tokens per minute limit exceeded" in prompt
+
+    def test_extract_continuity_payload_uses_last_response_marker(self):
+        """A model's own response can legitimately contain the literal string
+        '## Response' (e.g. writing markdown about its own output format) —
+        the extraction must anchor on the FINAL marker, not the first."""
+        from cron.scheduler_prompt import _extract_continuity_payload
+
+        doc = (
+            "# Cron Job: x\n\n## Prompt\n\nExample doc with\n## Response\nheading "
+            "inside the prompt body\n\n## Response\n\nActual answer here"
+        )
+        assert _extract_continuity_payload(doc) == "Actual answer here"
+
+    def test_extract_continuity_payload_no_marker_returns_whole_doc(self):
+        from cron.scheduler_prompt import _extract_continuity_payload
+
+        assert _extract_continuity_payload("plain text, no sections") == (
+            "plain text, no sections"
+        )
+
+
+

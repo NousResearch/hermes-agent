@@ -165,7 +165,9 @@ _TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
 # whole response begins with one of these phrases and refers to the requested
 # summary/checkpoint.
 _SUMMARY_REFUSAL_PREFIX_RE = re.compile(
-    r"^\s*(?:sorry[,:]?\s+)?i\s+(?:can't|cannot|won't|will not|must decline|am unable to|am not able to)\b",
+    r"^\s*(?:(?:sorry|i(?:['’]m| am)\s+sorry|i\s+apologize|as\s+an\s+ai)"
+    r"\s*[,;:]?\s*(?:but\s+)?)?i\s+"
+    r"(?:can(?:not|['’]t)|won['’]t|will not|must decline|am unable to|am not able to)\b",
     re.IGNORECASE,
 )
 

@@ -148,12 +148,16 @@ class MicroCompactionMixin:
         message = response.choices[0].message
         content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
         content = (content if isinstance(content, str) else str(content) if content else "").strip()
+
+        from agent.agent_runtime_helpers import strip_think_blocks
+        content = strip_think_blocks(None, content).strip()
         if not content:
             logger.info("micro-summarization returned empty content")
             return None
-
-        from agent.agent_runtime_helpers import strip_think_blocks
-        return strip_think_blocks(None, content).strip() or None
+        if _cc()._is_summary_refusal(content):
+            logger.warning("micro-summarization returned refusal content — discarding unusable summary")
+            return None
+        return content
 
     def _needs_defrag(self) -> bool:
         """Return True when the rolling summary is large enough to defrag."""
@@ -203,6 +207,8 @@ class MicroCompactionMixin:
         if not self._micro_compact_enabled:
             return messages
 
+        cursor_before = self._micro_compact_cursor
+
         # Cadence gate: each pass breaks prompt cache once. Counted per invocation so a no-op turn
         # can't wedge it.
         every_n = max(1, int(self._micro_compact_every_n_turns or 1))
@@ -247,6 +253,8 @@ class MicroCompactionMixin:
         updated_summary = self._micro_summarize_one(exchange_text)
         if updated_summary is None:
             _outcome = self._record_micro_failure(exchange_start, exchange_end)
+            if _outcome != "exchange_skipped":
+                self._micro_compact_cursor = cursor_before
             _telemetry(_outcome, messages, tokens_after=_tokens_before, exchange_tokens=_exchange_tokens)
             return messages
 

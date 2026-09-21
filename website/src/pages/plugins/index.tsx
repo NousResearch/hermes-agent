@@ -1,115 +1,58 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
+import { useHistory } from "@docusaurus/router";
+import useBaseUrl from "@docusaurus/useBaseUrl";
 import styles from "./styles.module.css";
-import { pluginCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
-interface PluginCapabilities {
-  providesTools?: string[];
-  providesHooks?: string[];
-  providesMiddleware?: string[];
-  requiresEnv?: string[];
-}
-
-interface CatalogPlugin {
-  name: string;
-  description: string;
-  repo: string;
-  sha: string;
-  shaShort: string;
-  tier: string;
-  category: string;
-  maintainer: string;
-  subdir?: string;
-  requiresHermes?: string;
-  platforms?: string[];
-  capabilities?: PluginCapabilities;
-  docsUrl?: string;
-  /** Human label for the pin ("1.4.0"); cosmetic, shown beside the sha. */
-  version?: string;
-  /** Card banner image (GitHub-hosted https URL enforced by the extractor). */
-  image?: string;
-  installCommand: string;
-  /** GitHub stargazers at the last daily probe; null when the repo is not on GitHub or unprobed. */
-  stars?: number | null;
-  /** Lowercase pre-joined haystack for the search filter (built at load). */
-  _search?: string;
-}
-
-interface CatalogMeta {
-  generatedAt?: string;
-  total?: number;
-  byTier?: Record<string, number>;
-  byCategory?: Record<string, number>;
-  removedCount?: number;
-  starsFetchedAt?: string | null;
-}
+import {
+  type CatalogPlugin,
+  type CatalogMeta,
+  CATEGORY_CONFIG,
+  CATEGORY_ORDER,
+  SUBMIT_PLUGIN_URL,
+  TIER_CONFIG,
+  authorPagePath,
+  categoryOf,
+  desktopInstallLink,
+  formatDate,
+  formatRelativeTime,
+  formatStars,
+  pinUrl,
+  pluginPagePath,
+  repoUrl,
+  tierOf,
+} from "../../components/PluginCatalog/catalog";
+import CopyButton from "../../components/PluginCatalog/CopyButton";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
 const PLUGINS_URL = "/docs/api/plugins.json";
 const META_URL = "/docs/api/plugins-meta.json";
 
-const CATALOG_README_URL =
-  "https://github.com/NousResearch/hermes-agent/tree/main/plugin-catalog";
-
-const TIER_CONFIG: Record<
-  string,
-  { label: string; color: string; bg: string; border: string; icon: string }
-> = {
-  official: {
-    label: "Official",
-    color: "#ffd700",
-    bg: "rgba(255, 215, 0, 0.08)",
-    border: "rgba(255, 215, 0, 0.25)",
-    icon: "\u{2713}",
-  },
-  community: {
-    label: "Community",
-    color: "#94a3b8",
-    bg: "rgba(148, 163, 184, 0.08)",
-    border: "rgba(148, 163, 184, 0.2)",
-    icon: "\u{2756}",
-  },
-};
-
 const TIER_ORDER = ["all", "official", "community"];
 
-// Browse taxonomy. Order here is the order of the filter pills and of the
-// grouped sections; keep it in sync with CATALOG_CATEGORIES in
-// hermes_cli/plugin_catalog.py and website/scripts/extract-plugins.py.
-const CATEGORY_CONFIG: Record<string, { label: string; icon: string; blurb: string }> = {
-  desktop: { label: "Desktop", icon: "\u{1F5A5}\u{FE0F}", blurb: "Panes, tabs and views for Hermes Desktop" },
-  memory: { label: "Memory", icon: "\u{1F9E0}", blurb: "Memory providers and context engines" },
-  platform: { label: "Platforms", icon: "\u{1F4AC}", blurb: "Messaging and channel adapters" },
-  web: { label: "Web & Browser", icon: "\u{1F310}", blurb: "Search backends, extraction and browser control" },
-  tools: { label: "Tools", icon: "\u{1F6E0}\u{FE0F}", blurb: "New tools the agent can call" },
-  voice: { label: "Voice", icon: "\u{1F399}\u{FE0F}", blurb: "Speech, TTS and realtime audio" },
-  automation: { label: "Automation", icon: "\u{23F1}\u{FE0F}", blurb: "Hooks, wake triggers and session automation" },
-  models: { label: "Models", icon: "\u{2728}", blurb: "Model and inference providers" },
-  general: { label: "General", icon: "\u{1F4E6}", blurb: "Plugins that span several areas" },
-};
-const CATEGORY_ORDER = Object.keys(CATEGORY_CONFIG);
+// Sort orders. "stars" is the extractor's own order (stars desc, name), so it
+// needs no client-side work; the two date sorts read the git-derived
+// addedAt/updatedAt fields and push undated entries last.
+type SortKey = "stars" | "newest" | "updated";
+const SORT_OPTIONS: { key: SortKey; label: string; title: string }[] = [
+  { key: "stars", label: "Most starred", title: "GitHub stars, most first" },
+  { key: "newest", label: "Newest", title: "Most recently added to the catalog first" },
+  { key: "updated", label: "Recently updated", title: "Most recently re-pinned or edited first" },
+];
 
-function formatRelativeTime(iso?: string): string | null {
-  if (!iso) return null;
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return null;
-  const diffMs = Date.now() - then;
-  if (diffMs < 0) return "just now";
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days} day${days === 1 ? "" : "s"} ago`;
-  const months = Math.floor(days / 30);
-  return `${months} month${months === 1 ? "" : "s"} ago`;
+function dateMs(iso?: string | null): number {
+  const t = iso ? new Date(iso).getTime() : NaN;
+  return Number.isFinite(t) ? t : -Infinity;
 }
 
-function formatStars(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
+function sortPlugins(list: CatalogPlugin[], sort: SortKey): CatalogPlugin[] {
+  if (sort === "stars") return list;
+  const field = sort === "newest" ? "addedAt" : "updatedAt";
+  return [...list].sort(
+    (a, b) => dateMs(b[field]) - dateMs(a[field]) || a.name.localeCompare(b.name),
+  );
 }
 
 function highlightMatch(text: string, query: string): React.ReactNode {
@@ -122,47 +65,6 @@ function highlightMatch(text: string, query: string): React.ReactNode {
       <mark className={styles.highlight}>{text.slice(idx, idx + query.length)}</mark>
       {text.slice(idx + query.length)}
     </>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const onCopy = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      navigator.clipboard?.writeText(text).then(
-        () => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        },
-        () => {},
-      );
-    },
-    [text],
-  );
-  return (
-    <button
-      className={styles.copyBtn}
-      onClick={onCopy}
-      title="Copy install command"
-      aria-label="Copy install command"
-    >
-      {copied ? (
-        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
-          <path
-            fillRule="evenodd"
-            d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
-            clipRule="evenodd"
-          />
-        </svg>
-      ) : (
-        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14">
-          <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
-          <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
-        </svg>
-      )}
-      <span className={styles.copyBtnLabel}>{copied ? "Copied" : "Copy"}</span>
-    </button>
   );
 }
 
@@ -184,19 +86,24 @@ function PluginCard({
   onCategoryClick?: (category: string) => void;
   style?: React.CSSProperties;
 }) {
-  const tier = TIER_CONFIG[plugin.tier] || TIER_CONFIG.community;
-  const category = CATEGORY_CONFIG[plugin.category] || CATEGORY_CONFIG.other;
+  const tier = tierOf(plugin);
+  const category = categoryOf(plugin);
   const caps = plugin.capabilities || {};
   const toolCount = caps.providesTools?.length || 0;
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
-  const pinUrl = `${plugin.repo.replace(/\.git$/, "").replace(/\/$/, "")}/tree/${plugin.sha}`;
-  const installUrl = pluginCatalogInstallUrl(plugin);
+  const pagePath = pluginPagePath(plugin.name);
+  const history = useHistory();
+  const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
+  // Outside the Desktop picker a card is a link to the plugin's own page (shareable, indexable);
+  // inside the picker iframe navigation would leave the host's embed, so the card keeps
+  // expanding in place there.
+  const onCardClick = onPick ? onToggle : () => history.push(pageHref);
 
   return (
     <div
       className={`${styles.card} ${expanded ? styles.cardExpanded : ""}`}
-      onClick={onToggle}
+      onClick={onCardClick}
       style={style}
     >
       <div className={styles.cardAccent} style={{ background: tier.color }} />
@@ -217,7 +124,11 @@ function PluginCard({
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle}>{highlightMatch(plugin.name, query)}</h3>
+            <h3 className={styles.cardTitle}>
+              <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+                {highlightMatch(plugin.name, query)}
+              </Link>
+            </h3>
             <span
               className={styles.tierPill}
               style={{
@@ -236,7 +147,7 @@ function PluginCard({
             {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
-                href={`${plugin.repo.replace(/\.git$/, "").replace(/\/$/, "")}/stargazers`}
+                href={`${repoUrl(plugin)}/stargazers`}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
@@ -290,6 +201,23 @@ function PluginCard({
           ))}
         </div>
 
+        {/* Updated is omitted while it equals Added: a fresh entry has nothing to say yet. */}
+        {plugin.addedAt && (
+          <div className={styles.cardDates}>
+            <span title={`Added to the catalog ${formatDate(plugin.addedAt)}`}>
+              Added {formatRelativeTime(plugin.addedAt) ?? formatDate(plugin.addedAt)}
+            </span>
+            {plugin.updatedAt && plugin.updatedAt !== plugin.addedAt && (
+              <>
+                <span aria-hidden="true" className={styles.cardDatesSep}>·</span>
+                <span title={`Last catalog change ${formatDate(plugin.updatedAt)}`}>
+                  Updated {formatRelativeTime(plugin.updatedAt) ?? formatDate(plugin.updatedAt)}
+                </span>
+              </>
+            )}
+          </div>
+        )}
+
         {onPick ? (
           <button
             className={styles.pickBtn}
@@ -303,10 +231,11 @@ function PluginCard({
         ) : (
           <a
             className={styles.pickBtn}
-            href={installUrl}
+            href={desktopInstallLink(plugin.name)}
+            title="Opens the Install Plugin dialog in Hermes Desktop at the reviewed version. No app? Use the install command below."
             onClick={(e) => e.stopPropagation()}
           >
-            Install in Hermes
+            Open in Hermes Desktop
           </a>
         )}
 
@@ -315,7 +244,15 @@ function PluginCard({
             {plugin.maintainer && (
               <div className={styles.metaRow}>
                 <span className={styles.metaLabel}>Maintainer</span>
-                <span className={styles.metaValue}>{plugin.maintainer}</span>
+                <span className={styles.metaValue}>
+                  {plugin.maintainerSlug ? (
+                    <Link to={authorPagePath(plugin.maintainerSlug)} onClick={(e) => e.stopPropagation()}>
+                      {plugin.maintainer}
+                    </Link>
+                  ) : (
+                    plugin.maintainer
+                  )}
+                </span>
               </div>
             )}
             {plugin.requiresHermes && (
@@ -330,7 +267,7 @@ function PluginCard({
               <span className={styles.metaLabel}>Pinned</span>
               <span className={styles.metaValue}>
                 <a
-                  href={pinUrl}
+                  href={pinUrl(plugin)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
@@ -358,6 +295,9 @@ function PluginCard({
               <CopyButton text={plugin.installCommand} />
             </div>
             <div className={styles.cardLinks}>
+              <Link className={styles.docsLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
+                Plugin page →
+              </Link>
               <a
                 className={styles.docsLink}
                 href={plugin.repo}
@@ -382,17 +322,6 @@ function PluginCard({
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function StatCard({ value, label, color }: { value: number; label: string; color: string }) {
-  return (
-    <div className={styles.stat}>
-      <span className={styles.statValue} style={{ color }}>
-        {value}
-      </span>
-      <span className={styles.statLabel}>{label}</span>
     </div>
   );
 }
@@ -452,6 +381,7 @@ export default function PluginCatalogPage() {
   const [search, setSearch] = useState("");
   const [tierFilter, setTierFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [sort, setSort] = useState<SortKey>("stars");
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -500,13 +430,14 @@ export default function PluginCatalogPage() {
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
-    return allPlugins.filter((p) => {
+    const matching = allPlugins.filter((p) => {
       if (tierFilter !== "all" && p.tier !== tierFilter) return false;
       if (categoryFilter !== "all" && p.category !== categoryFilter) return false;
       if (q) return (p._search || "").includes(q);
       return true;
     });
-  }, [search, tierFilter, categoryFilter, allPlugins]);
+    return sortPlugins(matching, sort);
+  }, [search, tierFilter, categoryFilter, sort, allPlugins]);
 
   // Browse mode (no search, no category picked): render one section per
   // category so Memory, Desktop, Platforms… read as distinct shelves rather
@@ -567,7 +498,7 @@ export default function PluginCatalogPage() {
   return (
     <Layout
       title="Plugin Catalog"
-      description="Browse reviewed, SHA-pinned plugins for Hermes Agent"
+      description="Give Hermes new powers: reviewed plugins you can install in one click"
     >
       <div className={`${styles.page} ${pickerMode ? styles.pickerMode : ""}`}>
         <header className={styles.hero}>
@@ -584,49 +515,36 @@ export default function PluginCatalogPage() {
               </span>
             </nav>
             <p className={styles.heroSub}>
-              Reviewed, SHA-pinned plugins. Open in Hermes Desktop to review and install, or copy the CLI command.
+              Give Hermes new powers. Memory, voice, messaging, browsing, Desktop panes and more,
+              built by the community.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})
                 </span>
               )}
             </p>
-            {meta.generatedAt && !catalogEmpty && (
-              <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.75 }}>
-                Catalog refreshed{" "}
-                <span title={meta.generatedAt}>
-                  {formatRelativeTime(meta.generatedAt) || "recently"}
-                </span>
-                {meta.starsFetchedAt && (
-                  <>
-                    {" · "}ranked by GitHub stars as of{" "}
-                    <span title={meta.starsFetchedAt}>
-                      {formatRelativeTime(meta.starsFetchedAt) || "recently"}
-                    </span>
-                  </>
-                )}
+            {!catalogEmpty && (
+              <p className={styles.heroSub} style={{ fontSize: "0.9rem" }}>
+                Built a plugin?{" "}
+                <Link className={styles.heroLink} to={SUBMIT_PLUGIN_URL}>
+                  Submit it to the catalog →
+                </Link>
               </p>
             )}
-
-            {!catalogEmpty && (
-              <div className={styles.statsRow}>
-                <StatCard
-                  value={allPlugins.filter((p) => p.tier === "official").length}
-                  label="Official"
-                  color="#ffd700"
-                />
-                <StatCard
-                  value={allPlugins.filter((p) => p.tier === "community").length}
-                  label="Community"
-                  color="#94a3b8"
-                />
-                <StatCard
-                  value={Object.keys(categoryCounts).length}
-                  label="Categories"
-                  color="#7dd3fc"
-                />
-                <StatCard value={meta.removedCount ?? 0} label="Removed" color="#f87171" />
-              </div>
+            {meta.generatedAt && !catalogEmpty && (
+              <p className={styles.heroMeta}>
+                {allPlugins.length} plugins across {Object.keys(categoryCounts).length} categories
+                {" · "}updated{" "}
+                <span
+                  title={
+                    meta.starsFetchedAt
+                      ? `Catalog ${meta.generatedAt}; popularity ranking as of ${meta.starsFetchedAt}`
+                      : meta.generatedAt
+                  }
+                >
+                  {formatRelativeTime(meta.generatedAt) || "recently"}
+                </span>
+              </p>
             )}
           </div>
         </header>
@@ -650,7 +568,8 @@ export default function PluginCatalogPage() {
               <input
                 ref={searchRef}
                 type="text"
-                placeholder='Search plugins... (press "/" to focus)'
+                placeholder="Search plugins by name or by what you want Hermes to do"
+                title='Tip: press "/" to jump here'
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className={styles.searchInput}
@@ -693,6 +612,25 @@ export default function PluginCatalogPage() {
                   >
                     {tier === "all" ? "All" : conf?.label || tier}
                     <span className={styles.tierCount}>{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className={styles.sortPills} role="radiogroup" aria-label="Sort plugins">
+              <span className={styles.sortLabel}>Sort</span>
+              {SORT_OPTIONS.map((opt) => {
+                const active = sort === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    className={`${styles.tierBtn} ${active ? styles.sortBtnActive : ""}`}
+                    onClick={() => setSort(opt.key)}
+                    role="radio"
+                    aria-checked={active}
+                    title={opt.title}
+                  >
+                    {opt.label}
                   </button>
                 );
               })}
@@ -744,14 +682,9 @@ export default function PluginCatalogPage() {
                 Submissions are open.
               </p>
               <div className={styles.emptyActions}>
-                <a
-                  className={styles.emptyCta}
-                  href={CATALOG_README_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  How to submit a plugin ↗
-                </a>
+                <Link className={styles.emptyCta} to={SUBMIT_PLUGIN_URL}>
+                  How to submit a plugin
+                </Link>
                 <Link className={styles.emptyCtaSecondary} to="/user-guide/features/plugin-catalog">
                   Read the catalog docs
                 </Link>

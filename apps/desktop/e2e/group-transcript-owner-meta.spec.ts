@@ -1,3 +1,6 @@
+import os from 'node:os'
+import path from 'node:path'
+
 import { MOCK_REPLY } from '../../../tests-js/scripts/mock-server'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
@@ -13,7 +16,7 @@ import { expect, test } from './test'
 
 const ROOM = 'Ops Room'
 const NEW_TITLE = 'Infra Ops'
-const SHOTS = '/tmp/batchbots/group-identity-members/shots'
+const SHOTS = path.join(os.tmpdir(), 'batchbots/group-identity-members/shots')
 let fixture: MockBackendFixture | null = null
 
 type Page = MockBackendFixture['page']

@@ -27,12 +27,46 @@ sys.modules.pop("cron.{store}", None)
 import cron.{store}
 """
 
+_OCCURRENCES_SKEW_SCRIPT = """
+from datetime import datetime, timedelta, timezone
+import cron.jobs as jobs
+
+# Model a daemon that loaded cron.jobs before these constants existed, then
+# lazy-loads the newer occurrences module from disk during a due scan.
+for name in ("FIRE_CLAIM_SKEW_SECONDS", "FIRE_CLAIM_TTL_SECONDS"):
+    delattr(jobs, name)
+
+from cron.occurrences import completed_occurrence, unclaimed_pending_slot
+
+assert not completed_occurrence({"id": "job"}, "2026-01-01T00:00:00+00:00")
+
+# A slot stamped by another owner whose lease has lapsed is restored: the TTL comparison runs.
+now = datetime.now(timezone.utc)
+stale = (now - timedelta(hours=1)).isoformat()
+job = {"id": "job", "schedule": {"kind": "interval"},
+       "pending_slot": {"scheduled_at": stale, "at": stale, "by": "other-machine"}}
+assert unclaimed_pending_slot(job, now) == stale
+"""
+
 
 @pytest.mark.parametrize("store", ["notepad", "incidents", "executions", "delivery_queue"])
 def test_lazy_cron_stores_import_against_pre_upgrade_sqlite_util(store):
     repo_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
         [sys.executable, "-c", _SKEW_SCRIPT.format(store=store)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_occurrences_resolve_fire_claim_constants_without_cached_jobs_exports():
+    repo_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-c", _OCCURRENCES_SKEW_SCRIPT],
         cwd=repo_root,
         capture_output=True,
         text=True,

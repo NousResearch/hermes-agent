@@ -316,11 +316,12 @@ class CLISessionMixin:
             return []
         try:
             from hermes_cli.session_listing import query_session_listing
+            from hermes_state_sessions import INTERNAL_LISTING_SOURCES
 
             return query_session_listing(
                 self._session_db, source="cli", current_session_id=self.session_id,
                 include_all_sources=False, include_unnamed=True, limit=limit,
-                exclude_sources=["kanban", "tool"])
+                exclude_sources=list(INTERNAL_LISTING_SOURCES))
         except Exception:
             return []
 
@@ -1022,8 +1023,26 @@ class CLISessionMixin:
             stream.write("\033[3J\033[2J\033[H")
             stream.flush()
         except Exception:
+            # Fallback for terminals that reject the escape sequence. Never os.system():
+            # it spawns a cmd.exe/shell window that flashes on Windows (#116904) and a
+            # minimal container without `clear` on PATH just no-ops through the shell.
             try:
-                os.system("cls" if os.name == "nt" else "clear")
+                import subprocess
+
+                from hermes_cli._subprocess_compat import windows_hide_flags
+
+                if os.name == "nt":
+                    argv = ["cmd", "/c", "cls"]  # `cls` is a cmd builtin, not an exe
+                else:
+                    clear_bin = shutil.which("clear")
+                    argv = [clear_bin] if clear_bin else []
+                if argv:
+                    subprocess.run(
+                        argv,
+                        stdin=subprocess.DEVNULL,
+                        creationflags=windows_hide_flags(),
+                        check=False,
+                    )
             except Exception:
                 pass
 

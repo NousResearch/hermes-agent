@@ -348,8 +348,6 @@ class TestNormalizeOpencodeBaseUrlFamilyPath:
     @pytest.mark.parametrize("provider, api_mode, url, expected", [
         ("opencode-go", "chat_completions", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go/v1"),
         ("opencode-zen", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
-        # opencode-free is served on the Zen relay, so it maps back to /zen (not /zen/go).
-        ("opencode-free", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
         # Family healed first, then the /v1 strip for the Anthropic SDK — both apply.
         ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go"),
         ("opencode-zen", "anthropic_messages", "https://opencode.ai/zen/go", "https://opencode.ai/zen"),
@@ -357,6 +355,13 @@ class TestNormalizeOpencodeBaseUrlFamilyPath:
         ("opencode-go", "chat_completions", "https://gateway.internal.example/zen/v1", "https://gateway.internal.example/zen/v1"),
         # Non-/zen paths on the real host keep the pre-existing /v1 behaviour.
         ("opencode-go", "chat_completions", "https://opencode.ai/api", "https://opencode.ai/api/v1"),
+        # A custom provider merely NAMED after a family declared its relay explicitly: no family
+        # heal, but still the family's /v1 handling.
+        ("opencode-zen-bridge", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1"),
+        ("opencode-go-bridge", "chat_completions", "https://opencode.ai/zen/go", "https://opencode.ai/zen/go/v1"),
+        # The host check is on the hostname, so a port does not defeat the heal; query survives.
+        ("opencode-go", "chat_completions", "https://opencode.ai:443/zen/v1", "https://opencode.ai:443/zen/go/v1"),
+        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1?x=1", "https://opencode.ai/zen/go?x=1"),
     ])
     def test_family_path_follows_the_resolved_provider(self, provider, api_mode, url, expected):
         from hermes_cli.models import normalize_opencode_base_url
@@ -867,3 +872,46 @@ class TestValidateCustomUnreachableFallback:
         # The unreachable-listing wording is unchanged.
         unreachable = self._validate("kimi-k3", "kimi-coding", models=None, api_mode="anthropic_messages")
         assert "do not implement GET /v1/models" in unreachable["message"]
+
+
+# -- validate — profile-owned catalog is authoritative (#116667) ----------------
+
+class TestProfileCatalogAuthoritative:
+    """A profile that points ``models_url`` at its own catalog endpoint (relay re-shape,
+    #101705) owns validation: the generic ``{base_url}/models`` listing may expose a
+    different product line that this deployment cannot serve, so a miss in the
+    profile-owned catalog must not be turned into an acceptance by that generic
+    listing (#116667). Unavailable/empty profile catalogs keep the generic fallback."""
+
+    @pytest.fixture
+    def relay_profile(self, monkeypatch):
+        import providers
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(
+            name="relay-owned-catalog", auth_type="api_key",
+            env_vars=("RELAY_TEST_KEY",), base_url="https://relay.example.invalid/v1",
+            models_url="https://relay.example.invalid/catalog",
+            fallback_models=("plan/model-1",),
+        )
+        monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+        return profile
+
+    def test_model_only_in_generic_listing_is_rejected(self, relay_profile):
+        """Profile catalog: ["plan/model-1"]; generic /models: ["other-vendor/model-a"];
+        requested "other-vendor/model-a" — the generic hit must not accept it."""
+        result = _validate(
+            "other-vendor/model-a", "relay-owned-catalog", api_models=["other-vendor/model-a"])
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "plan/model-1" in result["message"]
+
+    def test_unavailable_profile_catalog_keeps_generic_fallback(self, relay_profile):
+        """The profile's own catalog unreachable/empty (e.g. no credentials yet):
+        the generic listing stays the validator, as before (#116667's carve-out)."""
+        with patch("hermes_cli.models.fetch_api_models", return_value=["other-vendor/model-a"]), \
+             patch("hermes_cli.models.provider_model_ids", return_value=[]):
+            result = validate_requested_model(
+                "other-vendor/model-a", "relay-owned-catalog", api_key="k")
+        assert result["accepted"] is True
+        assert result["recognized"] is True

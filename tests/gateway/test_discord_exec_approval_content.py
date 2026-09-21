@@ -48,4 +48,59 @@ async def test_exec_approval_prompt_uses_visible_content_with_command_and_reason
     assert "script execution via -c flag" in prompt_text
     assert "it will NOT run" in prompt_text
 
+    # Content is the canonical, accessible approval payload (embeds may not render, #33681);
+    # the embed is a header-only card so the command and reason appear exactly once.
+    embed = sent["embed"]
+    embed_text = (embed.description or "") + "".join(field.value or "" for field in embed.fields)
+    assert command not in embed_text
+    assert "script execution via -c flag" not in embed_text
 
+
+@pytest.mark.asyncio
+async def test_exec_approval_content_stays_within_discord_cap_for_long_reason():
+    """The reason shares the 2000-char content cap with the command preview."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    result = await adapter.send_exec_approval(
+        chat_id="555", command="x" * 5000, session_key="discord:555", description="r" * 5000)
+
+    assert result.success is True
+    assert len(sent["content"]) <= adapter.MAX_MESSAGE_LENGTH
+    assert "xxx" in sent["content"]  # the command preview is not starved to zero
+
+
+
+def _embed_text(embed):
+    # Fields are attribute objects on discord.py and dicts on the test stub.
+    return (embed.description or "") + "".join(
+        str(getattr(f, "value", None) or (f.get("value") if isinstance(f, dict) else "") or "")
+        for f in embed.fields)
+
+
+@pytest.mark.asyncio
+async def test_slash_confirm_embed_is_header_only_card():
+    """Same rule as the approval prompt: content carries the message once, the embed is a header card."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    await adapter.send_slash_confirm(
+        chat_id="555", title="Reset session?", message="This will clear the conversation history.",
+        session_key="discord:555", confirm_id="c1")
+
+    assert "clear the conversation history" in sent["content"]
+    assert "clear the conversation history" not in _embed_text(sent["embed"])
+
+
+@pytest.mark.asyncio
+async def test_clarify_embed_is_header_only_card():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    sent = _capture_channel(adapter)
+
+    await adapter.send_clarify(
+        chat_id="555", question="Which environment should I deploy to?", choices=["staging", "prod"],
+        clarify_id="cl1", session_key="discord:555")
+
+    assert "Which environment should I deploy to?" in sent["content"]
+    assert "Pick one below" in sent["content"]
+    assert "Which environment should I deploy to?" not in _embed_text(sent["embed"])

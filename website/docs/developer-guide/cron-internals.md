@@ -14,7 +14,7 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 |------|---------|
 | `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
 | `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
-| `tools/cronjob_tools.py` | Model-facing `cronjob` tool registration and handler |
+| `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
 | `hermes_cli/cron.py` | CLI `hermes cron` subcommands |
 
@@ -29,7 +29,7 @@ Four schedule formats are supported:
 | **Cron expression** | `0 9 * * *` | Standard 5-field cron syntax (minute, hour, day, month, weekday) |
 | **ISO timestamp** | `2025-01-15T09:00:00` | One-shot, fires at the exact time |
 
-The model-facing surface is a single `cronjob` tool with action-style operations: `create`, `list`, `update`, `pause`, `resume`, `run`, `remove`.
+The model-facing surface is a single `cronjob_manage` tool with action-style operations: `create`, `list`, `update`, `pause`, `resume`, `run`, `remove`.
 
 ## Job Storage
 
@@ -66,7 +66,7 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 ### `last_status` literals
 
 `last_status` is a closed set written only by `cron.jobs.mark_job_run`. Every
-renderer (`hermes cron list`/`doctor`, the `cronjob` tool, the web dashboard
+renderer (`hermes cron list`/`doctor`, the `cronjob_manage` tool, the web dashboard
 badge, the Desktop routine inspector) maps each literal explicitly — a consumer
 must never test `== "ok"` for "the user got their result":
 
@@ -155,12 +155,28 @@ dropped silently. The mechanics, in the order the due scan applies them
    with a logged reason when the operator set `cron.catch_up_missed: false`
    (planned downtime). One-shots past their 120 s grace are retired with a
    diagnostic, never resurrected.
-6. **Paused / disabled / terminal jobs never catch up**; the due scan drops them
-   before any of the above, and pause/resume clears any pending slot.
+6. **Paused / disabled / terminal jobs never fire**; the due scan drops them
+   before any of the above, and pause/resume clears any pending slot. A
+   recurring occurrence that came due *while paused* is not lost, though:
+   `resume_job` keeps a past stored `next_run_at` as the due instant instead of
+   re-anchoring from now (and logs that it did), so the first tick after
+   resume applies rules 3–5 to it — one late/catch-up run, or a logged skip.
+   One-shots and future instants recompute from now on resume.
 
 The same store fields drive every topology: a standalone `hermes -p X gateway
 run` and a profile served by the default multiplexer (`_start_multiplex` ticks
 each home under `_profile_cron_scope`) evaluate the identical record.
+
+**Fire-claim lease during a run.** A firing run holds `fire_claim = {at, by}` and
+a heartbeat thread refreshes `at` every 60 s (the lease is 300 s). A heartbeat
+sample that reads the claim as someone else's is re-sampled once before it
+counts: only a confirmed loss cancels the in-flight run. Even then the run's
+outcome is decided against the store at completion, not against that latch —
+a claim the store still validates records the run's real result (`ok`, or the
+real error), while a genuinely re-owned claim discards the stale result and
+never writes over the new owner. `Interrupted by shutdown before terminal
+completion.` is therefore recorded only when a real transport cancel (gateway
+drain) stops a run that still holds its claim.
 
 ### Gateway Integration
 
@@ -188,6 +204,13 @@ accidentally removed.
 What "firing" *means* (job execution + delivery) is unchanged and shared by all
 providers — it stays in `scheduler.run_job()` / `scheduler._deliver_result()`.
 A provider only controls the trigger, never execution.
+
+A ticker whose checkout was updated under it (boot revision ≠ disk revision) yields its tick
+only to a gateway that can actually take it over: the runtime-lock holder must be a live gateway
+whose `gateway_state.json` heartbeat is fresh and whose stamped `code_sha` is the on-disk revision.
+A lock held by a process that is itself still running the pre-update code — the common case right
+after `hermes update` with a single gateway — never counts as a fresh gateway, so the ticker keeps
+dispatching instead of yielding every tick to nobody.
 
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
 
@@ -375,6 +398,6 @@ hermes cron remove <job_id>         # Delete a job
 
 ## Related Docs
 
-- [Cron Feature Guide](/user-guide/features/cron)
+- [Cron Feature Guide](../user-guide/features/cron.md)
 - [Gateway Internals](./gateway-internals.md)
 - [Agent Loop Internals](./agent-loop.md)

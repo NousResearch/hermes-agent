@@ -31,14 +31,22 @@ def test_session_source_falls_back_to_platform(monkeypatch):
 
 
 
-@pytest.mark.parametrize("inherited", ["tui", "desktop"])
-def test_oneshot_child_drops_inherited_ui_transport_source(monkeypatch, inherited):
-    """A finite `hermes chat -q` spawned from a TUI/Desktop session inherits the transport's
-    HERMES_SESSION_SOURCE but is not that conversation: it keeps its own platform label (#112550)."""
+@pytest.mark.parametrize("inherited", ["", "tui", "desktop"])
+def test_oneshot_run_gets_distinct_source(monkeypatch, inherited):
+    """A finite `hermes chat -q` / `hermes -z` run is tagged `oneshot`, whether launched from a plain shell
+    or spawned inside a TUI/Desktop session (whose transport label it inherits but is not) (#112550)."""
     monkeypatch.setenv("HERMES_SESSION_SOURCE", inherited)
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
 
-    assert _session_source_for_agent("cli") == "cli"
+    assert _session_source_for_agent("cli") == "oneshot"
+
+
+def test_oneshot_marker_does_not_relabel_subagents(monkeypatch):
+    """Delegate children inside a one-shot process share its env but keep their own platform."""
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+
+    assert _session_source_for_agent("subagent") == "subagent"
 
 
 @pytest.mark.parametrize("inherited", ["kanban", "tool", "a2a"])

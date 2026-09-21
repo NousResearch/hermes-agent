@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger("hermes.mcp_serve")
 
@@ -698,7 +699,7 @@ def _http_auth(token: str, resource_url: str):
 
     class _StaticTokenVerifier:
         async def verify_token(self, candidate: str):
-            if not hmac.compare_digest(candidate, token):
+            if not hmac.compare_digest(candidate.encode("utf-8"), token.encode("utf-8")):
                 return None
             return AccessToken(token=candidate, client_id="hermes-mcp-client", scopes=[])
 
@@ -737,6 +738,14 @@ def _is_loopback_host(host: str) -> bool:
     return host.lower() in {"127.0.0.1", "localhost", "::1"}
 
 
+_LOOPBACK_ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+
+
+def _valid_http_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+
+
 def run_mcp_server(
     verbose: bool = False,
     *,
@@ -758,6 +767,11 @@ def run_mcp_server(
         sys.exit(2)
     if not path.startswith("/"):
         print("Error: MCP HTTP path must start with '/'", file=sys.stderr)
+        sys.exit(2)
+
+    host = host.lower()
+    if public_url and not _valid_http_url(public_url):
+        print("Error: MCP public URL must be an absolute http:// or https:// URL", file=sys.stderr)
         sys.exit(2)
 
     bearer_token = os.environ.get(token_env, "") if transport == "http" and token_env else ""
@@ -804,14 +818,12 @@ def run_mcp_server(
             if transport == "stdio":
                 await server.run_stdio_async()
                 return
-            security = None
-            if remote_http:
-                from mcp.server.transport_security import TransportSecuritySettings
-                security = TransportSecuritySettings(
-                    enable_dns_rebinding_protection=True,
-                    allowed_hosts=allowed_hosts or [],
-                    allowed_origins=[],
-                )
+            from mcp.server.transport_security import TransportSecuritySettings
+            security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=allowed_hosts or _LOOPBACK_ALLOWED_HOSTS,
+                allowed_origins=[],
+            )
             await server.run_streamable_http_async(
                 host=host,
                 port=port,

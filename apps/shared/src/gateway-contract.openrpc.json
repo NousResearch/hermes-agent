@@ -367,6 +367,24 @@
       }
     },
     {
+      "name": "client.capabilities",
+      "summary": "What the calling client handles, sent once per connection (after gateway.ready); returns the server\u2192client request methods this backend may send.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClientCapabilitiesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClientCapabilitiesResult"
+        }
+      }
+    },
+    {
       "name": "clipboard.paste",
       "summary": "Save the host clipboard image into the session and queue it for the next turn.",
       "params": [
@@ -597,6 +615,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ConnectionOperationStatus"
+        }
+      }
+    },
+    {
+      "name": "connectors.operation.wake",
+      "summary": "The browser leg came back (hermes://connections/done): read the accounts now, not at the next tick.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ConnectionOperationParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ConnectionWakeResult"
         }
       }
     },
@@ -7131,6 +7167,35 @@
         "title": "CliExecResult",
         "type": "object"
       },
+      "ClientCapabilitiesParams": {
+        "additionalProperties": false,
+        "properties": {
+          "server_requests": {
+            "default": false,
+            "title": "Server Requests",
+            "type": "boolean"
+          }
+        },
+        "title": "ClientCapabilitiesParams",
+        "type": "object"
+      },
+      "ClientCapabilitiesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "server_requests": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Server Requests",
+            "type": "array"
+          }
+        },
+        "required": [
+          "server_requests"
+        ],
+        "title": "ClientCapabilitiesResult",
+        "type": "object"
+      },
       "ClipboardPasteParams": {
         "additionalProperties": false,
         "properties": {
@@ -7568,6 +7633,7 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
         "properties": {
           "text": {
             "anyOf": [
@@ -7580,6 +7646,18 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         },
         "title": "CompleteSlashParams",
@@ -8248,7 +8326,6 @@
         "description": "``tools/connectors/contract.py::Actor``.",
         "enum": [
           "user",
-          "renderer_flow",
           "backend_watcher",
           "clock"
         ],
@@ -8281,37 +8358,25 @@
         "title": "ConnectionAnswer",
         "type": "object"
       },
+      "ConnectionAnswerStatus": {
+        "description": "What the card says about one row: ``tools/connectors/mcp.py::apply_answer``.",
+        "enum": [
+          "approved",
+          "skipped"
+        ],
+        "title": "ConnectionAnswerStatus",
+        "type": "string"
+      },
       "ConnectionAnswerTarget": {
-        "additionalProperties": true,
-        "description": "One row's answer from the card. ``status`` is what the card observed for that row\n(``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the\nolder spelling of the same field and one of the two is present.",
+        "additionalProperties": false,
+        "description": "One row's answer from the card. ``env`` carries the credential values an install asked for\nthrough ``required_env``.",
         "properties": {
           "name": {
             "title": "Name",
             "type": "string"
           },
           "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Status"
-          },
-          "state": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "State"
+            "$ref": "#/components/schemas/ConnectionAnswerStatus"
           },
           "detail": {
             "anyOf": [
@@ -8325,24 +8390,25 @@
             "default": null,
             "title": "Detail"
           },
-          "tools": {
+          "env": {
             "anyOf": [
               {
-                "items": {
+                "additionalProperties": {
                   "type": "string"
                 },
-                "type": "array"
+                "type": "object"
               },
               {
                 "type": "null"
               }
             ],
             "default": null,
-            "title": "Tools"
+            "title": "Env"
           }
         },
         "required": [
-          "name"
+          "name",
+          "status"
         ],
         "title": "ConnectionAnswerTarget",
         "type": "object"
@@ -8386,6 +8452,10 @@
             "title": "Op Id",
             "type": "string"
           },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
           "deadline_at": {
             "title": "Deadline At",
             "type": "number"
@@ -8427,6 +8497,7 @@
         },
         "required": [
           "op_id",
+          "seq",
           "deadline_at",
           "settled",
           "targets"
@@ -8463,6 +8534,30 @@
             "default": null,
             "title": "Detail"
           },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Instructions"
+          },
+          "discovery_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Discovery Error"
+          },
           "connect_url": {
             "anyOf": [
               {
@@ -8475,6 +8570,18 @@
             "default": null,
             "title": "Connect Url"
           },
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection Id"
+          },
           "attempt": {
             "anyOf": [
               {
@@ -8486,6 +8593,21 @@
             ],
             "default": null,
             "title": "Attempt"
+          },
+          "required_env": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ConnectionTargetEnvField"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Required Env"
           },
           "tools": {
             "anyOf": [
@@ -8532,6 +8654,10 @@
             "title": "Op Id",
             "type": "string"
           },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
           "deadline_at": {
             "title": "Deadline At",
             "type": "number"
@@ -8562,6 +8688,7 @@
         },
         "required": [
           "op_id",
+          "seq",
           "deadline_at",
           "timeout_seconds",
           "targets"
@@ -8646,6 +8773,48 @@
         "title": "ConnectionTargetAction",
         "type": "string"
       },
+      "ConnectionTargetEnvField": {
+        "additionalProperties": false,
+        "description": "One credential an MCP install still needs; the card renders a field per entry and sends the\nvalues back with the approval.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "boolean"
+          },
+          "default": {
+            "type": "string",
+            "title": "Default"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          }
+        },
+        "required": [
+          "name",
+          "required",
+          "secret",
+          "default"
+        ],
+        "title": "ConnectionTargetEnvField",
+        "type": "object"
+      },
       "ConnectionTargetKind": {
         "enum": [
           "connector",
@@ -8676,6 +8845,10 @@
           "op_id": {
             "title": "Op Id",
             "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
           },
           "deadline_at": {
             "title": "Deadline At",
@@ -8775,11 +8948,26 @@
         },
         "required": [
           "op_id",
+          "seq",
           "deadline_at",
           "settled",
           "targets"
         ],
         "title": "ConnectionUpdatePayload",
+        "type": "object"
+      },
+      "ConnectionWakeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ConnectionWakeResult",
         "type": "object"
       },
       "ConnectorRow": {
@@ -8902,6 +9090,10 @@
             "title": "Op Id",
             "type": "string"
           },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
           "deadline_at": {
             "title": "Deadline At",
             "type": "number"
@@ -8967,6 +9159,7 @@
         },
         "required": [
           "op_id",
+          "seq",
           "deadline_at",
           "settled",
           "targets"
@@ -10306,7 +10499,7 @@
       },
       "ErrorSurface": {
         "additionalProperties": true,
-        "description": "``agent/error_surface.py::_surface`` \u2014 advisory {layer, code, retryable} (+ identity, + auth hint).",
+        "description": "``agent/error_surface.py::_surface`` \u2014 advisory {layer, code, retryable} (+ identity, + auth hint,\n+ ``resets_at`` epoch seconds when the provider named when its limit lifts).",
         "properties": {
           "layer": {
             "title": "Layer",
@@ -10343,6 +10536,18 @@
             ],
             "default": null,
             "title": "Model"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
           }
         },
         "required": [
@@ -18693,6 +18898,30 @@
             "default": null,
             "title": "Exit Code"
           },
+          "exited_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exited At"
+          },
+          "completion_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completion Reason"
+          },
           "detached": {
             "anyOf": [
               {
@@ -20710,6 +20939,13 @@
             },
             "title": "Previewsessions",
             "type": "array"
+          },
+          "sessionIds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sessionids",
+            "type": "array"
           }
         },
         "required": [
@@ -21823,6 +22059,18 @@
             ],
             "default": null,
             "title": "Voice Context"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
           },
           "truncate_before_user_ordinal": {
             "anyOf": [
@@ -25138,6 +25386,11 @@
             "title": "Reasoning Effort",
             "type": "string"
           },
+          "reasoning_effort_wire": {
+            "default": "",
+            "title": "Reasoning Effort Wire",
+            "type": "string"
+          },
           "service_tier": {
             "default": "",
             "title": "Service Tier",
@@ -25986,6 +26239,11 @@
           "reasoning_effort": {
             "default": "",
             "title": "Reasoning Effort",
+            "type": "string"
+          },
+          "reasoning_effort_wire": {
+            "default": "",
+            "title": "Reasoning Effort Wire",
             "type": "string"
           },
           "service_tier": {
@@ -28134,7 +28392,21 @@
       },
       "SkillsReloadParams": {
         "additionalProperties": false,
-        "properties": {},
+        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills).",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
         "title": "SkillsReloadParams",
         "type": "object"
       },

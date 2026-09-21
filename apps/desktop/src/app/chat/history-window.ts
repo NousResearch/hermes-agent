@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { capabilityScoped, hermesApi, type ProfileScope } from '@/api/client'
+import { cachedTimelineIndex, previousPromptRowId, timelineIndexKey } from '@/components/assistant-ui/thread/timeline-index'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import type { SessionMessagesResponse } from '@/types/hermes'
+
+import { mergeOlderTranscriptPage } from './transcript-backfill'
 
 export const HISTORY_WINDOW_LIMIT = 120
 
@@ -18,6 +21,8 @@ interface HistoryPage {
   messages: ChatMessage[]
   olderAvailable: boolean
   newerAvailable: boolean
+  /** Display rows before this page's first row; how two pages prove they touch. */
+  offset: number
 }
 
 export async function fetchHistoryWindow(
@@ -51,7 +56,8 @@ export async function fetchHistoryWindow(
   return {
     messages: toChatMessages(response.messages),
     olderAvailable: response.pagination.has_older === true,
-    newerAvailable: response.pagination.has_newer === true
+    newerAvailable: response.pagination.has_newer === true,
+    offset: Math.max(0, Number(response.pagination.offset) || 0)
   }
 }
 
@@ -66,11 +72,12 @@ interface HistoryWindowOptions {
 /** A single replaceable display page, never merged into the live message store. */
 export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: HistoryWindowOptions) {
   const lifetime = useMemo(() => ({ scopeKey }), [scopeKey])
-  const latest = useRef({ lifetime, storedId, scope, isCurrent })
-  latest.current = { lifetime, storedId, scope, isCurrent }
+  const latest = useRef({ lifetime, page: null as HistoryPage | null, storedId, scope, isCurrent })
   const pending = useRef<AbortController | null>(null)
   const [selection, setSelection] = useState<{ lifetime: object; page: HistoryPage } | null>(null)
   const page = selection?.lifetime === lifetime ? selection.page : null
+
+  latest.current = { lifetime, page, storedId, scope, isCurrent }
 
   const cancel = useCallback(() => {
     pending.current?.abort()
@@ -130,5 +137,85 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
     }
   }, [cancel])
 
-  return { page, revealRow, returnToLatest }
+  /**
+   * Prepend the page before this window's first prompt. The anchor's
+   * predecessor comes from the same prompt index the rail draws, so the
+   * transcript's entry point and the rail page one range. `beforePrepend` is
+   * spent in the same commit as the prepend, exactly like a live-page grow.
+   */
+  const revealOlder = useCallback(async (beforePrepend?: () => void): Promise<boolean> => {
+    const captured = latest.current
+    const current = captured.page
+
+    // No older rows before this page's first row, or nothing to anchor on yet.
+    if (!current?.olderAvailable || !captured.storedId || !captured.isCurrent()) {
+      return false
+    }
+
+    const anchor = current.messages.find(message => message.role === 'user' && message.rowId !== undefined)?.rowId
+
+    cancel()
+    const controller = new AbortController()
+    pending.current = controller
+
+    try {
+      const rowId = await previousPromptRowId(captured.storedId, captured.scope, anchor)
+
+      if (rowId === null || controller.signal.aborted) {
+        // A complete index that lists no prompt before this window means the
+        // backend's older rows can never be paged to: retire the offer so the
+        // button and the top-edge auto-page stop promising a page that never
+        // arrives. An incomplete index still leaves the page untouched for a retry.
+        if (
+          rowId === null &&
+          anchor !== undefined &&
+          !controller.signal.aborted &&
+          latest.current.page === current &&
+          cachedTimelineIndex(timelineIndexKey(captured.storedId, captured.scope))?.complete
+        ) {
+          setSelection({ lifetime: captured.lifetime, page: { ...current, olderAvailable: false } })
+        }
+
+        return false
+      }
+
+      const next = await fetchHistoryWindow(captured.storedId, rowId, captured.scope, controller.signal)
+      // The around route reads forward from a prompt, so a turn longer than the
+      // page limit leaves rows between that page's end and this anchor. Never
+      // paint that as one continuous transcript: show the older page on its
+      // own instead, the way a rail jump to that mark would.
+      const contiguous = next.offset + next.messages.length >= current.offset
+      const messages = contiguous ? mergeOlderTranscriptPage(current.messages, next.messages) : next.messages
+
+      // A window replaced while this one was in flight owns the display page.
+      if (
+        controller.signal.aborted ||
+        messages === current.messages ||
+        latest.current.lifetime !== captured.lifetime ||
+        latest.current.page !== current
+      ) {
+        return false
+      }
+
+      if (contiguous) {
+        beforePrepend?.()
+      }
+
+      setSelection({
+        lifetime: captured.lifetime,
+        page: contiguous ? { ...next, messages, newerAvailable: current.newerAvailable } : next
+      })
+
+      return true
+    } catch {
+      // Missing/older backend, unreadable page, and an index that cannot name
+      // the predecessor all leave the page untouched; the caller reports
+      // failure and can retry explicitly.
+      return false
+    } finally {
+      if (pending.current === controller) {pending.current = null}
+    }
+  }, [cancel])
+
+  return { page, revealRow, returnToLatest, revealOlder }
 }

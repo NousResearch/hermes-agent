@@ -35,7 +35,7 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     Only local CLI sessions record one: gateway/cron/remote backends (non-"local" ``TERMINAL_ENV``) have no
     stable host cwd for the agent's tools.
     """
-    if source != "cli" or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
+    if source not in CLI_FAMILY_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
         return None
     try:
         return os.getcwd()
@@ -50,6 +50,11 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
 # Automation sources (kanban, tool, cron, a2a, ...) are inherited on purpose.
 _UI_TRANSPORT_SOURCES = frozenset({"tui", "desktop"})
 
+# Finite non-interactive CLI runs (``hermes chat -q``/``--oneshot``, ``hermes -z``) get their own source so human
+# pickers hide them without title/cwd heuristics; ``hermes -c`` still treats them as CLI history.
+ONESHOT_SOURCE = "oneshot"
+CLI_FAMILY_SOURCES = frozenset({"cli", ONESHOT_SOURCE})
+
 
 def _session_source_for_agent(platform: Optional[str]) -> str:
     try:
@@ -57,9 +62,12 @@ def _session_source_for_agent(platform: Optional[str]) -> str:
     except Exception:
         get_session_env = os.environ.get
     source = str(get_session_env("HERMES_SESSION_SOURCE", "") or "").strip()
-    if (source in _UI_TRANSPORT_SOURCES and get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
-            and get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") != "1"):
+    single_query = get_session_env("HERMES_SINGLE_QUERY_SESSION", "") == "1"
+    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
+    if single_query and not explicit and source in _UI_TRANSPORT_SOURCES:
         source = ""
+    if single_query and not source and (platform or "cli") == "cli":
+        return ONESHOT_SOURCE
     return source or platform or "cli"
 
 
@@ -619,7 +627,7 @@ class AIAgent(
             "on chatgpt.com/backend-api/codex (no stream events, no error). "
             "This is a known backend-side pattern that has affected ChatGPT "
             "Plus accounts intermittently. "
-            "Workaround: try `gpt-5.4` on the same OAuth profile, or `gpt-5.3-codex`, "
+            "Workaround: try `gpt-5.4` on the same OAuth profile, "
             "or switch to a different model/provider in your fallback chain. "
             "Some ChatGPT Codex accounts do not support `gpt-5.4-codex`. "
             "See hermes-agent#21444 for symptom history."
@@ -661,6 +669,13 @@ class AIAgent(
         # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
         if normalized_provider in ("nous", "custom") or is_actual_route(provider):
+            return False
+        # ACP facades expose the OpenAI-compatible chat.completions shape regardless of model
+        # family and have no ``responses`` attribute, so neither primary routing nor GPT-5
+        # fallback activation may upgrade them. Keyed on the profile's auth_type: every
+        # external-process provider, not one vendor's names.
+        from hermes_cli.runtime_provider_backends import _is_external_process_provider
+        if _is_external_process_provider(normalized_provider):
             return False
         if normalized_provider == "copilot":
             try:
@@ -934,6 +949,9 @@ class AIAgent(
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
         self._close_request_clients("cache_evict")
+        # The Codex app-server child is an LLM client, not session tool state: the evicted instance is popped
+        # from the cache and a rebuilt agent spawns its own child, so an unclosed one leaks for the gateway's life.
+        _quietly(self._close_codex_session)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
@@ -1302,19 +1320,29 @@ class AIAgent(
         self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
         try:
             if len(tool_calls) <= 1:
-                return self._execute_tool_calls_sequential(*args)
-
-            from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-            active_env = get_active_env(effective_task_id)
-            exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
-            segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
-            if len(segments) == 1:
-                run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
-                return run(*args)
-            from agent.tool_executor import execute_tool_calls_segmented
-            return execute_tool_calls_segmented(self, *args, segments=segments)
+                self._execute_tool_calls_sequential(*args)
+            else:
+                from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+                active_env = get_active_env(effective_task_id)
+                exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
+                segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
+                if len(segments) == 1:
+                    run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
+                    run(*args)
+                else:
+                    from agent.tool_executor import execute_tool_calls_segmented
+                    execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._executing_tools = False
+        # getattr: test stubs built without _set_defaults drive this method too
+        if getattr(self, "_trim_after_tool_batch", False):
+            # Only on normal completion: every executor frame that held a >=1 MB raw result has
+            # unwound and just the spilled preview lives in ``messages``. An in-flight exception
+            # would pin those frames via its traceback, so that path leaves the flag for the
+            # next completed batch (agent/tool_executor.py, #70684).
+            self._trim_after_tool_batch = False
+            from hermes_cli.mem_trim import trim_memory
+            trim_memory(reason="large tool result")
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""

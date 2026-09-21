@@ -161,6 +161,13 @@ def _split_repo_id(identifier: str) -> Optional[Tuple[str, str]]:
     return (f"{parts[0]}/{parts[1]}", parts[2]) if len(parts) >= 3 else None
 
 
+def _skill_file_path(skill_path: str, filename: str = "SKILL.md") -> str:
+    """Path of ``filename`` inside a skill directory. An empty ``skill_path`` means the skill
+    directory IS the repo root — the single-skill layout some skills.sh repos use (``SKILL.md``
+    and its ``references/``/``scripts/`` next to ``README.md``)."""
+    return f"{skill_path}/{filename}" if skill_path else filename
+
+
 def _skip_bundle_file(rel_path: str) -> bool:
     """Dotfiles, bytecode and __pycache__ never ship in a bundle."""
     base = rel_path.rsplit("/", 1)[-1]
@@ -220,7 +227,7 @@ class GitHubSource(SkillSource):
         self.taps = list(self.DEFAULT_TAPS) + list(extra_taps or [])
         # Per-instance repo -> (default_branch, tree_entries); lives for one
         # search/install flow so repeated tree lookups cost no API calls.
-        self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        self._tree_cache: Dict[str, Optional[Tuple[str, List[dict]]]] = {}
         self._tree_revisions: Dict[str, str] = {}
         # repo -> skills.sh.json grouping map; None = fetched, no sidecar.
         self._skillsh_groupings: Dict[str, Optional[Dict[str, str]]] = {}
@@ -265,7 +272,7 @@ class GitHubSource(SkillSource):
         # than the tree the paths were validated against (TOCTOU). Idempotent + cached.
         tree = self._get_repo_tree(repo)
         pinned_ref = self._tree_revisions.get(repo)
-        skill_md = self._fetch_file_content(repo, f"{skill_dir}/SKILL.md", ref=pinned_ref)
+        skill_md = self._fetch_file_content(repo, _skill_file_path(skill_dir), ref=pinned_ref)
         if skill_md is None:
             return None
         referenced = _referenced_support_paths(skill_md)
@@ -273,39 +280,57 @@ class GitHubSource(SkillSource):
             return None
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
         if tree is not None:
-            if not self._collect_tree_files(repo, skill_dir, tree[1], pinned_ref, referenced, files):
+            complete = self._collect_tree_files(repo, skill_dir, tree[1], pinned_ref, referenced, files)
+            if complete is None:
                 return None
-            revision = pinned_ref or tree[0]
+            # A bundle with a transiently failed blob fetch must not record the tree sha: the
+            # update check would otherwise see "same revision" and never re-fetch the gap (#101454).
+            revision = (pinned_ref or tree[0]) if complete else ""
         else:
             for rel_path in referenced:
-                self._add_support_file(repo, f"{skill_dir}/{rel_path}", rel_path, files, rel_path)
+                self._add_support_file(repo, _skill_file_path(skill_dir, rel_path), rel_path, files, rel_path)
             revision = ""
-        url = f"https://github.com/{repo}/" + (f"tree/{revision}/{skill_path}" if revision else skill_path)
+        url = (f"https://github.com/{repo}/tree/{revision}" + (f"/{skill_path}" if skill_path else "")
+               if revision else f"https://github.com/{repo}/{skill_path}")
         return SkillBundle(
-            name=skill_dir.split("/")[-1], files=files, source="github", identifier=identifier,
+            name=skill_dir.split("/")[-1] or repo.split("/")[-1], files=files, source="github", identifier=identifier,
             trust_level=self.trust_level_for(identifier), metadata={"source_url": url, "source_revision": revision},
         )
 
-    def _add_support_file(self, repo: str, item_path: str, rel_path: str, files: dict, shown: str, **kw) -> None:
-        """Fetch one support file into ``files``; a failed fetch warns (naming ``shown``) and is skipped."""
+    def current_revision(self, identifier: str) -> str:
+        """Tree sha the default branch currently resolves to — one cached tree lookup per repo,
+        no blob downloads — so an update check can skip refetching unchanged skills."""
+        if (split := _split_repo_id(identifier)) is None:
+            return ""
+        repo, _ = split
+        self._get_repo_tree(repo)  # populates _tree_revisions
+        return self._tree_revisions.get(repo, "")
+
+    def _add_support_file(self, repo: str, item_path: str, rel_path: str, files: dict, shown: str, **kw) -> bool:
+        """Fetch one support file into ``files``; a failed fetch warns (naming ``shown``), is skipped, and
+        returns False."""
         content = self._fetch_file_bytes(repo, item_path, **kw)
         if content is None:
             logger.warning("Failed to fetch referenced skill support file; continuing without it: %s", shown)
-        else:
-            files[rel_path] = content
+            return False
+        files[rel_path] = content
+        return True
 
     def _collect_tree_files(
         self, repo: str, skill_path: str, entries: List[dict], ref: Optional[str], referenced: set,
         files: Dict[str, Union[str, bytes]],
-    ) -> bool:
+    ) -> Optional[bool]:
         """Download the FULL skill directory from the pinned tree into ``files``. Link-driven fetching
         silently dropped support files under non-canonical dirs (``reference/``, ``agents/``, root
         LICENSE); everything still goes through quarantine + scan, and the scanner sees MORE this way.
-        Returns False (bundle rejected) on an unsafe path or a SKILL.md-linked path that exists in the
+        Returns None (bundle rejected) on an unsafe path or a SKILL.md-linked path that exists in the
         tree as a symlink/non-blob — that shape is an escape attempt. A linked path that is simply absent
-        is a dangling link (repo-only dev tool, prose over-match): warn and install without it."""
-        prefix = f"{skill_path}/"
+        is a dangling link (repo-only dev tool, prose over-match): warn and install without it. Returns
+        False when a blob fetch failed (installed with a gap the next update check must be able to fill).
+        An empty ``skill_path`` is the repo-root skill layout, so the whole repo root is its directory."""
+        prefix = f"{skill_path}/" if skill_path else ""
         symlinked: set = set()
+        complete = True
         for rel_path, item_path, regular in _tree_members(entries, prefix):
             if not regular:
                 symlinked.add(rel_path)
@@ -316,8 +341,8 @@ class GitHubSource(SkillSource):
                 rel_path = _validate_bundle_rel_path(rel_path)
             except ValueError:
                 logger.warning("Rejected unsafe file path in skill bundle: %s", item_path)
-                return False
-            self._add_support_file(repo, item_path, rel_path, files, item_path, ref=ref)
+                return None
+            complete &= self._add_support_file(repo, item_path, rel_path, files, item_path, ref=ref)
         for rel_path in sorted(referenced):
             # A SKILL.md-linked support path that isn't in the tree is a dangling link — a repo-only dev
             # tool, prose over-match, or a file the author forgot to push. Warn and install without it
@@ -327,25 +352,26 @@ class GitHubSource(SkillSource):
             # file.
             if rel_path in symlinked:
                 logger.warning("Rejected non-regular referenced file in skill bundle: %s%s", prefix, rel_path)
-                return False
+                return None
             if rel_path not in files:
                 logger.warning(
                     "Referenced skill support file is missing; continuing without it: %s%s", prefix, rel_path)
-        return True
+        return complete
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Fetch just the SKILL.md metadata for preview."""
         if (split := _split_repo_id(identifier)) is None:
             return None
         repo, skill_path = split[0], split[1].rstrip("/")
-        content = self._fetch_file_content(repo, f"{skill_path}/SKILL.md")
+        content = self._fetch_file_content(repo, _skill_file_path(skill_path))
         if not content:
             return None
         fm = _parse_frontmatter(content)
         tags = _hermes_tags(fm) or (fm["tags"] if isinstance(fm.get("tags"), list) else [])
         provider = github_provider_for(repo)
         return SkillMeta(
-            name=fm.get("name", skill_path.split("/")[-1]), description=str(fm.get("description", "")),
+            name=fm.get("name", skill_path.split("/")[-1] or repo.split("/")[-1]),
+            description=str(fm.get("description", "")),
             source="github", identifier=identifier, trust_level=self.trust_level_for(identifier),
             repo=repo, path=skill_path, tags=[str(t) for t in tags],
             extra={"provider": provider} if provider else {},
@@ -389,6 +415,9 @@ class GitHubSource(SkillSource):
         time (~12 of the 60/hr unauthenticated budget before)."""
         if repo in self._tree_cache:
             return self._tree_cache[repo]
+        # Misses are cached too: within one command a truncated/unreachable tree stays that way,
+        # and the update check now probes the tree before every fetch (#101454).
+        self._tree_cache[repo] = None
         repo_data = self._github_json(f"{_API}/{repo}")
         if repo_data is None:
             return None
@@ -399,7 +428,7 @@ class GitHubSource(SkillSource):
         if tree_data is None:
             return None
         if tree_data.get("truncated"):
-            logger.debug("Git tree truncated for %s, cannot cache", repo)
+            logger.debug("Git tree truncated for %s", repo)
             return None
         if isinstance(tree_data.get("sha"), str) and tree_data["sha"]:
             self._tree_revisions[repo] = tree_data["sha"]
@@ -474,6 +503,21 @@ class GitHubSource(SkillSource):
             if entry.get("type") == "blob" and (path.endswith(skill_md_suffix) or path == skill_md_suffix[1:]):
                 return f"{repo}/{path[: -len('/SKILL.md')]}"
         return None
+
+    def _find_repo_root_skill(self, repo: str) -> Optional[str]:
+        """Identifier for a single-skill repo whose ``SKILL.md`` sits at the repo ROOT (no skill
+        directory) — e.g. ``orzcls/win-disk-cleaner``. The empty path segment (``owner/repo/``)
+        denotes the skill directory being the repo root. Only repos with EXACTLY ONE SKILL.md in
+        the whole tree qualify, so a categorized multi-skill repo never resolves here."""
+        tree = self._get_repo_tree(repo)
+        if tree is None:
+            return None
+        skill_mds = [
+            entry.get("path", "") for entry in tree[1]
+            if entry.get("type") == "blob" and entry.get("mode") != "120000"
+            and (entry.get("path", "") == "SKILL.md" or entry.get("path", "").endswith("/SKILL.md"))
+        ]
+        return f"{repo}/" if skill_mds == ["SKILL.md"] else None
 
     def _fetch_file_content(self, repo: str, path: str, ref: Optional[str] = None) -> Optional[str]:
         """Fetch a single text file from GitHub (None on miss or non-UTF-8)."""

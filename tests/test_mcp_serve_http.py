@@ -63,6 +63,23 @@ def test_wildcard_http_bind_requires_client_reachable_public_url(monkeypatch, ca
     assert "wildcard MCP HTTP binds require --public-url" in capsys.readouterr().err
 
 
+def test_http_rejects_invalid_public_url_before_starting_bridge(monkeypatch, capsys):
+    import mcp_serve
+
+    monkeypatch.setenv("TEST_MCP_TOKEN", "secret")
+    with pytest.raises(SystemExit) as invalid_url:
+        mcp_serve.run_mcp_server(
+            transport="http",
+            host="0.0.0.0",
+            token_env="TEST_MCP_TOKEN",
+            allowed_hosts=["mcp.example.com:*"],
+            public_url="mcp.example.com/mcp",
+        )
+
+    assert invalid_url.value.code == 2
+    assert "absolute http:// or https:// URL" in capsys.readouterr().err
+
+
 def test_remote_http_uses_bearer_auth_and_preserves_transport_settings(monkeypatch):
     import mcp_serve
 
@@ -141,3 +158,54 @@ def test_authenticated_http_brackets_ipv6_resource_host(monkeypatch):
     assert calls["create"]["bearer_token"] == "secret"
     assert calls["create"]["resource_url"] == "http://[::1]:9000/mcp"
     assert calls["http"]["host"] == "::1"
+
+
+@pytest.mark.parametrize(
+    ("host", "allowed_hosts"),
+    [
+        ("LOCALHOST", ["127.0.0.1:*", "localhost:*", "[::1]:*"]),
+        ("127.0.0.1", ["mcp.example.com:*"]),
+    ],
+)
+def test_loopback_http_enforces_explicit_transport_security(
+    monkeypatch, host, allowed_hosts,
+):
+    import mcp_serve
+
+    calls = {}
+
+    class Bridge:
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    class Server:
+        async def run_streamable_http_async(self, **kwargs):
+            calls["http"] = kwargs
+
+    monkeypatch.setattr(mcp_serve, "EventBridge", Bridge)
+    monkeypatch.setattr(mcp_serve, "create_mcp_server", lambda **kwargs: Server())
+
+    supplied_hosts = None if host == "LOCALHOST" else allowed_hosts
+    mcp_serve.run_mcp_server(
+        transport="http",
+        host=host,
+        allowed_hosts=supplied_hosts,
+    )
+
+    assert calls["http"]["host"] == host.lower()
+    security = calls["http"]["transport_security"]
+    assert security.enable_dns_rebinding_protection is True
+    assert security.allowed_hosts == allowed_hosts
+    assert security.allowed_origins == []
+
+
+@pytest.mark.asyncio
+async def test_static_token_verifier_handles_unicode_as_unauthorized():
+    import mcp_serve
+
+    verifier, _ = mcp_serve._http_auth("secret", "https://mcp.example.com/mcp")
+
+    assert await verifier.verify_token("sëcret") is None

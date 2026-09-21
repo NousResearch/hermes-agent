@@ -1239,6 +1239,24 @@ class TestClearFunctions:
         # Store preserved
         assert (base / "store" / "HEAD").exists()
 
+    def test_clear_legacy_counts_unrecoverable_failures(self, tmp_path, monkeypatch):
+        """A failure recovery cannot fix must retain the caller's error accounting."""
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        legacy = base / "legacy-20200101-000000"
+        legacy.mkdir(parents=True)
+
+        def boom(path):
+            raise OSError("file in use")
+
+        monkeypatch.setattr("tools.checkpoint_manager.rmtree_readonly", boom)
+
+        result = clear_legacy()
+
+        assert result["deleted"] == 0
+        assert result["errors"] == 1
+        assert legacy.exists()
+
 
 # =========================================================================
 # Orphan pruning must not act on an unreachable volume

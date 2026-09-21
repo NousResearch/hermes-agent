@@ -127,3 +127,46 @@ class TestSplitToolDiagnostics:
         assert diagnostics == ""
         assert "--" in payload
         assert "a.py-6-after" in payload
+
+
+    def test_search_files_rg_filters_merged_stderr(tmp_path, monkeypatch):
+        """``rg --files`` diagnostics merged into stdout by ``_exec`` must not list
+        as file results (mirror image of the files_only drop)."""
+        from types import SimpleNamespace
+        ops = _ops(tmp_path)
+        fake = SimpleNamespace(
+            exit_code=0,
+            stdout="real file.py\nrg: ./x: IO error for operation (os error 13)\nplain.py\n",
+            stderr="")
+        monkeypatch.setattr(ops, "_run_rg_bounded", lambda *a, **k: fake)
+        res = ops._search_files_rg("*", str(tmp_path), 50, 0)
+        assert res.error is None
+        assert "real file.py" in res.files
+        assert "plain.py" in res.files
+        assert not any(f.lstrip().startswith(("rg:", "grep:")) for f in res.files), res.files
+
+
+    def test_search_files_find_filters_merged_stderr(tmp_path, monkeypatch):
+        """The find fallback's discovery branch collects raw lines: shell/find
+        diagnostics merged into stdout must not list as files."""
+        from types import SimpleNamespace
+        ops = _ops(tmp_path)
+        monkeypatch.setattr(ops, "_has_command", lambda c: c == "find")
+        monkeypatch.setattr(ops, "_is_broad_local_search_root", lambda r: False)
+        monkeypatch.setattr(ops, "_path_exists_probe",
+                            lambda p: SimpleNamespace(stdout="exists", cwd_error=None))
+        import tools.file_operations_search as fos
+        monkeypatch.setattr(fos, "_acquire_filename_search_roots", lambda keys: True)
+        monkeypatch.setattr(fos, "_release_filename_search_roots", lambda keys: None)
+        fake = SimpleNamespace(
+            exit_code=0,
+            stdout="real file.py\nfind: './x': Permission denied\nbash: warning: foo\nplain.py\n",
+            stderr="")
+        monkeypatch.setattr(ops, "_exec", lambda *a, **k: fake)
+        res = ops._search_files("*", str(tmp_path), 50, 0)
+        assert res.error is None
+        assert "real file.py" in res.files
+        assert "plain.py" in res.files
+        assert not any(f.lstrip().startswith(("find:", "bash:", "rg:", "grep:", "sh:"))
+                       for f in res.files), res.files
+

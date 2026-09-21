@@ -740,6 +740,9 @@ class SearchMixin:
                     continue
                 raw_files.append(parts[1])
             elif line:
+                # ``_exec`` merges stderr: a shell/find diagnostic must not list as a file.
+                if line.lstrip().startswith(("rg: ", "grep: ", "find: ", "bash: ", "sh: ")):
+                    continue
                 raw_files.append(line)
         bounded_sigpipe = result.exit_code == 141 and len(raw_files) >= fetch_limit
         if result.exit_code not in {0, 124} and not bounded_sigpipe:
@@ -803,7 +806,10 @@ class SearchMixin:
         result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
                                       shell_prefix=f"set -o pipefail; {cd_prefix}")
         stdout, limit_reason = _search_stdout_and_limit(result)
-        all_files = [f for f in stdout.splitlines() if f]
+        # ``_exec`` merges stderr into stdout: rg diagnostics must not list as files.
+        all_files = [
+            f for f in stdout.splitlines()
+            if f and not f.lstrip().startswith(("rg: ", "grep: "))]
         if scoped_common:
             all_files = [
                 f if posixpath.isabs(f) else posixpath.normpath(posixpath.join(scoped_common, f))

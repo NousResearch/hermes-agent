@@ -44,15 +44,53 @@ class TestMalformedEntriesAreLoud:
             assert _iter_fallback_entries(["just-a-model-slug"]) == []
         assert "provider:model" in caplog.text
 
+    def test_malformed_string_warning_never_logs_secret_value(self, caplog):
+        secret = "FAKE_STRING_SECRET_SENTINEL_e0d4"
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+            assert _iter_fallback_entries([f"malformed-{secret}"]) == []
+        assert "entry[0] is a malformed string" in caplog.text
+        assert secret not in caplog.text
+
     def test_dict_missing_model_warns_and_drops(self, caplog):
         with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
             assert _iter_fallback_entries([{"provider": "nous"}]) == []
-        assert "missing model" in caplog.text
+        assert "missing 'model'" in caplog.text
+
+    def test_malformed_dict_warning_never_logs_secret_values(self, caplog):
+        entry = {
+            "provider": "nous",
+            "api_key": "sk-super-secret-value",
+            "key_env": "SECRET_ENV_NAME",
+            "extra_headers": {"Authorization": "Bearer header-secret-value"},
+        }
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+            assert _iter_fallback_entries([entry]) == []
+        assert "entry[0] (dict) missing 'model'" in caplog.text
+        assert "sk-super-secret-value" not in caplog.text
+        assert "SECRET_ENV_NAME" not in caplog.text
+        assert "header-secret-value" not in caplog.text
 
     def test_non_string_non_dict_warns_and_drops(self, caplog):
         with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
             assert _iter_fallback_entries([42]) == []
-        assert "malformed fallback entry" in caplog.text
+        assert "entry[0] (int) is malformed" in caplog.text
+
+    def test_root_scalar_warns(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+            assert _iter_fallback_entries(42) == []
+        assert "Malformed fallback root (int)" in caplog.text
+
+    def test_bare_root_string_warns_and_parses_one_entry(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+            assert _iter_fallback_entries("openrouter:qwen/qwen3.6-plus") == [
+                {"provider": "openrouter", "model": "qwen/qwen3.6-plus"}]
+        assert "Malformed fallback root (str)" in caplog.text
+
+    def test_none_and_empty_list_stay_quiet(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
+            assert _iter_fallback_entries(None) == []
+            assert _iter_fallback_entries([]) == []
+        assert caplog.text == ""
 
     def test_all_entries_dropped_warns_chain_empty(self, caplog):
         with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):

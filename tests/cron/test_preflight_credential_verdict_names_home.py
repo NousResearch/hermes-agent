@@ -7,6 +7,7 @@ import re
 
 import pytest
 
+import cron.scheduler_preflight as preflight
 from cron.scheduler_preflight import _preflight_check_provider_key
 from cron.scheduler_provider import _profile_cron_scope
 
@@ -44,3 +45,19 @@ def test_missing_codex_credential_verdict_names_the_home_it_read(two_homes):
     with _profile_cron_scope(alpha):
         reason = _preflight_check_provider_key(JOB, {"cron": {}})
     assert reason and _scope(reason) == ("alpha", str(alpha))
+
+
+def test_halted_fallback_chain_does_not_skip_primary_credential_preflight(monkeypatch):
+    calls = []
+    chain = [{"provider": "openrouter", "model": "fallback-model"}]
+    monkeypatch.setattr(preflight._sched, "get_fallback_chain", lambda cfg: chain)
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.fallback_halt_active", lambda: (True, "halted")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    assert _preflight_check_provider_key(JOB, {"fallback_providers": chain}) is None
+    assert calls == [{"requested": "openai-codex", "target_model": "gpt-5.6-sol"}]

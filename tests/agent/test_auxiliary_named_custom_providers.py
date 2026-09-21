@@ -23,6 +23,21 @@ def _write_config(tmp_path, config_dict):
     config_path.write_text(yaml.dump(config_dict))
 
 
+def test_halt_blocks_auxiliary_main_fallback_chain(tmp_path):
+    _write_config(tmp_path, {
+        "model": {"default": "primary-model", "provider": "primary"},
+        "fallback_policy": {"halt": True},
+        "fallback_providers": [{"provider": "backup", "model": "backup-model"}],
+    })
+    from agent import auxiliary_client as ac
+
+    with patch.object(ac, "_resolve_fallback_entry") as resolve_entry:
+        result = ac._try_main_fallback_chain("compression", "primary", reason="unavailable")
+
+    assert result == (None, None, "")
+    resolve_entry.assert_not_called()
+
+
 class TestNormalizeVisionProvider:
     """_normalize_vision_provider should resolve 'main' to actual main provider."""
 

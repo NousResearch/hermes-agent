@@ -1126,7 +1126,12 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:
-        from hermes_cli.fallback_config import effective_runtime_provider, get_fallback_chain, resolve_entry_api_key
+        from hermes_cli.fallback_config import (
+            effective_runtime_provider, fallback_halt_active, get_fallback_chain, resolve_entry_api_key)
+        halt_active, halt_message = fallback_halt_active()
+        if halt_active:
+            logger.warning("%s Primary provider error: %s", halt_message, primary_exc)
+            raise primary_exc
         for entry in get_fallback_chain(config):
             provider = (entry.get("provider") or "").strip().lower()
             model = (entry.get("model") or "").strip()

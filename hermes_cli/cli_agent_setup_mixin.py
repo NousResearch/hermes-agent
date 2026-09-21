@@ -364,6 +364,14 @@ class CLIAgentSetupMixin:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         if not isinstance(primary_exc, AuthError):
             return None
+        from hermes_cli.fallback_config import fallback_halt_active
+
+        halt_active, halt_message = fallback_halt_active()
+        if halt_active:
+            logger.warning(halt_message)
+            from gateway.warning_notifications import render_notification
+            render_notification(lambda: _cprint(halt_message), platform="cli")
+            return None
         _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
         for _fb in _fb_chain:
             _fb_provider = (_fb.get("provider") or "").strip().lower()

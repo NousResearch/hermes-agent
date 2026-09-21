@@ -4434,6 +4434,12 @@ def _try_main_fallback_chain(
     """Top-level main-agent fallback chain for a ``provider: auto`` auxiliary call: auto tasks honour the
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
     ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order."""
+    from hermes_cli.fallback_config import fallback_halt_active
+
+    halt_active, halt_message = fallback_halt_active()
+    if halt_active:
+        logger.warning("Auxiliary %s: %s", task or "call", halt_message)
+        return None, None, ""
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.fallback_config import get_fallback_chain

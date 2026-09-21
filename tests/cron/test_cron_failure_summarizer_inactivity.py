@@ -65,6 +65,22 @@ def test_genuine_provider_timeout_with_fallback_configured(monkeypatch):
     assert "No backup provider is configured" not in msg
 
 
+def test_halted_fallback_copy_says_backups_were_disabled_not_attempted(monkeypatch):
+    chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-5"}]
+    monkeypatch.setattr(scheduler, "load_config", lambda: {"fallback_providers": chain})
+    monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: chain)
+    monkeypatch.setattr(
+        "hermes_cli.config_effective.load_user_config_effective",
+        lambda: {"fallback_policy": {"halt": True}},
+    )
+    job = {"name": "CI Autofix Poller", "id": "f7fe78574bda"}
+
+    msg = _summarize_cron_failure_for_delivery(job, "Request timed out.")
+
+    assert "fallback is disabled by fallback_policy.halt" in msg
+    assert "No backup provider succeeded either" not in msg
+
+
 def test_fallback_chain_phrase_fails_open_on_config_error(monkeypatch):
     def _raise():
         raise RuntimeError("config unreadable")

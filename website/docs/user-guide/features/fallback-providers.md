@@ -56,9 +56,14 @@ failover (#51560).
 Set `fallback_policy.halt: true` to make Hermes **surface the primary failure instead of
 switching providers**. Use this when falling back would silently move spend onto a paid API
 (e.g. a subscription-backed primary whose usage window resets tomorrow, with metered fallback
-keys configured): with `halt` the chain is never walked, a `🛑 fallback_policy.halt is enabled —
-staying on …` diagnostic is emitted, and the primary's error surfaces through the normal
-terminal path. Default is `false` (activate the chain as usual).
+keys configured): with `halt` the chain is never walked, a `🛑 Provider fallback is disabled by
+fallback_policy.halt` refusal is emitted, and the primary's error surfaces through the normal
+terminal path. The gate
+covers both mid-turn activation and pre-agent credential-resolution fallback in interactive CLI,
+one-shot, messaging gateway, TUI/Desktop, and cron runs. It also prevents auxiliary tasks using
+`provider: auto` from walking the main fallback chain. For cron, a halted chain does not suppress
+primary credential preflight, and provider-failure notices say fallback was disabled rather than
+claiming that backups were attempted. Default is `false` (activate the chain as usual).
 
 When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
 
@@ -448,7 +453,7 @@ See [Subagent Delegation](./delegation.md) for full configuration details.
 
 ## Cron Job Providers
 
-Unpinned cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`), both when the primary's credentials fail to resolve before the run and when the provider errors mid-run. A job pinned to its own provider, model or endpoint does **not**: if that route fails, the run fails (same-provider [credential pool](../configuration.md#credential-pool-strategies) rotation still applies). This matches how a pinned [delegation](./delegation.md) child behaves. Pin a cron job with `provider` and `model` overrides on the job itself:
+Unpinned cron jobs inherit your configured `fallback_providers` chain (or legacy `fallback_model`), unless `fallback_policy.halt` disables it, both when the primary's credentials fail to resolve before the run and when the provider errors mid-run. A job pinned to its own provider, model or endpoint does **not** inherit the global chain: if that route fails, the run fails (same-provider [credential pool](../configuration.md#credential-pool-strategies) rotation still applies). This matches how a pinned [delegation](./delegation.md) child behaves. Pin a cron job with `provider` and `model` overrides on the job itself:
 
 ```python
 cronjob(

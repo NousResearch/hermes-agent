@@ -7,6 +7,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_FALLBACK_HALT_MESSAGE = (
+    "🛑 Provider fallback is disabled by fallback_policy.halt; "
+    "surfacing the primary failure without switching providers."
+)
+
 
 def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/") if isinstance(value, str) else ""
@@ -89,24 +94,62 @@ def pre_agent_fallback_notice(
     return f"⚠️ Provider fallback: {primary_desc} unavailable; using {fallback_desc} for this response."
 
 
+def fallback_halt_active() -> tuple[bool, str]:
+    """Return whether fallback is halted and the shared user-facing refusal text.
+
+    Fail open when the effective config cannot be read: a config-read failure must not disable
+    recovery for an operator who never successfully enabled ``fallback_policy.halt``.
+    """
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+
+        policy = load_user_config_effective().get("fallback_policy")
+    except Exception:
+        return False, ""
+    # is_truthy_value, not bare truthiness: YAML `halt: "false"` (quoted) must disable, not enable.
+    from utils import is_truthy_value
+    active = bool(isinstance(policy, dict) and is_truthy_value(policy.get("halt")))
+    return active, _FALLBACK_HALT_MESSAGE if active else ""
+
+
 
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
-    candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+    """Normalize fallback entries, warning for every malformed value that is dropped.
+
+    Accepted roots are a list of entries or one dict. A bare string root is malformed (and warns)
+    but is still parsed as one ``provider:model`` shorthand for compatibility. ``None`` and an
+    empty list mean no configured fallback and stay quiet. Warnings for dict entries never include
+    entry values because those dicts may carry credentials or authorization headers.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        candidates = [raw]
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        logger.warning(
+            "Malformed fallback root (%s) — expected a list of entries or a single dict.",
+            type(raw).__name__,
+        )
+        if not isinstance(raw, str):
+            return []
+        candidates = [raw]
     entries: list[dict[str, Any]] = []
-    for entry in candidates:
+    for index, entry in enumerate(candidates):
         if isinstance(entry, str):
             parsed = _parse_string_entry(entry)
             if parsed is not None:
                 entries.append(parsed)
             else:
                 logger.warning(
-                    "Ignoring malformed fallback entry %r — string entries must look like "
-                    "'provider:model' (e.g. 'openrouter:z-ai/glm-5.3-flash').", entry)
+                    "Fallback entry[%d] is a malformed string — expected 'provider:model'; "
+                    "entry dropped.", index)
             continue
         if not isinstance(entry, dict):
             logger.warning(
-                "Ignoring malformed fallback entry %r — entries must be {provider, model} "
-                "dicts or 'provider:model' strings.", entry)
+                "Fallback entry[%d] (%s) is malformed — expected a dict or "
+                "'provider:model' string; entry dropped.", index, type(entry).__name__)
             continue
         provider = str(entry.get("provider") or "").strip()
         model = str(entry.get("model") or "").strip()
@@ -114,8 +157,8 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
             # A dict-shaped entry the user meant to configure: dropping it silently leaves a
             # chain that looks configured but is empty (#51560, #117806) — fail loud instead.
             logger.warning(
-                "Ignoring malformed fallback entry %r — missing %s.",
-                entry, "provider" if not provider else "model")
+                "Fallback entry[%d] (dict) missing '%s' — entry dropped.",
+                index, "provider" if not provider else "model")
             continue
         normalized = {**entry, "provider": provider, "model": model}
         base_url = _normalized_base_url(entry.get("base_url"))

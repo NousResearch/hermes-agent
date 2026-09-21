@@ -32,8 +32,12 @@ describe('botChatHandle', () => {
     expect(botChatHandle('bot:personal')).toBe('personal')
   })
 
-  it('drops the local connection prefix a local owner key carries', () => {
+  it('drops the connection prefix a local owner key carries', () => {
     expect(botChatHandle('bot:local::researcher')).toBe('researcher')
+  })
+
+  it('drops a remote connection prefix too', () => {
+    expect(botChatHandle('bot:homelab::researcher')).toBe('researcher')
   })
 
   it('is null for a working session scope', () => {
@@ -52,6 +56,16 @@ describe('useBotChatHandle', () => {
     setSessionTileWorkspaceScope('stored-1', { workspaceMode: 'sessions', workspaceOwnerKey: undefined })
     render(<HandleProbe runtimeId="rt-1" />)
     expect(screen.getByTestId('handle').textContent).toBe('none')
+  })
+
+  it('keeps the face on a bot chat restored after a relaunch', () => {
+    // $botChatScopes is window-local; the tab's own owner key is persisted, and
+    // the id set is restored from storage — together they must still resolve.
+    $sessionTiles.set([{ runtimeId: 'rt-1', storedSessionId: 'stored-1', workspaceOwnerKey: 'bot:local::restored' }])
+    setSessionTileWorkspaceScope('stored-1', { workspaceMode: 'bots', workspaceOwnerKey: 'bot:local::restored' })
+    const { unmount } = render(<HandleProbe runtimeId="rt-1" />)
+    expect(screen.getByTestId('handle').textContent).toBe('restored')
+    unmount()
   })
 
   it('stays null without a live session', () => {

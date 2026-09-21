@@ -229,8 +229,11 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   // A bot chat is a conversation with someone, so the message row carries their
-  // face; working sessions stay avatar-free (see bot-chat-avatar.tsx).
+  // face; working sessions stay avatar-free (see bot-chat-avatar.tsx). A
+  // collapsed inter-agent notice is a DIFFERENT agent's message and already
+  // shows its own sender glyph, so it keeps the plain column.
   const botChatHandle = useBotChatHandle(sessionId)
+  const botChatFace = collapsedNotice ? null : botChatHandle
 
   const activityOnly = useAuiState(
     state =>
@@ -333,7 +336,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
     <MessagePrimitive.Root
       className={cn(
         'group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden',
-        botChatHandle && 'flex-row items-start gap-2',
+        botChatFace && 'flex-row items-start gap-2',
         collapsedNotice && 'pb-(--conversation-turn-gap)'
       )}
       data-approval-activity-only={approval && activityOnly ? '' : undefined}
@@ -345,10 +348,10 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
       onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
       ref={enterRef}
     >
-      {botChatHandle ? (
+      {botChatFace ? (
         <>
           <div className="mt-0.5 shrink-0">
-            <BotChatAvatar handle={botChatHandle} />
+            <BotChatAvatar handle={botChatFace} />
           </div>
           <div className="flex min-w-0 flex-1 flex-col gap-0">{body}</div>
         </>

@@ -10,33 +10,53 @@
 import { useStore } from '@nanostores/react'
 import { type FC, useEffect, useState } from 'react'
 
-import { $botChatScopes, isBotChatSession, storedSessionIdForRuntimeId } from '@/store/session-states'
+import { $botChatScopes, $botChatSessionIds, $sessionTiles, isBotChatSession, storedSessionIdForRuntimeId } from '@/store/session-states'
 
 import { agentAvatarCache, resolveAgentAvatar } from './user-message'
 
-/** `bot:<handle>` owner key → the profile handle. Local owners carry a
- *  connection prefix (`bot:local::researcher`) that is not part of the name. */
+/** `bot:<connectionId>::<handle>` owner key → the profile handle. The
+ *  connection prefix (`local::`, or a remote connection's id) is not part of the
+ *  name. A remote bot's avatar is served by ITS gateway, which this desktop only
+ *  reaches through the roster — the lookup below asks the active gateway, so a
+ *  remote bot falls back to the glyph until that lands. */
 export function botChatHandle(ownerKey: null | string | undefined): null | string {
   if (!ownerKey?.startsWith('bot:')) {
     return null
   }
 
-  const handle = ownerKey.slice('bot:'.length).replace(/^local::/, '').trim()
+  const handle = ownerKey
+    .slice('bot:'.length)
+    .split('::')
+    .pop()
+    ?.trim()
 
   return handle || null
 }
 
-/** The handle of the bot whose chat this live session is, else null. */
+/** The handle of the bot whose chat this live session is, else null.
+ *
+ *  `$botChatScopes` is window-local: it is written when a bot chat is opened and
+ *  is gone after a relaunch, while the id set survives in storage. The tile's
+ *  own `workspaceOwnerKey` is persisted with the tab, so a restored bot chat
+ *  keeps its face instead of waiting to be re-opened from the roster. */
 export function useBotChatHandle(runtimeId: null | string | undefined): null | string {
+  const ids = useStore($botChatSessionIds)
   const scopes = useStore($botChatScopes)
+  const tiles = useStore($sessionTiles)
 
-  if (!runtimeId || !isBotChatSession(runtimeId)) {
+  if (!runtimeId || !ids.has(storedSessionIdForRuntimeId(runtimeId) ?? '') || !isBotChatSession(runtimeId)) {
     return null
   }
 
   const stored = storedSessionIdForRuntimeId(runtimeId)
 
-  return botChatHandle(stored ? scopes[stored]?.workspaceOwnerKey : null)
+  if (!stored) {
+    return null
+  }
+
+  const tile = tiles.find(candidate => candidate.storedSessionId === stored)
+
+  return botChatHandle(scopes[stored]?.workspaceOwnerKey ?? tile?.workspaceOwnerKey)
 }
 
 /** The face itself: the profile's avatar, else the neutral agent glyph — the

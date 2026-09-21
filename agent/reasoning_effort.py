@@ -67,10 +67,13 @@ SOLAR_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 #: widens it to a graded scale (live-verified, monotonic). ``xhigh`` requests the top tier.
 GLM52_EFFORTS: tuple[str, ...] = ("high", "max")
 GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
-# : GLM-5.3 widens the knob to a graded low/medium/high/max scale — verified : live on
-# api.z.ai/api/coding/paas/v4 (issue #91789, 2026-08-21): every : level accepted with monotonic
-# reasoning-token scaling (low=4, medium=11, : high=98, max=125 on the probe prompt).
-GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
+#: GLM-5.3's accepted vocabulary is low/high/max on both standard endpoints
+#: (api.z.ai/api/paas/v4 and open.bigmodel.cn/api/paas/v4, glm-5.3/-flash/-flashx):
+#: ``medium`` answers the "always-thinking" HTTP 400 (#96222, independently
+#: reproduced 2026-09-21). The coding-plan routes (…/api/coding/paas/v4) accept
+#: all four levels (issue #91789), so one shared low/high/max vocabulary serves
+#: both: ``medium`` clamps down to ``low`` — never escalates, stays a 200 there.
+GLM53_EFFORTS: tuple[str, ...] = ("low", "high", "max")
 GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
 #: DeepSeek V4 OpenAI-compat endpoint; ``xhigh`` requests the top tier.

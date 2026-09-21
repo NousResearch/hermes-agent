@@ -179,8 +179,8 @@ def test_run_conversation_flushes_assistant_tool_call_before_execution():
     assert result["final_response"] == "done"
 
 
-def test_raw_file_write_args_execute_but_are_redacted_before_session_storage(tmp_path):
-    """Persistence is a display boundary, not an operand transformation."""
+def test_raw_file_write_args_execute_and_preserve_session_replay_operands(tmp_path):
+    """Replay operands remain literal while other durable fields are redacted."""
     agent = _make_agent()
     db_path = tmp_path / "state.db"
     db = _attach_real_session_db(agent, db_path, "raw-tool-args")
@@ -213,10 +213,11 @@ def test_raw_file_write_args_execute_but_are_redacted_before_session_storage(tmp
     assert destination.read_text(encoding="utf-8") == secret
     with sqlite3.connect(db_path) as conn:
         stored = conn.execute("SELECT tool_calls FROM messages WHERE session_id = ?", ("raw-tool-args",)).fetchone()[0]
-        assert secret not in stored
+        # The raw replay operand remains searchable as tool-call JSON; that is
+        # the documented storage limitation, not a display projection.
         assert conn.execute(
             "SELECT 1 FROM messages_fts WHERE messages_fts MATCH ?", (f'"{secret}"',)
-        ).fetchone() is None
+        ).fetchone() is not None
 
 
 def test_interim_assistant_is_durable_before_ui_projection_on_abnormal_exit(tmp_path):

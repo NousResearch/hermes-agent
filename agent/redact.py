@@ -179,7 +179,9 @@ def _redact_level() -> str:
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
 _PREFIX_PATTERNS = [
-    r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter / Anthropic (sk-ant-*)
+    # Some provider keys include dot-separated opaque segments. Do not accept
+    # empty segments: display masks use ``...`` and must remain idempotent.
+    r"sk-(?=[A-Za-z0-9_.-]{10,}(?![A-Za-z0-9_.-]))[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?![A-Za-z0-9_.-])",
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token
@@ -249,6 +251,11 @@ _PREFIX_PATTERNS = [
 _MAILCHIMP_API_KEY_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{32}-us[0-9]{1,2}\b")
 _DISCORD_BOT_TOKEN_RE = re.compile(
     r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}(?![A-Za-z0-9_-])"
+)
+# Zhipu keys have a 32-character hexadecimal ID followed by an opaque suffix.
+# Require the complete shape so dotted filenames and content hashes do not match.
+_ZHIPU_API_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
 )
 
 # ENV assignment: KEY=value where KEY carries a secret-like name. Uppercase keys

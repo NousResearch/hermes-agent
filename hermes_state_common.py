@@ -270,6 +270,9 @@ FTS_STORAGE_VERSION = 3
 # integrity checker and the trigger 'delete'/'update' commands in agreement
 # with the stored index forever.
 FTS_TOOL_CONTENT_PREFIX_CHARS = 8_192
+# Compatibility marker for databases upgraded from the pre-v3 FTS layout. New
+# FTS projections ignore it; schema migration removes it after rebuilding.
+FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY = "fts_tool_full_content_high_water"
 
 
 def _fts_indexed_content_sql(alias: str) -> str:

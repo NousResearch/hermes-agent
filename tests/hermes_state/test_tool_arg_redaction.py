@@ -13,7 +13,7 @@ def _assert_absent_from_fts(conn):
     ).fetchone() is None
 
 
-def test_fresh_write_recursively_redacts_all_durable_projections(tmp_path):
+def test_fresh_write_keeps_tool_operands_literal_while_redacting_projections(tmp_path):
     db = SessionDB(tmp_path / "state.db")
     db.create_session("fresh", source="cli")
     tool_calls = {
@@ -37,13 +37,19 @@ def test_fresh_write_recursively_redacts_all_durable_projections(tmp_path):
             "SELECT content, tool_calls, reasoning_details, codex_reasoning_items, "
             "codex_message_items, display_metadata FROM messages WHERE session_id = 'fresh'"
         ).fetchone()
-        assert SECRET not in " ".join(str(value) for value in row)
+        assert SECRET not in " ".join(str(value) for value in (row["content"], row["reasoning_details"], row["codex_reasoning_items"], row["codex_message_items"], row["display_metadata"]))
         stored_tool_calls = json.loads(row["tool_calls"])
         assert tool_calls["function"]["arguments"]["nested"][0]["content"] == SECRET
         assert isinstance(stored_tool_calls["function"]["arguments"], dict)
-        assert SECRET not in json.dumps(stored_tool_calls)
+        assert stored_tool_calls["function"]["arguments"]["nested"][0]["content"] == SECRET
+        resumed = db.get_messages("fresh")[0]["tool_calls"]
+        assert resumed == tool_calls
         assert SECRET not in json.dumps(db.get_messages("fresh")[0]["display_metadata"])
-        _assert_absent_from_fts(db._conn)
+        # The raw replay operand is also indexed as tool-call JSON; this is the
+        # documented storage limitation rather than a display projection.
+        assert db._conn.execute(
+            "SELECT 1 FROM messages_fts WHERE messages_fts MATCH ?", (f'"{SECRET}"',)
+        ).fetchone() is not None
     finally:
         db.close()
 
@@ -61,14 +67,13 @@ def test_fresh_write_fails_closed_for_unserializable_projection(tmp_path):
         row = db._conn.execute(
             "SELECT tool_calls, reasoning_details, display_metadata FROM messages WHERE session_id = 'malformed'"
         ).fetchone()
-        assert SECRET not in " ".join(str(value) for value in row)
-        assert "[REDACTED:" in " ".join(str(value) for value in row)
-        _assert_absent_from_fts(db._conn)
+        assert SECRET not in " ".join(str(value) for value in (row["reasoning_details"], row["display_metadata"]))
+        assert SECRET in row["tool_calls"]
     finally:
         db.close()
 
 
-def test_schema_migration_recursively_redacts_legacy_projections_and_fts(tmp_path):
+def test_schema_migration_keeps_legacy_tool_operands_literal(tmp_path):
     db_path = tmp_path / "state.db"
     legacy_tool_calls = {
         "id": "legacy",
@@ -99,14 +104,13 @@ def test_schema_migration_recursively_redacts_legacy_projections_and_fts(tmp_pat
             "SELECT content, tool_calls, reasoning_details, codex_reasoning_items, "
             "codex_message_items, display_metadata FROM messages WHERE session_id = 'legacy'"
         ).fetchone()
-        assert SECRET not in " ".join(str(value) for value in row)
-        assert isinstance(json.loads(row["tool_calls"])["function"]["arguments"], dict)
-        _assert_absent_from_fts(migrated._conn)
+        assert SECRET not in " ".join(str(value) for value in (row["content"], row["reasoning_details"], row["codex_reasoning_items"], row["codex_message_items"], row["display_metadata"]))
+        assert json.loads(row["tool_calls"])["function"]["arguments"]["nested"][0]["content"] == SECRET
     finally:
         migrated.close()
 
 
-def test_schema_migration_fails_closed_for_malformed_projection(tmp_path):
+def test_schema_migration_preserves_malformed_tool_operands(tmp_path):
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path)
     db.create_session("malformed", source="cli")
@@ -121,8 +125,6 @@ def test_schema_migration_fails_closed_for_malformed_projection(tmp_path):
     migrated = SessionDB(db_path)
     try:
         stored = migrated._conn.execute("SELECT tool_calls FROM messages").fetchone()[0]
-        assert SECRET not in stored
-        assert "[REDACTED:" in stored
-        _assert_absent_from_fts(migrated._conn)
+        assert stored == malformed
     finally:
         migrated.close()

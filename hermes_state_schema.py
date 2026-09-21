@@ -133,7 +133,10 @@ _STALE_KEY_UPSERT_SQL = (
 _STATE_META_UPSERT_SQL = (
     "INSERT INTO state_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
 )
-_CLEAR_REBUILD_MARKERS_SQL = "DELETE FROM state_meta WHERE key IN ('fts_rebuild_high_water', 'fts_rebuild_progress')"
+_CLEAR_REBUILD_MARKERS_SQL = (
+    "DELETE FROM state_meta WHERE key IN "
+    f"('fts_rebuild_high_water', 'fts_rebuild_progress', '{FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY}')"
+)
 
 
 def _legacy_inline_reinsert_sql(table: str, indent: int, *, delete_first: bool = False) -> str:
@@ -339,28 +342,40 @@ class SessionSchemaMixin:
         its FTS family is created later under rebuild admission."""
         if not self._sqlite_table_exists(cursor, "messages_fts"):
             return
-        marker = cursor.execute(
-            "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1", (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,),
-        ).fetchone()
-        if marker is not None:
+        table_sql = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'"
+        ).fetchone()[0] or ""
+        needs_realign = not legacy and "messages_fts_src" not in table_sql.lower()
+        if not needs_realign:
+            # v3's stable projection no longer uses this retired migration marker.
+            cursor.execute("DELETE FROM state_meta WHERE key = ?", (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,))
             return
         trigram_present = self._sqlite_table_exists(cursor, "messages_fts_trigram")
         names = _FTS_BASE_TRIGGERS + (_FTS_TRIGRAM_TRIGGERS if legacy and trigram_present else ())
         has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
-        self._fts_tool_prefix_migration_requires_rebuild = bool(
+        self._fts_tool_prefix_migration_requires_rebuild = needs_realign or bool(
             has_messages and self._fts_triggers_missing(cursor, names)
         )
         cursor.execute("SAVEPOINT bounded_tool_fts")
         try:
-            self._stamp_fts_tool_high_water(cursor)
-            for name in names:
-                cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
-            if legacy:
-                self._execute_ddl_script_transactional(cursor, LEGACY_FTS_SQL)
-                if trigram_present:
-                    self._execute_ddl_script_transactional(cursor, LEGACY_FTS_TRIGRAM_SQL)
-            else:
+            if needs_realign:
+                # The pre-v3 vtable reads raw messages. Recreate it against the
+                # stable source view, then admit a full rebuild before triggers run.
+                for name in names:
+                    cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+                cursor.execute("DROP TABLE messages_fts")
                 self._execute_ddl_script_transactional(cursor, FTS_SQL)
+                cursor.execute("DELETE FROM state_meta WHERE key = ?", (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,))
+            else:
+                self._stamp_fts_tool_high_water(cursor)
+                for name in names:
+                    cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+                if legacy:
+                    self._execute_ddl_script_transactional(cursor, LEGACY_FTS_SQL)
+                    if trigram_present:
+                        self._execute_ddl_script_transactional(cursor, LEGACY_FTS_TRIGRAM_SQL)
+                else:
+                    self._execute_ddl_script_transactional(cursor, FTS_SQL)
             cursor.execute("RELEASE SAVEPOINT bounded_tool_fts")
         except BaseException:
             cursor.execute("ROLLBACK TO SAVEPOINT bounded_tool_fts")
@@ -1212,9 +1227,10 @@ class SessionSchemaMixin:
         """
         from hermes_state_messages import _redact_durable_projection
 
-        json_columns = (
-            "tool_calls", "reasoning_details", "codex_reasoning_items", "codex_message_items", "display_metadata",
-        )
+        # ``tool_calls`` are live replay operands. Keep their arguments literal: rewriting
+        # a token-looking file payload here would make a resumed write_file/patch call
+        # write the redaction placeholder instead of the original requested content.
+        json_columns = ("reasoning_details", "codex_reasoning_items", "codex_message_items", "display_metadata")
         string_columns = (
             "role", "content", "tool_call_id", "tool_name", "effect_disposition", "finish_reason", "reasoning",
             "reasoning_content", "platform_message_id", "api_content", "display_kind",

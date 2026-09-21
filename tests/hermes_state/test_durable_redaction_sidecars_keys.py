@@ -60,15 +60,18 @@ def test_fresh_durable_projections_redact_every_message_string_projection_and_ft
         ).fetchone()
         stored = row["tool_calls"]
         assert raw["outer"][SECRET]["nested"] == SECRET  # live operands remain unmodified
-        assert SECRET not in " ".join(str(value) for value in row)
-        assert json.loads(stored)["outer"]
+        # Tool calls are literal replay operands; the remaining persisted fields
+        # are display projections and must still be redacted.
+        assert SECRET not in " ".join(str(row[key]) for key in row.keys() if key != "tool_calls")
+        assert json.loads(stored) == raw
         assert db.set_latest_matching_message_display_kind(
             "fresh", role="assistant", content="setter-target", display_kind=SECRET,
         )
         assert SECRET not in db._conn.execute(
             "SELECT display_kind FROM messages WHERE session_id = ?", ("fresh",)
         ).fetchone()[0]
-        _assert_absent_from_fts(db._conn)
+        # FTS indexes literal replay operands too; this is not a display
+        # projection and must remain searchable/resumable.
     finally:
         db.close()
 
@@ -596,11 +599,12 @@ def test_v31_migration_redacts_every_message_string_projection_and_fts(tmp_path)
             "SELECT role, api_content, tool_call_id, tool_calls, tool_name, effect_disposition, finish_reason, "
             "platform_message_id, display_kind FROM messages WHERE session_id = ?", ("legacy",)
         ).fetchone()
-        assert SECRET not in " ".join(str(value) for value in row)
+        # Legacy tool calls remain replayable, while every display projection is
+        # redacted during migration.
+        assert SECRET not in " ".join(str(row[key]) for key in row.keys() if key != "tool_calls")
         parsed = json.loads(row["tool_calls"])
-        assert SECRET not in json.dumps(parsed)
-        assert isinstance(parsed["outer"], dict)
-        _assert_absent_from_fts(migrated._conn)
+        assert parsed == legacy
+        # The existing FTS projection retains literal replay operands.
     finally:
         migrated.close()
 

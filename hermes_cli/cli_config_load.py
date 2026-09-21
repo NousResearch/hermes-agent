@@ -168,7 +168,9 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
     security_config = defaults.get("security", {})
     if isinstance(security_config, dict):
         redact = security_config.get("redact_secrets")
-        if redact is not None:
+        # A dotenv setting is an explicit operator override. Preserve it so the
+        # import-time redactor sees the same policy as the later CLI config.
+        if redact is not None and "HERMES_REDACT_SECRETS" not in os.environ:
             os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
 
     # Session-search index knobs (hermes_state reads the env carriers).

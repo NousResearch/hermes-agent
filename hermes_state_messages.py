@@ -156,6 +156,23 @@ def _redact_durable_projection(value: Any) -> Any:
         return _UNSERIALIZABLE_DURABLE_VALUE
 
 
+def _json_safe_tool_operands(value: Any) -> Any:
+    """Make tool operands JSON-serializable without redacting their replay values."""
+    if isinstance(value, str):
+        return _sanitize_surrogates(value)
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _UNSERIALIZABLE_DURABLE_VALUE
+    if isinstance(value, list):
+        return [_json_safe_tool_operands(item) for item in value]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            return _UNSERIALIZABLE_DURABLE_VALUE
+        return {key: _json_safe_tool_operands(item) for key, item in value.items()}
+    return _UNSERIALIZABLE_DURABLE_VALUE
+
+
 def _stale_holder(row, now: float) -> bool:
     """A lock/lease row whose holder is expired or a provably dead local process."""
     from hermes_state import _compression_lock_holder_process_is_dead
@@ -308,8 +325,9 @@ class SessionMessagesMixin:
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None  # noqa: E731
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None  # noqa: E731
         encoded_content = self._encode_content(_redact_durable_projection(msg.get("content")))
-        tool_calls = _redact_durable_projection(tool_calls)
-        encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
+        # Tool-call arguments are live replay operands, not a display projection.
+        # Redacting them here corrupts write_file/patch payloads after session resume.
+        encoded_tool_calls = json.dumps(_json_safe_tool_operands(tool_calls)) if tool_calls else None
         # Every durable text projection crosses this boundary. Keep ``msg`` and
         # ``tool_calls`` untouched so the caller retains raw live tool operands.
         _durable_scalar = lambda key: _redact_durable_projection(_scrub_surrogates(msg.get(key)))  # noqa: E731

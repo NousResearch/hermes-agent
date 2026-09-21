@@ -357,7 +357,7 @@ terminal:
   docker_forward_env:              # Host env vars to forward into container
     -  —  keeps credential-pattern redaction only;  additionally redacts validated payment cards, SSNs, and IBANs;  additionally redacts email addresses and phone numbers.
 
-Tool operands are never changed by redaction: a tool receives the exact path, command, or file content it was called with. Before a tool-call record is written to , its structured arguments are redacted, and the resulting transcript is what FTS indexes. This applies to new writes and the one-time migration of older session rows. It protects Hermes UI, logs, session history, and local search views; it cannot recall or revoke a secret already sent to a tool, provider, remote host, or any other external system.
+Tool operands are never changed by redaction: a tool receives the exact path, command, or file content it was called with. Tool-start displays and logs use a redacted copy of those arguments, but the canonical `state.db` tool-call arguments remain literal so resumed `write_file`/`patch` calls and fixtures cannot be corrupted. This means conversation databases, their WAL/backups, FTS search index, and any tooling that reads raw tool-call JSON are **not storage-scrubbed for tool-call arguments**. Redaction still protects display/log projections and cannot recall or revoke a secret already sent to a tool, provider, remote host, or any other external system.
 - "GITHUB_TOKEN"
   docker_env:                      # Literal env vars to inject (KEY=value)
     DEBUG: "1"

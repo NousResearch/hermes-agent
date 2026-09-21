@@ -10,17 +10,19 @@ process still needs an explicit ``encoding="utf-8"`` (ruff ``PLW1514``). POSIX i
 alone deliberately — users' ``LANG``/``LC_*`` choices are respected.
 
 Stdlib only: entry points import this before ``harden_import_path()`` runs, so nothing
-here may pull in a Hermes package that a project-local directory could shadow.
+here may pull in a Hermes package that a project-local directory could shadow. The
+import-time calls below run inside ``_run_under_hardened_import_path`` so even the
+deferred imports (``hermes_constants``, ``tools.lazy_deps``, stdlib modules like
+``platform``) cannot be shadowed by the launch directory. ``selectors``, ``socket``
+and ``importlib`` are likewise shadowable (unlike ``errno``/``os``/``sys``/``time``,
+which are builtin or already loaded at interpreter start), so they are bound lazily
+inside the window rather than at the top of this file.
 """
 
 from __future__ import annotations
 
 import errno
-import importlib.abc
-import importlib.util
 import os
-import selectors
-import socket
 import sys
 import time
 
@@ -163,33 +165,6 @@ def _patch_urllib3_create_connection(module) -> None:
     module.create_connection = _urllib3_racer
 
 
-class _Urllib3ConnectionPatcher(importlib.abc.MetaPathFinder, importlib.abc.Loader):
-    """One-shot import hook: patch urllib3's connect walker the moment the module loads.
-
-    Importing urllib3 eagerly costs ~50 ms on every CLI start, and ``hermes`` / the TUI
-    gateway never load it unless something actually calls ``requests``.
-    """
-
-    def find_spec(self, fullname, path, target=None):
-        if fullname != _URLLIB3_CONNECTION_MODULE:
-            return None
-        if self in sys.meta_path:
-            sys.meta_path.remove(self)
-        spec = importlib.util.find_spec(fullname)
-        if spec is None or spec.loader is None:
-            return None
-        self._inner = spec.loader
-        spec.loader = self
-        return spec
-
-    def create_module(self, spec):
-        return self._inner.create_module(spec)
-
-    def exec_module(self, module):
-        self._inner.exec_module(module)
-        _patch_urllib3_create_connection(module)
-
-
 def install_happy_eyeballs_socket_connect() -> None:
     """Race IPv6/IPv4 for every sync TCP connect in the process (RFC 8305, #114265).
 
@@ -202,6 +177,47 @@ def install_happy_eyeballs_socket_connect() -> None:
     results serially — on a network whose advertised IPv6 route is blackholed, each AAAA
     record burns the full connect timeout before IPv4 answers. Idempotent, best-effort.
     """
+    # Deferred stdlib imports: these names are not preloaded at interpreter start, so a
+    # top-of-file import could resolve a project-local same-named module. Bound here —
+    # inside the hardened import window — as module attributes, keeping
+    # ``hermes_bootstrap.socket`` / ``.selectors`` intact for callers and tests.
+    global importlib, selectors, socket
+    import importlib.abc
+    import importlib.util
+    import selectors
+    import socket
+
+    if not hasattr(socket, "create_connection"):
+        return  # a sys.modules entry planted before this import is the host's problem
+
+    class _Urllib3ConnectionPatcher(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        """One-shot import hook: patch urllib3's connect walker the moment the module loads.
+
+        Importing urllib3 eagerly costs ~50 ms on every CLI start, and ``hermes`` / the TUI
+        gateway never load it unless something actually calls ``requests``.
+        """
+
+        _hermes_urllib3_patcher = True  # identity marker: the class is redefined per call
+
+        def find_spec(self, fullname, path, target=None):
+            if fullname != _URLLIB3_CONNECTION_MODULE:
+                return None
+            if self in sys.meta_path:
+                sys.meta_path.remove(self)
+            spec = importlib.util.find_spec(fullname)
+            if spec is None or spec.loader is None:
+                return None
+            self._inner = spec.loader
+            spec.loader = self
+            return spec
+
+        def create_module(self, spec):
+            return self._inner.create_module(spec)
+
+        def exec_module(self, module):
+            self._inner.exec_module(module)
+            _patch_urllib3_create_connection(module)
+
     if getattr(socket.create_connection, "_hermes_happy_eyeballs", False):
         return
 
@@ -220,7 +236,7 @@ def install_happy_eyeballs_socket_connect() -> None:
     urllib3_connection = sys.modules.get(_URLLIB3_CONNECTION_MODULE)
     if urllib3_connection is not None:
         _patch_urllib3_create_connection(urllib3_connection)
-    elif not any(isinstance(finder, _Urllib3ConnectionPatcher) for finder in sys.meta_path):
+    elif not any(getattr(finder, "_hermes_urllib3_patcher", False) for finder in sys.meta_path):
         sys.meta_path.insert(0, _Urllib3ConnectionPatcher())
 
 
@@ -334,9 +350,66 @@ def export_scratch_tmp_env() -> None:
         pass  # a missing/unwritable home just leaves the system temp dir in place
 
 
+def _import_window_path() -> list:
+    """``sys.path`` for the import-time window: the repo root plus interpreter-owned
+    directories, nothing else.
+
+    ``harden_import_path()`` only re-pins the repo first — enough for Hermes names,
+    but an absolute cwd (``-m`` launches) or PYTHONPATH directory still wins for
+    stdlib names the repo does not provide (``socket``, ``selectors``). The window
+    therefore resolves against just the repo and the Python installation itself.
+    """
+    root = os.environ.get("HERMES_PYTHON_SRC_ROOT") or os.path.dirname(os.path.abspath(__file__))
+    root_abs = os.path.normcase(os.path.abspath(root))
+    prefixes = {
+        os.path.normcase(os.path.abspath(p))
+        for p in (sys.prefix, sys.exec_prefix, sys.base_prefix, sys.base_exec_prefix)
+    }
+    try:
+        cwd = os.path.normcase(os.path.abspath(os.getcwd()))
+    except OSError:
+        cwd = None
+    kept = [root]
+    for p in sys.path:
+        if not isinstance(p, str):
+            continue
+        try:
+            ap = os.path.normcase(os.path.abspath(p))
+        except (TypeError, ValueError):
+            continue
+        if ap == root_abs or ap == cwd:
+            continue
+        if any(ap == px or ap.startswith(px + os.sep) for px in prefixes):
+            kept.append(p)
+    return kept
+
+
+def _run_under_hardened_import_path() -> None:
+    """Run the import-time calls with the caller's cwd unable to shadow anything.
+
+    This module is imported BEFORE ``harden_import_path()`` runs, so the caller's
+    ``sys.path`` can still rank a project-local ``hermes_constants.py``, ``tools/``
+    package, or ``platform.py``/``socket.py`` above the real one (``''`` on ``-c``
+    launches, an absolute cwd on ``-m`` launches, PYTHONPATH entries). Swap in the
+    restricted window path for the duration of the calls, then restore the caller's
+    list so import alone never permanently mutates a host's ``sys.path``; entries
+    the calls appended (the durable lazy target deliberately lands last) are kept.
+    """
+    path_before = sys.path[:]
+    try:
+        sys.path[:] = _import_window_path()
+        window_path = sys.path[:]
+        apply_windows_utf8_bootstrap()
+        suppress_platform_ver_console()
+        activate_durable_lazy_target()
+        try:
+            install_happy_eyeballs_socket_connect()
+        except Exception:
+            pass  # best-effort; socket patching must never break an entry point
+        export_scratch_tmp_env()
+    finally:
+        sys.path[:] = path_before + [p for p in sys.path if p not in path_before and p not in window_path]
+
+
 # Apply on import — entry points only need ``import hermes_bootstrap`` first.
-apply_windows_utf8_bootstrap()
-suppress_platform_ver_console()
-activate_durable_lazy_target()
-install_happy_eyeballs_socket_connect()
-export_scratch_tmp_env()
+_run_under_hardened_import_path()

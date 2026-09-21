@@ -336,6 +336,155 @@ class TestHardenImportPath:
 
 
 
+class TestImportShadowing:
+    """Import-time calls must not resolve through a sys.path that still holds the
+    caller's cwd (``''`` for ``-c``/``-m`` launches, or an absolute path via
+    PYTHONPATH). The module promises "stdlib only" because it runs before
+    ``harden_import_path()``; the deferred imports (``hermes_constants``,
+    ``tools.lazy_deps``, stdlib ``platform``/``tempfile``) run under a hardened
+    window so a project-local package of the same name never wins."""
+
+    @staticmethod
+    def _repo_root():
+        return Path(__file__).resolve().parent.parent
+
+    def _run_child(self, cwd, extra_env=None):
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        env["HERMES_REPO_ROOT"] = str(self._repo_root())
+        env.pop("HERMES_LAZY_INSTALL_TARGET", None)
+        env.update(extra_env or {})
+        script = textwrap.dedent("""
+            import os, sys
+            sys.path.append(os.environ["HERMES_REPO_ROOT"])
+            import hermes_bootstrap
+            print("HERMES_CONSTANTS=" + sys.modules["hermes_constants"].__file__)
+            if "tools.lazy_deps" in sys.modules:
+                print("LAZY_DEPS=" + sys.modules["tools.lazy_deps"].__file__)
+            print("SOCKET_FILE=" + sys.modules["socket"].__file__)
+            print("RELATIVE_PATH_KEPT=" + str("" in sys.path))
+            target = os.environ.get("HERMES_LAZY_INSTALL_TARGET", "")
+            if target:
+                print("LAZY_TARGET_KEPT=" + str(target in sys.path))
+        """)
+        return subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(cwd), env=env, capture_output=True, text=True, timeout=60,
+        )
+
+    def test_hermes_constants_cannot_be_shadowed_by_cwd(self, tmp_path):
+        """A project-local hermes_constants.py must not execute during bootstrap import."""
+        (tmp_path / "hermes_constants.py").write_text(
+            'import sys\nprint("PWNED-CONSTANTS", file=sys.stderr)\n'
+            'def export_scratch_tmp_env():\n    pass\n'
+        )
+        result = self._run_child(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert "PWNED-CONSTANTS" not in result.stderr
+        resolved = next(l for l in result.stdout.splitlines() if l.startswith("HERMES_CONSTANTS="))
+        assert str(tmp_path) not in resolved
+        assert str(self._repo_root()) in resolved
+
+    def test_lazy_deps_cannot_be_shadowed_by_cwd(self, tmp_path):
+        """Same arm through ``tools.lazy_deps`` (requires HERMES_LAZY_INSTALL_TARGET)."""
+        pkg = tmp_path / "tools"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "lazy_deps.py").write_text(
+            'import sys\nprint("PWNED-LAZY", file=sys.stderr)\n'
+            'def activate_durable_lazy_target():\n    pass\n'
+        )
+        target = tmp_path / "lazy-target"
+        target.mkdir()
+        result = self._run_child(tmp_path, {"HERMES_LAZY_INSTALL_TARGET": str(target)})
+        assert result.returncode == 0, result.stderr
+        assert "PWNED-LAZY" not in result.stderr
+        resolved = next(l for l in result.stdout.splitlines() if l.startswith("LAZY_DEPS="))
+        assert str(tmp_path / "tools") not in resolved
+
+    def test_caller_sys_path_restored_after_import(self, tmp_path):
+        """The hardening window must not permanently mutate the host's sys.path:
+        the '' cwd entry an embedder started with is still there after import."""
+        result = self._run_child(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert "RELATIVE_PATH_KEPT=True" in result.stdout
+
+    def test_stdlib_modules_cannot_be_shadowed_by_cwd(self, tmp_path):
+        """A project-local socket.py/selectors.py/importlib/ must not execute:
+        those stdlib names are not preloaded at interpreter start, so a top-level
+        import would resolve the shadow. They are deferred into the hardened
+        window, which binds the real modules."""
+        (tmp_path / "socket.py").write_text('print("PWNED-SOCKET")\n')
+        (tmp_path / "selectors.py").write_text('print("PWNED-SELECTORS")\n')
+        pkg = tmp_path / "importlib"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text('print("PWNED-IMPORTLIB")\n')
+        result = self._run_child(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert "PWNED" not in result.stderr + result.stdout
+        resolved = next(l for l in result.stdout.splitlines() if l.startswith("SOCKET_FILE="))
+        assert str(tmp_path) not in resolved
+
+    def test_sys_path_restored_exactly_with_differently_spelled_root(self, tmp_path):
+        """When the caller carries the repo root under a non-canonical spelling,
+        harden_import_path() drops it and inserts the canonical form; the restore
+        must not leak that canonical entry into the caller's list."""
+        script = textwrap.dedent("""
+            import os, sys
+            sys.path.append(os.environ["HERMES_REPO_ROOT"] + "/.")
+            before = sys.path[:]
+            import hermes_bootstrap
+            print("PATH_EXACT=" + str(sys.path == before))
+        """)
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        env["HERMES_REPO_ROOT"] = str(self._repo_root())
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "PATH_EXACT=True" in result.stdout
+
+    def test_lazy_target_survives_restore(self, tmp_path):
+        """Entries the window calls append (the durable lazy-install target)
+        must be kept after the caller's sys.path is restored."""
+        target = tmp_path / "lazy-target"
+        target.mkdir()
+        result = self._run_child(tmp_path, {"HERMES_LAZY_INSTALL_TARGET": str(target)})
+        assert result.returncode == 0, result.stderr
+        assert "LAZY_TARGET_KEPT=True" in result.stdout
+
+    def test_real_entry_point_not_shadowed(self, tmp_path):
+        """E2E: ``python -m hermes_cli.main --version`` from a directory holding
+        shadows for every import-time name must run the real bootstrap only."""
+        (tmp_path / "hermes_constants.py").write_text('print("PWNED-CONSTANTS")\n')
+        (tmp_path / "socket.py").write_text('print("PWNED-SOCKET")\n')
+        pkg = tmp_path / "tools"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "lazy_deps.py").write_text('print("PWNED-LAZY")\n')
+        lazy = tmp_path / "lazy-target"
+        lazy.mkdir()
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(self._repo_root())
+        env["HERMES_LAZY_INSTALL_TARGET"] = str(lazy)
+        result = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "--version"],
+            cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, result.stderr[-2000:]
+        assert "PWNED" not in result.stderr + result.stdout
+        assert "Hermes Agent" in result.stdout
+
+    def test_real_modules_still_load_with_no_shadow(self, tmp_path):
+        """Control: with nothing planted, the real modules resolve as before."""
+        result = self._run_child(tmp_path)
+        assert result.returncode == 0, result.stderr
+        resolved = next(l for l in result.stdout.splitlines() if l.startswith("HERMES_CONSTANTS="))
+        assert str(self._repo_root()) in resolved
+
+
 class TestSuppressPlatformVerConsole:
     """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
 

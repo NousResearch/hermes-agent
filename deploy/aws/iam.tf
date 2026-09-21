@@ -46,14 +46,10 @@ data "aws_iam_policy_document" "runtime_boundary" {
     actions = [
       "bedrock:InvokeModel",
       "bedrock:InvokeModelWithResponseStream",
-      # The boundary bounds SERVICES; the repositories are named by the runtime policy's
-      # `PullItsOwnImage` statement below. Deliberately not repeated here: a boundary is an
-      # intersection, so a repository list in two places that drift apart shows up as an
-      # AccessDenied naming neither of them — which is how the SSM heartbeat was lost.
-      "ecr:BatchCheckLayerAvailability",
-      "ecr:BatchGetImage",
+      # Layer reads are NOT here; they are bounded by repository in EcrLayerPullCeiling
+      # below. This one takes no resource — AWS models it account-wide — so scoping it
+      # would deny every pull.
       "ecr:GetAuthorizationToken",
-      "ecr:GetDownloadUrlForLayer",
       "logs:CreateLogStream",
       "logs:DescribeLogStreams",
       "logs:PutLogEvents",
@@ -75,6 +71,25 @@ data "aws_iam_policy_document" "runtime_boundary" {
       "sts:AssumeRole",
     ]
     resources = ["*"]
+  }
+
+  # The ceiling on image pulls, by repository rather than by service.
+  #
+  # The runtime policy already scopes these to the same repositories. Stating it twice is
+  # normally how a boundary goes wrong — an intersection whose two halves drift apart
+  # denies with a message naming neither, which is how the SSM heartbeat was lost — but
+  # both halves read `local.image_repository_arns`, so there is one list and nothing to
+  # drift. What it buys is that a future policy attached to this role cannot widen image
+  # pulls past the images this deployment declares, which is the job of a boundary.
+  statement {
+    sid    = "EcrLayerPullCeiling"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+    ]
+    resources = local.image_repository_arns
   }
 
   # Whatever the integrations need, capped to the same literal resources they name.

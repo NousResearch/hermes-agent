@@ -716,27 +716,66 @@ def test_the_auth_token_grant_is_unchanged_and_still_account_wide():
     assert 'resources = ["*"]' in block
 
 
-def test_the_boundary_bounds_ecr_by_service_not_by_repository():
-    """The boundary must not carry its own repository list.
-
-    A boundary is an intersection. Two repository lists that drift apart produce an
-    AccessDenied naming neither of them — the shape of the SSM heartbeat failure. The
-    boundary says which services may be touched; the runtime policy says which
-    repositories.
-    """
-    ceiling = _boundary_ceiling_actions()
-    for action in _ECR_PULL_ACTIONS:
-        assert _permits(ceiling, action), (
-            f"the boundary no longer permits {action}, so the runtime policy's pull "
-            "grant is capped away and the instance cannot pull any image"
-        )
+def _boundary() -> str:
     iam = (MODULE / "iam.tf").read_text(encoding="utf-8")
-    boundary = iam[iam.index('data "aws_iam_policy_document" "runtime_boundary"') : iam.index(
+    return iam[iam.index('data "aws_iam_policy_document" "runtime_boundary"') : iam.index(
         'resource "aws_iam_policy" "runtime_boundary"'
     )]
-    assert "image_repository_arns" not in boundary, (
-        "the boundary now carries its own copy of the repository list; keep the "
-        "resource scoping in one place"
+
+
+def test_the_boundary_caps_image_pulls_to_the_same_repositories():
+    """A boundary is an intersection: whatever it omits, the runtime policy cannot grant.
+
+    Both halves read `local.image_repository_arns`, so there is one list and the two
+    cannot drift. That is what makes stating it twice safe here — two hand-written lists
+    would deny with a message naming neither of them, which is how the SSM heartbeat was
+    lost.
+    """
+    boundary = _boundary()
+    assert 'sid    = "EcrLayerPullCeiling"' in boundary, (
+        "the boundary no longer bounds image pulls by repository"
+    )
+    ceiling = boundary[boundary.index('sid    = "EcrLayerPullCeiling"'):]
+    ceiling = ceiling[: ceiling.index("\n  }")]
+    assert "resources = local.image_repository_arns" in ceiling, (
+        "the boundary's pull ceiling does not read the same derived list as the runtime "
+        "policy; two lists that can disagree is the bug this shape exists to prevent"
+    )
+    for action in _ECR_PULL_ACTIONS:
+        assert f'"{action}"' in ceiling, (
+            f"the boundary no longer permits {action}, so the runtime policy's pull grant "
+            "is capped away and the instance cannot pull any image"
+        )
+
+
+def test_the_boundary_never_caps_the_auth_token_to_a_repository():
+    """`ecr:GetAuthorizationToken` takes no resource. In the boundary's ceiling it would
+    match nothing, and every pull would fail before it reached a repository."""
+    boundary = _boundary()
+    services = boundary[boundary.index('sid    = "ServicesThisDeploymentUses"'):]
+    services = services[: services.index('resources = ["*"]')]
+    assert '"ecr:GetAuthorizationToken"' in services, (
+        "the auth-token action moved out of the wildcard statement; it takes no resource "
+        "and a repository-scoped ceiling would deny it"
+    )
+    ceiling = boundary[boundary.index('sid    = "EcrLayerPullCeiling"'):]
+    assert '"ecr:GetAuthorizationToken"' not in ceiling[: ceiling.index("\n  }")]
+
+
+def test_the_boundary_and_the_runtime_policy_name_one_list():
+    """Neither side may grow a hand-written repository ARN."""
+    iam = (MODULE / "iam.tf").read_text(encoding="utf-8")
+    # Counted as bindings, not mentions: the comment beside the ceiling names the local
+    # too, and a test that counts prose fails the next time somebody explains it better.
+    bindings = re.findall(r"resources\s*=\s*local\.image_repository_arns", iam)
+    assert len(bindings) == 2, (
+        "the boundary and the runtime policy must each read the derived list exactly "
+        f"once; found {len(bindings)}. A second source of repository ARNs is the drift "
+        "this shape exists to prevent"
+    )
+    assert ":repository/" not in iam, (
+        "a repository ARN is written into iam.tf by hand; it must be derived in main.tf "
+        "from the image URIs so the module works in a customer's own account"
     )
 
 
@@ -751,6 +790,38 @@ def test_a_non_ecr_worker_image_is_refused_with_a_sentence():
         "the validation must still admit the empty control-plane-only default"
     )
     assert "dkr" in worker and "ecr" in worker
+
+
+_ARNS_LOCAL = "  image_repository_arns = distinct(values(local.ecr_repository_arns))"
+
+
+def _derive_repository_arns(tmp_path, image: str, worker: str) -> list[str]:
+    """What Terraform itself derives, from the module's own locals.
+
+    Lifted verbatim into a provider-free module rather than re-implemented in Python: the
+    tag-versus-digest handling is the part that is easy to get wrong, and a second
+    implementation here would assert my reading of the expression instead of the
+    expression. Provider-free, so it runs offline.
+    """
+    main = _main_tf()
+    block = main[main.index("  ecr_image_uris = {") : main.index(_ARNS_LOCAL) + len(_ARNS_LOCAL)]
+    (tmp_path / "main.tf").write_text(
+        'variable "image_uri" { type = string }\n'
+        'variable "worker_image_uri" { type = string }\n\n'
+        'locals {\n  partition = "aws"\n' + block + "\n}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["terraform", "init", "-backend=false", "-input=false"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+    result = subprocess.run(
+        ["terraform", "console", "-var", f"image_uri={image}",
+         "-var", f"worker_image_uri={worker}"],
+        cwd=tmp_path, input="local.image_repository_arns\n",
+        text=True, capture_output=True, check=True,
+    )
+    return re.findall(r'"(arn:[^"]+)"', result.stdout)
 
 
 @pytest.mark.skipif(
@@ -793,25 +864,49 @@ def test_terraform_derives_the_expected_repository_arns(tmp_path, image, worker,
     expression. The locals are lifted verbatim into a provider-free module so this runs
     offline.
     """
+    assert _derive_repository_arns(tmp_path, image, worker) == expected
+
+
+def test_one_repository_serving_both_images_is_listed_once():
+    """Both images in one repository under different tags is an ordinary layout.
+
+    IAM ignores the duplicate, so this is not a security property — it is a readability
+    and diff-churn one, and a policy nobody can read at a glance is a policy nobody
+    reviews.
+    """
     main = _main_tf()
-    block = main[main.index("  ecr_image_uris = {") : main.index(
-        "  image_repository_arns = values(local.ecr_repository_arns)"
-    ) + len("  image_repository_arns = values(local.ecr_repository_arns)")]
-    (tmp_path / "main.tf").write_text(
-        'variable "image_uri" { type = string }\n'
-        'variable "worker_image_uri" { type = string }\n\n'
-        'locals {\n  partition = "aws"\n' + block + "\n}\n",
-        encoding="utf-8",
+    assert "distinct(values(local.ecr_repository_arns))" in main, (
+        "two images in one repository would produce the same ARN twice in the policy"
     )
-    subprocess.run(
-        ["terraform", "init", "-backend=false", "-input=false"],
-        cwd=tmp_path, check=True, capture_output=True,
-    )
-    result = subprocess.run(
-        ["terraform", "console", "-var", f"image_uri={image}",
-         "-var", f"worker_image_uri={worker}"],
-        cwd=tmp_path, input="local.image_repository_arns\n",
-        text=True, capture_output=True, check=True,
-    )
-    derived = re.findall(r'"(arn:[^"]+)"', result.stdout)
-    assert derived == expected, result.stdout
+
+
+@pytest.mark.skipif(
+    shutil.which("terraform") is None, reason="terraform is not installed here"
+)
+@pytest.mark.parametrize(
+    "image, worker, expected",
+    [
+        pytest.param(
+            "369607682697.dkr.ecr.eu-west-2.amazonaws.com/nova:control-1.0",
+            "369607682697.dkr.ecr.eu-west-2.amazonaws.com/nova:worker-0.21.1",
+            ["arn:aws:ecr:eu-west-2:369607682697:repository/nova"],
+            id="one-repository-two-tags",
+        ),
+        pytest.param(
+            "369607682697.dkr.ecr.eu-west-2.amazonaws.com/nova@sha256:" + "a" * 64,
+            "369607682697.dkr.ecr.eu-west-2.amazonaws.com/nova@sha256:" + "b" * 64,
+            ["arn:aws:ecr:eu-west-2:369607682697:repository/nova"],
+            id="one-repository-two-digests",
+        ),
+        pytest.param(
+            "369607682697.dkr.ecr.eu-west-2.amazonaws.com/nova-control-plane:1.0",
+            "   ",
+            ["arn:aws:ecr:eu-west-2:369607682697:repository/nova-control-plane"],
+            id="whitespace-only-worker-is-empty",
+        ),
+    ],
+)
+def test_terraform_deduplicates_and_tolerates_a_blank_worker(
+    tmp_path, image, worker, expected,
+):
+    assert _derive_repository_arns(tmp_path, image, worker) == expected

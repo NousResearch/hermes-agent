@@ -56,8 +56,12 @@ locals {
     )
   }
 
-  # Sorted by key, so a plan does not churn on map ordering.
-  image_repository_arns = values(local.ecr_repository_arns)
+  # Sorted by key, so a plan does not churn on map ordering, and deduplicated: pointing
+  # both images at one repository under different tags is a perfectly ordinary layout, and
+  # it should produce one ARN rather than the same one twice. IAM would ignore the
+  # duplicate; a policy document that lists it is still a policy nobody can read at a
+  # glance, and it churns the diff every time the other image moves.
+  image_repository_arns = distinct(values(local.ecr_repository_arns))
 
   secret_arn_pattern = "arn:${local.partition}:secretsmanager:${var.region}:${local.account_id}:secret:${var.secret_prefix}*"
 

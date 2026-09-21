@@ -98,6 +98,35 @@ def test_scalar_platform_toolsets_fall_back_to_platform_default():
     assert enabled == default_enabled
 
 
+def test_enable_on_string_platform_toolsets_keeps_listed_entries():
+    """#115866: `hermes tools enable` must operate on the selection a list-literal
+    string encodes — not re-baseline it on the platform default, which silently
+    dropped the user's default-off entries (video, video_gen) on write."""
+    config = {"platform_toolsets": {"telegram": '["browser", "terminal", "video", "video_gen"]'}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _apply_toolset_change(config, "telegram", ["computer_use"], "enable")
+
+    saved = config["platform_toolsets"]["telegram"]
+    assert isinstance(saved, list)
+    assert {"browser", "terminal", "video", "video_gen", "computer_use"} <= set(saved)
+
+
+def test_malformed_list_string_platform_toolsets_warns_then_falls_back(caplog):
+    """A string that does not parse as a list falls back to the platform default
+    loudly: one warning naming the expected shape, never a silent substitution (#115866)."""
+    import hermes_cli.tools_config as tc
+
+    config = {"platform_toolsets": {"cli": '["web", terminal'}}
+    tc._warned_invalid_platform_toolsets.discard("cli")
+
+    with caplog.at_level("WARNING", logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+
+    assert enabled == default_enabled
+    assert [r for r in caplog.records if "platform_toolsets.cli" in r.getMessage()
+            and "expected a YAML list" in r.getMessage()]
 
 
 
@@ -716,19 +745,19 @@ class TestImagegenBackendRegistry:
     def test_fal_catalog_loads_lazily(self):
         """catalog_fn should defer import to avoid import cycles."""
         from hermes_cli.tools_config import IMAGEGEN_BACKENDS
-        catalog, default = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
+        catalog, default = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]({})
         assert default == "fal-ai/flux-2/klein/9b"
         assert "fal-ai/flux-2/klein/9b" in catalog
         assert "fal-ai/flux-2-pro" in catalog
 
-    def test_image_gen_providers_tagged_with_fal_backend(self):
-        """Both Nous Subscription and FAL.ai providers must carry the
-        imagegen_backend tag so _configure_provider fires the picker."""
-        from hermes_cli.tools_config import TOOL_CATEGORIES
+    def test_image_gen_providers_tagged_with_registered_backend(self):
+        """Every hardcoded image_gen row must name a backend in IMAGEGEN_BACKENDS
+        so _configure_provider can fire that backend's model picker."""
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS, TOOL_CATEGORIES
         providers = TOOL_CATEGORIES["image_gen"]["providers"]
         for p in providers:
-            assert p.get("imagegen_backend") == "fal", (
-                f"{p['name']} missing imagegen_backend tag"
+            assert p.get("imagegen_backend") in IMAGEGEN_BACKENDS, (
+                f"{p['name']} missing a registered imagegen_backend tag"
             )
 
 
@@ -753,7 +782,7 @@ class TestImagegenModelPicker:
             _configure_imagegen_model,
             IMAGEGEN_BACKENDS,
         )
-        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
+        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]({})
         model_ids = list(catalog.keys())
         ordered = [default_model] + [m for m in model_ids if m != default_model]
         gpt_idx = ordered.index("fal-ai/gpt-image-1.5")
@@ -977,6 +1006,65 @@ def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
 
 
 
+# ── One managed image row ─────────────────────────────────────────────────────
+#
+# FAL, Krea and Portal models all live behind the single "Nous Subscription" row; the stored
+# model id picks the gateway. Before, the Portal plugin rendered its own row that also wrote
+# `provider: nous`, so two rows read active at once and the Portal pick generated on FAL.
+
+
+def _managed_image_row() -> dict:
+    return next(p for p in TOOL_CATEGORIES["image_gen"]["providers"] if p.get("managed_nous_feature") == "image_gen")
+
+
+def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.tools_config_providers import _plugin_image_gen_providers
+
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda config, **kwargs: SimpleNamespace(features={"image_gen": SimpleNamespace(managed_by_nous=True)}),
+    )
+    rows = TOOL_CATEGORIES["image_gen"]["providers"] + _plugin_image_gen_providers()
+    for model in ("fal-ai/flux-2/klein/9b", "krea-2-medium", "google/gemini-3-pro-image"):
+        config = {"image_gen": {"provider": "nous", "model": model}}
+        active = [r["name"] for r in rows if tools_config._is_provider_active(r, config)]
+        assert active == [_managed_image_row()["name"]], (model, active)
+
+
+def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.web_routers.tools import _resolve_toolset_model_plugin, _toolset_model_catalog
+    from plugins.image_gen.krea import KREA_MODEL_IDS
+    from tools.image_generation_catalog import FAL_MODELS
+
+    paid = NousPortalAccountInfo(logged_in=True, source="jwt", fresh=False, paid_service_access=True)
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda *args, **kwargs: SimpleNamespace(features={}, account_info=paid))
+    plugin = _resolve_toolset_model_plugin("image_gen", _managed_image_row())
+    catalog, default_model = _toolset_model_catalog("image_gen", plugin, {})
+
+    assert default_model in catalog and default_model in FAL_MODELS
+    assert KREA_MODEL_IDS <= set(catalog)
+    assert not any(mid.startswith("fal-ai/krea/") for mid in catalog), "Krea 2 must appear once, natively"
+
+
+def test_pool_only_account_is_offered_fal_models_only(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.tools_config_providers import _managed_image_catalog
+
+    pool = NousPortalAccountInfo(
+        logged_in=True, source="jwt", fresh=False, paid_service_access=False,
+        tool_access=NousToolAccessInfo(enabled=True, coverage={"fal": True, "krea": False}))
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda *args, **kwargs: SimpleNamespace(features={}, account_info=pool))
+    catalog, _ = _managed_image_catalog({})
+
+    assert catalog and {meta["backend"] for meta in catalog.values()} == {"fal"}
+
+
 # ── Windows console-flash guard for post-setup subprocess spawns ──────────────
 #
 # The desktop GUI runs post-setup hooks through a detached, console-less
@@ -1015,6 +1103,15 @@ _requires_recently_shipped = pytest.mark.skipif(
     not _RECENTLY_SHIPPED_TOOLSETS,
     reason="no toolset is currently inside its first release",
 )
+
+
+def test_inter_agent_toolset_is_opt_in_and_reachable_from_picker():
+    """Messaging stays off the default schema while remaining user-selectable."""
+    from toolsets import TOOLSETS, resolve_toolset
+
+    assert "inter_agent" in TOOLSETS
+    assert "inter_agent" not in resolve_toolset("hermes-cli")
+    assert "inter_agent" in _checklist_toolset_keys("cli")
 
 
 def _saved_list_from_before(platform="cli"):
@@ -1138,6 +1235,20 @@ def test_disabled_composite_display_matches_runtime_tool_selection():
 
     for name in ("terminal", "file", "web", "vision", "skills"):
         assert (name in enabled) == bool(set(resolve_toolset(name)) & runtime), name
+
+
+def test_dispatcher_worker_recovers_kanban_and_injects_inter_agent_separately(monkeypatch):
+    """Kanban recovery must not depend on the messaging toolset's membership."""
+    from model_tools import _select_tool_names
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+    monkeypatch.setattr("model_tools._is_dispatcher_owned_worker", lambda: True)
+    monkeypatch.setattr("model_tools._is_delegated_child_context", lambda: False)
+
+    enabled = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+    selected = _select_tool_names(sorted(enabled), [], quiet_mode=True)
+    assert "kanban_complete" in selected
+    assert "inter_agent" in selected
 
 
 @_requires_recently_shipped

@@ -131,6 +131,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._turn_id = str(uuid.uuid4())  # keys send_stream_frame() per concurrent consumer
         # Returns False after /new or /stop; run() then abandons the stream.
         self._run_still_current = run_still_current or (lambda: True)
+        # Whether this consumer is fed the final reply's stream deltas. A consumer built only to
+        # relay interim commentary (text streaming off, ``display.interim_assistant_messages`` on)
+        # never receives the final's deltas, so the duplicate-risk diagnostic in
+        # ``_run_agent_mark_streamed_delivery`` must not fire for it (#105341). Default True: every
+        # other construction site (incl. the proxy path) creates consumers only when streaming is on.
+        self.stream_deltas_enabled = True
         # Only platforms needing an explicit finalize call (DingTalk AI Cards) force a
         # redundant final edit; ``is True`` keeps MagicMock adapters out.
         self._adapter_requires_finalize = getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
@@ -356,6 +362,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         target = self._clean_for_display(text or "").strip()
         seen = (self._visible_prefix(), *self._delivered_commentary_texts,
                 *self._delivered_segment_texts)
+        return bool(target) and any(sent.strip() == target for sent in seen)
+
+    def has_durably_delivered_text(self, text: str) -> bool:
+        """``has_delivered_text`` restricted to deliveries that outlive the turn: commentary and
+        finalized segments always count; the visible prefix only once ``_already_sent`` (a draft frame
+        sets ``_last_sent_text`` but is ephemeral — a failed finalize send after it must still fall
+        back to the gateway's real final send, same gate as ``delivered_final_matches``)."""
+        target = self._clean_for_display(text or "").strip()
+        seen = [*self._delivered_commentary_texts, *self._delivered_segment_texts]
+        if self._already_sent:
+            seen.append(self._visible_prefix())
         return bool(target) and any(sent.strip() == target for sent in seen)
 
     def on_segment_break(self) -> None:
@@ -709,9 +726,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         else:
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
-            # platform-limit check (_len_fn is for overflow).
+            # platform-limit check (_len_fn is for overflow).  It must not
+            # override an active flood backoff: while a refusal is being
+            # waited out, only the (server-requested) interval may fire an edit.
             should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or len(self._accumulated) >= self.cfg.buffer_threshold)
+                               or (len(self._accumulated) >= self.cfg.buffer_threshold
+                                   and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(

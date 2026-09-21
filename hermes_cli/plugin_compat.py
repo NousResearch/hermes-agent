@@ -149,17 +149,52 @@ def scan_source(src: str, rel: str, manifest: Dict[str, Dict[str, str]]) -> List
     return sorted(set(hits), key=lambda h: (h.file, h.line, h.old))
 
 
+_scan_lock = threading.Lock()
+_scan_cache: Dict[str, Tuple[Tuple[Tuple[str, int, int], ...], List[Hit]]] = {}
+
+
+def _plugin_dir_signature(plugin_dir: Path) -> Tuple[Tuple[str, int, int], ...]:
+    """``(relpath, mtime_ns, size)`` of every ``.py`` under the plugin — the cache key for a scan.
+    A stat walk costs ~1 ms; the AST scan it replaces costs ~10 ms per file."""
+    sig = []
+    for p in _iter_py(plugin_dir):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        sig.append((str(p.relative_to(plugin_dir)), st.st_mtime_ns, st.st_size))
+    return tuple(sorted(sig))
+
+
 def scan_plugin(plugin_dir: Optional[Path], manifest: Optional[Dict[str, Dict[str, str]]] = None) -> List[Hit]:
-    manifest = load_manifest() if manifest is None else manifest
+    """Hits for one plugin directory. With the default manifest the result is cached process-wide
+    on the directory's file signature: a multiplex gateway discovers plugins once per served
+    profile, and re-parsing every plugin's source per profile was ~0.4s × profiles on the boot path."""
+    loaded = load_manifest()
+    manifest = loaded if manifest is None else manifest
+    cacheable = manifest is loaded
     if not manifest or not plugin_dir or not Path(plugin_dir).is_dir():
         return []
+    plugin_dir = Path(plugin_dir)
+    key = str(plugin_dir.resolve(strict=False))
+    signature = _plugin_dir_signature(plugin_dir) if cacheable else ()
+    if cacheable:
+        with _scan_lock:
+            cached = _scan_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return list(cached[1])
     hits: List[Hit] = []
-    for p in _iter_py(Path(plugin_dir)):
+    for p in _iter_py(plugin_dir):
         try:
             src = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        hits += scan_source(src, str(p.relative_to(plugin_dir)), manifest)
+        # POSIX form on every OS: notices/reports compare and dedupe on this string, and the
+        # compat tests pin ``sub/m.py`` — native Windows otherwise records ``sub\m.py`` (#112576).
+        hits += scan_source(src, p.relative_to(plugin_dir).as_posix(), manifest)
+    if cacheable:
+        with _scan_lock:
+            _scan_cache[key] = (signature, list(hits))
     return hits
 
 

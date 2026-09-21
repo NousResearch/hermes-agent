@@ -9,10 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import sys
-from typing import Optional
 
 
-def _die(msg: str, code: int = 1, *, err: bool = False) -> None:
+def _die(msg: str, code: int = 1, *, err: bool = False) -> NoReturn:
     print(msg, file=sys.stderr if err else sys.stdout)
     sys.exit(code)
 
@@ -59,7 +58,8 @@ def _render_distribution_plan(plan) -> None:
         else:
             print(
                 "  ⚠ Profile exists but is NOT a distribution.  Installing here will\n"
-                "    overwrite its SOUL.md, skills/, cron/, and mcp.json.\n"
+                "    overwrite its SOUL.md and mcp.json and replace any skill or cron job\n"
+                "    of the same name the distribution ships.\n"
                 "    Your memories, sessions, auth.json, and .env will be preserved,\n"
                 "    but any hand-edits to distribution-owned files will be lost."
             )
@@ -165,31 +165,6 @@ def _source_profile_dir(source_label: str) -> Path:
     return source_dir
 
 
-def _clone_channels_refusal(source_label: str) -> Optional[str]:
-    """``--clone-channels`` is refused when a live multiplexer already serves the source: the
-    duplicate adapter would be parked at once (same explanation the migrate preflight gives)."""
-    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
-    from hermes_cli.profile_channels import channel_platforms_configured
-    from hermes_cli.profiles import normalize_profile_name
-    served = recorded_served_profiles()
-    if not served or len(served) < 2 or normalize_profile_name(source_label) not in {
-        normalize_profile_name(p) for p in served
-    }:
-        return None
-    try:
-        platforms = channel_platforms_configured(_source_profile_dir(source_label))
-    except FileNotFoundError:
-        return None
-    if not platforms:
-        return None
-    return (
-        f"Error: --clone-channels would copy {', '.join(platforms)} from '{source_label}', which the running "
-        "multiplexed gateway already serves: the bot can only belong to one profile, so the copy would be "
-        "parked as a duplicate credential. Clone without --clone-channels and give the new profile its own bot "
-        "(hermes -p <name> setup), or route its chats with gateway.profile_routes instead."
-    )
-
-
 def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bool, clone_flag: str) -> None:
     from hermes_cli.profile_channels import (
         channel_platforms_configured, format_stripped_notice, shared_channel_credentials,
@@ -221,27 +196,27 @@ def _profile_create(args):
     no_skills = getattr(args, "no_skills", False)
     clone_from = getattr(args, "clone_from", None)
     clone_channels = getattr(args, "clone_channels", False)
+    sync_imports = getattr(args, "sync_imports", False)
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
     source_label = clone_from or get_active_profile_name()
-    if clone_channels and cloned:
-        refusal = _clone_channels_refusal(source_label)
-        if refusal:
-            _die(refusal)
     try:
         profile_dir = create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
             no_alias=no_alias, no_skills=no_skills, description=getattr(args, "description", None),
-            clone_channels=clone_channels,
+            clone_channels=clone_channels, sync_imports=sync_imports,
         )
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         _die(f"Error: {e}")
     print(f"\nProfile '{name}' created at {profile_dir}")
     if cloned:
         if clone_all:
-            print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
+            print(f"Full copy from {source_label} (excluding session history, backups, and snapshots).")
         else:
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
+        if sync_imports:
+            print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
+                  "keeps pulling the same Claude Code / Codex trees.")
         _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
         # Auto-clone Honcho config for the new profile (only with clone operations)
         try:
@@ -310,7 +285,7 @@ def _profile_delete(args):
     from hermes_cli.profiles import delete_profile
     try:
         delete_profile(args.profile_name, yes=getattr(args, "yes", False))
-    except (ValueError, FileNotFoundError) as e:
+    except (ValueError, FileNotFoundError, RuntimeError) as e:
         _die(f"Error: {e}")
 
 
@@ -460,6 +435,36 @@ def _profile_rename(args):
         _die(f"Error: {e}")
 
 
+def _profile_migrate_identity(args):
+    """Retry the identity migration of a rename that already completed. Exits non-zero when a
+    live gateway would not migrate (it still owns the routing index in memory), or when a
+    database rejected the rewrite (collision, lock, partial failure)."""
+    from hermes_cli.profile_identity import migrate_profile_identity
+    try:
+        migrated = migrate_profile_identity(args.old_name, args.new_name)
+    except (ValueError, FileNotFoundError) as e:
+        _die(f"Error: {e}")
+    if not migrated:
+        _die(f"Error: session identity was not migrated. Restart or stop the gateway, then run:\n"
+             f"    hermes profile migrate-identity {args.old_name} {args.new_name}", err=True)
+    print(f"✓ Session/routing identity migrated: {args.old_name} → {args.new_name}")
+
+
+def _profile_purge_identity(args):
+    """Retry the identity purge of a delete that already completed. Exits non-zero when a live
+    gateway would not purge (it still owns the routing index in memory), or when a database rejected
+    the delete (lock, partial failure)."""
+    from hermes_cli.profile_identity import purge_profile_identity
+    try:
+        purged = purge_profile_identity(args.profile_name)
+    except ValueError as e:
+        _die(f"Error: {e}")
+    if not purged:
+        _die(f"Error: session identity was not purged. Restart or stop the gateway, then run:\n"
+             f"    hermes profile purge-identity {args.profile_name}", err=True)
+    print(f"✓ Session/routing identity purged: {args.profile_name}")
+
+
 def _profile_export(args):
     from hermes_cli.profiles import export_profile, get_profile_export_path
     name = args.profile_name
@@ -599,6 +604,8 @@ PROFILE_ACTIONS = {
     'show': _profile_show,
     'alias': _profile_alias,
     'rename': _profile_rename,
+    'purge-identity': _profile_purge_identity,
+    'migrate-identity': _profile_migrate_identity,
     'export': _profile_export,
     'import': _profile_import,
     'install': _profile_install,

@@ -254,11 +254,41 @@ class TestToolCallLimit(unittest.TestCase):
         self.assertFalse(_tool_call_limit_reached(4, 5))
         self.assertTrue(_tool_call_limit_reached(5, 5))
 
-    def test_negative_limit_is_rejected(self):
+    def test_negative_limit_disables_it_same_as_zero(self):
+        """The documented contract (cli-config.yaml.example) is `<= 0 = unlimited`,
+        and _tool_call_limit_reached already treats every non-positive value as
+        unbounded -- the config validator must not reject exactly the values the
+        adjacent limit predicate treats as valid."""
+        from tools.code_execution_tool import _configured_max_tool_calls, _tool_call_limit_reached
+
+        self.assertEqual(_configured_max_tool_calls({"max_tool_calls": -1}), -1)
+        self.assertFalse(_tool_call_limit_reached(100_000, -1))
+
+    def test_non_integer_limit_is_rejected(self):
         from tools.code_execution_tool import _configured_max_tool_calls
 
-        with self.assertRaisesRegex(ValueError, "cannot be negative"):
-            _configured_max_tool_calls({"max_tool_calls": -1})
+        with self.assertRaisesRegex(ValueError, "must be an integer"):
+            _configured_max_tool_calls({"max_tool_calls": "unlimited"})
+
+    def test_invalid_limit_returns_tool_error_for_local_and_remote(self):
+        for env_type in ("local", "ssh"):
+            with self.subTest(env_type=env_type):
+                with patch(
+                    "tools.terminal_tool._get_env_config",
+                    return_value={"env_type": env_type},
+                ), patch(
+                    "tools.terminal_tool._docker_has_host_access",
+                    return_value=False,
+                ), patch(
+                    "tools.approval.check_execute_code_guard",
+                    return_value={"approved": True},
+                ), patch(
+                    "tools.code_execution_tool._load_config",
+                    return_value={"max_tool_calls": "unlimited"},
+                ):
+                    result = json.loads(execute_code("print('ok')", task_id="invalid-limit"))
+                self.assertIn("error", result)
+                self.assertIn("must be an integer", result["error"])
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
@@ -630,7 +660,12 @@ class TestEnvVarFiltering(unittest.TestCase):
         try:
             os.environ["HERMES_TIMEZONE"] = "America/New_York"
             child_env = self._get_child_env()
-            self.assertEqual(child_env.get("TZ"), "America/New_York")
+            if sys.platform == "win32":
+                # The MSVC runtime only parses POSIX-form TZ; an IANA name yields a wrong
+                # offset (#112233), so Windows children keep the OS zone instead.
+                self.assertNotIn("TZ", child_env)
+            else:
+                self.assertEqual(child_env.get("TZ"), "America/New_York")
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
@@ -675,6 +710,20 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("'code' parameter", result["error"])
         self.assertIn("execute_code(code=...)", result["error"])
         self.assertIn("terminal(command=...)", result["error"])
+        self.assertNotIn("NoneType", result["error"])
+
+    def test_terminal_command_class_argument_names_schema_error(self):
+        """Do not execute an unrecognized command list; explain the schema."""
+        from tools.terminal_tool import _handle_terminal
+
+        result = json.loads(
+            _handle_terminal({"command_class": ["pytest"]}, task_id="test")
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("'command_class' parameter", result["error"])
+        self.assertIn("terminal(command=\"...\")", result["error"])
+        self.assertIn("string", result["error"])
         self.assertNotIn("NoneType", result["error"])
 
     def test_empty_code_explains_required_parameter(self):

@@ -1,6 +1,8 @@
 """Tests for config.yaml structure validation (validate_config_structure)."""
 
 
+import pytest
+
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     _EXTRA_KNOWN_ROOT_KEYS,
@@ -33,6 +35,15 @@ class TestCustomProvidersValidation:
         assert any("dict" in i.message and "list" in i.message for i in errors), (
             "Should detect custom_providers as dict instead of list"
         )
+
+    def test_scalar_is_an_error_naming_key_and_type(self):
+        """A non-list scalar (a bad `config set`) makes every endpoint vanish — name the key and the type."""
+        issues = validate_config_structure({"custom_providers": "oops", "model": {"provider": "openrouter"}})
+        errors = [i.message for i in issues if i.severity == "error"]
+        assert any(m.startswith("custom_providers is a str") and "list" in m for m in errors), errors
+        assert not [i for i in validate_config_structure(
+            {"custom_providers": [{"name": "x", "base_url": "http://h/v1"}], "model": {"provider": "custom"}})
+            if i.severity == "error"]
 
     def test_dict_detects_misplaced_fields(self):
         """When custom_providers is a dict, detect fields that look misplaced."""
@@ -112,15 +123,22 @@ class TestVoiceSubmitModeValidation:
 
 
 class TestCodeExecutionValidation:
-    def test_negative_max_tool_calls_is_rejected(self):
+    def test_negative_max_tool_calls_is_valid(self):
         issues = validate_config_structure(
             {"code_execution": {"max_tool_calls": -1}}
+        )
+
+        assert not any("code_execution.max_tool_calls" in issue.message for issue in issues)
+
+    def test_non_integer_max_tool_calls_is_rejected(self):
+        issues = validate_config_structure(
+            {"code_execution": {"max_tool_calls": "unlimited"}}
         )
 
         assert any(
             issue.severity == "error"
             and "code_execution.max_tool_calls" in issue.message
-            and "zero" in issue.hint
+            and "integer" in issue.message
             for issue in issues
         )
 

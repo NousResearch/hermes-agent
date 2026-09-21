@@ -10,7 +10,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -115,6 +117,57 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_running_card_clock_uses_current_attempt_start_after_reclaim(client):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Retry exact work", "assignee": "worker"},
+    ).json()["task"]
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        kb.claim_task(conn, created["id"])
+        run = kb.latest_run(conn, created["id"])
+        assert run is not None
+        conn.execute(
+            "UPDATE tasks SET started_at = ? WHERE id = ?",
+            (run.started_at - 3600, created["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    board = client.get("/api/plugins/kanban/board").json()
+    running = next(column for column in board["columns"] if column["name"] == "running")
+    task = next(task for task in running["tasks"] if task["id"] == created["id"])
+
+    assert task["started_at"] == run.started_at
+
+
+def test_task_drawer_clock_agrees_with_card_after_reclaim(client):
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Retry drawer work", "assignee": "worker"},
+    ).json()["task"]
+    conn = _hermes_cli_kanban_db_connect.connect()
+    try:
+        kb.claim_task(conn, created["id"])
+        run = kb.latest_run(conn, created["id"])
+        assert run is not None
+        conn.execute(
+            "UPDATE tasks SET started_at = ? WHERE id = ?",
+            (run.started_at - 3600, created["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{created['id']}").json()["task"]
+
+    # Drawer must report the active attempt's start, same as the card.
+    assert detail["started_at"] == run.started_at
 
 
 def test_patch_board_sets_project_directory(client, tmp_path):
@@ -274,6 +327,18 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
         )
 
 
+@pytest.mark.parametrize("status", ["running", "not-a-status"])
+def test_patch_rejected_status_verbs_are_bad_requests(client, status):
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "reject me"}).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": status},
+    )
+
+    assert response.status_code == 400
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 
@@ -290,7 +355,7 @@ def test_reopening_parent_demotes_ready_child(client):
 
     r = client.patch(
         f"/api/plugins/kanban/tasks/{parent['id']}",
-        json={"status": "done"},
+        json={"status": "done", "result": "done", "summary": "done"},
     )
     assert r.status_code == 200
 
@@ -314,7 +379,7 @@ def test_reopening_parent_demotes_ready_child(client):
 def test_reopening_parent_retracts_review_and_blocks_approval(client):
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="parent", assignee="planner")
-        assert kb.complete_task(conn, parent_id)
+        assert kb.complete_task(conn, parent_id, result="done")
         child_id = kb.create_task(
             conn,
             title="child in review",
@@ -359,7 +424,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
 
     response = client.patch(
         f"/api/plugins/kanban/tasks/{parent_id}",
-        json={"status": "done"},
+        json={"status": "done", "result": "done", "summary": "done"},
     )
     assert response.status_code == 200, response.text
 
@@ -383,14 +448,14 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
 def test_reopening_parent_recursively_retracts_done_and_running_descendants(client):
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="root", assignee="planner")
-        assert kb.complete_task(conn, parent_id)
+        assert kb.complete_task(conn, parent_id, result="done")
         child_id = kb.create_task(
             conn,
             title="accepted child",
             assignee="builder",
             parents=[parent_id],
         )
-        assert kb.complete_task(conn, child_id)
+        assert kb.complete_task(conn, child_id, result="done")
         grandchild_id = kb.create_task(
             conn,
             title="running grandchild",
@@ -419,7 +484,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
 
     response = client.patch(
         f"/api/plugins/kanban/tasks/{parent_id}",
-        json={"status": "done"},
+        json={"status": "done", "result": "done", "summary": "done"},
     )
     assert response.status_code == 200, response.text
     with kbc.connect() as conn:
@@ -686,6 +751,36 @@ def test_bulk_status_done_forwards_completion_summary(client):
         conn.close()
 
 
+def _gated_child(client):
+    parent = client.post("/api/plugins/kanban/tasks", json={"title": "parent"}).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "child", "parents": [parent["id"]]},
+    ).json()["task"]
+    return parent["id"], child["id"]
+
+
+def test_patch_done_or_review_refused_by_open_parent_names_it(client):
+    """A completion refused by the dependency gate must say which parent is open,
+    not the generic 'not valid from current state'."""
+    parent_id, child_id = _gated_child(client)
+    for status in ("done", "review"):
+        r = client.patch(f"/api/plugins/kanban/tasks/{child_id}", json={"status": status})
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert f"{parent_id} (ready)" in detail, detail
+        assert "unsatisfied parent" in detail, detail
+
+
+def test_bulk_done_refused_by_open_parent_names_it(client):
+    parent_id, child_id = _gated_child(client)
+    r = client.post("/api/plugins/kanban/tasks/bulk", json={"ids": [child_id], "status": "done"})
+    assert r.status_code == 200
+    entry = r.json()["results"][0]
+    assert entry["ok"] is False
+    assert f"{parent_id} (ready)" in entry["error"], entry
+    assert "unsatisfied parent" in entry["error"], entry
+
+
 def test_bulk_status_running_rejected(client):
     """Bulk updates must match single-task PATCH: direct 'running' is invalid."""
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
@@ -875,6 +970,22 @@ def test_dashboard_dependency_selects_use_value_change_handler():
 
     assert parent_select in bundle
     assert child_select in bundle
+
+
+def test_dashboard_board_project_binding_is_exposed_in_ui():
+    """The board switcher's unbind action clears the binding through the
+    same REST contract the API tests pin (PATCH ``project_id: ""``); the
+    create/settings payload shapes themselves are covered behaviourally in
+    ``test_kanban_board_project_api.py``. The bundle has no build step, so
+    only the UI-side seam is pinned here.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text(encoding="utf-8")
+
+    assert "hermes-kanban-board-project-unbind" in bundle
+    assert 'updateBoard(board, { project_id: "" })' in bundle
 
 
 def test_bulk_archive(client):
@@ -1232,3 +1343,62 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# Touch drag-vs-tap threshold (#115568)
+# ---------------------------------------------------------------------------
+
+def test_touch_card_tap_opens_instead_of_dragging():
+    """attachTouchDrag() must not claim a stationary tap: without a movement threshold,
+    every touch pointerdown called preventDefault() immediately, which suppresses the
+    synthesized click TaskCard.handleClick relies on to call props.onOpen() (#115568).
+    The bundle has no build step, so this runs the real function (extracted verbatim, not
+    regex-matched) through a real pointerdown/move/up sequence with a minimal DOM stub —
+    behavioral, not a source-text pin.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = Path(__file__).parent / "fixtures" / "kanban_touch_drag_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(bundle)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "PASS" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic severity colours follow the dashboard theme
+# ---------------------------------------------------------------------------
+
+
+def test_diag_severity_tokens_route_through_host_theme_tokens():
+    """The three ``--hermes-diag-*`` rungs must resolve through the host's
+    ``--color-warning`` / ``--color-destructive`` tokens (#115118). They were
+    literals declared on the consuming elements, which no theme override can
+    reach (the theme engine writes custom properties on ``<html>`` and an
+    element-level declaration always wins), so light themes rendered the
+    amber badge at 1.8:1 contrast with no way to fix it. Headless-Chrome
+    receipt: with the tokens set on ``<html>`` the computed colours follow;
+    with none set the shipped literals render unchanged.
+    """
+    css = (Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
+    block = css[css.index("--hermes-diag-warning"):]
+    block = block[: block.index("}")]
+    # Parse the declarations rather than matching whitespace-exact substrings, so a
+    # reformat that keeps the computed value passes and a wrong token/fallback fails.
+    declared = {
+        name: (token, fallback)
+        for name, token, fallback in re.findall(
+            r"--hermes-diag-(warning|error|critical)\s*:\s*var\(\s*(--color-[\w-]+)\s*,\s*(#[0-9a-fA-F]{6})\s*\)\s*;",
+            block,
+        )
+    }
+    assert declared == {
+        "warning": ("--color-warning", "#ff9e3b"),
+        "error": ("--color-destructive", "#ff6b3d"),
+        "critical": ("--color-destructive", "#ff4d4d"),
+    }

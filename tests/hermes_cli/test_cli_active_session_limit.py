@@ -39,3 +39,21 @@ def test_cli_claim_active_session_respects_global_limit(tmp_path, monkeypatch):
     finally:
         held.release()
         cli._release_active_session()
+
+
+def test_cli_shutdown_releases_root_lease_even_without_active_session_slot():
+    from unittest.mock import Mock
+
+    cli = object.__new__(HermesCLI)
+    cli._active_session_lease = None
+    failed_lease = Mock()
+    root_lease = Mock()
+    cli._failed_conversation_root_leases = [failed_lease]
+    cli._conversation_root_lease = root_lease
+
+    cli._release_active_session()
+
+    failed_lease.release.assert_called_once_with()
+    root_lease.release.assert_called_once_with()
+    assert cli._conversation_root_lease is None
+    assert cli._failed_conversation_root_leases == []

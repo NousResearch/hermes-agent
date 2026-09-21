@@ -467,9 +467,13 @@ class TestAnthropicAdapterMultimodal:
                 },
             }
 
-        # Build 5 screenshots interleaved with assistant messages.
+        # Build screenshots interleaved with assistant messages. The eviction frontier
+        # advances in whole batches, so use a count that lands exactly on one advance.
+        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
+
+        total = OUTBOUND_IMAGE_LIMIT + 1
         messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
-        for i in range(5):
+        for i in range(total):
             messages.append({
                 "role": "assistant", "content": "",
                 "tool_calls": [{
@@ -483,8 +487,7 @@ class TestAnthropicAdapterMultimodal:
 
         _, anthropic_msgs = convert_messages_to_anthropic(messages)
 
-        # Walk tool_result blocks in order; the OLDEST (5 - 3) = 2 should be
-        # text-only placeholders, newest 3 should still carry image blocks.
+        # One batch retires; everything newer keeps its image payload.
         tool_results = []
         for m in anthropic_msgs:
             if m["role"] != "user" or not isinstance(m["content"], list):
@@ -493,7 +496,7 @@ class TestAnthropicAdapterMultimodal:
                 if b.get("type") == "tool_result":
                     tool_results.append(b)
 
-        assert len(tool_results) == 5
+        assert len(tool_results) == total
         with_images = [
             b for b in tool_results
             if isinstance(b.get("content"), list)
@@ -508,8 +511,133 @@ class TestAnthropicAdapterMultimodal:
                 for x in b["content"]
             )
         ]
-        assert len(with_images) == 3
-        assert len(placeholders) == 2
+        assert len(placeholders) == IMAGE_EVICTION_BATCH
+        assert len(with_images) == total - IMAGE_EVICTION_BATCH
+
+    def test_parallel_batch_retires_the_oldest_siblings_first(self):
+        """Sibling tool_results in one user message are oldest-first; eviction must not
+        retire the newest of them (#103217)."""
+        from agent.anthropic_message_convert import _evict_old_screenshots
+        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
+
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
+        n = OUTBOUND_IMAGE_LIMIT + 1
+        result = [{
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "content": [dict(img)]}
+                for i in range(n)
+            ],
+        }]
+        _evict_old_screenshots(result)
+        survivors = [
+            b["tool_use_id"] for b in result[0]["content"]
+            if any(x.get("type") == "image" for x in b["content"])
+        ]
+        assert survivors == [f"t{i}" for i in range(IMAGE_EVICTION_BATCH, n)]
+
+    def test_floor_yields_when_one_carrier_breaches_the_block_limit(self):
+        """The keep floor shelters only breaches eviction cannot fix.
+
+        One tool_result carrying more image blocks than the ceiling is a single carrier;
+        a floor of three counted in carriers would retire nothing and ship a request the
+        API rejects. With no reserved uploads the breach is fixable, so it must be fixed.
+        """
+        from agent.anthropic_message_convert import _evict_old_screenshots
+        from agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
+
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
+        result = [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result", "tool_use_id": "t0",
+                "content": [dict(img) for _ in range(OUTBOUND_IMAGE_LIMIT + 5)],
+            }],
+        }]
+        _evict_old_screenshots(result)
+        assert not any(x.get("type") == "image" for x in result[0]["content"][0]["content"])
+
+    def test_a_batch_that_would_blind_the_model_stops_at_the_floor(self):
+        """Fifteen reserved uploads plus six one-frame tool_results: one eight-wide batch would
+        retire every frame although keeping the newest three already clears the ceiling."""
+        from agent.anthropic_message_convert import _evict_old_screenshots
+        from agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
+
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
+        result = [{"role": "user", "content": [dict(img) for _ in range(OUTBOUND_IMAGE_LIMIT - 5)]}]
+        for i in range(6):
+            result.append({"role": "assistant", "content": [{"type": "tool_use", "id": f"t{i}", "name": "s", "input": {}}]})
+            result.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": [dict(img)]}]})
+        _evict_old_screenshots(result)
+        kept = [
+            b["tool_use_id"] for m in result for b in m["content"]
+            if b.get("type") == "tool_result" and any(x.get("type") == "image" for x in b["content"])
+        ]
+        assert kept[-3:] == ["t3", "t4", "t5"]
+        assert OUTBOUND_IMAGE_LIMIT - 5 + len(kept) <= OUTBOUND_IMAGE_LIMIT
+
+    def test_eviction_frontier_holds_between_batch_advances(self):
+        """Screenshot eviction must not rewrite a new block on every capture.
+
+        The Anthropic prompt cache keys on an exact byte prefix. A frontier that
+        advances one block per screenshot edits an already-cached block every turn,
+        forcing a full-prefix re-write that costs far more than the image tokens it
+        reclaims.
+        """
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
+
+        fake_png = "iVBORw0KGgo="
+
+        def placeholder_count(n: int) -> int:
+            messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
+            for i in range(n):
+                messages.append({
+                    "role": "assistant", "content": "",
+                    "tool_calls": [{
+                        "id": f"call_{i}",
+                        "type": "function",
+                        "function": {"name": "computer_use", "arguments": "{}"},
+                    }],
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": f"call_{i}",
+                    "content": {
+                        "_multimodal": True,
+                        "content": [
+                            {"type": "text", "text": f"cap {i}"},
+                            {"type": "image_url",
+                             "image_url": {"url": f"data:image/png;base64,{fake_png}"}},
+                        ],
+                        "text_summary": f"cap {i}",
+                    },
+                })
+            _, out = convert_messages_to_anthropic(messages)
+            return sum(
+                1
+                for m in out
+                if isinstance(m.get("content"), list)
+                for b in m["content"]
+                if b.get("type") == "tool_result"
+                and isinstance(b.get("content"), list)
+                and any(
+                    x.get("type") == "text" and "screenshot removed" in x.get("text", "")
+                    for x in b["content"]
+                )
+            )
+
+        # Span three batch windows. The placeholder count must step once per batch (a
+        # one-step frontier fails the plateau check) AND the surviving image count must
+        # never exceed the limit (a fixed one-batch retire fails that after window one).
+        span = range(OUTBOUND_IMAGE_LIMIT - 2, OUTBOUND_IMAGE_LIMIT + 3 * IMAGE_EVICTION_BATCH)
+        counts = [placeholder_count(n) for n in span]
+        assert all(n - c <= OUTBOUND_IMAGE_LIMIT for n, c in zip(span, counts)), counts
+        steps = sum(a != b for a, b in zip(counts, counts[1:]))
+        assert steps == 3, (
+            f"eviction frontier moved {steps} times over {len(span)} screenshots (counts={counts}); "
+            "each step invalidates the cached prefix"
+        )
 
 # ---------------------------------------------------------------------------
 # Context compressor: screenshot-aware pruning
@@ -1532,7 +1660,8 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid is None
         assert backend._active_window_id is None
 
-    def test_linux_default_capture_skips_gnome_shell_helper(self):
+    def test_linux_default_capture_skips_gnome_shell_helper(self, monkeypatch):
+        monkeypatch.setattr("tools.computer_use.cua_backend.sys.platform", "linux")
         windows = [
             {"app_name": "", "pid": 100, "window_id": 1,
              "is_on_screen": None, "title": "@!1921,0;BDHF", "z_index": 0},
@@ -2227,6 +2356,17 @@ class TestElementTokenAttachment:
         assert args["element_index"] == 5
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
+
+    def test_token_attached_when_only_input_schema_advertises_it(self):
+        """cua-driver >= 0.21 dropped the per-tool `capabilities[]` array from tools/list but advertises
+        `element_token` in `click`'s inputSchema and REFUSES a bare element_index (`snapshot_id_required`).
+        The token must ride along from the live schema alone, or every element click is refused."""
+        backend = self._backend_with_session({})  # no capabilities[] at all — the modern shape
+        backend._session.supports_input_property = lambda tool, prop: (tool, prop) == ("click", "element_token")
+        backend._snapshot_tokens = {5: "s00000001:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s00000001:5"
 
 
     def test_capture_refreshes_snapshot_tokens(self):

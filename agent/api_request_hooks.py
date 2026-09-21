@@ -4,7 +4,6 @@ JSON-safe coercion, secret-key redaction, size caps, and the ``api_request_error
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import json
-import os
 import time
 from contextlib import suppress
 from types import SimpleNamespace
@@ -50,7 +49,10 @@ class ApiRequestHooksMixin:
 
     @staticmethod
     def _hook_payload_max_chars() -> int:
-        raw = os.getenv("HERMES_PLUGIN_PAYLOAD_MAX_CHARS", "50000")
+        from hermes_cli.config import load_config_readonly
+
+        plugins = (load_config_readonly() or {}).get("plugins") or {}
+        raw = plugins.get("hook_payload_max_chars", 50000)
         try:
             return max(1000, int(raw))
         except (TypeError, ValueError):

@@ -59,14 +59,8 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                 "description": "Output resolution.",
                 "default": DEFAULT_RESOLUTION,
             },
-            "model": {
-                "type": "string",
-                "description": (
-                    "Optional model override; defaults to the configured "
-                    "``video_gen.model``. Unknown models are rejected."
-                ),
-            },
-            # Capability-gated args are added by _build_dynamic_video_schema; never statically.
+            # No ``model`` here: the backend/model is user configuration (``video_gen.model``), never an
+            # agent choice (#83080 ruling). Capability-gated args are added by _build_dynamic_video_schema; never statically.
         },
         # NOTE (schema diet, #95681): image_url / reference_image_urls / negative_prompt / audio / seed /
         # upscale are added per-capability by _build_dynamic_video_schema.
@@ -104,11 +98,8 @@ def _discovered_registry():
 
 def check_video_generation_requirements() -> bool:
     """True when at least one registered provider reports available."""
-    try:
-        registry_mod, _ = _discovered_registry()
-        return any(_provider_call(p, "is_available", False) for p in registry_mod.list_providers())
-    except Exception:
-        return False
+    registry_mod, _ = _discovered_registry()
+    return any(_provider_call(p, "is_available", False) for p in registry_mod.list_providers())
 
 
 def _resolve_active_provider():
@@ -184,7 +175,6 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         "audio": _coerce_bool(args.get("audio")),
         "seed": _coerce_int(args.get("seed")),
         "upscale": _coerce_bool(args.get("upscale"))}
-    model_override = (args.get("model") or "").strip() or None
 
     # Soft validation — providers do their own; our surface never accepts image-only.
     if not prompt:
@@ -198,11 +188,10 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     if provider is None:
         return _missing_provider_error(configured)
 
-    # Explicit arg wins, then config, then provider default.
-    model = model_override or _read_configured_video_model() or provider.default_model()
+    # Config, then provider default; a ``model`` in args is ignored (models do not choose models).
+    model = _read_configured_video_model() or provider.default_model()
     kwargs: Dict[str, Any] = {
-        "model": model, "_model_override_explicit": bool(model_override),
-        "image_url": image_url, "reference_image_urls": reference_image_urls, **optional}
+        "model": model, "image_url": image_url, "reference_image_urls": reference_image_urls, **optional}
     # Drop None entries so providers see clean defaults.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
     pname = getattr(provider, "name", "?")
@@ -375,7 +364,6 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
             "- audio: native stereo audio is generated with every video "
             "(always on; no toggle) — describe the desired sound in the "
             "prompt")
-    properties["model"] = static_props["model"]
     return _schema("\n".join(parts), properties)
 
 

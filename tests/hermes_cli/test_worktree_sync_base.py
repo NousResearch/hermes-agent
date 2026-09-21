@@ -219,3 +219,15 @@ class TestSetupWorktreeSyncBase:
         info = cli._setup_worktree(str(clone))
         assert info is not None
         assert _head(info["path"]) == remote_head
+
+    def test_new_work_ignores_parked_feature_upstream(self, remote_and_clone):
+        clone, remote_head, _ = remote_and_clone
+        _run(["git", "switch", "-c", "feature"], clone)
+        _commit(clone, "feature-local.txt", "feature local")
+        _run(["git", "push", "-u", "origin", "feature"], clone)
+
+        info = cli._setup_worktree(str(clone))
+
+        assert info is not None
+        assert _head(info["path"]) == remote_head
+        assert not (Path(info["path"]) / "feature-local.txt").exists()

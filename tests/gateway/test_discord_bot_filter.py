@@ -70,7 +70,7 @@ class TestDiscordBotFilter(unittest.TestCase):
         message,
         allow_bots="none",
         client_user=None,
-        bots_require_inline_mention=False,
+        bots_require_inline_mention=True,
     ):
         """Simulate the on_message filter logic and return whether message was accepted."""
         # Replicate the exact filter logic from discord.py on_message
@@ -117,7 +117,7 @@ class TestDiscordBotFilter(unittest.TestCase):
 
 
     def test_inline_mention_requirement_accepts_body_mention(self):
-        """Opt-in guard still admits intentional inline cross-bot mentions."""
+        """The default guard admits intentional inline cross-bot mentions."""
         our_user = _make_author(is_self=True)
         bot = _make_author(bot=True)
         msg = _make_message(

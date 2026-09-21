@@ -6,14 +6,30 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 """
 
 import contextlib
-import logging
 import copy
+import functools
+import logging
 import threading
 
 from agent.session_activity import ActivityProvenance
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
+
+
+class _CommitFenceRegistration:
+    """One ``_compress_context`` attempt's entry on the agent's commit-fence stack.
+
+    The fence slot is a stack, not a save/restore cell: overlapping attempts register in
+    order but may complete in any order, so each attempt removes only its own entry and the
+    published slot always tracks the newest *live* attempt. The stall-fallback retry swaps
+    ``fence`` in place so the slot update stays tied to the owning registration.
+    """
+
+    __slots__ = ("fence",)
+
+    def __init__(self, fence) -> None:
+        self.fence = fence
 
 
 def _timeout_fallback_prompt(agent, system_message: str) -> str:
@@ -105,15 +121,18 @@ def _sync_persisted_markers(target_messages, source_messages) -> None:
 
 
 def _run_under_progress_timeout(
-    agent, run, messages, system_message, *, active_fence, fence_registration_lock, idle_timeout, total_ceiling
+    agent, run, messages, system_message, *, active_fence, registration, fence_registration_lock,
+    idle_timeout, total_ceiling, approx_tokens=None,
 ):
     """Run ``run(fence, target_messages=snapshot)`` on the pool under the progress-aware timeout.
     The pooled worker must NEVER share the caller's live transcript — a late engine after a host timeout could
     rewrite it. It deep-snapshots on the worker and publishes only via an ADMITTED commit; a no-op/abort
     returns the snapshot unchanged, so the ORIGINAL list is handed back to keep identity semantics."""
-    from agent.conversation_compression import CompressionCommitFence, run_compress_context_with_progress_timeout
+    from agent.conversation_compression import (
+        CompressionCommitFence, request_exceeds_model_window, run_compress_context_with_progress_timeout,
+    )
 
-    def _snapshot_worker(fence=None):
+    def _snapshot_worker(fence=None, *, same_turn_fallback_recovery=False):
         # #76354 review F3: the pooled worker must NEVER share the caller's live transcript. Plugin/legacy
         # context engines are allowed to mutate their input list in place; after a host timeout the worker
         # stays alive, so a shared list would let a late engine rewrite the live conversation (roles,
@@ -123,8 +142,16 @@ def _run_under_progress_timeout(
         # on timeout/cancel); durable SessionDB mutation is already gated behind the commit fence inside
         # compress_context.
         snapshot = copy.deepcopy(messages)
-        result_msgs, result_prompt = run(fence, target_messages=snapshot)
+        result_msgs, result_prompt = run(
+            fence, target_messages=snapshot, same_turn_fallback_recovery=same_turn_fallback_recovery
+        )
         return (messages if result_msgs is snapshot else result_msgs), result_prompt
+
+    # The stall-fallback retry is the same recovery attempt as the stalled primary, but the cancelled primary
+    # worker records its stall_interrupted cooldown while unwinding — racing the retry's automatic gate
+    # (#112387). The retry therefore bypasses ONLY the summary-failure cooldown (never clears it; the
+    # structural breakers stay in force), exactly like provider-proven overflow recovery.
+    _same_turn_fallback_worker = functools.partial(_snapshot_worker, same_turn_fallback_recovery=True)
 
     timeout_cause = {"total_exhausted": False, "progress_observed": False}
 
@@ -138,10 +165,14 @@ def _run_under_progress_timeout(
 
     def _publish_new_fence():
         # The stall-fallback retry needs a fence the aborted attempt cannot veto; publish
-        # it on the slot hard_interrupt() reads. The caller's finally restores its fence.
+        # it on the slot hard_interrupt() reads, but only while this attempt still owns the
+        # top registration. A later attempt's live fence must not be clobbered.
         retry_fence = CompressionCommitFence()
         with fence_registration_lock:
-            agent._active_compression_commit_fence = retry_fence
+            registration.fence = retry_fence
+            stack = vars(agent).get("_compression_commit_fence_stack") or ()
+            if stack and stack[-1] is registration:
+                agent._active_compression_commit_fence = retry_fence
         return retry_fence
 
     return run_compress_context_with_progress_timeout(
@@ -150,7 +181,8 @@ def _run_under_progress_timeout(
         idle_timeout_seconds=idle_timeout, total_ceiling_seconds=total_ceiling, on_timeout=_on_timeout,
         on_timeout_cause=_on_timeout_cause,
         on_commit_overrun=lambda waited, ceiling: _warn_commit_overrun(agent, waited, ceiling), fence=active_fence,
-        telemetry_agent=agent, new_fence=_publish_new_fence,
+        telemetry_agent=agent, new_fence=_publish_new_fence, fallback_worker=_same_turn_fallback_worker,
+        request_exceeds_window=request_exceeds_model_window(agent, approx_tokens) is True,
     )
 
 
@@ -236,17 +268,18 @@ class CompressionFacadeMixin:
         # entrypoints cannot replace the fence of the attempt currently committing.
         active_fence = commit_fence or CompressionCommitFence()
         fence_registration_lock = vars(self).setdefault("_compression_commit_fence_lock", threading.RLock())
-        with fence_registration_lock:
-            missing_fence = object()
-            previous_fence = vars(self).get("_active_compression_commit_fence", missing_fence)
-            self._active_compression_commit_fence = active_fence
+        registration = _CommitFenceRegistration(active_fence)
         try:
+            with fence_registration_lock:
+                fence_stack = vars(self).setdefault("_compression_commit_fence_stack", [])
+                fence_stack.append(registration)
+                self._active_compression_commit_fence = active_fence
 
-            def _run(fence=None, target_messages=None):
+            def _run(fence=None, target_messages=None, same_turn_fallback_recovery=False):
                 return compress_context(
                     self, target_messages if target_messages is not None else messages, system_message,
                     approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
-                    bypass_cooldown=bypass_cooldown,
+                    bypass_cooldown=bypass_cooldown or same_turn_fallback_recovery,
                     defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
                 )
 
@@ -261,18 +294,30 @@ class CompressionFacadeMixin:
             else:
                 result = _run_under_progress_timeout(
                     self, _run, messages, system_message,
-                    active_fence=active_fence, fence_registration_lock=fence_registration_lock,
-                    idle_timeout=idle_timeout, total_ceiling=total_ceiling,
+                    active_fence=active_fence, registration=registration,
+                    fence_registration_lock=fence_registration_lock,
+                    idle_timeout=idle_timeout, total_ceiling=total_ceiling, approx_tokens=approx_tokens,
                 )
             _mirror_result_onto_live_lists(self, result, messages, direct_path=direct_path)
             _rebind_caller_session_context(self)
             return result
         finally:
+            # Remove only THIS attempt's registration. Completion order is not registration
+            # order: restoring a saved "previous" fence would resurrect a dead fence over a
+            # live newer attempt (and popping the slot outright would delete that attempt's
+            # fence mid-run). The slot always tracks the newest live registration.
             with fence_registration_lock:
-                if previous_fence is missing_fence:
-                    vars(self).pop("_active_compression_commit_fence", None)
+                # Re-read rather than reuse the try-block local: an early exception before
+                # the append would otherwise raise NameError here and mask the real failure.
+                fence_stack = vars(self).get("_compression_commit_fence_stack") or ()
+                for idx in range(len(fence_stack) - 1, -1, -1):
+                    if fence_stack[idx] is registration:
+                        del fence_stack[idx]
+                        break
+                if fence_stack:
+                    self._active_compression_commit_fence = fence_stack[-1].fence
                 else:
-                    self._active_compression_commit_fence = previous_fence
+                    vars(self).pop("_active_compression_commit_fence", None)
             # Restore whatever the caller had, so a compaction never leaks its tag into the surrounding scope.
             if token is not None:
                 reset_conversation_context(token)

@@ -179,7 +179,17 @@ def _read_browser_cfg() -> dict:
 
 
 def _use_gateway(browser_cfg: dict) -> bool:
-    return is_truthy_value(browser_cfg.get("use_gateway"), default=False)
+    """True when the browser section selects the Nous Tool Gateway — by the current ``hermes tools``
+    picker row (``cloud_provider: nous``) or the pre-picker ``use_gateway: true`` flag. Reading only
+    the legacy flag missed every picker-configured gateway, and the direct-API branch it fell into
+    holds no credentials in managed mode (#108310)."""
+    if is_truthy_value(browser_cfg.get("use_gateway"), default=False):
+        return True
+    try:
+        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+    except Exception:  # pragma: no cover — helper ships with the package
+        return False
+    return str(browser_cfg.get("cloud_provider") or "").strip().lower() == NOUS_MANAGED_PROVIDER
 
 
 def get_browser_backend() -> str:
@@ -329,13 +339,15 @@ def _find_screenshot(stdout: str, since: float) -> Optional[str]:
 def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dict[str, Any]]:
     """Build a multimodal tool result attaching path for vision models"""
     try:
-        from tools.vision_tools import (_EMBED_MAX_DIMENSION, _EMBED_TARGET_BYTES,
+        from tools.vision_tools import (_EMBED_MAX_DIMENSION,
                                         _resize_image_for_vision, _should_use_native_vision_fast_path)
+        from tools.vision_tools_history_budget import resolve_embed_target_bytes
         if not _should_use_native_vision_fast_path():
             return None
         # History-reuse cap: this data URL bakes into the tool result and is re-sent every later turn —
         # same policy as the vision_analyze / browser_vision native embeds.
-        data_url = _resize_image_for_vision(Path(path), mime_type="image/png", max_base64_bytes=_EMBED_TARGET_BYTES,
+        data_url = _resize_image_for_vision(Path(path), mime_type="image/png",
+                                            max_base64_bytes=resolve_embed_target_bytes(),
                                             max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
         text = json.dumps(result, ensure_ascii=False)
         attached = text + "\n\nThe screenshot from this call is attached — inspect it with your native vision."
@@ -346,9 +358,19 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         return None
 
 
+def _served_profile_tag() -> str:
+    """``""`` outside a served-profile scope (every legacy key stays byte-identical); under a
+    multiplexed turn, the routed profile's home key — one profile's browser must never be handed
+    to another that happens to use the same session name or task id (#110032)."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    return "" if get_hermes_home_override() is None else hermes_home_key()
+
+
 def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
-    """Session-cache key for a backend browser: named sessions get their own."""
-    return f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+    """Session-cache key for a backend browser: named sessions get their own; served profiles get their own."""
+    key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+    tag = _served_profile_tag()
+    return f"{key}@{tag}" if tag else key
 
 
 def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
@@ -436,8 +458,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return _resolve_local_engine_cdp(env, task_id, session_name)
 
     # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN / auth login) — the
-    # legacy provider would create a second, redundant session. The Nous-gateway variant (use_gateway: true)
-    # DOES resolve through the provider: the gateway provisions the browser server-side and returns its CDP URL.
+    # legacy provider would create a second, redundant session. Nous-gateway configs (cloud_provider: nous
+    # from the picker, or the pre-picker use_gateway: true) DO resolve through the provider: the gateway
+    # provisions the browser server-side and returns its CDP URL.
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
     if provider_key == _BACKEND_KEY and not _use_gateway(_read_browser_cfg()):
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
@@ -583,6 +606,7 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
+    from agent.redact import redact_sensitive_text
     from tools.registry import tool_error, tool_result
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
@@ -634,12 +658,18 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
-    result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
+    # browser_vault_fill registers injected values with this forced model-egress
+    # boundary. Preserve raw stdout only for screenshot-path detection below.
+    result = {
+        "success": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "output": redact_sensitive_text(proc.stdout, force=True),
+    }
     if workspace:
         result["workspace"] = workspace
     if session:
         result["session"] = session
-    stderr = (proc.stderr or "").strip()
+    stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
     if stderr:

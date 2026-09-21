@@ -137,6 +137,56 @@ class TestBusyInputMode:
         cli.process_command("/queue follow up")
         assert cli._pending_input.get_nowait() == "follow up"
 
+    def test_queue_command_can_edit_remove_move_and_clear_pending_items(self):
+        cli = _make_cli()
+        cli.process_command("/queue first prompt")
+        cli.process_command("/queue second prompt")
+        cli.process_command("/queue edit 2 replacement prompt")
+        assert cli._pending_input_items() == ["first prompt", "replacement prompt"]
+
+        cli.process_command("/queue move 2 1")
+        assert cli._pending_input_items() == ["replacement prompt", "first prompt"]
+
+        cli.process_command("/queue rm 2")
+        assert cli._pending_input_items() == ["replacement prompt"]
+
+        cli.process_command("/queue clear")
+        assert cli._pending_input_items() == []
+        # queue.Queue bookkeeping must stay consistent after clear
+        assert cli._pending_input.unfinished_tasks == 0
+        assert cli._pending_input.empty()
+
+    def test_queue_command_preserves_prompts_that_start_with_non_subcommand_words(self):
+        cli = _make_cli()
+        cli.process_command("/queue maybe run later")
+        assert cli._pending_input.get_nowait() == "maybe run later"
+
+    def test_queue_add_allows_prompts_that_start_with_management_words(self):
+        cli = _make_cli()
+        cli.process_command("/queue add clear the logs after tests")
+        assert cli._pending_input.get_nowait() == "clear the logs after tests"
+
+    def test_queue_edit_preserves_voice_sentinel(self):
+        cli = _make_cli()
+        # Import AFTER _make_cli: the harness reloads the cli module, so the
+        # sentinel class must come from the same (reloaded) module the
+        # instance's handler compares against.
+        import cli as _cli_mod
+        cli._pending_input.put(_cli_mod._VoiceInputMessage("spoken prompt"))
+        cli.process_command("/queue edit 1 corrected prompt")
+        items = cli._pending_input_items()
+        assert len(items) == 1
+        assert isinstance(items[0], _cli_mod._VoiceInputMessage)
+        assert str(items[0]) == "corrected prompt"
+
+    def test_queue_out_of_range_indices_leave_queue_untouched(self):
+        cli = _make_cli()
+        cli.process_command("/queue only item")
+        cli.process_command("/queue rm 5")
+        cli.process_command("/queue edit 3 nope")
+        cli.process_command("/queue move 1 9")
+        assert cli._pending_input_items() == ["only item"]
+
 
 
 
@@ -580,6 +630,36 @@ class TestRootLevelProviderOverride:
         assert cfg["terminal"]["vercel_runtime"] == "python3.13"
         assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
 
+    def test_kanban_worker_workspace_survives_cli_config_load(
+        self, tmp_path, monkeypatch
+    ):
+        """A profile cwd must not redirect a dispatcher-owned worker."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        profile_cwd = tmp_path / "stable"
+        profile_cwd.mkdir()
+        workspace = tmp_path / "worktree"
+        workspace.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"terminal": {"backend": "local", "cwd": str(profile_cwd)}}
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_example")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+        import cli
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["cwd"] == str(workspace)
+        assert os.environ["TERMINAL_CWD"] == str(workspace)
+
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
         from hermes_cli.config import _normalize_root_model_keys
@@ -711,6 +791,5 @@ class TestRootLevelProviderOverride:
         })
         assert result["model"]["default"] == "flat-default-model"
         assert result["model"]["provider"] == "auto"
-
 
 

@@ -22,10 +22,10 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
                  "browser_get_images", "vision_analyze"),
         "edit": ("write_file", "patch", "skill_manage"),
         "search": ("search_files",),
-        "execute": ("terminal", "process", "execute_code", "browser_click", "browser_type", "browser_scroll",
+        "execute": ("terminal", "process", "process_manage", "execute_code", "browser_click", "browser_type", "browser_scroll",
                     "browser_press", "browser_back", "delegate_task", "image_generate", "text_to_speech"),
         "fetch": ("web_search", "web_extract", "browser_navigate"),
-        "other": ("todo",),
+        "other": ("todo", "todo_list"),
         "think": ("_thinking",),
     }.items()
     for name in names
@@ -35,9 +35,9 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
 # suppressed for these); unknown/plugin tools stay conservative.
 _POLISHED_TOOLS = {
     # Core operator loop
-    "todo", "memory", "session_search", "delegate_task",
+    "todo", "todo_list", "memory", "session_search", "delegate_task",
     # Files / execution
-    "read_file", "write_file", "patch", "search_files", "terminal", "process", "execute_code",
+    "read_file", "write_file", "patch", "search_files", "terminal", "process", "process_manage", "execute_code",
     # Skills / web / browser / media
     "skill_view", "skills_list", "skill_manage", "web_search", "web_extract",
     "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_scroll",
@@ -190,12 +190,79 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
 # --- tool-call titles -------------------------------------------------------
 
 
+def _clip(text: str, max_len: int) -> str:
+    return text if len(text) <= max_len else text[: max_len - 3] + "..."
+
+
+def _title_web_extract(args: Args) -> str:
+    urls = args.get("urls", [])
+    if not urls:
+        return "web extract"
+    first = urls[0]
+    if isinstance(first, dict):
+        first = first.get("url") or first.get("href") or "?"
+    elif not isinstance(first, str):
+        first = "?"
+    return f"extract: {first}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
+
+
+def _title_delegate(args: Args) -> str:
+    if isinstance(tasks := args.get("tasks"), list) and tasks:
+        return f"delegate batch ({len(tasks)} tasks)"
+    return f"delegate: {_clip(goal, 60)}" if (goal := args.get("goal", "")) else "delegate task"
+
+
+def _title_execute_code(args: Args) -> str:
+    from agent.display import build_tool_preview
+    preview = build_tool_preview("execute_code", args, max_len=0)
+    return f"python: {_clip(preview, 80)}" if preview else "python code"
+
+
+def _title_skill_manage(args: Args) -> str:
+    name, file_path = _arg(args, "name", default="?"), _arg(args, "file_path")
+    target = _clip(f"{name}/{file_path}" if file_path else name, 64)
+    return f"skill {_arg(args, 'action', default='manage')}: {target}"
+
+
+_TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
+    "terminal": lambda a: f"terminal: {_clip(a.get('command', ''), 80)}",
+    "read_file": lambda a: (
+        f"read: {a.get('path', '?')}"
+        + (f" L{a['offset']}" if isinstance(a.get('offset'), int) and a.get('offset', 0) > 0 else "")
+    ),
+    "write_file": lambda a: f"write: {a.get('path', '?')}",
+    "patch": lambda a: f"patch ({a.get('mode', 'replace')}): {a.get('path', '?')}",
+    "search_files": lambda a: f"search: {a.get('pattern', '?')}",
+    "web_search": lambda a: f"web search: {a.get('query', '?')}",
+    "web_extract": _title_web_extract,
+    "process": lambda a: _fmt(_arg(a, "session_id"), f"process {_arg(a, 'action', default='manage')}: {{}}",
+                              f"process {_arg(a, 'action', default='manage')}"),
+    "process_manage": lambda a: _fmt(_arg(a, "session_id"), f"process {_arg(a, 'action', default='manage')}: {{}}",
+                                     f"process {_arg(a, 'action', default='manage')}"),
+    "delegate_task": _title_delegate,
+    "session_search": lambda a: _fmt(_arg(a, "query"), "session search: {}", "recent sessions"),
+    "memory": lambda a: f"memory {_arg(a, 'action', default='manage')}: {_arg(a, 'target', default='memory')}",
+    "execute_code": _title_execute_code,
+    "todo": lambda a: f"todo ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo",
+    "todo_list": lambda a: f"todo_list ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo_list",
+    "skill_view": lambda a: f"skill view ({_arg(a, 'name', default='?')}{_fmt(_arg(a, 'file_path'), ' → {}', '')})",
+    "skills_list": lambda a: _fmt(_arg(a, "category"), "skills list ({})", "skills list"),
+    "skill_manage": _title_skill_manage,
+    "browser_navigate": lambda a: f"navigate: {a.get('url', '?')}",
+    "browser_snapshot": lambda a: "browser snapshot",
+    "browser_vision": lambda a: f"browser vision: {str(a.get('question', '?'))[:50]}",
+    "browser_get_images": lambda a: "browser images",
+    "vision_analyze": lambda a: f"analyze image: {str(a.get('question', '?'))[:50]}",
+    "image_generate": lambda a: _fmt(_arg(a, "prompt", "description")[:50], "generate image: {}", "generate image"),
+    "cronjob": lambda a: _fmt(_arg(a, "job_id", "id"), f"cron {_arg(a, 'action', default='manage')}: {{}}",
+                              f"cron {_arg(a, 'action', default='manage')}"),
+}
+
+
 def build_tool_title(tool_name: str, args: Args) -> str:
-    """``<tool_name>: <preview>`` using the same per-tool preview (and argument redaction) as
-    every other Hermes surface, so ACP clients never show a different summary than the CLI/TUI;
-    bare tool name when the arguments yield no preview."""
-    preview = build_tool_preview(tool_name, args, max_len=80)
-    return f"{tool_name}: {preview}" if preview else tool_name
+    """Build a human-readable title for a tool call (defaults to the tool name)."""
+    builder = _TITLE_BUILDERS.get(tool_name)
+    return builder(args) if builder is not None else tool_name
 
 
 # --- completion formatters; all share the signature (tool_name, result, args) --
@@ -620,12 +687,14 @@ def _format_generic_structured_result(tool_name: str, result: Optional[str], *, 
 
 _COMPLETION_FORMATTERS: Dict[str, _Formatter] = {
     "todo": _format_todo_result,
+    "todo_list": _format_todo_result,
     "read_file": _format_read_file_result,
     "write_file": _format_edit_result,
     "patch": _format_edit_result,
     "search_files": _format_search_files_result,
     "execute_code": _format_execute_code_result,
     "process": _format_process_result,
+    "process_manage": _format_process_result,
     "delegate_task": _format_delegate_result,
     "session_search": _format_session_search_result,
     "memory": _format_memory_result,
@@ -764,12 +833,15 @@ _START_CONTENT_BUILDERS: Dict[str, Optional[Callable[[Args], Any]]] = {
         f"Searching for '{a.get('pattern', '')}' ({a.get('target', 'content')})" + _fmt(a.get("path"), " in {}", "")
     ),
     "todo": _start_todo,
+    "todo_list": _start_todo,
     "skill_view": lambda a: f"Loading skill '{_arg(a, 'name', default='?')}' ({_arg(a, 'file_path', default='SKILL.md')})",
     "skill_manage": _start_skill_manage,
     "execute_code": _start_execute_code,
     "web_search": lambda a: _fmt(_arg(a, "query"), "Searching the web for: {}", "Searching the web"),
     "web_extract": None,
     "process": lambda a: f"Process action: {_arg(a, 'action', default='manage')}" + _fmt(_arg(a, "session_id"), "\nSession: {}", "")
+    + _preview("Input", _arg(a, "data"), 500),
+    "process_manage": lambda a: f"Process action: {_arg(a, 'action', default='manage')}" + _fmt(_arg(a, "session_id"), "\nSession: {}", "")
     + _preview("Input", _arg(a, "data"), 500),
     "delegate_task": _start_delegate,
     "session_search": lambda a: _fmt(_arg(a, "query"), "Searching past sessions for: {}", "Loading recent sessions"),
@@ -817,9 +889,11 @@ def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edi
 
 def build_tool_complete(
     tool_call_id: str, tool_name: str, result: Optional[str] = None, function_args: Optional[Args] = None,
-    snapshot: Any = None,
+    snapshot: Any = None, is_error: bool = False,
 ) -> ToolCallProgress:
-    """Create a ToolCallUpdate (progress) event for a completed tool call."""
+    """Create a ToolCallUpdate (progress) event for a completed tool call.
+
+    ``is_error`` is the executor's own verdict; the result-text heuristic stays as fallback."""
     if tool_name == "web_extract":  # errors only; success stays compact via the title
         error_text = _format_web_extract_result(tool_name, result, function_args)
         content = [_text(error_text)] if error_text else None
@@ -828,8 +902,20 @@ def build_tool_complete(
     structured = isinstance(_json_loads_maybe(result), (dict, list))
     return acp.update_tool_call(
         tool_call_id, kind=get_tool_kind(tool_name),
-        status="failed" if _tool_result_failed(result, tool_name) else "completed", content=content,
+        status="failed" if is_error or _tool_result_failed(result, tool_name) else "completed", content=content,
         raw_output=None if tool_name in _POLISHED_TOOLS or structured else result,
+    )
+
+
+def build_tool_abandoned(tool_call_id: str, tool_name: str) -> ToolCallProgress:
+    """Create a ToolCallUpdate for a call that ended without ever reporting a result.
+
+    A blocked or permission-denied call projects no ``tool.completed``, so the
+    turn ends with its bubble still spinning; ``failed`` is the honest terminal
+    state — the tool did not produce a result."""
+    return acp.update_tool_call(
+        tool_call_id, kind=get_tool_kind(tool_name), status="failed",
+        content=[_text("This tool call ended without a result (blocked, denied, or interrupted).")],
     )
 
 

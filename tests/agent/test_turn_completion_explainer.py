@@ -19,6 +19,7 @@ pass identically in CI and locally.
 
 import hermes_state_errors
 import os
+import pytest
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -204,19 +205,37 @@ def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
     assert "full disk" not in lower
 
 
-def test_deleted_wal_cause_is_enumerated_and_points_to_retired_capture():
+def test_deleted_wal_cause_is_plain_first_steps_not_a_forensic_runbook():
+    """The WAL-generation runbook lives in the logger.error at hermes_state; the chat reply
+    gives the two steps a user can take (stop, doctor) and points at the log."""
     from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
 
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "deleted_wal"
     ).lower()
     assert "deleted_wal" in PERSISTENCE_ERROR_CAUSES
-    assert "retired-wal-*/manifest.json" in out
-    assert "manifest.main.mode" in out
-    assert "sessions recover" in out and "--inspect-only" in out
-    assert "header_only" in out and "does not contain a copied state.db" in out
-    assert "check the logs for whether" in out
-    assert "restore the intended state.db" not in out
+    assert "hermes gateway stop" in out and "hermes doctor" in out
+    assert "send your message once more" in out
+    for jargon in ("manifest", "state.db-wal", "sidecar", "header_only", "--inspect-only", "generation"):
+        assert jargon not in out, jargon
+    assert "~/.hermes" not in out  # display_hermes_home(), never a hardcoded path
+
+
+@pytest.mark.parametrize("cause", ["replaced", "deleted_wal", "unknown"])
+def test_persistence_commands_are_pinned_to_the_failing_profile(monkeypatch, tmp_path, cause):
+    """Every copy-pasteable ``hermes`` command in a persistence explanation names the profile
+    whose store failed — a multi-profile backend serves sessions whose state.db is not the
+    process default, and a bare ``hermes`` follows the sticky active_profile (#105887). The
+    corrupt/fts_index causes already did this; replaced/deleted_wal/default did not."""
+    from hermes_constants import profile_cli_selector
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
+    selector = profile_cli_selector()
+    assert selector.strip(), "fixture must resolve to a named profile"
+    out = AIAgent._format_turn_completion_explanation("session_persistence_failed", cause)
+    assert "{profile_arg}" not in out
+    assert f"`hermes {selector}doctor" in out
+    assert "`hermes doctor" not in out and "`hermes gateway" not in out
 
 
 def test_explanation_persistence_unknown_cause_is_neutral():
@@ -237,7 +256,7 @@ def test_explanation_persistence_one_arg_backward_compat():
     """Existing one-arg callers must keep working (optional second param)."""
     out = AIAgent._format_turn_completion_explanation("session_persistence_failed")
     assert out.strip() != ""
-    assert "session storage" in out.lower()
+    assert "couldn't save" in out.lower() and "hermes doctor" in out.lower()
 
 
 def test_explanation_cause_ignored_for_other_reasons():

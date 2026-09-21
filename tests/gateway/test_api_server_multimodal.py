@@ -10,6 +10,9 @@ executes against a real aiohttp app.
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 

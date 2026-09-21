@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 from typing import Optional, Tuple
+from agent.proxy_bypass import loopback_request_kwargs
 from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_install as _install
@@ -94,7 +95,8 @@ def _surviving_chrome_cdp(data_dir: str) -> Optional[str]:
     http_cdp = f"http://127.0.0.1:{port}"
     try:
         import requests
-        ws_url = str(requests.get(f"{http_cdp}/json/version", timeout=2).json().get("webSocketDebuggerUrl") or "")
+        ws_url = str(requests.get(f"{http_cdp}/json/version", timeout=2, **loopback_request_kwargs(http_cdp))
+                     .json().get("webSocketDebuggerUrl") or "")
     except Exception:
         return None
     return http_cdp if ws_url.endswith(browser_path) else None

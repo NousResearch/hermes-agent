@@ -11,6 +11,9 @@ remote-tracking ref. Any doubt preserves the worktree.
 
 from __future__ import annotations
 
+import os
+import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -287,3 +290,83 @@ def test_parent_worktree_deferred_until_children_done(
         assert kb.complete_task(conn, child, summary="child done")
     # last child terminal -> deferred parent worktree reaped
     assert not parent_wt.exists()
+
+
+# These two exercise POSIX permission bits directly. Windows has no equivalent
+# (``os.chmod`` only toggles the read-only attribute and does not stop a
+# directory from being removed), and root bypasses the bits entirely, so the
+# "unpatched rmtree leaves the tree behind" guard would not hold in either.
+_needs_posix_permissions = pytest.mark.skipif(
+    os.name != "posix" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="needs enforced POSIX permission bits (non-Windows, non-root)",
+)
+
+
+@_needs_posix_permissions
+def test_rmtree_force_reaps_read_only_dirs(tmp_path: Path) -> None:
+    """Any tool that materialises read-only directories (Pants' execution root,
+    Bazel's output base, Go's module cache) defeats ``ignore_errors=True``: the
+    walk stops at the first one and the whole workspace survives, unlogged."""
+
+    def build(name: str) -> Path:
+        root = tmp_path / name
+        deep = root / "repo" / "build_cache" / "inputs" / "deep"
+        deep.mkdir(parents=True)
+        (deep / "f.txt").write_text("x")
+        for d in (deep, deep.parent, deep.parent.parent):
+            os.chmod(d, 0o500)
+        return root
+
+    stale = build("stale")
+    shutil.rmtree(stale, ignore_errors=True)
+    assert stale.exists(), "guard: ignore_errors=True must leave the tree behind"
+    kbw._rmtree_force(stale)  # leave nothing tmp_path teardown cannot remove
+
+    reaped = build("reaped")
+    kbw._rmtree_force(reaped)
+    assert not reaped.exists()
+
+
+@_needs_posix_permissions
+def test_rmtree_force_never_chmods_outside_the_tree(tmp_path: Path) -> None:
+    """``os.chmod`` follows symlinks, so chmod'ing a failing path would rewrite
+    the mode of whatever it points at — a side effect outside the workspace
+    being deleted. Only the parent directory and real directories are touched."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "secret"
+    victim.write_text("x")
+    os.chmod(victim, 0o600)
+
+    ws = tmp_path / "ws"
+    ro = ws / "repo" / "ro"
+    ro.mkdir(parents=True)
+    os.symlink(victim, ro / "link")
+    os.chmod(ro, 0o500)
+
+    kbw._rmtree_force(ws)
+
+    assert not ws.exists()
+    assert victim.exists(), "the symlink target must never be removed"
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+
+
+@_needs_posix_permissions
+def test_rmtree_force_never_chmods_the_directory_holding_the_workspace(
+    tmp_path: Path,
+) -> None:
+    """When the workspace itself cannot be unlinked, the write bit is missing
+    from the directory that *holds* it — the board's ``workspaces/`` root. That
+    is outside the tree being deleted, so removal is left to fail rather than
+    widening an operator's permissions behind their back."""
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    ws = root / "t_abc"
+    ws.mkdir()
+    (ws / "f.txt").write_text("x")
+    os.chmod(root, 0o500)
+
+    kbw._rmtree_force(ws)
+
+    assert stat.S_IMODE(root.stat().st_mode) == 0o500
+    os.chmod(root, 0o700)  # let tmp_path teardown proceed

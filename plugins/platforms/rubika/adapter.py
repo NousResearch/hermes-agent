@@ -132,6 +132,32 @@ class RubikaAdapter(BasePlatformAdapter):
             logger.warning("[%s] send() failed: %s", self.name, exc)
             return SendResult(success=False, error=str(exc), retryable=True)
 
+    async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
+                              reply_to: Optional[str] = None, metadata=None, **kwargs) -> SendResult:
+        return await self._send_uploaded_file(
+            chat_id, image_path, file_type="Image", caption=caption, reply_to=reply_to)
+
+    async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
+                            file_name: Optional[str] = None, reply_to=None, metadata=None,
+                            **kwargs) -> SendResult:
+        return await self._send_uploaded_file(
+            chat_id, file_path, file_type="File", caption=caption, reply_to=reply_to)
+
+    async def _send_uploaded_file(self, chat_id: str, file_path: str, *, file_type: str,
+                                  caption: Optional[str], reply_to: Optional[str]) -> SendResult:
+        try:
+            file_id = await self._client.upload_file(file_path, file_type=file_type)
+            params: Dict[str, Any] = {"chat_id": chat_id, "file_id": file_id, "text": caption or ""}
+            if reply_to:
+                params["reply_to_message_id"] = reply_to
+            data = await self._client.call("sendFile", **params)
+            return SendResult(success=True, message_id=str(data.get("message_id") or ""))
+        except RubikaAPIError as exc:
+            logger.warning("[%s] media send failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+        except OSError as exc:
+            return SendResult(success=False, error=f"Could not read file: {exc}")
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         raise NotImplementedError  # Task 10
 

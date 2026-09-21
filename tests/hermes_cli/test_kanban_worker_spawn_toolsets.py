@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import pytest
 import subprocess
+import sys
+
+
+def _unwrap_worker_log_wrapper(command: list[str]) -> list[str]:
+    wrapper_index = command.index("hermes_cli.kanban_worker_log")
+    return command[command.index("--", wrapper_index) + 1 :]
 
 
 def _make_task(kb, *, assignee: str):
@@ -56,7 +62,7 @@ agent:
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
 
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, cmd: cmd)
 
     captured = {}
 
@@ -78,7 +84,8 @@ agent:
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
-    assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
+    cmd = _unwrap_worker_log_wrapper(captured["cmd"])
+    assert cmd == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
     assert captured["env"]["HERMES_KANBAN_RUN_ID"] == "7"
     assert captured["env"]["HERMES_KANBAN_CLAIM_LOCK"] == "lock"
 
@@ -93,7 +100,7 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
 
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, cmd: cmd)
     captured = {}
 
     class FakeProc:
@@ -112,8 +119,9 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     kbd._default_spawn(task, str(workspace))
 
     # Mutable model strings are not launch authority; the owner reads the claimed card.
-    assert captured["cmd"][-2:] == ["-m", "hermes_cli.kanban_worker_client"]
-    assert task.model_override not in captured["cmd"]
+    cmd = _unwrap_worker_log_wrapper(captured["cmd"])
+    assert cmd == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    assert task.model_override not in cmd
 
 def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):
     """Under multiplex a worker spawn with ``terminal.env_passthrough`` configured must
@@ -134,7 +142,7 @@ def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd
 
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, cmd: cmd)
 
     captured = {}
 

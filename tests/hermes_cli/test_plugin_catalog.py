@@ -55,13 +55,15 @@ def test_version_and_image_are_cosmetic_and_offhost_images_are_dropped(tmp_path)
     assert entries["labelled"].to_dict()["version"] == "1.4.0"
 
 
-def test_screenshots_and_readme_are_parsed_and_default_off(tmp_path):
+def test_screenshots_and_readme_are_parsed_and_readme_defaults_on(tmp_path):
     shot = "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/docs/1.png"
     (tmp_path / "a.yaml").write_text(yaml.safe_dump(_entry("paged", screenshots=[shot, "https://evil.example/x.png"], readme=True)))
-    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("plain", readme="yes")))
+    (tmp_path / "b.yaml").write_text(yaml.safe_dump(_entry("plain", readme=False)))
+    (tmp_path / "c.yaml").write_text(yaml.safe_dump(_entry("bare")))
     entries = {e.name: e for e in pc.load_catalog(tmp_path)}
     assert entries["paged"].screenshots == [shot] and entries["paged"].readme is True
     assert entries["plain"].screenshots == [] and entries["plain"].readme is False
+    assert entries["bare"].readme is True
     assert entries["paged"].to_dict()["screenshots"] == [shot] and entries["paged"].to_dict()["readme"] is True
 
 

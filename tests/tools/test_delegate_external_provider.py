@@ -20,4 +20,5 @@ def test_pinned_command_retains_selected_external_provider(external):
         override_acp_command=sys.executable, override_acp_args=[],
     )
     assert result["provider"] == (profile.name if external else "copilot-acp")
+    assert result["requested_provider"] == result["provider"]
     assert result["acp_command"] == sys.executable

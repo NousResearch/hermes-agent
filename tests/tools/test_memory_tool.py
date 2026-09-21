@@ -203,12 +203,12 @@ class TestMemoryStoreReplace:
         assert result["success"] is True
         assert store.memory_entries == ["RULE B: CI is per-head."]
         assert result["replaced_entry"] == entry
-        # Batch surface carries the same visibility: op index -> full overwritten text.
+        # Batch surface carries the same visibility: 1-based op position -> full overwritten text.
         store.add("memory", "second entry")
         batch_result = store.apply_batch("memory", [{"action": "replace", "old_text": "second entry",
                                                      "content": "second entry, amended."}])
         assert batch_result["success"] is True
-        assert batch_result["replaced_entries"] == {0: "second entry"}
+        assert batch_result["replaced_entries"] == {1: "second entry"}
 
     def test_replace_same_across_single_batch_and_approval_replay(self, tmp_path, monkeypatch):
         """The three dispatch surfaces (store.replace, apply_batch, apply_memory_pending

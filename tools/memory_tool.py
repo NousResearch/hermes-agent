@@ -115,14 +115,14 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     if action == "add" and not content:
         return tool_error("Content is required for 'add' action.", success=False)
     if action in ("replace", "remove") and not old_text:
+        replace_hint = (" For 'replace', content is the COMPLETE new entry -- the whole "
+                        "matched entry is overwritten, not just the old_text span."
+                        if action == "replace" else "")
         return json.dumps({
             "success": False,
             "error": (f"'{action}' needs old_text -- a short unique substring of the entry "
                       f"to {action}. None was provided. Reissue the {action} with old_text "
-                      f"set to part of one of the current_entries below."
-                      + (" For 'replace', content is the COMPLETE new entry -- the whole "
-                         "matched entry is overwritten, not just the old_text span."
-                         if action == "replace" else "")),
+                      f"set to part of one of the current_entries below.{replace_hint}"),
             "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
     if action == "replace" and not content:
         return tool_error("content is required for 'replace' action.", success=False)

@@ -328,8 +328,9 @@ class MemoryStore:
     def _apply_batch_op(working: List[str], act: str, content: str, old_text: str,
                         pos: str) -> Tuple[Optional[str], Optional[str]]:
         """Apply one batch op to *working* in place; return ``(error message, replaced
-        entry text)`` — the second value is the full entry a 'replace' overwrote, so
-        the caller can surface it (#117952); both are None-typed on non-replace paths."""
+        entry text)``. The first element is None on every success path; the second is
+        the full entry a 'replace' overwrote (None on non-replace paths and on every
+        error path), surfaced so the caller can show what was lost (#117952)."""
         if act == "add":
             if not content:
                 return f"{pos}: content is required.", None
@@ -376,7 +377,9 @@ class MemoryStore:
                 if msg:
                     return self._batch_failure(target, msg)
                 if replaced_text is not None:
-                    replaced[i] = replaced_text
+                    # 1-based op position, matching the "Operation N" error numbering the
+                    # model sees for failed ops in the same batch.
+                    replaced[i + 1] = replaced_text
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single

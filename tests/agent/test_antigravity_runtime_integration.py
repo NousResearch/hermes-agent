@@ -67,6 +67,37 @@ def test_aiagent_runs_antigravity_turn_reuses_conversation_and_closes_once():
     assert agent._antigravity_session is None
 
 
+def test_runtime_passes_yolo_setting_to_default_client(monkeypatch):
+    from agent.transports import antigravity_cli
+    from hermes_cli import runtime_provider
+
+    captured = {}
+
+    class CapturingClient(_Client):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+            captured.update(kwargs)
+
+    monkeypatch.setattr(antigravity_cli, "AntigravityClient", CapturingClient)
+    monkeypatch.setattr(
+        runtime_provider, "get_antigravity_runtime_config",
+        lambda: {
+            "binary": "auto", "sandbox": False, "dangerously_skip_permissions": True,
+            "startup_timeout_seconds": 30, "request_timeout_seconds": 120,
+            "shutdown_timeout_seconds": 5, "debug_protocol": False,
+        },
+    )
+    agent = _agent(model="auto")
+    setattr(agent, "_antigravity_projector_factory", _Projector)
+
+    result = agent.run_conversation("hello")
+
+    assert result["completed"] is True
+    assert captured["sandbox"] is False
+    assert captured["dangerously_skip_permissions"] is True
+    agent.close()
+
+
 def test_live_model_switch_retires_antigravity_session_without_building_openai_client():
     agent = _agent(model="auto")
     setattr(agent, "provider", "google-antigravity")

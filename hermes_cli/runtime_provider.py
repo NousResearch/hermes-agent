@@ -480,6 +480,7 @@ _ANTIGRAVITY_PROVIDER = "google-antigravity"
 _ANTIGRAVITY_DEFAULTS = {
     "binary": "auto",
     "sandbox": True,
+    "dangerously_skip_permissions": False,
     "startup_timeout_seconds": 30,
     "request_timeout_seconds": 120,
     "shutdown_timeout_seconds": 5,
@@ -502,6 +503,9 @@ def get_antigravity_runtime_config() -> Dict[str, Any]:
     return {
         "binary": binary,
         "sandbox": bool(raw.get("sandbox", _ANTIGRAVITY_DEFAULTS["sandbox"])),
+        "dangerously_skip_permissions": bool(raw.get(
+            "dangerously_skip_permissions", _ANTIGRAVITY_DEFAULTS["dangerously_skip_permissions"]
+        )),
         "startup_timeout_seconds": timeout("startup_timeout_seconds"),
         "request_timeout_seconds": timeout("request_timeout_seconds"),
         "shutdown_timeout_seconds": timeout("shutdown_timeout_seconds"),

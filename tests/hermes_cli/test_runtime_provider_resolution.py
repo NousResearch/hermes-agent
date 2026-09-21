@@ -2212,6 +2212,7 @@ def test_google_antigravity_runtime_is_explicit_and_uses_profile_config(monkeypa
             "antigravity": {
                 "binary": "/profiles/a/bin/antigravity",
                 "sandbox": False,
+                "dangerously_skip_permissions": True,
                 "startup_timeout_seconds": 12,
                 "request_timeout_seconds": 90,
                 "debug_protocol": True,
@@ -2231,6 +2232,7 @@ def test_google_antigravity_runtime_is_explicit_and_uses_profile_config(monkeypa
         "antigravity": {
             "binary": "/profiles/a/bin/antigravity",
             "sandbox": False,
+            "dangerously_skip_permissions": True,
             "startup_timeout_seconds": 12,
             "request_timeout_seconds": 90,
             "shutdown_timeout_seconds": 5,

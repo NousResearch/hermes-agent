@@ -137,6 +137,14 @@ response, and `num_turns: 0`. This demonstrates the print-timeout partial-return
 path. It does **not** demonstrate signal-based cancellation or server-side
 cancellation semantics.
 
+## Permission modes
+
+The conservative default `antigravity.sandbox: true` emits `--sandbox`. An
+explicit `antigravity.dangerously_skip_permissions: true` instead emits
+`--dangerously-skip-permissions` and suppresses `--sandbox`, allowing headless
+tool actions without approval. This YOLO mode is opt-in and should only be used
+in trusted workspaces.
+
 ## Observable configuration/authentication state
 
 - `agy models` completed and listed 14 models, demonstrating that this local

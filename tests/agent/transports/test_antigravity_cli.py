@@ -94,6 +94,19 @@ def test_client_discovers_probes_and_streams_real_agy_subprocess(tmp_path, monke
     assert result.argv[result.argv.index("--model") + 1] == "claude-test-thinking"
 
 
+def test_client_yolo_mode_adds_dangerous_flag_without_sandbox(tmp_path):
+    from agent.transports.antigravity_cli import AntigravityClient
+
+    binary = _fake_agy(tmp_path)
+    result = AntigravityClient(
+        config_path=str(binary), known_locations=(), sandbox=False,
+        dangerously_skip_permissions=True,
+    ).run_turn("hello")
+
+    assert "--dangerously-skip-permissions" in result.argv
+    assert "--sandbox" not in result.argv
+
+
 def test_client_uses_config_path_and_resumes_with_conversation(tmp_path):
     from agent.transports.antigravity_cli import AntigravityClient
 

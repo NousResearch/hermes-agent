@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "antigravity": {
         "binary": "auto",             # `auto` resolves `agy` on the backend PATH
         "sandbox": True,
+        "dangerously_skip_permissions": False,
         "startup_timeout_seconds": 30,
         "request_timeout_seconds": 120,
         "shutdown_timeout_seconds": 5,

@@ -73,3 +73,30 @@ def test_docker_import_ignores_stale_base_environment(monkeypatch):
         sys.modules.pop("tools.environments.docker", None)
         if previous is not None:
             sys.modules["tools.environments.docker"] = previous
+
+
+def test_chat_completion_helpers_binds_shim_from_leaf():
+    """``chat_completion_helpers`` binds the router-timeout-shim predicates from the
+    leaf module, never from ``agent.transports.chat_completions``.
+
+    The predicates used to live in ``chat_completions`` ~110 lines below that heavy
+    module's own top-level imports, and ``chat_completion_helpers`` imported them eagerly
+    at module load (``from agent.transports.chat_completions import ...``). A long-lived
+    gateway that holds a stale ``chat_completions`` in ``sys.modules`` (or observes it
+    before the symbol is bound) then fails that eager import with
+    ``ImportError: cannot import name 'is_router_timeout_shim'``. The predicates now live
+    in the leaf ``agent.transports.router_timeout_shim``, which has no heavy imports, so
+    the consumer binds them atomically. The heavy transport keeps a re-export so
+    ``validate_response`` and ``auxiliary_client`` are unchanged.
+    """
+    from agent import chat_completion_helpers as cch
+    from agent.transports import router_timeout_shim
+
+    assert cch.is_router_timeout_shim is router_timeout_shim.is_router_timeout_shim
+    assert cch.router_timeout_shim_may_follow is router_timeout_shim.router_timeout_shim_may_follow
+
+    # Backward compat: the heavy transport still re-exports the same object for
+    # ``validate_response`` and ``auxiliary_client``'s lazy import.
+    from agent.transports.chat_completions import is_router_timeout_shim as reexported
+
+    assert reexported is router_timeout_shim.is_router_timeout_shim

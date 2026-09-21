@@ -653,6 +653,17 @@ PLATFORM_HINTS = {
         "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
         "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."
     ),
+    # Same channel reality as the base hint above, minus the legacy-Telegram "no tables"
+    # steering: with rich_messages on, TELEGRAM_RICH_MESSAGES_HINT carries the formatting
+    # guidance instead, so the base "prefer bullets / (no tables)" line must not contradict it.
+    "telegram_rich": (
+        "You are on Telegram. Rich Markdown auto-converts: **bold**, "
+        "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
+        "[links](url), ## headers. "
+        f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, videos (.mp4) play inline; image URLs via ![alt](url) send as "
+        "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
+        "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."
+    ),
     "discord": (
         "You are in a Discord server or group chat communicating with your user. Discord renders standard "
         "markdown natively (bold, italic, code blocks, links); tables are NOT supported — use bullet lists "

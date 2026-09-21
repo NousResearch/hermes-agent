@@ -529,6 +529,32 @@ class TestTelegramRichMessagesHint:
         assert "task lists" in stable
         assert "math/formulas" in stable
 
+    def test_rich_hint_has_no_contradicting_no_tables_steer(self, monkeypatch):
+        """With rich_messages on, the base "no tables" steering is swapped out
+        for the rich variant, so the assembled hint never carries both the
+        forbid and the "reach for real Markdown tables" instruction."""
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": True}}}}
+            }
+            stable = _stable_prompt(agent)
+        assert "(no tables)" not in stable
+        assert "Prefer bullets or labeled lines for structured data" not in stable
+        assert "real Markdown tables" in stable
+
+    def test_base_hint_keeps_no_tables_steer_when_rich_off(self, monkeypatch):
+        """Without rich_messages, the base hint keeps its legacy-Telegram
+        "no tables" steering unchanged."""
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}}
+            }
+            stable = _stable_prompt(agent)
+        assert "(no tables)" in stable
+        assert "lean into it" not in stable
+
     def test_rich_hint_from_top_level_platforms(self):
         """Top-level ``platforms.telegram.extra.rich_messages`` is merged
         alongside gateway.platforms, so it works on its own."""

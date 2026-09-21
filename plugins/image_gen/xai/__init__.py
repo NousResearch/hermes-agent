@@ -56,6 +56,10 @@ _XAI_ASPECT_RATIOS = {
 }
 _XAI_RESOLUTIONS = {"1k", "2k"}
 DEFAULT_RESOLUTION = "1k"
+# xAI accepts low|medium|high|auto (validated server-side). "low" is the default here so
+# omitting the field and setting it explicitly bill the same tier.
+_XAI_QUALITIES = {"low", "medium", "high", "auto"}
+DEFAULT_QUALITY = "low"
 _MAX_SOURCE_IMAGES = 3
 _REQUEST_TIMEOUT = 120
 _REMOTE_PREFIXES = ("http://", "https://", "data:")
@@ -170,6 +174,14 @@ def _resolve_resolution() -> str:
     return res if isinstance(res, str) and res in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
 
 
+def _resolve_quality() -> str:
+    """``image_gen.xai.quality`` -> a value xAI accepts, else :data:`DEFAULT_QUALITY`."""
+    quality = load_image_gen_config("xai").get("quality")
+    if isinstance(quality, str) and quality.strip().lower() in _XAI_QUALITIES:
+        return quality.strip().lower()
+    return DEFAULT_QUALITY
+
+
 def _xai_image_field(source: str) -> Dict[str, str]:
     """Edit ``image`` field: URL / data URI pass through; local paths are inlined as ``data:`` URIs."""
     source = source.strip()
@@ -260,6 +272,7 @@ class XAIImageGenProvider(StaticImageGenProvider):
         model_id, meta = _resolve_model(kwargs.get("model"))
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_res = _resolve_resolution()
+        xai_quality = _resolve_quality()
         source_images = collect_source_images(image_url, reference_image_urls)
         edit_fail = error_factory(provider_name, aspect, model=_EDIT_FALLBACK_MODEL, prompt=prompt)
         err = _check_source_images(source_images, image_url, edit_fail)
@@ -292,7 +305,7 @@ class XAIImageGenProvider(StaticImageGenProvider):
         else:
             payload = {
                 "model": model_id, "prompt": prompt, "aspect_ratio": _XAI_ASPECT_RATIOS.get(aspect, "1:1"),
-                "resolution": xai_res,
+                "resolution": xai_res, "quality": xai_quality,
             }
             endpoint_url = f"{base_url}/images/generations"
         if storage_options is not None:
@@ -328,6 +341,7 @@ class XAIImageGenProvider(StaticImageGenProvider):
         extra: Dict[str, Any] = {"storage_enabled": bool(storage_cfg["enabled"])}
         if not is_edit:
             extra["resolution"] = xai_res
+            extra["quality"] = xai_quality
         if storage_notice:
             extra["storage_notice"] = storage_notice
         if public_url:

@@ -232,6 +232,8 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
     """
     if not _is_session_expired_error(exc):
         return None
+    values = _call_redaction_values(server_name) if redaction_values is None else redaction_values
+    op_description = _sanitize_error(op_description, values)
     srv = _lookup_reconnectable_server(server_name, require_loop=True)
     if call_may_have_side_effects:
         # Even without a signallable server the outcome is still uncertain: a generic "call failed"
@@ -250,8 +252,6 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
             outcome_uncertain=True, server=server_name)
     if srv is None:
         return None
-    values = _call_redaction_values(server_name) if redaction_values is None else redaction_values
-    op_description = _sanitize_error(op_description, values)
     logger.info("MCP server '%s': %s failed with session-expired error (%s); signalling transport reconnect "
                 "and retrying once.", server_name, op_description, _sanitize_error(_exc_str(exc), values))
     if not _loop._signal_reconnect_and_wait(server_name, srv, op_description=op_description, timeout=15):

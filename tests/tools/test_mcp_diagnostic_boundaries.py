@@ -88,11 +88,13 @@ def test_content_type_redacts_before_lowercase(tmp_path, monkeypatch, caplog):
         )
 
     original = httpx.AsyncClient
-    monkeypatch.setattr(
-        httpx,
-        "AsyncClient",
-        lambda **kw: original(transport=httpx.MockTransport(respond), **kw),
-    )
+
+    def mock_client(**kw):
+        # Preflight now supplies a safety transport; replace only its network I/O.
+        kw["transport"] = httpx.MockTransport(respond)
+        return original(**kw)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
     caplog.set_level(logging.DEBUG, logger="tools.mcp_tool")
     t = core.MCPServerTask("final-review")
     assert not asyncio.run(t._prepare_run(cfg))

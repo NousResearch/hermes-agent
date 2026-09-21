@@ -11,7 +11,7 @@ import type { SettingsView } from './types'
 
 const views: SettingsView[] = [
   ...SECTIONS.map(section => `config:${section.id}` as SettingsView),
-  ...Object.keys(OTHER_SUBPAGES) as SettingsView[]
+  ...(Object.keys(OTHER_SUBPAGES) as SettingsView[])
 ]
 
 describe('settings subpage routing', () => {
@@ -50,6 +50,8 @@ describe('settings subpage routing', () => {
 
     const cases: [SettingsView, string, string][] = [
       ['config:model', 'aux=vision', 'auxiliary'],
+      ['keybinds', 'setting=hud-modifier', 'hud-gesture'],
+      ['keybinds', 'page=shortcuts&setting=hud-modifier', 'hud-gesture'],
       ['sessions', 'session=archived-id', 'archived'],
       ['vault', 'kind=login', 'credentials'],
       ['vault', 'label=Example', 'credentials'],

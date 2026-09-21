@@ -898,6 +898,13 @@ class GatewayAdapterLifecycleMixin:
         # would park a transiently-failed profile before the first watcher tick can retry it.
         for profile_name in transient_failed:
             self._served_profile_signatures.pop(profile_name, None)
+        # Cached configs follow the served set: a profile that failed to start (or stopped being
+        # served) keeps no home channel in the host-wide notice fan-out, where it would be owed a
+        # notice no transport can deliver and ``.restart_pending.json`` would never be unlinked.
+        configs = getattr(self, "_profile_configs", None)
+        if configs is not None:
+            for profile_name in [p for p in configs if p not in self._served_profile_signatures]:
+                configs.pop(profile_name, None)
         self._restore_secondary_completion_ledgers(profile_homes)
         return connected
 
@@ -931,6 +938,12 @@ class GatewayAdapterLifecycleMixin:
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
             publish_runtime_status(served_profiles=served)
+            # The host record is what a second `gateway run` reads to decide attach-vs-start; keep
+            # its served set in step with the live one (it is republished, never re-claimed).
+            from gateway.host_rendezvous import ROLE_GATEWAY, owns_host_lock, publish_record
+            if owns_host_lock(ROLE_GATEWAY):
+                from hermes_constants import get_hermes_home
+                publish_record(ROLE_GATEWAY, profiles=tuple(served), home=str(get_hermes_home()))
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises
@@ -1041,6 +1054,12 @@ class GatewayAdapterLifecycleMixin:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         profile_cfg = await self._load_secondary_profile_config(profile_name, profile_home)
+        # Keep the served profile's config: host-wide passes (planned-restart notices) must reach
+        # every served profile's home channels, and this is the only place it is loaded.
+        configs = getattr(self, "_profile_configs", None)
+        if configs is None:
+            configs = self._profile_configs = {}
+        configs[profile_name] = profile_cfg
         multiplex = self._multiplex_on()
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         connected = 0

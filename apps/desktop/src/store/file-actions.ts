@@ -78,7 +78,10 @@ export async function copyFilePath(path: string): Promise<void> {
  *  when that session's backend is this computer. A row tagged with a Connections
  *  gateway other than `local` runs there; an untagged row runs on the window's
  *  primary, remote or not (the rule the sidebar menus already apply). */
-export function shouldOfferLocalReveal(connectionId: null | string | undefined, primaryRemote = isDesktopFsRemoteMode()): boolean {
+export function shouldOfferLocalReveal(
+  connectionId: null | string | undefined,
+  primaryRemote = isDesktopFsRemoteMode()
+): boolean {
   const tagged = String(connectionId || '').trim()
 
   return tagged ? tagged === LOCAL_CONNECTION_ID : !primaryRemote

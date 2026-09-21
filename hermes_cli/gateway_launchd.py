@@ -14,6 +14,7 @@ import shlex
 import subprocess
 import sys
 import time
+from xml.sax.saxutils import escape
 
 
 def _gw():
@@ -211,6 +212,29 @@ def _gateway_run_command() -> list[str]:
     return [_gw().get_python_path(), "-m", "hermes_cli.main", *_gw()._profile_arg().split(), "gateway", "run", "--replace"]
 
 
+def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: Path) -> list[str]:
+    """launchd ``ProgramArguments`` that run ``command`` with a Local Network identity macOS accepts (#71206).
+
+    macOS Local Network Privacy attributes a socket to the process launchd spawned for the job. A bare
+    venv Python has no application ID and is not platform-entitled, so every LAN connect from the
+    launchd gateway dies with ``EHOSTUNREACH`` while the same code works from Terminal (whose grant it
+    inherits). An ad-hoc-signed helper .app does not help: nehelper never prompts for it and denies
+    (#57812 dead-end table, re-verified live on macOS 26.3). ``/usr/bin/osascript``'s ``do shell script``
+    spawns its child as osascript-responsible — an Apple platform binary — so the child is exempt;
+    ``/bin/sh -c exec …`` and ``/usr/bin/time`` wrappers are NOT (the launchd job identity is the
+    non-entitled first executable). ``do shell script`` buffers the child's stdout/stderr until it exits,
+    so the command appends both to the same files the plist's ``StandardOutPath``/``StandardErrorPath``
+    name (those keys stay: they are where osascript's own output lands — an empty result line per exit
+    and an un-timestamped ``execution error`` line on non-zero exit); ``exec`` keeps the
+    gateway a direct child in the job's process group, so ``launchctl bootout`` / ``kickstart -k`` still
+    deliver SIGTERM to it and KeepAlive's ``SuccessfulExit`` semantics are preserved (osascript exits 0
+    exactly when the shell did).
+    """
+    shell = f"exec {shlex.join(command)} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
+    applescript = shell.replace("\\", "\\\\").replace('"', '\\"')
+    return ["/usr/bin/osascript", "-e", f'do shell script "{applescript}"']
+
+
 def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor: bool = False) -> list[str]:
     """Wrap gateway run so raw stderr lines are timestamped before file write. ``external_supervisor``
     (launchd ProgramArguments only) adds ``--external-supervisor`` so ``hermes update`` hands back to
@@ -316,10 +340,12 @@ def generate_launchd_plist() -> str:
     _gw()._append_node_dir_for_service(priority_dirs)
     sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
 
-    # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping stderr.
+    # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
+    # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).
+    stdout_log, stderr_log = log_dir / "gateway.log", log_dir / "gateway.error.log"
+    command = _timestamped_stderr_gateway_command(stderr_log, external_supervisor=True)
     prog_args_xml = "\n        ".join(
-        f"<string>{part}</string>"
-        for part in _timestamped_stderr_gateway_command(log_dir / "gateway.error.log", external_supervisor=True)
+        f"<string>{escape(part)}</string>" for part in launchd_program_arguments(command, stdout_log, stderr_log)
     )
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
@@ -400,10 +426,10 @@ def generate_launchd_plist() -> str:
     <integer>60</integer>
 {nofile_block}
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    <string>{stdout_log}</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    <string>{stderr_log}</string>
 </dict>
 </plist>
 """

@@ -486,6 +486,7 @@ export const zh = defineLocale({
       gatewayManagedUpdatesUnavailable: '远程更新需要支持托管 SSH 更新的桌面版本。',
       gatewayManagedUpdatesEmpty: '请在已保存的连接中添加 SSH 连接，即可在此管理更新。',
       keyboardShortcuts: '按键绑定',
+      hudGesture: 'HUD 手势',
       screenCapture: '屏幕捕获',
       notificationAlerts: '桌面通知',
       notificationSounds: '声音',
@@ -874,7 +875,8 @@ export const zh = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
-      modelContextLength: '仅覆盖主聊天模型检测到的上下文窗口（以 token 计）。保持为 0 则使用所选模型检测到的值。不影响辅助模型/MoA 模型。',
+      modelContextLength:
+        '仅覆盖主聊天模型检测到的上下文窗口（以 token 计）。保持为 0 则使用所选模型检测到的值。不影响辅助模型/MoA 模型。',
       fallbackProviders: '备用模型',
       toolsets: '启用的工具集',
       timezone: '时区',
@@ -1207,6 +1209,10 @@ export const zh = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      minimizeToTrayTitle: '最小化到托盘',
+      minimizeToTrayDesc:
+        '最小化窗口或关闭主窗口时，将其隐藏到系统托盘（macOS 上为菜单栏），让 Hermes 继续运行。通过托盘菜单中的“退出 Hermes”或 Cmd+Q 退出。默认关闭，仅适用于此设备。',
+      minimizeToTrayUnavailable: '系统托盘不可用。窗口将正常最小化和关闭。关闭此选项后重新开启即可重试。',
       none: '无',
       noneParen: '(无)',
       builtinOnly: '仅内置',
@@ -1234,6 +1240,15 @@ export const zh = defineLocale({
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
       showOptions: '显示选项'
+    },
+    hudModifier: {
+      title: '轻按唤出 HUD',
+      description:
+        '在 Mac 上按下并松开 ⌘ + Option，在 Windows/Linux 上按下并松开 Ctrl + Alt，即可从任意应用将 HUD 置于前台。默认关闭，仅适用于此设备。',
+      permission: '请在系统设置 → 隐私与安全性 → 输入监控中允许 Hermes，然后重试。此手势不会记录按键或截取屏幕。',
+      unavailable: 'HUD 手势辅助程序无法启动或意外停止。请重试或重启 Hermes。Hermes 内原有的 HUD 快捷键仍可使用。',
+      missingHelper: '此 Hermes 安装缺少 HUD 手势辅助程序。请更新或重新安装 Hermes，然后重试。',
+      unsupportedSession: '此桌面会话不支持全局修饰键轻按事件。Linux 需要 X11；不支持 Wayland。'
     },
     screenshot: {
       enabledTitle: '截图快捷键',
@@ -1898,7 +1913,8 @@ export const zh = defineLocale({
         needsSetupHint: '此后端已选中但尚未完成设置——在设置完成前命令将会失败。',
         needsSetupConfirmTitle: backend => `仍要选择 ${backend} 吗？`,
         needsSetupConfirmDescription: detail => `${detail} 此更改生效后启动的会话在设置完成前将没有终端或文件工具。`,
-        needsSetupConfirmDescriptionGeneric: '此后端尚未完成设置。此更改生效后启动的会话在设置完成前将没有终端或文件工具。',
+        needsSetupConfirmDescriptionGeneric:
+          '此后端尚未完成设置。此更改生效后启动的会话在设置完成前将没有终端或文件工具。',
         needsSetupConfirmAction: '仍然选择'
       },
       browserRealProfile: {
@@ -2000,7 +2016,8 @@ export const zh = defineLocale({
       desktopHalfPending: '复制中…',
       desktopHalfPendingTip: '此包附带的桌面部分尚未复制到应用中。请重新扫描或重启应用。',
       desktopHalfRemote: '不可用（远程后端）',
-      desktopHalfRemoteTip: '此包的桌面部分位于远程后端的磁盘上，本应用无法读取。要在此使用，请通过“从 Git 安装”输入该包的仓库地址并勾选桌面目标，即可将桌面部分克隆到本机。',
+      desktopHalfRemoteTip:
+        '此包的桌面部分位于远程后端的磁盘上，本应用无法读取。要在此使用，请通过“从 Git 安装”输入该包的仓库地址并勾选桌面目标，即可将桌面部分克隆到本机。',
       emptyAll: '还没有插件。',
       empty: '此配置尚未安装任何 agent 插件。',
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
@@ -3312,6 +3329,8 @@ export const zh = defineLocale({
   },
 
   statusStack: {
+    hideStack: '隐藏状态面板',
+    showStack: '显示状态面板',
     agents: '代理',
     background: count => `${count} 个后台任务`,
     goalActive: '目标进行中',

@@ -550,6 +550,15 @@ def _print_external_login_notice() -> None:
         print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
 
 
+    _print_oauth_heal_notices()
+
+
+def _print_oauth_heal_notices() -> None:
+    """Tell the user when load_pool() just consolidated a forked OAuth grant."""
+    for note in auth_mod.consume_oauth_heal_notices():
+        print(f"note: {note}")
+
+
 def auth_remove_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     target = getattr(args, "target", None)
@@ -658,7 +667,10 @@ def auth_status_command(args) -> None:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
     if dispatch_plugin_auth("status", args, provider):
         return
+    if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
     status = auth_mod.get_auth_status(provider)
+    _print_oauth_heal_notices()
     if status.get("free_tier"):
         # Free tier: not an account login, so no account fields; point at the upgrade path.
         label, hint = _free_tier_lines()

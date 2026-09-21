@@ -1,5 +1,9 @@
 import { Box, Text, useInput } from '@hermes/ink'
-import type { ConnectionOperationTarget, ConnectionRespondParams, ConnectionTargetEnvField } from '@hermes/shared/gateway-events'
+import type {
+  ConnectionOperationTarget,
+  ConnectionRespondParams,
+  ConnectionTargetEnvField
+} from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -77,7 +81,9 @@ function handleFormKey(key: InputKey, h: FormKeyHandlers): void {
 function AuthorizedWithoutTools({ error, t }: { error: string; t: Theme }) {
   return (
     <Box flexDirection="column">
-      <Text bold color={t.color.ok}>Authorized. Tools unavailable.</Text>
+      <Text bold color={t.color.ok}>
+        Authorized. Tools unavailable.
+      </Text>
       <Text color={t.color.muted}>{error}</Text>
       <Text color={t.color.accent}>▸ Continue</Text>
       <Text color={t.color.muted}>Esc close</Text>
@@ -88,7 +94,9 @@ function AuthorizedWithoutTools({ error, t }: { error: string; t: Theme }) {
 function AwaitingBrowser({ t, target }: { t: Theme; target: ConnectionOperationTarget }) {
   return (
     <Box flexDirection="column">
-      <Text bold color={t.color.text}>Set up {target.name}</Text>
+      <Text bold color={t.color.text}>
+        Set up {target.name}
+      </Text>
       <Text color={t.color.accent}>{target.connect_url}</Text>
       {target.detail ? <Text color={t.color.muted}>{target.detail}</Text> : null}
       <Text color={t.color.muted}>Press Enter to open in browser</Text>
@@ -112,7 +120,9 @@ function FieldRow({ cols, draftValue, field, focused, onChange, onSubmit, showSe
   return (
     <Box flexDirection="column">
       <Text color={focused ? t.color.accent : t.color.label}>
-        {focused ? '▸ ' : '  '}{fieldLabel(field)}{field.required ? ' *' : ''}
+        {focused ? '▸ ' : '  '}
+        {fieldLabel(field)}
+        {field.required ? ' *' : ''}
       </Text>
       <Box paddingLeft={2}>
         {showSet ? (
@@ -154,8 +164,14 @@ function SetupForm(p: SetupFormProps) {
 
   return (
     <Box flexDirection="column">
-      <Text bold color={t.color.text}>Set up {target.name}</Text>
-      {target.instructions ? <Text color={t.color.muted} wrap="wrap">{target.instructions}</Text> : null}
+      <Text bold color={t.color.text}>
+        Set up {target.name}
+      </Text>
+      {target.instructions ? (
+        <Text color={t.color.muted} wrap="wrap">
+          {target.instructions}
+        </Text>
+      ) : null}
       {p.fields.map((field, index) => (
         <FieldRow
           cols={p.cols}
@@ -172,7 +188,7 @@ function SetupForm(p: SetupFormProps) {
       ))}
       {target.state === 'failed' && target.detail ? <Text color={t.color.error}>{target.detail}</Text> : null}
       <Text color={p.selectorFocused ? t.color.accent : t.color.muted}>
-        {p.action === 0 ? '▸ ' : '  '}Connect   {p.action === 1 ? '▸ ' : '  '}Cancel
+        {p.action === 0 ? '▸ ' : '  '}Connect {p.action === 1 ? '▸ ' : '  '}Cancel
       </Text>
       {p.missingRequired ? <Text color={t.color.muted}>{fieldLabel(p.missingRequired)} is required.</Text> : null}
       {p.submitting ? <Text color={t.color.muted}>Pending…</Text> : null}
@@ -216,7 +232,7 @@ export function ConnectionSetupOverlay({ cols, t }: ConnectionSetupOverlayProps)
 
     if (target?.state === 'connected') {
       setDraft(current =>
-        Object.fromEntries(fields.map(field => [field.name, field.secret ? '' : current[field.name] ?? '']))
+        Object.fromEntries(fields.map(field => [field.name, field.secret ? '' : (current[field.name] ?? '')]))
       )
     }
   }, [fields, target?.state])

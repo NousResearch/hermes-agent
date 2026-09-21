@@ -71,7 +71,12 @@ def _xai_oauth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
 
 
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+    from hermes_cli.auth import _load_global_auth_store
     state = _xai_oauth_state_from_store(_load_auth_store_maybe_locked(_lock))
+    if not _xai_oauth_state_has_usable_tokens(state):
+        global_state = _xai_oauth_state_from_store(_load_global_auth_store())
+        if _xai_oauth_state_has_usable_tokens(global_state):
+            state = global_state
     if not state:
         raise _xai_err(
             "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
@@ -92,6 +97,33 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
+    """Best-effort persist of a rotated xAI grant into the global-root auth.json.
+
+    xAI rotates refresh_token on every refresh, so a profile that refreshed a root-resolved grant
+    must write the chain back to root. Touches only root ``providers.xai-oauth``; swallows all
+    errors (root-stale is better than breaking the profile's own save).
+    """
+    from hermes_cli.auth import _global_auth_file_path, _persist_provider_state_to_store
+    global_path = _global_auth_file_path()
+    if global_path is None:  # classic mode (profile == root); the profile save already hit root
+        return
+    # Seat belt: under pytest never write the real ~/.hermes/auth.json (mirrors the read-side guard
+    # in _load_global_auth_store). Uses raw HOME, not Path.home(), which fixtures may monkeypatch.
+    real_home_env = os.environ.get("HOME", "") if os.environ.get("PYTEST_CURRENT_TEST") else ""
+    if real_home_env:
+        real_root = Path(real_home_env) / ".hermes" / "auth.json"
+        try:
+            if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                return
+        except Exception:
+            return
+    try:
+        _persist_provider_state_to_store("xai-oauth", state, global_path, set_active=False)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
+
+
 def _save_xai_oauth_tokens(
     tokens: Dict[str, Any], *, discovery: Optional[Dict[str, Any]] = None, redirect_uri: str = "",
     last_refresh: Optional[str] = None, auth_mode: str = "oauth_device_code",
@@ -102,19 +134,28 @@ def _save_xai_oauth_tokens(
     Pass ``set_active=False`` for side-tool bootstrap (TTS/setup, tools config, dashboard, refresh)
     so inference routing is unchanged.
     """
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store, _store_provider_state, _utc_now_z
+    from hermes_cli.auth import _auth_store_lock, _global_auth_file_path, _load_auth_store, _load_provider_state_with_source, _same_path, _save_auth_store, _store_provider_state, _utc_now_z, _write_through_xai_oauth_to_global_root
     if last_refresh is None:
         last_refresh = _utc_now_z()
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        state = _load_provider_state(auth_store, "xai-oauth") or {}
+        # A profile lacking its own xai-oauth block reads root's grant via fallback; refreshing it
+        # must write the rotated chain back to root or root keeps a revoked refresh token. Decide by
+        # where the grant was resolved FROM (key presence lies: _store_provider_state creates it).
+        state, source_path = _load_provider_state_with_source(auth_store, "xai-oauth")
+        state = state if state is not None else {}
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode=auth_mode)
         if discovery:
             state["discovery"] = discovery
         if redirect_uri:
             state["redirect_uri"] = redirect_uri
-        _store_provider_state(auth_store, "xai-oauth", state, set_active=set_active)
-        _save_auth_store(auth_store)
+        global_root = _global_auth_file_path()
+        if source_path is not None and global_root is not None and _same_path(source_path, global_root):
+            # Root-only write-back: a profile copy would shadow root and disable write-through.
+            _write_through_xai_oauth_to_global_root(state)
+        else:
+            _store_provider_state(auth_store, "xai-oauth", state, set_active=set_active)
+            _save_auth_store(auth_store)
 
 
 def _xai_jwt_exp(access_token: Any) -> Optional[float]:

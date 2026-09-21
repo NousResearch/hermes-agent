@@ -73,8 +73,7 @@ export interface ConnectionRequest {
 /** Answers the card may give for one target: the user said no, or the user consented and the backend
  *  does the work. The card never reports an outcome; only the backend moves a target. */
 export type ConnectionTargetOutcome =
-  | { name: string; status: 'skipped' }
-  | { env?: Record<string, string>; name: string; status: 'approved' }
+  { name: string; status: 'skipped' } | { env?: Record<string, string>; name: string; status: 'approved' }
 
 export interface ConnectionOutcome {
   targets?: ConnectionTargetOutcome[]
@@ -101,7 +100,14 @@ const TARGET_STATES: readonly ConnectionTargetState[] = [
 ]
 
 const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
-const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt', 'unavailable']
+
+const SETTLE_REASONS: readonly ConnectionSettleReason[] = [
+  'all_resolved',
+  'continue',
+  'deadline',
+  'interrupt',
+  'unavailable'
+]
 
 // The wire carries these as typed literals already; the lookups defend against a backend a version ahead.
 const oneOf =
@@ -167,10 +173,7 @@ export function normalizeConnectionRequest(
 /** Overlay the authoritative `connectors.operation.status` snapshot on the cached request. Frames for
  *  another operation, and frames the operation wrote before the one already applied, change nothing:
  *  the transport can reorder them and an older one would regress a row. */
-export function applyOperationStatus(
-  request: ConnectionRequest,
-  status: ConnectionOperationStatus
-): ConnectionRequest {
+export function applyOperationStatus(request: ConnectionRequest, status: ConnectionOperationStatus): ConnectionRequest {
   if (status.op_id !== request.opId || status.seq <= request.seq) {
     return request
   }
@@ -239,10 +242,7 @@ const sameEnvFields = (next: SetupField[], previous: SetupField[]): boolean =>
 
 /** Apply one `connection.update` frame. Every frame carries the operation's full target snapshot, so
  *  the store overlays it; frames for another operation or for a settled request are ignored. */
-export function applyConnectionUpdate(
-  request: ConnectionRequest,
-  update: ConnectionUpdatePayload
-): ConnectionRequest {
+export function applyConnectionUpdate(request: ConnectionRequest, update: ConnectionUpdatePayload): ConnectionRequest {
   if (update.op_id !== request.opId || request.settled) {
     return request
   }
@@ -302,7 +302,10 @@ export const hasConnectionRequest = (sessionId: string | null | undefined): bool
 
 /** Drive the operation. The entry stays in the store: the backend answers with `connection.update`
  *  and the card re-renders from that; only settlement removes it. */
-export async function respondToConnectionRequest(request: ConnectionRequest, outcome: ConnectionOutcome): Promise<boolean> {
+export async function respondToConnectionRequest(
+  request: ConnectionRequest,
+  outcome: ConnectionOutcome
+): Promise<boolean> {
   const current = $connectionRequests.get()[keyFor(request.sessionId)]
 
   if (!current || current.opId !== request.opId || current.settled) {

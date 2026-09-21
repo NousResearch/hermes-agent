@@ -11,8 +11,7 @@ N turn slots for ANY N, and a saturated pool then delayed the turn body of every
 message with nothing in the logs naming the wait.
 
 The runner here is a real ``GatewayRunner`` instance (``__new__``, no ``__init__``) carrying only
-the executor attributes, so with the fix reverted the pin fails on the delayed turn body, not on
-a missing method.
+the executor attributes.
 """
 
 from __future__ import annotations
@@ -38,19 +37,13 @@ def _runner(cleanup=None, *, cleanup_timeout=0.5):
     return runner
 
 
-def _run_housekeeping(runner, func, *args):
-    """Submit like the production callers do; fall back to the shared pool if the fix is absent."""
-    submit = getattr(runner, "_run_housekeeping_in_executor", runner._run_in_executor_with_context)
-    return submit(func, *args)
-
-
 async def _abandon_housekeeping(runner, count, timeout):
     """Submit ``count`` wedged housekeeping items, abandoning each like the real callers do."""
 
     async def one():
         try:
             await asyncio.wait_for(
-                _run_housekeeping(runner, runner._cleanup_agent_resources, object()),
+                runner._run_housekeeping_in_executor(runner._cleanup_agent_resources, object()),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:

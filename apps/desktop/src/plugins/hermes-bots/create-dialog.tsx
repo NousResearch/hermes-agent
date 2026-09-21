@@ -813,16 +813,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                     <Checkbox checked={shareAuth} onCheckedChange={value => setShareAuth(Boolean(value))} />
                     {remoteTarget ? b.editor.shareKeysOn(targetLabel) : b.editor.shareKeys}
                   </label>
-<<<<<<< HEAD
                   <div className="ps-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)">
                     {b.editor.shareKeysHint}
-=======
-                  <div className="ps-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)">
-                    Each profile owns its credentials. API keys are copied; OAuth logins (Claude, Codex, xAI, Nous)
-                    are not — sign the bot in with <code>hermes -p &lt;name&gt; model</code>. Uncheck to start with
-                    no credentials.
-
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
                   </div>
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
                     <Checkbox checked={noSkills} onCheckedChange={value => setNoSkills(Boolean(value))} />
@@ -960,13 +952,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                             <span className="min-w-0">
                               <span>{m.name}</span>
                               {m.fromCatalog && !needsSetup ? (
-<<<<<<< HEAD
                                 <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
                                   {m.installed ? b.editor.catalogInstalled : b.editor.catalog}
-=======
-                                <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
-                                  {m.installed ? 'catalog · installed' : 'catalog'}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
                                 </span>
                               ) : null}
                               {needsSetup ? (

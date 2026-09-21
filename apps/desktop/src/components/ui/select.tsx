@@ -100,13 +100,9 @@ function SelectItem({ className, children, ...props }: React.ComponentProps<type
   return (
     <SelectPrimitive.Item
       className={cn(
-<<<<<<< HEAD
         menuItemClass,
         menuItemFocusClass,
         'w-full cursor-pointer pe-7 data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50',
-=======
-        'relative flex w-full cursor-pointer items-center gap-2 rounded-sm py-1.5 pe-8 ps-2 text-xs outline-none select-none focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:cursor-default data-disabled:opacity-50',
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
         className
       )}
       data-slot="select-item"

@@ -716,7 +716,7 @@ export function ModelCatalogMenu({
                           </span>
                           {loadProgress ? (
                             <span
-                              className="ms-auto flex shrink-0 items-center gap-1.5"
+                              className="ml-auto flex shrink-0 items-center gap-1.5"
                               title={copyPicker.loadingIntoMemory}
                             >
                               <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
@@ -732,7 +732,7 @@ export function ModelCatalogMenu({
                           ) : null}
                           {isCurrent ? (
                             <Codicon
-                              className={cn('text-foreground', loadProgress ? 'ms-1' : 'ms-auto')}
+                              className={cn('text-foreground', loadProgress ? 'ms-1' : 'ml-auto')}
                               name="check"
                               size="0.75rem"
                             />
@@ -800,7 +800,7 @@ export function ModelCatalogMenu({
                 <span className="min-w-0 flex-1 truncate">
                   MoA: <HighlightMatches foldSeparators query={search} text={preset} />
                 </span>
-                {isCurrentMoa ? <Codicon className="ms-auto text-foreground" name="check" size="0.75rem" /> : null}
+                {isCurrentMoa ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
               </DropdownMenuItem>
             )
           })}
@@ -920,14 +920,10 @@ function DownloadingModelRow({
       textValue=""
     >
       <span className="min-w-0 flex-1 truncate">{target}</span>
-<<<<<<< HEAD
       <span
         className="ml-auto flex shrink-0 items-center gap-1.5"
         title={paused ? copyLocal.downloadPausedLabel : copyPicker.downloading}
       >
-=======
-      <span className="ms-auto flex shrink-0 items-center gap-1.5" title={copy.downloading}>
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
         <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
           <span
             className={cn(

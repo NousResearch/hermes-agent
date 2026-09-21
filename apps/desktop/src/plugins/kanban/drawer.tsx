@@ -318,7 +318,7 @@ function AssigneeMenu({
           <DropdownMenuItem key={profile.name} onSelect={() => onReassign(profile.name)}>
             <Avatar name={profile.name} size="0.875rem" />
             {profile.name}
-            {profile.name === current && <Codicon className="ms-auto" name="check" size="0.8rem" />}
+            {profile.name === current && <Codicon className="ml-auto" name="check" size="0.8rem" />}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -377,11 +377,7 @@ function CommentComposer({
     <div className="flex flex-col gap-1.5">
       <div className="relative">
         <Textarea
-<<<<<<< HEAD
           className="field-sizing-content max-h-40 resize-none pe-9 text-[0.8125rem]"
-=======
-          className={cn('field-sizing-content max-h-40 min-h-0 resize-none', running ? 'pe-[3.5rem]' : 'pe-[5rem]')}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
           onChange={event => setBody(event.target.value)}
           onKeyDown={event => {
             if (isSubmitEnter(event) && !event.shiftKey) {
@@ -608,7 +604,7 @@ function EstimateSection({ id }: { id: string }) {
             <Tip label={k.reEstimate}>
               <Button
                 aria-label={k.reEstimate}
-                className="ms-auto"
+                className="ml-auto"
                 disabled={est.isPending}
                 onClick={() => est.mutate()}
                 size="icon-xs"
@@ -957,7 +953,6 @@ export function TaskDrawer({
   // clips instead of scrolling itself; its height follows the content up to
   // the cap.
   return (
-<<<<<<< HEAD
     <Dialog onOpenChange={open => !open && onClose()} open>
       <DialogContent
         aria-describedby={undefined}
@@ -972,22 +967,6 @@ export function TaskDrawer({
             ) : (
               <span className="font-mono text-sm text-(--ui-text-tertiary)">{shortId(id)}</span>
             )}
-=======
-    <div className="absolute inset-y-0 right-0 z-20 flex w-[26rem] flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out animate-in fade-in slide-in-from-right-4">
-      <header className="flex flex-col gap-2 px-4 pt-3.5 pb-3">
-        <div className="flex items-center gap-2">
-          {task ? (
-            <StatusMenu columns={columns} onMove={move} status={task.status} />
-          ) : (
-            <span className="font-mono text-sm text-(--ui-text-tertiary)">{shortId(id)}</span>
-          )}
-          {task && (
-            <span className="font-mono text-[0.625rem] text-(--ui-text-quaternary)" data-selectable-text="true">
-              {shortId(task.id)}
-            </span>
-          )}
-          <div className="ms-auto flex items-center gap-0.5">
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
             {task && (
               <span className="font-mono text-[0.625rem] text-(--ui-text-quaternary)" data-selectable-text="true">
                 {shortId(task.id)}
@@ -1039,176 +1018,6 @@ export function TaskDrawer({
                 <Codicon name="close" />
               </Button>
             </div>
-<<<<<<< HEAD
-=======
-
-            {task.status === 'ready' && !task.assignee && !defaultAssignee && (
-              <Callout title={k.readyUnassignedTitle} tone={SEVERITY_TONE.warning}>
-                <p className="text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">{k.readyUnassignedBody}</p>
-              </Callout>
-            )}
-
-            {task.diagnostics && task.diagnostics.length > 0 && (
-              <Section label={k.diagnosticsN(task.diagnostics.length)}>
-                <Diagnostics items={task.diagnostics} onReclaim={() => void mutate(() => reclaimTask(task.id))()} />
-              </Section>
-            )}
-
-            <DescriptionSection body={task.body} onSave={body => void mutate(() => patchTask(task.id, { body }))()} />
-
-            <EstimateSection id={task.id} />
-
-            {task.result && (
-              <Section label={k.result}>
-                <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.result}</p>
-              </Section>
-            )}
-
-            {task.latest_summary && !isAdminSummary(task.latest_summary) && (
-              <Section label={k.latestSummary}>
-                <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.latest_summary}</p>
-              </Section>
-            )}
-
-            {(detail.links.parents.length > 0 || detail.links.children.length > 0) && (
-              <Section label={k.dependencies}>
-                {(['parents', 'children'] as const).map(side =>
-                  detail.links[side].length > 0 ? (
-                    <div className="flex flex-wrap items-center gap-1.5" key={side}>
-                      <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
-                        {side === 'parents' ? k.blockedBy : k.blocks}
-                      </span>
-                      {detail.links[side].map(linked => (
-                        <button
-                          className="rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                          key={linked}
-                          onClick={() => onOpen(linked)}
-                          type="button"
-                        >
-                          {shortId(linked)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null
-                )}
-              </Section>
-            )}
-
-            <Section
-              action={
-                <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
-                  <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
-                    <Codicon name="question" size="0.8rem" />
-                  </span>
-                </Tip>
-              }
-              label={k.comments(detail.comments.length)}
-            >
-              {detail.comments.length > 0 && (
-                <ul className="flex flex-col gap-2">
-                  {detail.comments.map(comment => (
-                    <li className="text-[0.75rem]" key={comment.id}>
-                      <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
-                      <span className="ms-2 text-[0.625rem] text-(--ui-text-quaternary)">
-                        {ago(comment.created_at)}
-                      </span>
-                      <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <CommentComposer
-                onRequeue={body => requeueMut.mutate(body)}
-                onSubmit={body => commentMut.mutate(body)}
-                pending={commentMut.isPending || requeueMut.isPending}
-                running={running}
-              />
-            </Section>
-
-            {detail.events.length > 0 && (
-              <Section label={k.activity(detail.events.length)}>
-                <ScrollFade deps={detail.events.length} max="7rem">
-                  <ul className="flex flex-col gap-1">
-                    {detail.events.map(event => {
-                      const { detail: extra, label } = eventText(event, k)
-
-                      return (
-                        <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
-                          <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
-                          {extra && (
-                            <span
-                              className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)"
-                              title={extra}
-                            >
-                              {extra}
-                            </span>
-                          )}
-                          <span className="ms-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {detail.runs.length > 0 && (
-              <Section label={k.runs(detail.runs.length)}>
-                <ScrollFade max="11rem">
-                  <ul className="flex flex-col gap-1.5">
-                    {detail.runs.map(run => {
-                      const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
-
-                      return (
-                        <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
-                          <div className="flex items-center gap-2">
-                            <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
-                              {run.outcome ?? run.status}
-                            </Badge>
-                            {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
-                            {duration(run.started_at, run.ended_at) && (
-                              <span className="text-(--ui-text-quaternary)">
-                                {duration(run.started_at, run.ended_at)}
-                              </span>
-                            )}
-                            <span className="ms-auto shrink-0 text-(--ui-text-quaternary)">
-                              {ago(run.ended_at ?? run.started_at)}
-                            </span>
-                          </div>
-                          {(run.error || run.summary) && (
-                            <p
-                              className={cn(
-                                'line-clamp-2 whitespace-pre-wrap',
-                                run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
-                              )}
-                            >
-                              {run.error ?? run.summary}
-                            </p>
-                          )}
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {log?.exists && log.content && (
-              <Section label={log.truncated ? k.workerLogTail : k.workerLog}>
-                <ScrollFade deps={log.content.length} max="12rem">
-                  <LogView className="border-0 px-0">{log.content}</LogView>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {Array.isArray(detail.attachments) && (
-              <AttachmentsSection
-                attachments={detail.attachments}
-                onUpload={file => uploadMut.mutate(file)}
-                pending={uploadMut.isPending}
-              />
-            )}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
           </div>
           <DialogTitle className="leading-snug" data-selectable-text="true">
             {task ? task.title || task.id : shortId(id)}

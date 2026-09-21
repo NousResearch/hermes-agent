@@ -27,7 +27,8 @@ test('parseInstallationId accepts only a version-4 UUID record', () => {
   assert.equal(parseInstallationId('{'), '')
 })
 
-test('loadOrCreateInstallationId persists and reuses one installation ID', () =>
+// NTFS reports no POSIX mode bits (same in-file guard the sibling test uses).
+test.skipIf(process.platform === 'win32')('loadOrCreateInstallationId persists and reuses one installation ID', () =>
   withTempDir(directory => {
     const filePath = path.join(directory, 'desktop-installation.json')
     assert.equal(

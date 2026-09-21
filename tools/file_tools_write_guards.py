@@ -224,7 +224,9 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         resolved = os.path.realpath(normalized)
 
     # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
-    # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
+    # mirror guard); the per-subsystem ``write_approval`` gate is enforced by the
+    # memory/skill tools (``memory``, ``skill_manage``), not by the generic file
+    # tools (``write_file``/``patch``). This gate targets PROJECT-LOCAL files only.
     # Must run before the ``.hermes`` component rule, which would match the home.
     # ``_hermes_exempt_homes`` also covers the ROOT when the active home is a named
     # profile, so ~/.hermes/<file> cannot read as project-local ``.hermes`` config.

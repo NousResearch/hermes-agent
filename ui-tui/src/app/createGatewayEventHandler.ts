@@ -1535,7 +1535,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const msgs: Msg[] = failed
             ? [
                 ...finalMessages.filter(
-                  (m, i) => !(i === finalMessages.length - 1 && m.role === 'assistant' && isBareErrorText(m.text, payload.error))
+                  (m, i) =>
+                    !(
+                      i === finalMessages.length - 1 &&
+                      m.role === 'assistant' &&
+                      isBareErrorText(m.text, payload.error)
+                    )
                 ),
                 { role: 'assistant', text: describeTurnFailure(payload) }
               ]

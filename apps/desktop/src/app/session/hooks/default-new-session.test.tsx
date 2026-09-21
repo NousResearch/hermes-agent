@@ -51,6 +51,7 @@ function mountActions() {
   const requestGateway = vi.fn(async () => ({ session_id: 'ambient', stored_session_id: 'ambient-stored' }) as never)
   const navigate = vi.fn()
   const state = createClientSessionState()
+
   const result = renderHook(() =>
     useSessionActions({
       activeSessionId: 'existing-runtime',
@@ -71,6 +72,7 @@ function mountActions() {
       updateSessionState: () => state
     })
   )
+
   return { ...result, navigate, requestGateway }
 }
 

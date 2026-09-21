@@ -122,7 +122,10 @@ async function run() {
       await jar.cookies.remove(base, accessName())
       mode = 'renew'
       const before = refreshes
-      const [first, second] = await Promise.all([portal.renewPortalAccessSilently(), portal.renewPortalAccessSilently()])
+      const [first, second] = await Promise.all([
+        portal.renewPortalAccessSilently(),
+        portal.renewPortalAccessSilently()
+      ])
       assert.equal(first, true)
       assert.equal(second, true)
       assert.equal(refreshes, before + 1)
@@ -192,7 +195,9 @@ async function run() {
     assert.equal(await portal.renewPortalAccessSilently(), false)
     console.log('PORTAL_SESSION_LIVE_OK')
   } finally {
-    for (const window of BrowserWindow.getAllWindows()) {window.destroy()}
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.destroy()
+    }
     server.closeAllConnections()
     await new Promise<void>(resolve => server.close(() => resolve()))
   }

@@ -38,6 +38,19 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   serves, re-enumerate when a profile dir appears or is tombstoned) is per served home, not per
   process. Why: a store opened before the scope was entered wrote a secondary profile's run
   records into the launch profile's `jobs.json`.
+- **Cron ownership is not gated on `gateway.multiplex_profiles`.** That flag gates ADAPTERS; one
+  host gateway process ticks EVERY profile's store either way (`run.py::_cron_tick_profile_homes`).
+  Gating the tick set on it left every non-launch profile's jobs in a store no ticker visited.
+- **Per-profile process assumptions are the bug class.** One process ticks N homes, so anything
+  keyed on "this process's profile" is wrong: in-flight state (`_running_job_ids`,
+  `_running_since`, `_running_futures`, `_running_worker_pids`, `_running_fire_owners`,
+  `_interrupted_job_ids`) is keyed by `_inflight_key(job_id)` = `(home key, job id)` — two
+  profiles legitimately carry a `daily-brief`; the parallel pool is keyed by home
+  (`cron.max_parallel_jobs` is per profile); and the stale-code yield gate asks
+  `scheduler_ownership.owns_cron_tick_for(home)` / `live_gateway_ticking(home)` instead of the
+  process-global runtime-lock boolean. Public accessors (`get_running_job_ids`,
+  `get_running_job_details`, `get_wedged_job_ids`) still report the host-wide union of bare job
+  ids for the shutdown drain.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,

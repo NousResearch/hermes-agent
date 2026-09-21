@@ -1672,10 +1672,11 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
 
 
 def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
-    """Profile homes the in-process ticker visits under multiplex: the served set PLUS the
-    process-active profile: ``profiles_to_serve`` lists default + every live named profile, but a
-    ``--profile <name>`` multiplexer's own profile may sit outside ``profiles/`` (custom
-    HERMES_HOME). Adapter startup already skips ``active``."""
+    """Profile homes the in-process ticker visits: the served set PLUS the process-active
+    profile: ``profiles_to_serve`` lists default + every live named profile, but a ``--profile
+    <name>`` gateway's own profile may sit outside ``profiles/`` (custom HERMES_HOME). One host
+    process ticks all of them regardless of ``gateway.multiplex_profiles``. Adapter startup
+    already skips ``active``."""
     from hermes_cli.profiles import get_active_profile_name, get_profile_dir
 
     homes = _multiplex_profile_homes(config)
@@ -5252,31 +5253,35 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     from cron.scheduler_provider import (
         InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode)
     cron_stop = threading.Event()
-    multiplex_cron = bool(getattr(runner.config, "multiplex_profiles", False))
+    # ONE gateway process per host multiplexes every profile, so its cron ticker owns EVERY
+    # profile's store — `gateway.multiplex_profiles` gates adapters, not cron. Gating the tick set
+    # on that flag left every non-launch profile's jobs in a store no ticker visited: they
+    # silently never fired.
+    try:
+        cron_profile_homes = _cron_tick_profile_homes(runner.config)
+    except Exception as exc:
+        logger.warning("Could not resolve profile homes for cron: %s", exc)
+        cron_profile_homes = []
+    # External providers own one unscoped remote registry, so they can only serve a single home.
     cron_provider = scheduler_for_profile_mode(
-        resolve_cron_scheduler(), multiplex_profiles=multiplex_cron)
+        resolve_cron_scheduler(), multiplex_profiles=len(cron_profile_homes) > 1)
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
 
-    # Multiplex: tell the ticker which profile homes to tick (else secondary profiles' jobs never
-    # run, #69377), including a ``--profile <name>`` multiplexer's OWN store.
-    if isinstance(cron_provider, InProcessCronScheduler) and multiplex_cron:
-        try:
-            profile_homes = _cron_tick_profile_homes(runner.config)
-            if profile_homes:
-                # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while
-                # the multiplexer runs gets its jobs fired without a restart (hot-serve).
-                cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
-                # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
-                cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
-                # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
-                # name); naming it keeps the ticker from routing a secondary's cron through that bot
-                # and lets a named multiplexer's own jobs reuse its live adapters.
-                cron_start_kwargs["default_profile"] = runner._primary_profile_name
-                logger.info(
-                    "Cron scheduler will tick %d profile(s) under multiplex: %s", len(profile_homes),
-                    [p[0] if isinstance(p, tuple) else p for p in profile_homes])
-        except Exception as exc:
-            logger.warning("Could not resolve profile homes for multiplex cron: %s", exc)
+    if isinstance(cron_provider, InProcessCronScheduler) and cron_profile_homes:
+        # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while
+        # the gateway runs gets its jobs fired without a restart (hot-serve).
+        cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
+        # Per-profile adapters so each profile's cron output goes via its own bot, not the
+        # default's. Absent (no multiplexed adapters), delivery for a secondary profile falls
+        # back to the primary's routed adapters or fails closed — the job still FIRES.
+        cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
+        # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
+        # name); naming it keeps the ticker from routing a secondary's cron through that bot
+        # and lets a named multiplexer's own jobs reuse its live adapters.
+        cron_start_kwargs["default_profile"] = runner._primary_profile_name
+        logger.info(
+            "Cron scheduler will tick %d profile(s): %s", len(cron_profile_homes),
+            [p[0] if isinstance(p, tuple) else p for p in cron_profile_homes])
 
     # Only the in-process ticker polls local due jobs, so only it gets the external-drain dispatch gate.
     if isinstance(cron_provider, InProcessCronScheduler):

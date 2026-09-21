@@ -2,6 +2,7 @@
 
 import multiprocessing
 import os
+from pathlib import Path
 
 import pytest
 
@@ -114,6 +115,80 @@ def test_invalid_utf8_record_file_is_not_overwritten(tmp_path):
         _install(HubLockFile(path), "failed")
 
     assert path.read_bytes() == b"\xff"
+
+
+def test_unreadable_record_file_is_reported_with_context(tmp_path, monkeypatch):
+    path = tmp_path / "lock.json"
+
+    def deny_read(self, *args, **kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "read_text", deny_read)
+    with pytest.raises(ValueError, match="Invalid skills hub lock file.*denied"):
+        HubLockFile(path).load()
+
+
+def test_optional_backfill_preserves_concurrent_record(tmp_path, monkeypatch):
+    from tools import skills_sync_optional
+
+    skills_dir = tmp_path / "skills"
+    optional_dir = tmp_path / "optional-skills"
+    for root in (skills_dir, optional_dir):
+        skill = root / "official-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: official-skill\n---\n", encoding="utf-8")
+
+    class FakeSync:
+        @staticmethod
+        def _skills_dir():
+            return skills_dir
+
+        @staticmethod
+        def _get_optional_dir():
+            return optional_dir
+
+        @staticmethod
+        def _dir_hash(_path):
+            return "same"
+
+    monkeypatch.setattr(skills_sync_optional, "_ss", lambda: FakeSync)
+
+    def concurrent_install(_path):
+        _install(HubLockFile(skills_dir / ".hub" / "lock.json"), "concurrent")
+        return "official-hash"
+
+    monkeypatch.setattr(skills_sync_optional, "_content_hash", concurrent_install)
+
+    assert skills_sync_optional._backfill_optional_provenance(quiet=True) == ["official-skill"]
+    assert {
+        entry["name"] for entry in HubLockFile(skills_dir / ".hub" / "lock.json").list_installed()
+    } == {"concurrent", "official-skill"}
+
+
+def test_optional_backfill_preserves_corrupt_record(tmp_path, monkeypatch):
+    from tools import skills_sync_optional
+
+    skills_dir = tmp_path / "skills"
+    optional_dir = tmp_path / "optional-skills"
+    optional_dir.mkdir()
+    lock_path = skills_dir / ".hub" / "lock.json"
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text("{", encoding="utf-8")
+
+    class FakeSync:
+        @staticmethod
+        def _skills_dir():
+            return skills_dir
+
+        @staticmethod
+        def _get_optional_dir():
+            return optional_dir
+
+    monkeypatch.setattr(skills_sync_optional, "_ss", lambda: FakeSync)
+
+    with pytest.raises(ValueError, match="Invalid skills hub lock file"):
+        skills_sync_optional._backfill_optional_provenance(quiet=True)
+    assert lock_path.read_text(encoding="utf-8") == "{"
 
 
 def test_failed_atomic_publication_preserves_record_file(tmp_path, monkeypatch):

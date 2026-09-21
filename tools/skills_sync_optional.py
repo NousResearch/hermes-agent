@@ -9,8 +9,6 @@ from pathlib import Path, PurePosixPath
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
-from utils import atomic_write_text
-
 logger = logging.getLogger("tools.skills_sync")
 
 
@@ -198,12 +196,14 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     optional_dir = ss._get_optional_dir()
     if not optional_dir.exists():
         return []
-    data = _load_hub_lock()
-    if data is None:
-        data = {"version": 1, "installed": {}}
-    installed = data.setdefault("installed", {})
+    from tools.skill_usage import skill_file_lock
+    from tools.skills_hub import HubLockFile
+
+    lock = HubLockFile(ss._skills_dir() / ".hub" / "lock.json")
+    data = lock.load()
+    installed = data["installed"]
     existing_paths = {entry.get("install_path") for entry in _hub_lock_entries(data)}
-    backfilled: List[str] = []
+    candidates: List[Tuple[str, str, dict]] = []
     installed_dir_index: Optional[Dict[str, List[Path]]] = None
     for _skill_md, src, install_path in _iter_optional_skills(optional_dir, root_relative=False):
         lock_name = src.name
@@ -219,17 +219,30 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
         if install_path in existing_paths or ss._dir_hash(dest) != ss._dir_hash(src):
             continue
         timestamp = datetime.now(timezone.utc).isoformat()
-        installed[lock_name] = {
+        entry = {
             "source": "official", "identifier": f"official/{install_path}",
             "trust_level": "builtin", "scan_verdict": "backfilled",
             "content_hash": _content_hash(dest), "install_path": install_path,
             "files": _skill_file_list(dest), "metadata": {"backfilled_from": "optional-skills"},
             "installed_at": timestamp, "updated_at": timestamp}
         existing_paths.add(install_path)
-        backfilled.append(lock_name)
-        if not quiet:
+        candidates.append((lock_name, install_path, entry))
+
+    backfilled: List[str] = []
+    if candidates:
+        with skill_file_lock(lock.path.with_suffix(".json.lock")):
+            data = lock.load()
+            installed = data["installed"]
+            existing_paths = {entry.get("install_path") for entry in _hub_lock_entries(data)}
+            for lock_name, install_path, entry in candidates:
+                if lock_name in installed or install_path in existing_paths:
+                    continue
+                installed[lock_name] = entry
+                existing_paths.add(install_path)
+                backfilled.append(lock_name)
+            if backfilled:
+                lock.save(data)
+    if not quiet:
+        for lock_name in backfilled:
             print(f"  = {lock_name} (official optional provenance backfilled)")
-    if backfilled:  # atomic: a mid-write crash must not wipe provenance (reader resets bad JSON)
-        atomic_write_text(ss._skills_dir() / ".hub" / "lock.json", tmp_prefix=".lock_",
-                          content=json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     return backfilled

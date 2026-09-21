@@ -995,8 +995,9 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
+| [`pre_kanban_decompose`](../../user-guide/features/hooks.md#pre_kanban_decompose) | Before the Triage decomposer calls its LLM | `task_id, board, title, body, assignee, profile_name, trigger: "auto" \| "manual"` | optional directive: `{"action": "skip", "reason": ...}` promotes the task without decomposing (auto runs only); `{"action": "route", "model": ..., "provider": ..., "reasoning_effort": ...}` picks the decomposer model for this call |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, `pre_tool_call`, which can return a block/approve directive, and `pre_kanban_decompose`, which can skip or re-route a kanban decomposition.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 

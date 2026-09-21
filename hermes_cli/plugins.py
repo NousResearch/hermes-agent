@@ -170,6 +170,13 @@ VALID_HOOKS: Set[str] = {
     #   (privacy: task ids, assignees, workspace paths).
     "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
     "on_kanban_task_updated", "on_kanban_dispatch_tick",
+    # pre_kanban_decompose: in kanban_decompose.decompose_task after the triage task loads, BEFORE
+    # the decomposer LLM call. Kwargs: task_id, board, title, body, assignee, profile_name, trigger
+    # ("auto" = dispatcher auto-decompose, "manual" = CLI/dashboard). Return None, {"action": "skip",
+    # "reason"} (promote as one task, no LLM call; honoured only when trigger == "auto") or
+    # {"action": "route", "model", "provider"?, "reasoning_effort"?} (per-call decomposer model).
+    # First valid directive wins (see get_pre_kanban_decompose_directive); bounded and fail-open.
+    "pre_kanban_decompose",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.
@@ -200,7 +207,7 @@ VALID_HOOKS: Set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification", "pre_kanban_decompose"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()
@@ -1987,6 +1994,91 @@ def get_plugin_error_classification(
         logger.warning("transform_api_error_classification: skipped %d valid classification(s) after the "
                        "first result in registration order won (run-all-then-pick-first)", len(valid) - 1)
     return winner
+
+
+_KANBAN_DECOMPOSE_REASON_MAX_CHARS = 500
+
+
+@dataclass(frozen=True)
+class KanbanDecomposeDirective:
+    """A validated ``pre_kanban_decompose`` directive.
+
+    ``action`` is ``"skip"`` (``reason`` set) or ``"route"`` (``model`` set; ``provider`` and
+    ``reasoning_config`` optional — unset fields keep the ``auxiliary.kanban_decomposer`` config).
+    """
+
+    action: str
+    reason: str = ""
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    reasoning_config: Optional[Dict[str, Any]] = None
+
+
+def _nonblank_str(value: Any) -> Optional[str]:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _parse_kanban_decompose_directive(result: Any) -> Optional[KanbanDecomposeDirective]:
+    """A directive from one callback return, or ``None`` when it is not a valid one."""
+    if not isinstance(result, dict):
+        return None
+    action = result.get("action")
+    if action == "skip":
+        reason = _nonblank_str(result.get("reason"))
+        if reason is None:
+            return None
+        return KanbanDecomposeDirective("skip", reason=reason[:_KANBAN_DECOMPOSE_REASON_MAX_CHARS])
+    if action != "route":
+        return None
+    model = _nonblank_str(result.get("model"))
+    provider = result.get("provider")
+    if model is None or (provider is not None and _nonblank_str(provider) is None):
+        return None
+    reasoning_config = None
+    effort = result.get("reasoning_effort")
+    if effort is not None:
+        from hermes_constants import parse_reasoning_effort
+        reasoning_config = parse_reasoning_effort(effort)
+        if reasoning_config is None:  # a typo must not silently fall back to the configured depth
+            return None
+    return KanbanDecomposeDirective(
+        "route", provider=_nonblank_str(provider), model=model, reasoning_config=reasoning_config)
+
+
+def get_pre_kanban_decompose_directive(
+    *, task_id: str, board: Optional[str], title: str, body: str, assignee: Optional[str],
+    profile_name: str, trigger: str,
+) -> Optional[KanbanDecomposeDirective]:
+    """Consult ``pre_kanban_decompose`` hooks before the decomposer LLM call.
+
+    Run-all-then-pick-first, like :func:`get_plugin_error_classification`: every callback runs with
+    failures isolated (and bounded by ``plugins.hook_callback_timeout``), then the first valid
+    directive in registration order wins; losing valid directives log a warning, invalid returns
+    are ignored with one. Fail-open: any failure yields ``None`` (decompose as configured).
+    """
+    try:
+        from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
+        hook_results = invoke_lifecycle_hook(
+            "pre_kanban_decompose", task_id=task_id, board=board, title=title, body=body,
+            assignee=assignee, profile_name=profile_name, trigger=trigger,
+        )
+    except Exception as exc:  # pragma: no cover - defensive; invoke_hook isolates callbacks
+        logger.warning("pre_kanban_decompose dispatch failed for %s: %s", task_id, exc)
+        return None
+    valid: List[KanbanDecomposeDirective] = []
+    for result in hook_results:
+        directive = _parse_kanban_decompose_directive(result)
+        if directive is not None:
+            valid.append(directive)
+        else:
+            logger.warning(
+                "pre_kanban_decompose: ignoring invalid directive %r for task %s — expected None, "
+                '{"action": "skip", "reason": <str>} or {"action": "route", "model": <str>, '
+                '"provider": <str>?, "reasoning_effort": <level>?}', result, task_id)
+    if len(valid) > 1:
+        logger.warning("pre_kanban_decompose: skipped %d valid directive(s) for task %s after the first result "
+                       "in registration order won (run-all-then-pick-first)", len(valid) - 1, task_id)
+    return valid[0] if valid else None
 
 
 def _ensure_plugins_discovered(force: bool = False) -> PluginManager:

@@ -477,6 +477,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_kanban_worker_stale_claim` | Observer | After a TTL-expired claim is reclaimed; live-PID extensions don't fire. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `heartbeat_stale`, `retry_status` | Identifiers and claim metadata only. |
 | `on_kanban_task_updated` | Observer | After a committed task-field write outside the claim/complete/block lifecycle (assign, overrides, dashboard editors). Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `changed_fields` | `changed_fields` carries field names only, never values; the named title/body values in the board DB may contain user/project content. |
 | `on_kanban_dispatch_tick` | Observer | Once per dispatcher tick, strictly after the dispatch lock is released; idle and contended ticks fire too. Return ignored. | `board`, `profile_name`, `dry_run`, `outcome`, `result` | `result` is the tick's `DispatchResult` and carries task ids, assignees, and workspace paths. |
+| [`pre_kanban_decompose`](#pre_kanban_decompose) | Directive/control | Before the Triage decomposer's LLM call, after the task loads; all callbacks run, then the first valid `skip` or `route` directive wins (run-all-then-pick-first). Bounded by `plugins.hook_callback_timeout` and fail-open. Python plugins only. | `task_id`, `board`, `title`, `body`, `assignee`, `profile_name`, `trigger` | `title` and `body` are the task's full user/project content. |
 
 ---
 
@@ -1646,6 +1647,54 @@ Five additional observers (RFC #58548) extend the kanban family. All are observe
 - **`on_kanban_worker_stale_claim`** — when a TTL-expired claim is reclaimed; live-PID extensions don't fire. Adds `worker_pid`, `heartbeat_stale`, `retry_status`.
 - **`on_kanban_task_updated`** — after a committed task-field write outside the claim/complete/block lifecycle (`assign_task`, model/reasoning overrides, dashboard editors). Adds `changed_fields` — field names only, never values.
 - **`on_kanban_dispatch_tick`** — once per dispatcher tick, strictly after the dispatch lock is released, including idle and lock-contended ticks. Payload: `board`, `profile_name`, `dry_run`, `outcome`, `result`.
+
+### `pre_kanban_decompose`
+
+Fires in `hermes_cli/kanban_decompose.py::decompose_task` once a Triage task has loaded and **before** the decomposer calls its LLM. It lets a plugin decide, per task, whether the task needs decomposing at all and which model should decompose it. Everything else about decomposition (the roster, the prompt, how the graph is written) stays as configured.
+
+**Callback signature:**
+
+```python
+def my_callback(task_id, board, title, body, assignee, profile_name, trigger, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `task_id` | `str` | The Triage task being decomposed. |
+| `board` | `str` | Board slug. |
+| `title` / `body` | `str` | The task's full title and body (not the truncated prompt copy). |
+| `assignee` | `str \| None` | The task's current assignee, if any. |
+| `profile_name` | `str` | Profile running the decomposer. |
+| `trigger` | `str` | `"auto"` for the dispatcher's auto-decompose, `"manual"` for `hermes kanban decompose`, `/kanban decompose`, and the dashboard's **⚗ Decompose** button. |
+
+**Return value:**
+
+| Return | Effect |
+|--------|--------|
+| `{"action": "skip", "reason": "..."}` | No LLM call. The task is promoted out of Triage as one unit, the same as the decomposer's `fanout=false` result: title and body are kept, and an unassigned task gets `kanban.default_assignee`. The reason is recorded on the task's `specified` event (`payload.reason`) and in an audit comment. **Honoured only when `trigger == "auto"`** — a user who explicitly asked for a decomposition always gets one, so a `skip` on a manual run is logged and ignored. `reason` is required. |
+| `{"action": "route", "model": "...", "provider": "...", "reasoning_effort": "..."}` | Decompose with this model for this one call only. `model` is required; `provider` and `reasoning_effort` are optional, and any field you leave out keeps its `auxiliary.kanban_decomposer` value. Global config is never changed. Applies to both automatic and manual runs. |
+| `None` | Decompose as configured. |
+
+Every callback runs, then the first valid directive in registration order wins; later valid directives are skipped with a warning. An invalid directive (unknown action, `skip` without a reason, `route` without a model, an unrecognized `reasoning_effort`) is ignored with a warning. The hook fails open: a callback that raises, or that runs longer than `plugins.hook_callback_timeout`, is treated as `None`, so a broken plugin never blocks decomposition.
+
+Auto-decompose runs inside the dispatcher loop before dispatch, so every skipped decomposition also frees that tick to dispatch sooner.
+
+**Example — skip small tasks, send medium ones to a cheaper model:**
+
+```python
+def pre_decompose(title, body, **kwargs):
+    size = len(body or "")
+    if size < 200:
+        return {"action": "skip", "reason": "short task; one unit of work"}
+    if size < 2000:
+        return {"action": "route", "provider": "openrouter", "model": "vendor/cheaper-model"}
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_kanban_decompose", pre_decompose)
+```
+
+Shell hooks cannot return these directives, so `pre_kanban_decompose` is refused for shell hooks.
 
 ---
 

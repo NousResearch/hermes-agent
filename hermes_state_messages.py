@@ -490,9 +490,9 @@ class SessionMessagesMixin:
                 # tool payloads. Row ids are database-global, but the session predicate is load-bearing:
                 # callers may carry an ancestor/foreign stamp that must not reorder this session.
                 origin_display = conn.execute(
-                    "SELECT display_identity, display_order FROM messages "
-                    "WHERE id = ? AND session_id = ? AND display_identity IS NOT NULL "
-                    "AND display_order IS NOT NULL",
+                    "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
+                    "display_kind, display_metadata, display_identity, display_order FROM messages "
+                    "WHERE id = ? AND session_id = ?",
                     (origin_row_id, session_id),
                 ).fetchone()
             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
@@ -500,9 +500,13 @@ class SessionMessagesMixin:
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
                 if origin_display is not None:
+                    origin_identity = origin_display["display_identity"] or self._display_identity(
+                        self._display_dedupe_key(origin_display))
+                    origin_order = (origin_display["display_order"]
+                                    if origin_display["display_order"] is not None else origin_display["id"])
                     conn.execute(
                         "UPDATE messages SET display_identity = ?, display_order = ? WHERE id = ?",
-                        (origin_display["display_identity"], origin_display["display_order"], cur.lastrowid),
+                        (origin_identity, origin_order, cur.lastrowid),
                     )
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)

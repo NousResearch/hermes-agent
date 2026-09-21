@@ -105,6 +105,38 @@ class TestDisplayProjectionParity:
             "Earlier progress", "Later answer",
         ]
 
+    def test_payload_pruning_keeps_completed_assistant_at_its_display_origin(self, db):
+        sid = "completed-assistant"
+        db.create_session(sid, source="desktop")
+        tool_calls = [{"id": "stable-call", "type": "function", "function": {
+            "name": "demo_tool", "arguments": json.dumps({"value": "L" * 4_000})}}]
+        origin_id = db.append_message(
+            sid, "assistant", "", tool_calls=tool_calls, timestamp=101.0)
+        db.append_message(
+            sid, "tool", "R" * 5_000, tool_call_id="stable-call",
+            tool_name="demo_tool", timestamp=102.0)
+        db.append_message(sid, "assistant", "Later answer", timestamp=200.0)
+
+        db.append_messages_batch(sid, [{
+            "role": "assistant", "content": "Earlier progress", "timestamp": 101.0,
+            "tool_calls": tool_calls, "_row_id": origin_id,
+        }])
+        origin_display = db._read_one(
+            "SELECT display_identity, display_order FROM messages WHERE id = ?", (origin_id,))
+        assert origin_display["display_identity"] is None
+        assert origin_display["display_order"] is None
+
+        history = db.get_messages_as_conversation(sid, include_row_ids=True)
+        history[0]["tool_calls"][0]["function"]["arguments"] = json.dumps({"value": "short"})
+        history[1]["content"] = "short result"
+
+        db.archive_and_compact(sid, history)
+
+        visible = db.get_messages_as_conversation(sid, include_row_ids=True, include_compacted=True)
+        assert [message["content"] for message in visible if message["role"] == "assistant"] == [
+            "Earlier progress", "Later answer",
+        ]
+
     def test_foreign_row_stamp_cannot_reorder_a_session(self, db):
         db.create_session("foreign", source="desktop")
         foreign_id = db.append_message("foreign", "assistant", "foreign origin", timestamp=1.0)

@@ -405,8 +405,12 @@ def test_ledger_reconciles_only_exact_superseded_review_comment_idempotently(
     ledger.close()
 
 
+@pytest.mark.parametrize("allow_merged", [False, True])
 def test_cli_wires_literal_resolve_superseded_feedback_identity(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    allow_merged: bool,
 ) -> None:
     from github_pr_feedback import cli
 
@@ -450,7 +454,7 @@ def test_cli_wires_literal_resolve_superseded_feedback_identity(
     monkeypatch.setattr(cli.FeedbackLedger, "for_current_profile", lambda: ledger)
     parser = argparse.ArgumentParser()
     cli.setup_cli(object(), parser)
-    args = parser.parse_args([
+    argv = [
         "resolve-superseded-feedback",
         "--repository",
         "acme/widgets",
@@ -466,7 +470,10 @@ def test_cli_wires_literal_resolve_superseded_feedback_identity(
         str(tmp_path),
         "--test-evidence",
         "focused regression: passed",
-    ])
+    ]
+    if allow_merged:
+        argv.append("--allow-merged")
+    args = parser.parse_args(argv)
 
     assert cli.handle_cli_with_context(object(), args) == 0
     assert seen[0][:3] == ("acme/widgets", 17, HEAD)
@@ -475,6 +482,7 @@ def test_cli_wires_literal_resolve_superseded_feedback_identity(
         "fix_sha": FIX,
         "repository_path": tmp_path,
         "test_evidence": "focused regression: passed",
+        "allow_merged": allow_merged,
     }
     assert (
         json.loads(capsys.readouterr().out)["status"] == "resolved_superseded_feedback"

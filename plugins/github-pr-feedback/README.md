@@ -209,9 +209,12 @@ never changes the bot identity used for PR reads or public writes.
 
 Set `HERMES_GITHUB_BOT_LOGIN=mrkillbobbot` alongside the token for Hermes core
 GitHub surfaces such as webhook comment delivery and merged-worktree checks.
-Those surfaces use the same central identity verifier. Agent-controlled raw
-`gh` commands receive neither this token nor the operator's GitHub CLI config;
-authenticated GitHub work must use a governed Hermes surface.
+Those surfaces use the same central identity verifier. The identity boundary is
+ownership-based: Codex-owned PR work uses the operator's `mrkillbob` GitHub
+identity, while Hermes-owned governed automation uses `mrkillbobbot` through
+the dedicated token. Codex-owned work is not required to use this plugin or a
+Hermes surface; the plugin's own governed commands must not inherit the
+operator's `gh` identity.
 
 The plugin receives these values only through Hermes's namespaced plugin
 context (`plugins.entries.github-pr-feedback.settings`); it does not parse
@@ -227,6 +230,16 @@ hermes github-pr-feedback status
 hermes github-pr-feedback scan
 hermes github-pr-feedback merge-status
 ```
+
+Historical review is intentionally separate from the ordinary open-PR scan:
+
+```sh
+hermes github-pr-feedback historical-merged-scan
+```
+
+This read-only command inventories feedback only on PRs with a confirmed merge
+commit. Closed-but-unmerged PRs are excluded before feedback is read, and no
+Kanban repair task or receipt is created.
 
 Enroll one exact configured pull request before it can enter the governed merge lane,
 or remove that durable enrollment without changing GitHub state:

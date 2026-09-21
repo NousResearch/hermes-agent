@@ -128,7 +128,8 @@ class TestProfileScopedSkills:
             "usage": 0,
             "provenance": "plugin",
         }
-        assert "skills_probe:disabled" not in rows
+        assert rows["skills_probe:disabled"]["enabled"] is False
+        assert rows["skills_probe:disabled"]["provenance"] == "plugin"
         assert "skills_probe:incompatible" not in rows
 
         content = client.get(

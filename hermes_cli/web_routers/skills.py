@@ -352,7 +352,7 @@ async def get_skills(profile: Optional[str] = None):
             config = load_config()
             disabled = get_disabled_skills(config)
             skills = _find_all_skills(skip_disabled=True)
-            for plugin_skill in _find_plugin_skills():
+            for plugin_skill in _find_plugin_skills(skip_disabled=True):
                 plugin_skill["provenance"] = "plugin"
                 skills.append(plugin_skill)
             usage = load_usage()

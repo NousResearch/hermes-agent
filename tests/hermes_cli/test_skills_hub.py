@@ -1,3 +1,4 @@
+import argparse
 import json
 from io import StringIO
 from unittest.mock import patch
@@ -165,6 +166,36 @@ def test_do_list_matches_successful_qualified_plugin_view(hub_env):
     listing = _capture()
     assert "skills_probe:visible" in listing
     assert "1 plugin" in listing
+
+
+def test_do_list_does_not_infer_plugin_provenance_from_category(hub_env, monkeypatch):
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(
+        skills_tool,
+        "_find_all_skills",
+        lambda **_kwargs: [{"name": "local-probe", "category": "plugin", "description": "local"}],
+    )
+    monkeypatch.setattr(skills_tool, "_find_plugin_skills", lambda **_kwargs: [])
+
+    listing = _capture()
+    assert "local-probe" in listing
+    assert "1 local, 0 plugin" in listing
+
+
+def test_skills_list_parser_accepts_plugin_source():
+    from hermes_cli.subcommands.skills import build_skills_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_skills_parser(subparsers, cmd_skills=lambda args: None)
+
+    args = parser.parse_args(["skills", "list", "--source", "plugin"])
+    assert args.source == "plugin"
 
 
 # ---------------------------------------------------------------------------

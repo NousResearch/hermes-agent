@@ -40,7 +40,7 @@ import { categoryFor, filteredOfficial, filteredSkills, skillsQueryKey, usageOf 
 const $skillsSortDesc = persistentAtom('hermes.desktop.capabilities.skillsSortDesc', true, Codecs.bool)
 
 // Row subtitle: category, with non-default origins badged.
-function skillSubtitle(skill: SkillInfo): ReactNode {
+function skillSubtitle(skill: SkillInfo, pluginLabel: string): ReactNode {
   const category = prettyName(categoryFor(skill))
   const provenance = skill.provenance
 
@@ -59,7 +59,7 @@ function skillSubtitle(skill: SkillInfo): ReactNode {
       )}
       {provenance === 'plugin' && (
         <Badge className="shrink-0 normal-case" variant="muted">
-          Plugin · read-only
+          {pluginLabel}
         </Badge>
       )}
     </>
@@ -301,7 +301,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                   setSelectedOfficial(null)
                 }}
                 onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                subtitle={skillSubtitle(skill)}
+                subtitle={skillSubtitle(skill, t.skills.provenance.plugin)}
                 title={skill.name}
                 toggleLabel={skill.name}
               />

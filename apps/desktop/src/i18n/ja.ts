@@ -1568,7 +1568,8 @@ export const ja = defineLocale({
     provenance: {
       agent: '学習済み',
       bundled: '組み込み',
-      hub: 'ハブ'
+      hub: 'ハブ',
+      plugin: 'プラグイン · 読み取り専用'
     },
     emptyNoneFound: noun => `${noun} が見つかりません`,
     emptyNothingMatches: query => `「${query}」に一致するものはありません。`,

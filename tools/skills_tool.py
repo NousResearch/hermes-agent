@@ -243,7 +243,7 @@ def _find_plugin_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         skills = []
         for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
             frontmatter = plugin_skill.pop("frontmatter", {})
-            if not skill_matches_platform(frontmatter):
+            if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
                 continue
             if not skip_disabled and _is_skill_disabled(plugin_skill["name"]):
                 continue

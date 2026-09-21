@@ -789,7 +789,9 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
     builtin_names = set(_read_manifest())
     all_skills = _find_all_skills(skip_disabled=True)  # include disabled ones to annotate status
-    all_skills.extend(_find_plugin_skills(skip_disabled=True))
+    plugin_skills = _find_plugin_skills(skip_disabled=True)
+    plugin_names = {skill["name"] for skill in plugin_skills}
+    all_skills.extend(plugin_skills)
     disabled_names = get_disabled_skill_names()
 
     table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",
@@ -800,7 +802,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     for skill in _sort_skills(all_skills):
         name = skill["name"]
         hub_entry = hub_installed.get(name)
-        if skill.get("category") == "plugin":
+        if name in plugin_names:
             source_type, source_display, trust = "plugin", name.split(":", 1)[0], "plugin"
         elif hub_entry:
             source_type, source_display = "hub", hub_entry.get("source", "hub")

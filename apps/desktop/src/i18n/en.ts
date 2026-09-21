@@ -1791,7 +1791,8 @@ export const en: Translations = {
     provenance: {
       agent: 'Learned',
       bundled: 'Built-in',
-      hub: 'Hub'
+      hub: 'Hub',
+      plugin: 'Plugin · read-only'
     },
     emptyNoneFound: noun => `No ${noun} found`,
     emptyNothingMatches: query => `Nothing matches “${query}”.`,

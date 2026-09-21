@@ -442,6 +442,15 @@ class TestSkillViewPluginGuards:
         assert result["success"] is False
         assert "not supported on this platform" in result["error"]
 
+    def test_environment_mismatch_is_omitted_from_plugin_listing(self, tmp_path, monkeypatch):
+        from tools.skills_tool import _find_plugin_skills
+
+        self._reg(tmp_path, "---\nname: foo\nenvironments: [docker]\n---\nBody.\n")
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr("tools.skills_tool.skill_matches_environment", lambda _frontmatter: False)
+
+        assert _find_plugin_skills(skip_disabled=True) == []
+
     def test_injection_logged_but_served(self, tmp_path, caplog):
         from tools.skills_tool import skill_view
 

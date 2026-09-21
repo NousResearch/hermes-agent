@@ -337,7 +337,9 @@ def _strip_images_from_messages(messages: list) -> bool:
 
     ``tool`` / ``tool_calls`` messages left empty get a placeholder, NOT deleted (deleting
     orphans the paired ``tool_call_id`` → HTTP 400); other now-empty messages are dropped.
-    Rewritten messages lose their ``api_content`` sidecar (it carries the removed images).
+    Rewritten messages lose their ``api_content`` sidecar (it carries the removed images):
+    a caller rewriting a persisted row must not leave bytes that replay them next turn. The
+    current callers pass per-call clones, where this is a no-op.
     """
     from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.turn_context import drop_stale_api_content

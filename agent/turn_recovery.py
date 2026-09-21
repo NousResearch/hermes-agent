@@ -236,9 +236,10 @@ def recover_before_classification(
     api_kwargs: Any, active_system_prompt: Any,
 ) -> Tuple[bool, Any]:
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
-    sanitization, provider image-content rejection (switch session to text-only), and the
-    Bedrock AnthropicBedrock SDK streaming fallback. Returns ``(retry_now,
-    active_system_prompt)``; the prompt may be ASCII-sanitized in place."""
+    sanitization, provider image-content rejection (record the (provider, model);
+    build_api_request strips images from that model's requests only), and the Bedrock
+    AnthropicBedrock SDK streaming fallback. Returns ``(retry_now, active_system_prompt)``;
+    the prompt may be ASCII-sanitized in place."""
     if isinstance(api_error, UnicodeEncodeError) and getattr(agent, '_unicode_sanitization_passes', 0) < 2:
         _recovered, active_system_prompt = _recover_unicode_encode_error(
             agent, api_error, messages, api_messages, api_kwargs, active_system_prompt
@@ -246,8 +247,9 @@ def recover_before_classification(
         if _recovered:
             return True, active_system_prompt
 
-    # Some providers 4xx on image_url content: strip images, mark session
-    # vision-unsupported, retry text-only. English phrase match; extend it.
+    # Some providers 4xx on image_url content: record the (provider, model) and retry;
+    # build_api_request strips images from that model's requests only. English phrase
+    # match; extend it.
     _err_body = ""
     try:
         _err_body = str(getattr(api_error, "body", None) or getattr(api_error, "message", None) or str(api_error))

@@ -226,14 +226,14 @@ class TestImageRejectionPhraseIsolation:
 
 
 class TestStripImagesDropsStaleApiContent:
-    """The strip runs on the persistent history, not just the per-call copy.
+    """Generic helper contract: a rewritten row drops its ``api_content`` sidecar.
 
     ``api_content`` is the byte-stability sidecar: it holds the exact bytes
     previously sent for a message, and the next turn substitutes it back into
-    ``content``. Leaving it in place on a message this function rewrote would
-    replay the images the strip just removed — and the recovery cannot re-fire,
-    because it records the model in ``_image_rejecting_models`` and gates itself
-    on that. The session would then send rejected images on every subsequent turn.
+    ``content``. When a caller rewrites a PERSISTED row, the sidecar must go with
+    it or the next turn replays the images the strip just removed. The current
+    callers only pass per-call clones (``api_messages``), where dropping the
+    sidecar is a no-op — the contract is kept for any caller that does not.
 
     Same contract the other content-rewrite paths follow (stale-confirmation
     redaction in ``replay_cleanup``, compression rewrites, merge-into-tail):

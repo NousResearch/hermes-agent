@@ -39,6 +39,7 @@ def fleet(tmp_path, monkeypatch):
         # profile -> installed unit(s); a tuple is one unit, a list is every installed unit.
         services={"coder": ("systemd", False), "ops": ("systemd", False)},
         pids={"coder": 4101, "ops": 4102},
+        default_pid=None,
         ops=[],
         refused_at_start={},
     )
@@ -57,9 +58,14 @@ def fleet(tmp_path, monkeypatch):
                 state.services[name] = remaining
             else:
                 state.services.pop(name, None)
+            if name == "default":
+                state.default_pid = None
+        elif verb == "stop" and name == "default":
+            state.default_pid = None
         elif verb == "install":
             state.services[name] = (kind, system)
         elif verb in ("start", "restart") and name == "default":
+            state.default_pid = os.getpid()
             (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
             runtime_path = root / "gateway_state.json"
             runtime = json.loads(runtime_path.read_text()) if runtime_path.exists() else {}
@@ -82,7 +88,9 @@ def fleet(tmp_path, monkeypatch):
     # blocker), and the user-scope unit path lives under the real $HOME. The whole fleet runs as this
     # user with no unit files on disk unless a test writes some (it repoints _SYSTEM_UNIT_DIR itself).
     from hermes_cli import gateway as gw
+    from hermes_cli import gateway_multiplex_served as multiplex_served
     from hermes_cli import gateway_migrate_guards as guards
+    monkeypatch.setattr(multiplex_served, "live_default_gateway_pid", lambda: state.default_pid)
     monkeypatch.setattr(guards, "_pid_uid", lambda pid: root.stat().st_uid if pid in state.pids.values() else None)
     _unit_path = gw.get_systemd_unit_path
     monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: _unit_path(system=True) if system
@@ -429,6 +437,7 @@ def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_re
 
     def _detached(home):  # no service manager anywhere -> detached start writes the served record
         fleet.services["default-detached"] = True
+        fleet.default_pid = os.getpid()
         (fleet.root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(fleet.root)}))
         (fleet.root / "gateway_state.json").write_text(json.dumps({
             "pid": os.getpid(), "hermes_home": str(fleet.root), "gateway_state": "running",

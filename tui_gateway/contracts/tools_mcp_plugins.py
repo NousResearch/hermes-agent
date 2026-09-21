@@ -625,6 +625,7 @@ class PluginsManageResult(Result):
     plugin: AgentPluginRow | None = None
     plugin_name: str | None = None
     warnings: list[str] | None = None
+    python_dependencies: list[str] | None = None
     missing_env: list[str] | None = None
     after_install_path: str | None = None
     enabled: bool | None = None

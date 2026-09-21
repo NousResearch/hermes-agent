@@ -115,9 +115,15 @@ def build_models_payload(
 
             rows = [r for r in rows if not _is_managed_custom(r)]
 
-    moa_row = _moa_provider_row(ctx.current_provider)
+    # The virtual MoA row is injected after list_authenticated_providers() has already applied
+    # model_catalog.excluded_providers, so it has to honour the exclusion itself — otherwise
+    # "moa" is the one provider a user cannot hide from the picker.
+    _excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+    moa_row = None if "moa" in _excluded else _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
         rows = [moa_row] + _without_slug(rows, "moa")
+    elif "moa" in _excluded:
+        rows = _without_slug(rows, "moa")
 
     if explicit_only:
         rows = _filter_explicit_provider_rows(rows, ctx)

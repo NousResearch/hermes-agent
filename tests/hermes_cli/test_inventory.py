@@ -685,3 +685,96 @@ def _apply_featured_with_dates(rows, dates: dict[str, str]):
 
 
 
+# ─── model_catalog.excluded_providers vs the virtual MoA row ───────────
+
+
+def test_excluded_providers_hides_the_virtual_moa_row():
+    """`moa` must be hideable like any other provider.
+
+    The virtual Mixture-of-Agents row is injected AFTER
+    list_authenticated_providers() has already applied
+    model_catalog.excluded_providers, so build_models_payload has to honour the
+    exclusion itself — otherwise `moa` is the one provider a user cannot hide
+    from the picker.
+    """
+    ctx = ConfigContext(
+        current_provider="nous",
+        current_model="openai/gpt-5.5",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        excluded_providers=["moa"],
+    )
+    moa_row = {"slug": "moa", "name": "Mixture of Agents", "models": ["default"],
+               "total_models": 1, "is_current": False, "source": "virtual"}
+
+    with _list_auth_returning([_nous_row()]), \
+            patch("hermes_cli.inventory._moa_provider_row", return_value=moa_row):
+        payload = build_models_payload(ctx)
+
+    slugs = [r.get("slug") for r in payload["providers"]]
+    assert "moa" not in slugs
+    assert "nous" in slugs
+
+
+def test_moa_row_still_shown_when_not_excluded():
+    """The exclusion is opt-in: an empty list must not hide MoA (contract pair)."""
+    ctx = ConfigContext(
+        current_provider="nous",
+        current_model="openai/gpt-5.5",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        excluded_providers=[],
+    )
+    moa_row = {"slug": "moa", "name": "Mixture of Agents", "models": ["default"],
+               "total_models": 1, "is_current": False, "source": "virtual"}
+
+    with _list_auth_returning([_nous_row()]), \
+            patch("hermes_cli.inventory._moa_provider_row", return_value=moa_row):
+        payload = build_models_payload(ctx)
+
+    assert "moa" in [r.get("slug") for r in payload["providers"]]
+# ─── plugin providers get a curated list from their profile ────────────
+
+
+def test_plugin_provider_fallback_models_seed_the_curated_list():
+    """A plugin provider with no _PROVIDER_MODELS entry must still have a curated list.
+
+    On the non-blocking GUI read path a cold disk cache yields no live catalog, so
+    the row falls back to `curated`. Plugin providers are absent from the static
+    _PROVIDER_MODELS table, which left that list EMPTY and collapsed the picker to
+    the single current model until a later open warmed the cache. The provider
+    profile's own fallback_models is the curated list for that case.
+    """
+    from hermes_cli.model_switch_providers import _build_curated_lists
+
+    class _FakeProfile:
+        name = "zzz-plugin-router"
+        fallback_models = ("alpha-1", "beta-2")
+
+    with patch("providers.list_providers", return_value=[_FakeProfile()]):
+        curated = _build_curated_lists("nous", "", "")
+
+    assert curated["zzz-plugin-router"] == ["alpha-1", "beta-2"]
+
+
+def test_static_curated_entry_wins_over_profile_fallback_models():
+    """fallback_models seeds only what the static table does not already define."""
+    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.model_switch_providers import _build_curated_lists
+
+    slug = next(k for k, v in _PROVIDER_MODELS.items() if v)
+    static_first = _PROVIDER_MODELS[slug][0]
+
+    class _FakeProfile:
+        fallback_models = ("should-not-appear",)
+
+    profile = _FakeProfile()
+    profile.name = slug
+
+    with patch("providers.list_providers", return_value=[profile]):
+        curated = _build_curated_lists("nous", "", "")
+
+    assert curated[slug][0] == static_first
+    assert "should-not-appear" not in curated[slug]

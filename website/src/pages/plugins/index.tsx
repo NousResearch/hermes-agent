@@ -435,6 +435,16 @@ export default function PluginCatalogPage() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  // Reveal the panel once it opens. `block: "nearest"` leaves the page alone
+  // when the panel is already in view; `start` scrolled the hero off-screen.
+  useEffect(() => {
+    if (!filtersOpen) return;
+    const frame = requestAnimationFrame(() => {
+      filterPanelRef.current?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [filtersOpen]);
+
   const allPlugins: CatalogPlugin[] = data?.plugins ?? [];
   const meta: CatalogMeta = data?.meta ?? {};
 
@@ -601,16 +611,7 @@ export default function PluginCatalogPage() {
               className={styles.filterToggle}
               aria-expanded={filtersOpen}
               aria-controls="plugin-directory-filters"
-              onClick={() => {
-                if (filtersOpen) {
-                  setFiltersOpen(false);
-                  return;
-                }
-                setFiltersOpen(true);
-                requestAnimationFrame(() => {
-                  filterPanelRef.current?.scrollIntoView({ block: "start" });
-                });
-              }}
+              onClick={() => setFiltersOpen((open) => !open)}
             >
               Filters
               {(tierFilter !== "all" || categoryFilter !== "all") && (

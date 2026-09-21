@@ -2704,6 +2704,35 @@ def _drop_invalid_roles(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [m for m in messages if m.get("role") in valid]
 
 
+def _drop_leading_non_user_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop any assistant or tool messages that appear before the first user message.
+    Strict LLM APIs (e.g. Google Gemini HTTP 400, Anthropic) require conversations to
+    start with a user message (after optional system prompts). Orphaned tool calls or
+    assistant messages surviving compaction or truncation at the head crash the request."""
+    if not messages:
+        return messages
+    system_count = 0
+    while system_count < len(messages) and messages[system_count].get("role") == "system":
+        system_count += 1
+    if system_count >= len(messages):
+        return messages
+
+    first_user_idx = None
+    for idx in range(system_count, len(messages)):
+        if messages[idx].get("role") == "user":
+            first_user_idx = idx
+            break
+
+    if first_user_idx is None or first_user_idx == system_count:
+        return messages
+
+    _ra().logger.debug(
+        "Pre-call sanitizer: dropping %d leading non-user message(s) before first user turn",
+        first_user_idx - system_count,
+    )
+    return messages[:system_count] + messages[first_user_idx:]
+
+
 def _drop_empty_tool_calls_arrays(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Strict providers 400 on ``tool_calls: []``; normalize on shallow copies so history stays byte-stable."""
     # --- Drop empty / malformed tool_calls arrays on assistant messages --- An assistant message carrying
@@ -3000,6 +3029,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     """Fix orphaned tool_call / tool_result pairs before every LLM call; runs unconditionally (not
     gated on the compressor). Order matters: empty non-final messages are healed first so the
     substituted turn participates in the pairing and dedup passes."""
+    messages = _drop_leading_non_user_messages(messages)
     messages = _drop_invalid_roles(messages)
     messages = repair_empty_non_final_messages(messages)
     messages = _drop_empty_tool_calls_arrays(messages)

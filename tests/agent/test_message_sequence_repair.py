@@ -1582,3 +1582,20 @@ def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
     assert repairs == 1
     assert _DB_PERSISTED_MARKER not in messages[0]
     assert agent._db_flush_scan_prefix is None
+
+
+def test_sanitize_drops_leading_non_user_messages_before_first_user():
+    """Gemini and Anthropic reject conversations where assistant tool-calls or tool responses
+    appear before the first user turn. Verify that leading assistant/tool turns are stripped."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "test", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "res"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"}
+    ]
+    out = sanitize_api_messages(list(messages))
+    assert [m.get("role") for m in out] == ["system", "user", "assistant"]

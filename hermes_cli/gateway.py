@@ -3713,8 +3713,15 @@ def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
         suffix = _current_profile_name()
     except Exception:
         return False
-    owner = _served_by_another_host_gateway()
-    if owner is None and not named_profile_served_by_running_multiplexer():
+    owner = host_multiplexer_serving()
+    if owner is not None:
+        try:
+            from gateway.status import _get_process_hermes_home, _same_hermes_home
+            if _same_hermes_home(owner.home, _get_process_hermes_home()):
+                return False
+        except Exception:
+            logger.debug("Host multiplexer home comparison failed", exc_info=True)
+    elif not named_profile_served_by_running_multiplexer():
         return False
 
     print_error(

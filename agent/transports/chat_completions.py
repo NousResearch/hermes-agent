@@ -257,7 +257,7 @@ def _model_consumes_thought_signature(model: Any) -> bool:
 
 def _route_replays_reasoning_details(base_url: Any) -> bool:
     """True when the target route reads replayed ``reasoning_details`` (OpenRouter's unified
-    reasoning array, also consumed by the Nous Portal).
+    reasoning array or a Nous Portal request).
 
     Every other chat-completions endpoint either ignores the field or, when its schema is
     strict (Groq, Mistral, Cerebras, opencode relays: ``property 'reasoning_details' is
@@ -269,6 +269,19 @@ def _route_replays_reasoning_details(base_url: Any) -> bool:
     from utils import base_url_host_matches
 
     return base_url_host_matches(base_url, "openrouter.ai") or base_url_host_matches(base_url, "nousresearch.com")
+
+
+def _reasoning_details_replay_limit(base_url: Any) -> int | None:
+    """Maximum assistant turns that may replay ``reasoning_details`` on a route.
+
+    Nous Portal consumes the sidecar but rejects requests after stale turns grow
+    beyond its cumulative replay budget.  Keeping the newest assistant turn
+    preserves the continuity signal without letting a long session wedge.  A
+    ``None`` limit means the route accepts every replayable turn.
+    """
+    from utils import base_url_host_matches
+
+    return 1 if base_url_host_matches(base_url, "nousresearch.com") else None
 
 
 def _has_replayable_thought_signature(extra_content: Any) -> bool:
@@ -453,8 +466,24 @@ class ChatCompletionsTransport(ProviderTransport):
         # A profile declaring a native carrier type consumes replayed details by contract.
         native_type = getattr(kwargs.get("provider_profile"), "native_reasoning_details_type", None) or None
         strip_reasoning_details = not (native_type or _route_replays_reasoning_details(kwargs.get("base_url")))
-        sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning_details, native_type))
-                           for m in messages]
+        replay_limit = None if native_type else _reasoning_details_replay_limit(kwargs.get("base_url"))
+        assistant_indexes = [
+            index for index, message in enumerate(messages)
+            if isinstance(message, dict) and message.get("role") == "assistant"
+        ]
+        replay_indexes = set(assistant_indexes[-replay_limit:]) if replay_limit is not None else set(assistant_indexes)
+        sanitized_pairs = [
+            (
+                message,
+                _sanitize_message(
+                    message,
+                    strip_extra_content,
+                    strip_reasoning_details or (replay_limit is not None and index not in replay_indexes),
+                    native_type,
+                ),
+            )
+            for index, message in enumerate(messages)
+        ]
         if all(s is None for _, s in sanitized_pairs):
             return messages
         return [m if s is None else s for m, s in sanitized_pairs]

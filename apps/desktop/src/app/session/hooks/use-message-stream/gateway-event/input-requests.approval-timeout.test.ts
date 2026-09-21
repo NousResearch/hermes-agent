@@ -45,6 +45,7 @@ describe('approval request.cancel', () => {
 
   it('timeout: tears the bar down and appends a plain system line with a Safety settings action', () => {
     parkApproval()
+
     const updateSessionState = vi.fn((_: string, updater: (s: { messages: unknown[] }) => unknown) =>
       updater({ messages: [] })
     )
@@ -52,7 +53,9 @@ describe('approval request.cancel', () => {
     expect(handleInputRequestEvent(context('timeout', updateSessionState))).toBe(true)
     expect($approvalRequests.get()['s1']).toBeUndefined()
 
-    const next = updateSessionState.mock.results[0]?.value as { messages: { role: string; parts: { text: string }[] }[] }
+    const next = updateSessionState.mock.results[0]?.value as {
+      messages: { role: string; parts: { text: string }[] }[]
+    }
     expect(next.messages).toHaveLength(1)
     expect(next.messages[0].role).toBe('system')
     expect(next.messages[0].parts[0].text).toMatch(/timed out/i)
@@ -63,6 +66,24 @@ describe('approval request.cancel', () => {
     expect(toast?.action?.label).toBe('Open Safety settings')
     toast?.action?.onClick()
     expect($routeRequest.get()?.path).toBe('/settings?tab=config:safety')
+  })
+
+  it('withdraws a queued request without dropping the front approval', () => {
+    setApprovalRequest({
+      sessionId: 's1',
+      command: 'first',
+      description: '',
+      requestId: 'front',
+      serverRequestId: 'srv-front'
+    })
+    parkApproval()
+    const updateSessionState = vi.fn()
+
+    expect(handleInputRequestEvent(context('answered', updateSessionState))).toBe(true)
+    expect($approvalRequests.get()['s1']?.requestId).toBe('front')
+    clearApprovalRequest('s1', 'front')
+    expect($approvalRequests.get()['s1']).toBeUndefined()
+    expect(updateSessionState).not.toHaveBeenCalled()
   })
 
   it('answered elsewhere: tears the bar down silently', () => {

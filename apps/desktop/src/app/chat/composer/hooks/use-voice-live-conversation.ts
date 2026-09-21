@@ -6,6 +6,9 @@ import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession 
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 
+import { useComposerScope } from '../scope'
+
+import { micError } from './use-mic-recorder'
 import type { ConversationStatus } from './use-voice-conversation'
 
 /** How long an accepted delegation may sit before the gateway shows the turn running. */
@@ -68,6 +71,29 @@ export function delegationPrompt(context: LiveTranscriptFragment[]): { context: 
 }
 
 /**
+ * Body of the session-end toast. `connection_lost` and `closed` are our own
+ * machine reasons (`lib/voice-live.ts`) and get i18n copy; so does a blank
+ * reason, which has no wording of its own. Any other reason is server-sent and
+ * unbounded, so it passes through verbatim (issue #111987 — no redaction claim
+ * for vendor strings).
+ */
+export function liveEndedMessage(
+  reason: string,
+  usageSeconds: null | number,
+  copy: { liveEndedClosed: string; liveEndedConnectionLost: string }
+): string {
+  let text = reason?.trim() ?? ''
+
+  if (text === 'connection_lost') {
+    text = copy.liveEndedConnectionLost
+  } else if (text === 'closed' || !text) {
+    text = copy.liveEndedClosed
+  }
+
+  return usageSeconds != null ? `${text} (${Math.round(usageSeconds)}s)` : text
+}
+
+/**
  * GPT-Live conversation engine — same public shape as `useVoiceConversation`
  * so the composer can mount either from `voice.voice_chat_mode`.
  *
@@ -97,6 +123,12 @@ export function useVoiceLiveConversation({
   // restart the feed loop, and a ref write alone does not re-render.
   const [activeDelegation, setActiveDelegation] = useState<null | string>(null)
   const sessionRef = useRef<null | VoiceLiveSession>(null)
+  // The scope's session owner (a Bot's own connection + profile) picks the
+  // GPT-Live backend and voice; a ref keeps the long-lived start closures
+  // reading the current value.
+  const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
+  const ownerRef = useRef({ connectionId: ownerConnectionId, profile: ownerProfile })
+  ownerRef.current = { connectionId: ownerConnectionId, profile: ownerProfile }
   // Bumped by every start/end so an in-flight start() that lost the race
   // (StrictMode double-effect, quick toggle) closes its session instead of
   // leaving a second billed one running.
@@ -252,7 +284,7 @@ export function useVoiceLiveConversation({
         if (reason !== 'close_requested') {
           notify({
             kind: 'warning',
-            message: usageSeconds != null ? `${reason} (${Math.round(usageSeconds)}s)` : reason,
+            message: liveEndedMessage(reason, usageSeconds, voiceCopy),
             title: voiceCopy.liveEnded
           })
           latest.current.onFatalError?.()
@@ -302,7 +334,7 @@ export function useVoiceLiveConversation({
         setLevel(speaking ? 0.6 : 0)
         refreshStatus()
       }
-    })
+    }, ownerRef.current)
 
     sessionRef.current = session
     startingRef.current = false
@@ -330,19 +362,14 @@ export function useVoiceLiveConversation({
         return
       }
 
-      notifyError(error, voiceCopy.couldNotStartSession)
+      // Only a mic DOMException gets the recorder's copy: this catch also
+      // takes non-mic start failures ('GPT-Live session already started',
+      // 'Missing local SDP offer', API errors) — those keep their own message.
+      notifyError(error instanceof DOMException ? micError(error, voiceCopy) : error, voiceCopy.couldNotStartSession)
       setStatus('idle')
       latest.current.onFatalError?.()
     }
-  }, [
-    end,
-    refreshStatus,
-    setDelegation,
-    voiceCopy.couldNotStartSession,
-    voiceCopy.liveDelegationFailed,
-    voiceCopy.liveEnded,
-    voiceCopy.liveError
-  ])
+  }, [end, refreshStatus, setDelegation, voiceCopy])
 
   // Drive the reply back into the voice: stream commentary as Hermes writes
   // it (sentence-chunked), quiet tool progress as thinking appends, and clear

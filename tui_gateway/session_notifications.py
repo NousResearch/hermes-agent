@@ -136,7 +136,9 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
 _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
-_KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0  # /loop and /heartbeat share one idle-poll cadence
+# kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
+# every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
+_KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = _BOT_DELIVERY_POLL_SECONDS = 5.0
 
 
 def _notif_release_turn(session: dict) -> None:
@@ -146,10 +148,11 @@ def _notif_release_turn(session: dict) -> None:
 
 def _notif_claim_turn(session: dict) -> bool:
     """Claim the idle session (running=True) under history_lock; False if a turn is live."""
-    with session["history_lock"]:
-        claimed = not session.get("running")
+    with _session_turn_admission(session) as admitted:
+        if not admitted or session.get("running"):
+            return False
         session["running"] = True
-        return claimed
+        return True
 
 
 def _notif_log_failure(what: str, exc: BaseException) -> None:
@@ -159,7 +162,10 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
     """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
     try:
-        _emit("message.start", sid)
+        from gateway.warning_notifications import render_notification
+        with _session_profile_runtime_scope(session):
+            render_notification(lambda: _emit("message.start", sid), platform="tui",
+                                diagnostic=(kwargs.get("display_metadata") or {}).get("notification_category") == "diagnostic")
         _run_prompt_submit(rid, sid, session, text, **kwargs)
     except Exception as exc:
         _notif_log_failure(what, exc)
@@ -187,14 +193,35 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
             if not _notif_claim_turn(session):
                 mgr.abandon_tick()
                 return
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, payload["message"])
+            # Releases the claim on failure: the swallow below would otherwise leave the session busy for good.
+            _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed")
             return
     except Exception:
         pass
     decision = mgr.complete_tick("")
     if decision.get("message"):
         _notif_loop_status(sid, decision["message"])
+
+
+def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
+    """Whether the gateway's heartbeat poller owns this session's due tick.
+
+    Desktop/TUI can attach to a messaging conversation, but its session-owner poller has no adapter
+    route for the reply. Ownership is the gateway's LIVE routing index, not the row's immutable
+    ``source``: ``gateway/run_heartbeat_restore.py`` only registers watches for a non-suspended,
+    origin-bearing key whose current ``session_id`` is this one, so a row archived by /reset,
+    auto-reset or compression rotation belongs to nobody there and must keep firing here. The index
+    lives in the gateway's home store (the launch handle for a multiplexed gateway, the profile's
+    own store for a per-profile gateway), so both are consulted; no entry is fail-open.
+    """
+    try:
+        with _session_db(session) as db:
+            for store in {id(d): d for d in (db, _get_db()) if d is not None}.values():
+                if (entry := store.gateway_routing_entry_for_session(session_key)) is not None:
+                    return bool(entry.get("origin")) and not entry.get("suspended")
+        return False
+    except Exception:
+        return False
 
 
 def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
@@ -214,8 +241,10 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = HeartbeatManager(session_id=sid_key)
-    if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
-        return  # not due, or busy — the tick coalesces to the next idle poll
+    if not mgr.is_active() or not mgr.state.is_due() or _notif_gateway_owns_heartbeat(session, sid_key):
+        return  # not due, or the gateway poller owns the routed conversation — stays due there
+    if not _notif_claim_turn(session):
+        return  # busy — the tick coalesces to the next idle poll
     if not (prompt := mgr.due_prompt()):
         _notif_release_turn(session)
         return
@@ -232,6 +261,14 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
             mgr.abandon_fire()
 
 
+def _loop_route_is_gateway_chat(state) -> bool:
+    """A /loop set from a messaging chat carries the gateway's ``route`` (platform + chat_id); its wakeup scanner
+    (``gateway/run_goals.py::_loop_wakeup_fire_one``) fires those and skips route-less CLI/TUI loops. Mirror it here
+    so a Desktop viewer of the same session never consumes the tick and strands the reply off the chat."""
+    route = getattr(state, "route", None) or {}
+    return bool(route.get("platform") and route.get("chat_id"))
+
+
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
@@ -242,7 +279,9 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = LoopManager(session_id=sid_key)
-    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not _notif_claim_turn(session):
+    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or _loop_route_is_gateway_chat(mgr.state):
+        return  # not due, or the gateway's wakeup scanner owns the routed chat — stays due there
+    if not _notif_claim_turn(session):
         return  # busy — stays due, next poll retries
     if not (wakeup := mgr.fire_tick()):
         _notif_release_turn(session)
@@ -359,7 +398,12 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             if not events:
                 continue
             task = _kb.get_task(conn, sub["task_id"])
-            texts.extend(t for t in (_format_kanban_event_text(sub, task, ev, slug) for ev in events) if t)
+            from gateway.kanban_watchers_notifier import diagnostic_event
+            from gateway.warning_notifications import DiagnosticText
+            for ev in events:
+                text = _format_kanban_event_text(sub, task, ev, slug)
+                if text:
+                    texts.append(DiagnosticText(text) if diagnostic_event(ev) else text)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
             if task and getattr(task, "status", "") == "archived":
@@ -397,6 +441,11 @@ def _collect_kanban_notifications(session: dict) -> list:
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:
+    with _session_profile_runtime_scope(session):
+        _notif_poll_kanban_scoped(sid, session)
+
+
+def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
     """One kanban poll: emit new texts, buffer them, and run the buffered batch as a turn if idle. Events are
     cursor-claimed (never re-queued), so they wait in the buffer instead of dropping the agent turn."""
     try:
@@ -405,24 +454,45 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
         _notif_log_failure("kanban notification poll failed", exc)
         texts = []
     for text in texts:
-        _emit("status.update", sid, {"kind": "process", "text": text})
+        from gateway.warning_notifications import DiagnosticText, render_notification
+        render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": text}),
+                            platform="tui", diagnostic=isinstance(text, DiagnosticText))
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
         return
     with session["history_lock"]:
-        batch, session["_kanban_pending"] = list(session.get("_kanban_pending") or []), []
+        pending = session.get("_kanban_pending") or []
+        from gateway.warning_notifications import DiagnosticText, warning_notifications_enabled
+        split = not warning_notifications_enabled("tui")
+        diagnostic = split and isinstance(pending[0], DiagnosticText)
+        batch = [text for text in pending if not split or isinstance(text, DiagnosticText) == diagnostic]
+        session["_kanban_pending"] = [text for text in pending if split and isinstance(text, DiagnosticText) != diagnostic]
     with contextlib.suppress(Exception):
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch), "kanban notification dispatch failed")
+        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch),
+                      "kanban notification dispatch failed",
+                      **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
 
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
-    if (claim := claim_event_delivery(evt, "tui-poller")) is None:
+    try:
+        claim = claim_event_delivery(evt, "tui-poller")
+    except Exception as exc:  # shared ledger busy/unreadable: the durable row stays pending and replays
+        _notif_log_failure("notification delivery claim failed", exc)
+        claim = None
+    if claim is None:
+        # Another consumer holds the durable row — a gateway sharing this home claims before it verifies
+        # the target. No turn will run, and nothing else clears ``running``: a busy session is exempt
+        # from the reaper, keeps its lease, and never reaches its bot mailbox again.
+        _notif_release_turn(session)
         return
     kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
               if evt.get("type") == "async_delegation" else {})
+    from agent.notification_presentation import diagnostic_process_event
+    if diagnostic_process_event(evt):
+        kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
     try:
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
     except Exception:
@@ -469,7 +539,10 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         from tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
         display_text = (async_delegation_display_text(evt) if is_delegation
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
-        _emit("status.update", sid, {"kind": "process", "text": display_text})
+        from agent.notification_presentation import diagnostic_process_event
+        from gateway.warning_notifications import render_notification
+        render_notification(lambda: _emit("status.update", sid, {"kind": "process", "text": display_text}),
+                            platform="tui", diagnostic=diagnostic_process_event(evt))
         emitted.add(dedup_key)
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
@@ -496,10 +569,19 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         if deferred is None:
             time.sleep(0.25)
         return
-    claimed = [(event, text, claim) for event, text in notifications
-               if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None]
-    batch = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed))
-    text = batch.render(registry)
+    claimed: list = []
+    try:
+        for event, event_text in notifications:
+            if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None:
+                claimed.append((event, event_text, claim))
+        batch = ProcessNotificationBatch(tuple((event, event_text) for event, event_text, _claim in claimed))
+        text = batch.render(registry)
+    except Exception as exc:
+        _notif_log_failure("completion batch preparation failed", exc)
+        _notif_release_turn(session)
+        for event, _text, claim in claimed:
+            release_event_delivery(event, claim)
+        return
     if text is None:
         _notif_release_turn(session)
     try:
@@ -531,11 +613,15 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
 
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
-    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner
+    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
 
     home = _session_home(session)
-    with session["history_lock"]:
-        if any(session.get(key) for key in (
+    # Most profiles never receive a delivery: without a mailbox there is nothing to claim, and the owner
+    # lookup below costs a state.db open plus the exclusive active-session registry lock every pass (#111719).
+    if not has_mailbox(home):
+        return False
+    with _session_turn_admission(session) as admitted:
+        if not admitted or any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
                 "_auto_continue_scheduled")) or session.get("agent") is None:
             return False
@@ -570,7 +656,9 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     try:
         started = _run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
                                      image_paths=[], terminal_callback=terminal_receipt,
-                                     turn_author=claimed.get("author") or None)
+                                     turn_author=claimed.get("author") or None,
+                                     **({"display_metadata": {"notification_category": "diagnostic"}}
+                                        if claimed.get("notification_category") == "diagnostic" else {}))
     except Exception as exc:
         _notif_release_turn(session)
         terminal_receipt({"status": "failed", "error": str(exc)})
@@ -581,7 +669,37 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     return started
 
 
+# A failing mailbox poll (typically the active-session registry lock unavailable under contention) is
+# retried on the next ``_BOT_DELIVERY_POLL_SECONDS`` pass; log the failure once per window, not per attempt.
+_BOT_POLL_WARN_INTERVAL_S = 60.0
+
+
+def _poll_bot_live_delivery_guarded(sid: str, session: dict, now: float) -> None:
+    """One poller-loop pass of the mailbox poll. A failure is logged at WARNING once per
+    ``_BOT_POLL_WARN_INTERVAL_S`` (with the count of suppressed repeats) and at DEBUG otherwise. An
+    unthrottled poll logged ``Bot live-owner delivery poll failed`` ~2×/minute per session for days,
+    91% of an install's WARNING output (#111719)."""
+    try:
+        _poll_bot_live_delivery_once(sid, session)
+    except Exception:
+        suppressed = int(session.get("_bot_poll_warn_suppressed", 0))
+        if now - session.get("_bot_poll_warned_at", -_BOT_POLL_WARN_INTERVAL_S) < _BOT_POLL_WARN_INTERVAL_S:
+            session["_bot_poll_warn_suppressed"] = suppressed + 1
+            logger.debug("Bot live-owner delivery poll failed (repeat)", exc_info=True)
+            return
+        session["_bot_poll_warned_at"], session["_bot_poll_warn_suppressed"] = now, 0
+        logger.warning("Bot live-owner delivery poll failed (%d repeat(s) suppressed since the last report)",
+                       suppressed, exc_info=True)
+        return
+    session["_bot_poll_warn_suppressed"] = 0
+
+
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
+    with _session_profile_runtime_scope(session):
+        _notification_poller_scoped_loop(stop_event, sid, session)
+
+
+def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     """Daemon thread (started by _init_session()) that drains the process-global completion_queue for this session
     (ownership routing: _notif_handle_event) and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
     delivery path for platform="tui" rows.
@@ -596,13 +714,12 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = 0.0
+    last_kanban_poll = last_loop_poll = last_bot_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
-        try:
-            _poll_bot_live_delivery_once(sid, session)
-        except Exception:
-            logger.warning("Bot live-owner delivery poll failed", exc_info=True)
+        if now - last_bot_poll >= _BOT_DELIVERY_POLL_SECONDS:  # bot DM → live-owner delivery latency ≤ 5 s
+            last_bot_poll = now
+            _poll_bot_live_delivery_guarded(sid, session, now)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
@@ -625,7 +742,12 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
                 ready.append(queue.get_nowait())
             except Exception:
                 break
-        handle(ready, None)
+        try:
+            handle(ready, None)
+        except Exception as exc:
+            # This thread is the session's only path to notifications, /loop, /heartbeat and its
+            # bot mailbox; one bad event must not end all four.
+            _notif_log_failure("notification dispatch failed", exc)
     # Drain remaining events after the stop signal so nothing is lost on shutdown; foreign and orphaned-delegation
     # events are handed back to the shared queue afterwards.
     deferred: list = []

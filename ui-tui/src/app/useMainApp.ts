@@ -57,6 +57,7 @@ import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
+import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
@@ -72,6 +73,8 @@ import {
   BACKEND_RESTARTING,
   BACKEND_RESTARTING_ACTIVITY,
   backendGaveUp,
+  CONNECTION_LOST,
+  CONNECTION_LOST_ACTIVITY,
   lastStderrLine
 } from './userMessages.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
@@ -606,6 +609,7 @@ export function useMainApp(gw: GatewayClient) {
 
     let stopped = false
     applyAgentSnapshot(ui.sid)
+    applyProcessSnapshot(ui.sid)
 
     const refresh = () => {
       const sid = ui.sid
@@ -615,6 +619,16 @@ export function useMainApp(gw: GatewayClient) {
 
           if (!stopped && result && getUiState().sid === sid) {
             applyAgentSnapshot(sid, result)
+          }
+        })
+        .catch(() => {})
+      // Background processes share the dock with the subagents (Processes block).
+      gw.request<{ processes: ProcessEntry[] }>('process.list', { session_id: sid })
+        .then(raw => {
+          const result = asRpcResult<{ processes: ProcessEntry[] }>(raw)
+
+          if (!stopped && result && getUiState().sid === sid) {
+            applyProcessSnapshot(sid, result.processes ?? [])
           }
         })
         .catch(() => {})
@@ -962,16 +976,31 @@ export function useMainApp(gw: GatewayClient) {
 
     const exitHandler = (code: null | number) => {
       turnController.reset()
+      const state = getUiState()
+      const storedSid = state.storedSid
+
+      // Attached socket closed: the backend (and any live turn) is still there —
+      // GatewayClient owns the backoff reconnect, and the next gateway.ready
+      // resumes the durable session id. Calling start() here would race that
+      // reconnect and reset its backoff.
+      if (gw.attached) {
+        recoverSidRef.current = storedSid ?? recoverSidRef.current
+        patchUiState({ busy: false, compacting: false, sid: null, status: 'reconnecting…' })
+
+        if (state.sid) {
+          turnController.pushActivity(CONNECTION_LOST_ACTIVITY, 'warn')
+          sys(CONNECTION_LOST)
+        }
+
+        return
+      }
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
-      // death — a user /quit exits Node before this fires, and a replaced child
-      // is identity-skipped in GatewayClient. Rather than stranding a long
-      // session (the user's complaint), respawn the gateway and resume the
-      // persisted session via the next gateway.ready, so a single crash / OOM /
-      // signal doesn't lose their work. planGatewayRecovery bounds the attempts
-      // so a gateway that crash-loops on startup can't spawn-storm, and falls
-      // back to recoverSidRef when sid was already cleared by a prior exit.
-      const plan = planGatewayRecovery(getUiState().sid, recoverSidRef.current, recoveryAtRef.current, Date.now())
+      // death — respawn the gateway and resume the persisted session via the
+      // next gateway.ready. session.resume takes the durable stored id, not the
+      // process-local runtime sid. planGatewayRecovery bounds the attempts so a
+      // crash-looping gateway can't spawn-storm.
+      const plan = planGatewayRecovery(storedSid, recoverSidRef.current, recoveryAtRef.current, Date.now())
 
       // Clear sid immediately: while the gateway is down, sid-guarded effects
       // (session.active_list poll, queue drain) would otherwise fire RPCs at a

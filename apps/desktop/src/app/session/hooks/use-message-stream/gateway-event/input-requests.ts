@@ -9,7 +9,6 @@ import { normalizeConnectionRequest, setConnectionRequest, updateConnectionReque
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import {
-  $approvalRequests,
   $secretRequests,
   $sudoRequests,
   $vaultCodeRequests,
@@ -20,7 +19,8 @@ import {
   clearSudoRequest,
   clearVaultCodeRequest,
   clearVaultSaveLoginRequest,
-  clearVaultUnlockRequest
+  clearVaultUnlockRequest,
+  sessionApprovalRequests
 } from '@/store/prompts'
 import { requestRoute } from '@/store/recovery-requests'
 import { forgetServerRequest } from '@/store/server-requests'
@@ -121,8 +121,12 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if ($approvalRequests.get()[key]?.serverRequestId === id) {
-    clearApprovalRequest(sessionId, $approvalRequests.get()[key]?.requestId)
+  const approval = sessionApprovalRequests(sessionId ?? null)
+    .get()
+    .find(request => request.serverRequestId === id)
+
+  if (approval) {
+    clearApprovalRequest(sessionId, approval.requestId)
 
     // The Run/Reject bar vanishing is the only thing the user would otherwise
     // see; the tool row then shows a model-facing "BLOCKED" result. Say what

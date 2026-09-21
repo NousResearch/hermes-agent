@@ -43,6 +43,10 @@
   margin-bottom: 0.75rem;
 }
 
+[data-theme="light"] .heroEyebrow {
+  color: #a8860a;
+}
+
 .heroTitle {
   font-size: 3rem;
   font-weight: 700;
@@ -94,33 +98,31 @@
   color: #ffd700;
 }
 
-.statsRow {
-  display: flex;
-  justify-content: center;
-  gap: 2.5rem;
-  flex-wrap: wrap;
+/* Inline "submit your plugin" link under the hero subtitle. */
+.heroLink {
+  color: #ffd700;
+  font-weight: 600;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(255, 215, 0, 0.35);
+  transition: border-color 0.15s;
 }
 
-.stat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.2rem;
+.heroLink:hover {
+  color: #ffd700;
+  text-decoration: none;
+  border-bottom-color: #ffd700;
 }
 
-.statValue {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 1.6rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.statLabel {
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+.heroMeta {
+  font-size: 0.85rem;
   color: var(--ifm-font-color-secondary, #9a968e);
+  opacity: 0.8;
+  margin: -0.75rem 0 1.5rem;
 }
+
+/* Three promises every listing carries; replaces the registry-style counters. */
+
+
 
 .controlsBar {
   position: sticky;
@@ -159,12 +161,16 @@
   padding: 0.7rem 2.5rem 0.7rem 2.6rem;
   font-size: 0.95rem;
   font-family: "DM Sans", sans-serif;
-  border: 1px solid rgba(255, 215, 0, 0.12);
+  border: 1px solid rgba(255, 215, 0, 0.18);
   border-radius: 10px;
-  background: rgba(15, 15, 24, 0.6);
+  background: var(--ifm-background-surface-color, #fff);
   color: var(--ifm-font-color-base, #e8e4dc);
   outline: none;
   transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+[data-theme="dark"] .searchInput {
+  background: rgba(15, 15, 24, 0.6);
 }
 
 .searchInput:focus {
@@ -242,6 +248,29 @@
 
 .tierBtnActive .tierCount {
   background: rgba(255, 255, 255, 0.08);
+}
+
+/* Sort control: Most starred / Newest / Recently updated, same pill shape as the tier tabs. */
+.sortPills {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+}
+
+.sortLabel {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-500);
+  margin-right: 0.15rem;
+}
+
+.sortBtnActive {
+  border-color: rgba(255, 215, 0, 0.3);
+  background: rgba(255, 215, 0, 0.06);
+  color: #ffd700;
 }
 
 /* ── Category pills + grouped sections ─────────────────────────────────── */
@@ -464,6 +493,15 @@
   opacity: 1;
 }
 
+.cardImage {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  object-fit: cover;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+
 .cardInner {
   padding: 1rem 1rem 0.85rem 1.15rem;
 }
@@ -516,6 +554,20 @@
   margin-top: 0.1rem;
 }
 
+.versionPill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  background: rgba(96, 165, 250, 0.12);
+  color: rgba(96, 165, 250, 0.95);
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
 .cardDesc {
   font-size: 0.82rem;
   line-height: 1.55;
@@ -536,6 +588,20 @@
   align-items: center;
   gap: 0.35rem;
   flex-wrap: wrap;
+}
+
+/* Added / Updated line from the catalog's git history. */
+.cardDates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--ifm-color-emphasis-500);
+}
+
+.cardDatesSep {
+  opacity: 0.5;
 }
 
 /* Capability chips: tools/hooks/middleware counts. */
@@ -827,13 +893,6 @@
     font-size: 2rem;
   }
 
-  .statsRow {
-    gap: 1.5rem;
-  }
-
-  .statValue {
-    font-size: 1.25rem;
-  }
 
   .controlsBar {
     padding: 0.75rem 1rem;
@@ -889,4 +948,21 @@
 .pickBtn:hover {
   background: var(--ifm-color-primary);
   color: #fff;
+  text-decoration: none;
+}
+
+a.pickBtn {
+  text-align: center;
+  text-decoration: none;
+}
+
+/* Card title doubles as the link to the plugin's own page. */
+.cardTitleLink {
+  color: inherit;
+  text-decoration: none;
+}
+
+.cardTitleLink:hover {
+  color: var(--ifm-color-primary);
+  text-decoration: none;
 }

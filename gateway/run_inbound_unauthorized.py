@@ -112,7 +112,12 @@ class UnauthorizedOwnerNotifier:
                 # The stranger's DM *is* the home channel (misconfiguration); posting there would
                 # answer the unauthorized user, which the ignore behaviour exists to prevent.
                 return
-            await runner._send_home_channel_message(
-                platform, home, transport, f"⚠️ {hint}", "unauthorized-sender notice failed for %s:%s: %s",
+            # Automatic operator diagnostic on the home channel; same boundary as the state.db warning.
+            from gateway.warning_notifications import present_notification
+            await present_notification(
+                lambda: runner._send_home_channel_message(
+                    platform, home, transport, f"⚠️ {hint}", "unauthorized-sender notice failed for %s:%s: %s",
+                ),
+                platform=platform,
             )
             return

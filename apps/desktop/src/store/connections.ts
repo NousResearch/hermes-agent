@@ -5,6 +5,7 @@ import type { DesktopConnectionsRegistry } from '@/global'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
 import {
   beginGatewaySwitch,
   endGatewaySwitch,
@@ -13,6 +14,7 @@ import {
 } from '@/store/gateway-switch'
 import {
   $activeGatewayProfile,
+  $freshSessionRequest,
   $newChatProfile,
   $showAllProfiles,
   captureNewChatSource,
@@ -22,7 +24,8 @@ import {
   refreshActiveProfile,
   requestFreshSession
 } from '@/store/profile'
-import { $connection } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
+import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
@@ -185,14 +188,24 @@ function waitForInitialConnection(): Promise<void> {
 }
 
 /**
- * Load the registry once for Sessions and restore the last successfully used
- * source. Later registry refreshes stay side-effect free, so editing Settings
- * in another window never changes the active workspace.
+ * Load the registry once for Sessions and restore the explicit default route,
+ * otherwise the last successfully used source. Later registry refreshes stay
+ * side-effect free, so editing Settings in another window never changes the
+ * active workspace.
  */
 export async function initializeConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
-  const registry = await refreshConnectionsRegistry()
+  const freshSessionRequest = $freshSessionRequest.get()
+  const [registry, defaultLoaded] = await Promise.all([
+    refreshConnectionsRegistry(),
+    refreshDefaultProfile().then(
+      () => true,
+      () => false
+    )
+  ])
 
-  if (!registry || restoreAttempted) {
+  // Main may already have opened the explicit default. A failed preference
+  // read is not evidence of an absent preference; keep that live route.
+  if (!registry || !defaultLoaded || restoreAttempted || isPeerInstanceWindow() || windowProfileOverride()) {
     return registry
   }
 
@@ -203,8 +216,32 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   // (statusbar switcher, fleet profile rail) is not drift to "restore" over.
   // The launch preference only decides where a window lands when nobody has
   // said otherwise yet.
-  if (switchRevision > 0 || pendingTarget !== null) {
+  if (switchRevision > 0 || pendingTarget !== null || $freshSessionRequest.get() !== freshSessionRequest) {
     return registry
+  }
+
+  // An explicit default is stronger than the registry's last-used preference,
+  // including the last profile remembered on the SAME source. A legacy null
+  // route is already resolved by main's ensureBackend(profile), including any
+  // per-profile remote override; the registry must not reinterpret it as local.
+  const defaultRoute = $defaultProfileRoute.get()
+
+  if (defaultRoute) {
+    if ($activeSessionId.get() || $selectedStoredSessionId.get()) {
+      return registry
+    }
+
+    const connectionId = defaultRoute.connectionId
+
+    if (connectionId === null) {
+      return registry
+    }
+
+    if (registry.connections.some(connection => connection.id === connectionId)) {
+      await selectConnection(connectionId, { profile: defaultRoute.profile })
+    }
+
+    return $connectionsRegistry.get() ?? registry
   }
 
   // Residual drift: a window can be live on a source the registry cannot name

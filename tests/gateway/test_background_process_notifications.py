@@ -161,6 +161,62 @@ async def test_consumed_completion_skips_raw_notification(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("launching_turn_busy", [True, False])
+async def test_agent_notify_receipt_only_while_launching_turn_is_busy(
+    monkeypatch, tmp_path, launching_turn_busy
+):
+    """#112033: with notify_on_complete the agent reports the result itself, so the chat gets no
+    separate receipt — except while the launching turn is still running, when the injection only
+    queues a follow-up and the concise receipt is the only thing the user would see."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=True)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    watcher = {**_watcher_dict(), "session_key": "agent:main:telegram:dm:123", "notify_on_complete": True}
+    adapter._active_sessions = {watcher["session_key"]: asyncio.Event()} if launching_turn_busy else {}
+
+    await runner._run_process_watcher(watcher)
+
+    runner._enqueue_process_completion_notification.assert_awaited_once()
+    if launching_turn_busy:
+        adapter.send.assert_awaited_once()
+        assert adapter.send.await_args.args[1].startswith("✅ Background task finished")
+    else:
+        adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arm_process_watcher_schedules_on_live_loop_only(monkeypatch, tmp_path):
+    """#112033: a watcher registered mid-turn starts on the gateway loop at once while the gateway
+    serves; before/after that the caller keeps it for the startup / post-turn drain."""
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    started = []
+
+    async def _fake_watcher(watcher):
+        started.append(watcher["session_id"])
+    runner._run_process_watcher = _fake_watcher
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    runner._running = False
+    assert runner.arm_process_watcher({"session_id": "proc_early"}) is False
+
+    runner._running = True
+    assert runner.arm_process_watcher({"session_id": "proc_live"}) is True
+    await asyncio.sleep(0.05)
+    assert started == ["proc_live"]
+
+
+@pytest.mark.asyncio
 async def test_consumed_completion_skips_raw_notification_without_agent_notify(
     monkeypatch, tmp_path
 ):

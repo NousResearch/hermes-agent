@@ -389,6 +389,31 @@ async function listRemoteHermesProfiles(ssh) {
   return parseRemoteProfileListing(listing)
 }
 
+async function readRemoteInstallId(ssh) {
+  // The stable backend identity the roster collapses on (`hermes_cli/install_identity.py`:
+  // `<install root>/install_id`, opaque hex). Read from the INSTALL root, so an ssh connection
+  // pinned to `<root>/profiles/<name>` reports the same id as one pointed at the root — they are
+  // one backend. Read-only: a missing file is left missing (minting identity is the install's job,
+  // never a visiting client's) and simply means "no id", exactly as an older backend reports.
+  const root = remoteInstallRoot(assertSafeRemoteHome(await probeRemoteHermesHome(ssh)))
+  const file = expandRemotePath(`${root}/install_id`)
+  let out = ''
+
+  try {
+    out = await ssh.exec(`if [ -f ${file} ]; then cat ${file}; fi`)
+  } catch (cause) {
+    const error: any = new Error('Could not read the remote Hermes install id.')
+    error.kind = 'transient-transport-error'
+    error.cause = cause
+    throw error
+  }
+
+  const id = String(out || '').trim().split('\n').pop()?.trim().toLowerCase() ?? ''
+
+  // Same shape check the minting side guarantees; anything else is not an identity.
+  return /^[0-9a-f]{32}$/.test(id) ? id : undefined
+}
+
 function assertSafeRemoteHome(home) {
   const value = String(home || '').trim()
 
@@ -516,21 +541,58 @@ async function removeLockfile(ssh, ownershipId) {
   }
 }
 
+const PROBE_VERDICT_ATTEMPTS = 3
+const PROBE_VERDICT_RETRY_MS = 500
+
+// Liveness and ownership probes print exactly one of two sentinels. An exec
+// that resolves with neither — the channel died before the remote shell ran,
+// which is exactly the state of an SSH session mid-teardown right after the
+// served token was resolved — is indeterminate, not the negative verdict:
+// reading it as DEAD tore down a live backend as "exited while its served
+// token was being resolved", and reading it as FOREIGN skipped the reap while
+// still removing the lockfile, leaving one orphaned `serve --isolated` per
+// attempt (#111810). Retry over a short window; with no definite answer fail
+// closed with a transient error so callers keep the ownership record.
+async function execProbeVerdict(ssh, command, sentinels, failureMessage) {
+  for (let attempt = 0; attempt < PROBE_VERDICT_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, PROBE_VERDICT_RETRY_MS))
+    }
+
+    let out
+
+    try {
+      out = String((await ssh.exec(command)) || '').trim()
+    } catch (cause) {
+      const error: any = new Error(failureMessage)
+      error.kind = 'transient-transport-error'
+      error.cause = cause
+      throw error
+    }
+
+    if (sentinels.includes(out)) {
+      return out
+    }
+  }
+
+  const error: any = new Error(failureMessage)
+  error.kind = 'transient-transport-error'
+  throw error
+}
+
 async function remotePidAlive(ssh, pid) {
   if (!pid || !Number.isInteger(Number(pid))) {
     return false
   }
 
-  try {
-    const out = (await ssh.exec(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`)).trim()
+  const verdict = await execProbeVerdict(
+    ssh,
+    `kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`,
+    ['ALIVE', 'DEAD'],
+    'Could not verify the SSH backend process.'
+  )
 
-    return out === 'ALIVE'
-  } catch (cause) {
-    const error: any = new Error('Could not verify the SSH backend process.')
-    error.kind = 'transient-transport-error'
-    error.cause = cause
-    throw error
-  }
+  return verdict === 'ALIVE'
 }
 
 // Stable kernel process-start identity used to fence a later managed-update
@@ -587,8 +649,7 @@ async function pidIsOurDashboard(
     return false
   }
 
-  try {
-    const script =
+  const script =
       'import os,shlex,subprocess,sys\n' +
       `pid=${Number(pid)}\n` +
       `expected=os.path.expanduser(${shq(hermesPath)})\n` +
@@ -635,15 +696,14 @@ async function pidIsOurDashboard(
       'except (ValueError,IndexError):pass\n' +
       'print("OWNED" if ok else "FOREIGN")'
 
-    const out = await ssh.exec(`python3 -c ${shq(script)}`)
+  const verdict = await execProbeVerdict(
+    ssh,
+    `python3 -c ${shq(script)}`,
+    ['OWNED', 'FOREIGN'],
+    'Could not verify SSH backend process ownership.'
+  )
 
-    return String(out || '').trim() === 'OWNED'
-  } catch (cause) {
-    const error: any = new Error('Could not verify SSH backend process ownership.')
-    error.kind = 'transient-transport-error'
-    error.cause = cause
-    throw error
-  }
+  return verdict === 'OWNED'
 }
 
 // Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
@@ -1090,7 +1150,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const reservationNonce = validateSpawnNonce(opts.reservationNonce || crypto.randomBytes(8).toString('hex'))
 
   return withRemoteUpdateMutex(
-    `umask 077 && mkdir -p "$(dirname ${reservation})"; ` +
+    `(umask 077 && mkdir -p "$(dirname ${reservation})"); ` +
       // reservation/lockPath/ownerPath are expandRemotePath() output — already
       // shell-quoted fragments ("$HOME"'/…'). Embed raw so the assignment
       // expands $HOME; shq() here would store the quote characters literally
@@ -1660,7 +1720,20 @@ async function connect(deps) {
       void 0
     }
 
-    await cleanupStale(ssh, ownershipId, ownedSpawn)
+    // This record IS the child this attempt spawned. A liveness probe that
+    // cannot be settled must not become "leave it running": assume alive so
+    // cleanupStale re-runs the ownership proof, which keeps the record when
+    // nothing can be proven and lets the next connect reap by exact ownership.
+    const pidAlive = await remotePidAlive(ssh, pid).catch(() => true)
+
+    try {
+      await cleanupStale(ssh, ownershipId, ownedSpawn, pidAlive)
+    } catch (cleanupError) {
+      // An unsettled ownership proof must not replace the boot failure the
+      // user needs to see; keep it reachable for diagnostics instead.
+      error.cleanupCause = cleanupError
+    }
+
     throw error
   }
 }
@@ -1692,6 +1765,7 @@ export {
   probeRemotePlatform,
   PROTOCOL_VERSION,
   readLockfile,
+  readRemoteInstallId,
   READY_RE,
   REMOTE_LOCK_DIR,
   remotePidAlive,

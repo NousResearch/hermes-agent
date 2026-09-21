@@ -81,6 +81,19 @@ def test_fetch_models_with_pricing_copies_nested_original(monkeypatch):
     assert "original" not in result["free/model"]
 
 
+def test_fetch_models_with_pricing_copies_billing_mode_for_nous_only(monkeypatch):
+    payload = {"data": [{"id": "a/b", "billing_mode": "subscription", "pricing": {"prompt": "0.000002", "completion": "0.00001"}}]}
+    resp = MagicMock()
+    resp.read.return_value = json.dumps(payload).encode()
+    resp.__enter__ = lambda self: self
+    resp.__exit__ = lambda *a: False
+    monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", lambda req, timeout=8.0: resp)
+
+    fetch = lambda **kw: fetch_models_with_pricing(api_key="sk-test", base_url="https://example.test", force_refresh=True, **kw)
+    assert fetch(include_sale_original=True)["a/b"]["billing_mode"] == "subscription"
+    assert "billing_mode" not in fetch()["a/b"]
+
+
 
 
 def test_resolve_nous_pricing_credentials_honors_inference_env_override(monkeypatch):

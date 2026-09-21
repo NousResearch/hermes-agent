@@ -54,6 +54,18 @@ def _read_proc_argv(pid: int) -> Optional[List[str]]:
         return None
 
 
+def describe_holder_pid(pid: int) -> str:
+    """``PID 123 (hermes gateway run)`` for operator-facing holder lists; /proc argv first, psutil elsewhere."""
+    argv = _read_proc_argv(pid)
+    if argv is None and psutil is not None:
+        try:
+            argv = psutil.Process(pid).cmdline() or None
+        except Exception:
+            argv = None
+    who = " ".join(" ".join([os.path.basename(argv[0]), *argv[1:]]).split())[:80] if argv else "command line unavailable"
+    return f"PID {pid} ({who})"
+
+
 def _looks_like_python_executable(program: str) -> bool:
     name = os.path.basename(program).lower().removesuffix(".exe")
     for prefix in ("python", "pypy"):
@@ -321,6 +333,43 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
         )
         holders.append((-1, f"open-file scan failed: {exc}"))
     return holders
+
+
+def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str] = "--force") -> Optional[str]:
+    """Operator-facing refusal for structural maintenance (VACUUM, index rebuild, bulk delete) while another
+    process holds ``db_path`` or a WAL sidecar; ``None`` when the store is provably quiet.
+
+    Running ``hermes sessions optimize-storage`` underneath a fleet of live gateways put every agent into
+    the retired-WAL refusal until all writers were stopped (#110054). Same fail-closed scan doctor and
+    repair use: an incomplete scan refuses too, it never reads as an all-clear.
+    """
+    holders = foreign_state_db_holders(db_path)
+    if not holders:
+        return None
+    from hermes_constants import profile_cli_selector
+    from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
+
+    by_pid: dict[int, Set[str]] = {}
+    unknown: List[str] = []
+    for pid, target in holders:
+        if pid <= 0 or target.startswith("uninspectable"):
+            unknown.append(target)
+        else:
+            by_pid.setdefault(pid, set()).add(Path(target.removesuffix(" (deleted)")).name)
+    lines = [f"Refusing `hermes sessions {command}`: another process is using {db_path}."]
+    lines += [f"  {describe_holder_pid(pid)}: {', '.join(sorted(by_pid[pid]))}" for pid in sorted(by_pid)]
+    if unknown:
+        lines.append(f"  cannot prove the database is quiet (holder scan incomplete: {unknown[0][:120]})")
+    profile_arg = profile_cli_selector()
+    lines += [
+        "Rewriting the database under a live writer is how every agent ends up refusing turns with the "
+        "retired state.db-wal error. Nothing is lost.",
+        f"Stop them first (`hermes {profile_arg}gateway stop`, quit the Desktop app, pause cron), then re-run.",
+    ]
+    if force_hint:
+        lines.append(f"Override with {force_hint} if you accept the risk.")
+    lines.append(f"Recovery guide: {STORAGE_RECOVERY_DOCS_URL}")
+    return "\n".join(lines)
 
 
 def live_writer_holds_db(

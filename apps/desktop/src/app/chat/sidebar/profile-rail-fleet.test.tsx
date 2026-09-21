@@ -16,6 +16,7 @@ const navigate = vi.fn()
 const selectConnection = vi.fn()
 const selectProfile = vi.fn()
 const getAgentRoster = vi.fn()
+const openWindow = vi.fn()
 
 vi.mock('react-router', () => ({
   useNavigate: () => navigate
@@ -33,6 +34,8 @@ vi.mock('@/i18n', () => ({
         colorFor: 'Color',
         connectGateway: 'Manage gateways…',
         editSoul: 'Edit SOUL.md…',
+        openInNewWindow: 'Open in new window',
+        setAsDefault: 'Set as default',
         exportProfile: 'Export profile…',
         failedLoadSoul: 'Failed to load SOUL.md',
         failedSaveSoul: 'Failed to save SOUL.md',
@@ -101,7 +104,7 @@ vi.mock('@/store/profile-share', () => ({
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), notePointerMove: vi.fn(), startPrewarm: vi.fn() })
 }))
 
 vi.mock('./use-profile-rail-refresh-on-active', () => ({
@@ -206,7 +209,8 @@ async function renderFleet() {
 beforeEach(() => {
   getAgentRoster.mockResolvedValue(roster)
   selectConnection.mockResolvedValue(undefined)
-  ;(window as { hermesDesktop?: unknown }).hermesDesktop = { getAgentRoster }
+  openWindow.mockResolvedValue({ ok: true })
+  ;(window as { hermesDesktop?: unknown }).hermesDesktop = { getAgentRoster, openWindow }
 })
 
 afterEach(() => {
@@ -223,6 +227,40 @@ afterEach(() => {
 })
 
 describe('ProfileRail fleet mode', () => {
+  it.each([false, true])(
+    'keeps right-click launch routes exact without selecting a profile (condensed=%s)',
+    async condensed => {
+      armFleet()
+      activeConnectionId.set('local')
+      profiles.set([
+        { is_default: true, name: 'default' },
+        { is_default: false, name: 'builder' },
+        ...(condensed ? Array.from({ length: 12 }, (_, index) => ({ is_default: false, name: `p${index}` })) : [])
+      ])
+      await renderFleet()
+
+      for (const target of [
+        { label: 'builder', connectionId: null, profile: 'builder' },
+        { label: 'scout · Gateway A', connectionId: 'gateway-a', profile: 'scout' },
+        { label: 'default · Gateway A', connectionId: 'gateway-a', profile: 'default' }
+      ]) {
+        if (condensed) {
+          fireEvent.pointerDown(screen.getByRole('button', { name: 'Profiles' }), { button: 0, ctrlKey: false })
+        }
+        fireEvent.contextMenu(
+          screen.getByRole(condensed ? (target.connectionId ? 'menuitem' : 'menuitemradio') : 'button', {
+            name: target.label
+          })
+        )
+        await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Open in new window' })))
+        expect(openWindow).toHaveBeenLastCalledWith({ connectionId: target.connectionId, profile: target.profile })
+        expect(selectProfile).not.toHaveBeenCalled()
+        expect(selectConnection).not.toHaveBeenCalled()
+        fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+      }
+    }
+  )
+
   it('keeps the custom named-profile order when a source becomes inactive', async () => {
     armFleet()
     profiles.set([...profiles.get(), { name: 'editor', is_default: false }])

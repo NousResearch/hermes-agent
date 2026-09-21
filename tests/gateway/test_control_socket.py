@@ -161,6 +161,39 @@ def test_unknown_verb_and_malformed_request(home: Path):
     assert payload["protocol"] == CONTROL_PROTOCOL_VERSION
 
 
+def test_verb_handler_receives_params(home: Path):
+    """A handler declaring a ``params`` argument is called with the request's params dict; a bare
+    handler is still called with no args (backward compat for identify/status/rescan)."""
+    received = {}
+
+    def with_params(params):
+        received.update(params)
+        return {"echo": params}
+
+    def bare():
+        return {"ok": 1}
+
+    async def scenario():
+        server = GatewayControlServer(
+            home, verb_handlers={"with-params": with_params, "bare": bare})
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            got = await loop.run_in_executor(
+                None, lambda: query_gateway_control(
+                    home, "with-params", params={"old": "a", "new": "b"}))
+            bare_ok = await loop.run_in_executor(
+                None, lambda: query_gateway_control(home, "bare"))
+            return got, bare_ok
+        finally:
+            await server.stop()
+
+    got, bare_ok = _run(scenario())
+    assert got == {"echo": {"old": "a", "new": "b"}}
+    assert received == {"old": "a", "new": "b"}
+    assert bare_ok == {"ok": 1}
+
+
 def test_stop_removes_socket_and_pointer(home: Path):
     async def scenario():
         server = GatewayControlServer(

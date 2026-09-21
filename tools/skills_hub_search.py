@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import httpx
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from tools.skills_hub_clawhub import ClawHubSource
@@ -82,6 +83,15 @@ def _load_stale_index_cache() -> Optional[dict]:
 # index is available and no source filter is active (~70 GitHub calls/search
 # for unauthenticated users otherwise).
 _API_SOURCE_IDS = frozenset({"github", "skills-sh", "clawhub", "lobehub", "well-known"})
+# Consulted only when the index answered a non-empty query with nothing: the
+# index is rebuilt asynchronously and lags the registries, so a skill that is
+# live on skills.sh may not be in it yet. GitHub stays out — one miss (a typo)
+# would burn an unauthenticated user's whole hourly GitHub budget.
+_INDEX_MISS_FALLBACK_IDS = _API_SOURCE_IDS - {"github"}
+# Cap on the fallback pass. ClawHub can take minutes; without its own budget
+# every unfiltered miss (a typo) would stall CLI/TUI/dashboard for the callers'
+# full 30 s ``overall_timeout`` where the index alone answered instantly.
+_INDEX_MISS_FALLBACK_BUDGET = 8.0
 
 
 def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]:
@@ -141,32 +151,42 @@ def _select_active_sources(sources: List[SkillSource], source_filter: str) -> Li
     return active
 
 
-def parallel_search_sources(
-    sources: List[SkillSource], query: str = "", per_source_limits: Optional[Dict[str, int]] = None,
-    source_filter: str = "all", overall_timeout: float = 30, on_source_done: Optional[Any] = None,
-) -> Tuple[List[SkillMeta], Dict[str, int], List[str]]:
-    """Search all sources in parallel with an overall timeout.
+def _index_miss_fallback_sources(
+    sources: List[SkillSource], active: List[SkillSource], query: str, source_counts: Dict[str, int],
+    provider_filter: str = "",
+) -> List[SkillSource]:
+    """Registries to consult after the index stood in for them and found nothing.
 
-    Returns ``(all_results, source_counts, timed_out_ids)``. *on_source_done*
-    is an optional ``(source_id, count) -> None`` progress callback. Under a
-    provider filter every source's results are narrowed before they are
-    counted and merged, so callers need no provider logic of their own.
+    Empty for a browse (no query), when the index was not consulted (no skip
+    happened), when it returned matches, or when it did not answer at all
+    (timed out: no budget is left and the registries would only be blamed as
+    late without being asked). Also empty under a provider filter
+    (``--source nvidia``): the fallback registries carry no ``extra.provider``,
+    so their results would all be cut and the calls would only burn budget.
     """
+    if not query.strip() or provider_filter or not any(src.source_id() == "hermes-index" for src in active):
+        return []
+    if source_counts.get("hermes-index") != 0:
+        return []
+    return [src for src in sources if src.source_id() in _INDEX_MISS_FALLBACK_IDS and src not in active]
+
+
+def _fan_out(
+    active: List[SkillSource], query: str, per_source_limits: Dict[str, int], provider_filter: str,
+    deadline: float, on_source_done: Optional[Any], all_results: List[SkillMeta],
+    source_counts: Dict[str, int], timed_out_ids: List[str],
+) -> None:
+    """Query ``active`` in parallel until ``deadline`` (monotonic), merging into the accumulators."""
     from concurrent.futures import as_completed
+    from tools.daemon_pool import DaemonThreadPoolExecutor
 
-    per_source_limits = per_source_limits or {}
-    active = _select_active_sources(sources, source_filter)
-    provider_filter = _provider_filter_of(source_filter)
-    all_results: List[SkillMeta] = []
-    source_counts: Dict[str, int] = {}
-    timed_out_ids: List[str] = []
-    if not active:
-        return all_results, source_counts, timed_out_ids
-
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        timed_out_ids.extend(src.source_id() for src in active)
+        return
     # Not a ``with`` block: its shutdown(wait=True) would block on a slow source
     # (ClawHub) for minutes and defeat ``overall_timeout``. Daemon workers so an
     # abandoned source cannot block interpreter exit either.
-    from tools.daemon_pool import DaemonThreadPoolExecutor
     pool = DaemonThreadPoolExecutor(max_workers=min(len(active), 8))
     futures = {
         pool.submit(
@@ -175,7 +195,7 @@ def parallel_search_sources(
         for src in active
     }
     try:
-        for fut in as_completed(futures, timeout=overall_timeout):
+        for fut in as_completed(futures, timeout=remaining):
             try:
                 sid, results = fut.result(timeout=0)
                 if provider_filter:
@@ -190,11 +210,49 @@ def parallel_search_sources(
             except Exception:
                 pass
     except TimeoutError:
-        timed_out_ids = [futures[f] for f in futures if not f.done()]
-        if timed_out_ids:
-            logger.debug("Skills browse timed out waiting for: %s", ", ".join(timed_out_ids))
+        late = [futures[f] for f in futures if not f.done()]
+        timed_out_ids.extend(late)
+        if late:
+            logger.debug("Skills browse timed out waiting for: %s", ", ".join(late))
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+def parallel_search_sources(
+    sources: List[SkillSource], query: str = "", per_source_limits: Optional[Dict[str, int]] = None,
+    source_filter: str = "all", overall_timeout: float = 30, on_source_done: Optional[Any] = None,
+) -> Tuple[List[SkillMeta], Dict[str, int], List[str]]:
+    """Search all sources in parallel with an overall timeout.
+
+    Returns ``(all_results, source_counts, timed_out_ids)``. *on_source_done*
+    is an optional ``(source_id, count) -> None`` progress callback. Under a
+    provider filter every source's results are narrowed before they are
+    counted and merged, so callers need no provider logic of their own.
+
+    When the centralized index stood in for the external registries and found
+    nothing for a non-empty query, those registries are queried within the
+    same ``overall_timeout`` — capped at ``_INDEX_MISS_FALLBACK_BUDGET`` so a
+    slow registry cannot turn an instant index miss into a 30 s stall — so
+    every caller (CLI, TUI gateway, dashboard) still finds skills the index
+    has not picked up yet.
+    """
+    per_source_limits = per_source_limits or {}
+    active = _select_active_sources(sources, source_filter)
+    provider_filter = _provider_filter_of(source_filter)
+    all_results: List[SkillMeta] = []
+    source_counts: Dict[str, int] = {}
+    timed_out_ids: List[str] = []
+    if not active:
+        return all_results, source_counts, timed_out_ids
+
+    deadline = time.monotonic() + overall_timeout
+    _fan_out(active, query, per_source_limits, provider_filter, deadline, on_source_done,
+             all_results, source_counts, timed_out_ids)
+    fallback = _index_miss_fallback_sources(sources, active, query, source_counts, provider_filter)
+    if fallback:
+        fallback_deadline = min(deadline, time.monotonic() + _INDEX_MISS_FALLBACK_BUDGET)
+        _fan_out(fallback, query, per_source_limits, provider_filter, fallback_deadline, on_source_done,
+                 all_results, source_counts, timed_out_ids)
     return all_results, source_counts, timed_out_ids
 
 

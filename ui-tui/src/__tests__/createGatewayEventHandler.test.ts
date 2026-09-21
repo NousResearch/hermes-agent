@@ -1,5 +1,10 @@
+import type { ConnectionOperationTarget } from '@hermes/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  $connectionOperation,
+  resetConnectionOperationsForTests
+} from '../app/connectionOperationStore.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
@@ -81,6 +86,7 @@ describe('createGatewayEventHandler', () => {
     resetUiState()
     resetTurnState()
     resetServerRequestsForTests()
+    resetConnectionOperationsForTests()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
   })
@@ -104,6 +110,57 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('ready')
     expect(getOverlayState().approval).toBeNull()
     expect(getTurnState().tools).toEqual([])
+
+    const target: ConnectionOperationTarget = { action: 'install', kind: 'mcp', name: 'asana', state: 'pending' }
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        deadline_at: 10,
+        op_id: 'op-1',
+        seq: 2,
+        targets: [target],
+        timeout_seconds: 30
+      },
+      type: 'connection.request'
+    })
+    expect($connectionOperation.get()).toMatchObject({ opId: 'op-1', seq: 2, targets: [target] })
+    expect(getOverlayState().connection).toEqual({ opId: 'op-1' })
+
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        deadline_at: 11,
+        op_id: 'op-1',
+        seq: 1,
+        settled: false,
+        targets: [{ ...target, state: 'failed' }]
+      },
+      type: 'connection.update'
+    })
+    expect($connectionOperation.get()).toMatchObject({ seq: 2, targets: [target] })
+  })
+
+  it('keeps the durable session id when a session.info payload omits it', () => {
+    patchUiState({ sid: 'focused', storedSid: 'durable-1' })
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    // Agent-less producers (_fallback_session_info, lazy cwd switch) send no stored_session_id.
+    onEvent({
+      session_id: 'focused',
+      payload: { cwd: '/tmp/a', model: 'test', skills: {}, tools: {} },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().storedSid).toBe('durable-1')
+    expect(getUiState().info?.stored_session_id).toBe('durable-1')
+
+    // A payload that carries one is authoritative.
+    onEvent({
+      session_id: 'focused',
+      payload: { model: 'test', skills: {}, stored_session_id: 'durable-2', tools: {} },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().storedSid).toBe('durable-2')
+    expect(getUiState().info?.stored_session_id).toBe('durable-2')
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
@@ -1074,12 +1131,17 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
     const resumeById = vi.fn()
+    const resumed = Promise.withResolvers<void>()
     const ctx = buildCtx(appended)
 
     ctx.session.newSession = newSession
     // Mimic resumeById's synchronous status write so the test proves the
     // "recovering session…" label is applied *after* (and survives) it.
-    ctx.session.resumeById = resumeById.mockImplementation(() => patchUiState({ status: 'resuming…' }))
+    ctx.session.resumeById = resumeById.mockImplementation(() => {
+      patchUiState({ status: 'resuming…' })
+
+      return resumed.promise.then(() => patchUiState({ sid: 'sess-recovered', status: 'ready' }))
+    })
     ctx.session.STARTUP_RESUME_ID = ''
     ctx.session.recoverSidRef = ref<null | string>('sess-crashed')
 
@@ -1089,10 +1151,12 @@ describe('createGatewayEventHandler', () => {
 
     await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed'))
     expect(newSession).not.toHaveBeenCalled()
-    // One-shot: the ref is consumed so a later ordinary restart forges/resumes
-    // per config instead of re-resuming the recovered session.
-    expect(ctx.session.recoverSidRef.current).toBeNull()
+    expect(ctx.session.recoverSidRef.current).toBe('sess-crashed')
     expect(getUiState().status).toBe('recovering session…')
+
+    resumed.resolve()
+    await vi.waitFor(() => expect(ctx.session.recoverSidRef.current).toBeNull())
+    expect(getUiState().sid).toBe('sess-recovered')
   })
 
   it('on gateway.ready with auto_resume on and a recent session, resumes it', async () => {

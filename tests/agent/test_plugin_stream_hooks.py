@@ -224,6 +224,44 @@ def test_stream_observers_keep_context_and_dispatcher_scope_per_profile(
     )
 
 
+def test_observer_failures_report_in_originating_profile(tmp_path, monkeypatch):
+    from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli import plugins
+    from agent.plugin_stream_hooks import enqueue_plugin_observer_hook, shutdown_plugin_observer_dispatcher
+
+    shutdown_plugin_observer_dispatcher()
+    homes = [tmp_path / "a", tmp_path / "b"]
+    managers = {home: plugins.PluginManager(scope_key=str(home)) for home in homes}
+    reports = []
+
+    def failing(**kwargs):
+        raise ValueError(kwargs["event_id"])
+
+    for home, manager in managers.items():
+        manager._discovered = True
+        plugins.PluginContext(plugins.PluginManifest(name="failure-plugin"), manager).register_hook(
+            "memory_prefetch", failing
+        )
+        def report(hook, callback, payload, exc, owner=home):
+            reports.append((owner, get_hermes_home(), payload["event_id"], str(exc)))
+        monkeypatch.setattr(manager, "_report_hook_failure", report)
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: managers[get_hermes_home()])
+    try:
+        for index, home in enumerate([homes[0], homes[1], homes[0]]):
+            token = set_hermes_home_override(home)
+            try:
+                assert enqueue_plugin_observer_hook("memory_prefetch", event_id=str(index))
+            finally:
+                reset_hermes_home_override(token)
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+        assert sorted(reports) == sorted(
+            (home, home, str(index), str(index))
+            for index, home in enumerate([homes[0], homes[1], homes[0]])
+        )
+    finally:
+        shutdown_plugin_observer_dispatcher()
+
+
 def test_observer_dispatcher_shutdown_has_bounded_join(monkeypatch):
     from agent.plugin_stream_hooks import (
         enqueue_plugin_observer_hook,

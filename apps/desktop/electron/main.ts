@@ -15347,12 +15347,13 @@ ipcMain.handle('hermes:connection', async (event, profile, extra) => {
     primaryProfileKey()
   )
 
-  return connectDesktopProfileRoute(route, spawnPriorityFrom(extra?.priority))
+  return connectDesktopProfileRoute(route, spawnPriorityFrom(extra?.priority), event.sender)
 })
 
 async function connectDesktopProfileRoute(
   route: DesktopProfileRoute,
-  spawnPriority: LocalBackendSpawnPriority = 'foreground'
+  spawnPriority: LocalBackendSpawnPriority = 'foreground',
+  sender?: Electron.WebContents
 ) {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
@@ -15373,13 +15374,20 @@ async function connectDesktopProfileRoute(
     clearSpawnPriority()
   }
 
+  // A republished connection reaches a window that may have moved, resized or changed
+  // display since it first dialled, so re-read the calling window's state here instead
+  // of letting the renderer keep the values it cached at its original connect.
+  const windowState = getWindowState((sender && BrowserWindow.fromWebContents(sender)) || mainWindow)
+
   if (route.connectionId) {
-    return { ...connection, connectionId: route.connectionId, registryScoped: true }
+    return { ...connection, ...windowState, connectionId: route.connectionId, registryScoped: true }
   }
 
   const connectionId = resolvedConnectionId(readDesktopConnectionsRegistry(), connection)
 
-  return connectionId ? { ...connection, connectionId } : connection
+  return connectionId
+    ? { ...connection, ...windowState, connectionId }
+    : { ...connection, ...windowState }
 }
 
 // Registry-scoped variant: resolve a backend for (connectionId, profile).
@@ -15387,7 +15395,7 @@ async function connectDesktopProfileRoute(
 // local kind delegates to ensureBackend when the v1 route is local, and
 // forces a genuinely-local child when the v1 global mode is remote (the
 // registry 'local' entry always means this machine).
-ipcMain.handle('hermes:connection:for', async (_event, payload) => {
+ipcMain.handle('hermes:connection:for', async (event, payload) => {
   const { connectionId, profile, priority } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
@@ -15395,7 +15403,8 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
 
   return connectDesktopProfileRoute(
     { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
-    spawnPriority
+    spawnPriority,
+    event.sender
   )
 })
 

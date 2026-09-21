@@ -44,6 +44,31 @@ def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_
         platform_value if profile is None else f"{profile}:{platform_value}", chat_id, thread_id)
 
 
+def _delivery_target_key(platform_value: str, chat_id, thread_id) -> tuple:
+    """Dedupe key for one DELIVERED chat, profile-independent.
+
+    Two served profiles can share a single home chat (one Telegram group for the whole host);
+    keyed per profile they would each post their own "Gateway online" notice into it.
+    """
+    return _notice_target_key(platform_value, chat_id, thread_id)
+
+
+def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[str] = None):
+    """``resolve_delivery_transport`` isolated to one target: ``None`` (logged) on failure.
+
+    The fan-out spans every served profile, so one profile's broken adapter must not abort the
+    pass and starve every profile after it in dict order.
+    """
+    from gateway.delivery import resolve_delivery_transport
+    try:
+        return resolve_delivery_transport(platform, config, adapters)
+    except Exception as exc:
+        logger.debug(
+            "Home-channel transport unavailable for %s%s: %s",
+            f"{profile}:" if profile else "", getattr(platform, "value", platform), exc)
+        return None
+
+
 def _update_output_tail(output: str, limit: int) -> str:
     """Last ``limit`` chars of an update log, prefixed with an ellipsis when cut."""
     return output if len(output) <= limit else "…" + output[-limit:]
@@ -786,12 +811,11 @@ class GatewayNotificationsMixin:
 
     def _home_channel_transports(self):
         """Yield ``(platform, platform_cfg, home, transport)`` for every home channel with a live transport."""
-        from gateway.delivery import resolve_delivery_transport
         for platform, platform_cfg in self.config.platforms.items():
             home = platform_cfg.home_channel
             if not home or not home.chat_id:
                 continue
-            transport = resolve_delivery_transport(platform, self.config, self.adapters)
+            transport = _safe_delivery_transport(platform, self.config, self.adapters)
             if transport is None:
                 continue
             yield platform, platform_cfg, home, transport
@@ -813,7 +837,6 @@ class GatewayNotificationsMixin:
     def _served_home_channel_transports(self):
         """``(profile, platform, platform_cfg, home, transport)`` for every served profile's home
         channel with a live transport — the launch profile's (``profile`` ``None``) first."""
-        from gateway.delivery import resolve_delivery_transport
         for platform, platform_cfg, home, transport in self._home_channel_transports():
             yield None, platform, platform_cfg, home, transport
         for profile, profile_cfg in (getattr(self, "_profile_configs", None) or {}).items():
@@ -822,7 +845,7 @@ class GatewayNotificationsMixin:
                 home = platform_cfg.home_channel
                 if not home or not home.chat_id:
                     continue
-                transport = resolve_delivery_transport(platform, profile_cfg, adapters)
+                transport = _safe_delivery_transport(platform, profile_cfg, adapters, profile=profile)
                 if transport is None:
                     continue
                 yield profile, platform, platform_cfg, home, transport
@@ -917,8 +940,9 @@ class GatewayNotificationsMixin:
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify EVERY served profile's configured home channels that the gateway is back online.
 
-        Best-effort, once per (profile, platform) home channel — one host process serves them all,
-        so a notice restricted to the launch profile leaves every other profile's channel silent.
+        Best-effort, once per home CHAT — several served profiles can share one chat (a single
+        Telegram group for the whole host), and one host process restarting once owes that chat
+        one notice. Accounting stays per profile so the marker's owed set still discharges.
         ``skip_targets`` lets startup avoid duplicate messages when a more specific restart
         notification is queued for the same chat.
         """
@@ -928,7 +952,14 @@ class GatewayNotificationsMixin:
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"
-        for profile, platform, platform_cfg, home, transport in self._served_home_channel_transports():
+        targets = list(self._served_home_channel_transports())
+        # A chat already notified for ANOTHER profile is not notified again.
+        notified_chats = {
+            _delivery_target_key(platform.value, home.chat_id, home.thread_id)
+            for profile, platform, _cfg, home, _transport in targets
+            if _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id) in skipped
+        }
+        for profile, platform, platform_cfg, home, transport in targets:
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
@@ -938,9 +969,14 @@ class GatewayNotificationsMixin:
             target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)
             if target in skipped or target in delivered:
                 continue
+            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id)
+            if chat in notified_chats:
+                delivered.add(target)
+                continue
             if await self._send_home_channel_message(
                 platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
             ):
+                notified_chats.add(chat)
                 delivered.add(target)
                 logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
         return delivered

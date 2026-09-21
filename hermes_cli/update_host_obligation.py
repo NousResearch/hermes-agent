@@ -205,7 +205,9 @@ def collapse_units_to_host_processes(
     for unit in units:
         try:
             pid = int(main_pid(unit) or 0)
-        except (TypeError, ValueError):
+        except Exception:
+            # Identity that cannot be proved keeps its own restart; a probe failure of any kind
+            # must never abort the whole pass.
             pid = 0
         if pid <= 0:
             restart.append(unit)

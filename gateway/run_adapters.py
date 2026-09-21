@@ -898,6 +898,13 @@ class GatewayAdapterLifecycleMixin:
         # would park a transiently-failed profile before the first watcher tick can retry it.
         for profile_name in transient_failed:
             self._served_profile_signatures.pop(profile_name, None)
+        # Cached configs follow the served set: a profile that failed to start (or stopped being
+        # served) keeps no home channel in the host-wide notice fan-out, where it would be owed a
+        # notice no transport can deliver and ``.restart_pending.json`` would never be unlinked.
+        configs = getattr(self, "_profile_configs", None)
+        if configs is not None:
+            for profile_name in [p for p in configs if p not in self._served_profile_signatures]:
+                configs.pop(profile_name, None)
         self._restore_secondary_completion_ledgers(profile_homes)
         return connected
 

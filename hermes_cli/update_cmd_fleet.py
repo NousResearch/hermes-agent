@@ -56,20 +56,63 @@ def _fleet_restart_pending_marker_path() -> Path:
     return get_hermes_home() / _FLEET_RESTART_PENDING_NAME
 
 
+def _write_legacy_fleet_restart_pending_marker(
+    *, expected_sha: str = "", runtimes: list[dict] | None = None
+) -> bool:
+    """Arm the LEGACY per-``HERMES_HOME`` marker. True when written. Never raises.
+
+    Fallback only: ``$HERMES_HOME`` is writable by construction (the updater already writes its
+    receipts there), so it still carries the obligation when the host state dir cannot.
+    """
+    path = _fleet_restart_pending_marker_path()
+    try:
+        lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
+        if expected_sha:
+            lines.append(f"expected_sha={expected_sha}")
+        if runtimes is not None:
+            lines.append("inventory=" + json.dumps({"version": 1, "runtimes": runtimes}))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return True
+    except OSError as exc:
+        logger.debug("Could not write legacy fleet-restart-pending marker: %s", exc)
+        return False
+
+
 def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: list[dict] | None = None) -> None:
-    """Arm the HOST pull→restart obligation. Never raises."""
+    """Arm the HOST pull→restart obligation. Never raises.
+
+    An unwritable host state dir (``HERMES_GATEWAY_LOCK_DIR`` on a read-only mount, a container
+    UID that does not own ``$HOME``) must never disarm the obligation: an update interrupted
+    after this point would then leave stale code running with no warning and no catch-up restart
+    (#117275). The legacy per-home marker — which every reader here still honours — carries it
+    instead, and a host that can write neither says so out loud.
+    """
     if runtimes == []:
         # An explicit empty inventory owes no restart (e.g. Desktop-hosted `serve` with no
         # gateway services). Arming the marker here leaves a breadcrumb nothing can discharge:
         # a no-gateway host would then fail every later ``hermes update`` (#115311).
         return
     from hermes_cli.update_cmd import _m
-    from hermes_cli.update_host_obligation import write_host_obligation
+    from hermes_cli.update_host_obligation import host_obligation_path, write_host_obligation
     if _m()._pytest_owns_live_checkout(_fleet_restart_pending_marker_path().parent):
         logger.debug("Skipping fleet-restart-pending obligation under pytest (live checkout)")
         return
-    write_host_obligation(
-        expected_sha=expected_sha, runtimes=runtimes, profile=_current_profile_name())
+    if write_host_obligation(
+            expected_sha=expected_sha, runtimes=runtimes, profile=_current_profile_name()):
+        return
+    if _write_legacy_fleet_restart_pending_marker(expected_sha=expected_sha, runtimes=runtimes):
+        logger.warning(
+            "Host update-restart obligation (%s) is unwritable; armed the per-home marker %s instead.",
+            host_obligation_path(), _fleet_restart_pending_marker_path())
+        return
+    logger.error(
+        "Could not arm the update-restart obligation in %s or %s; an interrupted update will not warn.",
+        host_obligation_path(), _fleet_restart_pending_marker_path())
+    print(
+        "  ⚠ Could not record the pending gateway-restart obligation (state dir not writable) — "
+        "restart gateways with `hermes gateway restart` if this update is interrupted.",
+        file=sys.stderr,
+    )
 
 
 def _current_profile_name() -> str:
@@ -104,10 +147,14 @@ def _obligation_fields() -> dict[str, str] | None:
 
     ``None`` means nothing armed OR a malformed record; both must leave the obligation standing.
     """
-    from hermes_cli.update_host_obligation import obligation_fields
+    from hermes_cli.update_host_obligation import host_obligation_present, obligation_fields
     fields = obligation_fields()
     if fields is not None:
         return fields
+    if host_obligation_present():
+        # The record exists but its terms are unknown (corrupt, or a NEWER CLI's version). An
+        # unrelated legacy marker's inventory cannot discharge terms nobody can read: fail closed.
+        return None
     try:
         text = _fleet_restart_pending_marker_path().read_text(encoding="utf-8")
     except (OSError, UnicodeError):
@@ -566,6 +613,29 @@ def _live_fleet_current_rows() -> list[dict] | None:
     return None
 
 
+def _restart_identity_sha() -> str:
+    """The SHA a completed host restart is stamped with; ``""`` when nothing names the code.
+
+    ``_current_checkout_sha()`` is ``None`` on every non-git install (zip, pip, Docker), and an
+    empty stamp can never match, so the per-host restart-once guard would be inert exactly on the
+    installs it exists for: each profile's ``hermes update`` would re-kill the one shared
+    multiplexer. The obligation's own ``expected_sha`` — else the receipt's post-update identity —
+    names the same pulled code.
+    """
+    sha = _current_checkout_sha()
+    if sha:
+        return str(sha)
+    sha = ((_obligation_fields() or {}).get("expected_sha") or "").strip()
+    if sha:
+        return sha
+    with suppress(Exception):
+        from hermes_cli.update_receipt import read_latest_receipt
+        post_update = (read_latest_receipt() or {}).get("post_update")
+        if isinstance(post_update, dict):
+            return str(post_update.get("sha") or "")
+    return ""
+
+
 def _run_pending_fleet_restart() -> bool:
     """Catch-up restart for gateways left on pre-update code. Never raises.
 
@@ -579,7 +649,7 @@ def _run_pending_fleet_restart() -> bool:
     """
     from hermes_cli.update_cmd import _m
     from hermes_cli.update_host_obligation import host_restart_already_completed, mark_host_restart_completed
-    checkout_sha = _current_checkout_sha()
+    checkout_sha = _restart_identity_sha()
     if host_restart_already_completed(checkout_sha):
         print("  ✓ This host's gateway was already restarted for this update — not restarting it again.")
         return True

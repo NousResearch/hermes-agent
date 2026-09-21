@@ -1878,6 +1878,19 @@ def resolve_model_threshold(
     return float(model_thresholds[best[1]]) if best else default
 
 
+def _has_model_threshold_override(
+    model: str, model_thresholds: dict[str, float] | None, provider: str = "",
+) -> bool:
+    """Whether ``model_thresholds`` contains an override for this runtime."""
+    if not model_thresholds or not model:
+        return False
+    provider = (provider or "").strip().lower()
+    return any(
+        _model_threshold_key_rank(key, model, provider) is not None
+        for key in model_thresholds
+    )
+
+
 def _memory_provider_section(memory_context: str) -> str:
     """Prompt block carrying the sanitized memory-provider JSON, or "" when empty."""
     sanitized = sanitize_memory_context(memory_context)
@@ -2502,15 +2515,20 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         base_percent = resolve_model_threshold(model, self.model_thresholds, self._config_threshold_percent, provider)
         effective_percent = self._effective_threshold_percent(context_length, base_percent)
         threshold = self._compute_threshold_tokens(context_length, effective_percent, self.max_tokens)
-        cap = self._effective_threshold_cap(context_length)
+        cap = self._effective_threshold_cap(context_length, model, provider)
         if cap is not None:
             threshold = min(threshold, cap)
         return base_percent, effective_percent, threshold
 
-    def _effective_threshold_cap(self, context_length: int) -> int | None:
-        """The configured ``threshold_tokens`` cap clamped to the window; None when no cap is configured."""
+    def _effective_threshold_cap(self, context_length: int, model: str, provider: str) -> int | None:
+        """The ``threshold_tokens`` cap clamped to the window; None when no cap applies. The shipped
+        default yields to a user-authored per-model ratio; an explicit cap is absolute."""
         cap = self.threshold_tokens_cap
-        return min(cap, context_length) if cap is not None and cap > 0 else None
+        if cap is None or cap <= 0:
+            return None
+        if self.threshold_tokens_cap_is_default and _has_model_threshold_override(model, self.model_thresholds, provider):
+            return None
+        return min(cap, context_length)
 
     def preview_threshold_tokens(self, model: str, context_length: int, provider: str = "") -> int:
         """The trigger ``update_model`` would install, without mutating state."""
@@ -2586,7 +2604,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _apply_threshold_tokens_cap(self) -> None:
         """Clamp threshold_tokens to the configured cap (itself clamped to the context length) and to the
         auxiliary summariser's window when the feasibility probe installed one."""
-        cap = self._effective_threshold_cap(self.context_length)
+        cap = self._effective_threshold_cap(self.context_length, self.model, self.provider)
         if cap is not None and cap < self.threshold_tokens:
             self.threshold_tokens = cap
         # Durable, so every recomputation honours it rather than a one-time assignment (#114707).
@@ -2644,6 +2662,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "",
         api_mode: str = "", abort_on_summary_failure: bool = False, max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
+        threshold_tokens_cap_is_default: bool = False,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
@@ -2662,6 +2681,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.threshold_percent = self._base_threshold_percent
         # Effective trigger = min(ratio threshold, cap); re-applied in update_model().
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(threshold_tokens_cap)
+        # The shipped safety cap yields to a user-authored per-model ratio. A user-authored
+        # threshold_tokens remains an absolute cap and keeps the historical lower-of rule.
+        self.threshold_tokens_cap_is_default = bool(threshold_tokens_cap_is_default)
         # Aux summariser window installed by the feasibility probe; None until it runs.
         self._aux_context_ceiling: int | None = None
         self.protect_first_n, self.protect_last_n = protect_first_n, protect_last_n

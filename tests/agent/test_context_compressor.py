@@ -2373,6 +2373,26 @@ class TestThresholdTokensCap:
         comp.update_model("model-b", context_length=2_000_000)
         assert comp.threshold_tokens == default_cap
 
+    @pytest.mark.parametrize(
+        ("cap_is_default", "expected"),
+        [(True, 300_000), (False, 256_000)],
+    )
+    def test_model_ratio_outranks_only_implicit_default_cap(self, cap_is_default, expected):
+        """A model-specific ratio is user intent; an explicit absolute cap remains authoritative."""
+        comp = ContextCompressor(
+            "deepseek-flash",
+            threshold_percent=0.50,
+            model_thresholds={"deepseek-flash": 0.30},
+            threshold_tokens_cap=256_000,
+            threshold_tokens_cap_is_default=cap_is_default,
+            config_context_length=1_000_000,
+            quiet_mode=True,
+        )
+
+        assert comp.threshold_tokens == expected
+        comp.update_model("unmatched-model", context_length=1_000_000)
+        assert comp.threshold_tokens == 256_000
+
 
 
 class TestTruncateToolCallArgsJson:

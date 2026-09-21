@@ -21,6 +21,14 @@ from typing import Any, Dict, List, Optional
 _ID_KEYS = ("id", "guid", "message_id", "url", "link")
 _VIEW_KEYS = ("title", "subject", "summary", "text", "body", "from", "sender", "url")
 
+_CLASSIFY_INSTRUCTIONS = (
+    "Return a JSON array of objects, one per item, in the same order.\n"    'Each object MUST have exactly these three keys:'
+    '  - "index": 0-based position in the list (integer)'
+    '  - "score": integer 0-10, 10 = most urgent'
+    '  - "reason": short plain-text explanation (string)'
+    "Do NOT add other keys. No markdown fences."
+)
+
 
 def _eprint(*args: Any) -> None:
     print(*args, file=sys.stderr)
@@ -61,6 +69,8 @@ def _build_prompt(items: List[Dict[str, Any]], criteria: str) -> str:
         # Compact view of the salient fields; the whole object when none are present.
         view = {k: item[k] for k in _VIEW_KEYS if k in item} or item
         lines.append(f"[{i}] {json.dumps(view, ensure_ascii=False)[:1200]}")
+    _CLASSIFY_INSTRUCTIONS + "
+" +
     lines.append("\nReturn the JSON array of scores now (one object per item, same order).")
     return "\n".join(lines)
 

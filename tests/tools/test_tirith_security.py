@@ -516,6 +516,84 @@ class TestInstallArchiveMemberValidation:
     @patch("tools.tirith_security._verify_checksum", return_value=True)
     @patch("tools.tirith_security.shutil.which", return_value=None)
     @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
+    @patch("tools.tirith_security.subprocess.run")
+    def test_install_publishes_binary_after_version_probe(self, mock_run, mock_target, mock_which,
+                                                          mock_checksum, tmp_path, monkeypatch):
+        """A release candidate is published only after its version command succeeds."""
+        del mock_target, mock_which, mock_checksum
+        from tools.tirith_security import _install_tirith
+
+        payload = b"#!/bin/sh\nexit 0\n"
+        member = tarfile.TarInfo("bin/tirith")
+        member.mode = 0o755
+        member.size = len(payload)
+        archive, checksums = self._write_archive(tmp_path, member, payload)
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        mock_run.return_value = _mock_run(0, "tirith 1.0.0")
+
+        with patch("tools.tirith_security._download_file",
+                   side_effect=self._download_side_effect(archive, checksums)):
+            path, reason = _install_tirith(log_failures=False)
+
+        assert (path, reason) == (str(hermes_home / "bin" / "tirith"), "")
+        mock_run.assert_called_once()
+
+    @patch("tools.tirith_security._verify_checksum", return_value=True)
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
+    @patch("tools.tirith_security.subprocess.run")
+    def test_install_rejects_loader_incompatible_binary(self, mock_run, mock_target, mock_which,
+                                                        mock_checksum, tmp_path, monkeypatch):
+        """A dynamic-loader failure must not leave an unusable binary in HERMES_HOME/bin."""
+        del mock_target, mock_which, mock_checksum
+        from tools.tirith_security import _install_tirith
+
+        payload = b"#!/bin/sh\nexit 0\n"
+        member = tarfile.TarInfo("bin/tirith")
+        member.mode = 0o755
+        member.size = len(payload)
+        archive, checksums = self._write_archive(tmp_path, member, payload)
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        mock_run.side_effect = OSError("GLIBC_2.34 not found")
+
+        with patch("tools.tirith_security._download_file",
+                   side_effect=self._download_side_effect(archive, checksums)):
+            path, reason = _install_tirith(log_failures=False)
+
+        assert (path, reason) == (None, "binary_probe_failed")
+        assert not os.path.exists(hermes_home / "bin" / "tirith")
+
+    @patch("tools.tirith_security._verify_checksum", return_value=True)
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
+    @patch("tools.tirith_security.subprocess.run")
+    def test_install_rejects_binary_with_failing_version_probe(self, mock_run, mock_target, mock_which,
+                                                               mock_checksum, tmp_path, monkeypatch):
+        """A nonzero version command must not publish the extracted candidate."""
+        del mock_target, mock_which, mock_checksum
+        from tools.tirith_security import _install_tirith
+
+        payload = b"#!/bin/sh\nexit 0\n"
+        member = tarfile.TarInfo("bin/tirith")
+        member.mode = 0o755
+        member.size = len(payload)
+        archive, checksums = self._write_archive(tmp_path, member, payload)
+        hermes_home = tmp_path / "hermes-home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        mock_run.return_value = _mock_run(1, "", "initialization failed")
+
+        with patch("tools.tirith_security._download_file",
+                   side_effect=self._download_side_effect(archive, checksums)):
+            path, reason = _install_tirith(log_failures=False)
+
+        assert (path, reason) == (None, "binary_probe_failed")
+        assert not os.path.exists(hermes_home / "bin" / "tirith")
+
+    @patch("tools.tirith_security._verify_checksum", return_value=True)
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin")
     def test_install_rejects_non_regular_tirith_member(self, mock_target, mock_which,
                                                        mock_checksum, tmp_path, monkeypatch):
         """Symlink or hardlink tar members must not be installed as tirith."""

@@ -1761,6 +1761,17 @@ def task_graph_context(conn: sqlite3.Connection, task_id: str) -> dict:
 # --- Comments & events ---
 
 def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) -> int:
+    # The column is TEXT and every reader of it is str-based, but ``sqlite3``
+    # binds ``bytes`` as BLOB and a BLOB cell comes back as ``bytes`` from a raw
+    # cursor no matter which ``text_factory`` is installed. A bytes author
+    # crashes the event payload below (``json.dumps``), and a bytes body stores a
+    # type every reader has to tolerate. This is the only writer of
+    # ``task_comments``, so the column is normalised once here instead of being
+    # patched around by each reader.
+    if isinstance(body, (bytes, bytearray, memoryview)):
+        body = bytes(body).decode("utf-8", errors="replace")
+    if isinstance(author, (bytes, bytearray, memoryview)):
+        author = bytes(author).decode("utf-8", errors="replace")
     if not body or not body.strip():
         raise ValueError("comment body is required")
     if not author or not author.strip():

@@ -247,7 +247,7 @@ function IdleView({
             )}
           </div>
         }
-        body={u.connectionRetry}
+        body={status.error === 'git-unusable' ? u.gitUnusable : u.connectionRetry}
         detail={status.message}
         icon={<ErrorIcon />}
         title={u.checkFailedTitle}

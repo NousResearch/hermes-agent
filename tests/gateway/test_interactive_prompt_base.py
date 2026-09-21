@@ -39,6 +39,16 @@ class TestTruncatePreview:
     def test_exact_budget_unchanged(self):
         assert BasePlatformAdapter._truncate_preview("x" * 10, 10) == "x" * 10
 
+    def test_ea_fit_measures_the_escaped_rendering(self):
+        """An escaping platform's budget applies to the wire payload, never to raw chars."""
+        class _Html(_DefaultAdapter):
+            def _ea_escape(self, text):
+                return _html.escape(text)
+
+        adapter = _bare(_Html)
+        assert adapter._ea_fit("&" * 100, 20) == "&&&&..."  # 4 x "&amp;" == 20 escaped chars
+        assert adapter._ea_fit("&" * 4, 20) == "&" * 4  # fits once escaped → untouched
+
 
 class TestFormatExecApproval:
     def test_default_template(self, monkeypatch):

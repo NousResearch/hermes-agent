@@ -262,10 +262,16 @@ function ProfileItem({
   label: string
   name: string
 }) {
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
 
   return (
-    <DropdownMenuRadioItem className="min-w-0" onPointerEnter={startPrewarm} onPointerLeave={cancelPrewarm} value={name}>
+    <DropdownMenuRadioItem
+      className="min-w-0"
+      onPointerEnter={startPrewarm}
+      onPointerLeave={cancelPrewarm}
+      onPointerMove={notePointerMove}
+      value={name}
+    >
       <span className="flex min-w-0 items-center gap-1.5">
         <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
         <span className="truncate">{label}</span>

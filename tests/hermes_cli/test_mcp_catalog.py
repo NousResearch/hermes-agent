@@ -222,7 +222,8 @@ class TestManifestParsing:
                 "type": "api_key",
                 "env": [
                     {"name": "DEMO_KEY", "prompt": "API key", "secret": True},
-                    {"name": "DEMO_URL", "prompt": "Base URL", "secret": False, "required": False},
+                    {"name": "DEMO_URL", "prompt": "Base URL", "secret": False,
+                     "required": False, "default": "https://demo.example"},
                 ],
             }
         )
@@ -236,6 +237,7 @@ class TestManifestParsing:
         assert e.auth.env[0].secret is True
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
+        assert e.auth.env[1].default == "https://demo.example"
 
     def test_http_api_key_builds_bearer_headers_template(self, catalog_dir):
         body = _basic_manifest(
@@ -588,6 +590,47 @@ class TestInstall:
         assert "${MCP_DEMO_API_KEY}" in raw
         assert "secret-val" not in raw
 
+    def test_install_oauth_preregistered_client_writes_oauth_block(self, catalog_dir, monkeypatch):
+        """Vendors without DCR: ``auth.oauth`` lands verbatim in ``mcp_servers.<name>.oauth`` while
+        the credentials it references are prompted into .env — config.yaml stays secret-free."""
+        auth = {
+            "type": "oauth",
+            "env": [
+                {"name": "DEMO_CLIENT_ID", "prompt": "id", "secret": False},
+                {"name": "DEMO_CLIENT_SECRET", "prompt": "secret"},
+            ],
+            "oauth": {
+                "client_id": "${DEMO_CLIENT_ID}", "client_secret": "${DEMO_CLIENT_SECRET}",
+                "redirect_host": "localhost", "redirect_port": 27890,
+            },
+        }
+        _write_manifest(catalog_dir, "demo", _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/v2/mcp"}, auth=auth))
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_config_path, get_env_value, load_config
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda prompt, **kw: f"val-for-{prompt}")
+        mcp_catalog.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["auth"] == "oauth"
+        assert server["oauth"] == {
+            "client_id": "val-for-id", "client_secret": "val-for-secret",
+            "redirect_host": "localhost", "redirect_port": 27890,
+        }
+        assert get_env_value("DEMO_CLIENT_SECRET") == "val-for-secret"
+        raw = get_config_path().read_text(encoding="utf-8")
+        assert "${DEMO_CLIENT_SECRET}" in raw and "val-for-secret" not in raw
+
+        # A ``${VAR}`` the manifest never declares would reach the token endpoint as a literal
+        # placeholder (invalid_client): rejected at parse time, like the api_key header contract.
+        auth["oauth"]["client_id"] = "${UNDECLARED_ID}"
+        path = _write_manifest(catalog_dir, "demo2", _basic_manifest(
+            "demo2", transport={"type": "http", "url": "https://mcp.example.com/v2/mcp"}, auth=auth))
+        with pytest.raises(mcp_catalog.CatalogError, match="UNDECLARED_ID"):
+            mcp_catalog._parse_manifest(path)
+
 
 
 
@@ -888,6 +931,30 @@ class TestToolsConfigIncludeMode:
 
 
 class TestShippedCatalog:
+    def test_asana_catalog_targets_v2_with_preregistered_client(self, monkeypatch):
+        """Asana's V1 ``/sse`` server is retired and V2 has no DCR: the shipped entry must install
+        as the V2 Streamable HTTP URL plus a pre-registered client whose credentials are ``${VAR}``
+        references the install path actually prompts for (never literal values)."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _build_server_config, _catalog_root, _parse_manifest
+
+        root = _catalog_root()
+        if not root.exists():
+            pytest.skip("optional-mcps/ not present in this checkout")
+        for m in root.glob("*/manifest.yaml"):
+            assert (_parse_manifest(m).transport.url or "") != "https://mcp.asana.com/sse", m
+
+        entry = _parse_manifest(root / "asana" / "manifest.yaml")
+        cfg = _build_server_config(entry, None)
+        assert cfg["url"] == "https://mcp.asana.com/v2/mcp"
+        assert cfg["auth"] == "oauth"
+        declared = {spec.name for spec in entry.auth.env}
+        for key in ("client_id", "client_secret"):
+            ref = re.fullmatch(r"\$\{([A-Z_]+)\}", cfg["oauth"][key])
+            assert ref and ref.group(1) in declared, (key, cfg["oauth"][key])
+        # Asana matches the registered redirect URL exactly; the callback must be pinned.
+        assert cfg["oauth"]["redirect_host"] and cfg["oauth"]["redirect_port"]
+
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.
 

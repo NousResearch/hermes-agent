@@ -100,8 +100,27 @@ function tailStateFromPage(page: TailPage, profile?: TranscriptProfileScope): Tr
   }
 }
 
+function sameTailState(a: TranscriptTailState, b: TranscriptTailState): boolean {
+  return (
+    a.nextOffset === b.nextOffset &&
+    a.possiblyTruncated === b.possiblyTruncated &&
+    JSON.stringify(a.profile ?? null) === JSON.stringify(b.profile ?? null)
+  )
+}
+
 function setTranscriptTailEntry(key: string, state: TranscriptTailState): void {
   const current = $transcriptTailBySessionId.get()
+
+  // Heartbeats re-record identical entries; a needless .set() re-renders the
+  // whole chat tree through the tail atom (#113842).
+  if (key in current && sameTailState(current[key], state)) {
+    // Still a use of the entry: bump it to the MRU end so the constantly
+    // re-read active session is not the next eviction candidate.
+    transcriptTailOrder = [...transcriptTailOrder.filter(candidate => candidate !== key), key]
+
+    return
+  }
+
   const existing = new Set(Object.keys(current))
   transcriptTailOrder = transcriptTailOrder.filter(candidate => candidate !== key && existing.has(candidate))
   transcriptTailOrder.push(key)

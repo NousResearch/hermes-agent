@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway, main, update_cmd_fleet as fleet
+from hermes_cli import gateway, main, update_cmd_fleet as fleet, update_receipt
 
 
 @pytest.mark.linux_only
-@pytest.mark.parametrize("failure", ["listing", "timeout", "missing", "restart", "inactive", "running", None])
+@pytest.mark.parametrize("failure", ["listing", "timeout", "missing", "restart", "inactive", "running", "missing-owned", None])
 def test_pending_marker_requires_complete_systemd_recovery(monkeypatch, tmp_path, failure):
     stopped = []
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda **kw: [123] if failure == "running" and not stopped else [])
@@ -31,7 +31,7 @@ def test_pending_marker_requires_complete_systemd_recovery(monkeypatch, tmp_path
                 raise FileNotFoundError("systemctl")
             return SimpleNamespace(returncode=int(failure == "listing"), stdout=(
                 "hermes-gateway-one.service loaded active running\n"
-                "hermes-gateway-two.service loaded failed failed\n"), stderr="")
+                + ("" if failure == "missing-owned" else "hermes-gateway-two.service loaded failed failed\n")), stderr="")
         bad = cmd[-1] == "hermes-gateway-two"
         if "restart" in cmd:
             recovered.append(cmd[-1])
@@ -42,8 +42,15 @@ def test_pending_marker_requires_complete_systemd_recovery(monkeypatch, tmp_path
         return SimpleNamespace(returncode=0, stdout="0s")
 
     monkeypatch.setattr(fleet, "_systemctl", systemctl)
+    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "pending")
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **kw: [
+        {"profile": name.removeprefix("hermes-gateway-"), "state": "current", "code_sha": "pending"}
+        for name in recovered
+    ])
+    fleet._write_fleet_restart_pending_marker(expected_sha="pending", runtimes=[
+        {"kind": "gateway", "profile": profile} for profile in ("one", "two")
+    ])
     marker = fleet._fleet_restart_pending_marker_path()
-    marker.write_text("expected_sha=pending\n")
     if failure not in (None, "running"):
         with pytest.raises(SystemExit, match="1"):
             fleet._apply_pending_fleet_restart_catchup()

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import subprocess
 import threading
@@ -24,6 +25,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -41,6 +43,10 @@ _OAUTH_TOKEN_URLS = [
 _OAUTH_TOKEN_USER_AGENT = "axios/1.7.9"
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+# Claude Code's macOS Keychain entry (generic password). Hermes reads it
+# (_read_claude_code_credentials_from_keychain) and, since #98334, mirrors the
+# refresh write into it so the two stores stop diverging on a single-use rotation.
+_CLAUDE_CODE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -59,6 +65,29 @@ def _is_oauth_token(key: str) -> bool:
     if not key or key.startswith("sk-ant-api"):
         return False
     return key.startswith(("sk-ant-", "eyJ", "cc-"))
+
+
+def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Optional[str] = None) -> bool:
+    """Claude Code OAuth identity for one Anthropic Messages route (#114967).
+
+    The route qualifies when it is the ``anthropic`` provider itself or its host is exactly
+    ``api.anthropic.com`` (an empty base_url is the native default) — a named custom provider
+    pointed at the native host carries the same identity, while third-party Anthropic-protocol
+    endpoints never do (Claude Code headers and tool-name transforms 401/403 there). ``credential``
+    is a static string or a ``key_cmd``/per-request callable token source; a callable is
+    materialized once for the shape test (``CommandTokenSource`` caches, so this never double-mints)
+    and a mint failure classifies as non-OAuth — the wire client surfaces the real error.
+    """
+    text = str(base_url or "").strip()
+    native_host = not text or (urlparse(text).hostname or "").lower().rstrip(".") == "api.anthropic.com"
+    if not (native_host or (provider or "").strip().lower() == "anthropic"):
+        return False
+    if callable(credential) and not isinstance(credential, str):
+        try:
+            credential = credential()
+        except Exception:  # noqa: BLE001 — classification must never raise
+            return False
+    return isinstance(credential, str) and _is_oauth_token(credential)
 
 
 class CredentialPersistError(RuntimeError):
@@ -100,6 +129,9 @@ def _commit_private_json(path: Path, payload: Any, what: str) -> None:
 # reached its store. Two scopes: process-local (OrderedDict) and a durable sidecar next to the shared singleton
 # file so OTHER processes fail closed too. Non-reversible digests; never cleared.
 _SPENT_ROTATION_LOCK = threading.Lock()
+# Fingerprints of Claude Code refresh tokens the endpoint rejected terminally: the WARNING fires once per token
+# per process and later attempts skip the POST (a re-login rotates the token, so a new one is tried normally).
+_DEAD_REFRESH_TOKEN_FINGERPRINTS: set = set()
 _SPENT_ROTATION_FINGERPRINTS: "OrderedDict[str, None]" = OrderedDict()
 _SPENT_ROTATION_MAX_TRACKED = 64
 _SPENT_ROTATION_SIDECAR_COMMENT = (
@@ -201,32 +233,112 @@ def _claude_oauth_record(data: Any, source: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
-    """Read the "Claude Code-credentials" macOS Keychain entry (Claude Code >=2.1.114)."""
+_KEYCHAIN_ATTR = r'(?:0x(?P<hex>[0-9A-Fa-f]+)\b.*|"(?P<text>.*)")'
+
+
+def _decode_keychain_attr(match: Optional["re.Match[str]"]) -> str:
+    """``security`` prints an attribute as ``"text"`` when it is plain printable ASCII and as
+    ``0x<HEX>  "<octal-escaped echo>"`` otherwise; the quoted form is NOT escaped (an embedded
+    ``"`` appears raw), so the text group must run to the last quote on the line."""
+    if match is None:
+        return ""
+    if match.group("hex"):
+        try:
+            return bytes.fromhex(match.group("hex")).decode("utf-8")
+        except ValueError:
+            return ""
+    return match.group("text") or ""
+
+
+def _find_claude_code_keychain_item() -> Optional[tuple[str, Dict[str, Any]]]:
+    """``(account, payload)`` of the ``Claude Code-credentials`` login Keychain item, or None.
+
+    One ``find-generic-password -g`` call: attributes on stdout, ``password: …`` on stderr. The
+    account matters because ``add-generic-password -U`` matches on account AND service — writing
+    under another account would create a second item instead of updating the one Claude Code reads.
+    """
     if platform.system() != "Darwin":
         return None
     try:
         result = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-g"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    account = _decode_keychain_attr(re.search(r'^\s*"acct"<blob>=' + _KEYCHAIN_ATTR + r"\s*$", result.stdout, re.M))
+    raw = _decode_keychain_attr(re.search(r"^password: " + _KEYCHAIN_ATTR + r"\s*$", result.stderr, re.M))
+    if not account or not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    return (account, payload) if isinstance(payload, dict) else None
+
+
+def _read_claude_code_keychain_payload() -> Optional[Dict[str, Any]]:
+    """Raw ``{"claudeAiOauth": {...}, ...}`` payload from the macOS Keychain, or None.
+
+    Returns the full entry (not the normalised credential record) so a refresh
+    write can merge the rotated token triple over the existing metadata
+    (``subscriptionType`` / ``rateLimitTier`` / ``scopes``) instead of clobbering it.
+    """
+    if platform.system() != "Darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", _CLAUDE_CODE_KEYCHAIN_SERVICE, "-w"],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5, stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("Keychain: security command not available or timed out")
         return None
     if result.returncode != 0:
-        logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
+        logger.debug("Keychain: no entry found for %r", _CLAUDE_CODE_KEYCHAIN_SERVICE)
         return None
     raw = result.stdout.strip()
+    if not raw:
+        return None
     try:
-        return _claude_oauth_record(json.loads(raw), "macos_keychain") if raw else None
+        payload = json.loads(raw)
     except json.JSONDecodeError:
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _keychain_mirror_command(account: str, payload: Dict[str, Any]) -> tuple[list[str], str]:
+    """``(argv, stdin)`` that updates the Claude Code Keychain item with ``payload``.
+
+    The command line goes to ``security -i`` on stdin, with the secret hex-encoded (``-X``):
+    a bare ``-w`` prompts twice on /dev/tty when a terminal exists (hangs the CLI) and, with
+    no terminal, reads only the first line and stores an EMPTY password when the confirmation
+    read hits EOF — either way the live token must never sit on argv.
+    """
+    def quoted(value: str) -> str:  # the ``security -i`` tokenizer: double quotes, backslash escapes
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8").hex()
+    line = f"add-generic-password -U -a {quoted(account)} -s {quoted(_CLAUDE_CODE_KEYCHAIN_SERVICE)} -X {encoded}\n"
+    return ["security", "-i"], line
+
+
+def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
+    """Read the "Claude Code-credentials" macOS Keychain entry (Claude Code >=2.1.114)."""
+    payload = _read_claude_code_keychain_payload()
+    return _claude_oauth_record(payload, "macos_keychain") if payload else None
 
 
 def claude_code_credentials_path() -> Path:
-    """Claude Code's shared OAuth file; every profile reads/writes this same path."""
-    return Path.home() / ".claude" / ".credentials.json"
+    """Claude Code's shared OAuth file; every profile reads/writes this same path. Honours ``CLAUDE_CONFIG_DIR``
+    like the Claude CLI itself (blank = unset, as in ``hermes_cli.foreign_sessions``). The supported opt-out of
+    borrowing the login is ``auth.adopt_external_logins: false`` in config.yaml."""
+    override = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    root = Path(override).expanduser() if override else Path.home() / ".claude"
+    return root / ".credentials.json"
 
 
 def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
@@ -237,7 +349,13 @@ def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials (Keychain and/or file). When both exist: prefer the only
     non-expired one (Claude Code 2.1.x refreshes one source but not the other), else the later ``expiresAt`` so a
-    refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded."""
+    refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded.
+
+    This is the only reader of the borrowed login, so ``auth.adopt_external_logins: false`` is enforced here:
+    every resolver, pool seed/sync and 401 refresher then sees "no Claude Code login" and never touches the file."""
+    from agent.credential_sources import adopt_external_logins_enabled
+    if not adopt_external_logins_enabled():
+        return None
     kc_creds = _read_claude_code_credentials_from_keychain()
     file_creds = _read_claude_code_credentials_from_file()
     if not (kc_creds and file_creds):
@@ -257,10 +375,47 @@ def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
 # ── OAuth token endpoint ──
 
 
+# OAuth ``error`` codes (RFC 6749 §5.2 + the provider's reuse detection) after which replaying the
+# same refresh token can never succeed; only a fresh login recovers.
+_OAUTH_GRANT_DEAD_CODES = frozenset({"invalid_grant", "invalid_token", "refresh_token_reused"})
+
+
+class AnthropicOAuthError(ValueError):
+    """Token endpoint rejected the request. ``code`` is the OAuth ``error`` field of the response body."""
+
+    def __init__(self, status: int, code: str, description: str, *, what: str) -> None:
+        self.status = status
+        self.code = code
+        detail = f" ({description})" if description else ""
+        super().__init__(f"Anthropic token {what} failed: HTTP {status} {code or 'error'}{detail}")
+
+    @property
+    def relogin_required(self) -> bool:
+        return self.status in (400, 401) and self.code in _OAUTH_GRANT_DEAD_CODES
+
+
+def is_terminal_anthropic_refresh_error(exc: BaseException) -> bool:
+    """True when retrying the same Anthropic refresh token cannot succeed (dead grant)."""
+    return isinstance(exc, AnthropicOAuthError) and exc.relogin_required
+
+
+def _oauth_http_error(exc: Any, *, what: str) -> AnthropicOAuthError:
+    """``urllib.error.HTTPError`` -> structured error carrying the body's OAuth ``error`` code."""
+    code, description = "", ""
+    try:
+        payload = json.loads(exc.read().decode() or "{}")
+        code = str(payload.get("error") or "")
+        description = str(payload.get("error_description") or "")
+    except Exception:
+        pass
+    return AnthropicOAuthError(int(exc.code), code, description, what=what)
+
+
 def _post_oauth_token(
     data: bytes, *, content_type: str, timeout: int, what: str, user_agent: str = _OAUTH_TOKEN_USER_AGENT
 ) -> Dict[str, Any]:
     """POST to the token endpoints in order; raise the last error if all fail."""
+    import urllib.error
     import urllib.request
     last_error = None
     for endpoint in _OAUTH_TOKEN_URLS:
@@ -270,6 +425,11 @@ def _post_oauth_token(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            last_error = _oauth_http_error(exc, what=what)
+            logger.debug("Anthropic token %s failed at %s: %s", what, endpoint, last_error)
+            if last_error.relogin_required:
+                break  # a dead grant is dead at every endpoint; do not replay it
         except Exception as exc:
             last_error = exc
             logger.debug("Anthropic token %s failed at %s: %s", what, endpoint, exc)
@@ -326,22 +486,35 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
             # Another process may have spent this token and lost the commit; its sidecar verdict is authoritative.
             if is_rotation_consumed_uncommitted(refresh_token, source_path=cred_path):
                 logger.debug("Refresh token was already consumed by an uncommitted rotation "
-                             "- refusing to replay it; re-run 'claude setup-token'")
+                             "- refusing to replay it; run 'hermes auth add anthropic'")
+                return None
+            fingerprint = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()[:32]
+            if fingerprint in _DEAD_REFRESH_TOKEN_FINGERPRINTS:
+                logger.debug("Claude Code refresh token was already rejected as terminally invalid - not replaying it")
                 return None
             try:
                 refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
             except Exception as e:
-                logger.debug("Failed to refresh Claude Code token: %s", e)
+                if is_terminal_anthropic_refresh_error(e):
+                    _DEAD_REFRESH_TOKEN_FINGERPRINTS.add(fingerprint)
+                    logger.warning(
+                        "Claude Code OAuth refresh token is terminally invalid (%s); Hermes cannot use this "
+                        "login. Run 'hermes auth add anthropic' to give Hermes its own login.", e)
+                else:
+                    logger.debug("Failed to refresh Claude Code token: %s", e)
                 return None
             # The POST spent ``refresh_token``; this write is the commit step. On failure, fail closed and
             # mark the pre-rotation pair as spent.
             try:
-                _write_claude_code_credentials(refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"])
+                _write_claude_code_credentials(
+                    refreshed["access_token"], refreshed["refresh_token"], refreshed["expires_at_ms"],
+                    spent_refresh_token=refresh_token,
+                )
             except Exception as e:
                 logger.error(
                     "Anthropic OAuth refresh rotated the single-use token but could not "
                     "commit it to %s (%s) — treating the refresh as failed; "
-                    "re-run 'claude setup-token' to reauthenticate",
+                    "run 'hermes auth add anthropic' to give Hermes its own login",
                     cred_path, e,
                 )
                 mark_rotation_consumed_uncommitted(
@@ -358,7 +531,8 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
 
 
 def _write_claude_code_credentials(
-    access_token: str, refresh_token: str, expires_at_ms: int, *, scopes: Optional[list] = None
+    access_token: str, refresh_token: str, expires_at_ms: int, *, scopes: Optional[list] = None,
+    spent_refresh_token: str = "",
 ) -> None:
     """Commit refreshed credentials to ~/.claude/.credentials.json; ``CredentialPersistError`` on any failure (a
     corrupt existing file included). *scopes* (or the previously stored scopes) are persisted because Claude Code
@@ -376,6 +550,57 @@ def _write_claude_code_credentials(
         oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
     existing["claudeAiOauth"] = oauth_data
     _commit_private_json(cred_path, existing, "credentials")
+    _mirror_claude_code_credentials_to_keychain(
+        access_token, refresh_token, expires_at_ms, spent_refresh_token=spent_refresh_token)
+
+
+def _merge_keychain_credential_payload(
+    existing_payload: Dict[str, Any], access_token: str, refresh_token: str, expires_at_ms: int
+) -> Dict[str, Any]:
+    """Rotate the ``claudeAiOauth`` token triple over the existing Keychain payload,
+    preserving its metadata (``subscriptionType`` / ``rateLimitTier`` / ``scopes``).
+
+    Pure and host-agnostic so the merge semantics are unit-testable without a Keychain.
+    """
+    merged = dict(existing_payload)
+    oauth = dict(existing_payload.get("claudeAiOauth") or {})
+    oauth.update({"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms})
+    merged["claudeAiOauth"] = oauth
+    return merged
+
+
+def _mirror_claude_code_credentials_to_keychain(
+    access_token: str, refresh_token: str, expires_at_ms: int, *, spent_refresh_token: str
+) -> None:
+    """After a Hermes refresh, write the rotated pair into the Claude Code Keychain item too (#98334).
+
+    Claude Code on macOS reads the login Keychain first. Refresh tokens are single-use, so a refresh
+    that only updates the file leaves the Keychain holding a spent token and Claude Code logs itself
+    out. Only the item that held the pair we just spent is updated — a different pair there means a
+    different login (``CLAUDE_CONFIG_DIR``) or a rotation Claude Code already made, and clobbering it
+    would be the bug in the other direction. Best-effort: never raises, never creates an item.
+    """
+    if platform.system() != "Darwin":
+        return
+    try:
+        item = _find_claude_code_keychain_item()
+        if item is None:
+            return
+        account, existing = item
+        oauth = existing.get("claudeAiOauth")
+        if not isinstance(oauth, dict) or oauth.get("refreshToken") != spent_refresh_token:
+            logger.debug("Keychain mirror skipped: item does not hold the pair that was just rotated")
+            return
+        argv, line = _keychain_mirror_command(
+            account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
+        result = subprocess.run(
+            argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        )
+    except Exception as e:  # the file commit already succeeded; a Keychain hiccup must not fail the rotation
+        logger.debug("Keychain mirror skipped (%s)", e)
+        return
+    if result.returncode != 0:
+        logger.debug("Keychain mirror failed (rc=%s): %s", result.returncode, (result.stderr or "").strip()[:200])
 
 
 # ── Resolution ──
@@ -396,7 +621,7 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
     logger.debug("Claude Code credentials expired — attempting refresh")
     refreshed = _refresh_oauth_token(creds)
     if not refreshed:
-        logger.debug("Token refresh failed — re-run 'claude setup-token' to reauthenticate")
+        logger.debug("Token refresh failed — run 'hermes auth add anthropic' to give Hermes its own login")
     return refreshed or None
 
 

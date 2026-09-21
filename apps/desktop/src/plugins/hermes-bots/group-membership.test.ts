@@ -370,3 +370,58 @@ describe('legacy display-name descriptors', () => {
     expect(modules.membership.groupChatMemberBots('room', [TAIYI], {})[0]).toBe(TAIYI)
   })
 })
+
+describe('renamed profile descriptors (#110200)', () => {
+  const RENAMED: RosterRow = {
+    connectionId: 'local',
+    handle: 'niezalezny',
+    name: 'niezalezny',
+    previous_names: ['niezale-ny'],
+    remoteSource: false
+  }
+
+  it('re-seat a renamed member under its live identity, not as a stale ghost', () => {
+    modules.chat.$groupChats.set(
+      rooms({
+        room: {
+          log: [],
+          members: [{ connectionId: 'local', handle: 'niezale-ny', name: 'niezale-ny' }]
+        }
+      })
+    )
+
+    const seated = modules.membership.groupChatMemberBots('room', [RENAMED], {})
+
+    // One member under the NEW identity: the stale handle is gone from the
+    // roster and @-completion.
+    expect(seated.map(row => row.name)).toEqual(['niezalezny'])
+  })
+
+  it('never match a previous name across connections', () => {
+    const remoteTwin: RosterRow = {
+      connectionId: 'other-box',
+      name: 'niezalezny',
+      previous_names: ['niezale-ny'],
+      remoteSource: true
+    }
+
+    modules.chat.$groupChats.set(
+      rooms({ room: { log: [], members: [{ connectionId: 'local', name: 'niezale-ny' }] } })
+    )
+
+    const seated = modules.membership.groupChatMemberBots('room', [remoteTwin], {})
+
+    // The local descriptor must not be captured by another connection's history.
+    expect(seated.map(row => row.name)).toEqual(['niezale-ny'])
+    expect(seated[0].connectionId).toBe('local')
+  })
+
+  it('persist the healed descriptor with its rename history', () => {
+    // durableGroupChatMembers carries previous_names down so an @old-handle
+    // keeps resolving after the heal, even when the live row is unreachable.
+    const healed = modules.membership.durableGroupChatMembers([RENAMED])
+
+    expect(healed[0].name).toBe('niezalezny')
+    expect(healed[0].previous_names).toEqual(['niezale-ny'])
+  })
+})

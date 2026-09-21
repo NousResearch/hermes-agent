@@ -115,7 +115,7 @@ def _write_valid_ssh_backend_lock(tmp_path, monkeypatch) -> int:
 def test_update_cleanup_spares_backend_owned_by_valid_ssh_lock(tmp_path, monkeypatch):
     pid = _write_valid_ssh_backend_lock(tmp_path, monkeypatch)
 
-    def assert_owned_pid_is_excluded(*, exclude_pids=None):
+    def assert_owned_pid_is_excluded(*, exclude_pids=None, **_):
         assert exclude_pids is not None
         assert pid in exclude_pids
         return []
@@ -135,7 +135,7 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
 ):
     pid = _write_valid_ssh_backend_lock(tmp_path, monkeypatch)
 
-    def assert_owned_pid_is_not_excluded(*, exclude_pids=None):
+    def assert_owned_pid_is_not_excluded(*, exclude_pids=None, **_):
         assert exclude_pids is None or pid not in exclude_pids
         return []
 
@@ -320,14 +320,18 @@ class TestBackCompatAlias:
 class TestDashboardUpdateCleanup:
     """The git and Windows ZIP update paths share this final cleanup."""
 
-    def test_all_failed_stops_do_not_claim_the_dashboard_was_stopped(self, capsys):
+    def test_all_failed_stops_do_not_claim_the_dashboard_was_stopped(self, capsys, monkeypatch, tmp_path):
+        own_home = tmp_path / "profiles" / "work"
+        monkeypatch.setenv("HERMES_HOME", str(own_home))
         with patch(
             "hermes_cli.main._kill_stale_dashboard_processes",
             return_value={"matched": [12345], "killed": [], "failed": [(12345, "denied")],
                           "unrecovered": []},
-        ):
+        ) as kill:
             _finish_dashboard_update_cleanup([])
 
+        # The sweep only touches this home's backends (#113978).
+        assert kill.call_args.kwargs["scope_home"] == str(own_home)
         assert "stopped during update" not in capsys.readouterr().out
 
 

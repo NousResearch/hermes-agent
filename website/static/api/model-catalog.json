@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-16T16:50:25Z",
+  "updated_at": "2026-09-20T18:57:41Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -159,6 +159,10 @@
         {
           "id": "z-ai/glm-5.3-flash",
           "description": ""
+        },
+        {
+          "id": "z-ai/glm-5.3-flashx",
+          "description": "high-speed tier of glm-5.3-flash"
         },
         {
           "id": "z-ai/glm-5.2",
@@ -361,6 +365,9 @@
         },
         {
           "id": "z-ai/glm-5.3-flash"
+        },
+        {
+          "id": "z-ai/glm-5.3-flashx"
         },
         {
           "id": "z-ai/glm-5.2",

@@ -1,6 +1,7 @@
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { type FC, useEffect, useState } from 'react'
 
+import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/components/assistant-ui/thread/user-message'
 
 // Sender-side inter-agent delivery: `hermes -p <agent> chat … -q "Message
@@ -17,6 +18,57 @@ export function deliveryTargetFromCommand(command: string): null | string {
   const match = DELIVERY_COMMAND_RE.exec(command)
 
   return match ? match[2].toLowerCase() : null
+}
+
+/** `@Dr. Foo`, `scribe@laptop`, `peer/scribe` → `dr. foo` / `scribe`: the
+ *  routing alias a `message_agent` target and a "Message from" signature share. */
+function agentKey(value: unknown): string {
+  return typeof value === 'string' ? value.trim().replace(/^@/, '').replace(/@[^@]*$/, '').split('/').pop()!.toLowerCase() : ''
+}
+
+/**
+ * Did THIS bot send a `message_agent` to `sender` in the CURRENT exchange of
+ * `earlier` (the thread up to, not including, the inbound "Message from
+ * <sender>" row)? True means that row is the teammate's answer to our dispatch
+ * — the round trip is complete and the next assistant message addresses the
+ * human, not the teammate. The scan stops at the nearest earlier human row or
+ * previous inbound row from the same sender: one dispatch exempts only the
+ * answer that follows it, never every later unsolicited delivery (#85884).
+ * Matching the sender by handle OR display name (either may sign the inbound
+ * row) errs towards "expanded": a missed fold shows content, a wrong fold hides it.
+ */
+export function dispatchedTo(earlier: readonly { content?: unknown; role?: string }[], sender: (string | undefined)[]): boolean {
+  const keys = new Set(sender.map(agentKey).filter(Boolean))
+
+  if (!keys.size) {
+    return false
+  }
+
+  for (let i = earlier.length - 1; i >= 0; i--) {
+    const row = earlier[i]
+
+    if (row.role === 'user') {
+      const inbound = AGENT_MESSAGE_RE.exec(messageContentText(row.content))
+
+      if (!inbound || [inbound[1], inbound[2], inbound[3]].some(part => keys.has(agentKey(part)))) {
+        return false
+      }
+
+      continue
+    }
+
+    if (row.role !== 'assistant' || !Array.isArray(row.content)) {
+      continue
+    }
+
+    for (const part of row.content as { args?: { target?: unknown }; toolName?: string; type?: string }[]) {
+      if (part?.type === 'tool-call' && part.toolName === 'message_agent' && keys.has(agentKey(part.args?.target))) {
+        return true
+      }
+    }
+  }
+
+  return false
 }
 
 /** Extract the recipient's reply text from the terminal result payload. */
@@ -59,7 +111,7 @@ const NOTICE_CLASS =
   'flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60'
 
 const AgentGlyph: FC<{ handle: string }> = ({ handle }) => {
-  const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase()) ?? null)
+  const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase())?.url ?? null)
 
   useEffect(() => {
     let live = true

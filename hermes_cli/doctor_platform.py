@@ -93,7 +93,7 @@ def _report_database_holders(name: str, db_path: Path) -> None:
     """Name the processes holding ``db_path`` (or a WAL sidecar) so the operator knows what to stop before the
     offline journal-mode conversion; a partial or unavailable scan is reported as "cannot prove quiet", never as
     an all-clear (the scan is the same fail-closed authority repair/VACUUM/checkpoint admission uses)."""
-    from hermes_state_holders import _read_proc_argv, foreign_state_db_holders, psutil
+    from hermes_state_holders import describe_holder_pid, foreign_state_db_holders
     if sys.platform == "win32":
         check_warn(f"{name}: cannot prove the database is quiet", "(holder scan is unavailable on Windows)")
         return
@@ -105,14 +105,7 @@ def _report_database_holders(name: str, db_path: Path) -> None:
         else:
             by_pid.setdefault(pid, set()).add(Path(target.removesuffix(" (deleted)")).name)
     for pid in sorted(by_pid):
-        argv = _read_proc_argv(pid)  # /proc only; macOS holders come from psutil
-        if argv is None and psutil is not None:
-            try:
-                argv = psutil.Process(pid).cmdline() or None
-            except Exception:
-                argv = None
-        who = " ".join([Path(argv[0]).name, *argv[1:]])[:80] if argv else "command line unavailable"
-        check_info(f"{name} is held by PID {pid} ({who}): {', '.join(sorted(by_pid[pid]))}")
+        check_info(f"{name} is held by {describe_holder_pid(pid)}: {', '.join(sorted(by_pid[pid]))}")
     if unknown:
         check_warn(f"{name}: cannot prove the database is quiet",
                    f"(holder scan incomplete: {unknown[0][:120]}" + (f"; +{len(unknown) - 1} more" if len(unknown) > 1 else "") + ")")
@@ -151,8 +144,8 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
             check_warn(f"{name} is in WAL mode ({size}) despite database.journal_mode=delete",
                        "(the setting never applied: an existing WAL database is never live-downgraded"
                        + ("; also exposed to the WAL-reset bug" if vulnerable else "")
-                       + ". Stop every Hermes process for this profile, then run a one-time offline "
-                       "'PRAGMA journal_mode=DELETE' on the file)")
+                       + ". Stop every Hermes process for this profile, then run "
+                       f"`hermes sessions set-journal-mode delete{'' if name == 'state.db' else f' --db {path}'}`)")
             _report_database_holders(name, path)
         elif error is not None:
             if vulnerable:
@@ -166,9 +159,9 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
             if vulnerable:
                 exposed.append(name)
             check_warn(f"{name} is in WAL mode on a cross-VM filesystem (virtiofs/9p, {size})",
-                       "(WAL can silently corrupt across the VM boundary; stop every Hermes process and run a one-time "
-                       "offline 'PRAGMA journal_mode=DELETE' on the file, then set `database.journal_mode: delete` — "
-                       "or move the database onto a native/named volume)")
+                       "(WAL can silently corrupt across the VM boundary; stop every Hermes process and run "
+                       f"`hermes sessions set-journal-mode delete{'' if name == 'state.db' else f' --db {path}'}`, then "
+                       "set `database.journal_mode: delete` — or move the database onto a native/named volume)")
         elif mode == "wal" and vulnerable:
             exposed.append(name)
             check_warn(f"{name} is in WAL mode ({size})", "(exposed to the WAL-reset bug until SQLite is upgraded)")

@@ -101,7 +101,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
 
-def approval_callback(cli, command: str, description: str) -> str:
+def approval_callback(cli, command: str, description: str, *, purpose: str = "") -> str:
     """Prompt for dangerous command approval through the TUI.
 
     Shows a selection UI with choices: once / session / always / deny.
@@ -128,6 +128,7 @@ def approval_callback(cli, command: str, description: str) -> str:
         cli._approval_state = {
             "command": command,
             "description": description,
+            "purpose": purpose,
             "choices": choices,
             "selected": 0,
             "response_queue": response_queue,

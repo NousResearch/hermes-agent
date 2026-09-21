@@ -113,6 +113,8 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
         ⚠ approval required · {req.description}
       </Text>
 
+      {req.purpose ? <Text>Purpose: {req.purpose}</Text> : null}
+
       <Box flexDirection="column" paddingLeft={1}>
         {shown.map((line, i) => (
           <Text color={t.color.text} key={i} wrap="truncate-end">

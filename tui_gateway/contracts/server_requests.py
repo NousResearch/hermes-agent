@@ -75,6 +75,7 @@ class ApprovalRequestParams(ServerRequestParams):
     request_id: str
     command: str = ""
     description: str = ""
+    purpose: str | None = None
     choices: list[ApprovalChoice] = Field(default_factory=list)
     allow_permanent: bool | None = None
     allow_session: bool | None = None

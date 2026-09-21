@@ -217,6 +217,7 @@ const approval: Handler = ctx => {
   const p = request.params
   const command = str(p.command)
   const description = str(p.description) || 'dangerous command'
+  const purpose = str(p.purpose) || undefined
 
   rememberServerRequest(request)
   void receiveApprovalRequest(null, {
@@ -227,6 +228,7 @@ const approval: Handler = ctx => {
       : undefined,
     command,
     description,
+    purpose,
     // The approval queue's own id — `approval.pending` / `approval.received` / `approval.respond` key on it.
     requestId: str(p.request_id) || undefined,
     serverRequestId: request.id,

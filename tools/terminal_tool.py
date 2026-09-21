@@ -144,10 +144,10 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
 
 
-def _check_all_guards(command: str, env_type: str,
+def _check_all_guards(command: str, env_type: str, *, purpose: str = "",
                       has_host_access: bool = False) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
-    return _check_all_guards_impl(command, env_type,
+    return _check_all_guards_impl(command, env_type, purpose=purpose,
                                   approval_callback=_get_approval_callback(),
                                   has_host_access=has_host_access)
 
@@ -881,13 +881,14 @@ class _ApprovalVerdict:
     approved_run: bool = False
 
 
-def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
+def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool,
+                         purpose: str = "") -> _ApprovalVerdict:
     """Run tirith + dangerous-command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
     if force:
         return _ApprovalVerdict(approved_run=True)
-    approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
+    approval = _check_all_guards(command, env_type, purpose=purpose, has_host_access=_docker_has_host_access(config))
     if not approval["approved"]:
         if approval.get("status") == "pending_approval":  # gateway ask mode
             raise _Rejected(_error_json(
@@ -1232,6 +1233,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    purpose: str = "",
     _host_local: bool = False,
     _completion_output_chars: int = 0,
 ) -> str:
@@ -1297,7 +1299,7 @@ def terminal_tool(
             ))
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
-        verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        verdict = _run_approval_guards(command, env_type, plan.config, force=force, purpose=purpose)
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:
@@ -1367,6 +1369,11 @@ TERMINAL_SCHEMA = {
             "workdir": {
                 "type": "string",
                 "description": "Working directory for this command (absolute path). Defaults to the session working directory."
+            },
+            "purpose": {
+                "type": "string",
+                "description": "Short plain-language reason for this command, shown only if approval is required.",
+                "maxLength": 280
             },
             "pty": {
                 "type": "boolean",
@@ -1443,6 +1450,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
+        purpose=args.get("purpose", ""),
     )
 
 

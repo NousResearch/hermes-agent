@@ -4414,6 +4414,18 @@
             "title": "Description",
             "type": "string"
           },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Purpose"
+          },
           "choices": {
             "items": {
               "$ref": "#/components/schemas/ApprovalChoice"
@@ -16520,6 +16532,18 @@
             ],
             "default": null,
             "title": "Description"
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Purpose"
           },
           "pattern_key": {
             "anyOf": [

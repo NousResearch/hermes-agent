@@ -285,6 +285,36 @@ class TestExtractText:
         text, _reply_text = WeComAdapter._extract_text(body)
         assert text == "part1\npart2"
 
+    @pytest.mark.asyncio
+    async def test_extracts_quoted_appmsg_text_and_media(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._cache_media = AsyncMock(return_value=("/tmp/quoted.pdf", "application/pdf"))
+        body = {
+            "msgtype": "text",
+            "text": {"content": "review this"},
+            "quote": {
+                "msgtype": "appmsg",
+                "appmsg": {
+                    "title": "report.pdf",
+                    "description": "22.5 MB",
+                    "file": {"url": "https://example.com/quoted.pdf"},
+                },
+            },
+        }
+
+        text, reply_text = WeComAdapter._extract_text(body)
+        paths, media_types = await adapter._extract_media(body)
+
+        assert text == "review this"
+        assert reply_text == "report.pdf\n22.5 MB"
+        adapter._cache_media.assert_awaited_once_with(
+            "file", {"url": "https://example.com/quoted.pdf"}
+        )
+        assert paths == ["/tmp/quoted.pdf"]
+        assert media_types == ["application/pdf"]
+
 
 class TestCallbackDispatch:
     @pytest.mark.asyncio
@@ -608,6 +638,37 @@ class TestInboundMessages:
         assert event.source.user_id == "user-1"
         assert event.media_urls == ["/tmp/test.png"]
         assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_failed_file_download_is_visible_to_agent(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={"dm_policy": "open"}))
+        adapter._is_dm_intake_allowed = lambda _sender_id: True
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-file"},
+            "body": {
+                "msgid": "msg-file",
+                "chattype": "single",
+                "from": {"userid": "user-1"},
+                "msgtype": "file",
+                "file": {
+                    "filename": "report.pdf",
+                    "url": "https://example.com/report.pdf",
+                },
+            },
+        }
+
+        await adapter._on_message(payload)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert "report.pdf" in event.text
+        assert "could not be downloaded" in event.text
+        assert event.media_urls == []
 
 
 class TestWeComZombieSessionFix:

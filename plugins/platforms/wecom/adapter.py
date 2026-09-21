@@ -444,6 +444,15 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         if is_group and text:
             text = re.sub(r"^@\S+\s*", "", text).strip()  # "@Bot /approve" -> "/approve"
         media_urls, media_types = await self._extract_media(body)
+        media_refs = self._inbound_media_refs(body)
+        if len(media_urls) < len(media_refs):
+            labels = list(dict.fromkeys(label for _kind, _ref, label in media_refs if label))
+            label = ", ".join(labels) if labels else "WeCom attachment"
+            failure_note = (
+                f"[Attachment could not be downloaded: {label}. "
+                "The file content and local path are unavailable.]"
+            )
+            text = "\n\n".join(part for part in (failure_note, text) if part).strip()
         message_type = self._derive_message_type(body, text, media_types)
         has_reply_context = bool(reply_text and (text or media_urls))
         if reply_text and not has_reply_context:  # quote-only message: the quote becomes the text
@@ -498,6 +507,24 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         return super()._text_batch_delay_for(pending)
 
     @staticmethod
+    def _extract_appmsg_text(appmsg: Dict[str, Any]) -> Optional[str]:
+        """Render visible fields from a WeCom article/document card."""
+        lines: List[str] = []
+        for keys in (
+            ("title",),
+            ("description", "desc", "digest", "summary"),
+            ("url", "content_url", "page_url", "link_url"),
+        ):
+            value = next(
+                (str(appmsg.get(key) or "").strip() for key in keys
+                 if str(appmsg.get(key) or "").strip()),
+                "",
+            )
+            if value and value not in lines:
+                lines.append(value)
+        return "\n".join(lines) or None
+
+    @staticmethod
     def _extract_text(body: Dict[str, Any]) -> Tuple[str, Optional[str]]:
         msgtype = str(body.get("msgtype") or "").lower()
         if msgtype == "mixed":
@@ -506,11 +533,16 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         else:  # voice transcript / appmsg attachment title (filename) follow the text; empties drop below
             text_parts = [
                 _content_of(body, "text"), _content_of(body, "voice") if msgtype == "voice" else "",
-                str(_dict_or_empty(body, "appmsg").get("title") or "").strip() if msgtype == "appmsg" else "",
+                WeComAdapter._extract_appmsg_text(_dict_or_empty(body, "appmsg")) or "" if msgtype == "appmsg" else "",
             ]
         quote = _dict_or_empty(body, "quote")
         quote_type = str(quote.get("msgtype") or "").lower()
-        reply_text = _content_of(quote, quote_type) or None if quote_type in ("text", "voice") else None
+        if quote_type in ("text", "voice"):
+            reply_text = _content_of(quote, quote_type) or None
+        elif quote_type == "appmsg":
+            reply_text = WeComAdapter._extract_appmsg_text(_dict_or_empty(quote, "appmsg"))
+        else:
+            reply_text = None
         return "\n".join(part for part in text_parts if part).strip(), reply_text
 
     @staticmethod

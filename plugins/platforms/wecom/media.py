@@ -53,14 +53,24 @@ def _media_body(media_type: str, media_id: str) -> Dict[str, Any]:
 class WeComMediaMixin:
     """Media helpers mixed into WeComAdapter (uses its transport, req_id cache and stream registry)."""
 
-    async def _extract_media(self, body: Dict[str, Any]) -> Tuple[List[str], List[str]]:
-        refs: List[Tuple[str, Dict[str, Any]]] = []
+    @staticmethod
+    def _inbound_media_refs(body: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any], str]]:
+        """Return downloadable media references with a user-visible label."""
+        refs: List[Tuple[str, Dict[str, Any], str]] = []
         msgtype = str(body.get("msgtype") or "").lower()
 
-        def _ref(kind: str, container: Dict[str, Any]) -> bool:
+        def _label(ref: Dict[str, Any], fallback: str = "") -> str:
+            return next(
+                (str(ref.get(key) or "").strip() for key in ("filename", "name", "title")
+                 if str(ref.get(key) or "").strip()),
+                fallback,
+            )
+
+        def _ref(kind: str, container: Dict[str, Any], fallback: str = "") -> bool:
             found = isinstance(container.get(kind), dict)
             if found:
-                refs.append((kind, container[kind]))
+                ref = container[kind]
+                refs.append((kind, ref, _label(ref, fallback)))
             return found
 
         if msgtype == "mixed":
@@ -73,12 +83,22 @@ class WeComMediaMixin:
             if msgtype == "file":
                 _ref("file", body)
             if msgtype == "appmsg" and isinstance(body.get("appmsg"), dict):  # AI Bot attachments (PDF/Word/Excel)
-                _ref("file", body["appmsg"]) or _ref("image", body["appmsg"])
+                appmsg = body["appmsg"]
+                fallback = str(appmsg.get("title") or "").strip()
+                _ref("file", appmsg, fallback) or _ref("image", appmsg, fallback)
         quote = _dict_at(body, "quote")
         quote_type = str(quote.get("msgtype") or "").lower()
         if quote_type in ("image", "file"):
             _ref(quote_type, quote)
-        cached = [c for c in [await self._cache_media(kind, ref) for kind, ref in refs] if c]
+        elif quote_type == "appmsg" and isinstance(quote.get("appmsg"), dict):
+            appmsg = quote["appmsg"]
+            fallback = str(appmsg.get("title") or "").strip()
+            _ref("file", appmsg, fallback) or _ref("image", appmsg, fallback)
+        return refs
+
+    async def _extract_media(self, body: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+        refs = self._inbound_media_refs(body)
+        cached = [c for c in [await self._cache_media(kind, ref) for kind, ref, _label in refs] if c]
         return [c[0] for c in cached], [c[1] for c in cached]
 
     async def _cache_media(self, kind: str, media: Dict[str, Any]) -> Optional[Tuple[str, str]]:

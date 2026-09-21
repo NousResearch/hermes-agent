@@ -48,7 +48,10 @@ method("complete.path", params=CompletePathParams, result=CompletionItemsResult,
 
 
 class CompleteSlashParams(Params):
+    """``session_id`` binds skill completions to that session's profile and workspace (project skills)."""
+
     text: str | None = None
+    session_id: str | None = None
 
 
 class CompleteSlashResult(Result):

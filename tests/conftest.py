@@ -77,8 +77,14 @@ def _hermes_home_points_at_production(value: str) -> bool:
     if not value:
         return True
     try:
+        # The platform-default root, not a hardcoded ``~/.hermes``: Windows installs live under
+        # ``%LOCALAPPDATA%\hermes``, and a dev shell exporting that path used to be honored as
+        # "custom", pinning import-time paths (``tui_gateway.server._hermes_home``) to the live
+        # install so the state.db guard tripped on every store-touching test (#112692).
+        from hermes_state_guard import _real_platform_state_root
+
         resolved = Path(value).expanduser().resolve()
-        real_root = (Path.home() / ".hermes").resolve()
+        real_root = _real_platform_state_root() or (Path.home() / ".hermes").resolve()
     except Exception:
         return True
     if resolved == real_root:
@@ -113,6 +119,38 @@ os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 #: `_isolate_env` fixture has sandboxed it by then, so the check would pass
 #: even with this block removed.
 HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
+
+# ── Host-rendezvous isolation ───────────────────────────────────────────────
+# ``gateway/host_rendezvous.py`` publishes ONE record per role per OS USER, in
+# ``$HERMES_GATEWAY_LOCK_DIR`` else ``$XDG_STATE_HOME/hermes/gateway-locks`` —
+# deliberately outside HERMES_HOME, because the host singleton spans profiles.
+# Under the per-file parallel runner that directory is shared by ~40 pytest
+# subprocesses: one test that boots a real gateway publishes a record, and every
+# other file's lifecycle code then correctly attaches to a gateway that has
+# nothing to do with it. Give each pytest PROCESS its own rendezvous dir.
+#
+# A caller-supplied value always wins (both here and in the per-test fixture
+# below) — otherwise the documented override is a silent no-op.
+HOST_LOCK_DIR_AT_CONFTEST_IMPORT = os.environ.get("HERMES_GATEWAY_LOCK_DIR", "")
+if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
+    # Deterministic per-PID name, not mkdtemp: the parallel runner SIGKILLs a worker on timeout,
+    # which never runs atexit, so a random dir per run leaked one directory per killed worker.
+    # A fixed name is reused by the next process with that PID, and dead siblings are swept here.
+    _LOCK_DIR_PREFIX = "hermes-test-gateway-locks-"
+    _LOCK_DIR_ROOT = Path(tempfile.gettempdir())
+    for _stale in _LOCK_DIR_ROOT.glob(f"{_LOCK_DIR_PREFIX}*"):
+        try:
+            _stale_pid = int(_stale.name[len(_LOCK_DIR_PREFIX):])
+        except ValueError:
+            continue
+        try:
+            os.kill(_stale_pid, 0)
+        except OSError:
+            shutil.rmtree(_stale, ignore_errors=True)
+    _SESSION_LOCK_DIR = str(_LOCK_DIR_ROOT / f"{_LOCK_DIR_PREFIX}{os.getpid()}")
+    shutil.rmtree(_SESSION_LOCK_DIR, ignore_errors=True)
+    os.environ["HERMES_GATEWAY_LOCK_DIR"] = _SESSION_LOCK_DIR
+    atexit.register(shutil.rmtree, _SESSION_LOCK_DIR, True)
 
 
 # ── Per-file process isolation ──────────────────────────────────────────────
@@ -493,6 +531,16 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # Per-TEST host-rendezvous dir (see the session-level block at the top): the
+    # host gateway/serve record is shared per OS user by design, so without this
+    # one test's published owner makes the next test's lifecycle code attach to it.
+    # HOME is deliberately NOT redirected above, so an unpinned run would read and
+    # write the developer's live ~/.local/state/hermes/gateway-locks.
+    # Skipped when the caller supplied the variable, so an explicit override still
+    # works (tests of the resolution rule itself rely on that).
+    if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
     # hermes_state's live-DB guard stays armed in them even when the test
@@ -657,8 +705,21 @@ def _close_leaked_session_dbs():
     on those ``close()`` releases a refcount rather than closing, so a sweep
     would silently retire a shared generation that a wider-scoped fixture
     still holds. The registry owns that lifecycle (``close_all()``).
+
+    Before the sweep, the auto-title upgrade threads a turn spawned are joined
+    (bounded): they hold the turn's SessionDB and write to it (and print to
+    ``sys.stdout``) after the turn returns, so left running they race this
+    close (``_reopen_after_close_locked`` on a daemon thread), the next test's
+    capture, and interpreter finalization — the ``Fatal Python error`` /
+    SIGSEGV shape of #113186, seen from ``tests/gateway/test_timestamp_sidecar_replay.py``.
     """
     yield
+    # sys.modules lookup, not import: a file that never touched title_generator spawned
+    # nothing. Tests that swap in a stub module (tui_gateway golden transcript) have no
+    # real threads either, so a stub without the helper is the same "nothing to join" case.
+    wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+    if wait is not None:
+        wait()
     try:
         from hermes_state_guard import _test_instance_registry as registry
     except Exception:
@@ -720,6 +781,14 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
     monkeypatch.setattr(
         _mod,
         "_read_claude_code_credentials_from_keychain",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    # The #98334 refresh write also mirrors into the Keychain; keep that out of
+    # the real store in any test that hasn't explicitly opted in.
+    monkeypatch.setattr(
+        _mod,
+        "_mirror_claude_code_credentials_to_keychain",
         lambda *_args, **_kwargs: None,
         raising=False,
     )
@@ -1258,6 +1327,40 @@ def _relocate_basetemp_outside_operator_home(config) -> None:
     )
     factory._given_basetemp = safe
     config.option.basetemp = str(safe)
+
+
+def _pinned_mcp_sdk_version() -> str:
+    """The ``mcp==X`` pin carried by the ``[mcp]`` extra in pyproject.toml."""
+    import tomllib
+
+    with open(Path(__file__).resolve().parent.parent / "pyproject.toml", "rb") as fh:
+        extras = tomllib.load(fh)["project"]["optional-dependencies"]
+    for req in extras["mcp"]:
+        if req.startswith("mcp=="):
+            return req.split("==", 1)[1].strip()
+    raise RuntimeError("pyproject.toml [mcp] extra no longer pins mcp==X")
+
+
+@pytest.fixture
+def require_mcp_2_sdk():
+    """Skip tests that pin mcp 2.0-only behaviour when an older SDK is installed.
+
+    The runtime deliberately supports both SDK generations (the dual streamable-client probe in
+    mcp_tool), so a stale ``mcp`` distribution imports fine and presence-only guards let these
+    tests through — where they fail later with opaque SDK errors. Compare the installed
+    distribution against the pin so the outcome is an explicit skip with an actionable reason.
+    """
+    from importlib.metadata import PackageNotFoundError, version as dist_version
+
+    from packaging.version import Version
+
+    pinned = _pinned_mcp_sdk_version()
+    try:
+        found = dist_version("mcp")
+    except PackageNotFoundError:
+        pytest.skip(f"requires mcp=={pinned} (not installed); install the [mcp] extra")
+    if Version(found) < Version(pinned):
+        pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
 
 
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory

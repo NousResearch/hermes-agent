@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,8 @@ import hermes_cli.web_routers.dashboard_ui as _rt_dashboard_ui
 import hermes_cli.web_server_dashboard as _web_server_dashboard
 import hermes_cli.web_server_memory as _web_server_memory
 from hermes_cli import plugins_cmd
+from hermes_cli import plugin_catalog
+from hermes_cli import plugins_cmd_catalog
 from tools import registry as tools_registry
 
 
@@ -142,6 +145,30 @@ def test_plugins_hub_short_ttl_cache_collapses_duplicate_fetches(monkeypatch):
 
     assert calls["discover"] == 1
     assert first is second
+
+
+def test_plugins_hub_route_builds_catalog_annotations_off_event_loop(monkeypatch):
+    """The synchronous catalog lookup must run in the route's worker thread."""
+    tools_registry.invalidate_check_fn_cache()
+    _web_server_dashboard._invalidate_plugins_hub_cache()
+    event_loop_thread = threading.current_thread()
+    annotation_threads: list[threading.Thread] = []
+
+    _patch_minimal_hub_dependencies(monkeypatch, check_fn=lambda: True)
+    monkeypatch.setattr(web_server, "_require_token", lambda _request: None)
+
+    def removed_annotation(name, _dir_path, _removed_entries):
+        annotation_threads.append(threading.current_thread())
+        return "withdrawn by catalog" if name == "demo" else None
+
+    monkeypatch.setattr(plugins_cmd_catalog, "removed_annotation", removed_annotation)
+    monkeypatch.setattr(plugin_catalog, "resolved_removed_entries", lambda: [])
+
+    payload = asyncio.run(_rt_dashboard_ui.get_plugins_hub(object()))
+
+    assert payload["plugins"][0]["removed_reason"] == "withdrawn by catalog"
+    assert annotation_threads == [annotation_threads[0]]
+    assert annotation_threads[0] is not event_loop_thread
 
 
 def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):

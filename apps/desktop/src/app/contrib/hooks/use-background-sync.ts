@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -25,6 +26,7 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTiles,
+  confirmReconnectSettlesExcept,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
@@ -60,9 +62,9 @@ export function resolveActiveTranscriptSession(
   storedSessionId: string,
   runtimeSessionId: string
 ): ActiveTranscriptSession | undefined {
-  const verifiedOwner = $sessionTiles.get().find(
-    tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId
-  )?.ownerRoute
+  const verifiedOwner = $sessionTiles
+    .get()
+    .find(tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId)?.ownerRoute
 
   if (verifiedOwner) {
     return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }
@@ -214,8 +216,12 @@ export async function reconcileTileTranscripts({
         runtimeSessionId,
         state => ({
           ...state,
+          // An un-acked optimistic `user-*` row exists only here, so a
+          // background refresh that lands mid-send would drop it and the
+          // message would have to be retyped. Same composition order as
+          // reconcileAuthoritativeChatMessages (use-session-actions/index.ts).
           messages: preserveLocalAssistantErrors(
-            graftRefreshedTailOntoBackfill(messages, state.messages),
+            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
             state.messages
           )
         }),
@@ -293,7 +299,10 @@ export async function reconcileActiveTranscript({
         // The refresh re-reads only the newest tail page; graft it onto any
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
-        messages: preserveLocalAssistantErrors(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages)
+        messages: preserveLocalAssistantErrors(
+          preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+          state.messages
+        )
       }),
       storedSessionId
     )
@@ -399,9 +408,11 @@ export function resetTypingActivityTracking(): void {
 export function rehydrateLiveSessionStatuses(
   response: LiveSessionStatusResponse,
   nowMs = Date.now(),
-  profileKey = 'default'
+  profileKey = 'default',
+  stateAtRequest = $sessionStates.get()
 ): void {
   const seen = new Set<string>()
+  const workingStoredIds = new Set<string>()
 
   for (const session of response.sessions ?? []) {
     const runtimeSessionId = session.id?.trim()
@@ -415,7 +426,19 @@ export function rehydrateLiveSessionStatuses(
 
     seen.add(runtimeSessionId)
 
+    if (working) {
+      workingStoredIds.add(storedSessionId)
+    }
+
     const existing = $sessionStates.get()[runtimeSessionId]
+
+    // The active-list response is an async snapshot. Stream events can start
+    // or finish this turn after the request begins but before its response is
+    // applied. In that case the event state is newer: an old idle row must not
+    // finish a live turn, and an old working row must not revive a terminal one.
+    if (existing !== stateAtRequest[runtimeSessionId]) {
+      continue
+    }
 
     // A turn we just submitted is not yet running as far as the backend is
     // concerned, so the snapshot honestly reports it idle — but the local
@@ -475,6 +498,12 @@ export function rehydrateLiveSessionStatuses(
 
       const existing = $sessionStates.get()[runtimeSessionId]
 
+      if (existing !== stateAtRequest[runtimeSessionId]) {
+        seen.add(runtimeSessionId)
+
+        continue
+      }
+
       if (existing?.busy || existing?.needsInput || existing?.awaitingResponse) {
         publishSessionState(runtimeSessionId, {
           ...existing,
@@ -495,6 +524,12 @@ export function rehydrateLiveSessionStatuses(
   }
 
   liveRuntimeIdsByProfile.set(profileKey, seen)
+
+  // Completions the reconnect reconcile downgraded blind: this snapshot is the
+  // terminal fact it lacked. Every parked session not reported working is
+  // over, whether or not an earlier poll ever saw its runtime (a turn that
+  // started just before the drop was never polled).
+  confirmReconnectSettlesExcept(workingStoredIds)
 }
 
 /** Forget every profile's live-runtime bookkeeping. A gateway wipe already
@@ -716,16 +751,23 @@ export function useBackgroundSync({
       }
 
       inFlight = true
+      const stateAtRequest = $sessionStates.get()
 
       try {
         const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
 
         if (!cancelled) {
-          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile)
+          rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, stateAtRequest)
         }
       } catch {
         // Older gateways may not expose session.active_list. Live stream events
-        // still work as before; leave the current sidebar state untouched.
+        // still work as before; leave the current sidebar state untouched —
+        // except completions the reconnect reconcile parked awaiting this
+        // snapshot: with no snapshot to confirm them they light now (the
+        // pre-#113029 behaviour) rather than never.
+        if (!cancelled) {
+          confirmReconnectSettlesExcept(new Set())
+        }
       } finally {
         inFlight = false
 

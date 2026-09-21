@@ -27,7 +27,7 @@ import {
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
-import { PluginsTab } from '../skills/plugins-tab'
+import { PluginsTab } from '../capabilities/plugins/plugins-tab'
 
 import { PluginInstallModal } from './plugin-install-modal'
 
@@ -36,7 +36,7 @@ const installDesktopPlugin = vi.fn()
 
 const renderFlow = () =>
   render(
-    <MemoryRouter initialEntries={['/skills?tab=plugins']}>
+    <MemoryRouter initialEntries={['/capabilities?tab=plugins']}>
       <QueryClientProvider client={queryClient}>
         <PluginsTab profile={null} />
         <PluginInstallModal />

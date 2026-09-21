@@ -1,7 +1,8 @@
 """`hermes chat -Q` must not leak presentation output into stdout (#93220).
 
-The quiet single-query branch lives inline in ``cli.py``'s main flow (no
-standalone function to call), so these pin the branch's required statements
+The quiet single-query branch lives inline in ``_run_single_query_mode``
+(``hermes_cli/cli_single_query.py``, re-exported by ``cli``; no standalone
+function to call), so these pin the branch's required statements
 at the source level — the established convention for behavior with no
 runtime mirror (see the install.ps1 source-text tests). Deleting any
 neutralization reintroduces a leak:
@@ -32,7 +33,7 @@ def _quiet_branch() -> str:
     """
     import inspect
 
-    source = Path(cli_mod.__file__).read_text(encoding="utf-8")
+    source = Path(inspect.getsourcefile(cli_mod._run_single_query_mode)).read_text(encoding="utf-8")
     start = source.index(_QUIET_ANCHOR)
     branch = source[start : start + 8000]
     helper = inspect.getsource(cli_mod._configure_quiet_agent).replace("agent.", "cli.agent.")

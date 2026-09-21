@@ -5,6 +5,8 @@ import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ConfigApi from '@/api/config'
+
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
 const getHermesConfigRecord = vi.fn()
@@ -12,7 +14,10 @@ const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()
 const getElevenLabsVoices = vi.fn()
 
-vi.mock('@/hermes', () => ({
+// Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
+// config hook reaches them through the barrel, and a bare mock would throw.
+vi.mock('@/hermes', async () => ({
+  ...(await vi.importActual<typeof ConfigApi>('@/api/config')),
   getHermesConfigRecord: () => getHermesConfigRecord(),
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),

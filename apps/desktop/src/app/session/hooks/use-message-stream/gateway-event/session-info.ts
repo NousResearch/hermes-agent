@@ -17,6 +17,7 @@ import {
   setCurrentCwdTransient,
   setCurrentFastMode,
   setCurrentPersonality,
+  setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
   setSessions,
@@ -242,6 +243,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // updateSessionState below), never the persisted composer draft. Writing
       // it to $currentReasoningEffort here would reseed every new chat with the
       // last-resumed session's pin, clobbering agent.reasoning_effort.
+      if (typeof payload?.reasoning_effort_wire === 'string') {
+        setCurrentReasoningEffortWire(payload.reasoning_effort_wire)
+      }
+
       if (typeof payload?.service_tier === 'string') {
         setCurrentServiceTier(payload.service_tier)
       }

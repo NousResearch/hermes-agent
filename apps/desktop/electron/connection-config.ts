@@ -95,6 +95,25 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
+/** Plugin-namespace event-socket URL (path is already /relative and validated
+ * by the caller) with the same single-credential query shape as the gateway
+ * socket: ?ticket= on OAuth remotes, ?token= elsewhere. */
+function buildPluginWsUrlWithCredential(baseUrl, path, name, value) {
+  const parsed = new URL(baseUrl)
+  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
+  const prefix = parsed.pathname.replace(/\/+$/, '')
+
+  return `${wsScheme}://${parsed.host}${prefix}/api/plugins${path}?${name}=${encodeURIComponent(value)}`
+}
+
+function buildPluginWsUrlWithTicket(baseUrl, path, ticket) {
+  return buildPluginWsUrlWithCredential(baseUrl, path, 'ticket', ticket)
+}
+
+function buildPluginWsUrlWithToken(baseUrl, path, token) {
+  return buildPluginWsUrlWithCredential(baseUrl, path, 'token', token)
+}
+
 /** True only when a gateway explicitly rejected the current OAuth session. */
 function isGatewayAuthRejection(error) {
   if (error && typeof error === 'object' && (error as any).needsOauthLogin === true) {
@@ -1009,6 +1028,8 @@ export {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildPluginWsUrlWithTicket,
+  buildPluginWsUrlWithToken,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHaveSession,

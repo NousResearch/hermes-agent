@@ -89,9 +89,12 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
 /** The plugin WebSocket door — the live twin of `pluginRest`, scoped the same
  *  way: `path` is relative to `/api/plugins/<pluginId>` ('/events' → the
  *  plugin's own event stream). Token-mode backends auth via the same query
- *  credential the app's own sockets use; OAuth remotes resolve null (callers
- *  keep their polling fallback — every consumer must have one anyway, since a
- *  socket can drop). Auto-reconnects with backoff until disposed. */
+ *  credential the app's own sockets use; OAuth remotes dial a URL minted by
+ *  the main process (`getPluginWsUrl` — a single-use WS ticket per attempt,
+ *  the same discipline as the gateway socket). When no fresh URL is available
+ *  the caller keeps its polling fallback (every consumer must have one
+ *  anyway, since a socket can drop). Auto-reconnects with backoff until
+ *  disposed. */
 export function pluginSocket(pluginId: string, path: string, onMessage: (data: unknown) => void): () => void {
   const suffix = pluginPathSuffix('pluginSocket', path)
 
@@ -99,22 +102,22 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
   let disposed = false
   let attempt = 0
 
-  const connect = async () => {
-    const connection = await activeConnection().catch(() => null)
-
-    // No bridge / OAuth cookie auth (WS tickets are single-use, core-managed):
-    // stay on the polling fallback rather than half-working.
-    if (disposed || !connection || connection.authMode === 'oauth') {
+  const scheduleRetry = () => {
+    if (disposed) {
       return
     }
 
-    const base = connection.baseUrl.replace(/^http/, 'ws')
-    const join = suffix.includes('?') ? '&' : '?'
-    socket = new WebSocket(
-      `${base}/api/plugins/${pluginId}${suffix}${join}token=${encodeURIComponent(connection.token)}`
-    )
+    // Full-jitter exponential backoff: same rationale as the gateway socket
+    // reconnect loops — an immediate-retry loop across many desktop clients
+    // floods the gateway with connection attempts during a restart. Also the
+    // only retry path for a connect-time bail (below), which owns no socket
+    // and therefore gets no onclose of its own.
+    window.setTimeout(() => void connect(), reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
+    attempt += 1
+  }
 
-    socket.onmessage = event => {
+  const wire = (opened: WebSocket) => {
+    opened.onmessage = event => {
       attempt = 0
 
       try {
@@ -124,18 +127,77 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       }
     }
 
-    socket.onclose = () => {
+    opened.onclose = () => {
       socket = null
-
-      if (!disposed) {
-        // Full-jitter exponential backoff: same rationale as the gateway
-        // socket reconnect loops — an immediate-retry loop across many
-        // desktop clients floods the gateway with connection attempts
-        // during a restart.
-        window.setTimeout(() => void connect(), reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
-        attempt += 1
-      }
+      scheduleRetry()
     }
+  }
+
+  const connect = async () => {
+    if (disposed) {
+      return
+    }
+
+    const connection = await activeConnection().catch(() => null)
+
+    if (disposed) {
+      return
+    }
+
+    // No bridge: stay on the polling fallback rather than half-working. A
+    // TRANSIENT null (bridge round-trip timeout) retries through the same
+    // backoff instead of latching the fallback until the next page action —
+    // a connect-time bail owns no socket, so nothing else would reschedule.
+    if (!connection) {
+      scheduleRetry()
+
+      return
+    }
+
+    if (connection.authMode === 'oauth') {
+      const mintWsUrl = window.hermesDesktop?.getPluginWsUrl
+
+      if (typeof mintWsUrl !== 'function') {
+        // Older Desktop main: no minting door for plugin sockets — stay on
+        // the polling fallback rather than half-working.
+        return
+      }
+
+      try {
+        const result = await mintWsUrl(
+          { connectionId: getApiRequestConnection(), profile: getApiRequestProfile() },
+          `/api/plugins/${pluginId}${suffix}`
+        )
+
+        if (disposed) {
+          return
+        }
+
+        const wsUrl = typeof result === 'string' ? result : result?.ok ? result.wsUrl : null
+
+        if (!wsUrl) {
+          // No usable credential for this backend right now (or a rejected
+          // mint): polling stays the refresh path for this attempt.
+          return
+        }
+
+        socket = new WebSocket(wsUrl)
+        wire(socket)
+      } catch {
+        // Mint transport failure: never hammer the mint endpoint from the
+        // reconnect loop; the polling fallback keeps the board live.
+        return
+      }
+
+      return
+    }
+
+    const base = connection.baseUrl.replace(/^http/, 'ws')
+    const join = suffix.includes('?') ? '&' : '?'
+    socket = new WebSocket(
+      `${base}/api/plugins/${pluginId}${suffix}${join}token=${encodeURIComponent(connection.token)}`
+    )
+    wire(socket)
   }
 
   void connect()

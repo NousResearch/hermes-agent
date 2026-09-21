@@ -114,6 +114,8 @@ import {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  buildPluginWsUrlWithTicket,
+  buildPluginWsUrlWithToken,
   connectionScopeKey,
   cookiesHaveLiveSession,
   cookiesHaveSession,
@@ -317,6 +319,7 @@ import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
   localRouteFallbackProfiles,
+  registryGatewayWsUrl,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
@@ -16293,6 +16296,43 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
 
 ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
   return gatewayWsUrlIpcResult(() => registryGatewayWsUrlHandler(payload))
+})
+
+// Plugin event sockets ride the same auth surfaces as the gateway socket, but
+// the renderer can neither mint an OAuth ticket (the mint endpoint rides the
+// cookie partition) nor reach a remote's static token on OAuth remotes. This
+// door resolves the (connectionId, profile) backend, mints when needed, and
+// hands back a ready-to-open plugin-namespace URL; a null result means "no
+// credential for this backend — stay on the polling fallback".
+async function freshPluginWsUrl(rawScope, rawPath) {
+  const scope = rawScope && typeof rawScope === 'object' ? rawScope : {}
+  const connection = await ensureRegistryBackend(scope.connectionId ?? null, scope.profile ?? null)
+
+  const path = String(rawPath ?? '')
+
+  if (!path.startsWith('/') || path.split('/').includes('..')) {
+    throw new Error(`freshPluginWsUrl: illegal plugin socket path "${path}"`)
+  }
+
+  let wsUrl
+
+  if (connection.authMode === 'oauth') {
+    const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
+    wsUrl = buildPluginWsUrlWithTicket(connection.baseUrl, path, ticket)
+  } else if (connection.token) {
+    wsUrl = buildPluginWsUrlWithToken(connection.baseUrl, path, connection.token)
+  } else {
+    return null
+  }
+
+  const finalWsUrl = registryGatewayWsUrl(connection, wsUrl)
+  rememberRemoteWsHeaders(finalWsUrl, connection.headers)
+
+  return finalWsUrl
+}
+
+ipcMain.handle('hermes:plugin:ws-url', async (_event, scope, path) => {
+  return gatewayWsUrlIpcResult(() => freshPluginWsUrl(scope, path))
 })
 
 // Transactional update for a Desktop-managed SSH install. Unlike the generic

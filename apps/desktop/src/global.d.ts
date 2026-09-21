@@ -38,6 +38,15 @@ declare global {
         connectionId?: null | string
         profile?: null | string
       }) => Promise<GatewayWsUrlResult>
+      // Plugin event-socket dial URL for the same (connectionId, profile)
+      // backend: main resolves the backend, mints an OAuth ticket when needed,
+      // and returns the ready-to-open plugin-namespace URL. Null when the
+      // backend has no usable WS credential — callers stay on their polling
+      // fallback. Same GatewayWsUrlResult contract otherwise.
+      getPluginWsUrl?: (
+        scope: { connectionId?: null | string; profile?: null | string },
+        path: string
+      ) => Promise<GatewayWsUrlResult | null>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
       // Credential-free routes across the union connection registry. The

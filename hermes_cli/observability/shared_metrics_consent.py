@@ -133,23 +133,28 @@ def shared_metrics_state(config: dict) -> SharedMetricsState:
         enabled = explicit
         send = enabled and shared.get("send") is True
         source = "profile"
-    elif global_answer is not None:
-        enabled = send = global_answer
-        source = "global"
-    elif deployment_answer is not None:
-        enabled = send = deployment_answer
-        source = "env"
     else:
-        enabled = send = False
-        source = "default"
+        if global_answer is not None:
+            enabled, source = global_answer, "global"
+        elif deployment_answer is not None:
+            enabled, source = deployment_answer, "env"
+        else:
+            enabled, source = False, "default"
+        # A profile may inherit collection yet refuse transmission: an explicit ``send: false``
+        # is that profile's own decision and wins over the inherited answer.
+        send = enabled and shared.get("send") is not False
     decided = global_answer is not None or deployment_answer is not None
     return SharedMetricsState(enabled=enabled, send=send, decided=decided, source=source)
 
 
 def consent_prompt_pending(config: dict) -> bool:
-    """True when a surface should ask: collection is off for this profile and nobody has answered."""
+    """True when a surface should ask: nothing anywhere has answered for this profile.
+
+    A profile that wrote its own ``enabled`` key already decided — even ``enabled: false``
+    set by hand before any global answer existed must not be asked to reconsider.
+    """
     state = shared_metrics_state(config)
-    return not state.enabled and not state.decided
+    return not state.decided and state.source == "default"
 
 
 # ── the writer ───────────────────────────────────────────────────────────────

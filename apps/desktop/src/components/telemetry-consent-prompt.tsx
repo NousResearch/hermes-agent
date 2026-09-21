@@ -53,7 +53,9 @@ export function TelemetryConsentPrompt({ enabled, profile }: { enabled: boolean;
     let cancelled = false
     void getSharedMetricsConsent(profile)
       .then(state => {
-        if (!cancelled && !state.decided && !state.enabled) {
+        // Same rule as the CLI: ask only when nothing anywhere has answered — a profile
+        // that wrote its own key (even `enabled: false`) has decided.
+        if (!cancelled && !state.decided && state.source === 'default') {
           setOpen(true)
         }
       })
@@ -75,6 +77,10 @@ export function TelemetryConsentPrompt({ enabled, profile }: { enabled: boolean;
       await setSharedMetricsConsent({ enabled: share, send: share }, profile)
       void invalidateSharedMetricsConsent(profile)
     } catch (error) {
+      // Nothing was persisted (the on-disk state is still "undecided"), so let a later
+      // trigger this run — a reconnect, a profile swap back — ask again instead of
+      // waiting for the next launch.
+      askedThisRun.delete(profile)
       notifyError(error, copy.failedSave)
     } finally {
       setBusy(false)

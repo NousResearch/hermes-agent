@@ -68,6 +68,23 @@ def test_explicit_profile_opt_out_beats_the_global_answer():
     assert consent_prompt_pending(profile) is False
 
 
+def test_explicit_send_false_wins_over_inherited_collection():
+    """A profile may inherit collection yet refuse transmission by hand-setting only `send`."""
+    apply_shared_metrics_choice({}, enabled=True, send=True)
+
+    profile = {"telemetry": {"shared_metrics": {"send": False}}}
+    state = shared_metrics_state(profile)
+    assert (state.enabled, state.send, state.source) == (True, False, "global")
+    assert resolve_send_config(profile).send is False
+
+
+def test_profile_that_opted_out_by_hand_is_never_asked():
+    """An explicit profile key is a decision even before any global answer exists."""
+    profile = {"telemetry": {"shared_metrics": {"enabled": False}}}
+    assert shared_metrics_state(profile).decided is False
+    assert consent_prompt_pending(profile) is False
+
+
 def test_later_answers_do_not_rewrite_the_global_default():
     apply_shared_metrics_choice({}, enabled=False, send=False)
     apply_shared_metrics_choice({}, enabled=True, send=True)

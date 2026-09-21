@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import Any, Collection, Dict
 
-_STATUS_MARKERS = {"installed": "✓", "missing": "·", "manual-only": "?"}
+_STATUS_MARKERS = {"installed": "✓", "configured": "✓", "missing": "·", "manual-only": "?"}
 
 # (name, help, optional (flag, add_argument kwargs), handler(args)) — order defines the help listing.
 _SUBCOMMANDS = [
@@ -67,7 +68,33 @@ def _all_servers() -> list:
     return [*custom_servers(lsp_cfg.get("servers") if isinstance(lsp_cfg, dict) else None), *SERVERS]
 
 
-def _status_for(server_id: str) -> str:
+def _configured_server_ids() -> set[str]:
+    """Server ids carrying a ``command`` override in the active profile.
+
+    Deliberately independent of the LSP service: a pinned command is a fact about the config, and it
+    is exactly the case ``lsp status`` used to misreport — the server resolves from the override while
+    ``detect_status`` reports ``missing``, because it only looks in the managed bin dir.
+    """
+    from hermes_cli.config import load_config_readonly
+    try:
+        lsp_cfg = load_config_readonly().get("lsp") or {}
+    except Exception:  # noqa: BLE001 — status must still render on a broken config
+        return set()
+    servers = lsp_cfg.get("servers") if isinstance(lsp_cfg, dict) else None
+    if not isinstance(servers, dict):
+        return set()
+    return {
+        server_id for server_id, server_cfg in servers.items()
+        if isinstance(server_id, str)
+        and isinstance(server_cfg, dict)
+        and isinstance(server_cfg.get("command"), list)
+        and server_cfg["command"]
+    }
+
+
+def _status_for(server_id: str, configured_servers: Collection[str] = ()) -> str:
+    if server_id in configured_servers:
+        return "configured"
     import os
     from agent.lsp.install import detect_status
     from agent.lsp.servers import SERVERS, ServerContext
@@ -82,11 +109,13 @@ def _cmd_status(emit_json: bool) -> int:
     from agent.lsp import get_service
     servers = _all_servers()
     svc = get_service()
-    info = svc.get_status() if svc is not None else {"enabled": False}
+    info: Dict[str, Any] = svc.get_status() if svc is not None else {"enabled": False}
+    configured_servers = _configured_server_ids()
+    info["configured_servers"] = sorted(configured_servers)
     if emit_json:
         import json
         registry = [{"server_id": s.server_id, "extensions": list(s.extensions), "description": s.description,
-                     "binary_status": _status_for(s.server_id)} for s in servers]
+                     "binary_status": _status_for(s.server_id, configured_servers)} for s in servers]
         sys.stdout.write(json.dumps({"service": info, "registry": registry}, indent=2) + "\n")
         return 0
 
@@ -109,7 +138,7 @@ def _cmd_status(emit_json: bool) -> int:
         out += ["", "Backend warnings", "================"] + [f"  ! {line}" for line in backend_warnings]
     out += ["", "Registered Servers", "=================="]
     for s in servers:
-        status = _status_for(s.server_id)
+        status = _status_for(s.server_id, configured_servers)
         ext_summary = ", ".join(list(s.extensions)[:5])
         if len(s.extensions) > 5:
             ext_summary += f", … (+{len(s.extensions) - 5})"

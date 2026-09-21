@@ -6,7 +6,9 @@ Covers:
    alongside the server, so the npm install command targets both.
 2. ``hermes lsp status`` surfaces a ``Backend warnings`` section when
    bash-language-server is installed but ``shellcheck`` is missing.
-3. ``_check_lint`` returns ``skipped`` (not ``error``) when the linter
+3. ``hermes lsp status`` reports explicit server command overrides as
+   ``configured`` even when the LSP service is disabled.
+4. ``_check_lint`` returns ``skipped`` (not ``error``) when the linter
    command exists on PATH but couldn't actually run — e.g. ``npx tsc``
    without the typescript SDK installed.  This is what unblocks the
    LSP semantic tier on TypeScript files when the user doesn't also
@@ -15,12 +17,20 @@ Covers:
 from __future__ import annotations
 
 import io
+import json
+import os
+import subprocess
+import sys
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.lsp.install import INSTALL_RECIPES
+
+
+_WORKTREE = Path(__file__).resolve().parents[3]
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +146,43 @@ def test_status_output_includes_backend_warnings_section(tmp_path, monkeypatch):
     output = buf.getvalue()
     assert "Backend warnings" in output
     assert "shellcheck" in output
+
+
+def test_status_reports_command_override_as_configured_when_disabled(tmp_path):
+    command = tmp_path / "pyright-langserver"
+    command.write_text("launcher\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        "lsp:\n"
+        "  enabled: false\n"
+        "  servers:\n"
+        "    pyright:\n"
+        "      command:\n"
+        f"        - {command.as_posix()}\n"
+        "        - --stdio\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env.update({"HERMES_HOME": str(tmp_path), "PYTHONPATH": str(_WORKTREE)})
+
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "lsp", "status"],
+        cwd=str(_WORKTREE), env=env, capture_output=True, text=True, timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    pyright_line = next(line for line in result.stdout.splitlines() if "pyright" in line)
+    assert "[configured" in pyright_line
+    assert "[missing" not in pyright_line
+
+    json_result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "lsp", "status", "--json"],
+        cwd=str(_WORKTREE), env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert json_result.returncode == 0, json_result.stderr
+    payload = json.loads(json_result.stdout)
+    pyright = next(server for server in payload["registry"] if server["server_id"] == "pyright")
+    assert pyright["binary_status"] == "configured"
+    assert payload["service"]["configured_servers"] == ["pyright"]
 
 
 # ---------------------------------------------------------------------------

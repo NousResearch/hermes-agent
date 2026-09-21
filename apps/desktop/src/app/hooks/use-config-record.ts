@@ -49,7 +49,13 @@ export const useHermesConfigRecord = (profile?: ProfileScope) => {
 
   return {
     ...query,
-    writeScope: peekConfigReadOrigin(query.data) ?? null
+    // `undefined`, never `null`: callers hand this straight to saveHermesConfig
+    // with sparse `setNested({}, …)` patches, so the WeakMap misses and the
+    // fallback is capabilityScoped(writeScope) → profileScoped(writeScope).
+    // profileScoped(undefined) keeps the app-wide `_apiProfile`; profileScoped
+    // (null) drops it and would write the PRIMARY profile before the first
+    // GET resolves.
+    writeScope: peekConfigReadOrigin(query.data) ?? undefined
   }
 }
 

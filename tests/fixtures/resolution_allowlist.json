@@ -145,11 +145,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/copilot_auth.py",
-    "symbol": "_gh_cli_candidates",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/dep_ensure.py",
     "symbol": "<module>",
     "kind": "bare_which"
@@ -702,11 +697,6 @@
   {
     "path": "hermes_cli/_early_recovery.py",
     "symbol": "_find_uv_binary",
-    "kind": "known_path_table"
-  },
-  {
-    "path": "hermes_cli/copilot_auth.py",
-    "symbol": "_gh_cli_candidates",
     "kind": "known_path_table"
   },
   {

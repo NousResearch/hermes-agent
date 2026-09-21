@@ -451,8 +451,9 @@ class TestMicroCompaction:
     def test_first_pass_costs_marker_overhead_then_pays_it_back(self):
         """The first pass can grow the transcript; later passes recover it.
 
-        Inserting the summary marker costs a fixed ~400 tokens of scaffolding
-        (the compaction preamble, the historical heading and the end marker).
+        Inserting the summary marker costs a fixed block of scaffolding
+        (``SUMMARY_PREFIX``, the historical heading and the end marker —
+        currently ~450 tokens and grows when the preamble is lengthened).
         On pass one that overhead is paid against a single absorbed exchange,
         so the net can be positive. From pass two on the marker is replaced
         rather than added, so the scaffolding is already paid for and each
@@ -476,13 +477,20 @@ class TestMicroCompaction:
         assert after_many < after_first, "later passes must recover it"
 
     def test_cumulative_savings_accumulate_across_passes(self):
+        """Session-total savings go positive once marker overhead is paid back.
+
+        The first pass inserts ``SUMMARY_PREFIX`` scaffolding (~450 tokens);
+        with the current preamble that alone leaves the cumulative counter
+        negative after only a few absorptions. Enough later passes must
+        still recover it — that is the amortization contract.
+        """
         cc = _compressor()
         messages = _conversation(exchanges=10)
 
-        for _ in range(4):
+        for _ in range(6):
             messages = cc._micro_compact(messages)
 
-        assert cc._micro_compact_passes == 4
+        assert cc._micro_compact_passes == 6
         assert cc._micro_compact_tokens_saved_total > 0
 
     def test_defrag_triggers_once_the_rolling_summary_grows(self):
@@ -716,7 +724,8 @@ class TestMicroCompaction:
 
         from agent import turn_finalizer
 
-        src = inspect.getsource(turn_finalizer.finalize_turn)
+        # The micro-compaction gate lives in the helper finalize_turn calls.
+        src = inspect.getsource(turn_finalizer._micro_compact_after_turn)
         micro_block = src.split("Post-turn micro-compaction", 1)[1]
         # Scope to the micro block only: stop at the persist call that follows.
         micro_block = micro_block.split("agent._persist_session", 1)[0]
@@ -802,7 +811,8 @@ class TestDefragFlushCursorInvalidation:
 
         from agent import turn_finalizer
 
-        src = inspect.getsource(turn_finalizer.finalize_turn)
+        # The micro-compaction gate lives in the helper finalize_turn calls.
+        src = inspect.getsource(turn_finalizer._micro_compact_after_turn)
         micro_block = src.split("Post-turn micro-compaction", 1)[1]
         micro_block = micro_block.split("agent._persist_session", 1)[0]
         assert "_flush_scan_cursor_invalidated" in micro_block, (
@@ -813,3 +823,48 @@ class TestDefragFlushCursorInvalidation:
             "finalize_turn must invalidate the bounded flush-scan cursor "
             "when the defrag pop stripped a live marker's stamp"
         )
+
+
+class TestMergeAdjacentUserTurnsPersistedMarker:
+    """Third pop site under the _DB_PERSISTED_MARKER contract: a supersede that
+    drops a stale micro marker can leave two persisted plain user dicts adjacent;
+    the merge rewrites the earlier one's content in place, so the stamp must be
+    popped and the flush-scan cursor invalidated or the merged text is
+    identity-skipped and never reaches state.db."""
+
+    def _spliced_merge(self):
+        from agent.context_compressor import (
+            _DB_PERSISTED_MARKER,
+            COMPRESSED_SUMMARY_METADATA_KEY,
+            MICRO_COMPACT_MARKER_KEY,
+        )
+
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = "ROLLING"
+        u1 = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
+        stale_micro = {
+            "role": "assistant",
+            "content": "SUMMARY",
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+            MICRO_COMPACT_MARKER_KEY: True,
+            _DB_PERSISTED_MARKER: True,
+        }
+        u2 = {"role": "user", "content": "second", _DB_PERSISTED_MARKER: True}
+        exchange = [
+            {"role": "assistant", "content": "answer", _DB_PERSISTED_MARKER: True},
+            {"role": "user", "content": "third", _DB_PERSISTED_MARKER: True},
+        ]
+        messages = [u1, stale_micro, u2, *exchange]
+        # Dropping stale_micro leaves u1/u2 adjacent; the exchange is spliced out.
+        return cc, cc._splice_micro_compact_result(messages, 3, 5, supersede=True)
+
+    def test_merge_pops_persisted_marker_and_raises_flag(self):
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+
+        cc, result = self._spliced_merge()
+
+        merged = [m for m in result if m.get("role") == "user"]
+        assert len(merged) == 1
+        assert merged[0]["content"] == "first\n\nsecond"
+        assert _DB_PERSISTED_MARKER not in merged[0]
+        assert cc._flush_scan_cursor_invalidated is True

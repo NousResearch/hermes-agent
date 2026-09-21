@@ -58,6 +58,7 @@ def _cache_agent(
     static=None,
     cache_ttl="5m",
     provider="openai",
+    model="gpt-4o",
     tools=None,
     direct_tool_cache=False,
 ):
@@ -69,6 +70,7 @@ def _cache_agent(
         _use_native_cache_layout=native,
         _cache_ttl=cache_ttl,
         provider=provider,
+        model=model,
         tools=tools or [],
         _direct_native_anthropic_tool_cache_capability=lambda: direct_tool_cache,
         client=None,
@@ -269,7 +271,8 @@ class TestRedecoratePromptCacheOnPolicyChange:
             {"role": "system", "content": prompt},
             {"role": "user", "content": "task"},
             {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "task\n\n" + guidance},
+            {"role": "user", "content": "task"},
+            {"role": "user", "content": guidance},
         ]
         decorated = apply_anthropic_cache_control(base, native_anthropic=True)
 

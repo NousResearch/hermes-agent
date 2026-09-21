@@ -102,7 +102,7 @@ hermes setup --portal
 | Provider | 说明 | 配置方式 |
 |----------|-----------|---------------|
 | **Nous Portal** | 订阅制，零配置 | 通过 `hermes model` 进行 OAuth 登录 |
-| **OpenAI Codex** | ChatGPT OAuth，使用 Codex 模型 | 通过 `hermes model` 进行设备码认证 |
+| **OpenAI Codex** | ChatGPT 或 Codex 订阅，使用 Codex 模型 | 通过 `hermes model` → **ChatGPT or Codex Subscription** 进行设备码认证 |
 | **Anthropic** | 直接使用 Claude 模型——Max 计划 + 额外用量积分（OAuth），或按 token 付费的 API key | `hermes model` → OAuth 登录（需要 Max + 额外积分），或 Anthropic API key |
 | **OpenRouter** | 跨多个 provider 的多模型路由 | 输入 API key |
 | **Z.AI** | GLM / Zhipu 托管模型 | 设置 `GLM_API_KEY` / `ZAI_API_KEY` |
@@ -236,7 +236,7 @@ Agent 会代你执行终端命令并显示结果。
 hermes gateway setup    # 交互式平台配置
 ```
 
-接入 [Telegram](/user-guide/messaging/telegram)、[Discord](/user-guide/messaging/discord)、[Slack](/user-guide/messaging/slack)、[WhatsApp](/user-guide/messaging/whatsapp)、[Signal](/user-guide/messaging/signal)、[Email](/user-guide/messaging/email)、[Home Assistant](/user-guide/messaging/homeassistant) 或 [Microsoft Teams](/user-guide/messaging/teams)。
+接入 [Telegram](../user-guide/messaging/telegram.md)、[Discord](../user-guide/messaging/discord.md)、[Slack](../user-guide/messaging/slack.md)、[WhatsApp](../user-guide/messaging/whatsapp.md)、[Signal](../user-guide/messaging/signal.md)、[Email](../user-guide/messaging/email.md)、[Home Assistant](../user-guide/messaging/homeassistant.md) 或 [Microsoft Teams](../user-guide/messaging/teams.md)。
 
 ### 自动化与工具
 

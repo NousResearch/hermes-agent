@@ -51,6 +51,7 @@ def _make_agent(session_db=None, session_id="sess-codex"):
     # Pre-seed the session so run_codex_app_server_turn skips the spawn block.
     agent._codex_session = MagicMock()
     agent._codex_session.run_turn.return_value = _make_turn()
+    agent._codex_session_prompt = None  # seeded session: no recorded composition to compare
     agent.tool_progress_callback = None
     agent._iters_since_skill = 0
     agent._skill_nudge_interval = 0
@@ -72,6 +73,7 @@ def test_codex_success_flushes_and_reports_persisted():
         effective_task_id="task-1",
     )
     assert result["completed"] is True
+    assert isinstance(result["messages"][-1]["timestamp"], float)
     # With the agent as sole persister, the gateway must SKIP its DB write.
     assert result["agent_persisted"] is True
 
@@ -110,6 +112,7 @@ def test_codex_turn_persists_each_message_exactly_once():
     real AIAgent._flush_messages_to_session_db to prove no #860/#42039
     duplicate-write regression on the codex path."""
     tmp = tempfile.mkdtemp(prefix="codex_persist_")
+    db = None
     try:
         db = SessionDB(Path(tmp) / "state.db")
         sid = "sess-codex-once"
@@ -152,13 +155,19 @@ def test_codex_turn_persists_each_message_exactly_once():
         # Exactly one user turn, exactly one assistant turn — no duplicates.
         assert contents.count("USER_TURN") == 1, contents
         assert contents.count("CODEX_ASSISTANT") == 1, contents
+        assistant_row = next(
+            row for row in rows if row["content"] == "CODEX_ASSISTANT"
+        )
+        assert isinstance(assistant_row["timestamp"], float)
         # session_search can now see the codex conversation.
         hits = {r["session_id"] for r in db.search_messages("CODEX_ASSISTANT")}
         assert sid in hits
     finally:
         import shutil
 
-        shutil.rmtree(tmp)
+        if db is not None:
+            db.close()
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 class TestGatewayPersistedResolution:

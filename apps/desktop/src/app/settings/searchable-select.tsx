@@ -88,7 +88,11 @@ export function SearchableSelect({
           <Codicon className="shrink-0 opacity-60" name={open ? 'chevron-up' : 'chevron-down'} size="1rem" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+      {/* min-w, not w: the trigger shrink-wraps to its current value inside the
+          settings grid, so a width pinned to it clipped every IANA row after
+          "Africa/A…". The popover keeps its own width and only grows to cover a
+          trigger wider than that. */}
+      <PopoverContent align="start" className="min-w-(--radix-popover-trigger-width) p-0">
         <Command filter={rankSearchOption}>
           <CommandInput autoFocus placeholder={placeholder} />
           <CommandList>

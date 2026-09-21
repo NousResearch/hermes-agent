@@ -1,5 +1,7 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
 import type { Usage } from '@hermes/shared/gateway-events'
+import unicodeSpinners from 'unicode-animations'
+import type { BrailleSpinnerName } from 'unicode-animations'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
@@ -72,8 +74,23 @@ export interface Notice {
 // derived from this tuple so adding/removing a style only touches one
 // line — `useConfigSync` (validation) and `session.ts` (slash arg
 // validation + usage hint) both import it.
-export const INDICATOR_STYLES = ['ascii', 'emoji', 'kaomoji', 'unicode'] as const
-export type IndicatorStyle = (typeof INDICATOR_STYLES)[number]
+// `unicode:<name>` selects a spinner from the `unicode-animations`
+// package (bare `unicode` = `unicode:braille`); the variant list is
+// derived from the package itself so it can never drift from what the
+// renderer can draw.  Mirror in hermes_constants.py (INDICATOR_STYLE_VALUES)
+// for CLI/gateway-side validation.
+export const UNICODE_SPINNER_NAMES = Object.keys(unicodeSpinners) as BrailleSpinnerName[]
+export type UnicodeSpinnerName = BrailleSpinnerName
+export type IndicatorStyle =
+  | 'ascii'
+  | 'emoji'
+  | 'kaomoji'
+  | 'unicode'
+  | `unicode:${UnicodeSpinnerName}`
+export const INDICATOR_STYLES: readonly IndicatorStyle[] = [
+  'ascii', 'emoji', 'kaomoji', 'unicode',
+  ...UNICODE_SPINNER_NAMES.map((n): IndicatorStyle => `unicode:${n}`)
+]
 export const DEFAULT_INDICATOR_STYLE: IndicatorStyle = 'kaomoji'
 
 export interface SelectionApi {

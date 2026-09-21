@@ -180,10 +180,12 @@ The status-bar busy indicator is pluggable — the default rotates Hermes' kawai
 
 ```yaml
 display:
-  tui_status_indicator: kaomoji   # kaomoji | emoji | unicode | ascii
+  tui_status_indicator: kaomoji   # kaomoji | emoji | unicode[:spinner] | ascii
 ```
 
 Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
+
+The `unicode` style is a braille spinner by default; `unicode:<spinner>` selects any animation from the bundled `unicode-animations` package: `braille`, `braillewave`, `dna`, `scan`, `rain`, `scanline`, `pulse`, `snake`, `sparkle`, `cascade`, `columns`, `orbit`, `breathe`, `waverows`, `checkerboard`, `helix`, `fillsweep`, `diagswipe` — e.g. `/indicator unicode:breathe`. Each spinner keeps its authored frame rate and a fixed reserved width.
 
 ## Auto-resume
 

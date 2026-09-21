@@ -2630,16 +2630,21 @@ class CLICommandsMixin:
         _persist_display_choice("display.busy_input_mode", arg, "Busy input mode", _BUSY_MODE_LONG[arg])
 
     def _handle_indicator_command(self, cmd: str):
-        """Handle /indicator [status|kaomoji|emoji|unicode|ascii] — pick the TUI busy-indicator style.
+        """Handle /indicator [status|kaomoji|emoji|unicode[:spinner]|ascii] — pick the TUI busy-indicator style.
         Persists to ``display.tui_status_indicator`` (the key the TUI reads) for its next render."""
-        from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
+        from hermes_constants import (
+            DEFAULT_INDICATOR_STYLE,
+            INDICATOR_STYLE_VALUES,
+            UNICODE_SPINNER_NAMES,
+        )
         current = (self.config.get("display") or {}).get("tui_status_indicator", DEFAULT_INDICATOR_STYLE)
         arg = _command_arg(cmd, lower=True)
-        usage = _dim_line(f"Usage: /indicator [{'|'.join(INDICATOR_STYLES)}]")
+        usage = _dim_line("Usage: /indicator [ascii|emoji|kaomoji|unicode[:spinner]]")
         if not arg or arg == "status":
             return _cp(_accent_line(f"Busy-indicator style: {current}"), usage)
-        if arg not in INDICATOR_STYLES:
-            return _cp(_dim_line(f'(._.) Unknown indicator style: {arg}'), usage)
+        if arg not in INDICATOR_STYLE_VALUES:
+            return _cp(_dim_line(f'(._.) Unknown indicator style: {arg}'), usage,
+                       _dim_line("unicode spinners: " + " | ".join(UNICODE_SPINNER_NAMES)))
         self.config.setdefault("display", {})["tui_status_indicator"] = arg
         _persist_display_choice("display.tui_status_indicator", arg, "Busy-indicator style",
                                 "The TUI picks up the new style on its next render.")

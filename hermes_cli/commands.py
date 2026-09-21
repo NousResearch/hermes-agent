@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from utils import is_truthy_value
-from hermes_constants import INDICATOR_STYLES
+from hermes_constants import INDICATOR_STYLE_VALUES
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +197,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]", argument_mode="options"),
     CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
-               cli_only=True, args_hint=f"[{'|'.join(INDICATOR_STYLES)}]",
-               subcommands=INDICATOR_STYLES, desktop="terminal"),
+               cli_only=True, args_hint="[ascii|emoji|kaomoji|unicode[:spinner]]",
+               subcommands=tuple(sorted(INDICATOR_STYLE_VALUES)), desktop="terminal"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status"),
                desktop="composer-voice"),

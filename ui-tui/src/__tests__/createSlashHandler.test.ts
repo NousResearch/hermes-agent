@@ -768,7 +768,9 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/indicator sparkle')).toBe(true)
     expect(rpc).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /indicator [ascii|emoji|kaomoji|unicode]')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(
+      'usage: /indicator [ascii|emoji|kaomoji|unicode[:spinner]]  (spinners: braille, braillewave, dna, scan, rain, scanline, pulse, snake, sparkle, cascade, columns, orbit, breathe, waverows, checkerboard, helix, fillsweep, diagswipe)'
+    )
   })
 
   it('drops stale slash.exec output after a newer slash', async () => {

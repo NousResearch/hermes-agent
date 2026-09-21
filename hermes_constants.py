@@ -22,6 +22,23 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERR
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
+# Spinner names from the `unicode-animations` npm package, selectable as
+# ``unicode:<name>`` (bare ``unicode`` = ``unicode:braille``).  Mirror of
+# ``BrailleSpinnerName`` in ui-tui/node_modules/unicode-animations/dist/braille.d.ts;
+# the TUI derives its own list from the package at runtime, so a mismatch here
+# only narrows CLI/gateway validation, never the TUI's rendering.
+UNICODE_SPINNER_NAMES: tuple[str, ...] = (
+    "braille", "braillewave", "dna", "scan", "rain", "scanline", "pulse",
+    "snake", "sparkle", "cascade", "columns", "orbit", "breathe", "waverows",
+    "checkerboard", "helix", "fillsweep", "diagswipe",
+)
+
+# Full accepted value set for ``display.tui_status_indicator``: the four base
+# styles plus every ``unicode:<spinner>`` variant.
+INDICATOR_STYLE_VALUES: frozenset[str] = frozenset(INDICATOR_STYLES) | frozenset(
+    f"unicode:{name}" for name in UNICODE_SPINNER_NAMES
+)
+
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.

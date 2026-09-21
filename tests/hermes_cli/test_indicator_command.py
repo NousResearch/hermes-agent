@@ -134,13 +134,13 @@ class TestIndicatorRegistry(unittest.TestCase):
 
     def test_indicator_subcommands_match_handler(self):
         from hermes_cli.commands import COMMAND_REGISTRY
-        from hermes_constants import INDICATOR_STYLES
+        from hermes_constants import INDICATOR_STYLE_VALUES
 
         indicator = next(c for c in COMMAND_REGISTRY if c.name == "indicator")
         self.assertEqual(indicator.category, "Configuration")
         # The registered styles are what the handler accepts — single source of truth.
         self.assertEqual(
-            set(indicator.subcommands), set(INDICATOR_STYLES)
+            set(indicator.subcommands), set(INDICATOR_STYLE_VALUES)
         )
 
 

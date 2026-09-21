@@ -8,6 +8,7 @@ import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/ski
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
+import { addToolSeconds } from '@/store/turn-breakdown'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
 
 import { SUBAGENT_EVENT_TYPES, toTodoPayload } from '../utils'
@@ -69,6 +70,14 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     if (sessionId) {
       flushQueuedDeltas(sessionId)
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
+
+      // Accumulate the call's measured duration for the turn-breakdown
+      // popover (issue #117224). Subagent orchestration tools are skipped —
+      // their `duration_s` double-counts the child tools that also report.
+      if (typeof payload?.duration_s === 'number' && payload?.name !== 'delegate_task') {
+        addToolSeconds(sessionId, payload.duration_s)
+      }
+
       // Onboarding's first build paces its check-ins off real work done
       // (no-op in every other session).
       reportFirstBuildToolComplete(sessionId)

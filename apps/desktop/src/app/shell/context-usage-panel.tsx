@@ -1,13 +1,20 @@
 import { compactNumber } from '@hermes/shared'
-import { useMemo } from 'react'
+import { useStore } from '@nanostores/react'
+import { useMemo, useState } from 'react'
 
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { useI18n } from '@/i18n'
+import type { Translations } from '@/i18n/types'
+import { formatDuration } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
+import { $turnBreakdownBySession, type TurnBreakdown } from '@/store/turn-breakdown'
 import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types/hermes'
 
 interface ContextUsagePanelProps {
   breakdown: ContextBreakdown | null
   loading: boolean
+  /** The session whose turn clock the breakdown section reads. */
+  sessionId?: null | string
   usage: UsageStats
 }
 
@@ -16,9 +23,10 @@ interface ContextUsagePanelProps {
  *  popover opens with its numbers already in hand. `usage` is the gauge's
  *  merged figure — measured occupancy when the backend has it, the estimate
  *  otherwise — so the header and the bar can never disagree. */
-export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePanelProps) {
+export function ContextUsagePanel({ breakdown, loading, sessionId, usage }: ContextUsagePanelProps) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel
+  const turnCopy = t.shell.statusbar.turnBreakdown
   const contextMax = usage.context_max ?? 0
   const contextUsed = usage.context_used ?? 0
   const contextPercent = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
@@ -71,6 +79,64 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
       {loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
 
       {!loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>}
+
+      <TurnBreakdownSection copy={turnCopy} sessionId={sessionId} />
+    </div>
+  )
+}
+
+/** Per-turn wall-clock breakdown (issue #117224). Wall time and tool time come
+ *  from the per-session clock store fed by the message stream; model time is
+ *  the remainder, prefixed with `~` because the windows overlap (a tool can
+ *  run while the model streams) — same honesty marker the CLI uses for
+ *  estimated context figures. Hidden entirely until a turn has run. */
+function TurnBreakdownSection({
+  copy,
+  sessionId
+}: {
+  copy: Translations['shell']['statusbar']['turnBreakdown']
+  sessionId?: null | string
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  const breakdownMap = useStore($turnBreakdownBySession)
+  const breakdown: TurnBreakdown | undefined = sessionId ? breakdownMap[sessionId] : undefined
+  const running = Boolean(breakdown?.startedAt && !breakdown.completedAt)
+
+  // Tick once a second only while a turn is live, so the wall figure counts up
+  // in place; a frozen turn renders a static value.
+  useViewedInterval(() => setNow(Date.now()), 1000, running)
+
+  if (!breakdown?.startedAt) {
+    return null
+  }
+
+  const endedAt = breakdown.completedAt ?? now
+  const wallSeconds = Math.max(0, Math.floor((endedAt - breakdown.startedAt) / 1000))
+  const toolSeconds = Math.floor(breakdown.toolSeconds)
+  const modelSeconds = Math.max(0, wallSeconds - toolSeconds)
+
+  const entries: ReadonlyArray<{ label: string; value: string }> = [
+    { label: copy.wall, value: formatDuration((endedAt - breakdown.startedAt)) },
+    { label: copy.tools, value: `${toolSeconds}s` },
+    { label: copy.model, value: `~${formatDuration(modelSeconds * 1000)}` }
+  ]
+
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-(--ui-stroke-secondary) pt-2" data-slot="turn-breakdown">
+      <p className="font-medium text-foreground">
+        {copy.title}
+        {running ? ` · ${copy.running}` : ''}
+      </p>
+
+      <ul className="flex flex-col gap-1">
+        {entries.map(entry => (
+          <li className="flex items-center justify-between gap-2" key={entry.label}>
+            <span className="text-muted-foreground">{entry.label}</span>
+
+            <span className="tabular-nums text-foreground">{entry.value}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

@@ -96,31 +96,39 @@ describe('statusbar item visibility', () => {
     expect(screen.getByText('Plugin thing')).toBeTruthy()
   })
 
-  it('starts the per-turn session readouts hidden and restores them from the menu', async () => {
+  it('starts the timers visible (CLI bar parity) and lets the menu hide them', async () => {
     const statusbar = bar([
       item('running-timer', 'Turn timer', { variant: 'text' }),
-      item('context-usage', 'Context meter', { variant: 'menu' }),
-      item('cache-hit-rate', 'Cache hit rate', { variant: 'text' }),
-      item('tokens-per-second', 'Tokens per second', { variant: 'text' }),
       item('session-timer', 'Session timer', { variant: 'text' }),
       item('gateway-health', 'Gateway')
     ])
 
-    for (const label of ['Turn timer', 'Context meter', 'Cache hit rate', 'Tokens per second', 'Session timer']) {
-      expect(screen.queryByText(label)).toBeNull()
-    }
+    // The timers left STATUSBAR_HIDDEN_BY_DEFAULT (issue #117224 user
+    // follow-up): the last-turn and session clocks are the bar's health
+    // answer, same as the CLI bar's ⏱/⏲ pair, so they ship visible.
+    expect(within(statusbar).getByText('Turn timer')).toBeTruthy()
+    expect(within(statusbar).getByText('Session timer')).toBeTruthy()
 
     openContextMenu(statusbar)
 
-    for (const [id, label] of [
-      ['session-timer', 'Session timer'],
-      ['cache-hit-rate', 'Cache hit rate']
-    ]) {
-      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: label }))
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'Session timer' }))
 
-      expect($statusbarHiddenIds.get()).not.toContain(id)
-      expect(within(statusbar).getByText(label)).toBeTruthy()
-    }
+    expect($statusbarHiddenIds.get()).toContain('session-timer')
+    expect(within(statusbar).queryByText('Session timer')).toBeNull()
+  })
+
+  it('surfaces the context meter, tokens-per-second and cache-hit-rate by default (CLI bar parity)', async () => {
+    const statusbar = bar([
+      item('context-usage', 'Context meter', { variant: 'menu' }),
+      item('tokens-per-second', 'Tokens per second', { variant: 'text' }),
+      item('cache-hit-rate', 'Cache hit rate', { variant: 'text' })
+    ])
+
+    expect(within(statusbar).getByText('Context meter')).toBeTruthy()
+    expect(within(statusbar).getByText('Tokens per second')).toBeTruthy()
+    // Issue #117224 user follow-up: the cache hit rate is one of the readouts
+    // users watch, so it ships visible like the CLI bar's ◎ segment.
+    expect(within(statusbar).getByText('Cache hit rate')).toBeTruthy()
   })
 })
 

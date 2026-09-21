@@ -1950,14 +1950,38 @@ def _get_usage(agent) -> dict:
     # Cache-hit ratio + rolling latency/tps (CLI status-bar parity). Omitted, not fabricated, when there is no
     # data (Codex reports no latency; zero cache reads shows no hit% rather than an alarming 0).
     with contextlib.suppress(Exception):
-        # Mirrors the classic CLI bar (cli.py _get_status_bar_snapshot / PR #98250): hit =
-        # session_cache_read_tokens / session_prompt_tokens (CanonicalUsage.prompt_tokens = input +
-        # cache_read + cache_write) latency/tps read the deque(maxlen=10) history maintained per API call in
-        # agent/conversation_loop.py.
-        _prompt_total = int(getattr(agent, "session_prompt_tokens", 0) or 0)
-        _cache_read = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
-        if _prompt_total > 0 and _cache_read > 0:
-            usage["cache_hit_pct"] = max(0, min(100, round(_cache_read / _prompt_total * 100)))
+        # Mirrors the classic CLI bar (cli_status_bar_mixin._cache_hit_rate): the hit ratio is
+        # measured SINCE THE LAST BASELINE RESET — a model switch or a context compression both
+        # invalidate the prompt cache, so a session-cumulative ratio would read falsely low
+        # forever after either. Baseline state rides on the agent (same home as the CLI's
+        # `self._cache_hit_baseline_*`), so per-session agents isolate naturally.
+        _model_name = getattr(agent, "model", None) or "unknown"
+        _base_model = getattr(agent, "_cache_hit_baseline_model", None)
+        _base_prompt = int(getattr(agent, "_cache_hit_baseline_prompt", 0) or 0)
+        _base_read = int(getattr(agent, "_cache_hit_baseline_read", 0) or 0)
+        _base_comps = int(getattr(agent, "_cache_hit_baseline_compressions", 0) or 0)
+        _cur_prompt = int(getattr(agent, "session_prompt_tokens", 0) or 0)
+        _cur_read = int(getattr(agent, "session_cache_read_tokens", 0) or 0)
+        _cur_comps = int(usage.get("compressions", 0) or 0)
+
+        def _rebase(*, tokens: bool) -> None:
+            agent._cache_hit_baseline_model = _model_name
+            agent._cache_hit_baseline_compressions = _cur_comps
+            if tokens:
+                agent._cache_hit_baseline_prompt = _cur_prompt
+                agent._cache_hit_baseline_read = _cur_read
+
+        if _base_model is None:
+            _rebase(tokens=False)
+        elif _model_name != _base_model:
+            _rebase(tokens=True)
+        if _cur_comps != _base_comps:
+            _rebase(tokens=True)
+        _delta_prompt = _cur_prompt - _base_prompt
+        _delta_read = _cur_read - _base_read
+        # A zero-read regime hides the readout (no data ≠ an alarming 0%).
+        if _delta_prompt > 0 and _delta_read > 0:
+            usage["cache_hit_pct"] = max(0, min(100, round(_delta_read / _delta_prompt * 100)))
     with contextlib.suppress(Exception):  # a status-bar readout must never break usage reporting
         _lhist = list(getattr(agent, "_api_latency_history", []) or [])
         _ohist = list(getattr(agent, "_api_output_history", []) or [])

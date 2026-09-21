@@ -10,6 +10,7 @@ import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
+import { StableText } from '@/components/chat/stable-text'
 import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
@@ -19,18 +20,21 @@ import { displayPath, pathLeaf } from '@/lib/display-path'
 import {
   Activity,
   AlertCircle,
+  Check,
   Clock,
+  ClockPause,
   Command,
   FolderOpen,
   Globe,
   Hash,
+  Hourglass,
   Layers3,
   Loader2,
   Terminal,
   Zap
 } from '@/lib/icons'
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { cacheHitClass, cacheHitLabel, compressionCountClass, contextBarLabel, contextUsageClass, formatDuration, latencyLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -59,6 +63,7 @@ import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
+import { $turnBreakdownBySession } from '@/store/turn-breakdown'
 import {
   $backendUpdateApply,
   $backendUpdateStatus,
@@ -185,6 +190,16 @@ export function useStatusbarItems({
   const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
 
   const activeSessionId = primaryFocused ? primaryActiveSessionId : (focusedRuntimeId ?? null)
+
+  // Last-turn clock (issue #117224 user feedback): the breakdown store freezes
+  // `completedAt` when a turn ends, so `completedAt − startedAt` keeps the
+  // PREVIOUS turn's duration on the bar after the turn — the CLI's ⏲ frozen
+  // timer. Null while no turn has run this session.
+  const turnBreakdown = useStoreSelector(
+    $turnBreakdownBySession,
+    breakdown => (activeSessionId ? (breakdown[activeSessionId] ?? null) : null)
+  )
+
   const busy = primaryFocused ? primaryBusy : focusedBusy
 
   // EMPTY_USAGE (module constant) keeps the fallback referentially stable —
@@ -298,10 +313,16 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(gaugeUsage), [gaugeUsage])
   const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])
+  // Threshold ladders return class NAMES only (see lib/statusbar) — the CSS
+  // custom properties they resolve to re-derive on every theme/skin change.
+  const contextUsageTone = useMemo(() => contextUsageClass(gaugeUsage), [gaugeUsage])
   // Both ride the same usage payload the context meter does (session.usage
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
   const cacheHit = cacheHitLabel(currentUsage)
+  const cacheHitTone = useMemo(() => cacheHitClass(currentUsage), [currentUsage])
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
+  const latency = latencyLabel(currentUsage)
+  const compressions = currentUsage.compressions ?? 0
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
   const systemResourcesItem = useSystemResourcesStatusbarItem()
@@ -614,15 +635,7 @@ export function useStatusbarItems({
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
       {
-        detail: <LiveDuration since={turnStartedAt} />,
-        hidden: !busy || !turnStartedAt,
-        icon: <Loader2 className="size-3 animate-spin" />,
-        id: 'running-timer',
-        label: copy.turnRunning,
-        toggleLabel: copy.toggleRunningTimer,
-        variant: 'text'
-      },
-      {
+        className: contextUsageTone || undefined,
         detail: contextBar || undefined,
         // Never self-hide: the user opted this item in (it's hidden-by-
         // default), so an empty label must render as a waiting placeholder,
@@ -633,12 +646,18 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
-          <ContextUsagePanel breakdown={contextBreakdown} loading={contextBreakdownLoading} usage={gaugeUsage} />
+          <ContextUsagePanel
+            breakdown={contextBreakdown}
+            loading={contextBreakdownLoading}
+            sessionId={activeSessionId}
+            usage={gaugeUsage}
+          />
         ),
         toggleLabel: copy.toggleContextUsage,
         variant: 'menu'
       },
       {
+        className: cacheHitTone || undefined,
         icon: <Layers3 className="size-3" />,
         id: 'cache-hit-rate',
         // Same never-self-hide rule as the context meter: opted in means a
@@ -657,11 +676,81 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
+        // CLI ◷ parity (issue #117224): rolling average API latency. Joins the
+        // never-self-hide family — an enabled-but-empty item renders '—' until
+        // the first completed call reports a timing. Label carries the number
+        // ONLY (icon + one value, like CLI) — a separate detail copy of the
+        // same value made the bar show "22.7s 22.7s" and read as a broken
+        // second timer.
+        hidden: !latency,
+        icon: <Clock className="size-3" />,
+        id: 'latency',
+        label: latency || '—',
+        title: copy.latencyTitle,
+        toggleLabel: copy.toggleLatency,
+        variant: 'text'
+      },
+      {
+        // CLI 🗜️ parity: compression count. Conditional segment — the count is
+        // 0 in the healthy steady state and a permanent "0" would be noise, so
+        // the whole item vanishes (and drops out of the customize menu) until
+        // the first compaction happens. Tone ladders up as it repeats.
+        className: compressionCountClass(compressions) || undefined,
+        detail: `${compressions}`,
+        hidden: compressions <= 0,
+        icon: <Layers3 className="size-3 rotate-180" />,
+        id: 'compressions',
+        label: copy.compressionsTitle,
+        title: copy.compressionsTitle,
+        toggleLabel: copy.toggleCompressions,
+        variant: 'text'
+      },
+      {
+        // Issue #117224 user feedback: the session total comes FIRST and the
+        // last-turn clock SECOND (CLI bar order: session duration, then the
+        // ⏱/⏲ turn timer). The paused-clock glyph distinguishes the session
+        // total; the hourglass marks the per-turn clock.
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
+        icon: <ClockPause className="size-3" />,
         id: 'session-timer',
-        label: copy.session,
+        label: copy.toggleSessionTimer,
         toggleLabel: copy.toggleSessionTimer,
+        variant: 'text'
+      },
+      {
+        // CLI ⏱ live / ⏲ frozen semantics — ticks while the turn runs, then
+        // freezes at the completed turn's duration instead of vanishing. The
+        // hourglass distinguishes it from the paused-clock session total
+        // before it.
+        detail:
+          busy && turnStartedAt ? (
+            <LiveDuration since={turnStartedAt} />
+          ) : turnBreakdown?.startedAt && turnBreakdown.completedAt ? (
+            <StableText>
+              {formatDuration(turnBreakdown.completedAt - turnBreakdown.startedAt)}
+            </StableText>
+          ) : undefined,
+        hidden: !((busy && turnStartedAt) || (turnBreakdown?.startedAt && turnBreakdown.completedAt)),
+        icon: <Hourglass className="size-3" />,
+        id: 'running-timer',
+        label: copy.turnRunning,
+        toggleLabel: copy.toggleRunningTimer,
+        variant: 'text'
+      },
+      {
+        // CLI ✓ parity (`_format_idle_since`): time elapsed since the last
+        // final reply completed. Hidden while a turn is live (the running
+        // timer owns the moment) and before the first turn — same as CLI.
+        detail: turnBreakdown?.completedAt ? (
+          <LiveDuration since={turnBreakdown.completedAt} />
+        ) : undefined,
+        hidden: Boolean(busy && turnStartedAt) || !turnBreakdown?.completedAt,
+        icon: <Check className="size-3" />,
+        id: 'idle-since',
+        label: copy.toggleIdleSince,
+        title: copy.idleSinceTitle,
+        toggleLabel: copy.toggleIdleSince,
         variant: 'text'
       },
       systemResourcesItem,
@@ -689,7 +778,12 @@ export function useStatusbarItems({
       backendVersionItem,
       busy,
       cacheHit,
+      cacheHitTone,
+      activeSessionId,
       chatOpen,
+      compressions,
+      contextUsageTone,
+      latency,
       clientVersionItem,
       contextBar,
       contextBreakdown,
@@ -702,6 +796,7 @@ export function useStatusbarItems({
       systemResourcesItem,
       terminalShowing,
       tokensPerSecond,
+      turnBreakdown,
       turnStartedAt
     ]
   )

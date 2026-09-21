@@ -3220,8 +3220,21 @@ export interface Translations {
       toggleVersion: string
       toggleFreeTier: string
       toggleWorkspace: string
+      toggleLatency: string
+      toggleCompressions: string
+      toggleIdleSince: string
+      idleSinceTitle: string
       cacheHitRateTitle: string
       tokensPerSecondTitle: string
+      latencyTitle: string
+      compressionsTitle: string
+      turnBreakdown: {
+        title: string
+        running: string
+        wall: string
+        tools: string
+        model: string
+      }
       agents: string
       closeAgents: string
       openAgents: string

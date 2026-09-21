@@ -18,6 +18,7 @@ import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
+import { beginTurnBreakdown, endTurnBreakdown } from '@/store/turn-breakdown'
 
 import type { GatewayEventContext } from './types'
 
@@ -147,6 +148,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       // resetting to accept-time here would visibly snap the timer back
       // after the submit-time seed above already started it.
       setTurnStartedAt(sessionStateByRuntimeIdRef.current.get(sessionId)?.turnStartedAt ?? Date.now())
+      // Turn-start clock for the breakdown popover (issue #117224). Uses
+      // the same seeded value so both readouts agree on when the turn began.
+      beginTurnBreakdown(sessionId)
     }
 
     return true
@@ -369,6 +373,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     if (isActiveEvent) {
       setTurnStartedAt(null)
+      // The turn's wall clock is now frozen in the per-session breakdown
+      // store; the idle readout derives from the completedAt timestamp.
+      endTurnBreakdown(sessionId)
 
       // Pet beat: a finished turn always celebrates — go straight to the
       // jump, never linger on the run/reason pose. One atom update (clears

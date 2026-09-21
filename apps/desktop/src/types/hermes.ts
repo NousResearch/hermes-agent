@@ -771,8 +771,12 @@ export interface SessionRuntimeInfo {
 export interface UsageStats {
   /** Rolling tokens-per-second over the last ~10 API calls (tui_gateway `_get_usage`). */
   avg_tps?: number
+  /** Rolling average API latency in seconds over the same ~10-call window (CLI ◷ parity). */
+  avg_latency_s?: number
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
+  /** Times the context window was auto-compressed this session (CLI 🗜️ parity). */
+  compressions?: number
   calls: number
   context_max?: number
   context_percent?: number

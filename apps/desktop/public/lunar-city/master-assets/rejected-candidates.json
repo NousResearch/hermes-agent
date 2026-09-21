@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "rejectedCandidates": [
+    {
+      "id": "research-lab-hunyuan3d-2mini-v001",
+      "targetAssetId": "building-research-lab",
+      "generator": {
+        "repository": "https://github.com/Tencent-Hunyuan/Hunyuan3D-2",
+        "model": "Hunyuan3D-DiT-v2-mini",
+        "device": "cpu"
+      },
+      "artifact": {
+        "localPath": "/private/tmp/lunar-city-generated-candidates/research-lab/hunyuan3d-2mini-v001.glb",
+        "format": "glb",
+        "vertices": 240009,
+        "faces": 480534
+      },
+      "rejection": {
+        "status": "rejected_for_production",
+        "reason": "Rendered preview is a cube/default primitive, not a recognizable research lab silhouette.",
+        "rejectIfMatched": "high_poly_cube_or_wrong_silhouette",
+        "canRetryWithBetterInput": true
+      }
+    }
+  ]
+}

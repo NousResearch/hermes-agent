@@ -155,12 +155,50 @@ def _mark_exited_quietly(exit_code: int, reason: str) -> None:
         from gateway.lifecycle_ledger import mark_exited
         mark_exited(exit_code, reason=reason)
     with contextlib.suppress(Exception):
+        if not _restart_supervisor_present():
+            # The exit code asks "the service supervisor" to restart the gateway — but on a
+            # Windows login-item install (Startup Hermes_Gateway.vbs, no Scheduled Task) there
+            # IS no supervisor: the login item only launches at login, so this kill used to
+            # produce a silent outage until a manual start. Leave a forensic record and say so
+            # loudly instead of assuming a restart.
+            from gateway.lifecycle_ledger import _append_exit_diag
+
+            logger.critical(
+                "Loop-liveness watchdog is exiting (code %d, reason %s) with no restart "
+                "supervisor installed — nothing will restart the gateway automatically. "
+                "Run `hermes gateway install` (Scheduled Task) or start it manually.",
+                exit_code, reason)
+            _append_exit_diag(
+                {"ts": _now_iso(), "tag": "gateway.watchdog_exit_no_supervisor",
+                 "exit_code": exit_code, "exit_reason": reason, "pid": os.getpid(),
+                 "hint": "no Scheduled Task / service supervisor; login item only starts at login"},
+                None)
+    with contextlib.suppress(Exception):
         from gateway.status import write_runtime_status
         # Only the supervisor-restart code asserts a restart; other codes leave the recorded
         # operator intent (a restart-drain that wedged is still a requested restart) untouched.
         restart = {"restart_requested": True} if exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE else {}
         write_runtime_status(
             gateway_state="degraded", exit_reason=reason, wait_timeout=0.25, **restart)
+
+
+def _restart_supervisor_present() -> bool:
+    """True when something will restart the gateway after a supervisor-exit code.
+
+    systemd/launchd/service managers always supervise; on Windows only a registered
+    Scheduled Task counts — a Startup-folder login item launches at login but never
+    restarts a dead process. Never raises (fail-open: assume supervised)."""
+    try:
+        if sys.platform != "win32":
+            return True
+        from hermes_cli.gateway_windows import is_task_registered
+        return bool(is_task_registered())
+    except Exception:
+        return True
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _process_hermes_home() -> Path:
@@ -174,6 +212,24 @@ def _home(home: Optional[Path]) -> Path:
 
 def get_loop_heartbeat_path(home: Optional[Path] = None) -> Path:
     return _home(home).joinpath(*_HEARTBEAT_RELATIVE)
+
+
+def get_loop_heartbeat_age_s(home: Optional[Path] = None) -> Optional[float]:
+    """Seconds since the loop heartbeat file's ``updated_at``; None when the file is
+    missing, unreadable, or carries no parseable stamp. A frozen heartbeat is the
+    supervisor-visible sign of a wedged loop — or, with the writer long dead, of the
+    stale record every other reader must discount."""
+    try:
+        raw = get_loop_heartbeat_path(home).read_text(encoding="utf-8").strip()
+        updated_at = (json.loads(raw) or {}).get("updated_at") if raw else None
+        stamp = datetime.fromisoformat(updated_at) if isinstance(updated_at, str) and updated_at else None
+    except (OSError, ValueError, AttributeError):
+        return None
+    if stamp is None:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - stamp).total_seconds())
 
 
 def get_loop_tick_socket_path(home: Optional[Path] = None, pid: Optional[int] = None) -> Path:

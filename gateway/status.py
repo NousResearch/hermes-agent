@@ -374,14 +374,18 @@ def retained_gateway_state(runtime: Any) -> str:
     stopped is "stopped", not a current failure. A watchdog exit (``degraded`` + an exit_reason in
     ``WATCHDOG_EXIT_REASONS``) is the same kind of current failure as ``startup_failed`` and is kept
     under the same rule, so the dashboard agrees with ``hermes gateway status``. Any other retained
-    state of a dead process (``running``, ``starting``, missing) is just "stopped". Shared by
-    ``/api/status`` and ``/api/messaging/platforms`` so the sidebar strip and the Channels page
+    state of a dead process (``running``, ``starting``, missing) is just "stopped". A ``"stale"``
+    record (``read_runtime_status`` already proved the recorded PID gone) is judged by the file's
+    own claim in ``recorded_state`` so the stale mark does not swallow a watchdog ``degraded``.
+    Shared by ``/api/status`` and ``/api/messaging/platforms`` so the sidebar strip and the Channels page
     cannot disagree."""
     rt = runtime if isinstance(runtime, dict) else {}
+    state = rt.get("gateway_state")
+    effective = rt.get("recorded_state") if state == "stale" else state
     if rt.get("desired_state") != "stopped":
-        if rt.get("gateway_state") == "startup_failed":
+        if effective == "startup_failed":
             return "startup_failed"
-        if rt.get("gateway_state") == "degraded" and rt.get("exit_reason") in WATCHDOG_EXIT_REASONS:
+        if effective == "degraded" and rt.get("exit_reason") in WATCHDOG_EXIT_REASONS:
             return "degraded"
     return "stopped"
 
@@ -1163,9 +1167,34 @@ def publish_runtime_status(**fields: Any) -> int:
     return generation
 
 
+# States that claim a live, serving (or booting) gateway. A record in one of these
+# states whose recorded PID is dead — or fails the start-time PID-reuse guard —
+# outlived an ungracefully-killed writer (taskkill /F, OOM, closed console) and
+# must not keep reading as live.
+_LIVE_CLAIMING_GATEWAY_STATES = frozenset({"running", "degraded", "starting", "draining"})
+
+
 def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
-    """Read ``gateway_state.json``; ``path`` lets callers inspect another profile's file."""
-    return _read_json_file(path or _get_runtime_status_path())
+    """Read ``gateway_state.json``; ``path`` lets callers inspect another profile's file.
+
+    The returned payload carries a read-time liveness annotation so consumers do not
+    each re-implement the PID check: ``alive`` is True when the recorded PID is live
+    and passes the start-time PID-reuse guard. When the recorded PID is gone but the
+    file still claims a live state, the claim is marked ``gateway_state: "stale"``
+    (the file's own claim is preserved as ``recorded_state``) instead of ``"running"``.
+    Read-path only — the file on disk is never rewritten.
+    """
+    payload = _read_json_file(path or _get_runtime_status_path())
+    if not isinstance(payload, dict) or _pid_from_record(payload) is None:
+        return payload
+    if _live_pid_from_record(payload) is None:
+        if payload.get("gateway_state") in _LIVE_CLAIMING_GATEWAY_STATES:
+            payload["recorded_state"] = payload["gateway_state"]
+            payload["gateway_state"] = "stale"
+        payload["alive"] = False
+    else:
+        payload["alive"] = True
+    return payload
 
 
 # Max age of a ``gateway_state.json`` snapshot before its liveness claim is suspect: an older record
@@ -1413,7 +1442,7 @@ def get_runtime_status_running_pid(
     payload = runtime if runtime is not None else read_runtime_status()
     if not isinstance(payload, dict):
         return None
-    if payload.get("gateway_state") in {None, "stopped", "startup_failed"}:
+    if payload.get("gateway_state") in {None, "stopped", "stale", "startup_failed"}:
         return None
     pid = _live_pid_from_record(payload)
     if pid is None:

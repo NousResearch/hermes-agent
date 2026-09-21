@@ -4212,6 +4212,14 @@ def _runtime_health_lines() -> list[str]:
 
     # A live-claiming snapshot can outlive an ungracefully killed gateway (taskkill /F, OOM). Past
     # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state.
+    # ``read_runtime_status`` pre-marks that contradiction as gateway_state "stale" (original claim
+    # in "recorded_state"); the raw-file shape below covers readers that bypass the annotator.
+    if gateway_state == "stale" and state.get("alive") is False:
+        lines.append(
+            f"⚠ Stale gateway_state.json: recorded state '{state.get('recorded_state', '?')}' but the "
+            "recorded process is gone (likely an ungraceful shutdown)"
+        )
+        return lines
     if gateway_state in ("running", "degraded", "starting", "draining") and runtime_status_is_stale(state):
         if not runtime_status_pid_is_live(state):
             lines.append(

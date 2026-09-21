@@ -501,26 +501,39 @@ def cron_status():
             else:
                 _print_ticker_health(pids)
         else:
-            print(color("✗ No gateway is running on this host — cron jobs will NOT fire", Colors.RED))
-            # When scheduling last worked before the host went away: without this, a
-            # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
+            # No gateway process — but the desktop/serve dashboard backend hosts its own
+            # ticker (hermes_cli.web_server._start_desktop_cron_ticker): a fresh heartbeat
+            # means jobs ARE firing without a gateway. Consult it before claiming NOT fire.
+            ticker_hb_age: Optional[float] = None
             with contextlib.suppress(Exception):
-                from cron.jobs import TICKER_INTERVAL_SECONDS, get_ticker_heartbeat_age
-                hb_age = get_ticker_heartbeat_age()
-                if hb_age is not None and hb_age > TICKER_INTERVAL_SECONDS * 3 + 20:
-                    print(color("  Scheduler last ticked "
-                                f"{_format_lateness(hb_age)} ago — jobs that came due "
-                                "since then have not fired.", Colors.YELLOW))
-            print("\n  Start the ONE host gateway (it multiplexes every profile, this one included):\n"
-                  "    hermes --profile default gateway install   # user service\n"
-                  "    sudo hermes --profile default gateway install --system  # Linux servers: boot-time service\n"
-                  "    hermes --profile default gateway run       # Or run in foreground")
-            if active not in ("default", "custom"):
-                print("\n  It serves this profile automatically. If a per-profile service or gateway\n"
-                      "  from an older release is still installed, fold it in (preflight + dry run):\n"
-                      "      hermes --profile default gateway migrate --multiplex --dry-run\n"
-                      "      hermes --profile default gateway migrate --multiplex\n"
-                      "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
+                from cron.jobs import get_ticker_heartbeat_age as _status_ticker_age
+                ticker_hb_age = _status_ticker_age()
+            if _ticker_age_is_fresh(ticker_hb_age):
+                print(color("✓ Scheduler is firing without a gateway — cron jobs will fire automatically",
+                            Colors.GREEN))
+                print(f"  Ticker heartbeat: {int(ticker_hb_age)}s ago "
+                      "(hosted by the dashboard/serve backend, no gateway process)")
+            else:
+                print(color("✗ No gateway is running on this host — cron jobs will NOT fire", Colors.RED))
+                # When scheduling last worked before the host went away: without this, a
+                # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
+                with contextlib.suppress(Exception):
+                    from cron.jobs import TICKER_INTERVAL_SECONDS, get_ticker_heartbeat_age
+                    hb_age = get_ticker_heartbeat_age()
+                    if hb_age is not None and hb_age > TICKER_INTERVAL_SECONDS * 3 + 20:
+                        print(color("  Scheduler last ticked "
+                                    f"{_format_lateness(hb_age)} ago — jobs that came due "
+                                    "since then have not fired.", Colors.YELLOW))
+                print("\n  Start the ONE host gateway (it multiplexes every profile, this one included):\n"
+                      "    hermes --profile default gateway install   # user service\n"
+                      "    sudo hermes --profile default gateway install --system  # Linux servers: boot-time service\n"
+                      "    hermes --profile default gateway run       # Or run in foreground")
+                if active not in ("default", "custom"):
+                    print("\n  It serves this profile automatically. If a per-profile service or gateway\n"
+                          "  from an older release is still installed, fold it in (preflight + dry run):\n"
+                          "      hermes --profile default gateway migrate --multiplex --dry-run\n"
+                          "      hermes --profile default gateway migrate --multiplex\n"
+                          "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
 
     print()
     _print_active_jobs_summary(list_jobs(include_disabled=False))

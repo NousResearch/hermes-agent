@@ -88,6 +88,31 @@ def test_explicit_opt_out_survives_save_config():
     assert shared_metrics_state(on_disk).send is False
 
 
+def test_deployment_env_answers_for_every_profile_below_a_recorded_answer(monkeypatch):
+    """HERMES_SHARED_METRICS is the automated-instance answer: it opts every profile in and
+    suppresses the question, but a recorded human answer and an explicit profile key both win."""
+    monkeypatch.setenv("HERMES_SHARED_METRICS", "true")
+    assert shared_metrics_state({}) == (True, True, True, "env")
+    assert consent_prompt_pending({}) is False
+    assert resolve_send_config({}).send is True
+
+    profile = {"telemetry": {"shared_metrics": {"enabled": False}}}
+    assert shared_metrics_state(profile) == (False, False, True, "profile")
+
+    apply_shared_metrics_choice({}, enabled=False, send=False)  # a person declined somewhere
+    assert shared_metrics_state({}) == (False, False, True, "global")
+
+
+def test_deployment_env_can_pre_decline_and_unset_means_undecided(monkeypatch):
+    monkeypatch.setenv("HERMES_SHARED_METRICS", "false")
+    assert shared_metrics_state({}) == (False, False, True, "env")
+    assert consent_prompt_pending({}) is False
+
+    monkeypatch.setenv("HERMES_SHARED_METRICS", "  ")
+    assert shared_metrics_state({}) == (False, False, False, "default")
+    assert consent_prompt_pending({}) is True
+
+
 def test_cli_prompt_asks_once_then_never_for_any_profile(monkeypatch):
     class _Tty:
         def isatty(self):

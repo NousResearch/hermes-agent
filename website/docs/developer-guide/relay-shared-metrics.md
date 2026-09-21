@@ -323,6 +323,14 @@ telemetry:
   to this consent only. Later answers on any surface write the profile's
   explicit keys and leave the global file alone, so any profile can opt out (or
   in) locally afterwards; delete the file to be asked again.
+- **Automated instances** (Hermes Cloud, containers, CI) have nobody to ask:
+  `HERMES_SHARED_METRICS=true|false` in the process environment supplies the
+  instance-wide answer. It is read live by the same resolver, sits *below*
+  both a profile's explicit keys and a recorded human answer (a person's
+  decision always beats the operator default), marks the instance as decided
+  so no surface asks, and stops applying the moment it is unset. Turning
+  sharing off in Settings → Telemetry on such an instance writes that
+  profile's explicit keys and wins.
 - Every surface that records a decision goes through one writer,
   `hermes_cli/observability/shared_metrics_consent.py::apply_shared_metrics_choice`:
   `hermes setup telemetry`, the `hermes tools` toggle, the dashboard/desktop
@@ -336,7 +344,7 @@ telemetry:
   the backend's once-per-process reconcile. The same module's
   `shared_metrics_state` is the single resolver every reader uses (relay gate,
   sender, wizard, `GET /api/telemetry/shared-metrics`, which also reports
-  `decided` and `source: profile|global|default`).
+  `decided` and `source: profile|global|env|default`).
 - **The one-time question** is asked while collection is off for the current
   profile AND no global answer exists: the interactive CLI asks once before the
   REPL starts (TTY only, never on managed installs); the Desktop asks once after

@@ -14,7 +14,8 @@ import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { ListRow, SettingsContent, SettingsSection, ToggleRow } from './primitives'
 
-const DOCS_URL = 'https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/relay-shared-metrics.md'
+const DOCS_URL =
+  'https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/relay-shared-metrics.md'
 const TELEMETRY_SUBDIR = 'telemetry/shared_metrics'
 
 const CAPTION =
@@ -151,6 +152,7 @@ export function TelemetrySettings() {
           onChange={on => void toggle(on)}
         />
         {state?.source === 'global' ? <p className={`${CAPTION} pb-2`}>{copy.inheritedNote}</p> : null}
+        {state?.source === 'env' ? <p className={`${CAPTION} pb-2`}>{copy.deploymentNote}</p> : null}
         {state?.enabled && !state.send ? <p className={`${CAPTION} pb-2`}>{copy.collectOnlyNote}</p> : null}
         <p className={`${CAPTION} pb-2`}>{copy.cliHint}</p>
       </SettingsSection>

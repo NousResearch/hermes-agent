@@ -478,6 +478,8 @@ export const zhHant = defineLocale({
 
       inheritedNote: '此設定檔沒有自己的設定，沿用您首次被詢問時的回答。切換開關僅對此設定檔生效。',
 
+      deploymentNote: '此設定檔沒有自己的設定，沿用此部署設定的預設值。切換開關僅對此設定檔生效。',
+
       cliHint: '終端機中可透過 `hermes setup telemetry` 使用同一設定。',
 
       enabledTitle: '遙測共享已開啟',

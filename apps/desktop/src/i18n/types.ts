@@ -607,6 +607,7 @@ export interface Translations {
       shareDesc: string
       collectOnlyNote: string
       inheritedNote: string
+      deploymentNote: string
       cliHint: string
       enabledTitle: string
       enabledMessage: string

@@ -9,6 +9,12 @@ to "profiles are independent islands" and applies ONLY to this consent. A profil
 explicit ``enabled``/``send`` keys always win over the global answer, so any profile can opt
 out (or in) locally afterwards.
 
+Hosted / automated deployments have no person to ask, so ``HERMES_SHARED_METRICS`` in the
+process environment supplies the instance-wide answer (``true`` = share, ``false`` = decline)
+when no profile key and no recorded human answer exist. It sits BELOW both — a person's
+recorded decision always beats the operator default — and it is read live, so it is not
+persisted and stops applying when unset.
+
 Every surface writes through ``apply_shared_metrics_choice``: it sets the profile keys
 explicitly, records the global answer the first time, and reconciles the send-consent window
 at the moment of the decision — the same writer the relay and the sender use, so no two
@@ -28,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 SHARED_METRICS_PATH = ("telemetry", "shared_metrics")
 GLOBAL_CONSENT_FILENAME = "telemetry-consent.json"
+CONSENT_ENV_VAR = "HERMES_SHARED_METRICS"
 
 
 class SharedMetricsChoice(NamedTuple):
@@ -41,9 +48,9 @@ class SharedMetricsState(NamedTuple):
     #: Some surface has recorded an answer for this user (the global file exists). Off +
     #: undecided is the one state in which a surface may ask, once.
     decided: bool
-    #: Where ``enabled``/``send`` came from: this profile's explicit keys, the global answer,
-    #: or the built-in default (off).
-    source: str  # "profile" | "global" | "default"
+    #: Where ``enabled``/``send`` came from: this profile's explicit keys, the recorded global
+    #: answer, the deployment's ``HERMES_SHARED_METRICS``, or the built-in default (off).
+    source: str  # "profile" | "global" | "env" | "default"
 
 
 # ── global answer ────────────────────────────────────────────────────────────
@@ -93,6 +100,14 @@ def write_global_consent(share: bool) -> None:
     )
 
 
+def env_consent() -> Optional[bool]:
+    """The deployment's answer from ``HERMES_SHARED_METRICS``, or None when unset/blank."""
+    from utils import is_truthy_value
+
+    raw = os.getenv(CONSENT_ENV_VAR, "").strip()
+    return is_truthy_value(raw) if raw else None
+
+
 # ── effective state ──────────────────────────────────────────────────────────
 
 def _shared_node(config: dict) -> dict:
@@ -105,13 +120,15 @@ def _shared_node(config: dict) -> dict:
 def shared_metrics_state(config: dict) -> SharedMetricsState:
     """Effective consent for the profile whose RAW config this is.
 
-    Profile keys are tri-state: an explicit boolean ``enabled`` wins; absent means inherit the
-    global answer; no global answer means off. ``send`` is only ever True together with
-    ``enabled``.
+    Precedence: an explicit boolean ``enabled`` in the profile wins; else the recorded global
+    answer; else the deployment's ``HERMES_SHARED_METRICS``; else off. ``send`` is only ever
+    True together with ``enabled``. ``decided`` is True once any of the last three exists, so
+    an automated instance is never asked.
     """
     shared = _shared_node(config)
     explicit = shared.get("enabled")
     global_answer = read_global_consent()
+    deployment_answer = env_consent()
     if isinstance(explicit, bool):
         enabled = explicit
         send = enabled and shared.get("send") is True
@@ -119,10 +136,14 @@ def shared_metrics_state(config: dict) -> SharedMetricsState:
     elif global_answer is not None:
         enabled = send = global_answer
         source = "global"
+    elif deployment_answer is not None:
+        enabled = send = deployment_answer
+        source = "env"
     else:
         enabled = send = False
         source = "default"
-    return SharedMetricsState(enabled=enabled, send=send, decided=global_answer is not None, source=source)
+    decided = global_answer is not None or deployment_answer is not None
+    return SharedMetricsState(enabled=enabled, send=send, decided=decided, source=source)
 
 
 def consent_prompt_pending(config: dict) -> bool:

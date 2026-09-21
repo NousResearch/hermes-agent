@@ -690,6 +690,8 @@ export const zh = defineLocale({
 
       inheritedNote: '此配置文件没有自己的设置，沿用您首次被询问时的回答。切换开关仅对此配置文件生效。',
 
+      deploymentNote: '此配置文件没有自己的设置，沿用此部署设定的默认值。切换开关仅对此配置文件生效。',
+
       cliHint: '终端中可通过 `hermes setup telemetry` 使用同一设置。',
 
       enabledTitle: '遥测共享已开启',

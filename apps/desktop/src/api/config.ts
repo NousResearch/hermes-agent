@@ -209,8 +209,9 @@ export interface SharedMetricsConsent {
 export interface SharedMetricsConsentState extends SharedMetricsConsent {
   /** Some consent surface has recorded the user's answer (global, shared by every profile). */
   decided: boolean
-  /** Where enabled/send came from: this profile's own keys, the global answer, or the off default. */
-  source: 'default' | 'global' | 'profile'
+  /** Where enabled/send came from: this profile's own keys, the recorded global answer, the
+   *  deployment's HERMES_SHARED_METRICS, or the off default. */
+  source: 'default' | 'env' | 'global' | 'profile'
 }
 
 export function getSharedMetricsConsent(profile?: null | string): Promise<SharedMetricsConsentState> {

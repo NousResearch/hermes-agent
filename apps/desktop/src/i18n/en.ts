@@ -733,6 +733,8 @@ export const en: Translations = {
         'This profile collects metrics locally but does not send them (set from the command line). Turning sharing on will start sending; turning it off will stop collecting as well.',
       inheritedNote:
         'This profile has no setting of its own and follows the answer you gave when first asked. Flipping the switch sets it for this profile only.',
+      deploymentNote:
+        'This profile has no setting of its own and follows the default set by this deployment. Flipping the switch sets it for this profile only.',
       cliHint: 'The same setting is available from the terminal with `hermes setup telemetry`.',
       enabledTitle: 'Telemetry sharing on',
       enabledMessage: 'Metrics are collected locally and sent to Nous Research daily.',

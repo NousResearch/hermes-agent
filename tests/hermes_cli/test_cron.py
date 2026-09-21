@@ -46,6 +46,35 @@ class TestCronCommandLifecycle:
         assert updated["provider"] == "nous"
         assert "Updated job" in capsys.readouterr().out
 
+    def test_edit_preserve_lifecycle_keeps_disabled_job_disabled(
+        self, tmp_cron_dir, capsys
+    ):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0].update({"enabled": False, "state": "scheduled"})
+        save_jobs(jobs)
+
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+        args = parser.parse_args(
+            [
+                "cron",
+                "edit",
+                job["id"],
+                "--schedule",
+                "every 2h",
+                "--preserve-lifecycle",
+            ]
+        )
+
+        assert cron_command(args) == 0
+        updated = get_job(job["id"])
+        assert updated["schedule"]["minutes"] == 120
+        assert updated["state"] == "scheduled"
+        assert updated["enabled"] is False
+        assert "Updated job" in capsys.readouterr().out
+
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
             prompt="Combine skill outputs",

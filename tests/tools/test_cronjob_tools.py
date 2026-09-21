@@ -304,14 +304,18 @@ class TestUnifiedCronjobTool:
         job_id = created["job_id"]
 
         from cron.jobs import get_job, update_job
+        from tools.registry import registry
 
         update_job(job_id, {"state": stored_state, "enabled": enabled})
         updated = json.loads(
-            cronjob(
-                action="update",
-                job_id=job_id,
-                schedule="every 2h",
-                preserve_lifecycle=True,
+            registry.dispatch(
+                "cronjob_manage",
+                {
+                    "action": "update",
+                    "job_id": job_id,
+                    "schedule": "every 2h",
+                    "preserve_lifecycle": True,
+                },
             )
         )
 

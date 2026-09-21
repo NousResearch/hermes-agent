@@ -247,6 +247,9 @@ _current_model: contextvars.ContextVar[str] = contextvars.ContextVar(
     "repair_stats_current_model", default="unknown"
 )
 
+# Placeholder used when no model could be attributed to an event.
+_UNKNOWN_MODEL = "unknown"
+
 
 def set_current_model(model: str) -> None:
     """Bind the active model for the current turn (per-turn context).
@@ -255,7 +258,45 @@ def set_current_model(model: str) -> None:
     ``auxiliary_client.set_runtime_main``.  Empty/whitespace falls back to
     the ``"unknown"`` placeholder.
     """
-    _current_model.set((model or "").strip() or "unknown")
+    _current_model.set((model or "").strip() or _UNKNOWN_MODEL)
+
+
+def _model_from_ambient_context() -> str:
+    """Best-effort model lookup from the run context bound around a turn.
+
+    ``run_agent`` / ``turn_facade`` bind the live parent agent for the duration
+    of a turn via :func:`agent.subagent_lifecycle.bind_subagent_parent`, so
+    repair events emitted on a path that never ran the per-turn
+    :func:`set_current_model` binding can still be attributed to the model that
+    is actually live.  Never raises; returns ``""`` when nothing is bound.
+    """
+    try:
+        from agent.subagent_lifecycle import get_active_subagent_parent
+
+        parent = get_active_subagent_parent()
+        if parent is not None:
+            model = str(getattr(parent, "model", "") or "").strip()
+            if model:
+                return model
+    except Exception:
+        pass
+    return ""
+
+
+def _resolve_model(model_name: str) -> str:
+    """Pick the model to attribute an event to.
+
+    Precedence: explicit caller value → per-turn binding → ambient run context
+    → ``"unknown"``.  An explicit empty string from the per-turn binding means
+    "the binding had nothing useful", so the ambient context still gets a look.
+    """
+    explicit = (model_name or "").strip()
+    if explicit:
+        return explicit
+    bound = (_current_model.get() or "").strip()
+    if bound and bound != _UNKNOWN_MODEL:
+        return bound
+    return _model_from_ambient_context() or bound or _UNKNOWN_MODEL
 
 
 # ---------------------------------------------------------------------------
@@ -271,13 +312,14 @@ def record_repair(
 ) -> None:
     """Record a repair event.  Silently no-ops on any failure.
 
-    ``model_name`` is optional: when omitted (or empty) the model bound for
-    the current turn via :func:`set_current_model` is used, so repair call
-    sites don't need to plumb the model through.
+    ``model_name`` is optional: when omitted (or empty) the model bound for the
+    current turn via :func:`set_current_model` — or, failing that, the agent
+    bound around the turn — is used, so repair call sites don't need to plumb
+    the model through.
     """
     try:
         get_stats().record(
-            pattern, tool_name, model_name or _current_model.get(), success, detail
+            pattern, tool_name, _resolve_model(model_name), success, detail
         )
     except Exception:
         pass

@@ -300,3 +300,116 @@ class TestStringPatterns:
         stats.record("bare_string_wrap", "t", "m")
         assert stats.total() == 2
         assert stats.by_model("m")["bare_string_wrap"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Ambient run context — model inference without caller plumbing (Copilot #77941)
+# ---------------------------------------------------------------------------
+
+class TestAmbientRunContext:
+    """``record_repair`` must infer the live model from the run context bound
+    around a turn (``subagent_lifecycle.bind_subagent_parent``) when no explicit
+    model and no per-turn ``set_current_model`` binding are present."""
+
+    class _FakeAgent:
+        model = "ambient-model"
+
+    def test_infers_model_from_bound_parent_agent(self):
+        from agent.subagent_lifecycle import bind_subagent_parent
+
+        get_stats().reset()
+        set_current_model("")  # per-turn binding carries nothing useful
+        agent = self._FakeAgent()
+        with bind_subagent_parent(agent):
+            record_repair(RepairPattern.BARE_STRING_WRAP, "terminal")
+        assert get_stats().by_model("ambient-model").get("bare_string_wrap", 0) == 1
+        assert "unknown" not in get_stats().all_models()
+        get_stats().reset()
+
+    def test_explicit_model_wins_over_ambient_context(self):
+        from agent.subagent_lifecycle import bind_subagent_parent
+
+        get_stats().reset()
+        set_current_model("")
+        agent = self._FakeAgent()
+        with bind_subagent_parent(agent):
+            record_repair(RepairPattern.EMPTY_ARGS, "t", model_name="explicit-model")
+        assert get_stats().by_model("explicit-model").get("empty_args", 0) == 1
+        assert get_stats().by_model("ambient-model") == {}
+        get_stats().reset()
+
+    def test_per_turn_binding_wins_over_ambient_context(self):
+        from agent.subagent_lifecycle import bind_subagent_parent
+
+        get_stats().reset()
+        set_current_model("per-turn-model")
+        agent = self._FakeAgent()
+        with bind_subagent_parent(agent):
+            record_repair(RepairPattern.UNREPAIRABLE, "t")
+        assert get_stats().by_model("per-turn-model").get("unrepairable", 0) == 1
+        assert get_stats().by_model("ambient-model") == {}
+        get_stats().reset()
+
+    def test_ambient_parent_without_model_falls_back_to_unknown(self):
+        from agent.subagent_lifecycle import bind_subagent_parent
+
+        class _ModelLess:
+            pass
+
+        get_stats().reset()
+        set_current_model("")
+        agent = _ModelLess()
+        with bind_subagent_parent(agent):
+            record_repair(RepairPattern.OTHER, "t")
+        assert get_stats().by_model("unknown").get("other", 0) == 1
+        get_stats().reset()
+
+    def test_no_ambient_parent_keeps_unknown(self):
+        get_stats().reset()
+        set_current_model("")
+        record_repair(RepairPattern.OTHER, "t")
+        assert get_stats().by_model("unknown").get("other", 0) == 1
+        get_stats().reset()
+
+
+# ---------------------------------------------------------------------------
+# Import-guard resilience (Copilot #77941): a stats module that exists but is
+# broken must degrade to a no-op, not break the repair pipeline at import.
+# ---------------------------------------------------------------------------
+
+class TestImportGuardResilience:
+
+    _PROBE = """
+import sys, types
+
+class Boom(types.ModuleType):
+    def __getattr__(self, name):
+        raise RuntimeError("boom")
+
+# Present-but-broken stats module: the import guard must catch this.
+sys.modules["agent.tool_repair_stats"] = Boom("agent.tool_repair_stats")
+
+import agent.message_sanitization as ms
+import agent.agent_runtime_helpers as arh
+
+assert ms._record_repair is None, "message_sanitization guard did not degrade"
+assert ms._RP is None, "message_sanitization RepairPattern guard did not degrade"
+assert arh._record_repair is None, "agent_runtime_helpers guard did not degrade"
+
+# And the repair pipeline still works with observability disabled.
+assert ms._repair_tool_call_arguments("{oops", "terminal") == "{}"
+print("GUARD-OK")
+"""
+
+    def test_broken_stats_module_degrades_to_noop(self):
+        import pathlib
+        import subprocess
+        import sys
+
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        proc = subprocess.run(
+            [sys.executable, "-c", self._PROBE],
+            cwd=str(repo_root), capture_output=True, text=True, timeout=180,
+        )
+        assert proc.returncode == 0, f"probe failed:\n{proc.stdout}\n{proc.stderr}"
+        assert "GUARD-OK" in proc.stdout

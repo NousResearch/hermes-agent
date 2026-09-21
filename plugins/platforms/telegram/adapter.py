@@ -3891,6 +3891,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 await asyncio.sleep(wait)
                 try:
                     await self._edit_text(chat_id, message_id, content)
+                    if _saturated_preview:
+                        self._last_overflow_preview[_preview_key] = content
+                        return self._stream_preview_partial_result(message_id, content)
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)

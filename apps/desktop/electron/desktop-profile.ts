@@ -52,6 +52,21 @@ export function resolveDesktopWindowRoute(
     : { ...fallback }
 }
 
+/** A peer window's launch route plus whether the renderer asked for that
+ * route explicitly ("Open profile in new window"). Only an explicit route is
+ * the window's New-session default; an inherited one seeds boot alone. */
+export interface DesktopWindowLaunch extends DesktopProfileRoute {
+  profileWindow: boolean
+}
+
+export function resolveDesktopWindowLaunch(
+  explicit: unknown,
+  source: WindowConnectionRoute | null,
+  fallback: DesktopProfileRoute
+): DesktopWindowLaunch {
+  return { ...resolveDesktopWindowRoute(explicit, source, fallback), profileWindow: explicit !== undefined }
+}
+
 // A profile-less boot/reconnect belongs to its sender. An explicit profile
 // keeps the legacy route, even if the sender serves the same name remotely.
 export function resolveDesktopConnectionRequest(
@@ -139,7 +154,11 @@ export function createDesktopProfilePreferences(
     options.onDefaultChanged?.(null)
   }
 
-  function profileChanged(connectionId: null | string, oldName: string, newName: null | string) {
+  function profileChanged(connectionId: null | string, oldName: string, newName: null | string, backendMode: string) {
+    if (backendMode === 'local' && readActive() === oldName) {
+      remember(newName || 'default')
+    }
+
     const route = getDefault()
 
     if (route?.connectionId !== connectionId || route?.profile !== oldName) {
@@ -159,7 +178,12 @@ export function createDesktopProfilePreferences(
     }
   }
 
-  function afterProfileRequest(connectionId: null | string, request: ProfileRenameRequest, response: unknown) {
+  function afterProfileRequest(
+    connectionId: null | string,
+    request: ProfileRenameRequest,
+    response: unknown,
+    backendMode: string
+  ) {
     if (response && typeof response === 'object') {
       const result = response as Record<string, unknown>
 
@@ -172,9 +196,9 @@ export function createDesktopProfilePreferences(
     const deleted = profileNameFromDeleteRequest(request)
 
     if (renamed) {
-      profileChanged(connectionId, renamed.oldName, renamed.newName)
+      profileChanged(connectionId, renamed.oldName, renamed.newName, backendMode)
     } else if (deleted) {
-      profileChanged(connectionId, deleted, null)
+      profileChanged(connectionId, deleted, null, backendMode)
     }
   }
 

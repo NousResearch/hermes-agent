@@ -599,17 +599,19 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = _parse("sessions list", args, (("--limit",), dict(type=int, default=20)))
     if ns.limit < 1 or ns.limit > 200:
         raise ConsoleCommandError("sessions list --limit must be between 1 and 200")
+    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
     with _session_db() as db:
         sessions = db.list_sessions_rich(
-            exclude_sources=["kanban", "tool"], limit=ns.limit, order_by_last_active=True)
+            exclude_sources=list(INTERNAL_LISTING_SOURCES), limit=ns.limit, order_by_last_active=True)
     return _format_sessions(sessions)
 
 
 def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "sessions stats")
+    from hermes_state_sessions import INTERNAL_LISTING_SOURCES
     with _session_db() as db:
         total = db.session_count()
-        listable = db.session_count(exclude_children=True, exclude_sources=["kanban", "tool"])
+        listable = db.session_count(exclude_children=True, exclude_sources=list(INTERNAL_LISTING_SOURCES))
         lines = [
             f"Total sessions: {total}",
             f"Listable sessions: {listable}",
@@ -704,8 +706,15 @@ def _sessions_rename(_engine: HermesConsoleEngine, args: list[str]) -> None:
 
 @_captured
 def _sessions_optimize(_engine: HermesConsoleEngine, args: list[str]) -> None:
-    _expect_no_args(args, "sessions optimize")
+    # --force is parsed HERE: the refusal below points at it, and a hint the surface cannot
+    # accept would make this command refuse forever whenever a gateway is running.
+    ns = _parse("sessions optimize", args, (("--force",), dict(action="store_true")))
     with _session_db(read_only=False) as db:
+        from hermes_state_holders import held_store_refusal
+        refusal = None if ns.force else held_store_refusal(
+            db.db_path, command="optimize", force_hint="`sessions optimize --force`")
+        if refusal:
+            raise ConsoleCommandError(refusal)
         print(f"Optimized {db.vacuum()} FTS index(es).")
 
 
@@ -818,7 +827,7 @@ _BUILTIN_COMMANDS = (
      "Export sessions to JSONL.", _sessions_export, "Export session data?"),
     (("sessions", "rename"), "sessions rename <session> <title>", "Rename a session.",
      _sessions_rename, "Rename this session?"),
-    (("sessions", "optimize"), "sessions optimize", "Optimize the session store.",
+    (("sessions", "optimize"), "sessions optimize [--force]", "Optimize the session store.",
      _sessions_optimize, "Optimize the session database?"),
     (("sessions", "repair"), "sessions repair [--check-only] [--no-backup]",
      "Repair a malformed session database schema.", _sessions_repair,

@@ -1369,7 +1369,11 @@ def skills_command(args) -> None:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
         return
-    handler(args)
+    try:
+        handler(args)
+    except ValueError as exc:
+        _print_error(_console, str(exc))
+        raise SystemExit(1) from None
 
 
 # --- Slash command entry point (/skills in chat) ---
@@ -1496,7 +1500,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         for line in _SLASH_USAGE[action]:
             c.print(line)
         return
-    handler(args, c)
+    try:
+        handler(args, c)
+    except ValueError as exc:
+        _print_error(c, str(exc))
 
 
 def _print_skills_help(console: Console) -> None:

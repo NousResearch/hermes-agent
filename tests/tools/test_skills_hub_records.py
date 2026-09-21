@@ -22,7 +22,7 @@ def _install(lock, name):
     )
 
 
-def _record_in_process(home, name, read, release=None, uninstall=False):
+def _record_in_process(home, name, read, release=None, uninstall=False, started=None):
     os.environ["HERMES_HOME"] = str(home)
     ensure_hub_dirs()
     lock = HubLockFile()
@@ -36,6 +36,8 @@ def _record_in_process(home, name, read, release=None, uninstall=False):
         return data
 
     lock.load = paused_load
+    if started is not None:
+        started.set()
     if uninstall:
         lock.record_uninstall("existing")
     else:
@@ -48,11 +50,11 @@ def test_concurrent_record_updates_compose(uninstall):
     ensure_hub_dirs()
     _install(HubLockFile(), "existing")
     ctx = multiprocessing.get_context("spawn")
-    read_a, read_b, release = [ctx.Event() for _ in range(3)]
+    read_a, read_b, release, started_b = [ctx.Event() for _ in range(4)]
     first = ctx.Process(target=_record_in_process, args=(home, "first", read_a, release))
     second = ctx.Process(
         target=_record_in_process,
-        args=(home, "second", read_b, None, uninstall),
+        args=(home, "second", read_b, None, uninstall, started_b),
     )
     children = []
     try:
@@ -61,8 +63,9 @@ def test_concurrent_record_updates_compose(uninstall):
         assert read_a.wait(10)
         second.start()
         children.append(second)
+        assert started_b.wait(10)
         # An unlocked writer reaches load(); a locked writer waits for process A.
-        assert not read_b.wait(3)
+        read_b.wait(3)
         release.set()
         for child in children:
             child.join(10)

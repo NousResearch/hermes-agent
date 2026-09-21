@@ -56,6 +56,8 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# Size of the pool that runs turn bodies (blocking agent work).
+_TURN_MAX_WORKERS = 10
 # Size of the separate pool for best-effort session HOUSEKEEPING (finalize hooks, agent cleanup).
 # It is separate from the turn pool because housekeeping callers ABANDON their worker on timeout —
 # see _run_housekeeping_in_executor.
@@ -4321,7 +4323,7 @@ class GatewayRunner(
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""
-        return GatewayRunner._get_or_create_pool(self, "_executor", 10, "hermes-gateway")
+        return GatewayRunner._get_or_create_pool(self, "_executor", _TURN_MAX_WORKERS, "hermes-gateway")
 
     def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for best-effort session housekeeping."""

@@ -23,9 +23,7 @@ import time
 
 import pytest
 
-from gateway.run import GatewayRunner
-
-_TURN_POOL_SIZE = 10
+from gateway.run import _TURN_MAX_WORKERS, GatewayRunner
 
 
 def _runner(cleanup=None, *, cleanup_timeout=0.5):
@@ -38,13 +36,6 @@ def _runner(cleanup=None, *, cleanup_timeout=0.5):
     if cleanup is not None:
         runner._cleanup_agent_resources = cleanup
     return runner
-
-
-def _stop(runner):
-    for attr in ("_executor", "_housekeeping_executor"):
-        pool = getattr(runner, attr, None)
-        if pool is not None:
-            pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _run_housekeeping(runner, func, *args):
@@ -79,7 +70,7 @@ def test_abandoned_housekeeping_cannot_delay_a_turn_body():
 
     runner = _runner(wedged_cleanup)
     # Enough to fill the turn pool outright if housekeeping still lands on it.
-    abandoned = _TURN_POOL_SIZE
+    abandoned = _TURN_MAX_WORKERS
 
     async def exercise():
         await _abandon_housekeeping(runner, abandoned, runner._CLEANUP_TIMEOUT_S)
@@ -102,7 +93,7 @@ def test_abandoned_housekeeping_cannot_delay_a_turn_body():
         latency = asyncio.run(exercise())
     finally:
         wedge.set()
-        _stop(runner)
+        runner._shutdown_executor()
 
     assert latency < 1.0, f"turn body waited {latency:.2f}s behind abandoned housekeeping"
 

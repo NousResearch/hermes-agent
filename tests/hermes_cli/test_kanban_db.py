@@ -472,6 +472,160 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_ignores_a_quota_stamp_superseded_by_a_later_run(
+    kanban_home, monkeypatch,
+):
+    """A quota-flavored stamp left by an OLD run must not park the card once a
+    newer non-failed run supersedes it.
+
+    Live incident (2026-09-20, card t_31c90f16): runs 142-146 on the daedelus
+    lane exited rate-limited during an Ollama quota wall. The requeue path
+    deliberately stamps ``last_failure_error`` (so the guard can see the quota
+    blocker) WITHOUT incrementing ``consecutive_failures``. Run 147 then ran to
+    completion and handed the card off for review — but branch 2 of
+    ``check_respawn_guard`` regex-tests the stamp TEXT alone, with no
+    latest-run scoping, so every dispatcher tick for the next ~17 minutes
+    refused to spawn the reviewer with ``respawn_guarded {blocker_auth}``
+    (14+ events) and ``hermes kanban diagnostics`` showed 0 active diagnostics:
+    an invisible, permanent park until an operator hand-cleared the column.
+
+    Branch 1 already has the correct semantics ("LATEST run only: a newer
+    crash/completion supersedes the rate-limit run"); branch 2 must match it.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale quota stamp", assignee="a")
+        kb.claim_task(conn, tid)
+        rl_run = kb.get_task(conn, tid).current_run_id
+        # Run N: the quota wall. Ends long before the cooldown under test.
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=?, error=? WHERE id=?",
+            (
+                now - 10_000,
+                "pid 1 exited rate-limited (quota wall) — requeued without "
+                "counting a failure",
+                rl_run,
+            ),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (
+                "pid 1 exited rate-limited (quota wall) — requeued without "
+                "counting a failure",
+                tid,
+            ),
+        )
+        conn.commit()
+
+        # The stamp still governs while it IS the latest run's story: the
+        # cooldown branch fires, not blocker_auth.
+        monkeypatch.setattr(_kb.time, "time", lambda: now - 10_000 + 100)
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+        # Run N+1: a NEWER run that ended in a non-failed handoff. The card
+        # moved on; the old quota stamp must no longer park it.
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at) VALUES (?, 'a', 'review', "
+            "'review_requested', ?, ?)",
+            (tid, now - 600, now - 500),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now)
+        assert kbd.check_respawn_guard(conn, tid, lane="review") is None
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        # The same stale-stamp shape in the review lane through the real tick:
+        # no respawn_guarded event, and the card is claimable.
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert dict(res.respawn_guarded).get(tid) is None
+
+
+def test_respawn_guard_still_blocks_a_fresh_quota_stamp(
+    kanban_home, monkeypatch,
+):
+    """The supersession rule must not weaken a GENUINE park: a quota/auth stamp
+    from the LATEST ended run still refuses the spawn."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="genuine auth wall", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='spawn_failed', status='failed', ended_at=?, "
+            "error=? WHERE id=?",
+            (now - 10, "provider authentication failed", run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("provider authentication failed", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now)
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+
+
+def test_superseded_stamp_falls_through_to_the_normal_guards(
+    kanban_home, monkeypatch,
+):
+    """Lifting the stale stamp must not make the card MORE spawnable than a card
+    with no stamp at all: it falls through to the recent_success / active_pr
+    checks, which keep their own exemptions and expiries."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="stale stamp then success", assignee="a")
+        kb.claim_task(conn, tid)
+        rl_run = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=?, error=? WHERE id=?",
+            (now - 10_000, "pid 1 exited rate-limited (quota wall) — requeued", rl_run),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at) VALUES (?, 'a', 'done', 'completed', ?, ?)",
+            (tid, now - 600, now - 500),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now)
+        # The quota stamp no longer masks the completed-run rule.
+        assert kbd.check_respawn_guard(conn, tid) == "recent_success"
+        # ... and the deliberate re-queue exemption still applies.
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, created_at) "
+                "VALUES (?, 'unblocked', ?)",
+                (tid, now - 400),
+            )
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

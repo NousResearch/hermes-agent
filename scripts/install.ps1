@@ -1007,20 +1007,36 @@ $script:UserPathRegistryName = "Path"
 #
 # Session refreshes ($env:Path = ...) are a different job and keep the
 # expanding .NET read: a process environment wants expanded values.
+#
+# Writable is $false when a Path value EXISTS but is not a string (a
+# REG_MULTI_SZ or binary value some tool left behind).  Callers must then skip
+# the write: treating an unreadable value as "empty" and writing from that
+# would replace the user's whole PATH with only our entries, which is what the
+# .NET getter's null led the old code to do.
 function Get-UserPathRaw {
-    $empty = @{ Value = ""; Kind = [Microsoft.Win32.RegistryValueKind]::ExpandString }
+    $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($script:UserPathRegistrySubKey)
-    if (-not $key) { return $empty }
+    if (-not $key) { return @{ Value = ""; Kind = $kind; Writable = $true } }
     try {
         $value = $key.GetValue(
             $script:UserPathRegistryName,
             $null,
             [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        if ($value -isnot [string]) { return $empty }
-        return @{ Value = $value; Kind = $key.GetValueKind($script:UserPathRegistryName) }
+        if ($null -eq $value) { return @{ Value = ""; Kind = $kind; Writable = $true } }
+        if ($value -isnot [string]) { return @{ Value = ""; Kind = $kind; Writable = $false } }
+        return @{ Value = $value; Kind = $key.GetValueKind($script:UserPathRegistryName); Writable = $true }
     } finally {
         $key.Close()
     }
+}
+
+# One message for every call site that has to leave an unreadable User PATH
+# alone, naming what the user can add by hand.
+function Write-UserPathNotWritable {
+    param([string[]]$Entries)
+
+    Write-Warn ("User PATH is stored as a non-text registry value, so it was left untouched. " +
+        "Add manually: " + ($Entries -join ";"))
 }
 
 # Write the persisted User PATH back with the value kind it was read with
@@ -1058,19 +1074,29 @@ function Expand-UserPathEntry {
 # a failed broadcast only delays visibility, it must never fail the install.
 function Send-EnvironmentChanged {
     try {
-        if (-not ([System.Management.Automation.PSTypeName]'HermesInstall.EnvBroadcast').Type) {
-            Add-Type -Namespace 'HermesInstall' -Name 'EnvBroadcast' -MemberDefinition @'
-[DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
-'@
-        }
+        $type = Get-EnvBroadcastType
+        if (-not $type) { return }
         $HWND_BROADCAST = [IntPtr]0xffff
         $WM_SETTINGCHANGE = 0x001A
         $result = [UIntPtr]::Zero
-        [void][HermesInstall.EnvBroadcast]::SendMessageTimeout(
+        [void]$type::SendMessageTimeout(
             $HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, "Environment", 0, 1000, [ref]$result)
     } catch {
     }
+}
+
+# The P/Invoke type behind Send-EnvironmentChanged, compiled on first use.
+# Split out so the PowerShell tests can prove it compiles under both pwsh 7 and
+# Windows PowerShell 5.1 without sending a real broadcast: the sender swallows
+# every error by design, so a wrong signature would otherwise fail silently.
+function Get-EnvBroadcastType {
+    $known = ([System.Management.Automation.PSTypeName]'HermesInstall.EnvBroadcast').Type
+    if ($known) { return $known }
+    Add-Type -Namespace 'HermesInstall' -Name 'EnvBroadcast' -MemberDefinition @'
+[DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+    return ([System.Management.Automation.PSTypeName]'HermesInstall.EnvBroadcast').Type
 }
 
 # Append each missing directory to the persisted User PATH.
@@ -1085,6 +1111,10 @@ function Add-UserPathEntries {
     param([string[]]$Entries)
 
     $rawUserPath = Get-UserPathRaw
+    if (-not $rawUserPath.Writable) {
+        Write-UserPathNotWritable -Entries $Entries
+        return
+    }
     $userPathItems = @(if ($rawUserPath.Value) { $rawUserPath.Value -split ";" })
     $expandedItems = @($userPathItems | ForEach-Object { Expand-UserPathEntry $_ })
     $changed = $false
@@ -1125,6 +1155,10 @@ function Set-ManagedNodeFirstOnUserPath {
     if (-not $NodeDir) { return }
 
     $rawUserPath = Get-UserPathRaw
+    if (-not $rawUserPath.Writable) {
+        Write-UserPathNotWritable -Entries @($NodeDir)
+        return
+    }
     $userPath = $rawUserPath.Value
     $items = if ($userPath) { @($userPath -split ";") } else { @() }
 
@@ -3443,7 +3477,12 @@ function Set-HermesBinOnUserPath {
     param([string]$hermesBin)
 
     $rawUserPath = Get-UserPathRaw
+    if (-not $rawUserPath.Writable) {
+        Write-UserPathNotWritable -Entries @($hermesBin)
+        return
+    }
     $currentPath = $rawUserPath.Value
+    $removedLegacy = $false
 
     # Migrate older layouts off the user PATH:
     #   venv\Scripts     -- shadowed the user's python (#83797)
@@ -3458,15 +3497,27 @@ function Set-HermesBinOnUserPath {
         $cleaned = @($items | Where-Object { $legacyEntries -notcontains (Expand-UserPathEntry $_) })
         if ($cleaned.Count -ne $items.Count) {
             $currentPath = $cleaned -join ";"
-            Set-UserPathRaw -Value $currentPath -Kind $rawUserPath.Kind
-            Write-Info "Removed legacy launcher entries from user PATH (kept hermes via $hermesBin)"
+            $removedLegacy = $true
         }
     }
 
     # Presence is judged on the expanded spelling (a user may have stored
     # "%LOCALAPPDATA%\hermes\bin"); the raw text is what gets written back.
-    if ([Environment]::ExpandEnvironmentVariables("$currentPath") -notlike "*$hermesBin*") {
-        Set-UserPathRaw -Value "$hermesBin;$currentPath" -Kind $rawUserPath.Kind
+    $addBin = [Environment]::ExpandEnvironmentVariables("$currentPath") -notlike "*$hermesBin*"
+    if ($addBin) {
+        # No trailing ";" when there was nothing before: an empty PATH element
+        # means "the current directory" to Git Bash, MSYS and Cygwin.
+        $currentPath = if ($currentPath) { "$hermesBin;$currentPath" } else { $hermesBin }
+    }
+
+    # One write and one broadcast, however many of the two steps applied.
+    if ($removedLegacy -or $addBin) {
+        Set-UserPathRaw -Value $currentPath -Kind $rawUserPath.Kind
+    }
+    if ($removedLegacy) {
+        Write-Info "Removed legacy launcher entries from user PATH (kept hermes via $hermesBin)"
+    }
+    if ($addBin) {
         Write-Success "Added to user PATH: $hermesBin"
     } else {
         Write-Info "PATH already configured"

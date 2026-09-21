@@ -36,10 +36,21 @@ $scratchSubKey = "Software\HermesInstallTest\" + [Guid]::NewGuid().ToString('N')
 $script:UserPathRegistrySubKey = $scratchSubKey
 $script:UserPathRegistryName = 'Path'
 
+# The sender swallows every error by design, so prove the P/Invoke type behind
+# it COMPILES in this edition before it is stubbed. No broadcast is sent.
+Write-Host '-- the broadcast type compiles --'
+$broadcastType = Get-EnvBroadcastType
+$broadcastMethod = if ($broadcastType) { $broadcastType.GetMethod('SendMessageTimeout') } else { $null }
+Assert-Equal $true ($null -ne $broadcastMethod) "SendMessageTimeout is bound under PowerShell $($PSVersionTable.PSVersion.Major)"
+Assert-Equal 7 $(if ($broadcastMethod) { $broadcastMethod.GetParameters().Count } else { 0 }) 'with the seven parameters the call passes'
+Assert-Equal $true ((Get-EnvBroadcastType) -eq $broadcastType) 'and a second ask reuses the compiled type'
+Write-Host ''
+
 $script:Broadcasts = 0
+$script:Warnings = @()
 function Send-EnvironmentChanged { $script:Broadcasts++ }
 function Write-Info { param([string]$Message) }
-function Write-Warn { param([string]$Message) }
+function Write-Warn { param([string]$Message) $script:Warnings += $Message }
 function Write-Success { param([string]$Message) }
 
 $ExpandString = [Microsoft.Win32.RegistryValueKind]::ExpandString
@@ -150,6 +161,7 @@ try {
     $after = Get-ScratchPath
     Assert-Equal "$hermesBinDir;$varEntry;C:\literal" $after.Value 'legacy entries stripped, bin prepended, %VARS% entry survives raw'
     Assert-Equal $ExpandString $after.Kind 'REG_EXPAND_SZ is preserved'
+    Assert-Equal 1 $script:Broadcasts 'the strip and the prepend land in ONE write and one broadcast'
 
     $script:Broadcasts = 0
     Set-HermesBinOnUserPath -HermesBin $hermesBinDir
@@ -161,6 +173,44 @@ try {
     Set-HermesBinOnUserPath -HermesBin $hermesBinDir
     Remove-Item Env:\HERMES_USER_PATH_TEST_HOME
     Assert-Equal "C:\literal;%HERMES_USER_PATH_TEST_HOME%\bin" (Get-ScratchPath).Value 'a %VAR% spelling is recognised: legacy stripped, bin not duplicated'
+
+    Set-ScratchPath $null $null
+    Set-HermesBinOnUserPath -HermesBin $hermesBinDir
+    $after = Get-ScratchPath
+    Assert-Equal $hermesBinDir $after.Value 'no User PATH yet: exactly the bin dir, no trailing ";" (an empty element is the CWD to Git Bash)'
+    Assert-Equal $ExpandString $after.Kind 'a created value is REG_EXPAND_SZ'
+    Assert-Equal 1 $script:Broadcasts 'a created value broadcasts once'
+
+    Set-ScratchPath '' $ExpandString
+    Set-HermesBinOnUserPath -HermesBin $hermesBinDir
+    Assert-Equal $hermesBinDir (Get-ScratchPath).Value 'an empty User PATH gets the same clean single entry'
+
+    Write-Host ''
+    Write-Host '-- a Path value that is not text is never written from --'
+    # Reading it as "empty" and writing from that would replace the user's whole
+    # PATH with only our entries. Every call site must leave it exactly as found.
+    $multiKind = [Microsoft.Win32.RegistryValueKind]::MultiString
+    Set-ScratchPath ([string[]]@('C:\a', 'C:\b')) $multiKind
+    $script:Warnings = @()
+    Assert-Equal $false (Get-UserPathRaw).Writable 'a REG_MULTI_SZ value reads as not writable'
+
+    Set-ManagedNodeFirstOnUserPath $nodeDir
+    Add-UserPathEntries -Entries $gitEntries
+    Set-HermesBinOnUserPath -HermesBin $hermesBinDir
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($scratchSubKey)
+    try {
+        Assert-Equal $multiKind $key.GetValueKind('Path') 'the value kind is untouched'
+        Assert-Equal 'C:\a|C:\b' (@($key.GetValue('Path')) -join '|') 'every entry the user had is still there'
+    } finally {
+        $key.Close()
+    }
+    Assert-Equal 0 $script:Broadcasts 'nothing was written, so nothing was broadcast'
+    Assert-Equal 3 $script:Warnings.Count 'each call site says so once'
+    Assert-Equal $true ($script:Warnings[2] -like "*$hermesBinDir*") 'and names what to add by hand'
+
+    Set-ScratchPath $null $null
+    Assert-Equal $true (Get-UserPathRaw).Writable 'a MISSING value is writable: that is a first install, not damage'
 } finally {
     [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($scratchSubKey, $false)
     $parent = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\HermesInstallTest', $true)

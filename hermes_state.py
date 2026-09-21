@@ -869,6 +869,101 @@ class SessionDB(
             yield None if self._read_conns_closed else self._conn
 
     @contextmanager
+    def live_external_writer_lifetime(
+        self,
+    ) -> Iterator[Callable[[sqlite3.Connection], None]]:
+        """Pin this exact live owner while a second connection commits.
+
+        The caller acquires this guard *before* opening or beginning the external
+        writer.  Unlike :meth:`live_write_connection`, this never begins SQL on
+        ``self._conn``; doing so would deadlock when both connections name this
+        database.  The yielded verifier binds the external transaction to the
+        owner's physical file identity, application id and durable generation.
+
+        ``_read_conns_lock`` is held before ``_lock``, matching ``close()``.  A
+        close therefore cannot publish ``_read_conns_closed`` until the external
+        commit or rollback has settled.
+        """
+
+        with self._read_conns_lock:
+            with self._lock:
+                if self._read_conns_closed or self._conn is None or self.read_only:
+                    raise sqlite3.ProgrammingError(
+                        "SessionDB external-writer lifetime is unavailable"
+                    )
+                self._raise_if_db_corrupt()
+                self._raise_if_db_replaced()
+                owner = self._conn
+                if owner.in_transaction:
+                    raise sqlite3.ProgrammingError(
+                        "SessionDB owner already has an active transaction"
+                    )
+                owner_path = Path(
+                    owner.execute("PRAGMA database_list").fetchone()[2]
+                ).resolve()
+                owner_app_row = owner.execute("PRAGMA application_id").fetchone()
+                owner_app = int(owner_app_row[0] or 0) if owner_app_row else 0
+                owner_generation_row = owner.execute(
+                    "SELECT value FROM state_meta WHERE key=?",
+                    (_STATE_DB_GENERATION_KEY,),
+                ).fetchone()
+                owner_generation = (
+                    str(owner_generation_row[0])
+                    if owner_generation_row and owner_generation_row[0]
+                    else ""
+                )
+                if (
+                    owner_path != self.db_path.resolve()
+                    or not owner_app
+                    or not owner_generation
+                ):
+                    raise sqlite3.ProgrammingError(
+                        "SessionDB owner generation is unavailable"
+                    )
+
+                def require_external_writer(conn: sqlite3.Connection) -> None:
+                    if (
+                        conn is None
+                        or conn is owner
+                        or not conn.in_transaction
+                        or self._read_conns_closed
+                        or self._conn is not owner
+                    ):
+                        raise sqlite3.ProgrammingError(
+                            "external writer is outside the live owner lifetime"
+                        )
+                    self._raise_if_db_corrupt()
+                    self._raise_if_db_replaced()
+                    external_path = Path(
+                        conn.execute("PRAGMA database_list").fetchone()[2]
+                    ).resolve()
+                    external_app_row = conn.execute("PRAGMA application_id").fetchone()
+                    external_generation_row = conn.execute(
+                        "SELECT value FROM state_meta WHERE key=?",
+                        (_STATE_DB_GENERATION_KEY,),
+                    ).fetchone()
+                    external_app = (
+                        int(external_app_row[0] or 0) if external_app_row else 0
+                    )
+                    external_generation = (
+                        str(external_generation_row[0])
+                        if external_generation_row and external_generation_row[0]
+                        else ""
+                    )
+                    if (
+                        external_path != owner_path
+                        or external_app != owner_app
+                        or external_generation != owner_generation
+                    ):
+                        raise StateDbReplacedError(
+                            "external writer does not name the live SessionDB generation"
+                        )
+
+                yield require_external_writer
+                self._raise_if_db_corrupt()
+                self._raise_if_db_replaced()
+
+    @contextmanager
     def live_write_connection(self) -> Iterator[sqlite3.Connection]:
         """Hold the existing writer as a fence, without reopen, repair or retry.
 

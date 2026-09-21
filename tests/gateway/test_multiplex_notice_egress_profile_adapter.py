@@ -39,6 +39,7 @@ def _runner():
     r._session_sources = None
     r._running_agents = {}
     r._restart_requested = False
+    r._running = True
     r._restart_command_source = None
     return r
 

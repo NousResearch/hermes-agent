@@ -17,6 +17,7 @@ from gateway.session import SessionSource
 class RestartTestAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
+        self._running = True
         self.sent: list[str] = []
         self.sent_calls: list[tuple[str, str, object]] = []
 

@@ -118,10 +118,11 @@ describe('JsonRpcRequestChannel', () => {
     }
   })
 
-  // TUI contract: a backend whose request loop is wedged may still stream
-  // deltas; only a pong (or a response to our own request) proves it can
-  // answer, so notifications alone must NOT keep the transport alive.
-  it("'response' liveness (default, TUI): unanswered pings fail the heartbeat even while deltas stream", async () => {
+  // 'response' mode itself stays available (explicit opt-in): a caller that
+  // wants only a pong (or a response to its own request) to prove the
+  // backend can answer keeps that stricter contract.
+  it("'response' liveness (explicit opt-in): unanswered pings fail the heartbeat even while deltas stream", async () => {
+    // unchanged semantics for any caller that still chooses 'response'
     vi.useFakeTimers()
 
     try {

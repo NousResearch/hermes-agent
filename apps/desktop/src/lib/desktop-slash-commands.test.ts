@@ -10,6 +10,7 @@ import {
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
+  isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
   isModelPickerCommand,
   isPickerCommand,
@@ -502,7 +503,7 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
 
   it('marks every registry row with a reason unavailable offline, without a hand-typed copy', () => {
     for (const [name, reason] of Object.entries(desktopSlashRegistry)) {
-      if (reason === 'hidden') {
+      if (reason === null || reason === 'hidden') {
         continue
       }
 
@@ -515,6 +516,23 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
 
       expect(isDesktopSlashSuggestion(name)).toBe(false)
     }
+  })
+
+  it('recognizes offered built-ins and their aliases offline as Commands, never as skills (#116159)', () => {
+    // Cold catalog: nothing remembered, nothing cached. /context has no
+    // desktop disposition and no hand-typed TS row, so only the dump can
+    // vouch for it — and it must, or the popover files it under Skills and
+    // Enter takes the extension path.
+    for (const name of ['/context', '/ctx', '/usage']) {
+      expect(desktopSlashRegistry[name as keyof typeof desktopSlashRegistry]).toBeNull()
+      expect(isDesktopSlashExtensionCommand(name)).toBe(false)
+      expect(slashCompletionGroup(name)).toBe('Commands')
+      expect(isDesktopSlashCommand(name)).toBe(true)
+      expect(resolveDesktopCommand(name)?.surface.kind).toBe('exec')
+    }
+
+    // Control: an unknown skill command still groups as a skill offline.
+    expect(slashCompletionGroup('/gif-search')).toBe('Skills')
   })
 
   it('keeps the TS-only list disjoint from the registry dump', () => {

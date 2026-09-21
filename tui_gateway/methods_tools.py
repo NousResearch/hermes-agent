@@ -1504,8 +1504,18 @@ def _plugins_update(rid, params):
     return _ok(rid, {"ok": True, "unchanged": not changed, "sha": sha})
 
 
+def _plugins_remove(rid, params):
+    """Uninstall a user install (``<HERMES_HOME>/plugins/<name>``) — the same core as ``hermes plugins
+    remove`` and the dashboard; bundled plugins and paths outside the plugins dir are refused there."""
+    name = (params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4019, "plugins.remove requires a 'name'")
+    result = _tools_mod("hermes_cli.plugins_cmd").dashboard_remove_user_plugin(name)
+    return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "remove failed")
+
+
 _PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
-                    "update": _plugins_update}
+                    "update": _plugins_update, "remove": _plugins_remove}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
@@ -1513,7 +1523,8 @@ def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install to the current catalog SHA."""
+    default True); ``update`` re-pins a catalog install to the current catalog SHA; ``remove`` deletes
+    a user install by ``name``."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 
@@ -1532,9 +1543,22 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands.")
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
+
+    def done(result):
+        redact = _tools_mod("agent.redact").redact_sensitive_text
+        # Unlike the interactive CLI, this output crosses the RPC boundary and can be persisted
+        # in the transcript. Redact before tailing so a credential crossing the slice boundary
+        # cannot survive as two unmatched fragments.
+        stdout = redact(result.stdout or "", force=True, redact_url_credentials=True)[-4000:]
+        stderr = redact(result.stderr or "", force=True, redact_url_credentials=True)[-2000:]
+        return _ok(rid, {"stdout": stdout, "stderr": stderr, "code": result.returncode})
+
+    # shell=True preserves the user-facing !cmd grammar (pipes, redirects and interpolation).
+    # The child must not inherit credentials held by the long-lived gateway process.
+    env = _tools_mod("tools.environments.local").build_subprocess_env()
     return _captured_exec(
-        rid, cmd, 30, shell=True, fail_code=5003, timeout_err=(5002, "command timed out (30s)"),
-        on_result=lambda r: _ok(rid, {"stdout": r.stdout[-4000:], "stderr": r.stderr[-2000:], "code": r.returncode}))
+        rid, cmd, 30, shell=True, env=env, fail_code=5003,
+        timeout_err=(5002, "command timed out (30s)"), on_result=done)
 
 
 def register(server) -> None:

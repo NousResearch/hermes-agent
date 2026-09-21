@@ -2,6 +2,7 @@
 flags (end/reopen/archive/pin/hide/read), model_config patching, listing and
 counting, delete cascades, and the auto-archive sweep."""
 
+import glob
 import json
 import logging
 import re
@@ -832,6 +833,25 @@ class SessionSessionsMixin:
             (stamp,),
         ) or 0)
 
+    def backfill_acp_session_cwd(self) -> int:
+        """Promote ``model_config.cwd`` into the cwd column for ACP rows lacking one.
+
+        ACP sessions minted before the adapter populated the column still carry
+        their workspace inside ``model_config``, written by the same adapter that
+        knew the real directory — so this is a record being promoted, not a guess.
+        Only fills NULL/empty; an explicit column value always wins. Returns the
+        number of rows changed.
+        """
+        return int(self._write_rowcount(
+            """UPDATE sessions
+                  SET cwd = json_extract(model_config, '$.cwd')
+                WHERE source = 'acp'
+                  AND COALESCE(cwd, '') = ''
+                  AND json_valid(model_config)
+                  AND COALESCE(json_extract(model_config, '$.cwd'), '') != ''""",
+            (),
+        ) or 0)
+
     def _set_lineage_column(self, column: str, session_id: str, value: Any) -> bool:
         """Set one ``sessions`` column across a whole compression lineage: Desktop projects roots
         forward to their tip, so updating only the tip would let the root resurrect it on refresh."""
@@ -1483,7 +1503,9 @@ class SessionSessionsMixin:
             return
         targets = [sessions_dir / f"{session_id}{suffix}" for suffix in (".json", ".jsonl")]
         try:
-            targets.extend(sessions_dir.glob(f"request_dump_{session_id}_*.json"))
+            # glob.escape: a session id carrying ``[`` / ``?`` / ``*`` is a PATTERN otherwise, so the
+            # dump sweep either matches nothing or matches another session's files.
+            targets.extend(sessions_dir.glob(f"request_dump_{glob.escape(session_id)}_*.json"))
         except OSError:
             pass
         for p in targets:
@@ -1632,8 +1654,11 @@ class SessionSessionsMixin:
         self, older_than_days: Optional[float] = None, source: str = None, **filters,
     ) -> int:
         """Bulk soft-hide with prune_sessions' filter surface, via set_session_archived so each lineage
-        flips as a unit; idempotent. Returns matches."""
+        flips as a unit; idempotent. Returns matches. A lineage is matched through its TIP only: an
+        old compression ancestor never qualifies on its own age, or the fan-out would hide an open,
+        recently active continuation (#115489)."""
         filters.setdefault("archived", False)
+        filters["lineage_tips_only"] = True
         rows = self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
         for row in rows:
             self.set_session_archived(row["id"], True)

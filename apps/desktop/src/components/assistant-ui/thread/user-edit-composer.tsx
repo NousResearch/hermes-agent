@@ -529,6 +529,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
   const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
     if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+      // A plain text drag within the editor mutates the DOM without a
+      // React-visible beforeinput (insertFromDrop), so the undo snapshot has
+      // to be banked here — before Chromium applies the move.
+      recordUndoPoint()
+
       return
     }
 
@@ -597,6 +602,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
 
     recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
+  }
+
+  // Cut never reaches the handler above: React's onBeforeInput is a
+  // keypress/textInput polyfill and does not observe the native
+  // `beforeinput` event, so Chromium's deleteByCut input type is invisible to
+  // it. The native `cut` clipboard event still fires before the DOM mutation,
+  // which is where the pre-edit snapshot has to be banked or ⌘Z skips the cut.
+  const handleCut = () => {
+    recordUndoPoint()
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
@@ -865,6 +879,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
                 composingRef.current = true
                 beginComposerComposition(event.currentTarget)
               }}
+              onCut={handleCut}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onFocus={() => markActiveComposer('edit')}

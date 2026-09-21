@@ -840,6 +840,10 @@ def _reinject_pruned_skill_markers(summary: str, skill_names: list[str]) -> str:
 # 2.5% of the context window, clamped; floor keeps small models workable.
 LEAN_TAIL_FLOOR_TOKENS = 10_000
 LEAN_TAIL_CAP_TOKENS = 25_000
+# Hard share of the window the verbatim tail may occupy, applied after either formula. The lean
+# floor alone is 61% of a 16K window and 122% of an 8K one, so on a local 27B the "protected"
+# tail WAS the whole request and every compaction pass summarised six rows and reclaimed nothing.
+TAIL_MAX_CONTEXT_FRACTION = 0.20
 # Newest-first budget, straddler truncated; lives inside the single summary message.
 _LEAN_USER_MESSAGES_BUDGET_CHARS = 24_000  # ~6K tokens
 _LEAN_USER_MESSAGE_MAX_CHARS = 4_000
@@ -2057,9 +2061,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if self._tail_token_budget is None:
             if getattr(self, "tail_mode", "lean") == "lean":
                 # Lean mode: tail is a small clamped recency window; the summary carries continuity.
-                self._tail_token_budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
+                budget = max(LEAN_TAIL_FLOOR_TOKENS, min(LEAN_TAIL_CAP_TOKENS, int(self.context_length * 0.025)))
             else:
-                self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+                budget = int(self.threshold_tokens * self.summary_target_ratio)
+            if self.context_length > 0:
+                budget = min(budget, int(self.context_length * TAIL_MAX_CONTEXT_FRACTION))
+            self._tail_token_budget = max(1, budget)
         return self._tail_token_budget
 
     @tail_token_budget.setter
@@ -2103,6 +2110,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
+        # The model the aux lane actually resolved for the most recent summary call (an ``auto`` route
+        # may differ from ``summary_model``/``model``). Recorded so a failed auto-resolved model is
+        # named in the user-visible warning and falls back to the main model (#116472).
+        self._last_aux_resolved_model = None
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
@@ -2971,6 +2982,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
         return True
 
+    def _tail_soft_ceiling(self, token_budget: int) -> int:
+        """Optional tail rows may overrun the budget by 1.5x so whole rows are kept, but never past
+        ``TAIL_MAX_CONTEXT_FRACTION`` of the window — on a small window the overrun alone was a third
+        of the request. Required anchors and atomic tool groups may still exceed it."""
+        ceiling = int(token_budget * 1.5)
+        ctx = getattr(self, "context_length", 0) or 0
+        if ctx > 0:
+            ceiling = min(ceiling, int(ctx * TAIL_MAX_CONTEXT_FRACTION))
+        return max(ceiling, token_budget)
+
     def _pressure_demote_tail(
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int,
@@ -2978,7 +2999,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
         Keeps a short recent floor verbatim; overrides the skill guard (else the dead-end recurs).
         Returns the number of tool results demoted (arg truncations are logged but not counted)."""
-        soft_ceiling = int(protect_tail_tokens * 1.5)
+        soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
 
@@ -3470,15 +3491,24 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             prev_end = end
         return "".join(parts)
 
-    def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
-        """Fall back from a separate ``summary_model`` to the main model: record the aux failure, clear model + cooldown."""
+    def _fallback_to_main_for_compression(
+        self, e: Exception, reason: str, failed_model: Optional[str] = None
+    ) -> None:
+        """Fall back from a separate ``summary_model`` to the main model: record the aux failure, clear model + cooldown.
+
+        ``failed_model`` names the model that actually failed — an ``auto`` route resolves one per call
+        without setting ``summary_model``, so without it the user warning would have no model to name
+        (#116472)."""
+        failed = str(
+            failed_model or self.summary_model or getattr(self, "_last_aux_resolved_model", "") or ""
+        ).strip()
         self._summary_model_fallen_back = True
         logger.warning(
             "Summary model '%s' %s (%s). Falling back to main model '%s' for compression.",
-            self.summary_model, reason, e, self.model,
+            failed or "(auto)", reason, e, self.model,
         )
         self._last_aux_model_failure_error = _short_error_text(e)
-        self._last_aux_model_failure_model = self.summary_model
+        self._last_aux_model_failure_model = failed or None
         telemetry = getattr(self, "_active_compression_telemetry", None)
         if isinstance(telemetry, dict):
             telemetry["fallback_used"] = True
@@ -3526,6 +3556,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         finally:
             route_known = bool(_aux_route.get("provider") and _aux_route.get("model"))
             _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
+            # Remember the resolved model for the failure path: an ``auto`` route picks one per call
+            # without setting ``summary_model``, so only this names it in the user warning (#116472).
+            self._last_aux_resolved_model = _aux_model or None
             self._record_aux_compression_call(
                 prompt_messages=call_kwargs["messages"],
                 # max_tokens is intentionally absent; .get() keeps the telemetry hook from breaking the call.
@@ -3614,6 +3647,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
             summary = self._augment_summary_lean(summary, turns_to_summarize)
             self._validate_summary_user_provenance(summary, has_user_turn)
+            # A detached stale attempt must not publish its late summary onto shared compressor state:
+            # the fallback already advanced _previous_summary and owns the cooldown/error fields. The
+            # candidate itself is discarded downstream by the working-attempt check; bail here so the
+            # attribute writes never land. Entry-generation claims (lock sit-outs) do not count; the
+            # working marker is the ownership boundary for summary state.
+            from agent.conversation_compression import _raise_if_stale_attempt
+
+            _raise_if_stale_attempt(self)
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
             self._summary_model_fallen_back = False
@@ -3761,6 +3802,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         self, e: Exception, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str], memory_context: str,
     ) -> Optional[str]:
         """Classify a summary-call failure; retry once on the main model (returning its result) or arm a cooldown (None)."""
+        # A detached stale attempt must not arm a failure cooldown or stamp error state the fallback
+        # attempt owns; unwind as a cancellation so none of the shared-state writes below can land.
+        from agent.conversation_compression import _raise_if_stale_attempt
+
+        _raise_if_stale_attempt(self)
         # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
         # RuntimeErrors are transient and must get the main-model retry below first.
         # ``call_llm`` raises ``RuntimeError`` for two very different cases: 1. 2. An empty/invalid response
@@ -3792,8 +3838,14 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # A distinct summary model gets ONE main-model retry: a specific reason for known transient classes,
         # else a best-effort "failed" retry — losing N turns is worse than one extra summary attempt.
-        if self.summary_model and self.summary_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
-            self._fallback_to_main_for_compression(e, kind.fallback_reason())
+        # ``provider: auto`` resolves a model per call WITHOUT setting ``summary_model``; use the model the
+        # aux lane actually resolved so an auto route that keeps returning empty content (a proxy channel
+        # answering 200 with no body) is abandoned for the main model instead of retried forever (#116472).
+        _route_model = str(
+            self.summary_model or getattr(self, "_last_aux_resolved_model", "") or ""
+        ).strip()
+        if _route_model and _route_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
+            self._fallback_to_main_for_compression(e, kind.fallback_reason(), failed_model=_route_model)
             # Retry immediately on the main model.
             return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
@@ -4550,7 +4602,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Keep >= 2 non-head messages summarizable so a tiny middle still saves messages.
         compressible_tail_cap = max(3, available_tail - 2)
         min_tail = min(min_tail_floor, compressible_tail_cap, available_tail) if available_tail > 1 else 0
-        soft_ceiling = int(token_budget * 1.5)
+        soft_ceiling = self._tail_soft_ceiling(token_budget)
         # The count floor is opportunistic: oversized optional rows must not ride it past the token
         # ceiling (#108647), so the walk runs floorless whenever the ceiling can hold at least the wire
         # overhead of that many empty rows. Only when it cannot does the continuity floor win — no
@@ -4801,8 +4853,13 @@ Write only the summary body. Do not include any preamble or prefix."""
             "%d message(s) preserved unchanged. Conversation is frozen until the next /compress or /new.",
         )
         telemetry["failure_class"] = failure_class
-        # Roll back the self-heal rehydration so the aborted attempt is a true no-op (#57835).
-        self._previous_summary = previous_summary_before_scan
+        # Roll back the self-heal rehydration so the aborted attempt is a true no-op (#57835). Only the
+        # attempt still owning summary work may roll back: a detached stale attempt (reachable here via
+        # the deterministic summary pin) must not revert the fallback's _previous_summary.
+        from agent.conversation_compression import _caller_attempt_is_current
+
+        if _caller_attempt_is_current(self):
+            self._previous_summary = previous_summary_before_scan
         if not self.quiet_mode:
             logger.warning(message, n_skipped)
         return True
@@ -4995,6 +5052,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         WITHOUT clearing it (#100661). Set by provider-proven overflow recovery, which is already bounded by
         the caller's attempt budget.
         """
+        # A detached stale attempt must not even reset per-call state the fallback owns. Staleness that
+        # arises mid-compress is caught by the write-point gates below; this covers stale-at-entry.
+        from agent.conversation_compression import _raise_if_stale_attempt
+
+        _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
@@ -5048,6 +5110,12 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
 
         # Phase 3: Generate structured summary (or skip the LLM when the middle is too small to matter)
+        # Choke point for staleness that arose during phases 1-2: everything below writes shared state
+        # (feasibility counters, fallback diagnostics, finalize's cursor/rearm resets), and the inner
+        # _summarize_window/_generate_summary gates cover staleness arising during the LLM call itself.
+        from agent.conversation_compression import _raise_if_stale_attempt
+
+        _raise_if_stale_attempt(self)
         feasibility_skip = not force and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
         summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
         if not feasibility_skip:

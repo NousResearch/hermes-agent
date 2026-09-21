@@ -62,7 +62,10 @@ Use `/compress` when a session gets long, `/new` for a fresh thread, and
 `hermes sessions prune` only when you want to delete old ended sessions from
 storage. If `state.db` has simply grown large, start with the non-destructive
 option first: `hermes sessions optimize` merges FTS5 index segments and
-VACUUMs the database without touching any session data. Compression reduces the active context; it is not a privacy delete.
+VACUUMs the database without touching any session data. Both `optimize` and `prune` refuse
+while another Hermes process (gateway, Desktop, dashboard, cron) holds `state.db` — stop it
+first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
+Compression reduces the active context; it is not a privacy delete.
 Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
 initial title up front — useful for finding it later with `/resume <name>` or
 in the `/sessions` picker.
@@ -233,7 +236,7 @@ What happens:
 1. The CLI validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
 2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
 3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
-   - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
+   - **Telegram** — opens a new forum topic (DM topics if the bot owner has enabled Threaded Mode via BotFather, or a forum supergroup topic).
    - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
    - **Matrix** — posts a seed message and uses its event id as the thread root (`m.thread` relation).
@@ -585,7 +588,10 @@ hermes sessions archive --title "dry run" --yes
 ```
 
 At least one filter is required — a bare `hermes sessions archive` refuses to
-archive your entire history. Archived sessions are hidden from
+archive your entire history. A compacted conversation is archived as a unit
+through its live tip: an old compression segment never matches on its own age,
+so a chat that is still active is never hidden because its history is long.
+Archived sessions are hidden from
 `hermes sessions list` and `/resume` but remain in the database and can be
 unarchived from the Desktop/Dashboard session list.
 
@@ -695,6 +701,35 @@ themselves cannot tell the two apart.
 `--apply` refuses while a gateway owns any of the stores (it holds the routing
 index in memory and would write it back), and is safe to re-run: a second run
 finds nothing.
+
+
+### Convert the Store Between WAL and DELETE Journal Mode
+
+`database.journal_mode: delete` only applies to databases Hermes creates. An
+existing `state.db` that is already in WAL mode is **never** live-downgraded at
+open — other gateway, dashboard or cron processes may hold uncheckpointed WAL
+commits, and a downgrade underneath them destroys those commits — so Hermes
+keeps WAL and logs one `ERROR` per process telling you the configured `delete`
+did not apply. The self-service conversion is:
+
+```bash
+# stop every process using the profile's store first (gateway, dashboard, CLIs, cron)
+hermes sessions set-journal-mode delete     # WAL -> rollback journal
+hermes sessions set-journal-mode wal        # back to WAL
+hermes sessions set-journal-mode delete --db ~/.hermes/kanban.db   # another Hermes store
+```
+
+The command refuses — naming each PID and command — while any process still
+holds the file or its `-wal`/`-shm` sidecars, switches the mode without
+waiting out openers (a holder that appears mid-way makes SQLite refuse instead
+of racing it), and verifies the file header reports the new mode. It reminds
+you to set `database.journal_mode` to the same value when the config disagrees,
+because the next open re-applies the configured mode. The holder scan is local
+and POSIX-only, so it cannot see a process in another container or VM sharing
+the volume, and on Windows there is no scan at all — the command refuses there
+outright unless you pass `--force` after stopping every Hermes process
+yourself. Enabling WAL is also refused when the store sits on a cross-VM
+filesystem (virtiofs/9p), where WAL shared memory corrupts silently.
 
 
 ## Importing Sessions from Claude Code and Codex CLI

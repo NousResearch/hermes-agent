@@ -405,7 +405,7 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
     if isinstance(started_at, str) and "|" in started_at:
         # Fingerprint strings are "<instantiation epoch>|<start time>": the epoch part is
         # exact (reboot witness), the start-time part is probed live and drifts ~1s
-        # across processes (see gateway.status.start_times_match) — compare it tolerantly.
+        # across processes (see gateway.status.start_time_fingerprints_match) — compare it tolerantly.
         # An unreadable probe keeps the documented stranger-conservative answer.
         current = _process_fingerprint(int(pid))
         if current is None:
@@ -417,8 +417,8 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
         if cur_epoch != rec_epoch:
             return True
         try:
-            from gateway.status import start_times_match
-            return not start_times_match(int(cur_start), int(rec_start))
+            from gateway.status import start_time_fingerprints_match
+            return not start_time_fingerprints_match(int(cur_start), int(rec_start))
         except (TypeError, ValueError):
             return True
     from gateway.status import get_process_start_time
@@ -429,8 +429,8 @@ def _pid_recycled(pid: Optional[int], started_at) -> bool:
         # Legacy integer rows record raw start times: a recycled pid's start differs by
         # minutes-to-days, so the ±2-native-unit liveness tolerance keeps reuse detection
         # exact while a drifted live probe no longer misreads the worker as recycled.
-        from gateway.status import start_times_match
-        return not start_times_match(current, started_at)
+        from gateway.status import start_time_fingerprints_match
+        return not start_time_fingerprints_match(current, started_at)
     except (TypeError, ValueError):
         return True
 

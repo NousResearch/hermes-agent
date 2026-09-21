@@ -105,9 +105,15 @@ Copies **everything** — config, API keys, personality, all memories, skills, p
 Anthropic (Claude Pro/Max), OpenAI Codex, and xAI OAuth logins use **single-use refresh tokens** — a copy of one is not a second credential, it is the same credential with two owners, and the first profile to refresh it revokes it for every other copy. `--clone-all` (and the dashboard's credential mirroring) therefore drops those OAuth rows from the clone. Static API keys are copied as usual. Sign the new profile into the OAuth provider itself: `hermes -p <name> auth add <provider>` (or `hermes -p <name> model`).
 :::
 
-### Every profile owns its credentials
+### Profile credentials
 
-A named profile resolves providers from **its own** `auth.json` and `.env` only. It never inherits the root profile's logins or API keys, and a token refresh inside a profile never writes to the root store. A profile with no provider of its own is asked to set one up (`hermes -p <name> model`, or `hermes -p <name> auth add <provider>`) — it does not silently act as the owner. `hermes update` lists every profile that has no provider of its own so a bot never goes quiet unannounced.
+Cloud model-provider API keys and endpoint overrides are stored once in the
+installation root `.env` and are available to every named profile. A profile's
+own `.env` can override a model-provider key, while platform, relay, and other
+service credentials remain private to that profile. OAuth logins and credential
+pools stay in each profile's `auth.json`; a token refresh never writes to the
+root store. A profile with no usable provider key is still asked to set one up
+(`hermes -p <name> model`, or `hermes -p <name> auth add <provider>`).
 
 ### Clone from a specific profile
 

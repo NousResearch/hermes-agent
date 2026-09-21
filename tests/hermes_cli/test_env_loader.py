@@ -460,6 +460,28 @@ def test_no_user_env_does_not_clear_anything(tmp_path, monkeypatch):
     assert os.getenv("PATH") == "/usr/bin:/bin"
 
 
+def test_named_profile_loads_shared_model_keys_from_install_root(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n")
+    (root / ".env").write_text(
+        "OPENROUTER_API_KEY=sk-root-openrouter\n"
+        "NVIDIA_API_KEY=nvapi-root\n"
+        "TELEGRAM_BOT_TOKEN=telegram-root\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    for name in ("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "TELEGRAM_BOT_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    load_hermes_dotenv(hermes_home=profile)
+
+    assert os.environ["OPENROUTER_API_KEY"] == "sk-root-openrouter"
+    assert os.environ["NVIDIA_API_KEY"] == "nvapi-root"
+    assert "TELEGRAM_BOT_TOKEN" not in os.environ
+
+
 def test_known_key_explicitly_set_in_user_env_is_kept(tmp_path, monkeypatch):
     """A known Hermes key that IS explicitly set in the profile .env survives
     the cleanup (overrides the inherited value).

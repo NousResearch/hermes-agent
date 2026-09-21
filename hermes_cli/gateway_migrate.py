@@ -914,7 +914,7 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         print(f"  ✓ {_restart_default(plan.default, target, plan.default_home, run_as_user=run_as_user)}")
     except Exception as exc:
         _print([f"  ✗ migration failed ({exc})",
-                "  ↩ Restoring the per-profile gateways so no profile is left without one..."])
+                "  ↩ Restoring one host gateway so this host is not left without one..."])
         rolled_back = rollback_migration(plan.default_home)
         if not rolled_back:
             print(f"  Re-run {MIGRATE_COMMAND} to resume from the manifest.")
@@ -1020,9 +1020,20 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
     try:
         print(f"  ✓ {_restart_default(default_gw, target, default_home, run_as_user=run_as_user)}")
     except Exception as exc:
-        print(f"  ✗ default: could not bring the host gateway back up ({exc})")
-        print(incomplete)
-        return False
+        # The recorded service manager is exactly what the failed apply could not drive (a refused
+        # system-unit install, a read-only unit dir). Falling back to a detached gateway still
+        # honours one-gateway-per-host, and a host with a running gateway beats a correct unit.
+        print(f"  ✗ default: could not bring the host gateway back up via the recorded service "
+              f"manager ({exc}); falling back to a detached gateway")
+        try:
+            spawned = _spawn_detached_gateway(default_home)
+        except Exception as spawn_exc:
+            print(f"  ✗ default: the detached fallback also failed ({spawn_exc})")
+            spawned = False
+        if not spawned:
+            print(incomplete)
+            return False
+        print("  ✓ default: started the host gateway detached (no service manager)")
     live = _wait_for_live_gateway(default_home, _COMPENSATOR_WAIT_SECONDS)
     if live is None:
         print(f"  ✗ default: no gateway confirmed serving this host within {_COMPENSATOR_WAIT_SECONDS:.0f}s "

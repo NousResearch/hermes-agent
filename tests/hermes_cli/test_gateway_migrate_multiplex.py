@@ -77,6 +77,11 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: state.pids.get(_name(home)))
     monkeypatch.setattr(gm, "_service_op", _service_op)
     monkeypatch.setattr(gm, "_stop_gateway_process", lambda home: state.pids.pop(_name(home), None))
+    monkeypatch.setattr(gm, "_spawn_detached_gateway", lambda home: _fake_spawn(state, home))
+    # The compensator's liveness proof reads what a started gateway actually wrote, so a start that
+    # returns without producing a gateway (the ExecMainStatus=75 respawn loop) is NOT "restored".
+    monkeypatch.setattr(gm, "_wait_for_live_gateway",
+                        lambda home, timeout: _pid_of_started_gateway(home))
     monkeypatch.setattr(gm, "_host_supports_migration", lambda: None)
     # Part of the faked service layer: the real check asks systemd's questions (root, NSS user).
     monkeypatch.setattr(gm, "_preflight_apply", lambda plan, target, run_as_user: None)
@@ -92,6 +97,22 @@ def fleet(tmp_path, monkeypatch):
                         else tmp_path / "user-units" / f"{gw.get_service_name()}.service")
     state.root = root
     return state
+
+
+def _fake_spawn(state, home: Path) -> bool:
+    root = state.root
+    (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
+    return True
+
+
+def _pid_of_started_gateway(home: Path):
+    marker = home / "gateway.pid"
+    if not marker.exists():
+        return None
+    try:
+        return json.loads(marker.read_text()).get("pid")
+    except ValueError:
+        return None
 
 
 def _name(home: Path) -> str:
@@ -182,12 +203,13 @@ def test_apply_clears_the_manifest_on_success_and_the_compensator_restores(fleet
     gm._write_manifest(fleet.root, manifest)  # the compensator only ever runs on a FAILED apply
     assert gm.rollback_migration(fleet.root) is True
     assert _config_flag(fleet.root) is False
-    assert fleet.services == {"default": ("systemd", False), "coder": ("systemd", False), "ops": ("systemd", False)}
-    assert [op for op in fleet.ops if op[0] != "default"] == [
-        ("coder", "install"), ("coder", "start"), ("ops", "install"), ("ops", "start")]
+    # ONE gateway, not a fleet: the flipped host lock refuses N per-profile gateways, and the
+    # compensator clears the served record first, so every secondary it used to start would lose
+    # the flock race and respawn at exit 75 forever.
+    assert fleet.services == {"default": ("systemd", False)}
+    assert [op for op in fleet.ops if op[0] != "default"] == []
     assert fleet.ops[-1] == ("default", "restart")
-    # Each secondary's own gateway must have been startable at the moment it was started.
-    assert fleet.refused_at_start == {"coder": False, "ops": False}
+    assert "coder, ops" in capsys.readouterr().out
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
     assert runtime["served_profiles"] == []
     assert runtime["platforms"] == {"telegram": {"state": "connected"}}
@@ -226,36 +248,48 @@ def test_migration_preserves_root_system_service_user_for_default_install(fleet,
     assert installs == [("systemd", True, "root")]
 
 
-def test_rollback_with_failed_secondary_still_restarts_default_and_keeps_manifest(fleet, monkeypatch):
+def test_rollback_that_cannot_bring_the_gateway_back_reports_failure_and_keeps_the_manifest(
+        fleet, monkeypatch, capsys):
+    """A service-manager ``start`` that returns is not proof of a live gateway. Returning True on
+    it printed '✓ Restored' over a unit respawning every 5s at ExecMainStatus=75."""
     ok, _manifest = _apply_capturing_manifest(gm.build_migration_plan(), restore=True)
     assert ok is True
     fleet.ops.clear()
     real_op = gm._service_op
 
-    def _flaky(kind, system, verb, home, *, run_as_user=None):
-        if verb == "start" and _name(home) == "coder":
-            raise RuntimeError("systemctl start failed")
+    def _silent_start(kind, system, verb, home, *, run_as_user=None):
+        if verb in ("start", "restart") and _name(home) == "default":
+            (fleet.root / "gateway.pid").unlink(missing_ok=True)
+            return  # the unit "starts" and produces nothing (ExecMainStatus=75, respawning)
         real_op(kind, system, verb, home, run_as_user=run_as_user)
 
-    monkeypatch.setattr(gm, "_service_op", _flaky)
+    monkeypatch.setattr(gm, "_service_op", _silent_start)
+    monkeypatch.setattr(gm, "_COMPENSATOR_WAIT_SECONDS", 0.5)
     assert gm.rollback_migration(fleet.root) is False
-    # The flag is off, so the default must not be left multiplexing; the manifest stays for a re-run.
+    out = capsys.readouterr().out
+    assert "no gateway confirmed serving this host" in out and "Compensation incomplete" in out
     assert _config_flag(fleet.root) is False
-    assert fleet.ops[-1] == ("default", "restart")
-    assert ("ops", "start") in fleet.ops
+    assert [op for op in fleet.ops if op[0] != "default"] == [], "no secondary may be rebuilt"
     assert (fleet.root / gm.MANIFEST_NAME).exists()
 
 
-def test_rollback_rerun_does_not_respawn_a_running_detached_secondary(fleet, monkeypatch):
-    # Manifest of a fleet with no service manager anywhere (detached gateways only).
+def test_rollback_never_respawns_a_detached_secondary(fleet, monkeypatch):
+    """Detached gateways have no supervisor to loop, but they lose the same flock race and simply
+    die — leaving the operator a process that vanished. The compensator spawns the default only."""
     gm._write_manifest(fleet.root, {"version": 1, "flag_was": False, "default": {"service": None}, "secondaries": [
         {"profile": n, "home": str(fleet.root / "profiles" / n), "pid": 4100, "service": None} for n in ("coder", "ops")]})
     fleet.services.clear()
-    fleet.pids = {"coder": 4101}  # coder came back up in an earlier, interrupted rollback; ops did not
+    fleet.pids = {}
     spawned = []
-    monkeypatch.setattr(gm, "_spawn_detached_gateway", lambda home: spawned.append(_name(home)) or True)
+
+    def _spawn(home):
+        spawned.append(_name(home))
+        fleet.pids[_name(home)] = 5000 + len(spawned)
+        return _fake_spawn(fleet, home)
+
+    monkeypatch.setattr(gm, "_spawn_detached_gateway", _spawn)
     assert gm.rollback_migration(fleet.root) is True
-    assert spawned == ["ops"]
+    assert spawned == ["default"]
 
 
 def test_malformed_manifest_is_refused_before_any_mutation(fleet, capsys):
@@ -476,9 +510,11 @@ def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_re
     assert gm.rollback_migration(fleet.root) is True and _config_flag(fleet.root) is False
 
 
-def test_failed_default_bringup_rolls_back_to_per_profile_gateways(fleet, monkeypatch, capsys):
-    """#110850: the last step (install/start the default) is the one that can fail after the destructive
-    ones. It must not leave the flag on with no gateway anywhere: the manifest rolls the fleet back."""
+def test_failed_default_bringup_compensates_to_one_detached_gateway(fleet, monkeypatch, capsys):
+    """#110850: the last step (install/start the default) is the one that can fail after the
+    destructive ones. It must not leave the flag on with no gateway anywhere. The compensator can
+    no longer rebuild the fleet (the flipped host lock refuses it), and the recorded service
+    manager is the very thing that just failed — so it falls back to ONE detached gateway."""
     real_op = gm._service_op
 
     def _refusing(kind, system, verb, home, *, run_as_user=None):
@@ -489,12 +525,16 @@ def test_failed_default_bringup_rolls_back_to_per_profile_gateways(fleet, monkey
     monkeypatch.setattr(gm, "_service_op", _refusing)
     assert gm.apply_migration(gm.build_migration_plan(), served_wait=0.1) is False
     out = capsys.readouterr().out
-    assert "Restoring the per-profile gateways" in out and "Restored the per-profile gateways" in out
+    assert "Restoring one host gateway" in out and "Compensated: one host gateway is running" in out
+    assert "falling back to a detached gateway" in out
     assert _config_flag(fleet.root) is False
-    assert fleet.services == {"coder": ("systemd", False), "ops": ("systemd", False)}
+    # Compensation is a single gateway; the removed secondaries are named, not rebuilt.
+    assert "coder, ops" in out and "NOT reinstalled" in out
+    assert "coder" not in fleet.services and "ops" not in fleet.services
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
-    # The fleet is back where it started, so a corrected re-run is a fresh migration, not a refusal.
-    assert gm.build_migration_plan().eligible_for_migration()
+    # One gateway, no fleet left: a re-run is a clean convergence, never a refusal or a rollback.
+    after = gm.build_migration_plan()
+    assert not after.blocked and after.standalone_secondaries == []
 
 
 def test_interrupted_apply_is_resumed_from_the_manifest_not_short_circuited(fleet, monkeypatch, capsys):
@@ -524,9 +564,10 @@ def test_interrupted_apply_is_resumed_from_the_manifest_not_short_circuited(flee
     assert "serves 3 profiles" in capsys.readouterr().out
 
 
-def test_every_installed_unit_of_a_secondary_is_removed_and_restored(fleet, capsys):
-    """A profile carrying a user AND a system unit: both are stopped/uninstalled (recording only the first
-    found left the other live beside the multiplexer) and rollback reinstalls both."""
+def test_every_installed_unit_of_a_secondary_is_removed_and_recorded(fleet, capsys):
+    """A profile carrying a user AND a system unit: both are stopped/uninstalled (recording only the
+    first found left the other live beside the multiplexer) and BOTH are recorded, so a resume knows
+    the full topology. The compensator no longer reinstalls them — one gateway per host."""
     fleet.services["coder"] = [("systemd", False), ("systemd", True)]
     plan = gm.build_migration_plan()
     coder = next(p for p in plan.standalone_secondaries if p.name == "coder")
@@ -538,8 +579,8 @@ def test_every_installed_unit_of_a_secondary_is_removed_and_restored(fleet, caps
     assert [(s["kind"], s["system"]) for s in coder_rec["services"]] == [("systemd", False), ("systemd", True)]
     capsys.readouterr()
     assert gm.rollback_migration(fleet.root) is True
-    assert fleet.services["coder"] == ("systemd", True) or set(_units(fleet.services["coder"])) == {("systemd", False), ("systemd", True)}
-    assert [op for op in fleet.ops if op[0] == "coder"].count(("coder", "install")) == 2
+    assert [op for op in fleet.ops if op[0] == "coder" and op[1] in ("install", "start")] == [], \
+        "the compensator restores one gateway, not a two-unit per-profile fleet"
 
     # The unattended hook does not resolve an ambiguous two-unit topology on its own.
     for f in (gm.MANIFEST_NAME, "gateway.pid", "gateway_state.json"):
@@ -657,11 +698,16 @@ def test_failure_anywhere_in_the_destructive_phase_restores_the_removed_secondar
                             lambda home, value: (_ for _ in ()).throw(OSError("read-only config")) if value else real_flag(home, value))
     assert gm.apply_migration(gm.build_migration_plan(), served_wait=0.1) is False
     out = capsys.readouterr().out
-    assert "Restoring the per-profile gateways" in out and "Restored the per-profile gateways" in out
+    assert "Restoring one host gateway" in out and "Compensated: one host gateway is running" in out
     assert _config_flag(fleet.root) is not True
-    assert fleet.services == {"coder": ("systemd", False), "ops": ("systemd", False)}
+    # Whatever the destructive phase had already removed stays removed: the compensator restores
+    # ONE gateway and never re-installs or re-starts a per-profile one.
+    assert [op for op in fleet.ops if op[0] != "default" and op[1] in ("install", "start")] == []
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
-    assert gm.build_migration_plan().eligible_for_migration()
+    # Secondaries the phase had not reached yet are untouched, so a corrected re-run is a normal
+    # migration; the ones it had already removed are simply served by the restored host gateway.
+    after = gm.build_migration_plan()
+    assert not after.blocked and after.eligible_for_migration()
 
 
 def test_known_bringup_refusal_is_rejected_before_any_secondary_is_touched(fleet, monkeypatch, capsys):

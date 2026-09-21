@@ -7,6 +7,7 @@ imported lazily inside each function (no import cycle; test patches stay effecti
 
 import json
 import logging
+import math
 from contextlib import suppress
 import os
 import subprocess
@@ -298,6 +299,27 @@ def _fleet_covered_gateways(fleet: list) -> set[tuple[str, str]] | None:
     return covered
 
 
+def _marker_runtime_was_replaced(runtime: dict, marker_started: float, fleet: list) -> bool:
+    """Whether the process is gone or its PID now names the verified successor."""
+    import psutil
+
+    pid = runtime["pid"]
+    try:
+        created = float(psutil.Process(pid).create_time())
+    except psutil.NoSuchProcess:
+        return True
+    except psutil.Error:
+        return False
+    if not math.isfinite(created) or created <= marker_started:
+        return False
+    profile = runtime["profile"]
+    return any(
+        row.get("pid") == pid
+        and (row.get("profile") == profile or profile in (row.get("served_profiles") or []))
+        for row in fleet if isinstance(row, dict)
+    )
+
+
 def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: set[tuple[str, str]] | None, *, accept_states: tuple = ("current",)) -> bool:
     """Require a successor at the expected SHA for every owed gateway identity."""
     if not expected_sha:
@@ -335,6 +357,10 @@ def _marker_only_restart_obsolete() -> bool:
     is the whole of the evidence the marker's warning can be about, even after HEAD moved past
     ``expected_sha`` by an out-of-band pull.
 
+    For an inventoried gateway with a PID, successor coverage is not enough: the original process
+    must be gone or the PID must name an incarnation born after the marker. PID-less legacy rows keep
+    their historical profile-only coverage rule because they carry no process identity to verify.
+
     A serve/dashboard row whose supervisor owns the restart (Desktop backend, systemd/launchd
     unit, Windows service) is outside the gateway matrix's evidence, not evidence against it —
     the same boundary ``_receipt_owed_gateways`` draws for receipts (#115090) and the restart
@@ -354,6 +380,7 @@ def _marker_only_restart_obsolete() -> bool:
         expected_sha = fields.get("expected_sha", "").strip()
         inventory = json.loads(fields.get("inventory", "null"))
         owed: set[tuple[str, str]] | None = None
+        recorded_runtimes: list[dict] = []
         if inventory is not None:
             if not isinstance(inventory, dict) or inventory.get("version") != 1:
                 return False
@@ -375,6 +402,14 @@ def _marker_only_restart_obsolete() -> bool:
                 if not isinstance(profile, str) or not profile.strip() or profile == "unknown":
                     return False
                 owed.add(("gateway", profile))
+                pid = runtime.get("pid")
+                if pid is not None:
+                    if type(pid) is not int or pid <= 0:
+                        return False
+                    recorded_runtimes.append(runtime)
+        marker_started = float(fields.get("started", "")) if recorded_runtimes else 0.0
+        if recorded_runtimes and (not math.isfinite(marker_started) or marker_started <= 0):
+            return False
     except (OSError, UnicodeError, ValueError):
         return False
     if owed is not None and not owed:
@@ -409,6 +444,8 @@ def _marker_only_restart_obsolete() -> bool:
             return False  # stale / down / unknown-identity row still owes the restart
     if owed is not None and not owed <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
+    if any(not _marker_runtime_was_replaced(runtime, marker_started, fleet) for runtime in recorded_runtimes):
+        return False  # A current successor does not prove the inventoried process stopped serving.
     _clear_fleet_restart_pending_marker()
     logger.debug(
         "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",

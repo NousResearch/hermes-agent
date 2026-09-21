@@ -17,6 +17,7 @@ No live gateway, no network. Git and restart are mocked.
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -744,6 +745,44 @@ def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
     assert not update_cmd_fleet._fleet_restart_obligation_armed()
 
 
+def test_marker_waits_for_original_gateway_incarnation(monkeypatch):
+    """Current successor coverage settles only after the inventoried process is replaced."""
+    import psutil
+
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[{"kind": "gateway", "profile": "default", "pid": os.getpid()}],
+    )
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    before = marker.read_bytes()
+    fields = dict(line.split("=", 1) for line in marker.read_text(encoding="utf-8").splitlines())
+    marker_started = float(fields["started"])
+    _patch_marker_sha(monkeypatch, disk_sha)
+    current = [
+        {
+            "profile": "default",
+            "pid": 99_999_999,
+            "code_sha": disk_sha,
+            "code_version": "0.21.0",
+            "state": "current",
+        }
+    ]
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: current)
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+    assert marker.read_bytes() == before
+
+    current[0]["pid"] = os.getpid()
+    monkeypatch.setattr(
+        psutil,
+        "Process",
+        lambda pid: SimpleNamespace(create_time=lambda: marker_started + 1),
+    )
+    assert update_cmd._pending_fleet_restart_needed() is False
+    assert not marker.exists()
+
+
 def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypatch, capsys):
     """A current multiplexer discharges every profile named in its live record (#113350)."""
     disk_sha = "e" * 40
@@ -805,6 +844,8 @@ def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypat
     pass emits exactly launchd, desktop or manual-serve). The systemd/windows-service/service
     members of ``_SUPERVISOR_OWNED_SERVE_BACKENDS`` only ever appear on gateway rows.
     """
+    import psutil
+
     disk_sha = "e" * 40
     update_cmd._write_fleet_restart_pending_marker(
         expected_sha=disk_sha,
@@ -818,9 +859,14 @@ def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypat
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
-            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+            {"profile": "default", "pid": 43, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
         ],
     )
+
+    def old_gateway_is_gone(pid):
+        raise psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(psutil, "Process", old_gateway_is_gone)
 
     update_cmd._warn_pending_fleet_restart_on_startup()
 

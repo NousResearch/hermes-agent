@@ -45,6 +45,10 @@ _PRUNE_MIN_INTERVAL_SECONDS = 300.0
 # ``at`` is -inf until the first sweep: ``time.monotonic()`` has no fixed epoch and can start near
 # zero, which would otherwise read as "swept just now" and skip the first sweep of the process.
 _prune_state = {"records": 0, "at": float("-inf")}
+# record_obligation reaches _prune_due() from asyncio.to_thread workers and deliberately does NOT
+# hold _DB_LOCK there, so the read-modify-write below is genuinely concurrent: a lost increment
+# delays a sweep, and two threads crossing the bound together run it twice.
+_prune_state_lock = threading.Lock()
 
 # Visible prefixes for redeliveries that might duplicate an already-received message (crash mid-send /
 # post-rejection retry) — honest at-least-once. Runtime recovery uses a distinct marker: no restart
@@ -291,20 +295,27 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
         _prune()
 
 
+def _now_monotonic() -> float:
+    """The sweep gate's clock, as one module-local seam. A test freezing ``time.monotonic``
+    itself would mutate the shared module for everything running in-process."""
+    return time.monotonic()
+
+
 def _prune_due(now_monotonic: Optional[float] = None) -> bool:
     """True when the retention sweep is due; advances the counters as a side effect.
 
     Called under ``_DB_LOCK``'s caller but deliberately not holding it — the sweep itself takes its
     own connection, exactly as before.
     """
-    now = time.monotonic() if now_monotonic is None else now_monotonic
-    state = _prune_state
-    state["records"] += 1
-    if state["records"] < _PRUNE_EVERY_N_RECORDS and (now - state["at"]) < _PRUNE_MIN_INTERVAL_SECONDS:
-        return False
-    state["records"] = 0
-    state["at"] = now
-    return True
+    now = _now_monotonic() if now_monotonic is None else now_monotonic
+    with _prune_state_lock:
+        state = _prune_state
+        state["records"] += 1
+        if state["records"] < _PRUNE_EVERY_N_RECORDS and (now - state["at"]) < _PRUNE_MIN_INTERVAL_SECONDS:
+            return False
+        state["records"] = 0
+        state["at"] = now
+        return True
 
 
 def mark_attempting(obligation_id: str) -> None:

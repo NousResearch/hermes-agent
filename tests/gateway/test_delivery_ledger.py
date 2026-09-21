@@ -398,7 +398,7 @@ class TestPrune:
         calls = []
         monkeypatch.setattr(dl, "_prune", lambda *a, **kw: calls.append(1))
         dl._prune_state.update(records=0, at=0.0)
-        monkeypatch.setattr(dl.time, "monotonic", lambda: 0.0)  # freeze time: only the count can fire
+        monkeypatch.setattr(dl, "_now_monotonic", lambda: 0.0)  # freeze time: only the count can fire
 
         for i in range(dl._PRUNE_EVERY_N_RECORDS * 2):
             _record(oid=f"ob-burst-{i}")
@@ -412,7 +412,7 @@ class TestPrune:
         monkeypatch.setattr(dl, "_prune", lambda *a, **kw: calls.append(1))
         dl._prune_state.update(records=0, at=0.0)
         clock = {"t": 0.0}
-        monkeypatch.setattr(dl.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(dl, "_now_monotonic", lambda: clock["t"])
 
         _record(oid="ob-slow-1")
         assert calls == []

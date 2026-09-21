@@ -1387,7 +1387,7 @@ TERMINAL_SCHEMA = {
             "heartbeat": {
                 "type": "integer",
                 "minimum": 60,
-                "description": "With background=true: every N seconds (min 60) you get a heartbeat notification carrying the output produced since the last one, plus the normal exit notification (implies notify=true). Use it for long bounded jobs you must stay on top of (a merge train, a full test suite, a deploy) so you react to a failure within N seconds instead of at exit; leave it off for short jobs and silent daemons."
+                "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto

@@ -205,6 +205,31 @@ class RubikaAdapter(BasePlatformAdapter):
         return {"name": name, "type": "group" if is_group else "dm"}
 
 
-def register(*args, **kwargs) -> None:
-    """No-op until Task 12 wires plugin registration (platform_registry entry, config schema)."""
-    pass
+def _deps_present() -> bool:
+    """httpx is a hard dependency already used across the repo — always present."""
+    return True
+
+
+def _is_connected(config) -> bool:
+    return bool(_token(getattr(config, "extra", None) or {}))
+
+
+def interactive_setup() -> None:
+    """Prompt for the Rubika bot token and save it to .env."""
+    from hermes_cli.config import save_env_value
+    from hermes_cli.cli_output import prompt, print_header, print_success
+    print_header("Rubika")
+    if token := prompt("Rubika Bot API token (from BotFather@ on Rubika)", password=True):
+        save_env_value("RUBIKA_BOT_TOKEN", token)
+        print_success("Rubika token saved")
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="rubika", label="Rubika", adapter_factory=RubikaAdapter, check_fn=_deps_present,
+        is_connected=_is_connected, validate_config=_is_connected,
+        required_env=["RUBIKA_BOT_TOKEN"], setup_fn=interactive_setup,
+        allowed_users_env="RUBIKA_ALLOWED_USERS", cron_deliver_env_var="RUBIKA_HOME_CHANNEL",
+        emoji="💎",
+    )

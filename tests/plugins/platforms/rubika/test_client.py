@@ -1,6 +1,6 @@
 import httpx
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from plugins.platforms.rubika.client import RubikaClient, RubikaAPIError
 
@@ -30,3 +30,18 @@ async def test_call_raises_on_non_ok_status():
         with pytest.raises(RubikaAPIError) as exc_info:
             await client.call("sendMessage", chat_id="c1", text="hi")
     assert exc_info.value.status == "INVALID_INPUT"
+
+
+@pytest.mark.asyncio
+async def test_call_raises_rubikaapierror_on_http_error():
+    client = RubikaClient(token="TESTTOKEN")
+    mock_response = AsyncMock()
+    mock_response.status_code = 429
+    # Mock raise_for_status to raise an HTTPStatusError (synchronously)
+    http_error = httpx.HTTPStatusError("429 Too Many Requests", request=AsyncMock(), response=mock_response)
+    mock_response.raise_for_status = Mock(side_effect=http_error)
+    with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=mock_response)):
+        with pytest.raises(RubikaAPIError) as exc_info:
+            await client.call("sendMessage", chat_id="c1", text="hi")
+    assert exc_info.value.status == "429"
+    assert "HTTP error" in str(exc_info.value)

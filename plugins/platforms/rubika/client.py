@@ -32,15 +32,20 @@ class RubikaClient:
 
     async def call(self, method: str, **params: Any) -> Dict[str, Any]:
         """POST to /v3/{token}/{method} with params as the JSON body; return
-        the "data" field on success, raise RubikaAPIError otherwise."""
+        the "data" field on success, raise RubikaAPIError on any error (HTTP or API)."""
         url = f"{BASE_URL}/{self._token}/{method}"
         async with httpx.AsyncClient(timeout=self._timeout) as http_client:
             response = await http_client.post(url, json=params)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                message = f"Rubika API HTTP error calling {method}: {exc}"
+                logger.warning(message)
+                raise RubikaAPIError(message, status=str(response.status_code)) from exc
             body = response.json()
         status = body.get("status")
         if status != "OK":
             message = f"Rubika API error calling {method}: status={status}"
             logger.warning(message)
             raise RubikaAPIError(message, status=str(status))
-        return body.get("data") or {}
+        return body.get("data", {})

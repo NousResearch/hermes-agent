@@ -6595,6 +6595,19 @@ def _build_call_kwargs(
             extra_body.pop("reasoning")
             if reasoning_config is None:
                 reasoning_config = task_reasoning
+    # Volcengine Ark's Coding Plan endpoint rejects both standard thinking-off
+    # controls with a generic ``InvalidParameter`` response, so there is no
+    # field-specific error the reactive compatibility rung can recognize.  The
+    # title lane is the sole caller that forces reasoning off; omit only that
+    # forced disable on the resolved Volcengine route and keep every other task,
+    # endpoint, and caller-selected reasoning setting unchanged (#117810).
+    if (
+        task == "title_generation"
+        and isinstance(reasoning_config, dict)
+        and reasoning_config.get("enabled") is False
+        and base_url_host_matches(effective_base, "volces.com")
+    ):
+        reasoning_config = None
     reasoning_config = clamp_reasoning_config(
         known_reasoning_floor(reasoning_config, provider_norm, effective_base, model, task))
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)

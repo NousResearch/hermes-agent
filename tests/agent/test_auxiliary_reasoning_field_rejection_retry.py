@@ -76,6 +76,25 @@ def test_unrelated_400_does_not_strip_reasoning_fields():
     assert client.chat.completions.create.call_count == 1
 
 
+@pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+def test_volcengine_title_omits_reasoning_disable_before_first_request(async_mode):
+    """Ark's Coding Plan endpoint returns only ``InvalidParameter`` for both supported
+    thinking-off wire shapes, so the resolved route must omit the title lane's disable
+    control before dispatch instead of relying on an error-text retry."""
+    client = MagicMock()
+    client.base_url = "https://ark.cn-beijing.volces.com/api/coding/v3"
+    client.chat.completions.create = (
+        AsyncMock(return_value={"ok": True}) if async_mode else MagicMock(return_value={"ok": True})
+    )
+
+    assert _call(async_mode, client) == {"ok": True}
+
+    request = client.chat.completions.create.call_args.kwargs
+    assert "reasoning_effort" not in request
+    assert "reasoning" not in (request.get("extra_body") or {})
+    assert request["extra_body"]["response_format"] == {"type": "json_object"}
+
+
 def test_model_gating_400_naming_a_thinking_model_still_reaches_the_fallback_chain():
     """A route-gating 400 whose text merely contains a reasoning token inside the model id
     ("kimi-k2-thinking is not supported when using this account") is not a field rejection: no

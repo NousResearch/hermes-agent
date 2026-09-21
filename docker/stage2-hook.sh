@@ -211,6 +211,85 @@ refuse_symlinked_path() {
     return 1
 }
 
+# --- Serialize $HERMES_HOME mutations across compose siblings (#117937) ---
+# Shipped compose files start gateway + dashboard from this image over ONE
+# volume. Both run this hook. Without a lock, API_SERVER_KEY seeding
+# (check-then-act) appends two keys and rewrite_env_var (read-truncate-write)
+# drops the other container's routing override.
+#
+# mkdir is the exclusive lock. Official compose bind-mounts ~/.hermes;
+# Docker Desktop has historically granted flock to both containers at
+# once, so flock alone can look successful and still race. flock is
+# taken afterwards when present — a crashed holder drops it, which
+# helps native Linux — but it does not replace mkdir. Timeout then
+# fail-open: a stuck lock blocking cont-init is worse than the race.
+# Stale lockdirs are broken by age only (2 minutes, far longer than
+# this section runs). Do not steal via kill -0 (Docker PID namespaces
+# make foreign pids look dead, or collide with a local pid).
+_STAGE2_LOCK_WAIT="${STAGE2_HOME_LOCK_WAIT:-60}"
+_acquire_stage2_home_lock() {
+    _lock_file="${HERMES_HOME}/.stage2-home.lock"
+    _lock_dir="${HERMES_HOME}/.stage2-home.lockdir"
+    _stage2_lock_held=""
+    if [ ! -d "$HERMES_HOME" ]; then
+        echo "[stage2] Warning: $HERMES_HOME is not a directory — continuing without serialization"
+        return 1
+    fi
+    _i=0
+    while [ "$_i" -lt "$_STAGE2_LOCK_WAIT" ]; do
+        if mkdir "$_lock_dir" 2>/dev/null; then
+            _stage2_lock_held=mkdir
+            break
+        fi
+        if [ -L "$_lock_dir" ]; then
+            echo "[stage2] Warning: $_lock_dir is a symlink — not treating it as a lock"
+            rm -f "$_lock_dir" 2>/dev/null || true
+            continue
+        fi
+        # Stale only by age. 2 minutes is far longer than this section runs.
+        if [ -d "$_lock_dir" ]; then
+            _stale=$(find "$_lock_dir" -prune -mmin +2 -print 2>/dev/null || true)
+            if [ -n "$_stale" ]; then
+                echo "[stage2] Warning: breaking stale $_lock_dir (older than 2 minutes)"
+                rmdir "$_lock_dir" 2>/dev/null || true
+                continue
+            fi
+        fi
+        sleep 1
+        _i=$((_i + 1))
+    done
+    if [ "${_stage2_lock_held:-}" != "mkdir" ]; then
+        echo "[stage2] Warning: timed out waiting for $_lock_dir — continuing without serialization"
+        return 1
+    fi
+    # Best-effort: crash-releases the fd. Non-blocking so a false-exclusive
+    # or stuck flock cannot stall a holder that already has mkdir.
+    if command -v flock >/dev/null 2>&1; then
+        if exec 9>>"$_lock_file"; then
+            if flock -x -n 9 2>/dev/null; then
+                _stage2_lock_held=mkdir+flock
+            else
+                exec 9>&- || true
+            fi
+        fi
+    fi
+    return 0
+}
+_release_stage2_home_lock() {
+    case "${_stage2_lock_held:-}" in
+        *flock*)
+            flock -u 9 2>/dev/null || true
+            exec 9>&- || true
+            ;;
+    esac
+    case "${_stage2_lock_held:-}" in
+        *mkdir*)
+            rmdir "${HERMES_HOME}/.stage2-home.lockdir" 2>/dev/null || true
+            ;;
+    esac
+    _stage2_lock_held=""
+}
+
 chown_hermes_tree() {
     target="$1"
     if refuse_symlinked_path "recursive chown" "$target"; then
@@ -349,7 +428,7 @@ for f in \
     hermes_state.db \
     response_store.db response_store.db-shm response_store.db-wal \
     gateway.pid gateway.lock gateway_state.json processes.json \
-    active_profile; do
+    active_profile .stage2-home.lock; do
     if [ -e "$HERMES_HOME/$f" ]; then
         if refuse_symlinked_path "chown" "$HERMES_HOME/$f"; then
             :
@@ -456,6 +535,8 @@ seed_one "SOUL.md" "docker/SOUL.md"
 # not generate one. Hermes loads $HERMES_HOME/.env with override=True, so
 # a generated key written here would silently SHADOW the operator's env
 # key and 401 every client still using the supplied credential.
+trap '_release_stage2_home_lock' EXIT
+_acquire_stage2_home_lock || true
 if [ -n "${API_SERVER_KEY:-}" ]; then
     if [ -f "$HERMES_HOME/.env" ] && grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
         echo "[stage2] Warning: API_SERVER_KEY is set in both the container environment and $HERMES_HOME/.env — the .env value wins at runtime (loaded with override=True)"
@@ -584,6 +665,8 @@ for _profile_dir in "$HERMES_HOME"/profiles/*/; do
     sync_routing_overrides "${_profile_dir}.env"
 done
 unset _profile_dir _file _name _value _managed _line _rest _rc
+_release_stage2_home_lock
+trap - EXIT
 
 # .env holds API keys and secrets — restrict to owner-only access. Applied
 # unconditionally (not only on first-seed) so a host-mounted .env that was

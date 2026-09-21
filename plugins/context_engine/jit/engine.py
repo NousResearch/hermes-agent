@@ -131,11 +131,13 @@ class JitContextEngine(ContextEngine):
         try:
             from hermes_cli.config import load_config_readonly
             cfg = load_config_readonly()
-            comp_cfg = cfg.get("compression", {}) if isinstance(cfg, dict) else {}
-            custom = comp_cfg.get("threshold_tokens")
+            context_cfg = cfg.get("context", {}) if isinstance(cfg, dict) else {}
+            jit_cfg = context_cfg.get("jit", {}) if isinstance(context_cfg, dict) else {}
+            custom = jit_cfg.get("threshold_tokens")
             if custom and int(custom) > 0:
                 self.threshold_tokens = int(custom)
             else:
+                comp_cfg = cfg.get("compression", {}) if isinstance(cfg, dict) else {}
                 ratio = float(comp_cfg.get("threshold", 0.4))
                 calc = int(self.context_length * ratio)
                 self.threshold_tokens = min(32000, calc) if calc > 0 else 32000

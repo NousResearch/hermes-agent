@@ -12,7 +12,7 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from tools.registry import tool_error
-from tools.ansi_strip import strip_unicode_tags
+from tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
@@ -414,7 +414,7 @@ def _error_result_text(result) -> str:
     """Concatenated text of an ``isError`` result's blocks (EmbeddedResource error payloads
     carry text under ``.resource.text``)."""
     texts = (getattr(b, "text", None) or getattr(getattr(b, "resource", None), "text", None) for b in (result.content or []))
-    return "".join(str(t) for t in texts if t)
+    return "".join(strip_unicode_tags(str(t)) for t in texts if t)
 
 
 def _render_content_blocks(result, server_name: str) -> Tuple[str, int]:
@@ -614,8 +614,8 @@ def _render_resource_list(all_resources, server_name: str) -> dict:
             entry["uri"] = str(entry["uri"])
         mime = mcp_field(r, "mime_type", "mimeType")
         if mime:
-            entry["mimeType"] = mime  # camelCase: this is the tool's own JSON output shape
-        resources.append(entry)
+            entry["mimeType"] = str(mime)  # camelCase: this is the tool's own JSON output shape
+        resources.append(strip_unicode_tags_deep(entry))
     return {"resources": resources}
 
 
@@ -637,7 +637,7 @@ def _render_prompt_list(all_prompts, server_name: str) -> dict:
         if getattr(p, "arguments", None):
             entry["arguments"] = [{"name": a.name, **_pick(a, ("description", "description", True), ("required", "required"))}
                                   for a in p.arguments]
-        prompts.append(entry)
+        prompts.append(strip_unicode_tags_deep(entry))
     return {"prompts": prompts}
 
 
@@ -647,8 +647,8 @@ def _render_get_prompt(result, server_name: str) -> dict:
         entry = _pick(msg, ("role", "role"))
         if hasattr(msg, "content"):
             entry["content"] = strip_unicode_tags(msg.content.text if hasattr(msg.content, "text") else str(msg.content))
-        messages.append(entry)
-    return {"messages": messages, **_pick(result, ("description", "description", True))}
+        messages.append(strip_unicode_tags_deep(entry))
+    return {"messages": messages, **strip_unicode_tags_deep(_pick(result, ("description", "description", True)))}
 
 
 _make_list_resources_handler = _make_utility_handler(

@@ -7,6 +7,7 @@ inside the home silently turns the sandbox back into the live install (#111101).
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -106,6 +107,7 @@ def test_failed_sessionfinish_keeps_the_relocated_basetemp(tmp_path, monkeypatch
     suite_conftest.pytest_sessionfinish(None, exitstatus=1)
 
     assert relocated is not None and relocated.exists()
+    shutil.rmtree(relocated, ignore_errors=True)
     suite_conftest._RELOCATED_BASETEMPS.clear()
 
 

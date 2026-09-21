@@ -74,6 +74,8 @@ def _make_runner(session_db=None):
     adapter._bot = None
     adapter._create_dm_topic = AsyncMock(return_value=None)
     adapter.rename_dm_topic = AsyncMock()
+    adapter.close_topic = AsyncMock()
+    adapter.close_dm_topic = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
@@ -814,6 +816,38 @@ def test_recover_returns_none_for_brand_new_topic(tmp_path):
 
     # "99999" is non-lobby and not in the binding table — brand-new topic.
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="99999")) is None
+
+
+def test_root_summary_reply_recovers_exact_subject(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.record_telegram_topic_rollup(
+        chat_id="-100123", message_id="rollup-A", thread_id="111", task_id="t_subject",
+    )
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(
+        _make_group_source(thread_id="1"), "rollup-A",
+    ) == "111"
+
+
+@pytest.mark.asyncio
+async def test_kill_closes_topic_without_deleting_binding(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-kill", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988", thread_id="444", user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:444", session_id="sess-kill",
+    )
+    runner = _make_runner(session_db=db)
+
+    result = await runner._handle_kill_command(_make_event("/kill", thread_id="444"))
+
+    assert result is None
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.send.assert_awaited_once()
+    adapter.close_topic.assert_awaited_once_with(chat_id="208214988", thread_id="444")
+    assert db.get_telegram_topic_binding(chat_id="208214988", thread_id="444") is not None
 
 
 def test_list_telegram_topic_bindings_for_chat_no_table(tmp_path):

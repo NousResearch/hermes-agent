@@ -874,7 +874,7 @@ class GatewayBusySessionMixin:
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
-        "topic", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
+        "topic", "kill", "whoami", "platform", "stop", "reasoning", "memory", "skills", "fast",
         "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
         "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
@@ -910,7 +910,7 @@ class GatewayBusySessionMixin:
 
     # busy_handler key (hermes_cli/commands.py CommandDef) → mid-run variant ``_busy_<key>_command``.
     _BUSY_SPECIAL_HANDLERS: Dict[str, str] = {
-        k: f"_busy_{k}_command" for k in ("start", "stop", "new", "queue", "steer", "egress", "goal", "loop")
+        k: f"_busy_{k}_command" for k in ("start", "stop", "kill", "new", "queue", "steer", "egress", "goal", "loop")
     }
 
     async def _dispatch_busy_slash_command(self, event: MessageEvent, cmd_def, quick_key: str, source):
@@ -988,6 +988,14 @@ class GatewayBusySessionMixin:
         )
         logger.info("STOP for session %s — agent interrupted, session lock released", quick_key)
         return EphemeralReply(t("gateway.stop.stopped"))
+
+    async def _busy_kill_command(self, event: MessageEvent, quick_key: str, source):
+        """Interrupt the conversation turn, then close only the current Telegram subject."""
+        from gateway.run import _INTERRUPT_REASON_STOP
+        await self._interrupt_and_clear_session(
+            quick_key, source, interrupt_reason=_INTERRUPT_REASON_STOP, invalidation_reason="kill_command",
+        )
+        return await self._handle_kill_command(event)
 
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
         # /reset and /new bypass the running-agent guard (else they'd queue as user text and replay

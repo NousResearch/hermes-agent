@@ -263,6 +263,47 @@ class SessionTelegramTopicsMixin:
                     """, (str(session_id),))
         return dict(row) if row else None
 
+    def record_telegram_topic_rollup(
+        self, *, chat_id: str, message_id: str, thread_id: str,
+        task_id: Optional[str] = None, profile_name: str = "default",
+    ) -> None:
+        """Persist a root-lobby summary anchor for exact reply-to-subject recovery."""
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
+        def _do(conn):
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS telegram_topic_rollups (
+                    profile_name TEXT NOT NULL DEFAULT 'default',
+                    chat_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    task_id TEXT,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (profile_name, chat_id, message_id)
+                )
+            """)
+            conn.execute("""
+                INSERT INTO telegram_topic_rollups (
+                    profile_name, chat_id, message_id, thread_id, task_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_name, chat_id, message_id) DO UPDATE SET
+                    thread_id = excluded.thread_id,
+                    task_id = excluded.task_id,
+                    created_at = excluded.created_at
+                """, (profile_name, str(chat_id), str(message_id), str(thread_id),
+                      str(task_id) if task_id else None, time.time()))
+        self._execute_write(_do)
+
+    def get_telegram_topic_rollup_thread(
+        self, *, chat_id: str, message_id: str, profile_name: str = "default",
+    ) -> Optional[str]:
+        """Return the subject thread linked to a root-lobby summary message."""
+        profile_name = _normalize_telegram_topic_profile_name(profile_name)
+        row = self._topic_read_one("""
+            SELECT thread_id FROM telegram_topic_rollups
+            WHERE profile_name = ? AND chat_id = ? AND message_id = ?
+            """, (profile_name, str(chat_id), str(message_id)))
+        return str(row["thread_id"]) if row else None
+
     def delete_telegram_topic_binding(self, *, chat_id: str, thread_id: str, profile_name: str = "default") -> int:
         """Remove the binding row for one (chat, thread) pair. Called when the Bot API confirms
         a topic was deleted externally (``Thread not found`` after the same-thread retry

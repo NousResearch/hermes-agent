@@ -33,7 +33,7 @@ def _kbn():
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
 # the task is not archived so later review cycles keep notifying.
-TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
+TERMINAL_KINDS = ("claimed", "completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested", "changes_requested")
 # Kinds that hand a decision back to the origin, which must take a turn.
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
@@ -384,7 +384,11 @@ def _fmt_completed(ev, n) -> tuple:
     elif n.task and n.task.result:
         wake_handoff = _first_line(n.task.result, 160)
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
-    return f"✔ {n.head} done — {n.title}{handoff}", wake_handoff, None
+    return f"📌 {n.title}\n✔ {n.head} done{handoff}", wake_handoff, None
+
+
+def _fmt_claimed(ev, n) -> tuple:
+    return f"📌 {n.title}\n▶ {n.head} started", None, None
 
 
 def _fmt_review_requested(ev, n) -> tuple:
@@ -397,7 +401,7 @@ def _fmt_review_requested(ev, n) -> tuple:
         summary = str(summary)
         handoff = f"\n{summary[:200]}"
         wake_handoff = _first_line(summary, 200)
-    return f"👀 {n.head} ready for review — {n.title}{handoff}", wake_handoff, None
+    return f"📌 {n.title}\n👀 {n.head} ready for review{handoff}", wake_handoff, None
 
 
 def _fmt_changes_requested(ev, n) -> tuple:
@@ -409,7 +413,7 @@ def _fmt_changes_requested(ev, n) -> tuple:
     provenance = f" — reviewer @{reviewer}" if reviewer else ""
     if implementer:
         provenance += f" → implementer @{implementer}"
-    msg = f"🛑 {n.board_tag}Kanban {n.task_id} review requested changes/BLOCK: {reason_text}{provenance}"
+    msg = f"📌 {n.title}\n🛑 {n.board_tag}Kanban {n.task_id} review requested changes/BLOCK: {reason_text}{provenance}"
     return msg, None, reason_text
 
 
@@ -457,8 +461,9 @@ def _fmt_timed_out(ev, n) -> tuple:
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
+    "claimed": _fmt_claimed,
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
+    "blocked": lambda ev, n: (f"📌 {n.title}\n⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
     "gave_up": _fmt_gave_up,
     "crashed": lambda ev, n: (
         f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
@@ -555,6 +560,8 @@ class _KanbanNotification:
             self.wake_handoff = handoff
         if review_detail is not None:
             self.wake_review_detail = review_detail
+        if not msg.startswith("📌 "):
+            msg = f"📌 {self.title}\n{msg}"
         return msg
 
     def build_wake_text(self) -> None:
@@ -679,6 +686,13 @@ class _KanbanNotification:
             raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
         logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
                      ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
+        try:
+            from gateway.kanban_telegram_forum import refresh_pinned_task_card
+            await refresh_pinned_task_card(self)
+        except Exception as exc:
+            logger.warning("kanban notifier: pinned task card refresh failed for %s: %s", self.task_id, exc)
+        await self._send_telegram_topic_rollup(ev, msg)
+        await self._send_specialist_status(ev, msg)
         # Upload artifact paths from the handoff payload / legacy result as
         # native files. Both handoff kinds stage files for exactly this: a
         # review-bound card's files exist precisely so the human sees them at
@@ -693,6 +707,71 @@ class _KanbanNotification:
             except Exception as art_exc:
                 logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)
         return True
+
+    async def _send_telegram_topic_rollup(self, ev: Any, msg: str) -> None:
+        """Mirror major subject summaries to Telegram's root lobby, without technical progress noise."""
+        if not getattr(self.runner, "_kanban_telegram_topic_rollups", False):
+            return
+        if self.platform_str != "telegram" or not self.sub.get("thread_id"):
+            return
+        metadata = self.sub.get("delivery_metadata") or {}
+        chat_type = self.sub.get("chat_type") or metadata.get("chat_type")
+        if chat_type not in {"dm", "group", "supergroup"} or ev.kind not in {
+            "claimed", "blocked", "completed", "review_requested", "changes_requested",
+        }:
+            return
+        root_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        for key in (
+            "thread_id", "direct_messages_topic_id", "telegram_reply_to_message_id",
+            "telegram_dm_topic_reply_fallback",
+        ):
+            root_metadata.pop(key, None)
+        pilotage_topic_id = str(
+            getattr(self.runner, "_kanban_telegram_pilotage_topic_id", "") or ""
+        )
+        if pilotage_topic_id:
+            root_metadata["thread_id"] = pilotage_topic_id
+            if chat_type == "dm":
+                root_metadata["direct_messages_topic_id"] = pilotage_topic_id
+        try:
+            result = await self.adapter.send(self.sub["chat_id"], msg, metadata=root_metadata)
+            message_id = getattr(result, "message_id", None)
+            session_db = getattr(self.runner, "_session_db", None)
+            if message_id and session_db is not None:
+                await session_db.record_telegram_topic_rollup(
+                    chat_id=str(self.sub["chat_id"]), message_id=str(message_id),
+                    thread_id=str(self.sub["thread_id"]), task_id=self.task_id,
+                    profile_name=self.sub_profile or "default",
+                )
+        except Exception as exc:
+            logger.warning("kanban notifier: Telegram root summary failed for %s: %s", self.task_id, exc)
+
+    async def _send_specialist_status(self, ev: Any, msg: str) -> None:
+        """Let a connected assignee bot visibly announce major lifecycle steps."""
+        if not getattr(self.runner, "_kanban_specialist_status_updates", False):
+            return
+        assignee = str(getattr(self.task, "assignee", "") or "").strip()
+        if not assignee or assignee == self.sub_profile:
+            return
+        metadata = self.sub.get("delivery_metadata") or {}
+        chat_type = self.sub.get("chat_type") or metadata.get("chat_type")
+        if chat_type not in {"group", "supergroup"} or not self.sub.get("thread_id"):
+            return
+        if ev.kind not in {"claimed", "blocked", "completed", "review_requested", "changes_requested"}:
+            return
+        try:
+            specialist = self.runner._authorization_adapter(self.plat, assignee)
+        except Exception as exc:
+            logger.warning("kanban notifier: specialist adapter lookup for %s failed: %s", assignee, exc)
+            return
+        if specialist is None or specialist is self.adapter:
+            return
+        try:
+            result = await specialist.send(self.sub["chat_id"], msg, metadata=metadata)
+            if getattr(result, "success", True) is False:
+                raise RuntimeError(getattr(result, "error", None) or "send failed")
+        except Exception as exc:
+            logger.warning("kanban notifier: specialist status from %s failed for %s: %s", assignee, self.task_id, exc)
 
     async def _send_pings(self) -> bool:
         """Send every text ping; False when a send failed (claim already rewound/dropped)."""

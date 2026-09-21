@@ -75,10 +75,18 @@ class GatewayKanbanWatchersMixin:
             kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
         except Exception as exc:
             logger.warning("kanban notifier: cannot load config (%s); continuing enabled", exc)
+            cfg = {}
             kanban_cfg = {}
         if not kanban_cfg.get("notify_in_gateway", True):
             logger.info("kanban notifier: disabled via config kanban.notify_in_gateway=false")
             return
+        self._kanban_telegram_topic_rollups = bool(kanban_cfg.get("telegram_topic_rollups", False))
+        self._kanban_specialist_status_updates = bool(kanban_cfg.get("specialist_status_updates", False))
+        forum_cfg = kanban_cfg.get("telegram_forum", {})
+        self._kanban_telegram_pilotage_topic_id = (
+            str(forum_cfg.get("pilotage_topic_id") or "") if isinstance(forum_cfg, dict) else ""
+        )
+        from gateway.kanban_telegram_forum import sync_telegram_forum_tasks
 
         from gateway.config import Platform as _Platform
         try:
@@ -107,6 +115,10 @@ class GatewayKanbanWatchersMixin:
                 if _gc_due:
                     _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
                     _retention = _gc_retention_days()
+
+                await sync_telegram_forum_tasks(
+                    self, _kb, cfg, notifier_profile=notifier_profile,
+                )
 
                 deliveries = await asyncio.to_thread(
                     _notifier_collect, self, _kb,

@@ -199,20 +199,33 @@ class GatewayTopicThreadsMixin:
         except Exception:
             logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
-    def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
-        """Pin lobby-shaped topic-mode DM replies (missing ``message_thread_id`` or General) to the
-        user's most-recent bound topic. Never rewrite a non-lobby, unbound thread id: a brand-new DM
-        topic is also "unknown" until its first message is recorded. None = leave the source alone."""
-        if (
-            not self._is_telegram_dm(source) or not source.chat_id or not source.user_id
-            or not self._telegram_topic_mode_enabled(source)
-        ):
+    def _recover_telegram_topic_thread_id(
+        self, source: SessionSource, reply_to_message_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve a root-summary reply to its exact Telegram subject, then apply DM fallback recovery."""
+        if source.platform != Platform.TELEGRAM or not source.chat_id:
             return None
         inbound = str(source.thread_id or "")
-        if inbound and inbound not in self._TELEGRAM_GENERAL_TOPIC_IDS:
-            return None
         session_db = self._sync_session_db()
         if session_db is None:
+            return None
+        if reply_to_message_id:
+            try:
+                exact = session_db.get_telegram_topic_rollup_thread(
+                    chat_id=str(source.chat_id), message_id=str(reply_to_message_id),
+                    profile_name=self._telegram_topic_profile_name(source),
+                )
+            except Exception:
+                logger.debug("topic-recover: rollup lookup failed", exc_info=True)
+                exact = None
+            if exact:
+                return exact if exact != inbound else None
+        if inbound and inbound not in self._TELEGRAM_GENERAL_TOPIC_IDS:
+            return None
+        if (
+            not self._is_telegram_dm(source) or not source.user_id
+            or not self._telegram_topic_mode_enabled(source)
+        ):
             return None
         try:
             bindings = session_db.list_telegram_topic_bindings_for_chat(

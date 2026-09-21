@@ -288,7 +288,7 @@ export const fa = defineLocale({
       'nav.commandCenter': 'باز کردن مرکز فرمان',
       'nav.settings': 'باز کردن تنظیمات',
       'nav.profiles': 'باز کردن پروفایل‌ها',
-      'nav.skills': 'باز کردن مهارت‌ها',
+      'nav.capabilities': 'باز کردن مهارت‌ها',
       'nav.messaging': 'باز کردن پیام‌رسانی',
       'nav.artifacts': 'باز کردن ساخته‌ها',
       'nav.cron': 'باز کردن وظایف زمان‌بندی‌شده',
@@ -1636,7 +1636,7 @@ export const fa = defineLocale({
     nav: {
       newChat: { title: 'نشست جدید', detail: 'شروع یک نشست تازه' },
       settings: { title: 'تنظیمات', detail: 'پیکربندی Hermes Desktop' },
-      skills: { title: 'قابلیت‌ها', detail: 'مهارت‌ها، ابزارها و سرورهای MCP' },
+      capabilities: { title: 'قابلیت‌ها', detail: 'مهارت‌ها، ابزارها و سرورهای MCP' },
       messaging: { title: 'پیام‌رسانی', detail: 'راه‌اندازی Telegram، Slack، Discord و بیشتر' },
       artifacts: { title: 'ساخته‌ها', detail: 'مرور خروجی‌های تولیدشده' }
     },
@@ -2093,17 +2093,6 @@ export const fa = defineLocale({
     close: 'بستن cron',
     title: 'وظایف زمان‌بندی‌شده',
     count: count => `${count} وظیفه`,
-    modelImpact: {
-      title: 'وظایف زمان‌بندی‌شده به بازبینی نیاز دارند',
-      message: count => `${count} وظیفه زمان‌بندی‌شده تا وقتی تنظیمات مدلشان را بازبینی کنید رد می‌شوند.`,
-      detailMore: (names, remaining) => `${names} و ${remaining} مورد بیشتر`,
-      review: 'بازبینی وظایف زمان‌بندی‌شده',
-      saveFailed: 'Hermes آن تغییر مدل را ذخیره نکرد.',
-      confirmTitle: 'هشدار انتخاب مدل',
-      confirmDetail: 'فقط اگر این بده‌بستان را می‌پذیرید تأیید کنید.',
-      confirmAction: 'تأیید',
-      declined: 'تغییر مدل لغو شد — هشدار رده آموزش داده را نپذیرفتید.'
-    },
     search: 'جستجوی وظایف cron…',
     loading: 'در حال بارگذاری وظایف cron…',
     states: {
@@ -2294,7 +2283,7 @@ export const fa = defineLocale({
   sidebar: {
     nav: {
       'new-session': 'نشست جدید',
-      skills: 'قابلیت‌ها',
+      capabilities: 'قابلیت‌ها',
       messaging: 'پیام‌رسانی',
       artifacts: 'ساخته‌ها',
       cron: 'وظایف زمان‌بندی‌شده'
@@ -3410,7 +3399,6 @@ export const fa = defineLocale({
       authorized: server => `${server} مجاز شد`,
       failed: server => `راه‌اندازی ${server} ناموفق بود`,
       toolCount: count => (count === 1 ? '۱ ابزار' : `${count} ابزار`),
-      notInCatalog: server => `«${server}» در کاتالوگ MCP نیست`,
       envRequired: 'ابتدا اعتبارنامه‌های الزامی را پر کنید',
       sendFailed: 'ارسال پاسخ راه‌اندازی MCP ممکن نشد',
       reloadFailed: 'سرور ذخیره شد، اما بارگذاری مجدد ابزارهای MCP ناموفق بود — نشست بعدی بارگذاری می‌شوند',

@@ -83,6 +83,12 @@ def normalize_fallback_entries(raw: Any) -> list[dict[str, Any]]:
             try:
                 decoded = json.loads(text)
             except (json.JSONDecodeError, TypeError):
+                if text.startswith(("{", "[", '"')):
+                    logger.warning(
+                        "Ignoring fallback entry %s: expected valid JSON",
+                        location,
+                    )
+                    return
                 decoded = text
             if decoded != text or isinstance(decoded, (dict, list)):
                 append_candidate(decoded, location)

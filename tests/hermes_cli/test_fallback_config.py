@@ -30,10 +30,18 @@ def test_fallback_chain_accepts_compact_and_json_string_entries():
 
 
 def test_invalid_configured_fallback_entries_are_reported(caplog):
+    invalid_entries = [
+        "missing-model",
+        {"provider": "nous"},
+        7,
+        '{"provider":"openrouter",}',
+        '["openrouter:model",]',
+        '"openrouter:model',
+    ]
     with caplog.at_level(logging.WARNING, logger="hermes_cli.fallback_config"):
-        assert normalize_fallback_entries(["missing-model", {"provider": "nous"}, 7]) == []
+        assert normalize_fallback_entries(invalid_entries) == []
 
-    assert len(caplog.records) == 3
+    assert len(caplog.records) == len(invalid_entries)
     assert all("Ignoring fallback entry" in record.message for record in caplog.records)
 
 

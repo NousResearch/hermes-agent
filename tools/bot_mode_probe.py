@@ -286,10 +286,11 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         return hashlib.sha256(soul.read_bytes()).hexdigest() if soul.is_file() else ""
 
     def _skills() -> list[str]:
+        from agent.skill_utils import iter_skill_index_files
         skills_root = resolved / "skills"
         if not skills_root.is_dir():
             return []
-        return sorted(str(p.parent.relative_to(skills_root)) for p in skills_root.glob("**/SKILL.md"))
+        return sorted(str(p.parent.relative_to(skills_root)) for p in iter_skill_index_files(skills_root))
 
     surface["soul"] = _swallow(_soul, "")
     surface["skills"] = _swallow(_skills, [])

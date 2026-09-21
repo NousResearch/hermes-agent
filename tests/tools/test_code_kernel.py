@@ -64,6 +64,43 @@ def _run(code, **kwargs):
     return json.loads(execute_code(code, task_id="kernel-test", **kwargs))
 
 
+@pytest.mark.parametrize("padding", [80_000, 600_000], ids=["host-spill", "cell-spill"])
+def test_single_line_json_recovery_without_repeating_source(padding):
+    """Both clipping layers offer JSON recovery; a later cell needs no new fetch."""
+    with _kernel_config():
+        first = _run(
+            "import json\nsource_reads = 0\n"
+            "def fetch_report():\n"
+            "    global source_reads\n"
+            "    source_reads += 1\n"
+            f"    return {{'head': 'h' * {padding}, "
+            f"'finding': {{'count': 7319}}, 'tail': 't' * {padding}}}\n"
+            "print(json.dumps(fetch_report()))"
+        )
+        assert first["status"] == "success"
+        assert "7319" not in first["output"]
+        spill = first["stdout_spill_path"]
+        assert "json.load" in first["warning"]
+        assert spill in first["warning"]
+        recovered = _run(
+            f"with open({spill!r}, encoding='utf-8') as saved:\n"
+            "    print(json.dumps({'finding': json.load(saved)['finding'], 'source_reads': source_reads}))"
+        )
+    assert recovered["status"] == "success"
+    assert json.loads(recovered["output"]) == {"finding": {"count": 7319}, "source_reads": 1}
+
+
+def test_capped_stdout_is_not_advertised_as_complete():
+    """A successful cell can still leave an incomplete saved artifact."""
+    with _kernel_config():
+        result = _run("print('x' * 5_100_000)")
+        assert result["status"] == "success"
+        saved = Path(result["stdout_spill_path"]).read_text(encoding="utf-8")
+        assert "[... spill capped" in saved
+        assert "FULL output" not in result["warning"]
+        assert "unknown" in result["warning"]
+
+
 class TestSessionStatePersistence(unittest.TestCase):
     def test_state_persists_across_cells(self):
         with _kernel_config():

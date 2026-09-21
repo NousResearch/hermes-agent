@@ -52,6 +52,17 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 MAX_SPILLED_STDOUT_BYTES = 5_000_000
 
 
+def _stdout_recovery_hint(path: str) -> str:
+    """Shared guidance for host-side and session-kernel output spills."""
+    return (
+        f"Captured output saved to {path}. Inspect it or reuse already-loaded session data "
+        "before requesting the same data again. Do not repeat successful calls just to recover omitted output. "
+        "For JSON, use json.load() on the saved file and print only needed fields; line paging cannot split "
+        "single-line JSON. For text, use bounded searches or ranges. If the file contains a spill-cap marker, "
+        "it is partial: missing records remain unknown and the file may not be valid JSON."
+    )
+
+
 def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
     """Cap stdout by bytes (40% head / 60% tail) with explicit truncation metadata: byte counts
     ride alongside the textual marker because a client layer can miss or re-truncate it. The
@@ -73,9 +84,10 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
     spill_path = _spill_full_stdout(stdout_text)
     if spill_path:
         metadata["stdout_spill_path"] = spill_path
-        metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the "
-                               f"script did run. FULL output saved to {spill_path} — page it "
-                               f'with read_file(path="{spill_path}", offset=...) instead of re-running.')
+        metadata["warning"] = (
+            "execute_code stdout was truncated (head/tail shown); the script did run. "
+            + _stdout_recovery_hint(spill_path)
+        )
     return text, metadata
 
 
@@ -875,7 +887,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
-        "50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\n"
+        "50KB shows head/tail inline; captured output is saved to the path in the result. "
+        "Recover needed fields from that file or already-loaded session data before repeating successful calls. "
+        "For JSON, parse the saved file and print selected fields rather than paging a single long line. "
+        "Saved files can also be capped; missing records in a partial artifact remain unknown.\n\n"
         f"{cwd_note}\n\n"
         "Helpers require imports: `from hermes_tools import json_parse, shell_quote, retry`. "
         "json_parse(text) — tolerant "

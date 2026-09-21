@@ -195,7 +195,7 @@ code_execution:
 
 **Remote backends** (Docker, SSH, Modal) run a remote session kernel with the same contract. If the kernel cannot be spawned on the backend, Hermes falls back to running each call as a standalone script and says so in the result.
 
-**Large output.** Stdout over 50 KB is shown head-and-tail inline, and the full text is saved under `~/.hermes/cache/exec/` with the path included in the result, so the agent can page through it with `read_file` instead of re-running the script.
+**Large output.** Stdout over 50 KB is shown head-and-tail inline, with a saved-output path in the result. Recover the needed fields from that file or data still loaded in the session kernel before repeating successful calls. For JSON, parse the saved file with `json.load()` and print selected fields; line paging cannot split a single long JSON line. For text, use bounded searches or line ranges. Saved files also have a storage cap: a spill-cap marker means the artifact is partial, may not be valid JSON, and cannot establish missing records. A truncated preview alone does not mean the original request returned incomplete data.
 
 ## How Tool Calls Work Inside Scripts
 

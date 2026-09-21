@@ -19,7 +19,7 @@ import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { FolderOpen, Loader2, Monitor, Package, RefreshCw } from '@/lib/icons'
+import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
 import { CATALOG_ORIGIN, CATALOG_PICKER_URL } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
 import {
@@ -31,9 +31,11 @@ import {
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
+  removeAgentPlugin,
   toggleAgentPlugin,
   updateAgentPlugin
 } from '@/store/agent-plugins'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
@@ -222,7 +224,8 @@ function PackageRow({
   scopeLabel,
   busy,
   onAgentToggle,
-  onAgentUpdate
+  onAgentUpdate,
+  onAgentRemove
 }: {
   pkg: PluginPackage
   scope: null | string
@@ -230,6 +233,7 @@ function PackageRow({
   busy: boolean
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
+  onAgentRemove: (row: AgentPluginRow) => void
 }) {
   const { t } = useI18n()
   const p = t.skills.plugins
@@ -239,6 +243,10 @@ function PackageRow({
   const desktopOn = desktop ? desktop.status !== 'disabled' : false
   const agentOn = agent?.status === 'enabled'
   const agentToggleable = Boolean(agent?.key)
+  // Only what lives under the profile's plugins dir ("user", or "git" when it
+  // was cloned there) can be uninstalled here: bundled plugins are refused by
+  // the backend and entrypoint (pip-installed) ones go with their package.
+  const agentRemovable = agent?.source === 'user' || agent?.source === 'git'
   // Electron's desktop-half reconcile only walks THIS machine's homes, so a
   // package installed on a remote backend can never materialize here (#114079).
   const remoteBackend = useStore($connection)?.mode === 'remote'
@@ -278,6 +286,24 @@ function PackageRow({
             <Tip label={d.reveal}>
               <Button onClick={() => reveal(desktop.file!)} size="icon" variant="ghost">
                 <Codicon name="folder-opened" size="0.85rem" />
+              </Button>
+            </Tip>
+          )}
+        </span>
+        {/* Same fixed-slot treatment for Uninstall: present on every row so the
+            halves line up, populated only when the agent half is a user install. */}
+        <span className="flex size-7 shrink-0 items-center justify-center">
+          {agent && agentRemovable && (
+            <Tip label={p.uninstallTip(pkg.name, scopeLabel)}>
+              <Button
+                aria-label={`${p.uninstall}: ${pkg.name}`}
+                className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
+                disabled={busy}
+                onClick={() => onAgentRemove(agent)}
+                size="icon"
+                variant="ghost"
+              >
+                <Trash2 className="size-3.5" />
               </Button>
             </Tip>
           )}
@@ -565,6 +591,24 @@ export const PluginsTab = memo(function PluginsTab({
               <PackageRow
                 busy={pkg.agent ? agentBusy(pkg.agent) : false}
                 key={pkg.key}
+                onAgentRemove={row => {
+                  void confirm({
+                    confirmLabel: p.uninstall,
+                    description: p.uninstallConfirmBody(row.name, label),
+                    destructive: true,
+                    title: p.uninstallConfirmTitle(row.name)
+                  }).then(async ok => {
+                    if (!ok) {
+                      return
+                    }
+
+                    if (await removeAgentPlugin(requestGateway, row.name, p.uninstallFailed(row.name), scope)) {
+                      notify({ kind: 'success', message: p.uninstalled(row.name) })
+                      // Prunes the app-level desktop half whose source package just went away.
+                      void rescanAll(requestGateway, scope)
+                    }
+                  })
+                }}
                 onAgentToggle={(row, enable) => {
                   if (!row.key) {
                     return

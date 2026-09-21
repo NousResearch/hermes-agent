@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
+import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
@@ -388,6 +389,49 @@ describe('PluginsTab catalog UX', () => {
         expect.objectContaining({ action: 'update', name: 'demo-weather', profile: 'workbot' })
       )
     )
+  })
+
+  it('uninstalls through plugins.manage remove only after the confirm dialog is accepted', async () => {
+    $agentPlugins.set([
+      {
+        description: '',
+        key: 'demo-weather',
+        name: 'demo-weather',
+        source: 'git',
+        status: 'enabled',
+        version: '1.0.0'
+      }
+    ])
+    requestGateway.mockResolvedValue({ ok: true, name: 'demo-weather', plugins: [] } as never)
+
+    render(<PluginsTab profile="workbot" />)
+
+    screen.getByRole('button', { name: 'Uninstall: demo-weather' }).click()
+
+    // The click only asks; nothing is deleted until the destructive confirm is answered.
+    await waitFor(() => expect($confirmRequest.get()?.title).toBe('Uninstall demo-weather?'))
+    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
+
+    settleConfirm(true)
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'remove', name: 'demo-weather', profile: 'workbot' })
+      )
+    )
+    await waitFor(() => expect(screen.queryByText('demo-weather')).toBeNull())
+  })
+
+  it('offers no Uninstall for a pip-installed (entrypoint) agent plugin', () => {
+    $agentPlugins.set([
+      { description: '', key: 'demo-tool', name: 'demo-tool', source: 'entrypoint', status: 'enabled', version: '' }
+    ])
+
+    render(<PluginsTab profile={null} />)
+
+    expect(screen.getByText('demo-tool')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Uninstall: demo-tool' })).toBeNull()
   })
 
   it('refuses a catalog pick that is already installed and current', async () => {

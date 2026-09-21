@@ -1590,6 +1590,12 @@ export interface Translations {
       updateToPin: (sha: string) => string
       updateFailed: (name: string) => string
       updated: (name: string) => string
+      uninstall: string
+      uninstallTip: (name: string, profile: string) => string
+      uninstallConfirmTitle: (name: string) => string
+      uninstallConfirmBody: (name: string, profile: string) => string
+      uninstallFailed: (name: string) => string
+      uninstalled: (name: string) => string
       deepLinkErrorTitle: string
       deepLinkCatalogInvalidName: string
       deepLinkCatalogUnknown: (name: string) => string

@@ -974,6 +974,13 @@
    Hide them visually only — `display: none` would also drop the select's
    accessible name, since the label element is what names it. */
 @media (max-width: 820px) {
+  /* Tight band: the columns cannot hold their content width here, so let them
+     shrink back to the select's own 7.5rem floor. */
+  .compactSelect {
+    flex-shrink: 1;
+    min-width: 7.5rem;
+  }
+
   .compactSelect > span {
     position: absolute;
     width: 1px;

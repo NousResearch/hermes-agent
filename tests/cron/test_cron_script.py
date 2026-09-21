@@ -128,6 +128,17 @@ class TestRunJobScript:
         assert success is True
         assert output == "relative works"
 
+    def test_non_string_script_path_returns_error_not_crash(self, cron_env):
+        """A hand-edited jobs.json `script: 123` reaches _resolve_script_path,
+        whose Path() call raised TypeError (not in the except tuple) and
+        crashed the fire path. It must surface as a script error instead."""
+        from cron.scheduler_script import _run_job_script
+
+        for bad in (12345, {"a": 1}, ["x.py"]):
+            success, output = _run_job_script(bad)
+            assert success is False
+            assert "not a valid filesystem path" in output
+
     def test_missing_script_names_the_profile_folder(self, cron_env):
         """Scripts resolve per profile (#4707); the runtime error must say so (#94821)."""
         from cron.scheduler_script import _run_job_script

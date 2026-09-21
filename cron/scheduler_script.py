@@ -274,8 +274,9 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
         return None, f"Blocked: script path contains a NUL byte: {script_path!r}"
     try:
         raw = _sched.Path(script_path).expanduser()
-    except (ValueError, RuntimeError, OSError):
-        # RuntimeError: unexpandable ``~`` (no resolvable HOME).
+    except (TypeError, ValueError, RuntimeError, OSError):
+        # RuntimeError: unexpandable ``~`` (no resolvable HOME). TypeError: a
+        # hand-edited jobs.json value that is not str/PathLike (int, dict).
         return None, f"Blocked: script path is not a valid filesystem path: {script_path!r}"
     path = raw.resolve() if raw.is_absolute() else (scripts_dir / raw).resolve()
 

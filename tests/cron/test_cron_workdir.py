@@ -123,6 +123,16 @@ class TestUpdateJobWorkdir:
 # tools.cronjob_tools: end-to-end JSON round-trip
 # ---------------------------------------------------------------------------
 
+class TestResolveJobWorkdirMalformed:
+    """Hand-edited jobs.json: a non-string workdir must warn-skip, not crash."""
+
+    def test_non_string_workdir_is_ignored(self, tmp_cron_dir):
+        from cron.scheduler import _resolve_job_workdir
+
+        for bad in (12345, {"a": 1}, ["x"]):
+            assert _resolve_job_workdir({"workdir": bad}, "job1") is None
+
+
 class TestCronjobToolWorkdir:
 
 

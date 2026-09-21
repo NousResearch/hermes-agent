@@ -98,3 +98,82 @@ class TestScriptModeArchives:
         assert injected is True
         assert "plain script payload" in prompt
         assert "line two" in prompt
+
+class TestMalformedContextFrom:
+    """Hand-edited jobs.json fields must warn-skip, not crash the fire."""
+
+    def test_non_list_context_from_is_ignored(self, cron_env):
+        from cron.jobs import create_job
+        from cron.scheduler_prompt import _inject_context_from
+
+        job = create_job(prompt="Report", schedule="0 8 * * *")
+        for bad in (12345, 3.14, True, {"a": 1}):
+            job["context_from"] = bad
+            prompt, injected = _inject_context_from(job, "Report")
+            assert prompt == "Report"
+            assert injected is False
+
+    def test_non_string_entry_is_skipped(self, cron_env):
+        from cron.jobs import create_job
+        from cron.scheduler_prompt import _inject_context_from
+
+        job = create_job(prompt="Report", schedule="0 8 * * *")
+        for bad in ([12345], [True], [{"a": 1}], [["deadbeef"]]):
+            job["context_from"] = bad
+            prompt, injected = _inject_context_from(job, "Report")
+            assert prompt == "Report"
+            assert injected is False
+
+    def test_bad_entry_does_not_block_valid_sibling(self, cron_env):
+        from cron.jobs import create_job
+        from cron.scheduler_prompt import _inject_context_from
+
+        source = create_job(prompt="Upstream", schedule="0 8 * * *")
+        _write_archive(
+            cron_env, source["id"], "2026-09-19_08-00-00.md",
+            "# Cron Job: up\n\n## Prompt\n\ngo\n\n## Response\n\nUPSTREAM-ANSWER\n",
+        )
+        job = create_job(prompt="Report", schedule="0 8 * * *")
+        job["context_from"] = [12345, source["id"]]
+
+        prompt, injected = _inject_context_from(job, "Report")
+
+        assert injected is True
+        assert "UPSTREAM-ANSWER" in prompt
+
+    def test_build_job_prompt_survives_poisoned_context_from(self, cron_env):
+        """The path run_job actually takes: a poisoned context_from must not
+        escape _build_job_prompt, which sits outside run_job's try/except."""
+        from cron.jobs import create_job
+        from cron.scheduler_prompt import _build_job_prompt
+
+        job = create_job(prompt="Report", schedule="0 8 * * *")
+        job["context_from"] = 12345
+
+        prompt = _build_job_prompt(job)
+
+        assert "Report" in prompt
+
+    def test_non_iterable_skills_is_ignored(self, cron_env):
+        """Hand-edited jobs.json `skills: 5` must not crash prompt assembly."""
+        from cron.scheduler_prompt import _job_skill_names
+
+        for bad in (5, 3.14, True, {"a": 1}):
+            assert _job_skill_names({"skills": bad}) == []
+
+    def test_build_job_prompt_survives_fully_poisoned_job(self, cron_env):
+        """One job carrying every malformed field still builds a prompt:
+        script error is reported in-band, the rest are warn-skipped."""
+        from cron.jobs import create_job
+        from cron.scheduler_prompt import _build_job_prompt
+
+        job = create_job(prompt="Report", schedule="0 8 * * *")
+        job["context_from"] = 12345
+        job["skills"] = 7
+        job["workdir"] = {"x": 1}
+        job["script"] = 12345
+
+        prompt = _build_job_prompt(job)
+
+        assert "Report" in prompt
+        assert "Script Error" in prompt

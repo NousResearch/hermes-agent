@@ -47,6 +47,9 @@ def _job_skill_names(job: dict) -> list[str]:
         skills = [legacy] if legacy else []
     elif isinstance(skills, str):
         skills = [skills]
+    elif not isinstance(skills, (list, tuple)):
+        # Hand-edited jobs.json: a scalar/dict skills value is meaningless, not fatal.
+        skills = []
     return [str(name).strip() for name in skills if str(name).strip()]
 
 
@@ -97,18 +100,28 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     context_from = job.get("context_from")
     if not context_from:
         return prompt, False
-    from cron.jobs import get_cron_output_dir
-    output_dir = get_cron_output_dir()
     if isinstance(context_from, str):
         context_from = [context_from]
+    elif not isinstance(context_from, (list, tuple)):
+        # Hand-edited jobs.json: a scalar/dict context_from is meaningless, not fatal.
+        logger.warning(
+            "context_from: ignoring non-list value %r for job_id=%r name=%r%s",
+            context_from, job.get("id"), job.get("name"),
+            _delivery._cron_job_origin_log_suffix(job),
+        )
+        return prompt, False
+    from cron.jobs import get_cron_output_dir
+    output_dir = get_cron_output_dir()
     injected = False
     for source_job_id in context_from:
         # "self" = the job's own id: continuity across runs without touching session history.
         if isinstance(source_job_id, str) and source_job_id.strip().lower() == "self":
             source_job_id = str(job.get("id") or "")
         is_self = source_job_id == job.get("id")
-        # Traversal guard — valid job IDs are hex strings.
-        if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
+        # Traversal guard — valid job IDs are hex strings. A non-string entry takes
+        # the same warn-skip path; `all()` over a non-iterable would raise TypeError.
+        if (not isinstance(source_job_id, str) or not source_job_id
+                or not all(c in "0123456789abcdef" for c in source_job_id)):
             logger.warning(
                 "context_from: skipping invalid job_id %r for job_id=%r name=%r%s",
                 source_job_id, job.get("id"), job.get("name"),

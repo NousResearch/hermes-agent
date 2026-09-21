@@ -817,6 +817,18 @@ class TestMarkJobRun:
         mark_job_run(job["id"], success=False, error="boom")
         assert get_job(job["id"])["failure_streak"] == 1
 
+    def test_failure_streak_malformed_stored_value_recovers(self, tmp_cron_dir):
+        """A hand-edited jobs.json with a non-numeric streak must not crash the
+        bookkeeping write; it restarts the count instead."""
+        job = create_job(prompt="Poisoned", schedule="every 1h")
+        for bad in ("abc", {"x": 1}, [1, 2]):
+            jobs = load_jobs()
+            for j in jobs:
+                j["failure_streak"] = bad
+            save_jobs(jobs)
+            mark_job_run(job["id"], success=False, error="boom")
+            assert get_job(job["id"])["failure_streak"] == 1
+
 
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
         """Regression test for issue #16265.

@@ -2285,8 +2285,14 @@ def _record_run_outcome(
         job["failure_streak"] = 0
     else:
         # Consecutive agent-failure streak; delivery failures do NOT count
-        # (scheduler._failure_streak_nudge).
-        job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
+        # (scheduler._failure_streak_nudge). A non-numeric stored value
+        # (hand-edited jobs.json) restarts the count rather than crashing
+        # the bookkeeping write.
+        try:
+            streak = int(job.get("failure_streak") or 0)
+        except (TypeError, ValueError):
+            streak = 0
+        job["failure_streak"] = streak + 1
     job["last_delivery_error"] = delivery_error
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None

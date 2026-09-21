@@ -2973,3 +2973,21 @@ class TestFailureStreakNudge:
         from cron.scheduler import _failure_streak_nudge
         with patch("cron.scheduler.load_config", side_effect=RuntimeError("boom")):
             assert "failed 3 runs" in _failure_streak_nudge(self._job(2))
+
+    def test_nonnumeric_stored_streak_is_treated_as_fresh(self):
+        """A hand-edited jobs.json failure_streak must not kill failure delivery."""
+        from cron.scheduler import _failure_streak_nudge
+        with patch("cron.scheduler.load_config", return_value={}):
+            for bad in ("abc", {"x": 1}, [1, 2]):
+                job = self._job(0)
+                job["failure_streak"] = bad
+                assert _failure_streak_nudge(job) == ""
+
+    def test_non_dict_schedule_is_silent(self):
+        """A hand-edited jobs.json with a scalar schedule must not crash the
+        nudge (manual-run paths bypass the due-scan schedule normalization)."""
+        from cron.scheduler import _failure_streak_nudge
+        job = self._job(10)
+        job["schedule"] = "every 1h"
+        with patch("cron.scheduler.load_config", return_value={}):
+            assert _failure_streak_nudge(job) == ""

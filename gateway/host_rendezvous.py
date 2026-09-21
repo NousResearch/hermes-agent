@@ -313,7 +313,7 @@ class HostLockOutcome(enum.Enum):
     """Why a host-lock claim ended the way it did.
 
     ``COULD_NOT_OPEN`` is NOT contention: a read-only/undeletable lock dir (EROFS, EACCES,
-    ENOSPC) collapsed into the same \"another owner holds it\" log and sent operators hunting a
+    ENOSPC) collapsed into the same "another owner holds it" log and sent operators hunting a
     second gateway that never existed.
     """
 

@@ -85,6 +85,12 @@ CASES = {
     "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, uv_lock=True, desktop_updater=True)),
     "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True)),
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
+    # Python scripts inside the desktop package also need the Python lint and
+    # test lanes; the `apps/` prefix alone does not make a file frontend-only.
+    "python script under frontend package → python + frontend": (
+        ["apps/desktop/scripts/generate_lunar_city_asset_masks.py"],
+        _lanes(python=True, frontend=True, scan=True),
+    ),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
     "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True)),

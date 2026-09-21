@@ -654,7 +654,9 @@ class GatewayTurnMixin:
             pass
         return hs
 
-    async def _hmwa_hygiene_plan(self, hs, history, session_entry, session_key):
+    async def _hmwa_hygiene_plan(
+        self, hs, history, session_entry, session_key, *, trigger_tokens=None,
+    ):
         """Decide whether hygiene compression fires this turn (token/message thresholds, DB-backed
         failure cooldown, in-flight compression)."""
         from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
@@ -662,7 +664,11 @@ class GatewayTurnMixin:
             hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
             config_context_length=hs.config_context_length, provider=hs.provider or "",
         )
-        _compress_token_threshold = int(_hyg_context_length * hs.threshold_pct)
+        _compress_token_threshold = (
+            max(1, int(trigger_tokens))
+            if isinstance(trigger_tokens, int) and not isinstance(trigger_tokens, bool)
+            else int(_hyg_context_length * hs.threshold_pct)
+        )
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
@@ -722,9 +728,11 @@ class GatewayTurnMixin:
         if _needs_compress:
             logger.info(
                 "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
-                "(threshold: %s%% of %s = %s tokens)",
+                "(trigger: %s; context: %s)",
                 _msg_count, f"{_approx_tokens:,}", _token_source,
-                int(hs.threshold_pct * 100), f"{_hyg_context_length:,}", f"{_compress_token_threshold:,}",
+                (f"{_compress_token_threshold:,} tokens" if trigger_tokens is not None
+                 else f"{int(hs.threshold_pct * 100)}% = {_compress_token_threshold:,} tokens"),
+                f"{_hyg_context_length:,}",
             )
         return self._HygienePlan(_needs_compress, _approx_tokens, _msg_count, _warn_token_threshold)
 
@@ -1260,6 +1268,7 @@ class GatewayTurnMixin:
 
     async def _hmwa_run_session_hygiene(
         self, event, source, session_entry, session_key, history, _quick_key, run_generation,
+        *, trigger_tokens=None,
     ):
         """Auto-compress pathologically large transcripts before the agent starts so oversized
         histories don't cause repeated truncation/context failures. Token source: the API's
@@ -1272,7 +1281,9 @@ class GatewayTurnMixin:
         # Hygiene can never land with compression disabled; a sub-limit transcript is the identity (#111988).
         if not hs.compression_enabled:
             return self._bound_hygiene_payload(history, hs, session_entry)
-        plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key)
+        plan = await self._hmwa_hygiene_plan(
+            hs, history, session_entry, session_key, trigger_tokens=trigger_tokens,
+        )
         # No compression this turn (under both thresholds, cooldown, or one already in flight): without
         # the bound the model would get the full uncompressed transcript.
         if not plan.needs_compress:

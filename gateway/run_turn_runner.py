@@ -1256,6 +1256,12 @@ class TurnRunner:
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
+        # This cached messaging agent has the matching post-turn scheduler. Other AIAgent surfaces
+        # deliberately leave this false so opting in globally cannot disable their only proactive
+        # compaction path.
+        agent.compression_defer_threshold_to_post_turn = bool(
+            getattr(agent, "compression_post_turn_background_requested", False)
+        )
         ctx.agent_holder[0] = agent  # interrupt support
         # The titler fires from the turn prologue, so attach the rename lane before the run.
         self._attach_session_title_callback(agent, ctx)

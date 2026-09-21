@@ -4269,6 +4269,7 @@ class GatewayRunner(
         ("model", "context_length"), ("compression", "enabled"),
         ("compression", "progress_notices"), ("compression", "threshold"),
         ("compression", "model_thresholds"), ("compression", "threshold_tokens"),
+        ("compression", "post_turn_background_compaction"),
         ("compression", "codex_gpt55_autoraise"), ("compression", "codex_app_server_auto"),
         ("compression", "codex_responses_native"),
         ("compression", "codex_responses_compact_threshold"), ("compression", "in_place"),

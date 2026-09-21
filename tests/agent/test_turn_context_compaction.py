@@ -9,6 +9,7 @@ from agent.turn_context_compaction import (
     _codex_native_auto_compaction,
     _rearm_uncompressed_overflow_warn,
     run_turn_start_compaction,
+    threshold_compaction_runs_inline,
 )
 
 
@@ -78,3 +79,11 @@ def test_preflight_gate_skips_small_transcripts():
     est.assert_not_called()
     agent.context_compressor.should_compress.assert_not_called()
     assert out.messages is msgs
+
+
+def test_post_turn_deferral_never_disables_provider_overflow_recovery():
+    agent = SimpleNamespace(compression_defer_threshold_to_post_turn=True)
+
+    assert threshold_compaction_runs_inline(agent) is False
+    assert threshold_compaction_runs_inline(agent, provider_overflow=True) is True
+    assert threshold_compaction_runs_inline(SimpleNamespace()) is True

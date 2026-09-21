@@ -112,6 +112,17 @@ def _refund_api_call(agent: Any, api_call_count: int) -> int:
     return api_call_count
 
 
+def threshold_compaction_runs_inline(agent: Any, *, provider_overflow: bool = False) -> bool:
+    """Whether a routine threshold pass belongs on this turn's critical path.
+
+    A provider-proven overflow is always recovered inline. Only gateway agents explicitly armed
+    by their turn runner may defer proactive threshold work to the post-turn scheduler.
+    """
+    return provider_overflow or not bool(
+        getattr(agent, "compression_defer_threshold_to_post_turn", False)
+    )
+
+
 def _reanchor(agent: Any, messages: List[Any], user_message: Any) -> int:
     """Compaction rebuilt ``messages``: re-anchor this turn's user index so the
     api_content stamp, injection site and persist-override row hit the same dict."""
@@ -306,6 +317,14 @@ def _preflight_compression(
         if not _should_compress_now:
             _compress_block_reason = _blocked_compress_reason(_compressor, _preflight_tokens)
     if _should_compress_now:
+        if not threshold_compaction_runs_inline(agent):
+            logger.info(
+                "Deferring threshold compaction to the post-turn background scheduler "
+                "(~%s tokens >= %s, session %s)",
+                f"{_preflight_tokens:,}", f"{_compressor.threshold_tokens:,}",
+                agent.session_id or "none",
+            )
+            return
         # Managed local runtime: growing the window beats compressing (ladder order;
         # same seam as _maybe_grow_local_window in the loop).
         try:

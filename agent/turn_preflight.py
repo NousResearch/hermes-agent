@@ -22,7 +22,7 @@ from agent.conversation_compression import (
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
-    _reset_retry_state_after_compaction,
+    _reset_retry_state_after_compaction, threshold_compaction_runs_inline,
 )
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -96,6 +96,9 @@ def run_preflight_compression(
         and (not v._preflight_compression_blocked or provider_overflow_preflight)
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
         and not _compression_cooldown
+        and threshold_compaction_runs_inline(
+            agent, provider_overflow=provider_overflow_preflight
+        )
         and compressor.should_compress(request_pressure_tokens)
     ):
         # Managed local runtime: grow the context window before compressing (last
@@ -291,6 +294,7 @@ def compress_after_tool_results(
         and not bool(
             getattr(_compressor, "awaiting_real_usage_after_compression", False)
         )
+        and threshold_compaction_runs_inline(agent)
         and _compressor.should_compress(_real_tokens)
     ):
         compression_attempts += 1
@@ -351,13 +355,14 @@ def compress_after_tool_results(
         # warning so context can't silently overflow. ``attempts_spent`` names the
         # attempts_exhausted lockout when the engine says RUN but the per-turn
         # budget is spent (#101889).
-        _block_reason = _blocked_compress_reason(
-            _compressor, _real_tokens, attempts_spent=compression_attempts
-        )
-        if _block_reason:
-            agent._warn_context_overflow_blocked(
-                _block_reason, _real_tokens, int(getattr(_compressor, "threshold_tokens", 0) or 0)
+        if threshold_compaction_runs_inline(agent):
+            _block_reason = _blocked_compress_reason(
+                _compressor, _real_tokens, attempts_spent=compression_attempts
             )
+            if _block_reason:
+                agent._warn_context_overflow_blocked(
+                    _block_reason, _real_tokens, int(getattr(_compressor, "threshold_tokens", 0) or 0)
+                )
         # Proactive tool-result prune (deterministic, no LLM, keeps tail): no-op unless
         # proactive_prune_tokens is exceeded; commits only past
         # proactive_prune_min_reclaim_tokens so cache breaks stay episodic.

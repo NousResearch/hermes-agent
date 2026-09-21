@@ -9,7 +9,9 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 
 from __future__ import annotations
 
+import copy
 import logging
+import locale
 import math
 import re
 import time
@@ -36,6 +38,12 @@ from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
 
 logger = logging.getLogger("agent.conversation_loop")
+
+
+def _runtime_uses_ascii_encoding() -> bool:
+    """Return whether the process genuinely needs an ASCII-only request fallback."""
+    encoding = locale.getpreferredencoding(False).strip().lower().replace("_", "-")
+    return encoding in {"ascii", "us-ascii", "ansi-x3.4-1968"}
 
 
 def _vlines(agent: Any, *lines: str) -> None:
@@ -115,13 +123,11 @@ def _recover_unicode_encode_error(
     _is_ascii_codec = "'ascii'" in _err_str or "ascii" in _err_str
     # utf-8 refusing U+D800..U+DFFF ("surrogates not allowed").
     _is_surrogate_error = "surrogate" in _err_str or ("'utf-8'" in _err_str and not _is_ascii_codec)
-    # Sanitize `messages` AND `api_messages` (may carry reasoning_content/reasoning_details),
-    # plus `api_kwargs` and `prefill_messages`. Every sanitizer runs (no short-circuit).
-    _prefill = getattr(agent, "prefill_messages", None)
+    # Sanitize canonical messages for surrogate recovery, but keep ASCII recovery
+    # request-local: API copies may carry fields absent from the durable transcript.
     _surrogates_found = _sanitize_messages_surrogates(messages)
     _surrogates_found |= isinstance(api_messages, list) and _sanitize_messages_surrogates(api_messages)
     _surrogates_found |= isinstance(api_kwargs, dict) and _sanitize_structure_surrogates(api_kwargs)
-    _surrogates_found |= isinstance(_prefill, list) and _sanitize_messages_surrogates(_prefill)
     # Gate the retry on the error type, not on whether anything was found — a new
     # transformed field could slip through.
     if _surrogates_found or _is_surrogate_error:
@@ -139,30 +145,52 @@ def _recover_unicode_encode_error(
     if not _is_ascii_codec:
         return False, active_system_prompt
 
+    # Error text is provider-controlled and can mention ``ascii`` even when the
+    # process sends UTF-8. In that normal case, do not rewrite conversation,
+    # tools, prompts, or prefill; only repair values that can poison an ASCII
+    # transport header and retry the unchanged request copy.
+    if not _runtime_uses_ascii_encoding():
+        agent._force_ascii_payload = False
+        _client_kwargs = getattr(agent, "_client_kwargs", None)
+        _default_headers = _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
+        _headers_sanitized = isinstance(_default_headers, dict) and _sanitize_structure_non_ascii(_default_headers)
+        _credential_sanitized = False
+        _raw_key = getattr(agent, "api_key", None) or ""
+        if isinstance(_raw_key, str) and _raw_key:
+            _clean_key = _strip_non_ascii(_raw_key)
+            if _clean_key != _raw_key:
+                agent.api_key = _clean_key
+                if isinstance(_client_kwargs, dict):
+                    _client_kwargs["api_key"] = _clean_key
+                if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
+                    agent.client.api_key = _clean_key
+                _credential_sanitized = True
+        agent._unicode_sanitization_passes += 1
+        _vlines(
+            agent,
+            "⚠️  Repaired non-ASCII request credentials/headers without changing conversation content. Retrying..."
+            if (_headers_sanitized or _credential_sanitized) else
+            "⚠️  ASCII codec error under UTF-8 runtime — retrying unchanged request content...",
+        )
+        return True, active_system_prompt
+
     agent._force_ascii_payload = True
-    # Strip all non-ASCII from messages/tool schemas and retry; api_kwargs too so a
-    # non-ASCII transformed field doesn't survive via _build_api_kwargs cache paths.
-    _messages_sanitized = _sanitize_messages_non_ascii(messages)
-    if _messages_sanitized:
-        agent._db_flush_scan_prefix = None
-    if isinstance(api_messages, list):
-        _sanitize_messages_non_ascii(api_messages)
+    # Strip all non-ASCII from request-local messages, tools, and kwargs. The
+    # canonical agent state is shared across turns and must remain byte-stable.
+    _messages_sanitized = isinstance(api_messages, list) and _sanitize_messages_non_ascii(api_messages)
+    _tools_sanitized = False
     if isinstance(api_kwargs, dict):
-        _sanitize_structure_non_ascii(api_kwargs)
-    _prefill_sanitized = isinstance(_prefill, list) and _sanitize_messages_non_ascii(_prefill)
-    _tools = getattr(agent, "tools", None)
-    _tools_sanitized = isinstance(_tools, list) and _sanitize_tools_non_ascii(_tools)
+        if api_kwargs.get("tools") is getattr(agent, "tools", None):
+            api_kwargs["tools"] = copy.deepcopy(api_kwargs["tools"])
+        _tools_sanitized = _sanitize_structure_non_ascii(api_kwargs)
+        _tools_sanitized = _sanitize_tools_non_ascii(api_kwargs.get("tools")) or _tools_sanitized
 
     _system_sanitized = False
     if isinstance(active_system_prompt, str):
         _sanitized_system = _strip_non_ascii(active_system_prompt)
         if _sanitized_system != active_system_prompt:
-            active_system_prompt = agent._cached_system_prompt = _sanitized_system
+            active_system_prompt = _sanitized_system
             _system_sanitized = True
-    _ephemeral = getattr(agent, "ephemeral_system_prompt", None)
-    if isinstance(_ephemeral, str) and _strip_non_ascii(_ephemeral) != _ephemeral:
-        agent.ephemeral_system_prompt = _strip_non_ascii(_ephemeral)
-        _system_sanitized = True
 
     _client_kwargs = getattr(agent, "_client_kwargs", None)
     _default_headers = _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
@@ -198,7 +226,7 @@ def _recover_unicode_encode_error(
     _vlines(
         agent,
         "⚠️  System encoding is ASCII — stripped non-ASCII characters from request payload. Retrying..."
-        if (_messages_sanitized or _prefill_sanitized or _tools_sanitized or _system_sanitized
+        if (_messages_sanitized or _tools_sanitized or _system_sanitized
             or _headers_sanitized or _credential_sanitized) else
         "⚠️  System encoding is ASCII — enabling full-payload sanitization for retry...",
     )

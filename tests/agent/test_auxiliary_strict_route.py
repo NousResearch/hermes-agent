@@ -1,4 +1,4 @@
-"""Public auxiliary route contracts; SDK requests never leave the process."""
+"""Public auxiliary route contracts; SDK requests use fixtures or loopback only."""
 
 import io
 import json
@@ -35,10 +35,12 @@ def nous_wire(tmp_path, monkeypatch):
     def catalog(request, **_kwargs):
         assert request.full_url.endswith(models.NOUS_RECOMMENDED_MODELS_PATH)
         catalog_requests.append(request.full_url)
-        return io.BytesIO(json.dumps({
+        response = io.BytesIO(json.dumps({
             f"{tier}RecommendedCompactionModel": {"modelName": "recommended-model"}
             for tier in ("free", "paid")
         }).encode())
+        response.headers = {}
+        return response
 
     monkeypatch.setattr(models, "_urlopen_model_catalog_request", catalog)
 
@@ -333,3 +335,80 @@ async def test_strict_model_and_credential_recovery(monkeypatch, tmp_path, async
                 aux.call_llm(**kwargs)
         refresh.assert_not_called()
     heal.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("provider", ["custom", "auto", "main"])
+@pytest.mark.parametrize("policy", [None, False], ids=["default", "strict"])
+async def test_profile_routes_keep_credentials_and_models(
+    tmp_path, monkeypatch, asynchronous, provider, policy,
+):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    import hermes_constants
+    from agent import secret_scope
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.path, self.headers["Authorization"], body["model"]))
+            payload = json.dumps({
+                "id": "profile-response", "object": "chat.completion", "created": 1,
+                "model": body["model"],
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": "profile result"}}],
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    base = f"http://127.0.0.1:{server.server_port}/v1"
+    homes = [tmp_path / name for name in ("a", "b")]
+    for home in homes:
+        home.mkdir()
+        (home / ".env").write_text(f"OPENAI_API_KEY=fixture-{home.name}\n", encoding="utf-8")
+        (home / "config.yaml").write_text(yaml.safe_dump({
+            "model": {"provider": "custom", "default": "main-model", "base_url": base,
+                      "api_key": "${OPENAI_API_KEY}"},
+        }), encoding="utf-8")
+    kwargs = dict(provider=provider, model="custom/selected-model",
+                  messages=[{"role": "user", "content": "profile prompt"}])
+    if policy is not None:
+        kwargs["allow_fallback"] = policy
+    try:
+        for home in (homes[0], homes[1], homes[0]):
+            home_token = hermes_constants.set_hermes_home_override(str(home))
+            secret_token = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+            try:
+                for _ in range(2):
+                    response = await aux.async_call_llm(**kwargs) if asynchronous else aux.call_llm(**kwargs)
+                    expected_model = (
+                        "main-model" if policy is None and provider == "auto"
+                        else "selected-model" if policy is None
+                        else "custom/selected-model"
+                    )
+                    assert response.model == expected_model
+                    assert requests[-1] == (
+                        "/v1/chat/completions", f"Bearer fixture-{home.name}", expected_model,
+                    )
+            finally:
+                secret_scope.reset_secret_scope(secret_token)
+                hermes_constants.reset_hermes_home_override(home_token)
+        assert len(requests) == 6
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

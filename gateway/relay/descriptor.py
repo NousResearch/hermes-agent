@@ -4,7 +4,7 @@ The connector hands one to the gateway's ``RelayAdapter`` at handshake: which
 platform it fronts and which capabilities to advertise to the stream consumer
 (char limit, draft streaming, edit/threading, markdown dialect, length unit), so
 one adapter serves every platform without per-platform branching. Schema evolution
-is additive-only, gated by ``contract_version`` (docs/relay-connector-contract.md).
+is additive-only, gated by ``contract_version`` (website/docs/developer-guide/relay-connector-contract.md).
 """
 
 from __future__ import annotations

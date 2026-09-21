@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
+from agent.interrupt_control import interrupt_issuer
 from agent.turn_context_compaction import _reanchor
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -61,7 +62,8 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     if kanban_worker:
         notice += (
             " While tools are still available, call kanban_complete only if all task "
-            "requirements are verified; otherwise persist a kanban_comment handoff and "
+            "requirements are verified, or kanban_request_review if it is ready for "
+            "review; otherwise persist a kanban_comment handoff and "
             "continue. A diff or commit alone is not completion evidence."
         )
     # Only the current tool-result tail is mutable; an older turn may already be cached.
@@ -156,6 +158,9 @@ def prepare_iteration(
         messages, logger=request_logger, session_id=agent.session_id, cursor=_sanitize_cursor
     )
     if repaired_tool_calls > 0:
+        # In-place arg repair may have popped _DB_PERSISTED_MARKER off stamped live dicts;
+        # force a full flush scan so the repaired rows are rewritten.
+        agent._db_flush_scan_prefix = None
         request_logger.info(
             "Sanitized %s corrupted tool_call arguments before request (session=%s)",
             repaired_tool_calls,
@@ -329,7 +334,8 @@ def begin_iteration(
 
     if agent._interrupt_requested:
         interrupted = True
-        _turn_exit_reason = "interrupted_by_user"
+        _issuer = interrupt_issuer(agent)
+        _turn_exit_reason = f"interrupted_by_system({_issuer})" if _issuer else "interrupted_by_user"
         if not agent.quiet_mode:
             agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
         return _verdict("break")
@@ -342,7 +348,7 @@ def begin_iteration(
             agent._safe_print(
                 f"\n⏹️  Review input budget exhausted "
                 f"({int(agent.session_input_tokens):,} tokens) — stopping "
-                f"the review tool loop before the next provider call."
+                f"the review tool loop before the next provider call.", diagnostic=True,
             )
         return _verdict("break")
 
@@ -359,7 +365,7 @@ def begin_iteration(
     elif not agent.iteration_budget.consume():
         _turn_exit_reason = "budget_exhausted"
         if not agent.quiet_mode:
-            agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
+            agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)", diagnostic=True)
         return _verdict("break")
     return _verdict("fallthrough")
 
@@ -375,6 +381,7 @@ class RetryRestartVerdict:
     current_turn_user_idx: Any
     final_response: Any
     retry_count: Any
+    restart_count: Any
     api_call_count: Any
     _preflight_compression_blocked: Any
     _turn_exit_reason: Any
@@ -383,13 +390,20 @@ class RetryRestartVerdict:
 def apply_retry_restarts(
     agent: Any, *, _retry: Any, response: Any, interrupted: Any, messages: Any,
     conversation_history: Any, user_message: Any, api_kwargs: Any, current_turn_user_idx: Any,
-    final_response: Any, retry_count: Any, api_call_count: Any, length_continue_retries: Any,
+    final_response: Any, retry_count: Any, max_retries: Any, api_call_count: Any,
+    restart_count: Any, length_continue_retries: Any,
     _preflight_compression_blocked: Any, _turn_exit_reason: Any,
 ) -> RetryRestartVerdict:
     """Consume the ``TurnRetryState`` restart flags after the retry loop, in the original
     priority order. Refunds the iteration budget/count for restarts that produced no valid
     assistant item; ``restart_with_rebuilt_messages`` is the single consumer that clears
-    ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733)."""
+    ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
+
+    The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
+    ``max_retries`` via ``restart_count`` (a per-turn accumulator) so a runaway
+    interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
+    forever and hold the turn lease indefinitely."""
+
     from agent.conversation_loop import (
         _HANDOFF_SKIP_FINAL_RESPONSE, _should_skip_model_call_for_reference_handoff
     )
@@ -397,12 +411,30 @@ def apply_retry_restarts(
     def _verdict(action: str) -> RetryRestartVerdict:
         return RetryRestartVerdict(
             action=action, current_turn_user_idx=current_turn_user_idx,
-            final_response=final_response, retry_count=retry_count, api_call_count=api_call_count,
+            final_response=final_response, retry_count=retry_count, restart_count=restart_count,
+            api_call_count=api_call_count,
             _preflight_compression_blocked=_preflight_compression_blocked,
             _turn_exit_reason=_turn_exit_reason,
         )
 
     if _retry.restart_with_redirected_messages:
+        restart_count += 1
+        if restart_count > max_retries:
+            # A redirect/interrupt keeps re-arming this flag: stop refunding the iteration
+            # budget and re-issuing the same logical iteration, or a runaway turn holds the
+            # turn lease indefinitely (redirect restarts previously had no bound).
+            _turn_exit_reason = "redirect_restart_limit_exceeded"
+            logger.warning(
+                "Redirected-message restart limit (%s) exceeded; ending turn instead of "
+                "refunding the iteration budget indefinitely.",
+                max_retries,
+            )
+            # The correction that tripped the cap was never applied; hand it back as the
+            # next user turn (result["pending_steer"]) instead of losing it to clear_interrupt().
+            _unapplied = agent._drain_pending_redirect()
+            if _unapplied:
+                agent.steer(_unapplied)
+            return _verdict("break")
         # Cancelled request produced no valid assistant item: reuse the same logical
         # iteration after the outer loop appends partial context + correction.
         api_call_count -= 1
@@ -411,7 +443,10 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if interrupted:
-        _turn_exit_reason = "interrupted_during_api_call"
+        _issuer = interrupt_issuer(agent)
+        _turn_exit_reason = (
+            f"interrupted_during_api_call({_issuer})" if _issuer else "interrupted_during_api_call"
+        )
         return _verdict("break")
 
     if _retry.restart_with_compressed_messages:
@@ -444,6 +479,18 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if _retry.restart_with_rebuilt_messages:
+        restart_count += 1
+        if restart_count > max_retries:
+            # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
+            # iteration budget and re-issuing, or a runaway turn holds the turn lease
+            # indefinitely (rebuilt restarts previously had no bound).
+            _turn_exit_reason = "rebuilt_restart_limit_exceeded"
+            logger.warning(
+                "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
+                "refunding the iteration budget indefinitely.",
+                max_retries,
+            )
+            return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the
         # active fallback provider, refunding budget/count for the stalled attempt.
         api_call_count -= 1
@@ -469,7 +516,7 @@ def apply_retry_restarts(
     # All retries may exhaust with `response` still None; break out cleanly.
     if response is None:
         _turn_exit_reason = "all_retries_exhausted_no_response"
-        print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+        agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
     return _verdict("fallthrough")

@@ -2,7 +2,7 @@
 
 The 40-second problem: a cold local model streams 16-21 GB of weights
 before the first token, and the chat rendered that as the generic
-"provider may be slow or overloaded" stall warning. llama-server's child
+"waiting on <model>" long-wait notice. llama-server's child
 emits real per-tensor progress which the router relays over /models/sse
 ONLY — these tests pin the consumer that turns that stream into the
 status route's `loading` field and the chat's load notice."""

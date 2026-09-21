@@ -234,6 +234,22 @@ class TestIncomingDocumentHandling:
         assert "[Content of" not in (event.text or "")
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("content, inlined", [(b"small text", True), (b"x" * (200 * 1024), False)], ids=["small", "large"])
+    async def test_document_marks_media_text_inlined(self, adapter, content, inlined):
+        """The per-attachment flag must track whether the text was injected, so the document
+        note never claims the content is inlined when the >100 KB gate skipped it."""
+        with _mock_aiohttp_download(content):
+            msg = make_message(
+                attachments=[make_attachment(filename="notes.txt", content_type="text/plain", size=len(content))],
+                content="",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert ("[Content of" in (event.text or "")) is inlined
+        assert event.media_text_inlined == [inlined]
+
+    @pytest.mark.asyncio
     async def test_multiple_text_files_both_injected(self, adapter):
         """Two text file attachments should both be injected into event.text in order."""
         content1 = b"First file content"

@@ -37,10 +37,10 @@ the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
 Unsupported platforms use the explicit no-op runtime described above rather
 than downloading a different implementation.
 
-Operator-supplied typed native plugins must be rebuilt for Relay 0.9. `grpc-v1`
-workers must be regenerated and rebuilt when they use tool callbacks, tool
-execution intercepts, or manual tool-end APIs. Tool execution intercepts now
-receive a `ToolExecutionContext` instead of separate name and argument values.
+Native and worker plugins that register tool execution intercepts must target
+Relay 0.9's `ToolExecutionContext` callback and declare a compatibility range
+beginning at 0.9. Existing native plugins that do not use that callback remain
+supported through Relay's frozen ABI v4, v3, and v2 compatibility.
 
 Hermes passes the selected file to Relay as the explicit plugin configuration.
 Relay reads it in place of the ambient user `plugins.toml`, but the
@@ -48,11 +48,6 @@ operator-managed system file (`/etc/nemo-relay/plugins.toml`, or the
 `%ProgramData%` equivalent) still layers above it, so a system-wide exporter,
 policy, or dynamic plugin applies to Hermes too. For duplicate dynamic plugin
 IDs, the system declaration wins.
-
-Relay 0.9 has no query for whether another process already owns the plugin
-host. Hermes learns that only when its own initialization is refused, so a
-foreign activation is reported as such only when Hermes has a plugin
-configuration selected; without one, Hermes stays disabled and does not probe.
 
 When Relay managed execution is active, the provider request and response pass
 through that native module in the Hermes process so configured interceptors can

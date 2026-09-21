@@ -30,8 +30,7 @@ export interface HostBackendRecord {
 }
 
 export type SpawnOrAttachDecision =
-  | { action: 'attach'; record: HostBackendRecord }
-  | { action: 'spawn'; reason: 'isolated' | 'no-running-backend' }
+  { action: 'attach'; record: HostBackendRecord } | { action: 'spawn'; reason: 'isolated' | 'no-running-backend' }
 
 /** Filename the CLI writes under the machine Hermes root. */
 export const SPAWN_LEDGER_FILENAME = 'spawn-ledger.json'

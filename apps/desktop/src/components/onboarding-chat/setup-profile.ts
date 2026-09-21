@@ -265,12 +265,17 @@ export async function buildFirstTaskSeedMessages(
 ): Promise<{ content: string; display_kind?: 'hidden'; role: 'assistant' | 'user' }[]> {
   const root = plan === 'plugin' ? await window.hermesDesktop?.desktopPluginsRoot?.() : undefined
 
-  const capabilities = plan === 'machine-setup' ? '' : await readOnboardingCapabilities(scope, {
-    apps: answers.connectors,
-    context: `${task} ${answers.context}`
-  })
+  const capabilities =
+    plan === 'machine-setup'
+      ? ''
+      : await readOnboardingCapabilities(scope, {
+          apps: answers.connectors,
+          context: `${task} ${answers.context}`
+        })
 
-  return [{ content: buildFirstTaskRunbook(task, answers, plan, root, capabilities), display_kind: 'hidden', role: 'user' }]
+  return [
+    { content: buildFirstTaskRunbook(task, answers, plan, root, capabilities), display_kind: 'hidden', role: 'user' }
+  ]
 }
 
 /** The hidden note sent to the welcome chat once the build session is live. The check-ins after it come from the

@@ -5,9 +5,9 @@ const openSessionTile = vi.fn()
 const reuseBlankDraftTile = vi.fn()
 const setSessionTileWorkspaceScope = vi.fn()
 
-const focusedSessionWorkspaceScope = vi.fn<
-  () => { workspaceMode: 'bots' | 'sessions'; workspaceOwnerKey?: string }
->(() => ({ workspaceMode: 'sessions' }))
+const focusedSessionWorkspaceScope = vi.fn<() => { workspaceMode: 'bots' | 'sessions'; workspaceOwnerKey?: string }>(
+  () => ({ workspaceMode: 'sessions' })
+)
 
 const openSessionInNewWindow = vi.fn()
 const canOpenSessionWindow = vi.fn(() => true)

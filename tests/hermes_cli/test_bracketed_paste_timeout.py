@@ -15,11 +15,11 @@ from prompt_toolkit.keys import Keys
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CLI_PATH = ROOT / "cli.py"
+CLI_PATH = ROOT / "hermes_cli" / "cli_terminal_input.py"
 
 
 def _load_production_patch_helper():
-    """Load cli._apply_bracketed_paste_timeout_patch without importing cli.
+    """Load _apply_bracketed_paste_timeout_patch (hermes_cli/cli_terminal_input.py) without importing cli.
 
     Importing cli.py pulls optional runtime deps that aren't required for this
     parser-level regression.  AST-loading the exact helper keeps the test tied
@@ -38,7 +38,7 @@ def _load_production_patch_helper():
         None,
     )
     assert helper_node is not None, (
-        "cli.py must define _apply_bracketed_paste_timeout_patch()"
+        "hermes_cli/cli_terminal_input.py must define _apply_bracketed_paste_timeout_patch()"
     )
     helper_source = ast.get_source_segment(source, helper_node)
     namespace = {"time": time, "logger": logging.getLogger("test.cli")}

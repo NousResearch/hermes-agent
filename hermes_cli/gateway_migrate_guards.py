@@ -105,6 +105,11 @@ def _guard_service_domain(plan: MigrationPlan, profile: ProfileGateway) -> Optio
 
 def _guard_unix_user(plan: MigrationPlan, profile: ProfileGateway) -> Optional[str]:
     default_uid = plan.default.uid
+    if default_uid is None and plan.default.has_system_unit:
+        # Consolidating INTO a principal this host cannot identify is the same unknown boundary
+        # from the other side: the default's system unit names an account NSS does not resolve.
+        return ("The default gateway runs a system unit whose User= cannot be resolved on this host: "
+                "an unknown service principal is not folded into automatically.")
     if profile.uid is None and profile.has_system_unit:
         # Unknown principal is not "same user": the unit names an account this host cannot resolve.
         return (f"Profile '{profile.name}' runs a system unit whose User= cannot be resolved on this host: "
@@ -134,12 +139,13 @@ _AUTO_MIGRATION_GUARDS: tuple[Callable[[MigrationPlan, ProfileGateway], Optional
 def auto_migration_blockers(plan: MigrationPlan) -> list[str]:
     """Every boundary a standalone secondary sits behind; empty when the fleet is one user, one service
     domain, one profiles/ tree — the only shape ``hermes update`` may fold on its own."""
-    return [
+    findings = [
         finding
         for profile in plan.standalone_secondaries
         for guard in _AUTO_MIGRATION_GUARDS
         if (finding := guard(plan, profile)) is not None
     ]
+    return list(dict.fromkeys(findings))  # a default-side finding repeats per secondary
 
 
 # --------------------------------------------------------------------------- opt-out

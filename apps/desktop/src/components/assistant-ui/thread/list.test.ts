@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildGroups,
   firstVisibleGroupIndex,
+  hasTranscriptTextSelection,
   HIDDEN_TRANSCRIPT_RENDER_BUDGET,
   LIVE_TAIL_MIN_GROUPS,
   LIVE_TAIL_PARTS,
@@ -10,6 +11,7 @@ import {
   type MessageGroup,
   resolveThreadScrollTarget,
   RUN_START_SNAP_THRESHOLD_PX,
+  shouldAnchorBeforePrepend,
   shouldClampTranscriptBudget,
   shouldRePinOnTranscriptReload,
   shouldSnapOnRunStart,
@@ -101,6 +103,12 @@ describe('transcriptPaneBudget', () => {
     expect(transcriptPaneBudget(4, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
     expect(transcriptPaneBudget(1, false)).toBeGreaterThan(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
   })
+
+  it('keeps sharing one page budget past four mounted panes (no quarter floor)', () => {
+    const page = transcriptPaneBudget(1, false)
+    expect(transcriptPaneBudget(5, false)).toBeLessThan(transcriptPaneBudget(4, false))
+    expect(transcriptPaneBudget(6, false)).toBe(Math.ceil(page / 6))
+  })
 })
 
 describe('shouldClampTranscriptBudget', () => {
@@ -112,6 +120,21 @@ describe('shouldClampTranscriptBudget', () => {
   it('snaps only a hot-hidden pane that outgrew the retention budget', () => {
     expect(shouldClampTranscriptBudget(true, 10, 5)).toBe(true)
     expect(shouldClampTranscriptBudget(true, 5, 5)).toBe(false)
+  })
+})
+
+describe('shouldAnchorBeforePrepend', () => {
+  // Regression for #99920: the settle loop hands a bottom-pinned load back at
+  // the first-paint height, BEFORE the backfill commits; skipping the anchor
+  // there left the prepend re-pinned only by a ResizeObserver frames later —
+  // a full-viewport lurch on every long-session switch.
+  it('anchors an unsettled load that is pinned to the bottom', () => {
+    expect(shouldAnchorBeforePrepend(false, { kind: 'bottom' })).toBe(true)
+  })
+
+  it('never anchors an unsettled offset restore still being applied', () => {
+    expect(shouldAnchorBeforePrepend(false, { fromBottom: 3000, kind: 'offset' })).toBe(false)
+    expect(shouldAnchorBeforePrepend(true, { fromBottom: 3000, kind: 'offset' })).toBe(true)
   })
 })
 
@@ -243,10 +266,39 @@ describe('firstVisibleGroupIndex', () => {
     expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(groups.length - 8)
   })
 
+  it.each([8, 10])('keeps the visible-turn floor at %i mounted panes on the shared page budget', panes => {
+    // #117067 dropped the quarter-page floor from transcriptPaneBudget; its safety
+    // argument is that this floor, not the budget, guards against a degenerate
+    // pane. Control: at high pane counts the per-pane budget covers only ~3 of
+    // these turns, yet 8 stay visible and "Show earlier" still has history to reach.
+    const paneBudget = transcriptPaneBudget(panes, false)
+    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 20))
+
+    expect(paneBudget * panes).toBeLessThanOrEqual(600 + panes) // shared page, ceil slack only
+    expect(Math.floor(paneBudget / 20)).toBeLessThan(8)
+    expect(firstVisibleGroupIndex(groups, paneBudget, 8)).toBe(groups.length - 8)
+    expect(firstVisibleGroupIndex(groups, paneBudget, 8)).toBeGreaterThan(0)
+  })
+
   it('does not force the floor to hide turns the budget already showed', () => {
     const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 1))
 
     expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(0)
+  })
+
+  it('keeps the cut stable while the unbudgeted streaming tail grows', () => {
+    const history = [group('old', 50), group('mid', 30), group('recent', 30)]
+    const initial = [...history, group('streaming', 1)]
+    const grown = [...history, group('streaming', 5_000)]
+
+    expect(firstVisibleGroupIndex(initial, 60, 0, true)).toBe(1)
+    expect(firstVisibleGroupIndex(grown, 60, 0, true)).toBe(1)
+  })
+
+  it('exempts exactly one newest group while older history stays budgeted', () => {
+    const groups = [group('a', 200), group('b', 50), group('c', 50), group('d', 50), group('e', 10_000)]
+
+    expect(firstVisibleGroupIndex(groups, 60, 0, true)).toBe(2)
   })
 })
 
@@ -363,5 +415,99 @@ describe('shouldRePinOnTranscriptReload', () => {
 
   it('pins on a cold-load arrival (same session, never settled non-empty)', () => {
     expect(shouldRePinOnTranscriptReload({ sessionSwitched: false, settledNonEmpty: false })).toBe(true)
+  })
+})
+
+describe('hasTranscriptTextSelection', () => {
+  let transcript: HTMLDivElement
+  let outside: HTMLDivElement
+
+  beforeEach(() => {
+    transcript = document.createElement('div')
+    transcript.textContent = 'streamed transcript text'
+    outside = document.createElement('div')
+    outside.textContent = 'composer text'
+    document.body.append(transcript, outside)
+  })
+
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges()
+    transcript.remove()
+    outside.remove()
+  })
+
+  const selectContents = (node: Node) => {
+    const range = document.createRange()
+    range.selectNodeContents(node)
+    window.getSelection()?.addRange(range)
+  }
+
+  it('returns false with no selection', () => {
+    expect(hasTranscriptTextSelection(transcript)).toBe(false)
+  })
+
+  it('returns false for a collapsed caret inside the transcript', () => {
+    const range = document.createRange()
+    range.setStart(transcript.firstChild!, 1)
+    range.collapse(true)
+    window.getSelection()?.addRange(range)
+
+    expect(window.getSelection()!.isCollapsed).toBe(true)
+    expect(hasTranscriptTextSelection(transcript)).toBe(false)
+  })
+
+  it('returns true for a non-collapsed selection inside the transcript', () => {
+    selectContents(transcript)
+
+    expect(window.getSelection()!.isCollapsed).toBe(false)
+    expect(hasTranscriptTextSelection(transcript)).toBe(true)
+  })
+
+  it('returns false when the selection is outside the transcript', () => {
+    selectContents(outside)
+
+    expect(window.getSelection()!.isCollapsed).toBe(false)
+    expect(hasTranscriptTextSelection(transcript)).toBe(false)
+  })
+})
+
+describe('resolveThreadScrollTarget while selecting', () => {
+  let scrollElement: HTMLDivElement
+
+  beforeEach(() => {
+    scrollElement = document.createElement('div')
+    scrollElement.textContent = 'streamed transcript text'
+    document.body.append(scrollElement)
+    // No layout in the test DOM: pin a scroll offset as an own property.
+    Object.defineProperty(scrollElement, 'scrollTop', { configurable: true, value: 100 })
+  })
+
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges()
+    scrollElement.remove()
+  })
+
+  const contextFor = () => ({
+    contentElement: document.createElement('div'),
+    scrollElement
+  })
+
+  it('holds position instead of following while a selection lives in the transcript', () => {
+    const range = document.createRange()
+    range.selectNodeContents(scrollElement)
+    window.getSelection()?.addRange(range)
+
+    expect(resolveThreadScrollTarget(999, contextFor())).toBe(100)
+  })
+
+  it('resumes following once the selection collapses', () => {
+    const range = document.createRange()
+    range.selectNodeContents(scrollElement)
+    window.getSelection()?.addRange(range)
+    expect(resolveThreadScrollTarget(999, contextFor())).toBe(100)
+
+    window.getSelection()?.removeAllRanges()
+
+    expect(resolveThreadScrollTarget(999, contextFor())).toBe(999)
   })
 })

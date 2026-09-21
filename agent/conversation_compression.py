@@ -1064,7 +1064,10 @@ def _await_worker_within_budget(
             # Aliases builtin TimeoutError (3.11+): also fires when the WORKER died with one (#63892).
             # A settled future never unsettles — re-waiting spun ~2k iter/s; take the stall path now.
             if future.done():
-                logger.info("Context compression worker exited with %r — taking the stall path", future.exception())
+                exc = future.exception()
+                if exc is None:
+                    return True, future.result()
+                logger.info("Context compression worker exited with %r — taking the stall path", exc)
                 return False, None
             waited = time.monotonic() - wait_started
             since_progress = fence.seconds_since_progress()

@@ -53,6 +53,34 @@ def test_compression_wait_returns_promptly_when_worker_dies():
         assert (settled, result) == (False, None)
         assert _join_cancelled_worker(future, 0.5) is True
 
+    # Success race: the worker finishes in the window between ``result(timeout=)`` expiring and
+    # the ``done()`` check. The guard must hand back the completed compression, not discard it
+    # onto the stall/fallback path (which would cost a second LLM call).
+    raced = _RacedSuccessFuture()
+    raced.set_result("summary")
+    fence = CompressionCommitFence()
+    fence.touch_progress()
+    started = time.monotonic()
+    assert _await_worker_within_budget(raced, fence, idle=1.0, ceiling=2.0, wait_started=started) == (
+        True,
+        "summary",
+    )
+
+
+class _RacedSuccessFuture(concurrent.futures.Future):
+    """Already-settled future whose FIRST timed ``result()`` still raises TimeoutError, modelling
+    a worker that completed just after the wait slice expired."""
+
+    def __init__(self):
+        super().__init__()
+        self._timed_out_once = False
+
+    def result(self, timeout=None):
+        if timeout is not None and not self._timed_out_once:
+            self._timed_out_once = True
+            raise concurrent.futures.TimeoutError()
+        return super().result(timeout)
+
 
 def test_in_flight_commit_surfaces_worker_timeout_instead_of_looping():
     """_await_in_flight_commit has no ceiling on this path — pre-fix a dead worker spun forever."""

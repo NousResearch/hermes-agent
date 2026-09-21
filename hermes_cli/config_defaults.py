@@ -2661,6 +2661,11 @@ OPTIONAL_ENV_VARS = {
     "NVIDIA_BASE_URL": _prov(
         "NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)",
         "NVIDIA NIM base URL (leave empty for default)", None, password=False),
+    "ARK_API_KEY": _prov("Volcengine Ark API key (Agent Plan subscription / pay-as-you-go)",
+        "Volcengine Ark API key", "https://console.volcengine.com/ark"),
+    "ARK_AGENT_PLAN_BASE_URL": _prov(
+        "Custom Ark Agent Plan base URL (default: https://ark.cn-beijing.volces.com/api/plan/v3)",
+        "Ark Agent Plan base URL (leave empty for default)", None, password=False),
     "LM_API_KEY": _prov("LM Studio bearer token for auth-enabled local servers",
         "LM Studio API key / bearer token", None),
     "LM_BASE_URL": _base_url("LM Studio"),

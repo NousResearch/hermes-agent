@@ -128,6 +128,10 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "meta-ai": "meta", "meta": "meta", "groq": "groq", "mistral": "mistral",
     "togetherai": "togetherai", "perplexity": "perplexity", "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
+    # Volcengine Ark Agent Plan (subscription): models.dev keys it
+    # "volcengine-agent-plan"; the plan endpoint has no /models route, so this
+    # mapping is how the catalog reaches the picker.
+    "volcengine-agent-plan": "volcengine-agent-plan",
 }
 # Reverse mapping: models.dev id → Hermes ids (built lazily; many-to-one).
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, List[str]]] = None

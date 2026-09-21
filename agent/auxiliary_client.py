@@ -7217,7 +7217,12 @@ def _ladder_credential_rungs(
                 _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
             if recovery_err is None:
                 return resp, None
-        if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+        failed_api_key = str(
+            getattr(recovery_err, _FAILED_API_KEY_ATTR, "") or _client_api_key
+        )
+        if _recover_provider_pool(
+            pool_provider, recovery_err, failed_api_key=failed_api_key,
+        ):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
             try:

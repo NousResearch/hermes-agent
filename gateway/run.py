@@ -5170,7 +5170,34 @@ def _start_gateway_claim_pid_file() -> bool:
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+    _claim_host_gateway_role()
     return True
+
+
+def _claim_host_gateway_role() -> None:
+    """Take the HOST-wide gateway lock alongside the per-home one and publish the record.
+
+    Observe-only in this step: the per-home lock above still decides whether this process runs,
+    so a host with two gateways (the shape the multiplex-only ruling forbids) starts as it always
+    did and says so in the log. Flipping this into a refusal is a separate, reviewable change.
+    """
+    import atexit
+    from gateway import host_rendezvous as hr
+
+    try:
+        if hr.acquire_host_lock(hr.ROLE_GATEWAY):
+            hr.publish_record(hr.ROLE_GATEWAY, profiles=hr.served_profiles())
+            atexit.register(hr.clear_record, hr.ROLE_GATEWAY)
+            atexit.register(hr.release_host_lock, hr.ROLE_GATEWAY)
+            return
+        owner = hr.read_record(hr.ROLE_GATEWAY)
+        logger.warning(
+            "Another gateway already owns this host (%s). Multiplex-only expects exactly one "
+            "gateway per host; starting anyway (observe-only).",
+            hr.describe(owner) if owner else "owner unknown",
+        )
+    except Exception:
+        logger.debug("host gateway rendezvous failed", exc_info=True)
 
 
 async def _start_gateway_start_control_socket(runner):

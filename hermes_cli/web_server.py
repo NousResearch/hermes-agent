@@ -1273,6 +1273,37 @@ def _on_server_started(
 
     _best_effort("process-identity registration", _register_identity)
 
+    # Host rendezvous (multiplex-only): the host lock + record that let a SECOND `hermes serve`
+    # for any profile find this process and attach instead of binding a second port. Published
+    # after the bind so the record carries the real port, and beside — not instead of — the
+    # spawn-ledger entry above, which Desktop's attach ladder reads.
+    def _publish_host_record() -> None:
+        import atexit
+
+        from gateway import host_rendezvous as hr
+
+        if not hr.acquire_host_lock(hr.ROLE_SERVE):
+            owner = hr.read_record(hr.ROLE_SERVE)
+            _log.warning(
+                "Another backend already owns this host (%s); this one bound anyway "
+                "(observe-only). Multiplex-only expects exactly one backend per host.",
+                hr.describe(owner) if owner else "owner unknown",
+            )
+            return
+        hr.publish_record(
+            hr.ROLE_SERVE,
+            host=host,
+            port=actual_port,
+            profiles=hr.served_profiles(),
+            # The live session token, so an attaching client of the same OS user can
+            # authenticate even when the backend is gated and `GET /` withholds it.
+            token=_SESSION_TOKEN,
+        )
+        atexit.register(hr.clear_record, hr.ROLE_SERVE)
+        atexit.register(hr.release_host_lock, hr.ROLE_SERVE)
+
+    _best_effort("host rendezvous publish", _publish_host_record)
+
     _write_dashboard_ready_file(actual_port)
     # Port-discovery sentinel parsed by the Desktop spawn (matches either
     # token). Written to fd 1: tui_gateway.server redirects sys.stdout to

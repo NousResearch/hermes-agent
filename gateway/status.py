@@ -306,7 +306,14 @@ def _get_runtime_status_path() -> Path:
 
 
 def _get_lock_dir() -> Path:
-    """Machine-local dir for token-scoped gateway locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides."""
+    """Cross-profile rendezvous dir for machine-local locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides.
+
+    Scope is the **OS user**, not the kernel host: separate users have separate ``$HOME``s,
+    separate ``~/.hermes`` profile roots and separate credentials, so "one gateway per host"
+    means "one per host per OS user". Holds the token-scoped locks (:func:`acquire_scoped_lock`)
+    and the host-role lock + rendezvous record (``gateway/host_rendezvous.py``); the per-home
+    ``gateway.pid``/``gateway.lock`` above deliberately stay under each profile's HERMES_HOME.
+    """
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)

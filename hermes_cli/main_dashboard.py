@@ -751,15 +751,68 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def _host_backend_attachment():
+    """Live host serve/dashboard record to attach to, or ``None``.
+
+    Record-based discovery replaces the old bare-TCP probe: "something accepts a connection on
+    this port" proved nothing about WHO answers (a foreign service, or a recycled PID's new
+    owner). The record carries ``(pid, createTime)`` so liveness is proved against the same
+    incarnation, and its token fingerprint must still match the 0600 token file the owner wrote.
+    """
+    try:
+        from gateway import host_rendezvous as hr
+
+        record = hr.read_record(hr.ROLE_SERVE)
+        if record is None or not record.port:
+            return None
+        return record if hr.record_token_is_consistent(record) else None
+    except Exception:
+        return None
+
+
+def _attach_to_host_backend(args, headless_backend: bool) -> None:
+    """Multiplex-only: a second `hermes serve`/`dashboard` attaches to the host backend.
+
+    Exactly ONE backend runs per host and multiplexes every profile, so a second invocation —
+    for ANY profile, the default included — reports the live one and exits 0 instead of binding
+    a second port. ``--isolated`` opts out (Desktop's SSH backend proves ownership with it) and
+    Desktop pool backends (HERMES_DESKTOP=1) keep their own lifecycle. Returns normally when no
+    live record exists, leaving the re-exec fallback below to run.
+    """
+    if getattr(args, "isolated", False) or os.environ.get("HERMES_DESKTOP") == "1":
+        return
+    record = _host_backend_attachment()
+    if record is None:
+        return
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        profile = get_active_profile_name()
+    except Exception:
+        profile = "default"
+    wanted = getattr(args, "open_profile", "") or profile
+    url = f"http://{record.host or '127.0.0.1'}:{record.port}/?profile={wanted}"
+
+    kind = "backend" if headless_backend else "dashboard"
+    print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")
+    print(f"  Managing profile '{wanted}': {url}")
+    if not headless_backend and not args.no_open:
+        with contextlib.suppress(Exception):
+            import webbrowser
+            webbrowser.open(url)
+    sys.exit(0)
+
+
 def _route_named_profile_dashboard(
     args, _headless_backend: bool, _ssh_owner_nonce: str, _token_file: str) -> None:
     """Route a named-profile launch to the single MACHINE dashboard (per-request ``?profile=`` scoping
     makes one server per profile pure fragmentation).
 
-    Already listening → open ``?profile=<name>`` and exit; else re-exec pinned to
-    ``-p default`` (so ``_apply_profile_override`` can't re-route via the sticky
-    active_profile file). ``--isolated`` opts out; Desktop pool backends
-    (HERMES_DESKTOP=1) stay per-profile. Returns normally when no routing applies.
+    No-record fallback to :func:`_attach_to_host_backend`, which already attached (and exited)
+    when the host publishes a live rendezvous record: re-exec pinned to ``-p default`` (so
+    ``_apply_profile_override`` can't re-route via the sticky active_profile file). ``--isolated``
+    opts out; Desktop pool backends (HERMES_DESKTOP=1) stay per-profile. Returns normally when no
+    routing applies.
     """
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -774,16 +827,6 @@ def _route_named_profile_dashboard(
         or os.environ.get("HERMES_DESKTOP") == "1"
     ):
         return
-
-    url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
-    if _dashboard_listening(args.host, args.port):
-        print(f"Machine dashboard already running on port {args.port}.")
-        print(f"  Managing profile '{_launch_profile}': {url}")
-        if not args.no_open:
-            with contextlib.suppress(Exception):
-                import webbrowser
-                webbrowser.open(url)
-        sys.exit(0)
 
     print(
         f"Routing to the machine dashboard (profile '{_launch_profile}' "

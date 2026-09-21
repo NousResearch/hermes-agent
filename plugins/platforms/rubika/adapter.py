@@ -115,7 +115,22 @@ class RubikaAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        raise NotImplementedError  # Task 7
+        from plugins.platforms.rubika.keypad import build_chat_keypad, build_inline_keypad
+        metadata = metadata or {}
+        params: Dict[str, Any] = {"chat_id": chat_id, "text": content}
+        if reply_to:
+            params["reply_to_message_id"] = reply_to
+        if chat_keypad := metadata.get("chat_keypad"):
+            params["chat_keypad"] = build_chat_keypad(chat_keypad)
+            params["chat_keypad_type"] = "New"
+        if inline_keypad := metadata.get("inline_keypad"):
+            params["inline_keypad"] = build_inline_keypad(inline_keypad)
+        try:
+            data = await self._client.call("sendMessage", **params)
+            return SendResult(success=True, message_id=str(data.get("message_id") or ""))
+        except RubikaAPIError as exc:
+            logger.warning("[%s] send() failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         raise NotImplementedError  # Task 10

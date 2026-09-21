@@ -422,8 +422,7 @@ def strip_images_for_rejecting_model(agent: Any, api_messages: Any) -> bool:
     past it. History is never touched. Keyed on each rejecting (provider, model), so a model
     that accepts images gets them again.
     """
-    rejected = getattr(agent, "_image_rejecting_models", None)
-    if not isinstance(rejected, set) or _provider_model_key(agent) not in rejected:
+    if _provider_model_key(agent) not in agent._image_rejecting_models:
         return False
     return isinstance(api_messages, list) and _strip_images_from_messages(api_messages)
 

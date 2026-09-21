@@ -248,9 +248,7 @@ def recover_before_classification(
     # Guarded PER MODEL, not by a turn-global flag: in a fallback chain the next model can reject
     # images too, and a turn-wide flag would skip its recovery and fail the turn.
     _model_key = _provider_model_key(agent)
-    _rejected = getattr(agent, "_image_rejecting_models", None)
-    if not isinstance(_rejected, set):
-        _rejected = agent._image_rejecting_models = set()
+    _rejected = agent._image_rejecting_models
     if _model_key not in _rejected and _looks_like_image_content_rejection(_err_body) and _status_ok:
         # Send-path only. A rejection says what THIS model accepts, not what the conversation
         # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every

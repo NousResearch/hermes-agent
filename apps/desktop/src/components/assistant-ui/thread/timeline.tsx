@@ -1,4 +1,5 @@
 import { useAui, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
@@ -6,6 +7,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { $hideThreadTimeline } from '@/store/thread-timeline'
 
 import { messageContentText } from './content'
 import {
@@ -27,8 +29,13 @@ const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
-/** Hidden panes do not subscribe to streaming messages or measure layout. */
-export const ThreadTimeline: FC = () => (usePaneVisible() ? <ActiveThreadTimeline /> : null)
+/** Hidden rails do not subscribe to streaming messages or measure layout. */
+export const ThreadTimeline: FC = () => {
+  const paneVisible = usePaneVisible()
+  const hidden = useStore($hideThreadTimeline)
+
+  return paneVisible && !hidden ? <ActiveThreadTimeline /> : null
+}
 
 const ActiveThreadTimeline: FC = () => {
   const view = useSessionView()
@@ -86,8 +93,19 @@ const ActiveThreadTimeline: FC = () => {
 
   const railEntries = useMemo(() => {
     const indexed = indexedEntries ?? []
-    const selected = history.isHistorical ? deriveTimelineEntries((history.currentMessages ?? []).map(message => ({ id: message.id, rowId: message.rowId, role: message.role, text: messageContentText(message.parts) }))) : []
-    const loaded = new Map([...entries, ...selected].filter(entry => entry.rowId !== undefined).map(entry => [entry.rowId, entry]))
+    const selected = history.isHistorical
+      ? deriveTimelineEntries(
+          (history.currentMessages ?? []).map(message => ({
+            id: message.id,
+            rowId: message.rowId,
+            role: message.role,
+            text: messageContentText(message.parts)
+          }))
+        )
+      : []
+    const loaded = new Map(
+      [...entries, ...selected].filter(entry => entry.rowId !== undefined).map(entry => [entry.rowId, entry])
+    )
     const seen = new Set(indexed.map(entry => entry.rowId))
 
     const merged = [
@@ -98,7 +116,15 @@ const ActiveThreadTimeline: FC = () => {
     return (history.olderAvailable || indexedEntries) && !indexComplete
       ? [{ id: EARLIER_TIMELINE_ID, preview: t.assistant.thread.showEarlier }, ...merged]
       : merged
-  }, [entries, indexedEntries, indexComplete, history.olderAvailable, history.currentMessages, history.isHistorical, t.assistant.thread.showEarlier])
+  }, [
+    entries,
+    indexedEntries,
+    indexComplete,
+    history.olderAvailable,
+    history.currentMessages,
+    history.isHistorical,
+    t.assistant.thread.showEarlier
+  ])
 
   const root = useRef<HTMLDivElement>(null)
   const jumpFrame = useRef(0)
@@ -154,7 +180,12 @@ const ActiveThreadTimeline: FC = () => {
 
           const timeout = window.setTimeout(() => finish(false), 15000)
           controller.signal.addEventListener('abort', () => finish(false), { once: true })
-          const detail: TimelineRevealRequest = { id, rowId: railEntries.find(entry => entry.id === id)?.rowId, signal: controller.signal, complete: finish }
+          const detail: TimelineRevealRequest = {
+            id,
+            rowId: railEntries.find(entry => entry.id === id)?.rowId,
+            signal: controller.signal,
+            complete: finish
+          }
           viewport.dispatchEvent(new CustomEvent(TIMELINE_REVEAL_EVENT, { detail }))
         })
 

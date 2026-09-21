@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.plugin_validate_desktop import check_desktop_surface
+
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _CONFIG_TYPES = {
     "str", "string", "int", "integer", "float", "number",
@@ -530,6 +532,7 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
     _check_security_scan(report, plugin_dir)
+    check_desktop_surface(report, plugin_dir)
     return report
 
 
@@ -659,4 +662,5 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         "name present" if name else "plugin.json missing required 'name'",
     )
     _check_security_scan(report, plugin_dir)
+    check_desktop_surface(report, plugin_dir)
     return report

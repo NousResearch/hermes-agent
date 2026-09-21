@@ -1,7 +1,11 @@
 """Tests for hermes_cli.stderr_timestamp."""
 
+import os
 import re
+import signal
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -212,3 +216,41 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
     assert rc_config == 0
     assert rc_restart == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert rc_other == GATEWAY_FATAL_CONFIG_EXIT_CODE
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_wrapper_forwards_sigusr1_restart_request_to_child(tmp_path):
+    """Regression for #101426: launchd owns the wrapper's PID, so ``hermes update`` sends its
+    drain-aware SIGUSR1 to the wrapper. It must reach the gateway child and the wrapper must
+    report the child's planned exit code — not die of the signal itself (which makes launchd
+    treat the restart as a crash and apply its back-off to every sibling profile)."""
+    log_path = tmp_path / "gateway.error.log"
+    ready = tmp_path / "ready"
+    child = (
+        "import os, signal, sys, time, pathlib\n"
+        f"signal.signal(signal.SIGUSR1, lambda *_: (sys.stderr.write('restart requested\\n'), sys.exit({GATEWAY_SERVICE_RESTART_EXIT_CODE})))\n"
+        f"pathlib.Path({str(ready)!r}).write_text('1')\n"
+        "time.sleep(20)\n"
+        "sys.exit(1)\n"
+    )
+    wrapper = subprocess.Popen(
+        [sys.executable, "-m", "hermes_cli.stderr_timestamp", "--error-log", str(log_path), "--",
+         sys.executable, "-c", child],
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists():
+            assert time.monotonic() < deadline, "child never started"
+            time.sleep(0.05)
+        os.kill(wrapper.pid, signal.SIGUSR1)
+        rc = wrapper.wait(timeout=10)
+    finally:
+        # Kill the whole session: on a red run the wrapper dies of the signal and the child
+        # would otherwise keep sleeping.
+        try:
+            os.killpg(wrapper.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    assert rc == GATEWAY_SERVICE_RESTART_EXIT_CODE
+    assert "restart requested" in log_path.read_text(encoding="utf-8")

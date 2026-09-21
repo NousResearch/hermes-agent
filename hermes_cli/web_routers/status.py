@@ -20,7 +20,8 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state)
+    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
+    runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_constants import get_process_hermes_home, profile_name_for_home
@@ -115,6 +116,23 @@ async def get_health():
     """Lightweight process liveness for desktop/backend readiness probes."""
     return {"ok": True, "version": __version__,
             "auth_required": bool(getattr(app.state, "auth_required", False))}
+
+
+@router.get("/api/host/identity")
+async def get_host_identity(request: Request):
+    """Prove to an attaching `hermes serve`/`dashboard` WHO owns this port.
+
+    The host rendezvous record names a (pid, port) owner, but a record cannot say whether that
+    owner still holds the port: a graceful-shutdown window or an unrelated listener that
+    inherited the port both look identical on disk. The attaching side dials this endpoint with
+    the owner's 0600 token and attaches only when pid+role match. ``servesSpa`` is false for
+    headless ``serve``, so a `hermes dashboard` user is never routed to a backend with no UI.
+    """
+    _require_token(request)
+    # ``role`` is the host ROLE this process owns (gateway/host_rendezvous.ROLE_SERVE), not the
+    # launch mode: `hermes serve` and `hermes dashboard` are one host role that differ in SPA.
+    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(), "role": "serve",
+            "servesSpa": bool(getattr(app.state, "serves_spa", False))}
 
 
 @router.get("/api/health/idle")
@@ -293,16 +311,23 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     gateway_platforms: dict = {}
     gateway_exit_reason = None
     gateway_updated_at = None
+    gateway_heartbeat_stale_s = None
     if runtime:
         gateway_state = runtime.get("gateway_state")
         if not gateway_running:
             # Shared with /api/messaging/platforms: a durable operator stop outranks a retained
-            # ``startup_failed`` (kept on disk for diagnostics), so the overview does not alarm on it.
+            # ``startup_failed`` / watchdog ``degraded`` (kept on disk for diagnostics), so the
+            # overview does not alarm on it.
             gateway_state = retained_gateway_state(runtime)
         elif remote_health_body is not None and gateway_state in {None, "stopped"}:
             # The health probe confirmed the gateway is alive, but the local runtime status
             # file may be stale (cross-container): override so the badge is correct.
             gateway_state = "running"
+        elif gateway_state in {"running", "degraded", "starting"} and runtime_status_is_stale(runtime):
+            # Alive PID, but housekeeping stopped re-stamping the heartbeat: the loop or the
+            # housekeeping thread wedged while the file still says 'running' (#113372). Same arm
+            # as ``hermes gateway status`` so the sidebar strip and the CLI agree.
+            gateway_heartbeat_stale_s = runtime_status_heartbeat_age_s(runtime)
         gateway_platforms = _project_gateway_platforms(
             runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
         gateway_exit_reason = None if gateway_state == "stopped" else runtime.get("exit_reason")
@@ -322,6 +347,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
+        "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
         "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
@@ -456,7 +482,7 @@ async def get_status(profile: Optional[str] = None):
 
         # Busy/drainable (NAS lifecycle-safety gate) derive from the persisted in-flight turn
         # count + liveness via gateway.status. Liveness keys off gateway_running, NEVER
-        # gateway_updated_at — a healthy idle gateway never advances that.
+        # gateway_updated_at — a stale heartbeat is reported separately, not treated as death.
         active_agents = parse_active_agents((gateway["runtime"] or {}).get("active_agents", 0))
         # Off-loop: on a cold Windows install the first import of hermes_cli.gateway blocks
         # 15-30s (.pyc compilation + Defender), exceeding the desktop handshake's 15s timeout.
@@ -471,6 +497,9 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway["gateway_platforms"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
             "gateway_updated_at": gateway["gateway_updated_at"],
+            # Seconds since housekeeping last stamped the heartbeat, only when the PID is alive but the
+            # stamp is past the freshness TTL (loop/housekeeping wedged, #113372); else null.
+            "gateway_heartbeat_stale_s": gateway["gateway_heartbeat_stale_s"],
             # Non-null only for a profile served by the shared multiplexer: every profile that process carries.
             "gateway_shared_with": gateway["gateway_shared_with"],
             "active_agents": active_agents,

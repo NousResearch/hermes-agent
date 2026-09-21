@@ -91,6 +91,9 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
+    # The advertised policy is the SERVED profile's own config, so the profile must exist (#116900).
+    (home / "profiles" / "reviewer").mkdir(parents=True)
+    (home / "profiles" / "reviewer" / "config.yaml").write_text("approvals:\n  mode: manual\n")
     result = _result(srv._methods["groups.capabilities"](1, {}))
     assert result["room_link"]["enabled"] is True
     assert result["room_link"]["profile"] == "reviewer"
@@ -328,6 +331,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
     from gateway.hosted_rooms import local_authority_gateway_id
 
     catalog = catalog_mapping(
+            target_profile="default",
         installation_id="install-peer",
         persistent_process=True,
     )
@@ -416,6 +420,7 @@ def test_register_requires_roomlink_protocol_v2(home, monkeypatch):
             "target_profile": "reviewer",
             "grant": "signed.room.grant",
             "catalog": catalog_mapping(
+            target_profile="default",
                 installation_id="install-peer",
                 protocol_versions=(1,),
                 persistent_process=True,

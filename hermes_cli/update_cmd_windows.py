@@ -316,6 +316,46 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
     return found
 
 
+def _venv_holder_kind(cmdline: str) -> str:
+    """Machine-readable class of one venv holder for ``--list-venv-holders``.
+
+    ``gateway`` (the pausable gateway matcher), ``backend`` (``serve``/``dashboard`` -- the Desktop
+    app's backend shape), ``hermes:<subcommand>`` for any other Hermes entry, else ``python``.
+    Derived from the same classifiers the refusal path uses so automation stops exactly what the
+    guard would refuse on."""
+    from hermes_cli._scan_venv_blockers import _is_pausable_gateway
+    if _is_pausable_gateway(cmdline):
+        return "gateway"
+    subcommand = _hermes_holder_subcommand(cmdline)
+    if subcommand in _BACKEND_PURPOSES:
+        return "backend"
+    if subcommand:
+        return f"hermes:{subcommand}"
+    return "python"
+
+
+VENV_HOLDERS_EXIT = 3  # ``hermes update --list-venv-holders``: holders present (distinct from refusal 2)
+
+
+def list_venv_holders() -> list[dict]:
+    """``[{pid, exe, argv, kind}]`` for every process the venv-holder guard would refuse on, read-only.
+
+    Off Windows (or without psutil) the guard never fires, so the list is empty. ``exe``/``argv`` are the
+    live psutil values when readable (the scan may carry only a cmdline prefix)."""
+    from hermes_cli.update_cmd import _m
+    psutil = _psutil()
+    holders: list[dict] = []
+    for pid, name, cmdline in _m()._detect_venv_python_processes():
+        exe, argv = name, cmdline
+        if psutil is not None:
+            with suppress(Exception):
+                proc = psutil.Process(int(pid))
+                exe = proc.exe() or name
+                argv = " ".join(proc.cmdline()) or cmdline
+        holders.append({"pid": int(pid), "exe": exe, "argv": argv, "kind": _venv_holder_kind(argv)})
+    return holders
+
+
 def _leftover_pausable_gateway_pids(matches: list[tuple[int, str, str]]) -> list[int] | None:
     """PIDs from *matches* when EVERY remaining venv holder is a pausable gateway, else ``None`` (keep refusing).
 
@@ -1080,6 +1120,9 @@ def _refresh_windows_gateway_launchers() -> None:
         if gateway_windows.is_installed():
             gateway_windows._write_task_script()
             print("  ✓ Refreshed Windows gateway launcher scripts")
+            if gateway_windows.is_task_registered():
+                # A task registered by an older build never picks up template hardening otherwise (#113670).
+                gateway_windows.reconcile_scheduled_task(gateway_windows.get_task_name())
 
 
 def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
@@ -1223,6 +1266,14 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     from hermes_cli.update_cmd import _m
     if not token or not token.get("resume_needed"):
         return
+    # The foreground call sites register this same function via atexit as a safety net for
+    # process death before they get a chance to run it themselves (#115563). Once execution
+    # actually reaches here — foreground or the atexit fallback itself — ownership is taken:
+    # unregister immediately so a failure below (or the foreground caller failing after this
+    # returns) cannot replay the same RuntimeError a second time at interpreter teardown.
+    # ``unregister`` is a no-op when this function was never registered.
+    import atexit
+    atexit.unregister(_resume_windows_gateways_after_update)
     if not _m()._is_windows():
         token["resume_needed"] = False
         return

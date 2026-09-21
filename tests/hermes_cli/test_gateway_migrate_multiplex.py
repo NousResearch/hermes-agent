@@ -86,6 +86,16 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(plugins, "discover_plugins", lambda force=False: None)
     # Part of the faked service layer: the real check asks systemd's questions (root, NSS user).
     monkeypatch.setattr(gm, "_preflight_apply", lambda plan, target, run_as_user: None)
+    # Identity inputs are pinned too, or the verdict depends on the HOST: the fake pids 4101/4102 may
+    # name a real root-owned process in /proc on a CI runner (a spurious "UNIX privilege boundary"
+    # blocker), and the user-scope unit path lives under the real $HOME. The whole fleet runs as this
+    # user with no unit files on disk unless a test writes some (it repoints _SYSTEM_UNIT_DIR itself).
+    from hermes_cli import gateway as gw
+    from hermes_cli import gateway_migrate_guards as guards
+    monkeypatch.setattr(guards, "_pid_uid", lambda pid: root.stat().st_uid if pid in state.pids.values() else None)
+    _unit_path = gw.get_systemd_unit_path
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: _unit_path(system=True) if system
+                        else tmp_path / "user-units" / f"{gw.get_service_name()}.service")
     state.root = root
     return state
 

@@ -115,11 +115,15 @@ profile's does not, and that `os.environ` is unchanged afterwards.
 ## Shared subagent snapshots
 
 `subagent.list({session_id})` returns `{subagents, delegations}` for the calling
-transport's live session. Live child records are pinned to the exact session
-record and transport. Child authority is resolved at RPC time against the owning session's
+transport's live session. The roster is read-only and follows the CONVERSATION: exact-owner
+records plus children whose durable lineage (`owner_agent_session_id` → compression tip, the
+same spine as in-process `delegate_task(action="list")`) is the session's agent, because a
+Desktop reconnect / resume remints the UI session id and compression rotates the key while the
+children keep running (#114909). Control (`steer` / `interrupt` / `tail`) stays pinned to the
+exact session record and transport. Child authority is resolved at RPC time against the owning session's
 LIVE transport slot, so every authenticated reattach path (prompt.submit, queued drain,
 resume, activate, viewer failover) carries it with no registry bookkeeping — never add a
-per-record transport sync at an attach site; foreign or retired generations remain inaccessible. `last_tool` is the last started tool, not an in-flight
+per-record transport sync at an attach site; foreign or retired generations remain uncontrollable. `last_tool` is the last started tool, not an in-flight
 indicator. Async completion units are not agents and lack exact generation authority;
 `delegations` remains an empty array for wire compatibility. No dispatch context,
 results, callbacks, or routing keys are sent. Clients hydrate from this snapshot

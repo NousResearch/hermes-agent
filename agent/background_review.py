@@ -151,9 +151,12 @@ _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
 # ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
 # (both compression gates deferred until the first response); compaction then bounds each
-# request, but nothing else caps the SUM across the tool loop. 2x the historical 300k foreground
-# trigger. Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
-_REVIEW_MAX_INPUT_TOKENS_DEFAULT = 600_000
+# request, but nothing else caps the SUM across the tool loop. The default leaves 25% of the
+# review model's context window available and never exceeds the historical cloud-scale ceiling.
+# Override via ``auxiliary.background_review.max_input_tokens``; <= 0 disables.
+_REVIEW_MAX_INPUT_TOKENS_CAP = 600_000
+_REVIEW_INPUT_CONTEXT_FRACTION = 0.75
+_REVIEW_MAX_INPUT_TOKENS_FALLBACK = 120_000
 
 
 def _task_block(cfg: Any) -> Dict[str, Any]:
@@ -175,13 +178,27 @@ def _background_review_task_config(task_cfg: Optional[Dict[str, Any]] = None) ->
         return {}
 
 
-def _review_input_token_budget(task_cfg: Optional[Dict[str, Any]] = None) -> Optional[int]:
-    """Aggregate input-token budget for one review fork (None = unlimited; <= 0 disables)."""
-    raw = _background_review_task_config(task_cfg).get("max_input_tokens", _REVIEW_MAX_INPUT_TOKENS_DEFAULT)
+def _context_derived_review_input_budget(review_agent: Any = None) -> int:
+    """Default budget: 75% of the review fork's resolved context window, capped at the historical
+    600k ceiling. The fork's ``context_compressor.context_length`` is already resolved by
+    ``AIAgent.__init__`` (config overrides, catalog, endpoint probe) — no second lookup here.
+    Unknown window → a conservative fixed fallback so unattended review work stays bounded."""
+    context_window = getattr(getattr(review_agent, "context_compressor", None), "context_length", None)
+    if not isinstance(context_window, int) or isinstance(context_window, bool) or context_window <= 0:
+        return _REVIEW_MAX_INPUT_TOKENS_FALLBACK
+    return min(_REVIEW_MAX_INPUT_TOKENS_CAP, max(1, int(context_window * _REVIEW_INPUT_CONTEXT_FRACTION)))
+
+
+def _review_input_token_budget(
+    task_cfg: Optional[Dict[str, Any]] = None, review_agent: Any = None,
+) -> Optional[int]:
+    """Aggregate input-token budget for one review fork (None = unlimited; <= 0 disables). Unset
+    or malformed ``max_input_tokens`` → derived from ``review_agent``'s context window."""
+    task = _background_review_task_config(task_cfg)
     try:
-        budget = int(raw)
-    except (TypeError, ValueError):
-        budget = _REVIEW_MAX_INPUT_TOKENS_DEFAULT
+        budget = int(task["max_input_tokens"])
+    except (KeyError, TypeError, ValueError):
+        return _context_derived_review_input_budget(review_agent)
     return budget if budget > 0 else None
 
 
@@ -239,8 +256,27 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             "args": list(rp.get("args") or []), "routed": True,
         }
     except Exception as e:
-        logger.debug("background-review aux routing failed (%s); using main model", e)
+        _warn_review_routing_fallback(agent, task_provider, task_model, e)
         return parent
+
+
+def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: str, error: Exception) -> None:
+    """The configured review route could not be resolved, so the fork runs on the main model. That
+    was a debug-level line nobody saw (#116055): the misrouted model never ran and nothing said so.
+    User-visible notice once per agent (same rail as the reasoning_effort notice); log every time."""
+    message = (
+        f"⚠ auxiliary.background_review.provider='{task_provider}' (model '{task_model}') could not be "
+        f"resolved: {str(error).splitlines()[0]} — background reviews run on the main model "
+        f"{agent.provider}/{agent.model} instead. Run 'hermes doctor' to check auxiliary routing."
+    )
+    logger.warning("%s", message)
+    if getattr(agent, "_warned_bg_review_routing", False):
+        return
+    agent._warned_bg_review_routing = True
+    emit = getattr(agent, "_emit_warning", None)
+    if callable(emit):
+        with suppress(Exception):
+            emit(message)
 
 
 def _parent_can_emit_tool_calls(agent: Any) -> bool:
@@ -297,15 +333,27 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 
 # Review prompts. AIAgent exposes them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) so
 # per-agent overrides work; the text lives here.
+# Shared by the memory-only and combined review prompts: the memory tool has two targets and the
+# fork must pick one per fact. Without this the reviewer wrote profile data into MEMORY.md and the
+# same lesson into both stores until both hit their size limits (#30220).
+_MEMORY_ROUTING_BLOCK = (
+    "TWO distinct stores — pick the right one for each fact:\n"
+    "  • USER.md (memory tool, target='user'): who the user is — persona, preferences, "
+    "communication and work style, personal details they revealed, and expectations about how you "
+    "should behave.\n"
+    "  • MEMORY.md (memory tool, target='memory'): facts about the ENVIRONMENT you operate in — "
+    "tool quirks, project conventions, config gotchas, paths and endpoints that matter.\n\n"
+    "One fact goes to ONE store, never both — writing it to both bloats both files until they hit "
+    "their size limits and crowds out the facts that matter; misrouting it puts it where the next "
+    "session won't look. If the tool schema lists only one "
+    "target, that store is the only one enabled — use it and skip the other.\n\n"
+)
+
 _MEMORY_REVIEW_PROMPT = (
     "Review the conversation above and consider saving to memory if appropriate.\n\n"
-    "Focus on:\n"
-    "1. Has the user revealed things about themselves — their persona, desires, preferences, or "
-    "personal details worth remembering?\n"
-    "2. Has the user expressed expectations about how you should behave, their work style, or ways "
-    "they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. If nothing is worth saving, just say "
-    "'Nothing to save.' and stop."
+    "Memory has " + _MEMORY_ROUTING_BLOCK +
+    "If something stands out, save it once, in the right store, using the memory tool with the "
+    "matching target. If nothing is worth saving, just say 'Nothing to save.' and stop."
 )
 
 # Shared shape contract for anything written into a skill. The failure mode this prevents is the
@@ -454,9 +502,7 @@ _SKILL_REVIEW_PROMPT = (
 
 _COMBINED_REVIEW_PROMPT = (
     "Review the conversation above and update two things:\n\n"
-    "**Memory**: who the user is. Did the user reveal persona, desires, preferences, personal "
-    "details, or expectations about how you should behave? Save facts about the user and durable "
-    "preferences with the memory tool.\n\n"
+    "**Memory**: " + _MEMORY_ROUTING_BLOCK +
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
     "outcome.\n\n"
@@ -494,9 +540,12 @@ _COMBINED_REVIEW_PROMPT = (
     "skill_view just returned. New skills and NEW supporting files need no prior read. On a "
     "read-before-write refusal: view the named target once, retry the write once, do not loop.\n\n"
     "User-preference embedding: when the user complains about how you handled a task, update the "
-    "skill that governs that task — memory alone isn't enough. Memory says 'who the user is and "
+    "skill that governs that task rather than memory. Memory says 'who the user is and "
     "what the current situation and state of your operations are'; skills say 'how to do this "
-    "class of task for this user'. Both should carry user-preference lessons when relevant.\n\n"
+    "class of task for this user'. A user-preference lesson lives in exactly ONE place: the skill "
+    "that governs the task when one exists, USER.md only for cross-cutting preferences no skill "
+    "owns — never both. Duplicating it is how a memory file ends up restating SKILL.md until both "
+    "hit their size limits.\n\n"
     "If you notice overlapping existing skills, mention it — the background curator handles "
     "consolidation.\n\n"
     "Protected skills (DO NOT edit these):\n"
@@ -979,7 +1028,7 @@ def build_cache_parity_fork(
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).
-    review_agent._review_input_token_budget = _review_input_token_budget(task_cfg)
+    review_agent._review_input_token_budget = _review_input_token_budget(task_cfg, review_agent)
     return review_agent, _rt, _routed
 
 

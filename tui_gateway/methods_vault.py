@@ -63,25 +63,23 @@ def _release_vault_transport_owner(transport) -> None:
         release_session(owner, namespace="settings")
 
 
-def method(name: str):
-    """``@method(name)`` with ``params.profile`` bound (home + secret scope) around the handler."""
-    def deco(fn):
-        def scoped(rid, params: dict) -> dict:
-            from agent.vault_backends.unlock import settings_session_scope
+method = _registry.method
+# server.py's ``@_profile_scoped`` (applied at install): the one scoping path every RPC uses, so the
+# launch profile (no ``params.profile``) keeps its secret scope bound once the process multiplexes
+# instead of its manager-token reads raising ``UnscopedSecretError``.
+_profile_scoped = _registry.profile_scoped
 
-            try:
-                home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-            except FileNotFoundError as e:
-                return _err(rid, 5095, str(e))
-            # Settings can manage external logins without a chat, but its unlock does not
-            # authorize any chat (even one using the same socket). Chats prompt separately.
-            with settings_session_scope(_vault_transport_owner()):
-                if home is None:
-                    return fn(rid, params)
-                with _session_profile_runtime_scope({"profile_home": str(home)}):
-                    return fn(rid, params)
-        return _registry.method(name)(scoped)
-    return deco
+
+def _settings_scoped(fn):
+    """Bind Settings unlock authority to the authenticated live transport."""
+    def scoped(rid, params: dict) -> dict:
+        from agent.vault_backends.unlock import settings_session_scope
+
+        # Settings can manage external logins without a chat, but its unlock does not
+        # authorize any chat (even one using the same socket). Chats prompt separately.
+        with settings_session_scope(_vault_transport_owner()):
+            return fn(rid, params)
+    return scoped
 
 # JSON-RPC error code 5095 = vault failure (validation + store errors).
 # Kept as a literal inside handler bodies: handlers are rebound onto
@@ -89,6 +87,8 @@ def method(name: str):
 
 
 @method("vault.list")
+@_profile_scoped
+@_settings_scoped
 def _(rid, params: dict) -> dict:
     """Metadata-only listing across every enabled backend (local + unlocked password managers).
     Each item carries ``backend``; locked managers contribute nothing (see vault.sources)."""
@@ -106,6 +106,8 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.sources")
+@_profile_scoped
+@_settings_scoped
 def _(rid, params: dict) -> dict:
     """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
     from agent.vault_backends import enabled_backends
@@ -123,18 +125,20 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.source.set")
+@_profile_scoped
+@_settings_scoped
 def _(rid, params: dict) -> dict:
     """Enable/disable an external manager: writes ``vault.<name>.enabled`` and locks it when disabling."""
     from agent.vault_backends.base import external_backend_classes
     from agent.vault_backends.unlock import lock
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import _ensure_dict, load_config, save_config
 
     name = str(params.get("name") or "")
     if name not in {cls.name for cls in external_backend_classes()}:
         return _err(rid, 5095, f"unknown vault source: {name}")
     enabled = bool(params.get("enabled"))
     cfg = load_config()
-    section = cfg.setdefault("vault", {}).setdefault(name, {})
+    section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
     if enabled:
         section.pop("enabled", None)  # detected managers are on by default; this removes the opt-out
     else:
@@ -146,6 +150,8 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.unlock")
+@_profile_scoped
+@_settings_scoped
 def _(rid, params: dict) -> dict:
     """Unlock a manager with the master password typed in the Settings dialog (consumed by the CLI on stdin)."""
     from agent.vault_backends import enabled_backends
@@ -167,6 +173,8 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.lock")
+@_profile_scoped
+@_settings_scoped
 def _(rid, params: dict) -> dict:
     """Forget a manager's session token (or every one when ``name`` is omitted)."""
     from agent.vault_backends.unlock import lock
@@ -177,6 +185,8 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.add")
+@_profile_scoped
+@_settings_scoped
 def _(rid, params: dict) -> dict:
     """Add a vault item. ``secret`` values go straight into the encrypted store.
 
@@ -209,6 +219,8 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.remove")
+@_profile_scoped
+@_settings_scoped
 def _(rid, params: dict) -> dict:
     """Remove a vault item by id. Result: ``{removed: bool}``."""
     try:

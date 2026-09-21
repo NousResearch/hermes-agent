@@ -12,6 +12,7 @@ import pytest
 
 from tools.file_tools import (
     PATCH_SCHEMA,
+    read_file_tool,
 )
 
 
@@ -732,7 +733,7 @@ class TestDedupInvalidationTaskResolution:
 
         task_id = "acp-dedup"
         monkeypatch.setattr(tt, "_task_env_overrides", {task_id: {"cwd": str(workspace)}})
-        (workspace / "data.txt").write_text("v1\n")
+        (workspace / "data.txt").write_text("v1\n", encoding="utf-8")
 
         # The task resolves the relative path into the workspace; the default
         # task (the old buggy resolution) would resolve into proc.
@@ -976,7 +977,7 @@ class TestNotFoundCache:
         assert _check_not_found_cache("read", str(target), tid) is not None
 
         # Out-of-band creation: plain filesystem write, no tool hook fires.
-        target.write_text("real content\n")
+        target.write_text("real content\n", encoding="utf-8")
 
         # The cached miss must NOT be served once the path exists…
         assert _check_not_found_cache("read", str(target), tid) is None, (
@@ -1000,7 +1001,7 @@ class TestNotFoundCache:
         assert _check_not_found_cache("search", str(missing_dir), tid) is not None
 
         missing_dir.mkdir()
-        (missing_dir / "x.txt").write_text("hi\n")
+        (missing_dir / "x.txt").write_text("hi\n", encoding="utf-8")
 
         assert _check_not_found_cache("search", str(missing_dir), tid) is None, (
             "stale 'Path not found' served after the directory was created"
@@ -1137,3 +1138,16 @@ class TestSecretFileReadRedaction:
 
         assert self.SYNTH not in raw
         assert "«redacted" in raw
+
+
+class TestConflictMarkerFlag:
+    def test_read_flags_balanced_conflict_blocks_only(self, tmp_path):
+        conflicted = tmp_path / "c.py"
+        conflicted.write_text("x=1\n<<<<<<< HEAD\ny=2\n=======\ny=3\n>>>>>>> feature\nz=4\n", encoding="utf-8")
+        result = json.loads(read_file_tool(str(conflicted)))
+        assert result["conflict_blocks"] == 1
+        assert "merge-conflict" in result["_hint"]
+
+        prose = tmp_path / "p.py"
+        prose.write_text("print('<<<<<<< not a conflict')\n", encoding="utf-8")
+        assert "conflict_blocks" not in json.loads(read_file_tool(str(prose)))

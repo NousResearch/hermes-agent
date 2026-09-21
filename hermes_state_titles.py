@@ -176,6 +176,15 @@ class SessionTitlesMixin:
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
         exact = self.get_session_by_title(title)
+        # Exception to the "#N continuation" preference: the canonical Bot Chat's identity
+        # IS its exact title (Bot Mode re-resolves it by name on every open, no id pointer).
+        # A "<title> #N" sibling — a Desktop branch or a client-minted numbered row — is NOT
+        # a Bot Mode session: it is visible, unmanaged, and the message_agent gate is off in
+        # it. Every DM transport (``hermes -p <bot> chat --in ~ -c "Bot Chat"``: message_agent,
+        # bot_relay, cron delivery) resolves through here, so letting the numbered row win
+        # silently routes teammates' messages into a chat whose bot cannot answer back.
+        if exact is not None and title == self.CANONICAL_BOT_CHAT_TITLE:
+            return exact["id"]
         # Escape LIKE wildcards so "%"/"_" in titles cannot false-match.
         numbered = self._read_all(
             "SELECT id, title, started_at FROM sessions "

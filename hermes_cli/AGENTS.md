@@ -6,9 +6,27 @@ Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide
 
 `cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins
 `hermes_cli/cli_commands_mixin.py`, `cli_stream_mixin.py`, `cli_status_bar_mixin.py`,
-`cli_billing_mixin.py`, `cli_tui_mixin.py`, ... **Rich** renders banner/panels; **prompt_toolkit**
+`cli_billing_mixin.py`, `cli_tui_mixin.py` (widgets, keybindings, panels), `cli_tui_runtime_mixin.py`
+(run-loop phases: input dispatch, startup, signals, shutdown), `cli_init_mixin.py` (the `__init__`
+phases), ... Module-level helpers live in topical siblings that `cli.py` re-exports:
+`cli_config_load.py` (defaults + YAML merge, env mirroring), `cli_render.py` (ANSI/skin colours,
+light mode, markdown, `_cprint`, panel wrap), `cli_terminal_input.py` (file drops, paste/Enter-key
+sequences, CPR guards), `cli_shutdown.py` (exit watchdog, cleanup steps, one-shot finalize),
+`cli_single_query.py` (`-q` runner, exit codes, kanban loops), `cli_auto_maintenance.py` (state-db/checkpoint maintenance).
+Moved bodies late-bind cli-level names via `from cli import ...` at call time, so patch seams on the
+`cli` facade still intercept them; mutable module state (`_cleanup_done`, `_OUTPUT_HISTORY`,
+`_LIGHT_MODE_CACHE`, ...) and every `global`-writing function stay in `cli.py`. **Rich** renders banner/panels; **prompt_toolkit**
 handles input + autocomplete; `KawaiiSpinner` (`agent/display.py`) animates API calls and prints
 the `┊` activity feed. `load_cli_config()` in `cli.py` merges CLI defaults + user YAML.
+
+`hermes_cli/gateway.py` is the `hermes gateway` facade (process discovery, systemd backend, command
+dispatch); topical siblings re-exported by the facade: `gateway_service_unit.py` (systemd unit
+generation/refresh), `gateway_launchd.py` (macOS LaunchAgent backend), `gateway_setup_wizard.py`
+(`hermes gateway setup`: `_PLATFORMS` registry, status table, per-platform prompts, service offer),
+`gateway_windows*.py`, `gateway_supervised_restart.py`, `gateway_migrate*.py`, `gateway_multiplex_*.py`,
+`gateway_enroll.py`, `gateway_command_errors.py`. Sibling bodies read facade names through `_gw()`
+(late binding on `hermes_cli.gateway`), so monkeypatch on the facade; mutable state such as
+`_resolved_launchd_domain` stays a facade global.
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through
 `HermesCLI._SLASH_DISPATCH` (`canonical -> (method name, pass_arg)`), falling back to a
 `_handle_<name>_command` method by naming convention. **There is no `elif` ladder — do not add one.**
@@ -115,8 +133,17 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
 - **Apply**: git pull, or the Windows ZIP fallback — which fires ONLY when git itself failed
   (`_should_zip_fallback_on_update_error`, argv-classified; a dependency-install failure must never
   trigger a tree-clobbering re-download), REFUSES a dirty working tree (`-uall` + a pre-swap TOCTOU
-  re-check), and grafts the live `apps/desktop/release/` into the staged swap (the GitHub source
-  ZIP has no built desktop app; without the graft the swap deletes it).
+  re-check — but classifies a `!!` line by whether the swap would destroy it: an ignored path under a
+  root entry the ZIP does not ship (`.bytecode-fingerprint`, `.hermes-bootstrap-complete`,
+  `hermes_agent.egg-info/`; tracked root entries stand in for the ZIP set before the download, the
+  re-check gets the real one), a nested `__pycache__`/`node_modules`, or a `_ZIP_PRESERVED_NESTED`
+  output is admitted; other ignored files under shipped dirs still block), and grafts the live nested
+  build outputs (`_ZIP_PRESERVED_NESTED`: `apps/desktop/{release,dist,node_modules,build}`,
+  `hermes_cli/web_dist`, `ui-tui/{dist,node_modules,packages/hermes-ink/dist}`, `web/node_modules`,
+  `scripts/whatsapp-bridge/node_modules`) into the staged swap by hardlink (the GitHub source ZIP has
+  none of them; without the graft the swap deletes them). Post-swap, the Desktop
+  rebuild decision also trusts the build stamp under HERMES_HOME, so an install that already lost
+  its artifacts in an earlier update is rebuilt instead of "forgotten" (#90495).
 - **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE (every `hermes-gateway*` unit /
   `ai.hermes.gateway*` LaunchAgent), drain-first (SIGUSR1), with per-unit/per-label failure
   isolation. Restarting only the invoking profile's service leaves siblings on stale `sys.modules`
@@ -207,10 +234,13 @@ supervisor (control-socket `identify` answering anything but `manual`, OR the ar
 for a fresh supervised PID, never stop + foreground `run_gateway` (that stamps the CLI's PID and wedges
 every KeepAlive respawn, #110637).
 
-Service installs are a matrix, not a unit file: `gateway.py::generate_systemd_unit(system=,
-run_as_user=)` (user unit AND `--system` unit with `User=`; an unresolvable `User=` is a blocker,
-never a dir-owner fallback), `generate_launchd_plist` (`gui/<uid>` then `user/<uid>` domains, never a
-`~/Library/LaunchAgents` glob), Windows Scheduled Task and the Desktop-spawned backend all carry the
+Service installs are a matrix, not a unit file: `gateway_service_unit.py::generate_systemd_unit(system=,
+run_as_user=)` (systemd unit generation / `systemd_unit_is_current` / `refresh_systemd_unit_if_needed` live in that
+sibling and read facade helpers late-bound through `hermes_cli.gateway`, so patch them on the facade; user unit AND `--system` unit with `User=`; an unresolvable `User=` is a blocker,
+never a dir-owner fallback), `gateway_launchd.py::generate_launchd_plist` (`gui/<uid>` then `user/<uid>` domains, never a
+`~/Library/LaunchAgents` glob; the whole launchd backend — plist refresh, `launchctl` bootstrap/kickstart,
+`launchd_start/stop/restart/status`, detached-process degrade — lives in that sibling, with the domain cache
+`_resolved_launchd_domain` staying a facade global), Windows Scheduled Task and the Desktop-spawned backend all carry the
 profile's `HERMES_HOME` (and `HOME` for the service user) explicitly — a supervisor starts with an
 empty environment, so the env override that makes `-p` work interactively does not exist there. A
 change to install/restart/status regenerates and diffs every kind; both user and system units are

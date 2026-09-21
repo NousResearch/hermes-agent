@@ -219,7 +219,7 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
   assert.equal(handoff, null)
 })
 
-test('wrapHandoffForDetachedConsole keeps data out of cmd syntax and rejects unsupported parameters', () => {
+test('wrapHandoffForDetachedConsole uses a hidden wrapper while keeping data out of cmd syntax', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
   const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
@@ -232,6 +232,7 @@ test('wrapHandoffForDetachedConsole keeps data out of cmd syntax and rejects uns
   const wrapped = wrapHandoffForDetachedConsole(handoff, ['-InstallRoot', root, '-Branch', 'main'])
 
   assert.equal(wrapped.command, 'cmd.exe')
+  assert.equal(wrapped.detached, false)
   assert.deepEqual(wrapped.args.slice(0, -1), [
     '/d',
     '/v:off',
@@ -239,7 +240,7 @@ test('wrapHandoffForDetachedConsole keeps data out of cmd syntax and rejects uns
     '/c',
     'start',
     '',
-    '/min',
+    '/b',
     'powershell',
     '-NoProfile',
     '-ExecutionPolicy',

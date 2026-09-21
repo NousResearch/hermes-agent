@@ -100,15 +100,20 @@ def _kill_port_process(port: int) -> None:
                     os.kill(pid, signal.SIGTERM)
 
 
-def _bridge_pid_is_ours(pid: int, session_path: Path, expected_start) -> bool:
-    """``pid`` alive AND still our bridge: kernel start time (definitive), else legacy ``node`` + session path in cmdline."""
+def _bridge_pid_is_ours(pid: int, expected_start) -> bool:
+    """``pid`` alive AND still our bridge: kernel start time (definitive); fail closed without it.
+
+    Legacy pidfiles record only the PID. The old fallback accepted a ``node`` + session-path cmdline
+    substring as kill evidence — but a log tail, editor, or grep that merely *mentions* the session
+    path matches that same substring (#116883), so a legacy pidfile could signal a stranger. Without
+    a start-time fingerprint the caller must reap via the bridge-port scan instead.
+    """
     from gateway import status
     if not status._pid_exists(pid):
         return False
-    if expected_start is not None:
-        return status.get_process_start_time(pid) == expected_start
-    cmdline = status._read_process_cmdline(pid)
-    return bool(cmdline) and ("node" in cmdline) and (str(session_path) in cmdline)
+    if expected_start is None:
+        return False
+    return status.get_process_start_time(pid) == expected_start
 
 
 def _unlink_quietly(path: Path) -> None:
@@ -129,13 +134,15 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     except (ValueError, OSError, TypeError, IndexError):
         _unlink_quietly(pid_file)
         return
-    if _bridge_pid_is_ours(pid, session_path, recorded_start):
+    if _bridge_pid_is_ours(pid, recorded_start):
         with suppress(OSError):  # ProcessLookupError / PermissionError included
             os.kill(pid, signal.SIGTERM)
             logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
     elif _pid_exists(pid):
-        logger.warning("[whatsapp] Not killing pidfile PID %d: it is no longer the bridge (recycled onto an unrelated process); "
-                       "skipping to avoid killing a stranger.", pid)
+        reason = ("legacy pidfile lacks a start-time fingerprint and cmdline substring evidence can name a stranger"
+                  if recorded_start is None else "it is no longer the bridge (recycled onto an unrelated process)")
+        logger.warning("[whatsapp] Not killing pidfile PID %d: %s; "
+                       "skipping to avoid killing a stranger.", pid, reason)
     _unlink_quietly(pid_file)
 
 
@@ -174,7 +181,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
-from gateway.whatsapp_identity import to_whatsapp_jid
+from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
@@ -225,7 +232,7 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_FROM", "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY",
     "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_REQUIRE_MENTION",
     "WHATSAPP_MENTION_PATTERNS", "WHATSAPP_FREE_RESPONSE_CHATS", "WHATSAPP_DEBUG",
-    "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_REPLY_PREFIX", "WHATSAPP_MAX_MESSAGE_LENGTH",
+    "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH",
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
@@ -275,7 +282,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(_extra_or_secret(extra, "group_policy", "WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        # Same precedence as the DM list. Until #72529 the env carrier only reached the Node bridge, so
+        # env-only installs gated groups on an empty allowlist.
+        _, raw_groups = self._select_allowlist(
+            extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_GROUP_ALLOWED_USERS"), _wenv)
+        self._group_allow_from = self._coerce_allow_list(raw_groups)
         rr = extra.get("send_read_receipts", False)
         self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in {"1", "true", "yes", "on"}
         self._mention_patterns = self._compile_mention_patterns()
@@ -284,17 +295,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Set by disconnect() before SIGTERMing so _check_managed_bridge_exit() can tell an intentional exit (-15/-2/0) from a crash.
         self._shutting_down = False
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
-        self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 5.0)
-        self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 10.0)
-
-    def _coerce_float_extra(self, key: str, default: float) -> float:
-        """Read a float from ``config.extra``; NaN/Inf/negative/unparseable → ``default`` (fed to asyncio.sleep)."""
-        import math
-        try:  # float(None) → TypeError → default
-            parsed = float(self.config.extra.get(key) if getattr(self.config, "extra", None) else None)
-        except (TypeError, ValueError):
-            return float(default)
-        return parsed if math.isfinite(parsed) and parsed >= 0 else float(default)
+        # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
+        self._configure_text_batch_delays()
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
@@ -380,8 +382,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # that copy carries the DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is
         # re-resolved from this profile (dropped on a scoped miss), never inherited from the launch env.
         bridge_env = with_hermes_node_path()
-        if self._reply_prefix is not None:
+        reply_prefix = _wenv("WHATSAPP_REPLY_PREFIX")
+        if reply_prefix:
+            bridge_env["WHATSAPP_REPLY_PREFIX"] = reply_prefix
+        elif self._reply_prefix is not None:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+        else:
+            bridge_env.pop("WHATSAPP_REPLY_PREFIX", None)
         bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = "true" if self._send_read_receipts else "false"
         for _key, _v in [("WHATSAPP_MODE", _wenv("WHATSAPP_MODE", "self-chat"))] + [(k, _wenv(k)) for k in _BRIDGE_PASSTHROUGH_ENV]:
             if _v:
@@ -392,11 +399,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML
         # ``dm_policy: pairing`` runs under the default profile's allowlist and drops valid pairing DMs.
         bridge_env["WHATSAPP_DM_POLICY"] = self._dm_policy
-        allowed = ",".join(sorted(self._allow_from))
-        if allowed:
-            bridge_env["WHATSAPP_ALLOWED_USERS"] = allowed
-        else:
-            bridge_env.pop("WHATSAPP_ALLOWED_USERS", None)
+        bridge_env["WHATSAPP_GROUP_POLICY"] = self._group_policy
+        for env_key, ids in (("WHATSAPP_ALLOWED_USERS", self._allow_from), ("WHATSAPP_GROUP_ALLOWED_USERS", self._group_allow_from)):
+            if ids:
+                bridge_env[env_key] = ",".join(sorted(ids))
+            else:
+                bridge_env.pop(env_key, None)
         # Without these the bridge hardcodes ~/.hermes/{image,audio,document}_cache (wrong under HERMES_HOME/profiles/cache layout).
         img_dir, audio_dir, _video_dir, doc_dir = _cache_dirs()
         bridge_env.update(
@@ -780,9 +788,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 accepted.append((url, "unknown"))
         return [u for u, _ in accepted], [m for _, m in accepted]
 
-    def _inject_document_text(self, cached_urls: list, body: str) -> str:
-        """Prepend text-readable document contents (≤100KB) so the agent reads them inline."""
-        for doc_path in cached_urls:
+    def _inject_document_text(self, cached_urls: list, body: str) -> tuple[str, list[bool]]:
+        """Prepend text-readable document contents (≤100KB) so the agent reads them inline; returns
+        ``(body, media_text_inlined)`` with one flag per ``cached_urls`` entry (True = injected)."""
+        inlined = [False] * len(cached_urls)
+        for i, doc_path in enumerate(cached_urls):
             p = Path(doc_path)
             if p.suffix.lower() not in _TEXT_INJECT_EXTS:
                 continue
@@ -795,10 +805,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 parts = p.name.split("_", 2)  # strip the doc_<hex>_ prefix for display
                 injection = f"[Content of {parts[2] if len(parts) >= 3 else p.name}]:\n{content}"
                 body = f"{injection}\n\n{body}" if body else injection
+                inlined[i] = True
                 print(f"[{self.name}] Injected text content from: {doc_path}", flush=True)
             except Exception as e:
                 print(f"[{self.name}] Failed to read document text: {e}", flush=True)
-        return body
+        return body, inlined
 
     def _quoted_media(self, data: Dict[str, Any], raw_reply_id: Any) -> list[tuple[str, str]]:
         """``(path, mime)`` for the quoted message's attachment, folded into this event's own media so the
@@ -843,8 +854,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 for path, mime in self._quoted_media(data, raw_reply_id):
                     cached_urls.append(path)
                     media_types.append(mime)
+            media_text_inlined: list[bool] = []
             if msg_type == MessageType.DOCUMENT and cached_urls:
-                body = self._inject_document_text(cached_urls, body)
+                body, media_text_inlined = self._inject_document_text(cached_urls, body)
             native_metadata = data.get("nativeMetadata")
             metadata: Dict[str, Any] = {k: v for k, v in (
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
@@ -858,7 +870,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
             return MessageEvent(
                 text=body, message_type=msg_type, source=source, raw_message=data, message_id=data.get("messageId"),
-                media_urls=cached_urls, media_types=media_types, metadata=metadata,
+                media_urls=cached_urls, media_types=media_types, media_text_inlined=media_text_inlined, metadata=metadata,
                 reply_to_message_id=str(raw_reply_id) if raw_reply_id is not None else None,
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
@@ -883,7 +895,13 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
     return "document" if force_document else "audio" if is_voice else _WA_EXT_MEDIA_TYPE.get(os.path.splitext(file_path)[1].lower(), "document")
 
 
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False, caption=None):
+def _normalize_outbound_mentions(mentions: list[str] | None) -> list[str]:
+    """Valid participant JIDs, deduplicated, order preserved."""
+    return list(dict.fromkeys(jid for m in mentions or () if (jid := normalize_whatsapp_mention_jid(m))))
+
+
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
+                           caption=None, mentions=None):
     """Out-of-process delivery via the bridge HTTP API (standalone_sender_fn: cron apart from the gateway); ``caption`` rides on the media bubble."""
     try:
         import aiohttp
@@ -895,8 +913,28 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         media = media_files or []
         # A caption only applies to a single media file — never repeat it across a multi-file send.
         media_caption = caption if (caption and len(media) == 1) else None
+        pending_mentions = _normalize_outbound_mentions(mentions)
+
+        def _mention_first_payload(payload):
+            nonlocal pending_mentions
+            if pending_mentions:
+                payload["mentions"] = pending_mentions
+                pending_mentions = []
+            return payload
+
         last_message_id = None
         async with aiohttp.ClientSession() as session:
+            if pending_mentions:
+                async with session.get(
+                    f"http://localhost:{bridge_port}/health",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    health = await resp.json() if resp.status == 200 else {}
+                if not (health.get("capabilities") or {}).get("outboundMentions"):
+                    return {"error": (
+                        "WhatsApp bridge does not support native mentions; "
+                        "restart it from the same Hermes version.")}
+
             async def _post(path, payload, total, error_label=None):
                 """``(messageId, None)`` on 200, else ``(None, error_dict)`` (body read only when labelled)."""
                 url = f"http://localhost:{bridge_port}/{path}"
@@ -906,7 +944,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                     return None, {} if error_label is None else send_error(f"WhatsApp {error_label} error ({resp.status}): {await resp.text()}")
             # 1) Text first (skipped when media-only or when the text rides as the caption).
             if (message or "").strip() and not media_caption:
-                last_message_id, err = await _post("send", {"chatId": normalized_chat_id, "message": message}, 30, "bridge")
+                payload = _mention_first_payload({"chatId": normalized_chat_id, "message": message})
+                last_message_id, err = await _post("send", payload, 30, "bridge")
                 if err:
                     return err
             # 2) Each media file as a native attachment (mediaType picks the WhatsApp kind).
@@ -915,13 +954,15 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                     # In caption mode the words would vanish with the missing file — deliver the caption as a plain message.
                     if media_caption:
                         try:
-                            await _post("send", {"chatId": normalized_chat_id, "message": media_caption}, 30)
+                            payload = _mention_first_payload({"chatId": normalized_chat_id, "message": media_caption})
+                            await _post("send", payload, 30)
                         except Exception:
                             logger.warning("WhatsApp caption-fallback send failed for missing media")
                     return send_error(f"WhatsApp media file not found: {media_path}")
                 media_type = _bridge_media_type(media_path, is_voice, force_document)
                 payload: Dict[str, Any] = {"chatId": normalized_chat_id, "filePath": media_path, "mediaType": media_type}
                 payload.update({k: v for k, v in (("fileName", os.path.basename(media_path) if media_type == "document" else None), ("caption", media_caption)) if v})
+                payload = _mention_first_payload(payload)
                 mid, err = await _post("send-media", payload, 120, "media")
                 if err:
                     return err

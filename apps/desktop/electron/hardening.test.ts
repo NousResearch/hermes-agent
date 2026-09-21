@@ -14,10 +14,12 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
+  homeRelativeAttachmentCandidates,
   readFileDataUrlForIpc,
   resolveDirectoryForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
+  resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   SAFE_STORAGE_ENCODING,
@@ -154,19 +156,22 @@ test('encryptDesktopSecret stores safeStorage base64 payload', () => {
 
 // ─── Owner-only credential files (connection.json) ─────────────────────────
 
-test.runIf(process.platform !== 'win32')('writeSecretFileAtomic creates the file owner-only, not at the 0644 umask default', () => {
-  withTempDir(dir => {
-    const target = path.join(dir, 'connection.json')
-    const payload = JSON.stringify({ remote: { token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' } } })
+test.runIf(process.platform !== 'win32')(
+  'writeSecretFileAtomic creates the file owner-only, not at the 0644 umask default',
+  () => {
+    withTempDir(dir => {
+      const target = path.join(dir, 'connection.json')
+      const payload = JSON.stringify({ remote: { token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' } } })
 
-    writeSecretFileAtomic(target, payload)
+      writeSecretFileAtomic(target, payload)
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
-    assert.equal(modeOf(target) & 0o077, 0, 'no group/other bits')
-    assert.equal(fs.readFileSync(target, 'utf8'), payload, 'content round-trips')
-    assertNoSecretDebris(dir, 'connection.json', 'BLOB')
-  })
-})
+      assert.equal(modeOf(target), SECRET_FILE_MODE)
+      assert.equal(modeOf(target) & 0o077, 0, 'no group/other bits')
+      assert.equal(fs.readFileSync(target, 'utf8'), payload, 'content round-trips')
+      assertNoSecretDebris(dir, 'connection.json', 'BLOB')
+    })
+  }
+)
 
 test('encryptDesktopSecret allows plain-text opt-in when encryption is unavailable', () => {
   const secret = encryptDesktopSecret(
@@ -381,21 +386,84 @@ test('resolvePersistedRemoteToken keeps the existing token when no new token is 
   assert.equal(called, false, 'an empty incoming token must not re-encrypt anything')
 })
 
-test.runIf(process.platform !== 'win32')('writeSecretFileAtomic does not inherit loose bits from a stale temp file', () => {
-  // renameSync keeps the TEMP file's permissions, and writeFileSync's `mode`
-  // is ignored when the path already exists — so a temp left by a crashed
-  // earlier write would otherwise hand 0644 straight to the target.
-  withTempDir(dir => {
-    const target = path.join(dir, 'connection.json')
-    fs.writeFileSync(`${target}.tmp`, 'stale', { mode: 0o666 })
-    assert.notEqual(modeOf(`${target}.tmp`), SECRET_FILE_MODE)
-
-    writeSecretFileAtomic(target, 'fresh')
-
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
-    assert.equal(fs.readFileSync(target, 'utf8'), 'fresh')
-  })
+test('resolveRemoteTokenPlainText stays silent in the keychain-opt-out default', () => {
+  // #117269: with encryption opted out (the default), plain text is the CHOSEN
+  // mode and probeSecureTokenStorage reports availability on purpose — every
+  // saved token is plain here, so warning off the encoding alone would fire for
+  // every default user.
+  assert.equal(
+    resolveRemoteTokenPlainText({
+      envOverride: false,
+      token: { encoding: 'plain', value: 'token' },
+      secureTokenStorage: true
+    }),
+    false
+  )
 })
+
+test('resolveRemoteTokenPlainText warns only when the token is plain and the machine cannot secure it', () => {
+  // The genuine degraded state the banner is for: the keyring has gone away
+  // (secureTokenStorage false) while a plain token sits on disk.
+  assert.equal(
+    resolveRemoteTokenPlainText({
+      envOverride: false,
+      token: { encoding: 'plain', value: 'token' },
+      secureTokenStorage: false
+    }),
+    true
+  )
+
+  // An encrypted token never warns, whatever availability reports.
+  for (const secureTokenStorage of [true, false]) {
+    assert.equal(
+      resolveRemoteTokenPlainText({
+        envOverride: false,
+        token: { encoding: 'safeStorage', value: 'blob' },
+        secureTokenStorage
+      }),
+      false
+    )
+  }
+
+  // A missing token, or an absent availability signal, never manufactures a
+  // warning — the strict `=== false` match.
+  assert.equal(resolveRemoteTokenPlainText({ envOverride: false, token: undefined, secureTokenStorage: false }), false)
+  assert.equal(
+    resolveRemoteTokenPlainText({ envOverride: false, token: { encoding: 'plain' }, secureTokenStorage: undefined }),
+    false
+  )
+  assert.equal(resolveRemoteTokenPlainText({}), false)
+
+  // The env override supplies its token from the environment, never the saved
+  // block, so a plain stored blob must not warn while the override is active.
+  assert.equal(
+    resolveRemoteTokenPlainText({
+      envOverride: true,
+      token: { encoding: 'plain', value: 'token' },
+      secureTokenStorage: false
+    }),
+    false
+  )
+})
+
+test.runIf(process.platform !== 'win32')(
+  'writeSecretFileAtomic does not inherit loose bits from a stale temp file',
+  () => {
+    // renameSync keeps the TEMP file's permissions, and writeFileSync's `mode`
+    // is ignored when the path already exists — so a temp left by a crashed
+    // earlier write would otherwise hand 0644 straight to the target.
+    withTempDir(dir => {
+      const target = path.join(dir, 'connection.json')
+      fs.writeFileSync(`${target}.tmp`, 'stale', { mode: 0o666 })
+      assert.notEqual(modeOf(`${target}.tmp`), SECRET_FILE_MODE)
+
+      writeSecretFileAtomic(target, 'fresh')
+
+      assert.equal(modeOf(target), SECRET_FILE_MODE)
+      assert.equal(fs.readFileSync(target, 'utf8'), 'fresh')
+    })
+  }
+)
 
 /**
  * Owner-only is carried by two independent mechanisms — the create-time `mode`
@@ -434,20 +502,23 @@ test.runIf(process.platform !== 'win32')('the written file is owner-only even wh
   })
 })
 
-test.runIf(process.platform !== 'win32')('the written file is owner-only even when a stale temp cannot be removed', () => {
-  // The unlink is best-effort; if the stale temp survives, writeFileSync's
-  // `mode` is ignored on an existing path and only the chmod before the rename
-  // can still fix the bits.
-  withTempDir(dir => {
-    const target = path.join(dir, 'connection.json')
-    fs.writeFileSync(`${target}.tmp`, 'stale', { mode: 0o666 })
+test.runIf(process.platform !== 'win32')(
+  'the written file is owner-only even when a stale temp cannot be removed',
+  () => {
+    // The unlink is best-effort; if the stale temp survives, writeFileSync's
+    // `mode` is ignored on an existing path and only the chmod before the rename
+    // can still fix the bits.
+    withTempDir(dir => {
+      const target = path.join(dir, 'connection.json')
+      fs.writeFileSync(`${target}.tmp`, 'stale', { mode: 0o666 })
 
-    writeSecretFileAtomic(target, 'tok', { fs: fsWith({ rmSync: () => void 0 }) })
+      writeSecretFileAtomic(target, 'tok', { fs: fsWith({ rmSync: () => void 0 }) })
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE, 'tightened before the rename handed the bits over')
-    assert.equal(fs.readFileSync(target, 'utf8'), 'tok')
-  })
-})
+      assert.equal(modeOf(target), SECRET_FILE_MODE, 'tightened before the rename handed the bits over')
+      assert.equal(fs.readFileSync(target, 'utf8'), 'tok')
+    })
+  }
+)
 
 test('writeSecretFileAtomic cannot be redirected through a symlink planted at the temp path', context => {
   // A stale temp path is attacker-controllable in a shared temp/userData dir.
@@ -482,126 +553,141 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
   })
 })
 
-test.runIf(process.platform !== 'win32')('tightenSecretFileMode tightens a pre-existing world-readable config in place', () => {
-  // The upgrade path: a connection.json written by an older build sits at 0644
-  // with a real (encrypted) token in it. Tightening must change the mode and
-  // nothing else — the token has to stay readable or the user loses their
-  // configured gateway.
-  withTempDir(dir => {
-    const target = path.join(dir, 'connection.json')
+test.runIf(process.platform !== 'win32')(
+  'tightenSecretFileMode tightens a pre-existing world-readable config in place',
+  () => {
+    // The upgrade path: a connection.json written by an older build sits at 0644
+    // with a real (encrypted) token in it. Tightening must change the mode and
+    // nothing else — the token has to stay readable or the user loses their
+    // configured gateway.
+    withTempDir(dir => {
+      const target = path.join(dir, 'connection.json')
 
-    const legacy = JSON.stringify({
-      mode: 'remote',
-      remote: {
-        url: 'https://gw.example.com',
-        authMode: 'token',
-        token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' }
-      }
+      const legacy = JSON.stringify({
+        mode: 'remote',
+        remote: {
+          url: 'https://gw.example.com',
+          authMode: 'token',
+          token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' }
+        }
+      })
+
+      fs.writeFileSync(target, legacy, { mode: 0o644 })
+      assert.equal(modeOf(target), 0o644)
+
+      assert.equal(tightenSecretFileMode(target), true)
+
+      assert.equal(modeOf(target), SECRET_FILE_MODE)
+      assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), JSON.parse(legacy), 'contents untouched')
     })
+  }
+)
 
-    fs.writeFileSync(target, legacy, { mode: 0o644 })
-    assert.equal(modeOf(target), 0o644)
+test.runIf(process.platform !== 'win32')(
+  'tightenSecretFileMode leaves a non-safeStorage token payload readable',
+  () => {
+    // A hand-edited config (or one from a pre-release build) can hold a
+    // non-safeStorage token payload, which decryptDesktopSecret still reads
+    // verbatim on purpose. Tightening the mode must not disturb that fallback —
+    // it only narrows who can open the file.
+    withTempDir(dir => {
+      const target = path.join(dir, 'connection.json')
 
-    assert.equal(tightenSecretFileMode(target), true)
+      const legacyPlain = JSON.stringify({
+        mode: 'remote',
+        remote: { url: 'https://gw.example.com', authMode: 'token', token: { encoding: 'plain', value: 'tok-live-42' } }
+      })
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
-    assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), JSON.parse(legacy), 'contents untouched')
-  })
-})
+      fs.writeFileSync(target, legacyPlain, { mode: 0o644 })
 
-test.runIf(process.platform !== 'win32')('tightenSecretFileMode leaves a non-safeStorage token payload readable', () => {
-  // A hand-edited config (or one from a pre-release build) can hold a
-  // non-safeStorage token payload, which decryptDesktopSecret still reads
-  // verbatim on purpose. Tightening the mode must not disturb that fallback —
-  // it only narrows who can open the file.
-  withTempDir(dir => {
-    const target = path.join(dir, 'connection.json')
+      tightenSecretFileMode(target)
 
-    const legacyPlain = JSON.stringify({
-      mode: 'remote',
-      remote: { url: 'https://gw.example.com', authMode: 'token', token: { encoding: 'plain', value: 'tok-live-42' } }
+      assert.equal(modeOf(target), SECRET_FILE_MODE)
+      assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).remote.token.value, 'tok-live-42')
     })
+  }
+)
 
-    fs.writeFileSync(target, legacyPlain, { mode: 0o644 })
+test.runIf(process.platform !== 'win32')(
+  'tightenSecretFileMode is idempotent and never throws on an unusable path',
+  () => {
+    withTempDir(dir => {
+      const target = path.join(dir, 'connection.json')
+      writeSecretFileAtomic(target, '{}')
 
-    tightenSecretFileMode(target)
+      assert.equal(tightenSecretFileMode(target), true)
+      assert.equal(tightenSecretFileMode(target), true)
+      assert.equal(modeOf(target), SECRET_FILE_MODE)
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
-    assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).remote.token.value, 'tok-live-42')
-  })
-})
+      // Missing file (fresh install, nothing saved yet) reports failure quietly
+      // instead of breaking the read path it is called from.
+      assert.equal(tightenSecretFileMode(path.join(dir, 'absent.json')), false)
+    })
+  }
+)
 
-test.runIf(process.platform !== 'win32')('tightenSecretFileMode is idempotent and never throws on an unusable path', () => {
-  withTempDir(dir => {
-    const target = path.join(dir, 'connection.json')
-    writeSecretFileAtomic(target, '{}')
+test.runIf(process.platform !== 'win32')(
+  'tightenSecretFileMode refuses to chmod a symlink instead of following it to its target',
+  () => {
+    // Matches readInstallationId in desktop-installation.ts. Without the lstat
+    // guard a link planted at the config path sends the chmod to whatever it
+    // resolves to — someone else's file gets its mode rewritten.
+    withTempDir(dir => {
+      const target = path.join(dir, 'connection.json')
+      const victim = path.join(dir, 'victim.txt')
+      fs.writeFileSync(victim, 'not mine', { mode: 0o644 })
 
-    assert.equal(tightenSecretFileMode(target), true)
-    assert.equal(tightenSecretFileMode(target), true)
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
+      try {
+        fs.symlinkSync(victim, target, 'file')
+      } catch (error: any) {
+        if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+          return
+        }
 
-    // Missing file (fresh install, nothing saved yet) reports failure quietly
-    // instead of breaking the read path it is called from.
-    assert.equal(tightenSecretFileMode(path.join(dir, 'absent.json')), false)
-  })
-})
-
-test.runIf(process.platform !== 'win32')('tightenSecretFileMode refuses to chmod a symlink instead of following it to its target', () => {
-  // Matches readInstallationId in desktop-installation.ts. Without the lstat
-  // guard a link planted at the config path sends the chmod to whatever it
-  // resolves to — someone else's file gets its mode rewritten.
-  withTempDir(dir => {
-    const target = path.join(dir, 'connection.json')
-    const victim = path.join(dir, 'victim.txt')
-    fs.writeFileSync(victim, 'not mine', { mode: 0o644 })
-
-    try {
-      fs.symlinkSync(victim, target, 'file')
-    } catch (error: any) {
-      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
-        return
+        throw error
       }
 
-      throw error
-    }
+      assert.equal(tightenSecretFileMode(target), false, 'reports "not tightened" rather than acting on the link')
+      assert.equal(modeOf(victim), 0o644, 'the symlink target keeps its own mode')
+    })
+  }
+)
 
-    assert.equal(tightenSecretFileMode(target), false, 'reports "not tightened" rather than acting on the link')
-    assert.equal(modeOf(victim), 0o644, 'the symlink target keeps its own mode')
-  })
-})
+test.runIf(process.platform !== 'win32')(
+  'tightenSecretFileMode only touches a regular file the current user owns',
+  () => {
+    // Directories, sockets, fifos and files owned by another account are all
+    // "not ours to chmod". Injected lstat so the foreign-owner branch is
+    // reachable without a second OS account.
+    const chmodded: string[] = []
 
-test.runIf(process.platform !== 'win32')('tightenSecretFileMode only touches a regular file the current user owns', () => {
-  // Directories, sockets, fifos and files owned by another account are all
-  // "not ours to chmod". Injected lstat so the foreign-owner branch is
-  // reachable without a second OS account.
-  const chmodded: string[] = []
+    const fakeFs = (stat: Record<string, unknown>) =>
+      ({
+        chmodSync: (filePath: string) => void chmodded.push(filePath),
+        lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false, mode: 0o644, uid: 0, ...stat }),
+        renameSync: () => void 0,
+        rmSync: () => void 0,
+        writeFileSync: () => void 0
+      }) as any
 
-  const fakeFs = (stat: Record<string, unknown>) =>
-    ({
-      chmodSync: (filePath: string) => void chmodded.push(filePath),
-      lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false, mode: 0o644, uid: 0, ...stat }),
-      renameSync: () => void 0,
-      rmSync: () => void 0,
-      writeFileSync: () => void 0
-    }) as any
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 0
 
-  const uid = typeof process.getuid === 'function' ? process.getuid() : 0
+    assert.equal(
+      tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ isFile: () => false }), platform: 'linux' }),
+      false
+    )
+    assert.equal(
+      tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid: uid + 1 }), platform: 'linux' }),
+      false,
+      'a file owned by another user is left alone'
+    )
+    assert.deepEqual(chmodded, [], 'nothing was chmodded on the rejected paths')
 
-  assert.equal(
-    tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ isFile: () => false }), platform: 'linux' }),
-    false
-  )
-  assert.equal(
-    tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid: uid + 1 }), platform: 'linux' }),
-    false,
-    'a file owned by another user is left alone'
-  )
-  assert.deepEqual(chmodded, [], 'nothing was chmodded on the rejected paths')
-
-  // The same fs shape, but ours and loose: now it tightens.
-  assert.equal(tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid }), platform: 'linux' }), true)
-  assert.deepEqual(chmodded, ['/x/connection.json'])
-})
+    // The same fs shape, but ours and loose: now it tightens.
+    assert.equal(tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid }), platform: 'linux' }), true)
+    assert.deepEqual(chmodded, ['/x/connection.json'])
+  }
+)
 
 test('tightenSecretFileMode leaves Windows alone rather than flipping the read-only bit', () => {
   const chmods: string[] = []
@@ -628,21 +714,24 @@ test('tightenSecretFileMode leaves Windows alone rather than flipping the read-o
   assert.ok(chmods.includes('/home/me/connection.json'), 'the POSIX path was tightened')
 })
 
-test.runIf(process.platform === 'win32')('Windows atomic secret replacement preserves contents and remains writable', () => {
-  withTempDir(dir => {
-    const target = path.join(dir, 'connection.json')
-    const payload = JSON.stringify({ remote: { token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' } } })
-    fs.writeFileSync(target, 'old')
-    fs.writeFileSync(target + '.tmp', 'stale')
-    writeSecretFileAtomic(target, payload)
-    assert.equal(fs.readFileSync(target, 'utf8'), payload)
-    assert.equal(tightenSecretFileMode(target), true)
-    assertNoSecretDebris(dir, 'connection.json', 'BLOB')
-    writeSecretFileAtomic(target, 'replacement')
-    assert.equal(fs.readFileSync(target, 'utf8'), 'replacement')
-    assert.equal(fs.lstatSync(target).isFile(), true)
-  })
-})
+test.runIf(process.platform === 'win32')(
+  'Windows atomic secret replacement preserves contents and remains writable',
+  () => {
+    withTempDir(dir => {
+      const target = path.join(dir, 'connection.json')
+      const payload = JSON.stringify({ remote: { token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' } } })
+      fs.writeFileSync(target, 'old')
+      fs.writeFileSync(target + '.tmp', 'stale')
+      writeSecretFileAtomic(target, payload)
+      assert.equal(fs.readFileSync(target, 'utf8'), payload)
+      assert.equal(tightenSecretFileMode(target), true)
+      assertNoSecretDebris(dir, 'connection.json', 'BLOB')
+      writeSecretFileAtomic(target, 'replacement')
+      assert.equal(fs.readFileSync(target, 'utf8'), 'replacement')
+      assert.equal(fs.lstatSync(target).isFile(), true)
+    })
+  }
+)
 
 test('a token is never persisted in plaintext when safeStorage is unavailable', () => {
   // The defined degradation for `isEncryptionAvailable() === false` (Linux with
@@ -1038,6 +1127,25 @@ test('sanitizeDesktopConnectionConfig exposes secureTokenStorage and remoteToken
   assert.match(returned, /\bremoteTokenPlainText\b/, 'the renderer needs the plain-text token signal')
 })
 
+// #117269: the plain-text signal must be gated on the machine actually being
+// unable to secure the token — an inline encoding check would warn every
+// keychain-opt-out user, whose chosen mode is plain text. The signal flows
+// through resolveRemoteTokenPlainText (behavior tests above); this pins the
+// main-process wiring so the gate cannot be dropped at the call site.
+test('sanitizeDesktopConnectionConfig routes remoteTokenPlainText through the gated helper', () => {
+  const source = readMain()
+  const fnStart = source.indexOf('async function sanitizeDesktopConnectionConfig(')
+  assert.notEqual(fnStart, -1, 'sanitizeDesktopConnectionConfig must exist in main.ts')
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
+  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+
+  assert.match(
+    body,
+    /const remoteTokenPlainText = resolveRemoteTokenPlainText\(\{/,
+    'remoteTokenPlainText must be computed by resolveRemoteTokenPlainText (gated on secure storage) (#117269)'
+  )
+})
+
 // #95393: connections.save succeeded but the switcher menu (renderer
 // $connectionsRegistry snapshot) never refreshed until reload. The registry
 // push (broadcastConnectionsChanged) fired only on the dial-material-edit
@@ -1064,4 +1172,61 @@ test('saveRegistryConnection republishes the registry to renderers on EVERY succ
     /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'saved' \}\)/,
     'a non-dial-material save must republish the registry snapshot (#95393)'
   )
+})
+
+// ---------------------------------------------------------------------------
+// homeRelativeAttachmentCandidates (#115609)
+// ---------------------------------------------------------------------------
+
+test('homeRelativeAttachmentCandidates tries the home dir and the HERMES_HOME attachments dir', () => {
+  const candidates = homeRelativeAttachmentCandidates(
+    'AppData/Local/hermes/attachments/foo.xlsx',
+    '/Users/alice',
+    '/Users/alice/AppData/Local/hermes'
+  )
+
+  assert.deepEqual(candidates, [
+    path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'),
+    path.join('/Users/alice/AppData/Local/hermes', 'attachments', 'foo.xlsx')
+  ])
+})
+
+test('homeRelativeAttachmentCandidates normalizes Windows backslashes before joining', () => {
+  const candidates = homeRelativeAttachmentCandidates(
+    'AppData\\Local\\hermes\\attachments\\foo.xlsx',
+    '/Users/alice',
+    '/Users/alice/.hermes'
+  )
+
+  assert.equal(candidates[0], path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'))
+})
+
+test('homeRelativeAttachmentCandidates returns nothing for an absolute path', () => {
+  assert.deepEqual(
+    homeRelativeAttachmentCandidates('/already/absolute/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    []
+  )
+})
+
+test('homeRelativeAttachmentCandidates returns nothing for a file: URL', () => {
+  assert.deepEqual(
+    homeRelativeAttachmentCandidates('file:///already/resolved/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    []
+  )
+})
+
+test('homeRelativeAttachmentCandidates returns nothing for empty input', () => {
+  assert.deepEqual(homeRelativeAttachmentCandidates('', '/Users/alice', '/Users/alice/.hermes'), [])
+  assert.deepEqual(homeRelativeAttachmentCandidates('   ', '/Users/alice', '/Users/alice/.hermes'), [])
+})
+
+test('homeRelativeAttachmentCandidates second candidate falls back to basename only', () => {
+  // A ref that lost its directory prefix entirely still has a shot via the
+  // well-known attachments dir + basename, matching the reported repro shape.
+  const candidates = homeRelativeAttachmentCandidates('foo.xlsx', '/Users/alice', '/Users/alice/.hermes')
+
+  assert.deepEqual(candidates, [
+    path.join('/Users/alice', 'foo.xlsx'),
+    path.join('/Users/alice/.hermes', 'attachments', 'foo.xlsx')
+  ])
 })

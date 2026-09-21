@@ -127,7 +127,13 @@ dependencies = [
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
   # CIDR-aware forwarded_allow_ips requires uvicorn >=0.31.0.
-  "uvicorn[standard]>=0.31.0,<1",
+  # uvicorn's [standard] extra bundles uvloop, httptools, and watchfiles.
+  # uvloop cannot build on Android/Termux (libuv's ./configure fails), so
+  # we declare the working components inline and gate uvloop behind the
+  # [uvloop] optional extra — desktop/server profiles pull it via [all].
+  "uvicorn>=0.31.0,<1",
+  "httptools>=0.6.3,<0.9",
+  "watchfiles>=0.20,<2",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500
@@ -187,6 +193,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# High-performance event loop — uvloop replaces the stdlib asyncio loop with
+# a libuv-backed implementation for ~2-4x throughput on uvicorn.  Gated as an
+# optional extra because libuv's ./configure does not run on Android/Termux
+# (bionic libc, non-FHS layout).  Desktop and server installs pull this via
+# [all]; the [termux] / [termux-all] profiles intentionally omit it.
+uvloop = [
+  "uvloop>=0.15.1,<0.24; sys_platform != 'win32' and sys_platform != 'cygwin' and sys_platform != 'android' and platform_python_implementation != 'PyPy'",
+]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
@@ -367,7 +381,10 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.3.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.3.1", "python-multipart==0.0.32"]
+# uvicorn pin without [standard] — httptools / watchfiles are now core deps,
+# and uvloop is gated behind the [uvloop] extra.  This keeps [web] safe for
+# termux-all which includes it.
+web = ["fastapi==0.133.1", "uvicorn==0.41.0", "starlette==1.3.1", "python-multipart==0.0.32"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
@@ -393,6 +410,7 @@ all = [
   "hermes-agent[cron]",
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
+  "hermes-agent[uvloop]",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",

@@ -30,6 +30,7 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "_start_session_work": _start_session_work,
         "_sessions_lock": threading.RLock(), "_sessions": {},
         "_admit_prompt_turn": lambda *args, **kwargs: ([], agent),
+        "_session_profile_runtime_scope": lambda session: contextlib.nullcontext(),
         "_emit": noop, "bind_transport": noop, "reset_transport": noop,
         "_current_runtime_session_record": contextvars.ContextVar("refused_turn"),
         "_TurnRun": prompt_turn._TurnRun,
@@ -118,8 +119,8 @@ def test_mailbox_poll_skips_owner_lookup_without_a_mailbox(monkeypatch, tmp_path
     assert lookups == [tmp_path]
 
 
-def test_failing_mailbox_poll_backs_off_and_warns_once_per_window():
-    """A failing poll is retried only after the backoff and logged at WARNING once per window."""
+def test_failing_mailbox_poll_warns_once_per_window():
+    """A failing poll is logged at WARNING once per window; repeats within it are counted, not logged."""
     import logging
     records = []
 
@@ -138,14 +139,37 @@ def test_failing_mailbox_poll_backs_off_and_warns_once_per_window():
 
     guarded = rebind(session_notifications._poll_bot_live_delivery_guarded, {
         "_poll_bot_live_delivery_once": failing, "logger": log,
-        "_BOT_POLL_FAILURE_BACKOFF_S": session_notifications._BOT_POLL_FAILURE_BACKOFF_S,
         "_BOT_POLL_WARN_INTERVAL_S": session_notifications._BOT_POLL_WARN_INTERVAL_S})
     session = {}
-    for now in (0.0, 0.5, 1.0, 6.0, 12.0, 61.0):
+    for now in (0.0, 6.0, 12.0, 61.0):  # the poller calls at _BOT_DELIVERY_POLL_SECONDS cadence
         guarded("live", session, now)
-    assert len(attempts) == 4  # 0.0, 6.0, 12.0, 61.0 — the 0.5/1.0 passes sat out the backoff
     warnings = [r for r in records if r.levelno == logging.WARNING]
     assert [r.getMessage() for r in warnings] == [
         "Bot live-owner delivery poll failed (0 repeat(s) suppressed since the last report)",
         "Bot live-owner delivery poll failed (2 repeat(s) suppressed since the last report)"]
     assert all(r.exc_info for r in warnings)
+
+
+def test_mailbox_poll_delivers_past_a_schema_damaged_ticket(monkeypatch, tmp_path):
+    """A `{}` ticket beside a healthy envelope must not wedge the live poller's claim (real mailbox on disk)."""
+    import tools.bot_live_delivery as mailbox
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat", lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "healthy", delivery_id="d" * 32)
+    (mailbox._root(tmp_path) / f"{'a' * 32}.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: owner)
+    submitted = []
+    def submit(rid, sid, session, text, **kwargs):
+        submitted.append(text)
+        kwargs["terminal_callback"]({"status": "settled", "text": "reply"})
+        return True
+    poll = rebind(session_notifications._poll_bot_live_delivery_once, {
+        "_session_home": lambda session: tmp_path,
+        "_session_turn_admission": _session_turn_admission,
+        "_run_prompt_submit": submit,
+        "_notif_release_turn": lambda session: session.update(running=False),
+    })
+    session = {"history_lock": threading.RLock(), "agent": object(), "session_key": "chat",
+               "active_session_lease": SimpleNamespace(lease_id="lease", released=False)}
+    assert poll("live", session) is True
+    assert submitted == ["healthy"]
+    assert mailbox.read_delivery_result(tmp_path, queued["delivery_id"])["status"] == "settled"

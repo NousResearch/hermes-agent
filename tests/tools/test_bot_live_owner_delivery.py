@@ -186,3 +186,81 @@ def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
         mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
     with pytest.raises(PermissionError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
+
+
+def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp_path, caplog):
+    import logging
+
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
+    bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
+    bad.write_text('"oops"', encoding="utf-8")  # parses, but is not a record
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert sum(r.message.startswith(f"bot_live_delivery: skipping unreadable ticket {'e' * 32}.json")
+               for r in caplog.records) == 1
+    # Malformed is not absent: exact-id reads fail closed rather than overwrite the receipt.
+    with pytest.raises(ValueError):
+        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
+    with pytest.raises(ValueError):
+        mailbox.read_delivery_result(tmp_path, "e" * 32)
+    assert bad.read_text(encoding="utf-8") == '"oops"'
+
+
+def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
+    """Valid JSON that lost a field must degrade like corrupt JSON: skipped, warned once, never raised."""
+    import logging
+
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "healthy", delivery_id="d" * 32)
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    damaged = {
+        root / f"{'a' * 32}.json": "{}",
+        root / f"{'b' * 32}.json": json.dumps(dict(
+            delivery_id="b" * 32, id="b" * 32, status="queued", created_at=1,
+            sequence=1, owner=None, message="owner lost")),
+        root / f"{'c' * 32}.json": json.dumps(dict(
+            delivery_id="c" * 32, id="c" * 32, status="queued", created_at=2,
+            sequence="old", owner=owner, message="sequence lost", **owner)),
+        root / f"{'e' * 32}.json": json.dumps(dict(
+            delivery_id="../wrong", id="../wrong", status="queued", created_at=3,
+            sequence=3, owner=owner, message="id lost", **owner)),
+        root / f"{'1' * 32}.json": json.dumps(dict(
+            delivery_id="1" * 32, id="1" * 32, status=[], created_at=4,
+            sequence=4, owner=owner, message="status lost", **owner)),
+    }
+    for path, contents in damaged.items():
+        path.write_text(contents, encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "also healthy", delivery_id="f" * 32)
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
+        for _ in range(3):
+            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert admitted["sequence"] == queued["sequence"] + 1
+    assert {path: path.read_text(encoding="utf-8") for path in damaged} == damaged
+    skipped = [r.message for r in caplog.records if r.message.startswith("bot_live_delivery: skipping unreadable ticket")]
+    assert len(skipped) == len(damaged), "each damaged ticket warns once per process, not per scan"
+
+
+def test_existing_mailbox_lock_does_not_fsync_parent_dirs(tmp_path, monkeypatch):
+    """The idle poller re-enters the lock twice a second; only a freshly created mailbox links its parents."""
+    from tools import bot_live_delivery as mailbox
+
+    calls = []
+    monkeypatch.setattr(mailbox, "fsync_directory", lambda path: calls.append(path))
+    with mailbox._locked(tmp_path):
+        pass
+    assert len(calls) == 2
+    with mailbox._locked(tmp_path):
+        pass
+    assert len(calls) == 2

@@ -251,9 +251,15 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
             self._print_fn = None
             self.shutdown_memory_provider = MagicMock()
             self.close = MagicMock()
+            self.compress_task_id = None
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
+            # Capture the task scope the gateway forwards (#98206): the dedup
+            # reset inside compress_context is only effective under the live
+            # session row id, the same task_id the main turn hands to
+            # run_conversation.
+            self.compress_task_id = _kwargs.get("task_id")
             # No session_db → cannot rotate: session_id is UNCHANGED, and this
             # is a failure-to-rotate, not an in-place success.
             return ([{"role": "assistant", "content": "summary only"}], None)
@@ -341,6 +347,12 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     assert result == "ok"
     # The transcript must NOT be rewritten — the original is preserved.
     runner.session_store.rewrite_transcript.assert_not_called()
+    # #98206: hygiene compaction must scope the dedup reset to the LIVE
+    # session row id ("sess-1" from this test's SessionEntry) — the same
+    # task_id the main turn passes to run_conversation. Under the "default"
+    # fallback the skill_view/read_file dedup records survive compression
+    # and a re-read returns a stub pointing at pruned context.
+    assert NonRotatingCompressAgent.last_instance.compress_task_id == "sess-1"
 
     # This run neither rotated nor compacted in place, so it did NOT recover
     # the session: the reset must NOT have been reached. Spying on the module
@@ -493,13 +505,15 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
 
 
 @pytest.mark.asyncio
-async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monkeypatch, tmp_path):
+@pytest.mark.parametrize("warning_notifications", [True, False])
+async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monkeypatch, tmp_path, warning_notifications):
     """A timed-out SessionDB-bound worker cannot compact after the live turn starts.
 
     The worker remains alive long enough to cross the old race window. The
     timeout must fence its eventual commit, continue to the live agent, and
     clean up the temporary agent only after the worker actually returns.
     """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -559,6 +573,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         "  enabled: true\n"
         "  hygiene_timeout_seconds: 0.01\n"
         "  hygiene_failure_cooldown_seconds: 120\n"
+        f"display: {{suppress_warning_notifications: {str(not warning_notifications).lower()}}}\n"
     )
 
     gateway_run = importlib.import_module("gateway.run")
@@ -631,7 +646,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     assert _cd_args[0] == "sess-timeout"
     assert _cd_args[1] > time.time()
     timeout_warnings = [s for s in adapter.sent if "took too long" in s["content"]]
-    assert len(timeout_warnings) == 1
+    assert len(timeout_warnings) == int(warning_notifications)
     fake_db.archive_and_compact.assert_not_called()
     assert lease_released.is_set()
     # Event/state assertions prove the host returned before the detached

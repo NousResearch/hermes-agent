@@ -4,7 +4,9 @@ import type * as data from './data'
 import type * as groupChat from './group-chat'
 import type * as members from './group-chat-view-members'
 import type * as groupMembership from './group-membership'
-import { createGroupGateway, runTimersInline, scriptedStorage } from './group-test-utils'
+import type * as groupRounds from './group-rounds'
+import { createGroupGateway, drain, runTimersInline, scriptedStorage } from './group-test-utils'
+import type { ScriptedGateway } from './group-test-utils'
 import type { RosterRow } from './types'
 
 // Both membership doors (room-side "Manage members", per-Bot "Manage groups")
@@ -23,8 +25,10 @@ vi.mock('@hermes/plugin-sdk', async () => {
 interface Room {
   chat: typeof groupChat
   data: typeof data
+  gateway: ScriptedGateway
   members: typeof members
   membership: typeof groupMembership
+  rounds: typeof groupRounds
 }
 
 async function loadRoom(): Promise<Room> {
@@ -37,17 +41,18 @@ async function loadRoom(): Promise<Room> {
 
   Object.assign(host, gateway.host)
 
-  const [chat, d, m, membership, shared] = await Promise.all([
+  const [chat, d, m, membership, rounds, shared] = await Promise.all([
     import('./group-chat'),
     import('./data'),
     import('./group-chat-view-members'),
     import('./group-membership'),
+    import('./group-rounds'),
     import('./shared')
   ])
 
   shared.setPluginCtx(scriptedStorage(gateway.storage))
 
-  return { chat, data: d, members: m, membership }
+  return { chat, data: d, gateway, members: m, membership, rounds }
 }
 
 const programmer: RosterRow = { name: 'programmer' }
@@ -55,14 +60,22 @@ const planner: RosterRow = { name: 'planner' }
 const reviewer: RosterRow = { name: 'reviewer' }
 
 const seatedNames = (room: Room) =>
-  room.membership.groupChatMemberBots('Core', room.data.$lastRoster.get(), room.data.$botMeta.get()).map(bot => bot.name).sort()
+  room.membership
+    .groupChatMemberBots('Core', room.data.$lastRoster.get(), room.data.$botMeta.get())
+    .map(bot => bot.name)
+    .sort()
 
 function seedCore(room: Room, extra: Partial<groupChat.GroupChatRoom> = {}) {
   room.data.$lastRoster.set([programmer, planner, reviewer])
   room.data.$botMeta.set({ programmer: { groups: ['Core'] }, reviewer: { groups: ['Core'] } })
   room.chat.updateGroupChat(
     'Core',
-    r => ({ ...r, members: room.membership.durableGroupChatMembers([programmer, reviewer]), syncRevision: 7, ...extra }),
+    r => ({
+      ...r,
+      members: room.membership.durableGroupChatMembers([programmer, reviewer]),
+      syncRevision: 7,
+      ...extra
+    }),
     { sync: false }
   )
 }
@@ -72,7 +85,7 @@ beforeEach(() => {
 })
 
 describe('setGroupChatMembers', () => {
-  it('outranks a tie-revision mirror poll and clears the removed member\'s room state', async () => {
+  it("outranks a tie-revision mirror poll and clears the removed member's room state", async () => {
     const room = await loadRoom()
     seedCore(room, {
       holds: { reviewer: { at: 1 } },
@@ -87,10 +100,15 @@ describe('setGroupChatMembers', () => {
     // revision the room had before Save (the poll that raced the publish).
     const mirror = {
       version: 3,
-      rooms: { 'name:Core': { name: 'Core', log: [], members: [{ name: 'programmer' }, { name: 'reviewer' }], revision: 7 } },
+      rooms: {
+        'name:Core': { name: 'Core', log: [], members: [{ name: 'programmer' }, { name: 'reviewer' }], revision: 7 }
+      },
       deleted: {}
     }
-    room.chat.$groupChats.set(room.chat.mergeRemoteGroupChatSnapshotIntoRooms(mirror as never, room.chat.$groupChats.get()))
+
+    room.chat.$groupChats.set(
+      room.chat.mergeRemoteGroupChatSnapshotIntoRooms(mirror as never, room.chat.$groupChats.get())
+    )
 
     expect(seatedNames(room)).toEqual(['planner', 'programmer'])
     const saved = room.chat.$groupChats.get().Core as groupChat.GroupChatRoom
@@ -104,6 +122,7 @@ describe('setGroupChatMembers', () => {
   it('keeps a same-named local Bot out when selecting only its Connection counterpart', async () => {
     const room = await loadRoom()
     const local: RosterRow = { name: 'planner', title: 'Local Planner' }
+
     const remote: RosterRow = {
       connectionId: 'remote-1',
       connectionKind: 'remote',
@@ -120,10 +139,37 @@ describe('setGroupChatMembers', () => {
     await room.members.setGroupChatMembers('Core', [remote, reviewer])
 
     expect(room.data.$botMeta.get().planner.groups).toEqual([])
-    expect(room.chat.$groupChats.get().Core.members).toEqual(expect.arrayContaining([
-      expect.objectContaining({ connectionId: 'remote-1', name: 'planner', sourceScoped: true }),
-      expect.objectContaining({ name: 'reviewer' })
-    ]))
+    expect(room.chat.$groupChats.get().Core.members).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ connectionId: 'remote-1', name: 'planner', sourceScoped: true }),
+        expect.objectContaining({ name: 'reviewer' })
+      ])
+    )
+  })
+
+  it("does not replay a removed member's held messages after re-adding it", async () => {
+    const room = await loadRoom()
+    seedCore(room, {
+      heldMessages: { reviewer: ['held-before-removal'] },
+      log: [
+        {
+          at: 1,
+          from: { kind: 'user', name: 'You' },
+          id: 'held-before-removal',
+          text: 'STALE_PRE_REMOVAL_TEXT',
+          thread: 'old-thread'
+        }
+      ]
+    })
+
+    await room.members.setGroupMembership(reviewer, 'Core', false)
+    await room.members.setGroupMembership(reviewer, 'Core', true)
+    room.rounds.sendToGroupChat('Core', [reviewer], '@reviewer fresh task')
+    await drain(() => Boolean(room.chat.$groupChats.get().Core.running))
+
+    expect(room.chat.$groupChats.get().Core.heldMessages?.reviewer).toBeUndefined()
+    expect(room.gateway.calls[0].prompt).not.toContain('STALE_PRE_REMOVAL_TEXT')
+    expect(room.gateway.calls[0].prompt).toContain('fresh task')
   })
 })
 

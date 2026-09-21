@@ -14,13 +14,7 @@ import type {
   StatusResponse
 } from '@/types/hermes'
 
-import {
-  capabilityScoped,
-  hermesApi,
-  type ProfileScope,
-  profileScoped,
-  STARTUP_REQUEST_TIMEOUT_MS
-} from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
 export function getStatus(): Promise<StatusResponse> {
   return hermesApi<StatusResponse>({
@@ -162,50 +156,62 @@ export function validateProviderCredential(
   key: string,
   value: string,
   apiKey?: string
-): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[] }> {
-  return hermesApi<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>({
-    ...profileScoped(),
-    path: '/api/providers/validate',
-    method: 'POST',
-    body: { key, value, api_key: apiKey ?? '' }
-  })
+): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[]; resolved_base_url?: string }> {
+  return hermesApi<{ ok: boolean; reachable: boolean; message: string; models?: string[]; resolved_base_url?: string }>(
+    {
+      ...profileScoped(),
+      path: '/api/providers/validate',
+      method: 'POST',
+      body: { key, value, api_key: apiKey ?? '' }
+    }
+  )
 }
 
-export function getCustomEndpoints(): Promise<CustomEndpointsResponse> {
+export function getCustomEndpoints(profile?: null | string): Promise<CustomEndpointsResponse> {
   return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/providers/custom-endpoints'
   })
 }
 
-export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointsResponse> {
+export function saveCustomEndpoint(
+  endpoint: CustomEndpointUpdate,
+  profile?: null | string
+): Promise<CustomEndpointsResponse> {
   return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/providers/custom-endpoints',
     method: 'POST',
     body: endpoint
   })
 }
 
-export function validateCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointValidationResponse> {
+export function validateCustomEndpoint(
+  endpoint: CustomEndpointUpdate,
+  profile?: null | string
+): Promise<CustomEndpointValidationResponse> {
   return hermesApi<CustomEndpointValidationResponse>({
+    ...profileScoped(profile),
     path: '/api/providers/custom-endpoints/validate',
     method: 'POST',
     body: endpoint
   })
 }
 
-export function activateCustomEndpoint(id: string): Promise<{ ok: boolean; provider: string; model: string }> {
+export function activateCustomEndpoint(
+  id: string,
+  profile?: null | string
+): Promise<{ ok: boolean; provider: string; model: string }> {
   return hermesApi<{ ok: boolean; provider: string; model: string }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/activate`,
     method: 'POST'
   })
 }
 
-export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsResponse> {
+export function deleteCustomEndpoint(id: string, profile?: null | string): Promise<CustomEndpointsResponse> {
   return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
     method: 'DELETE'
   })

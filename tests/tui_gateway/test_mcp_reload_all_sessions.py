@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_constants
+from agent.secret_scope import current_secret_scope
 from tools import mcp_tool_agent as _mcp_agent
 from tools import mcp_tool_discovery as _mcp_discovery
 from tools import mcp_tool_lifecycle as _mcp_lifecycle
@@ -24,8 +25,14 @@ def reload_env(monkeypatch, tmp_path):
     refreshed: list[str] = []
     discovered_homes: list[str] = []
     monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", lambda: None)
-    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools",
-                        lambda: discovered_homes.append(hermes_constants.hermes_home_key()))
+    scoped_homes: list[str] = []
+
+    def _discover():
+        discovered_homes.append(hermes_constants.hermes_home_key())
+        if current_secret_scope() is not None:
+            scoped_homes.append(hermes_constants.hermes_home_key())
+
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", _discover)
     def refresh(agent, **_kw):
         refreshed.append(agent.name)
         agent.tools = ["fresh-tool"]
@@ -51,7 +58,7 @@ def reload_env(monkeypatch, tmp_path):
     monkeypatch.setattr(srv, "_sessions", sessions)
     return SimpleNamespace(
         refreshed=refreshed, discovered_homes=discovered_homes,
-        profile_b=profile_b, sessions=sessions)
+        scoped_homes=scoped_homes, profile_b=profile_b, sessions=sessions)
 
 
 def test_reload_from_one_session_refreshes_every_live_agent(reload_env):
@@ -166,3 +173,13 @@ def test_followup_dispatch_exception_releases_before_deferred_reload(monkeypatch
 
     assert session["running"] is False
     assert applied == [("B", False)]
+
+
+def test_reload_rediscovers_the_launch_profile_under_its_own_secret_scope(reload_env):
+    """The launch profile's servers resolve connect-time credentials through ``get_secret`` too:
+    rediscovered unscoped, they park with UnscopedSecretError once the process multiplexes while
+    the RPC still answers "reloaded" (#113746). Every rediscovery, launch home included, is scoped."""
+    srv._methods["reload.mcp"](1, {"session_id": "A", "confirm": True})
+
+    assert sorted(set(reload_env.scoped_homes)) == sorted(set(reload_env.discovered_homes))
+    assert hermes_constants.hermes_home_key() in reload_env.scoped_homes

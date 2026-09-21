@@ -47,7 +47,7 @@ $result = @{
 `
 
 test.skipIf(process.platform !== 'win32').each(['control', 'adversarial'])(
-  'Windows updater %s preserves data and an interactive console after its parent exits',
+  'Windows updater %s preserves data, stays hidden, and survives its parent exiting',
   async launchMode => {
     const temporary = mkdtempSync(path.join(os.tmpdir(), 'hermes-updater-test-'))
 
@@ -93,7 +93,7 @@ test.skipIf(process.platform !== 'win32').each(['control', 'adversarial'])(
             const extra = ${JSON.stringify(['-InstallRoot', root, '-Branch', branch, '-DesktopPid', '42', '-RelaunchExe', relaunchExe])};
             const options = { detached: true, stdio: 'ignore', env: { ...process.env, HERMES_UPDATER_TEST_PARENT: String(process.pid) } };
             const wrapped = wrapHandoffForDetachedConsole(handoff, extra);
-            spawnUpdaterProcess(wrapped.command, wrapped.args, options);
+            spawnUpdaterProcess(wrapped.command, wrapped.args, { ...options, detached: wrapped.detached });
             spawnUpdaterProcess(${JSON.stringify(installer)}, ${JSON.stringify(['-e', recordInstallerArgs, '--', ...installerArgs])}, options);
           `,
           resolveDir: fileURLToPath(new URL('.', import.meta.url)),
@@ -122,16 +122,24 @@ test.skipIf(process.platform !== 'win32').each(['control', 'adversarial'])(
 
       assert.ok(existsSync(resultFile), 'the detached PowerShell script must execute')
       const result = JSON.parse(readFileSync(resultFile, 'utf8'))
-      assert.deepEqual(result, {
-        InstallRoot: root,
-        Branch: branch,
-        DesktopPid: 42,
-        RelaunchExe: relaunchExe,
-        Console: true,
-        Visible: true,
-        Interactive: true,
-        ParentGone: true
-      })
+      assert.deepEqual(
+        {
+          InstallRoot: result.InstallRoot,
+          Branch: result.Branch,
+          DesktopPid: result.DesktopPid,
+          RelaunchExe: result.RelaunchExe,
+          Visible: result.Visible,
+          ParentGone: result.ParentGone
+        },
+        {
+          InstallRoot: root,
+          Branch: branch,
+          DesktopPid: 42,
+          RelaunchExe: relaunchExe,
+          Visible: false,
+          ParentGone: true
+        }
+      )
       assert.deepEqual(JSON.parse(readFileSync(installerResult, 'utf8')), installerArgs)
     } finally {
       rmSync(temporary, { recursive: true, force: true })

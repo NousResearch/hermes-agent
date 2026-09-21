@@ -11,6 +11,7 @@ import {
   deleteSession,
   getAllSessionMessages,
   getCronJobs,
+  getCustomEndpoints,
   getGlobalModelInfo,
   getGlobalModelOptions,
   getHermesConfig,
@@ -243,6 +244,41 @@ describe('Hermes REST helpers', () => {
     expect(result.recents.sessions).toEqual([])
     expect(result.cron.sessions).toEqual([])
     expect(result.messaging.sessions).toEqual([])
+  })
+
+  it('counts pinned rows toward a full legacy page so older sessions stay reachable', async () => {
+    // #81484: pins inside the window take LIMIT slots. 3 pinned + 17 unpinned
+    // against a cap of 20 IS a full page; discounting the pins read 17 < 20
+    // and the load-more row never mounted.
+    const row = (id: string, pinned: boolean) => ({ id, title: id, profile: 'default', pinned })
+
+    const recents = [
+      ...Array.from({ length: 3 }, (_, i) => row(`pinned-${i}`, true)),
+      ...Array.from({ length: 17 }, (_, i) => row(`recent-${i}`, false))
+    ]
+
+    api.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+      }
+
+      if (path.includes('source=cron') || path.includes('exclude_sources=')) {
+        return Promise.resolve({ ...emptySessionsResponse, sessions: [], total: 0 })
+      }
+
+      return Promise.resolve({ ...emptySessionsResponse, sessions: recents, total: recents.length })
+    })
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.profiles_truncated).toEqual({ default: true })
   })
 
   it('falls back to the per-slice endpoint when the batched route 404s on an older backend', async () => {
@@ -727,6 +763,18 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
+  })
+
+  it('scopes custom endpoint reads to the requested settings profile', async () => {
+    await getCustomEndpoints('content-studio')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/providers/custom-endpoints',
+        profile: 'content-studio',
+        priority: 'foreground'
       })
     )
   })

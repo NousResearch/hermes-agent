@@ -53,6 +53,8 @@ def test_startup_preserves_trees_and_explicit_stop_checks_owner(tmp_path, monkey
     # A real owner exits without cleanup, leaving a router and its model child.
     ready = tmp_path / "router.json"
     child_script = tmp_path / "router.py"
+    # The record lands by rename: the parent polls ``ready.exists()``, and an in-place write is visible
+    # (empty) the instant the child opens it — a loaded runner then reads b"" and json.loads raises.
     child_script.write_text(
         "import json,os,sys,time,subprocess,psutil\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"

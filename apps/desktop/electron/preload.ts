@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
 import type { DesktopProfileRoute } from './desktop-profile'
+import { customWindowControlsEnabled } from './window-controls'
 
 // Which translucency the OS can back. Asked synchronously because the renderer
 // needs it before its first paint, and answered by main because deciding it
@@ -52,6 +53,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
   },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
+  windowControls: {
+    custom: customWindowControlsEnabled(),
+    minimize: () => ipcRenderer.send('hermes:window-control', 'minimize'),
+    toggleMaximize: () => ipcRenderer.send('hermes:window-control', 'toggle-maximize'),
+    close: () => ipcRenderer.send('hermes:window-control', 'close')
+  },
   wakeIndicator: {
     getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),
     setState: state => ipcRenderer.send('hermes:wake-indicator:set', state),
@@ -179,33 +186,39 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     setSettings: enabled => ipcRenderer.invoke('hermes:login-startup:set', enabled)
   },
   // macOS native screenshot gesture; captures require a main-issued request.
-  screenshot: process.platform === 'darwin' ? {
-    getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
-    setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
-    openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
-    capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
-    onStatus: callback => {
-      const listener = (_event, status) => callback(status)
-      ipcRenderer.on('hermes:screenshot:status', listener)
+  screenshot:
+    process.platform === 'darwin'
+      ? {
+          getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
+          setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
+          openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
+          capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
+          onStatus: callback => {
+            const listener = (_event, status) => callback(status)
+            ipcRenderer.on('hermes:screenshot:status', listener)
 
-      return () => ipcRenderer.removeListener('hermes:screenshot:status', listener)
-    },
-    onRequest: callback => {
-      const channel = 'hermes:screenshot:request'
-      const listener = (_event, requestId) => callback(requestId)
-      if (ipcRenderer.listenerCount(channel) === 0) {
-        ipcRenderer.send('hermes:screenshot:subscribe', true)
-      }
-      ipcRenderer.on(channel, listener)
+            return () => ipcRenderer.removeListener('hermes:screenshot:status', listener)
+          },
+          onRequest: callback => {
+            const channel = 'hermes:screenshot:request'
+            const listener = (_event, requestId) => callback(requestId)
 
-      return () => {
-        ipcRenderer.removeListener(channel, listener)
-        if (ipcRenderer.listenerCount(channel) === 0) {
-          ipcRenderer.send('hermes:screenshot:subscribe', false)
+            if (ipcRenderer.listenerCount(channel) === 0) {
+              ipcRenderer.send('hermes:screenshot:subscribe', true)
+            }
+
+            ipcRenderer.on(channel, listener)
+
+            return () => {
+              ipcRenderer.removeListener(channel, listener)
+
+              if (ipcRenderer.listenerCount(channel) === 0) {
+                ipcRenderer.send('hermes:screenshot:subscribe', false)
+              }
+            }
+          }
         }
-      }
-    }
-  } : undefined,
+      : undefined,
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
   // shortcut + the persisted preference; the quick window only captures text
   // and hands it back, and the primary renderer submits it through the normal
@@ -484,6 +497,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   signalDeepLinkReady: () => ipcRenderer.invoke('hermes:deep-link-ready'),
   probePluginRepo: payload => ipcRenderer.invoke('hermes:plugin:probe', payload),
   installDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:installDesktop', payload),
+  removeDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:removeDesktop', payload),
   onWindowStateChanged: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:window-state-changed', listener)

@@ -22,7 +22,7 @@ vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
 const { $settingsScopeOverride } = await import('@/store/settings-scope')
-const { SettingsProfileScope } = await import('./profile-scope')
+const { ActiveProfileNote, SettingsProfileScope } = await import('./profile-scope')
 
 const profile = (name: string, isDefault = false, extra: Partial<ProfileInfo> = {}): ProfileInfo =>
   ({ has_env: false, is_default: isDefault, model: null, name, ...extra }) as ProfileInfo
@@ -136,5 +136,22 @@ describe('SettingsProfileScope', () => {
     // The "applies to" note names the target the way its chip does.
     expect(document.querySelector('[role="status"]')?.textContent).toContain('JordyV')
     expect(document.querySelector('[role="status"]')?.textContent).not.toContain('coder')
+  })
+})
+
+// Local Models sends unscoped requests, so it always edits the ACTIVE profile;
+// the note must say which one — and stay silent for single-profile users, like
+// the selector.
+describe('ActiveProfileNote', () => {
+  it('names the active profile (by its chip label) only with two or more profiles', () => {
+    $activeGatewayProfile.set('setup')
+    $profiles.set([profile('default', true)])
+    const { container, rerender } = render(<ActiveProfileNote />)
+    expect(container.textContent).toBe('')
+
+    $profiles.set([profile('default', true), profile('setup', false, { display_name: 'Setup box' })])
+    rerender(<ActiveProfileNote />)
+    expect(screen.getByRole('status').textContent).toContain('Setup box')
+    expect($settingsScopeOverride.get()).toBeNull()
   })
 })

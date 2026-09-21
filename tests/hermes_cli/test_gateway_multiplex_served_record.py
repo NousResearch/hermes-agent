@@ -32,6 +32,10 @@ def served_root(tmp_path, monkeypatch):
          "served_profiles": ["default", "coder"]}))
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    # Never read the developer's / CI's REAL host rendezvous record (superseded by the
+    # tests/conftest.py hook in #118097 once that lands).
+    (tmp_path / "locks").mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     import hermes_constants
     import gateway.status as status
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
@@ -166,7 +170,7 @@ def test_service_verbs_refuse_served_profile_with_exit_78(served_root, monkeypat
     assert calls, f"--force must let `gateway {verb}` reach the service manager"
 
 
-def test_status_surfaces_agree_for_a_satellite_profile(served_root, monkeypatch):
+def test_satellite_gateway_identity_does_not_imply_cron_health(served_root, monkeypatch):
     import hermes_cli.gateway as gw
     import hermes_cli.status as st
     import hermes_cli.cron as cr
@@ -184,7 +188,16 @@ def test_status_surfaces_agree_for_a_satellite_profile(served_root, monkeypatch)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         cr.cron_status()
-    assert "NOT fire" not in buf.getvalue() and "multiplexer" in buf.getvalue()
+    # Multiplex-only: the ONE host gateway is named as the ticker, with the profiles it serves —
+    # the FULL line, so this cannot pass on the sibling "(multiplexing this profile)" rung.
+    assert f"Scheduler host: the host gateway (PID {os.getpid()}) serving profiles default, coder" \
+        in buf.getvalue()
+    # The remediation this rung prints must run for a served NAMED profile (`hermes gateway
+    # restart` exits 78 there).
+    assert "restart: hermes --profile default gateway restart" in buf.getvalue()
+    # A live scheduler host alone does not prove this satellite's ticker is healthy.
+    assert "has not reported a heartbeat" in buf.getvalue()
+    assert "will fire automatically" not in buf.getvalue()
 
 
 def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):

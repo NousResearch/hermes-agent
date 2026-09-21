@@ -257,13 +257,13 @@ class TestWeixinSendMessageIntegration:
 
 
 class TestWeixinChunkDelivery:
-    def _connected_adapter(self) -> WeixinAdapter:
+    def _connected_adapter(self, context_token="ctx-token") -> WeixinAdapter:
         adapter = _make_adapter()
         adapter._session = object()
         adapter._send_session = adapter._session
         adapter._token = "test-token"
         adapter._base_url = "https://weixin.example.com"
-        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+        adapter._token_store.get = lambda account_id, chat_id: context_token
         return adapter
 
 
@@ -337,6 +337,27 @@ class TestWeixinChunkDelivery:
         assert [call.kwargs["context_token"] for call in send_message_mock.await_args_list] == ["ctx-token", None]
         assert adapter._rate_limit_circuit_until == 0.0
 
+    @pytest.mark.parametrize("stored_token", [None, "ctx-token"])
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_prepare_failed_without_recovery_is_not_a_rate_limit(self, send_message_mock, stored_token):
+        """No token to drop (fresh pairing, #80125) or a tokenless re-send that still fails: the error names the
+        real cause and the rate-limit breaker stays closed, instead of "rate limited; cooldown active" for 30s."""
+        from gateway.platforms.base import classify_send_error
+
+        adapter = self._connected_adapter(context_token=stored_token)
+        adapter._rate_limit_circuit_threshold = 1
+        send_message_mock.return_value = {"ret": weixin.RATE_LIMIT_ERRCODE, "errmsg": "prepare failed"}
+
+        result = asyncio.run(adapter.send("wxid_test123", "hello"))
+
+        assert result.success is False
+        assert "prepare failed" in (result.error or "") and "cooldown" not in (result.error or "")
+        # The platform-neutral classifier must not route it back into the rate-limited redelivery lane either.
+        assert classify_send_error(None, result.error or "") != "rate_limited"
+        assert adapter._rate_limit_cooldown_remaining() == 0.0
+        assert [call.kwargs["context_token"] for call in send_message_mock.await_args_list] == (
+            [None] if stored_token is None else ["ctx-token", None])
+
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
     def test_tokenless_resend_does_not_consume_retry_budget(self, send_message_mock):
         """With ``send_chunk_retries=0`` the stale-session re-send must still happen: it is a different payload,
@@ -364,7 +385,7 @@ class TestWeixinChunkDelivery:
         result = asyncio.run(adapter.send_document("wxid_test123", str(doc)))
 
         assert result.success is False
-        assert "prepare failed" in (result.error or "")
+        assert "session not ready" in (result.error or "") and "prepare failed" in (result.error or "")
         assert [call.kwargs["context_token"] for call in send_items_mock.await_args_list] == ["ctx-token", None]
 
 

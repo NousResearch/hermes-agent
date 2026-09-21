@@ -25,6 +25,7 @@ def _prepare(monkeypatch):
 
     monkeypatch.setattr(gateway_cli, "_guard_official_docker_root_gateway", lambda: None)
     monkeypatch.setattr(gateway_cli, "_guard_named_profile_under_multiplexer", lambda force=False: None)
+    monkeypatch.setattr(gateway_cli, "_attach_to_host_gateway_or_guard", lambda **kwargs: None)
     monkeypatch.setattr(gateway_cli, "_guard_supervised_gateway_conflict", lambda force=False: None)
     monkeypatch.setattr(gateway_cli, "_guard_existing_gateway_process_conflict", lambda replace=False: None)
     monkeypatch.setattr(gateway_cli, "_guard_fragile_foreground_gateway", lambda replace=False, force=False: None)

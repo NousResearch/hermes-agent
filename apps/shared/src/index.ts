@@ -106,7 +106,12 @@ export {
   type ReasoningEffort,
   type ReasoningEffortValue
 } from './reasoning-effort'
-export { reconnectBackoffDelayMs, type ReconnectBackoffOptions } from './reconnect-backoff'
+export {
+  isStableOpen,
+  RECONNECT_STABLE_OPEN_MS,
+  reconnectBackoffDelayMs,
+  type ReconnectBackoffOptions
+} from './reconnect-backoff'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,

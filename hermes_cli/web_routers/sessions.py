@@ -357,9 +357,13 @@ async def search_sessions(
                 seen[root] = payload
 
             def hit_payload(row: dict, snippet: str, role, session_started) -> dict:
+                # `last_active` rides only on id-match rows (sessions table); FTS
+                # hits have no row recency and leave it null so the desktop can
+                # fall back to session_started instead of inventing one.
                 return {
                     "snippet": snippet, "role": role, "source": row.get("source"),
-                    "model": row.get("model"), "session_started": session_started}
+                    "model": row.get("model"), "session_started": session_started,
+                    "last_active": row.get("last_active")}
 
             # Direct ID matches first (pasted ids never appear in message text).
             for row in db.search_sessions_by_id(

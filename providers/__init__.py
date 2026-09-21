@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
+# Where the CURRENT registration of each name came from: "bundled" / "user" (a
+# ``$HERMES_HOME`` plugin dir) / "runtime" (entry point, legacy module, direct call).
+_SOURCES: dict[str, str] = {}
+_current_source: str | None = None
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
 _discovering = False
@@ -83,11 +87,21 @@ def register_provider(profile: ProviderProfile) -> None:
     """
     global _PROVIDER_LIST_CACHE
     _REGISTRY[profile.name] = profile
+    _SOURCES[profile.name] = _current_source or "runtime"
     for alias in profile.aliases:
         _ALIASES[alias] = profile.name
     _PROVIDER_LIST_CACHE = None
     if _discovered and not _discovering:  # post-discovery registration: mirror it immediately
         _sync_auth_registry()
+
+
+def provider_source(name: str) -> str | None:
+    """Discovery source of the profile currently registered under *name* (see ``_SOURCES``), or None.
+
+    ``"user"`` is what lets a ``$HERMES_HOME`` plugin re-registering a bundled name win in
+    ``hermes_cli.auth.PROVIDER_REGISTRY`` too — a bundled profile never rewrites a built-in row.
+    """
+    return _SOURCES.get(_ALIASES.get(name, name))
 
 
 def get_provider_profile(name: str) -> ProviderProfile | None:
@@ -217,8 +231,9 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
 def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
     """Import a single plugin directory so it self-registers.
 
-    ``source`` is "bundled" or "user", used only for log messages.
+    ``source`` is "bundled" or "user"; it is recorded per registered profile (``_SOURCES``).
     """
+    global _current_source
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return
@@ -236,6 +251,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
     if module_name in sys.modules:
         return  # already imported
 
+    _current_source = source
     try:
         spec = importlib.util.spec_from_file_location(
             module_name, init_file, submodule_search_locations=[str(plugin_dir)]
@@ -250,6 +266,8 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
         )
         sys.modules.pop(module_name, None)
+    finally:
+        _current_source = None
 
 
 def _discover_entry_point_providers() -> None:

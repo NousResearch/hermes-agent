@@ -68,6 +68,7 @@ async function commitGroupChatRoster(group: string, previous: RosterRow[], seate
   updateGroupChat(group, (room: GroupChatRoom) => ({
     ...room,
     members: durableGroupChatMembers(seated),
+    heldMessages: without(room.heldMessages, key => key),
     holds: without(room.holds, key => key),
     stranded: without(room.stranded, key => key),
     sessions: without(room.sessions, groupSessionMemberKey),

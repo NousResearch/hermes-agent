@@ -67,7 +67,7 @@ import {
 import { type ConsoleEntry } from './preview-console-state'
 import { previewConsoleState } from './preview-console-store'
 import { LocalFilePreview, PreviewEmptyState } from './preview-file'
-import { type PreviewInputEvent, registerPreviewInput } from './preview-input'
+import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
@@ -95,6 +95,7 @@ type PreviewWebview = HTMLElement & {
   replaceMisspelling?: (word: string) => void
   selectAll?: () => void
   sendInputEvent?: (event: PreviewInputEvent) => void
+  getZoomFactor?: () => number
 }
 
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
@@ -820,7 +821,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           throw new Error('preview webview cannot take input events')
         }
 
-        webview.sendInputEvent(event)
+        // The guest keeps its own (per-host) zoom, which the act engine's CSS
+        // measurements do not include — ask the webview, not the window.
+        webview.sendInputEvent(toWebviewInputSpace(event, webview.getZoomFactor?.()))
       }
     })
   }, [isRemoteHtml, isWebPreview, tabId])

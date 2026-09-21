@@ -236,9 +236,11 @@ def _warn_stale_serve_runtimes(rows) -> None:
 
 def _owed_stale_serve_rows(rows) -> list[dict]:
     """Survivors the updater itself owes a restart for. A Desktop-supervised serve is excluded: the
-    recovery pass is forbidden to restart it (it hosts the live Desktop chats), so counting it keeps
-    ``fleet_restart_pending`` armed forever with nothing that could ever discharge it. It is still
-    named by :func:`_warn_stale_serve_runtimes` and recorded in the receipt. See #111494."""
+    recovery pass is forbidden to restart it (it hosts the live Desktop chats), so counting it would
+    end every update with the Desktop open as incomplete/exit 1. It is still named by
+    :func:`_warn_stale_serve_runtimes` and recorded in the receipt. See #111494. (The
+    fleet-restart-pending marker draws the same boundary for its own inventory, so a supervisor-owned
+    serve row no longer keeps that warning armed either.)"""
     return [row for row in (rows or []) if row.get("supervisor") != "desktop"]
 
 

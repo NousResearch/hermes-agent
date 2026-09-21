@@ -142,23 +142,27 @@ def test_catalog_accepts_declared_credential(
     catalog_env: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    import hermes_cli.mcp_catalog as mcp_catalog
+    import hermes_cli.mcp_config as mcp_config
+    from agent.secret_scope import get_secret
+    from tools.connectors.mcp import _CatalogBackend
 
-    installs: list[str] = []
-    monkeypatch.setattr(
-        mcp_catalog,
-        "install_entry",
-        lambda entry, enable=True: installs.append(entry.name),
-    )
+    probes: list[str] = []
 
-    response = client.post(
-        "/api/mcp/catalog/install",
-        headers=HEADERS,
-        json={"name": "demo", "env": {"DEMO_API_KEY": "valid-demo-value"}},
-    )
+    def probe(name, cfg, **_kwargs):
+        # The credential is in scope for the probe, and nothing is saved before it answers.
+        assert get_secret("DEMO_API_KEY") == "valid-demo-value"
+        assert not (catalog_env / ".env").exists()
+        assert "demo" not in mcp_config._get_mcp_servers()
+        probes.append(name)
+        return [("demo_tool", "")]
 
-    assert response.status_code == 200
-    assert installs == ["demo"]
+    monkeypatch.setattr(mcp_config, "_probe_single_server", probe)
+
+    assert _CatalogBackend().install(
+        "demo", {"DEMO_API_KEY": "valid-demo-value"}
+    ) == ["demo_tool"]
+    assert probes == ["demo"]
+    assert "demo" in mcp_config._get_mcp_servers()
     assert "DEMO_API_KEY=valid-demo-value" in (
         catalog_env / ".env"
     ).read_text(encoding="utf-8")

@@ -15,6 +15,19 @@ import hermes_cli.gateway as gateway
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
+@pytest.fixture(autouse=True)
+def inert_task_scheduler_probe():
+    """Tests that fake ``is_windows()`` send the reaper through ``_windows_scheduled_task_state``,
+    which spawns ``pwsh`` whenever one is on PATH (GitHub's ubuntu runners ship it). On a loaded
+    runner that spawn outlives its 10 s timeout and ``subprocess.run`` kills it through the test's
+    globally patched ``os.kill`` — a foreign PID lands in ``killed_pids``. Tests of the probe itself
+    call ``.undo()`` on this fixture to reach the real function."""
+    mp = pytest.MonkeyPatch()
+    mp.setattr(gateway, "_windows_scheduled_task_state", lambda name: None)
+    yield mp
+    mp.undo()
+
+
 def _install_fake_gateway_run(monkeypatch, start_gateway):
     module = ModuleType("gateway.run")
     module.start_gateway = start_gateway
@@ -1211,8 +1224,11 @@ class TestWindowsScheduledTaskSupervisorGuard:
         assert marked_pids == [orphan_pid]
         assert killed_pids == []
 
-    def test_windows_scheduled_task_running_returns_false_off_windows(self, monkeypatch):
+    def test_windows_scheduled_task_running_returns_false_off_windows(
+        self, monkeypatch, inert_task_scheduler_probe
+    ):
         """The state helper is inert on POSIX (no subprocess spawned)."""
+        inert_task_scheduler_probe.undo()  # exercise the real probe, not the module-wide stand-in
         monkeypatch.setattr(gateway, "is_windows", lambda: False)
 
         def _boom_run(*_a, **_k):
@@ -1365,14 +1381,19 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
     owned = run(FakeService("gw", r'"C:\hermes\hermes-agent\venv\Scripts\hermes.exe" gateway run'))
     assert [(s.name, s.service_pid, s.gateway_pid) for s in owned] == [("gw", 2360, 18480)]
 
-    # QueryServiceConfig denied to this user (hardened third-party service): not Hermes's, and never a
-    # reason to abort the whole enumeration; a Hermes-NAMED service is settled without asking binpath.
-    class DeniedConfigService(FakeService):
-        def binpath(self):
-            raise psutil.AccessDenied(2360, self._name)
+    # QueryServiceConfig unreadable to this user (hardened or malformed third-party service): not
+    # Hermes's, and never a reason to abort; a Hermes-NAMED service is settled without asking binpath.
+    class UnreadableConfigService(FakeService):
+        def __init__(self, name, error):
+            super().__init__(name, "")
+            self._error = error
 
-    assert run(DeniedConfigService("Hardened", "")) == []
-    named = run(DeniedConfigService("HermesGateway", ""))
+        def binpath(self):
+            raise self._error
+
+    assert run(UnreadableConfigService("Hardened", psutil.AccessDenied(2360, "Hardened"))) == []
+    assert run(UnreadableConfigService("BrokenMui", OSError(15100, "MUI file missing"))) == []
+    named = run(UnreadableConfigService("HermesGateway", OSError(15100, "MUI file missing")))
     assert [(s.name, s.service_pid, s.gateway_pid) for s in named] == [("HermesGateway", 2360, 18480)]
 
 
@@ -1435,6 +1456,33 @@ def test_find_windows_gateway_services_fails_closed_on_service_access_error(
             psutil_module=fake_psutil,
             profile_processes=[profile],
         )
+
+
+def test_find_windows_gateway_services_skips_unrelated_service_with_unreadable_config(monkeypatch):
+    """An unrelated service whose QueryServiceConfigW fails with a plain OSError (WinError 15100 MUI
+    loader, WinError 0 from OpenServiceW behind endpoint-security agents) is not Hermes's and must be
+    skipped, not turned into "SCM service enumeration failed" that aborts `hermes update` (#116173)."""
+    monkeypatch.setattr(gateway.sys, "platform", "win32")
+    import hermes_cli.gateway_windows as gateway_windows
+
+    monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
+
+    class MuiBrokenService:
+        def name(self):
+            return "IsolationSession"
+
+        def binpath(self):
+            raise OSError(15100, "The resource loader failed to find MUI file")
+
+    class AccessDenied(Exception):
+        pass
+
+    fake_psutil = SimpleNamespace(
+        win_service_iter=lambda: [MuiBrokenService()],
+        AccessDenied=AccessDenied,
+    )
+
+    assert gateway.find_windows_gateway_services(psutil_module=fake_psutil, profile_processes=[]) == []
 
 
 def test_find_windows_gateway_services_fails_closed_when_scm_scan_is_indeterminate(

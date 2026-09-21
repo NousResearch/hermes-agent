@@ -656,6 +656,30 @@ def _apply_tool_selection(
     _say(f"  ✓ {len(chosen_names)}/{len(probed)} tools enabled.")
 
 
+def card_install_config(entry: CatalogEntry) -> dict:
+    """The ``mcp_servers.<name>`` block a connection card installs, built in memory.
+
+    Same block :func:`install_entry` writes, minus everything a terminal owns: no prompts, no
+    probe, no checklist. The caller saves it only once the server accepted the connection. Tool
+    filter priority matches :func:`_apply_tool_selection`: a prior user selection survives a
+    reinstall, else the manifest's curated filter, else none.
+    """
+    install_dir = _do_git_install(entry) if entry.install is not None else None
+    cfg = _build_server_config(entry, install_dir)
+    cfg["enabled"] = True
+    prior_include = _read_prior_tool_list(entry.name, "include")
+    prior_exclude = _read_prior_tool_list(entry.name, "exclude")
+    if prior_include is not None:
+        cfg["tools"] = {"include": prior_include}
+    elif prior_exclude is not None:
+        cfg["tools"] = {"exclude": prior_exclude}
+    elif entry.tools.default_excluded:
+        cfg["tools"] = {"exclude": list(entry.tools.default_excluded)}
+    elif entry.tools.default_enabled:
+        cfg["tools"] = {"include": list(entry.tools.default_enabled)}
+    return cfg
+
+
 def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     """Install a catalog entry end-to-end.
 

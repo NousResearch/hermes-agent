@@ -125,6 +125,39 @@ class TestWantsTuiEarly:
         monkeypatch.setattr(m, "_EARLY_INTERFACE_CACHE", None)
         assert m._wants_tui_early([]) is False
 
+    # REGRESSION (#116902): mouse-residue suppression reads the interface
+    # before `_apply_profile_override()` sets HERMES_HOME, so a cache that
+    # ignored the home answered every later caller with the DEFAULT home's
+    # interface — `hermes -p <name>` booted the wrong one.
+    def test_reread_after_the_profile_rehomes_the_process(self, tmp_path, monkeypatch):
+        default_home = tmp_path / "default"
+        profile_home = tmp_path / "profiles" / "coder"
+        for home, interface in ((default_home, "cli"), (profile_home, "tui")):
+            home.mkdir(parents=True)
+            (home / "config.yaml").write_text(
+                f"display:\n  interface: {interface}\n"
+            )
+
+        # The import-time read, on the home the process starts in.
+        _fake_tty(monkeypatch, True)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        m._suppress_mouse_residue_early()
+        assert m._config_default_interface_early() == "cli"
+
+        # What `-p coder` does, after that read already happened.
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        assert m._config_default_interface_early() == "tui"
+        assert m._wants_tui_early([]) is True
+
+    def test_same_home_is_read_only_once(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text("display:\n  interface: tui\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert m._config_default_interface_early() == "tui"
+
+        # The cache still spares the hot path a second YAML parse.
+        (tmp_path / "config.yaml").write_text("display:\n  interface: cli\n")
+        assert m._config_default_interface_early() == "tui"
+
 
 # ---------------------------------------------------------------------------
 # argument parser — flags exist at both levels and are relaunch-inherited

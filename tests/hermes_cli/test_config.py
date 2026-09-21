@@ -2017,6 +2017,18 @@ def test_empty_dict_default_sections_are_open_containers():
     assert suggestion == "compression.model_thresholds"
 
 
+def test_lsp_root_policy_keys_are_recognized_and_off_by_default():
+    """``lsp.warmup_timeout`` / ``broken_retry_seconds`` / ``exclude_roots`` (#116446) must be settable via
+    ``hermes config set`` and must default to today's behaviour (no grace, lifetime broken set, no exclusion)."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["lsp"]["warmup_timeout"] == 0.0
+    assert DEFAULT_CONFIG["lsp"]["broken_retry_seconds"] == 0.0
+    assert DEFAULT_CONFIG["lsp"]["exclude_roots"] == []
+    for key in ("lsp.warmup_timeout", "lsp.broken_retry_seconds", "lsp.exclude_roots"):
+        assert _validate_config_key(key) == (True, None)
+
+
 class TestSaveConfigExplicitPathAuthority:
     """#113301: the explicit-path evidence that keeps user-set defaults through the strip pass
     must come from the fail-closed read, not from a second cached read that can yield ``{}``."""

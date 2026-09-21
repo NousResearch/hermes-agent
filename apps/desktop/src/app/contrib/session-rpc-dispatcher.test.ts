@@ -149,6 +149,40 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
     expect(probe.resolveSessionOwner).not.toHaveBeenCalled()
   })
 
+  it('routes a freshly recovered runtime id to its session\'s owner only once the binding is published', async () => {
+    // A session-scoped retry after withSessionNotFoundResume: the new runtime id is
+    // known to nobody until the recovering caller publishes stored → runtime. Before
+    // that, the dispatcher cannot translate it and fails closed; after, it reaches the
+    // stored session's owner. Callers therefore publish in `onRecovered`, which runs
+    // before the retried call — not after the retry has already returned.
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-omar', 'rt-omar-dead']]) }
+    const ambientRequest = vi.fn(async () => ({ ambient: true }))
+
+    const request = createSessionRpcDispatcher({
+      ambientRequest: ambientRequest as never,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionIdRef: { current: null },
+      sessionStateByRuntimeIdRef: { current: new Map() }
+    })
+
+    await expect(request('image.attach', { path: '/tmp/shot.png', session_id: 'rt-omar-live' })).rejects.toSatisfy(
+      isSessionOwnerResolutionError
+    )
+    expect(gatewayMocks.requestGatewayForAgent).not.toHaveBeenCalled()
+
+    runtimeIdByStoredSessionIdRef.current.set('stored-omar', 'rt-omar-live')
+
+    await expect(request('image.attach', { path: '/tmp/shot.png', session_id: 'rt-omar-live' })).resolves.toEqual({
+      routed: true
+    })
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'omar', 'image.attach', {
+      path: '/tmp/shot.png',
+      session_id: 'rt-omar-live'
+    })
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
+
   it('prefers the exact hint over an untagged row profile, and the probe result over nothing', async () => {
     setSessions([makeSessionInfo({ id: 'stored-omar', profile: 'default' })])
     setSessionOwnerHint('stored-omar', { connectionId: 'local', profile: 'omar' })

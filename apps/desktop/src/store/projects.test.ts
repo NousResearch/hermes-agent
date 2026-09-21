@@ -1011,10 +1011,10 @@ describe('project tree profile isolation', () => {
 })
 
 describe('tombstone pruning', () => {
-  const openGatewayReturning = (scopedIds: string[]) => {
+  const openGatewayReturning = (scopedIds: string[], projects: SidebarProjectTree[] = []) => {
     const gateway = {
       connectionState: 'open',
-      request: vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: scopedIds })
+      request: vi.fn().mockResolvedValue({ active_id: null, projects, scoped_session_ids: scopedIds })
     }
 
     activeGateway.mockImplementation(() => gateway as never)
@@ -1040,6 +1040,44 @@ describe('tombstone pruning', () => {
     await refreshProjectTree()
 
     expect($removedSessionIds.get().has('sess-1')).toBe(true)
+  })
+
+  it('keeps a settled archive tombstone while a stale tree still renders the session', async () => {
+    tombstoneSessions(['archived-1'])
+
+    // `scoped_session_ids` can be from a newer scope calculation than the
+    // cached tree rows. A stale sidebar refresh still contains the archived
+    // session in both its preview and repo lane, so pruning by scope alone
+    // resurrects the row after the archive RPC has settled.
+    openGatewayReturning([], [
+      {
+        id: 'project-1',
+        label: 'Project',
+        path: '/project',
+        repos: [
+          {
+            id: 'repo-1',
+            label: 'Repo',
+            path: '/project',
+            groups: [
+              {
+                id: 'main',
+                label: 'main',
+                path: '/project',
+                sessions: [{ id: 'archived-1' } as never]
+              }
+            ],
+            sessionCount: 1
+          }
+        ],
+        sessionCount: 1,
+        previewSessions: [{ id: 'archived-1' } as never]
+      }
+    ])
+
+    await refreshProjectTree()
+
+    expect($removedSessionIds.get().has('archived-1')).toBe(true)
   })
 
   it('prunes the tombstone once the mutation settles and scope no longer lists it', async () => {

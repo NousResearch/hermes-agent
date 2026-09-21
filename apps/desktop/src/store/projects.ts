@@ -407,18 +407,45 @@ const PROJECT_TREE_REQUEST_TIMEOUT_MS = 60_000
 
 let projectTreeRefreshGeneration = 0
 
+function projectTreeSessionIds(projects: SidebarProjectTree[]): Set<string> {
+  const ids = new Set<string>()
+
+  for (const project of projects) {
+    for (const id of project.sessionIds ?? []) {
+      ids.add(id)
+    }
+
+    for (const session of project.previewSessions ?? []) {
+      ids.add(session.id)
+    }
+
+    for (const repo of project.repos) {
+      for (const group of repo.groups) {
+        for (const session of group.sessions) {
+          ids.add(session.id)
+        }
+      }
+    }
+  }
+
+  return ids
+}
+
 function applyProjectTreePayload(res: ProjectTreePayload): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
-  $projectTree.set(res.projects ?? [])
+  const projects = res.projects ?? []
+  const rendered = projectTreeSessionIds(projects)
+  $projectTree.set(projects)
   $activeProjectId.set(res.active_id ?? null)
   const tombstones = $removedSessionIds.get()
 
   if (tombstones.size) {
-    // Keep a tombstone while the backend still lists the id (delete pending on
-    // its side) OR while its mutation is still in flight locally — dropping it
-    // early flashes the row back until the RPC lands.
+    // Keep a tombstone while any incoming tree row still lists the id, even if
+    // that response's scoped ids are newer. A stale preview or repo-lane row
+    // would otherwise resurrect an archived session after its RPC has settled.
+    // In-flight mutations remain pinned when a snapshot omits the id entirely.
     const inFlight = $sessionMutationsInFlight.get()
-    const pending = new Set([...tombstones].filter(id => scoped.has(id) || inFlight.has(id)))
+    const pending = new Set([...tombstones].filter(id => scoped.has(id) || rendered.has(id) || inFlight.has(id)))
 
     if (pending.size !== tombstones.size) {
       $removedSessionIds.set(pending)

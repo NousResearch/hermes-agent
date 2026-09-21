@@ -1342,6 +1342,10 @@ def restore_primary_runtime(agent) -> bool:
                     f"✅ Primary model restored: {agent.model} via {agent.provider}; "
                     f"fallback {previous_model} via {previous_provider} is no longer active."
                 )
+        # Route health is a best-effort side channel; never let its callback affect recovery.
+        with contextlib.suppress(Exception):
+            from agent.chat_completion_helpers import _notify_fallback_status
+            _notify_fallback_status(agent)
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)

@@ -3,13 +3,16 @@ import { cleanup, renderHook, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { bindConfigReadOrigin } from '@/api/config'
-import { getHermesConfigRecord } from '@/hermes'
+import type * as HermesApi from '@/hermes'
+import { bindConfigReadOrigin, getHermesConfigRecord } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 
 import { HERMES_CONFIG_KEY, useHermesConfigRecord } from './use-config-record'
 
-vi.mock('@/hermes', () => ({ getHermesConfigRecord: vi.fn() }))
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<typeof HermesApi>()),
+  getHermesConfigRecord: vi.fn()
+}))
 
 afterEach(() => {
   cleanup()

@@ -1,8 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { type ProfileScope, profileScopeKey } from '@/api/client'
-import { peekConfigReadOrigin, retainConfigReadOrigin } from '@/api/config'
-import { getHermesConfigRecord } from '@/hermes'
+import { getHermesConfigRecord, peekConfigReadOrigin, retainConfigReadOrigin } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type { HermesConfigRecord } from '@/types/hermes'
 
@@ -35,11 +34,7 @@ export const useHermesConfigRecord = (profile?: ProfileScope) => {
     // null/undefined both mean "no override" → fetch with undefined so
     // capabilityScoped falls back to the app-wide active profile (passing null
     // would wrongly target the primary backend).
-    queryFn: async () => {
-      const record = await getHermesConfigRecord(profile ?? undefined)
-
-      return record
-    },
+    queryFn: () => getHermesConfigRecord(profile ?? undefined),
     staleTime: 0,
     // The read origin is held in a WeakMap keyed by the record itself. Keep
     // the fetched object intact so the cached record and its origin cannot

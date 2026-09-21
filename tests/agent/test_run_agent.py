@@ -6143,6 +6143,49 @@ class TestAnthropicBaseUrlPassthrough:
 
 
 class TestAnthropicCredentialRefresh:
+    def test_pool_rotated_credential_is_not_replaced_by_per_request_refresh(self):
+        """A request refresh must not undo a rotation to a different pool entry."""
+        with (
+            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-account-one",
+                base_url="https://api.anthropic.com",
+                api_mode="anthropic_messages",
+                provider="anthropic",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        account_two_client = MagicMock()
+        account_two = SimpleNamespace(
+            id="anthropic-account-two",
+            runtime_api_key="sk-ant-oat01-account-two",
+            runtime_base_url="https://api.anthropic.com",
+        )
+        agent._credential_pool = SimpleNamespace(entries=lambda: [account_two])
+        agent._credential_pool_entry_id = account_two.id
+        agent._anthropic_api_key = account_two.runtime_api_key
+        agent._anthropic_client = account_two_client
+
+        with (
+            patch(
+                "agent.anthropic_credentials.resolve_anthropic_token",
+                return_value="sk-ant-oat01-account-one",
+            ) as resolve,
+            patch("agent.anthropic_adapter.build_anthropic_client") as rebuild,
+        ):
+            assert agent._try_refresh_anthropic_client_credentials() is False
+
+        resolve.assert_not_called()
+        rebuild.assert_not_called()
+        assert agent._anthropic_api_key == account_two.runtime_api_key
+        assert agent._credential_pool_entry_id == account_two.id
+        assert agent._anthropic_client is account_two_client
+
     def test_try_refresh_anthropic_client_credentials_rebuilds_client(self):
         with (
             patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),

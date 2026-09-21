@@ -279,6 +279,76 @@ async def test_whoami_reports_the_serving_profile_tier(work_profile_home):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["help", "commands"])
+@pytest.mark.parametrize("actor", [PRIMARY_ADMIN, SECONDARY_ADMIN, None])
+@pytest.mark.parametrize("policy_storage", ["cached", "disk"])
+async def test_shared_catalog_matches_actor_and_serving_policy(
+    tmp_path, monkeypatch, command, actor, policy_storage,
+):
+    """Catalog visibility follows dispatch across A→B→A shared group routes."""
+    import json
+    import math
+    from pathlib import Path
+
+    from gateway.message_actor import source_for_event_actor
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.commands import gateway_help_lines
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    work = home / "profiles" / PROFILE_NAME
+    for profile_home in (home, work):
+        _write_profile_scaffold(profile_home)
+    runner = _make_multiplex_runner()
+    runner.config.platforms[Platform.TELEGRAM].extra["group_user_allowed_commands"] = ["commands", "model"]
+    runner._secondary_config.platforms[Platform.TELEGRAM].extra["group_user_allowed_commands"] = ["commands", "status"]
+    (work / "config.yaml").write_text(json.dumps({"platforms": {"telegram": {
+        "enabled": True, "extra": runner._secondary_config.platforms[Platform.TELEGRAM].extra,
+    }}}, ensure_ascii=False), encoding="utf-8")
+    if policy_storage == "disk":
+        runner._profile_gateway_configs.clear()
+
+    for profile, profile_home in [(None, home), (PROFILE_NAME, work), (None, home)]:
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="-100",
+                               chat_type="group", profile=profile, user_id=None)
+        event = MessageEvent(text=f"/{command}", source=source, user_id=actor)
+        with _profile_runtime_scope(profile_home):
+            result = await runner._handle_message(event)
+            if actor is None and command == "commands":
+                assert "requires an identifiable user" in result
+            # Exercise the real renderer even when the outer identity gate denies /commands.
+            handler = getattr(runner, f"_handle_{command}_command")
+            pages = math.ceil(len(gateway_help_lines()) / 15) if command == "commands" else 1
+            rendered = []
+            for page in range(1, pages + 1):
+                event.text = f"/{command} {page}" if command == "commands" else "/help"
+                rendered.append(await handler(event))
+            catalog = "\n".join(rendered)
+            for name in ("help", "whoami", "model", "status", "restart"):
+                allowed = runner._check_slash_access(source_for_event_actor(event), name) is None
+                assert (f"`/{name}" in catalog) is allowed, (profile, actor, name)
+            if actor is not None or command == "help":
+                assert result == rendered[0]
+        assert source.user_id is None
+        assert Path(get_hermes_home()) == home
+
+    # An unresolved profile must not borrow primary policy, even at the renderer boundary.
+    event.source.profile = "ghost"
+    event.text = "/help"
+    assert "policy context" in await runner._handle_message(event)
+    assert "`/model" not in await handler(event)
+    # Bare standalone runners retain disabled-policy semantics, but still need an actor.
+    del runner.config
+    for name in ("model", "status"):
+        event.text = "/help"
+        catalog = await runner._handle_help_command(event)
+        allowed = runner._check_slash_access(source_for_event_actor(event), name) is None
+        assert (f"`/{name}" in catalog) is allowed
+
+
+@pytest.mark.asyncio
 async def test_quick_command_exec_resolves_named_profile_dict(
     work_profile_home,
 ):

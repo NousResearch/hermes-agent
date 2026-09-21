@@ -590,14 +590,17 @@ class GatewaySlashCommandsMixin(
         return _execute("version").text
 
     def _catalog_options(self, event: MessageEvent) -> dict:
-        """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
-        the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
-        never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
-        from gateway.slash_access import policy_for_source
-        source = event.source
-        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
-        # no ``config``; policy_for_source treats None as ungated.
-        policy = policy_for_source(getattr(self, "config", None), source)
+        """Keep catalogs within the event actor's serving-profile and identity gates."""
+        from gateway.slash_access import IDENTITY_FREE_FLOOR_COMMANDS, policy_for_source
+        source = source_for_event_actor(event)
+        policy_cfg, resolved = self._effective_gateway_config_for_source(source)
+        if not resolved:
+            return {"allowed_commands": set()}
+        policy = policy_for_source(policy_cfg, source)
+        if not getattr(source, "user_id", None):
+            return {"allowed_commands": {
+                name for name in IDENTITY_FREE_FLOOR_COMMANDS if policy.can_run(None, name)
+            }}
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
             return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
         return {}

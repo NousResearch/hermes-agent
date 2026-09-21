@@ -15,10 +15,12 @@ def test_repeat_backups_dedupe_and_rotate(tmp_path: Path, monkeypatch):
     # Same bytes again → no new file (the hermes-setup-three-times case).
     assert backup_config(cfg, "pre-setup", keep=2) is None
     for i in range(3):
+        # Every value has the same byte length. This guards against metadata-based
+        # comparison caches treating rapid rewrites as unchanged.
         cfg.write_text(f"model: {i}\n")
-        backup_config(cfg, "pre-setup", keep=2)
+        assert backup_config(cfg, "pre-setup", keep=2) is not None
     kept = list_config_backups(cfg, "pre-setup")
-    assert len(kept) == 2 and kept[0].read_text() == "model: 2\n"
+    assert [backup.read_text() for backup in kept] == ["model: 2\n", "model: 1\n"]
     # Nothing left beside config.yaml in the home root.
     assert [p.name for p in tmp_path.iterdir() if p.is_file()] == ["config.yaml"]
 

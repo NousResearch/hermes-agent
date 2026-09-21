@@ -150,7 +150,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # WeCom callback adapter parses untrusted XML POST bodies -> defusedxml.
     "platform.wecom_callback": ("defusedxml==0.7.1",),
     # Teams pulls a heavy tree (msal, dependency-injector); also the `teams` extra.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),
+    "platform.teams": (
+        "microsoft-teams-apps==2.0.13.4",
+        "aiohttp==3.14.3",
+        "pydantic-settings>=2.14.2,<3",  # GHSA-4xgf-cpjx-pc3j; Teams pulls it transitively
+    ),
     # Google Chat — Pub/Sub + Chat API. Not in [all]; Docker bakes `--extra google-chat`
     # so hosted/immutable images do not have to write the sealed venv.
     "platform.google_chat": (

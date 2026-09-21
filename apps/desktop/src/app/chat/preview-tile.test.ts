@@ -97,7 +97,10 @@ const fileTarget = (path: string) =>
 // just be declared on the tile.
 describe('preview tiles keep a live page alive across Hide', () => {
   it('registers a Browser tab with lifecycleKeepAlive while a text peek stays evictable', () => {
-    openPreview({ kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' }, 'explicit-link')
+    openPreview(
+      { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' },
+      'explicit-link'
+    )
     openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
 
     const browserId = $previewTabs.get().find(tab => tab.target.kind === 'url')!.id

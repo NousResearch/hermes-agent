@@ -170,7 +170,9 @@ describe('nextRunOverdueMs', () => {
   it('keeps upcoming, within-grace, paused and unparseable slots as plain next runs', () => {
     expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T21:00:00+04:00' }, now)).toBeNull()
     expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T20:30:00+04:00' }, now)).toBeNull()
-    expect(nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T13:34:18+04:00', state: 'paused' }, now)).toBeNull()
+    expect(
+      nextRunOverdueMs({ enabled: true, next_run_at: '2026-09-17T13:34:18+04:00', state: 'paused' }, now)
+    ).toBeNull()
     expect(nextRunOverdueMs({ enabled: false, next_run_at: '2026-09-17T13:34:18+04:00' }, now)).toBeNull()
     expect(nextRunOverdueMs({ enabled: true, next_run_at: 'not-a-date' }, now)).toBeNull()
   })

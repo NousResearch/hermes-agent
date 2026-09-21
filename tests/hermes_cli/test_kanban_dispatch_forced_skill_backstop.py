@@ -25,6 +25,9 @@ from tests.hermes_cli.test_kanban_forced_skills import install_skill
 def board(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     (home / "profiles" / "alpha").mkdir(parents=True)
+    # Identity marker: without one the dispatcher buckets 'alpha' as nonspawnable
+    # and never reaches the forced-skill backstop this file is about.
+    (home / "profiles" / "alpha" / ".env").write_text("HERMES_TEST_MARKER=x\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

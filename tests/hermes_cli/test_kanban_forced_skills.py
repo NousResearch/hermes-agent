@@ -38,6 +38,9 @@ def board(tmp_path, monkeypatch):
     """
     home = tmp_path / ".hermes"
     (home / "profiles" / "alpha").mkdir(parents=True)
+    # A named profile is only resolvable with an identity marker on disk; a bare
+    # directory is a ghost shell the profile layer refuses to serve.
+    (home / "profiles" / "alpha" / ".env").write_text("HERMES_TEST_MARKER=x\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "default")

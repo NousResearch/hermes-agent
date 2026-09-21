@@ -312,6 +312,10 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         # here exits 78, which every supervisor treats as permanent — on a launchd fleet that parked
         # every unit but the first to claim the host lock. Start beside it; the host-lock claim logs
         # the topology and the `gateway migrate --multiplex` path stays the way to converge.
+        logger.warning(
+            "Another profile's standalone gateway owns this host (%s); starting profile '%s' beside it. "
+            "Fold every profile onto one gateway with: hermes gateway migrate --multiplex",
+            attached.describe(), profile)
         return HostAttachDecision(START, "")
     if not gateway.served_known:
         # The owner never answered, so we know only that it exists. ATTACH here (on the record's

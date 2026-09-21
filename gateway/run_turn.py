@@ -4077,11 +4077,15 @@ class GatewayTurnMixin:
                     fail_result="Transformed-final edit failed for session %s (%s); sending transformed response via normal final send.",
                     fail_exc="Failed to edit streamed message for session %s: %s",
                 )
-        elif _sc is not None and getattr(_sc, "stream_deltas_enabled", True):
-            # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log
-            # the decision inputs ("signal never set" vs "ack-pending race"). Skipped for consumers
-            # never fed the final's deltas (interim-only wiring, #105341) — they cannot have raced
-            # the normal final send, so the warning would be a guaranteed false positive.
+        elif (
+            _sc is not None
+            and getattr(_sc, "stream_deltas_enabled", True)
+            and bool(getattr(_sc, "already_sent", False))
+        ):
+            # DUPLICATE-RISK DIAGNOSTIC: streamed content was visible but suppression did NOT fire;
+            # log the decision inputs ("signal never set" vs "ack-pending race"). Consumers never
+            # fed final deltas (#105341), or that never sent anything, leave the normal final as the
+            # only user-visible send and cannot have raced it.
             logger.warning(
                 "Normal final-send NOT suppressed despite active stream consumer for session %s: "
                 "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "

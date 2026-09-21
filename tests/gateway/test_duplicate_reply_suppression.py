@@ -13,10 +13,14 @@ Covers four fix paths:
 """
 
 import asyncio
+import logging
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.run_turn import GatewayTurnMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -129,3 +133,28 @@ class TestBaseInterruptSuppression:
 # ===================================================================
 # Test 4: stream_consumer.py — cancellation handler delivery confirmation
 # ===================================================================
+
+
+class TestDuplicateRiskDiagnostic:
+    @pytest.mark.asyncio
+    async def test_silent_stream_consumer_does_not_warn_about_duplicate_send(self, caplog):
+        """A consumer that delivered nothing leaves the normal final as the only send."""
+
+        class Runner(GatewayTurnMixin):
+            @staticmethod
+            def _run_agent_stream_confirmed_final_delivery(consumer, final_text, *, previewed=False):
+                return False
+
+        consumer = SimpleNamespace(final_content_delivered=False)
+        turn_ctx = SimpleNamespace(
+            stream_consumer_holder=[consumer],
+            source=SimpleNamespace(chat_id="chat-1"),
+            session_key="session-1",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            await Runner()._run_agent_mark_streamed_delivery(
+                {"final_response": "Only normal final send"}, cast(Any, turn_ctx),
+            )
+
+        assert "possible duplicate send" not in caplog.text

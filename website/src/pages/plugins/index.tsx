@@ -385,7 +385,9 @@ export default function PluginCatalogPage() {
   const [tierFilter, setTierFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [sort, setSort] = useState<SortKey>("stars");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const filterPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -414,12 +416,19 @@ export default function PluginCatalogPage() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const isEditable =
+        target?.matches("input, textarea, select") ||
+        target?.isContentEditable ||
+        Boolean(target?.closest("[contenteditable='true']"));
+      if (e.key === "/" && !isEditable) {
         e.preventDefault();
+        e.stopImmediatePropagation();
         searchRef.current?.focus();
       }
       if (e.key === "Escape") {
         searchRef.current?.blur();
+        setFiltersOpen(false);
       }
     };
     window.addEventListener("keydown", handler);
@@ -470,6 +479,7 @@ export default function PluginCatalogPage() {
     setSearch("");
     setTierFilter("all");
     setCategoryFilter("all");
+    setFiltersOpen(false);
   }, []);
 
   const pickCategory = useCallback((c: string) => {
@@ -549,6 +559,7 @@ export default function PluginCatalogPage() {
 
         {!catalogEmpty && (
           <div className={styles.controlsBar}>
+            <div className={styles.controlsTopRow}>
             <div className={styles.searchWrap}>
               <svg
                 className={styles.searchIcon}
@@ -566,7 +577,7 @@ export default function PluginCatalogPage() {
               <input
                 ref={searchRef}
                 type="text"
-                placeholder="Search plugins by name or by what you want Hermes to do"
+                placeholder="Search plugins"
                 title='Tip: press "/" to jump here'
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -585,6 +596,59 @@ export default function PluginCatalogPage() {
               )}
             </div>
 
+            <button
+              type="button"
+              className={styles.filterToggle}
+              aria-expanded={filtersOpen}
+              aria-controls="plugin-directory-filters"
+              onClick={() => {
+                if (filtersOpen) {
+                  setFiltersOpen(false);
+                  return;
+                }
+                setFiltersOpen(true);
+                requestAnimationFrame(() => {
+                  filterPanelRef.current?.scrollIntoView({ block: "start" });
+                });
+              }}
+            >
+              Filters
+              {(tierFilter !== "all" || categoryFilter !== "all") && (
+                <span className={styles.activeFilterCount}>
+                  {Number(tierFilter !== "all") + Number(categoryFilter !== "all")}
+                </span>
+              )}
+            </button>
+            <label className={styles.compactSelect}>
+              <span>Source</span>
+              <select value={tierFilter} onChange={(e) => setTierFilter(e.target.value)}>
+                {TIER_ORDER.map((tier) => (
+                  <option key={tier} value={tier}>{tier === "all" ? "All sources" : TIER_CONFIG[tier]?.label || tier}</option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.compactSelect}>
+              <span>Category</span>
+              <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                <option value="all">All categories</option>
+                {CATEGORY_ORDER.filter((c) => categoryCounts[c]).map((c) => (
+                  <option key={c} value={c}>{CATEGORY_CONFIG[c].label}</option>
+                ))}
+              </select>
+            </label>
+            <label className={`${styles.compactSelect} ${styles.compactSort}`}>
+              <span>Sort</span>
+              <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+                {SORT_OPTIONS.map((opt) => <option key={opt.key} value={opt.key}>{opt.label}</option>)}
+              </select>
+            </label>
+            </div>
+
+            <div
+              id="plugin-directory-filters"
+              ref={filterPanelRef}
+              className={`${styles.filterPanel} ${filtersOpen ? styles.filterPanelOpen : ""}`}
+            >
             <div className={styles.tierPills}>
               {TIER_ORDER.map((tier) => {
                 const active = tierFilter === tier;
@@ -660,6 +724,7 @@ export default function PluginCatalogPage() {
                   </button>
                 );
               })}
+            </div>
             </div>
           </div>
         )}

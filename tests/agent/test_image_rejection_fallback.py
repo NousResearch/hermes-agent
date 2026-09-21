@@ -357,29 +357,6 @@ class TestRejectionNeverReachesPersistedHistory:
         # The in-flight request still goes out text-only.
         assert "image_url" not in str(wire)
 
-    def test_later_requests_to_the_same_model_stay_text_only(self):
-        """build_api_request strips each attempt's copy — in Hermes's own message format, before
-        provider conversion, so every provider shape (incl. Bedrock's type-less blocks) is covered."""
-        from agent.message_sanitization import strip_images_for_rejecting_model
-
-        agent = self._agent()
-        self._recover(agent, self._history(), [])
-
-        api_messages = self._history()
-        assert strip_images_for_rejecting_model(agent, api_messages) is True
-        assert "image_url" not in str(api_messages)
-
-    def test_a_model_that_accepts_images_gets_them_again(self):
-        from agent.message_sanitization import strip_images_for_rejecting_model
-
-        agent = self._agent()
-        self._recover(agent, self._history(), [])
-
-        agent.provider, agent.model = "vision-provider", "vision-model"
-        api_messages = self._history()
-        assert strip_images_for_rejecting_model(agent, api_messages) is False
-        assert str(api_messages).count("data:image/png") == 2
-
     def test_every_model_in_a_fallback_chain_is_tracked(self):
         """Two models reject images in the same turn (fallback A -> B). A turn-global guard
         skipped B's recovery once A had tripped it, failing the turn; recording only one model
@@ -400,6 +377,9 @@ class TestRejectionNeverReachesPersistedHistory:
 
         assert retry_a is True and retry_b is True
         assert agent._image_rejecting_models == {("p", "model-a"), ("p", "model-b")}
+        # The per-model guard still stops re-entry: a second rejection from a model already
+        # known to reject images falls through to normal error handling instead of looping.
+        assert self._recover(agent, self._history(), [])[0] is False
         for model in ("model-a", "model-b"):
             agent.model = model
             api_messages = self._history()
@@ -440,10 +420,3 @@ class TestRejectionNeverReachesPersistedHistory:
         api_messages = self._history()
         assert strip_images_for_rejecting_model(agent, api_messages) is False
         assert str(api_messages).count("data:image/png") == 2
-
-    def test_a_repeat_rejection_from_the_same_model_does_not_loop(self):
-        """The per-model guard still stops re-entry: a second rejection from a model already
-        known to reject images falls through to normal error handling instead of retrying forever."""
-        agent = self._agent()
-        assert self._recover(agent, self._history(), [])[0] is True
-        assert self._recover(agent, self._history(), [])[0] is False

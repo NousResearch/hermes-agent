@@ -43,7 +43,13 @@ import {
   setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
-import { $sessionTiles, $workingSessionIds, clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import {
+  $sessionTiles,
+  $workingSessionIds,
+  clearAllSessionStates,
+  publishSessionState,
+  runtimeSessionOwner
+} from '@/store/session-states'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 
 import { deferred } from '../../../test/deferred'
@@ -675,6 +681,67 @@ describe('primary failure foreground isolation', () => {
       expect($desktopBoot.get().error).toBeNull()
     }
   )
+})
+
+describe('shared host backend event provenance', () => {
+  // Multiplex-only: ONE backend serves every local profile, so the primary
+  // socket carries profile B's events and no secondary closure exists to stamp
+  // them. Unstamped, runtimeSessionOwner() is blank for B and the live
+  // sessions/cron sync falls back to slow polling.
+  // A LOCAL host backend: no registry connection id, so ownership can only come
+  // from the stamp (a registry-tagged event already carries its exact owner).
+  const sharedPrimaryConn = {
+    ...primaryConn,
+    baseUrl: 'http://127.0.0.1:8899',
+    connectionId: '',
+    profile: 'beta',
+    sharedPrimary: true,
+    wsUrl: 'ws://127.0.0.1:8899/api/ws?token=t'
+  }
+
+  function deliverEvent(socket: FakeWebSocket, frame: Record<string, unknown>) {
+    ;(socket as unknown as { emit: (type: string, ev: unknown) => void }).emit('message', {
+      data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params: frame })
+    })
+  }
+
+  it("stamps a shared-primary profile-B event with B, not with the boot-time profile", async () => {
+    const desktop = fakeDesktop()
+
+    desktop.getConnection.mockResolvedValue(sharedPrimaryConn)
+    desktop.getGatewayWsUrl.mockResolvedValue(sharedPrimaryConn.wsUrl)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+
+    // The window moved to profile B after boot; the socket did not.
+    act(() => {
+      $connection.set(sharedPrimaryConn as unknown as ReturnType<typeof $connection.get>)
+      $activeGatewayProfile.set('beta')
+    })
+
+    act(() => {
+      deliverEvent(FakeWebSocket.instances[0], { session_id: 'rt-B', type: 'session.info' })
+    })
+
+    expect(runtimeSessionOwner('rt-B')).toBe('beta')
+  })
+
+  it('leaves an unshared primary on its exact owner — the socket already IS its profile', async () => {
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => {
+      deliverEvent(FakeWebSocket.instances[0], { session_id: 'rt-A', type: 'session.info' })
+    })
+
+    // The registry (connectionId, profile) owner, NOT a bare-profile marker:
+    // the stamp is reserved for the shared-primary topology.
+    expect(runtimeSessionOwner('rt-A')).toEqual({ connectionId: 'primary-vps', profile: 'default' })
+  })
 })
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {

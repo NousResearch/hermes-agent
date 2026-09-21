@@ -705,7 +705,46 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
     return true
   }
 
+  // Session WRITES are scoped by `body.profile` (`rename_session_endpoint` ->
+  // `_with_db(body.profile, ...)`), not by the query. They ARE scopable — just
+  // not through the URL — so they belong on the shared backend with the path
+  // left alone; `apps/desktop/src/api/sessions.ts` always names the owner in
+  // the body. Returning `true` here would append a `?profile=` the handler
+  // ignores and advertise a scope that is not doing the work.
+  if (method !== 'GET' && (pathname === '/api/sessions' || pathname.startsWith('/api/sessions/'))) {
+    return false
+  }
+
   return null
+}
+
+const SAFE_REQUEST_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+/**
+ * True when this is a REST request that CHANGES something and the server cannot
+ * vouch for its profile scope (`localPrimaryRequestScope` → null: no
+ * `?profile=`, no `body.profile`, no target named in the path).
+ *
+ * Such a route has exactly one scope left — the backend process's own
+ * `HERMES_HOME` — so it keeps a pooled, profile-scoped backend even though every
+ * other local request now shares the host one. Mechanical on purpose: the day a
+ * handler learns to read `profile` it joins `LOCAL_PRIMARY_SCOPED_ROUTES` (or a
+ * family above), `localPrimaryRequestScope` stops returning null, and this
+ * predicate stops seeing it — there is no second list to keep in sync.
+ *
+ * A call with no `requestPath` is a BACKEND/descriptor resolution (WebSocket
+ * dial, pool bookkeeping), not a REST call, and is never held back.
+ */
+export function unscopableMutatingRequest(opts: ProfileRouteOptions = {}): boolean {
+  if (!String(opts.requestPath || '')) {
+    return false
+  }
+
+  if (SAFE_REQUEST_METHODS.has(String(opts.requestMethod || 'GET').toUpperCase())) {
+    return false
+  }
+
+  return localPrimaryRequestScope(opts) === null
 }
 
 /**
@@ -720,11 +759,16 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
  *  3. A profile inheriting the app-global remote shares the primary backend —
  *     one host serves every profile — so it is scoped per request instead.
  *  4. An unknown profile under a remote primary shares that remote backend.
- *     A stored local profile remains isolated in its own backend.
- *  5. A local profile REST request that the primary backend can safely scope
- *     reuses that backend, with `?profile=` when the handler accepts it.
- *  6. Any other local profile gets its own pooled backend, spawned with
- *     `--profile`, so its `HERMES_HOME` scopes it.
+ *     A stored local profile keeps its own pooled backend instead.
+ *  5. A local profile REST request the primary backend can scope reuses that
+ *     backend, with `?profile=` when the handler reads the query (handlers that
+ *     name their target in the path or `body.profile` get no query).
+ *  6. Every other LOCAL profile also shares the one host backend
+ *     (multiplex-only: one `hermes serve` per HOST). The two ways out are
+ *     `HERMES_DESKTOP_ISOLATED_BACKEND=1`, which gives this app a private
+ *     backend, and a MUTATING request the server cannot scope at all — that
+ *     one keeps a pooled backend whose HERMES_HOME does the scoping, so a
+ *     destructive call can never fall through to the primary's home.
  *
  * Routing used to be spread across three overlapping predicates that each
  * re-derived part of this table, which is how case 3 ended up registering
@@ -782,9 +826,10 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
 
   // 6. Multiplex-only: every other LOCAL profile shares the one host backend
   //    too, carrying `?profile=` / the `profile` RPC param instead of getting
-  //    a `hermes serve` child of its own. `HERMES_DESKTOP_ISOLATED_BACKEND=1`
-  //    is the only way back to a private per-profile process.
-  if (sharesHostBackend({ isolated: opts.isolatedBackend })) {
+  //    a `hermes serve` child of its own — UNLESS this request mutates state
+  //    the server cannot scope, in which case the pooled backend's own
+  //    HERMES_HOME is the only scope left and it keeps one.
+  if (sharesHostBackend({ isolated: opts.isolatedBackend, unscopableRequest: unscopableMutatingRequest(opts) })) {
     return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
   }
 

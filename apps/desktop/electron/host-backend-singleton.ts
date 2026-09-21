@@ -27,6 +27,13 @@ export interface HostBackendCollapseOptions {
   profileRemoteOverride?: boolean
   /** The primary profile's backend is itself a remote host. */
   primaryRemoteActive?: boolean
+  /**
+   * This request MUTATES state the server cannot profile-scope
+   * (`connection-config.ts::unscopableMutatingRequest`). The pooled backend's
+   * own `HERMES_HOME` is then the only scope there is, so the collapse must
+   * not swallow it — and the spawn guard below must not refuse it.
+   */
+  unscopableRequest?: boolean
 }
 
 /**
@@ -35,7 +42,7 @@ export interface HostBackendCollapseOptions {
  * route, never meant a local child in the first place.
  */
 export function sharesHostBackend(opts: HostBackendCollapseOptions = {}): boolean {
-  if (opts.isolated) {
+  if (opts.isolated || opts.unscopableRequest) {
     return false
   }
 

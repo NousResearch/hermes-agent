@@ -376,7 +376,11 @@ const ROUTES = [
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
   {
-    name: 'an unscoped local profile request shares the host backend, scoped per request',
+    // THE INVARIANT this collapse must not eat: a route the server cannot
+    // profile-scope has only the backend PROCESS's HERMES_HOME left as a
+    // scope, so it keeps a pooled backend. /api/files/upload acts on host
+    // paths and takes no `profile` even after #118275.
+    name: 'a mutating local request the server cannot scope keeps its pooled backend',
     profile: 'coder',
     opts: {
       primaryProfile: 'default',
@@ -384,6 +388,34 @@ const ROUTES = [
       profileRemoteOverride: false,
       requestMethod: 'POST',
       requestPath: '/api/files/upload'
+    },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    // Same unscopable route, safe method: a read cannot corrupt the wrong
+    // home, and holding reads back would spawn a backend per profile again.
+    name: 'a read on an unscopable route still shares the host backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET',
+      requestPath: '/api/files/upload'
+    },
+    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+  },
+  {
+    // #118275 taught this handler `?profile=`, so the server CAN vouch for the
+    // scope and the same destructive call rides the shared host backend.
+    name: 'a destructive local request the server can scope shares the host backend',
+    profile: 'coder',
+    opts: {
+      primaryProfile: 'default',
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'POST',
+      requestPath: '/api/memory/reset'
     },
     expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
@@ -436,7 +468,10 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
   },
   {
-    name: 'a local session write shares the host backend, scoped per request',
+    // Scoped by `body.profile` (rename_session_endpoint -> `_with_db`), not by
+    // the query: shares the host backend with its path left alone. Appending
+    // `?profile=` here would advertise a scope the handler ignores.
+    name: 'a local session write shares the host backend, scoped by its body',
     profile: 'coder',
     opts: {
       primaryProfile: 'default',
@@ -445,7 +480,7 @@ const ROUTES = [
       requestMethod: 'PATCH',
       requestPath: '/api/sessions/session-1'
     },
-    expected: { backend: 'primary', descriptorProfile: 'coder', scopePath: true }
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
   },
   {
     name: 'a profile-management request uses the primary without a query scope',
@@ -811,6 +846,57 @@ test('resolveProfileApiRequest scopes destructive profile-owned routes to the sh
   }
 })
 
+test('resolveProfileApiRequest keeps an unscopable mutating route on a process-scoped backend', () => {
+  // The load-bearing half of the collapse: a route the server cannot scope has
+  // nothing left but the backend process's own HERMES_HOME, so it must NOT fall
+  // through to the shared primary. Live proof of the failure mode this pins:
+  // `POST /api/memory/reset?profile=beta` on an unfixed server deleted ALPHA's
+  // MEMORY.md and returned ok:true.
+  for (const [method, path] of [
+    ['POST', '/api/files/upload'],
+    ['DELETE', '/api/files/managed'],
+    // A hypothetical future route: the gate is derived from
+    // localPrimaryRequestScope(), not from a hardcoded list, so an endpoint
+    // nobody has taught `profile` is held back the day it is added.
+    ['POST', '/api/not-a-real-route/destroy']
+  ]) {
+    assert.deepEqual(
+      resolveProfileApiRequest('iris', path, {
+        globalRemote: false,
+        profileRemoteOverride: false,
+        requestMethod: method
+      }),
+      { backendProfile: 'iris', requestPath: path },
+      `${method} ${path} must keep its own backend`
+    )
+  }
+
+  // ...and the gate is about SCOPE, not about the word "destructive": the same
+  // unscopable paths read fine on the shared backend.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/files/managed', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'GET'
+    }),
+    { backendProfile: null, requestPath: '/api/files/managed?profile=iris' }
+  )
+})
+
+test('resolveProfileApiRequest leaves a body-scoped session write unqueried on the shared backend', () => {
+  // PATCH /api/sessions/{id} reads its target DB from `body.profile`; the query
+  // is ignored. apps/desktop/src/api/sessions.ts always names the owner in the
+  // body (sessionWriteProfile), so this rides the shared host backend.
+  assert.deepEqual(
+    resolveProfileApiRequest('iris', '/api/sessions/session-1', {
+      globalRemote: false,
+      profileRemoteOverride: false,
+      requestMethod: 'PATCH'
+    }),
+    { backendProfile: null, requestPath: '/api/sessions/session-1' }
+  )
+})
+
 test('resolveProfileApiRequest uses exact method and path eligibility for mixed families', () => {
   assert.deepEqual(
     resolveProfileApiRequest('iris', '/api/skills', {
@@ -818,11 +904,13 @@ test('resolveProfileApiRequest uses exact method and path eligibility for mixed 
     }),
     { backendProfile: null, requestPath: '/api/skills?profile=iris' }
   )
+  // Only `GET /api/skills` is eligible: the exact method matters, and an
+  // unlisted mutating method keeps its own process-scoped backend.
   assert.deepEqual(
     resolveProfileApiRequest('iris', '/api/skills', {
       requestMethod: 'POST'
     }),
-    { backendProfile: null, requestPath: '/api/skills?profile=iris' }
+    { backendProfile: 'iris', requestPath: '/api/skills' }
   )
   assert.deepEqual(
     resolveProfileApiRequest('iris', '/api/config/defaults', {

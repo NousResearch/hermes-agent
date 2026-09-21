@@ -478,6 +478,20 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     return {"role": "user", "content": content}
 
 
+def _coerce_non_dict_tool_use_inputs(result: List[Dict[str, Any]]) -> None:
+    """Coerce a stored ``tool_use.input`` that is not a dict to ``{}``. The executor's argument
+    validator rejects such a call and answers with an error ``tool_result``, but the malformed
+    assistant message is already in history; replayed verbatim it fails the whole next request with
+    HTTP 400 "Input should be a valid dictionary" (non-retryable, ends the cron/session). Native
+    block replay, pre-shaped content lists and pre-parsed ``tool_call.arguments`` all reach the wire
+    without re-validation, so coerce at request-build time — mirroring ``_parse_tool_args``'s
+    bad-JSON -> {}. #118240"""
+    for _, m in _assistant_block_lists(result):
+        for b in m["content"]:
+            if _block_type(b) == "tool_use" and not isinstance(b.get("input"), dict):
+                b["input"] = {}
+
+
 def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
     """Strip tool_use blocks with no matching tool_result, and vice versa. Compression/truncation
     can remove either side of a pair or insert messages between them. Anthropic requires the
@@ -727,6 +741,7 @@ def convert_messages_to_anthropic(
             _convert_tool_message_to_result(result, m)
         else:
             result.append(_convert_user_message(m.get("content", "")))
+    _coerce_non_dict_tool_use_inputs(result)
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
     _ensure_leading_user_turn(result)

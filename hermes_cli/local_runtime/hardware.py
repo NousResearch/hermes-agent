@@ -161,8 +161,14 @@ def _nvidia_vram() -> tuple[int, int] | None:
             parts = line.split(",")
             if len(parts) < 2:
                 continue
-            total_mib += int(parts[0])
-            free_mib += int(parts[1])
+            # A per-field "N/A" (driver mismatch, vGPU, WDDM) must skip only its own row:
+            # letting the ValueError reach the outer suppress would discard the good rows
+            # already totaled and return None — the silent degradation this probe prevents.
+            try:
+                total_mib += int(parts[0])
+                free_mib += int(parts[1])
+            except ValueError:
+                continue
         if total_mib <= 0:
             return None
         return total_mib << 20, free_mib << 20

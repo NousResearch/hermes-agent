@@ -121,5 +121,3 @@ def _check_web_bundle_provenance(should_fix: bool, f: Finding) -> None:
             "Web bundle differs from current source HEAD",
             f"(deployed {_short_revision(deployed)}; HEAD {_short_revision(current)})",
         )
-
-

@@ -84,9 +84,9 @@ describe("hermesBuildProvenance", () => {
     expect(provenance.invocation.length).toBeGreaterThan(0);
   });
 
-  it("preserves the dirty-tree fact after the build completes", async () => {
+  it.each(["web/index.html", "untracked.txt"])("preserves dirty build input %s", async (file) => {
     const repo = await makeRepository();
-    await writeFile(path.join(repo, "web", "index.html"), "<main>Dirty Hermes</main>\n");
+    await writeFile(path.join(repo, file), "<main>Dirty Hermes</main>\n");
 
     const provenance = await buildFixture(repo);
 
@@ -101,6 +101,7 @@ describe("hermesBuildProvenance", () => {
     await writeFile(path.join(source, "web", "index.html"), "<main>Packaged Hermes</main>\n");
     const sourceRevision = "a".repeat(40);
     vi.stubEnv("HERMES_GIT_SHA", sourceRevision);
+    vi.stubEnv("SOURCE_DATE_EPOCH", "0");
     vi.stubEnv("BUILD_SOURCE_BRANCH", "packaging-branch");
     vi.stubEnv("BUILD_SOURCE_DIRTY", "false");
 
@@ -108,16 +109,19 @@ describe("hermesBuildProvenance", () => {
 
     expect(provenance.commitSha).toBe(sourceRevision);
     expect(provenance.branch).toBe("packaging-branch");
+    expect(provenance.builtAt).toBe("1970-01-01T00:00:00.000Z");
     expect(provenance.dirty).toBe(false);
   });
 
-  it("does not mislabel a packaged release tag as a branch", async () => {
+  it.each(["", undefined])("does not mislabel a packaged release tag (branch override %s)", async (branch) => {
     const source = await mkdtemp(path.join(tmpdir(), "hermes-web-provenance-tag-"));
     temporaryPaths.push(source);
     await mkdir(path.join(source, "web"));
     await writeFile(path.join(source, "web", "index.html"), "<main>Tagged Hermes</main>\n");
     vi.stubEnv("HERMES_GIT_SHA", "b".repeat(40));
-    vi.stubEnv("BUILD_SOURCE_BRANCH", "");
+    vi.stubEnv("BUILD_SOURCE_BRANCH", branch);
+    vi.stubEnv("GITHUB_HEAD_REF", undefined);
+    vi.stubEnv("GITHUB_REF_TYPE", "tag");
     vi.stubEnv("GITHUB_REF_NAME", "v1.2.3");
     vi.stubEnv("BUILD_SOURCE_DIRTY", "false");
 

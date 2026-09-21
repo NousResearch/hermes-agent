@@ -101,7 +101,7 @@ class TestCompressionBoundaryHook:
     def test_memory_switch_is_queued_after_compression_commit(self):
         from hermes_state import SessionDB
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "test.db")
             agent = self._make_agent(db)
             compressor = MagicMock()
@@ -113,6 +113,7 @@ class TestCompressionBoundaryHook:
             compressor._last_compress_aborted = False
             agent.context_compressor = compressor
             agent._memory_manager = MagicMock()
+            agent._memory_manager.build_system_prompt.return_value = ""
             original_sid = agent.session_id
 
             agent._compress_context(

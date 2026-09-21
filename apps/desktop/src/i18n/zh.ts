@@ -1208,6 +1208,10 @@ export const zh = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      minimizeToTrayTitle: '最小化到托盘',
+      minimizeToTrayDesc:
+        '将最小化的窗口隐藏到系统托盘（macOS 上为菜单栏），Hermes 继续运行。关闭窗口、Alt+F4 和 Cmd+Q 的行为不变。默认关闭，仅适用于此设备。',
+      minimizeToTrayUnavailable: '系统托盘不可用。窗口将正常最小化和关闭。关闭此选项后重新开启即可重试。',
       none: '无',
       noneParen: '(无)',
       builtinOnly: '仅内置',

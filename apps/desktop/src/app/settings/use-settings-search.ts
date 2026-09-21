@@ -125,6 +125,19 @@ export function useSettingsSearchCatalog(enabled: boolean) {
   const appearance = t.settings.appearance
 
   const appearanceEntries: SettingsSearchEntry[] = [
+    ...(window.hermesDesktop?.minimizeToTray
+      ? [
+          {
+            context: appearanceContext,
+            description: t.settings.config.minimizeToTrayDesc,
+            icon: Monitor,
+            id: `setting:${APPEARANCE_SETTING_IDS.minimizeToTray}`,
+            keywords: ['tray', 'background', 'minimize', 'dock', 'taskbar', 'menu bar'],
+            label: t.settings.config.minimizeToTrayTitle,
+            target: { view: 'config:appearance' as const, setting: APPEARANCE_SETTING_IDS.minimizeToTray }
+          }
+        ]
+      : []),
     {
       context: appearanceContext,
       description: t.language.description,

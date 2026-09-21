@@ -996,6 +996,11 @@ export const en: Translations = {
       daysAgo: count => `${count} days ago`
     },
     config: {
+      minimizeToTrayTitle: 'Minimize to tray',
+      minimizeToTrayDesc:
+        'Hide minimized windows in the system tray (menu bar on macOS) while Hermes keeps running. Close, Alt+F4, and Cmd+Q keep their normal behavior. Off by default; applies only to this device.',
+      minimizeToTrayUnavailable:
+        'The system tray is unavailable. Windows will minimize and close normally. Turn this off and on to retry.',
       none: 'None',
       noneParen: '(none)',
       builtinOnly: 'Built-in only',

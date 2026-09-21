@@ -960,6 +960,11 @@ export const ja = defineLocale({
       daysAgo: count => `${count} 日前`
     },
     config: {
+      minimizeToTrayTitle: 'トレイに最小化',
+      minimizeToTrayDesc:
+        '最小化したウィンドウをシステムトレイ（macOS ではメニューバー）に隠し、Hermes を実行し続けます。閉じる、Alt+F4、Cmd+Q の動作は変わりません。初期設定はオフで、このデバイスにのみ適用されます。',
+      minimizeToTrayUnavailable:
+        'システムトレイを利用できないため、通常どおり最小化・終了します。再試行するには一度オフにしてからオンにしてください。',
       none: 'なし',
       noneParen: '(なし)',
       builtinOnly: '内蔵のみ',

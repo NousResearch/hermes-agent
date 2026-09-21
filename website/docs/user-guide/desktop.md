@@ -128,6 +128,14 @@ The app is built for working on several things at once:
 - **Multiple windows** — **Cmd/Ctrl+Shift+N** opens a new window, and any session can be popped out via its context menu (**New window**) or from the command palette. A popped-out window renders that single chat without the global sidebar — handy for parking a long-running session on another monitor. Live agent output streams into every window showing the session.
 - **Panes** — **Cmd/Ctrl+B** toggles the left sidebar, **Cmd/Ctrl+J** the right one, and **Cmd/Ctrl+\\** swaps which side the sidebars sit on.
 
+#### Minimize to tray
+
+Enable **Settings → Appearance → Window layout → Minimize to tray** to hide minimized windows from the taskbar or Dock while their sessions keep running. The setting is off by default and applies only to this device.
+
+Use **Show Hermes** in the system tray (the menu bar on macOS) to restore the windows. **Quit Hermes** still uses the normal active-work confirmation. Closing a window, **Alt+F4**, and **Cmd+Q** keep their existing behavior; this setting does not turn Close into hide-to-tray.
+
+On macOS, the Dock icon hides only when no ordinary Hermes window remains visible. On Linux, a registered StatusNotifier tray host is required; desktops without one keep normal minimize behavior. If the host disappears, hidden windows are restored.
+
 ### Terminal
 
 A real terminal lives in the right sidebar, next to the file browser:

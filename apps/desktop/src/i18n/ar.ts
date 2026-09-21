@@ -879,6 +879,11 @@ export const ar = defineLocale({
       daysAgo: count => `قبل ${count} يوم`
     },
     config: {
+      minimizeToTrayTitle: 'التصغير إلى علبة النظام',
+      minimizeToTrayDesc:
+        'إخفاء النوافذ المصغّرة في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. يظل سلوك الإغلاق وAlt+F4 وCmd+Q كما هو. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
+      minimizeToTrayUnavailable:
+        'علبة النظام غير متاحة. ستُصغّر النوافذ وتُغلق كالمعتاد. أوقف هذا الخيار ثم فعّله لإعادة المحاولة.',
       none: 'لا شيء',
       noneParen: '(لا شيء)',
       notSet: 'غير مضبوط',

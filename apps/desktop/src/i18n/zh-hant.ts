@@ -998,6 +998,10 @@ export const zhHant = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      minimizeToTrayTitle: '最小化至系統匣',
+      minimizeToTrayDesc:
+        '將最小化的視窗隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。關閉視窗、Alt+F4 和 Cmd+Q 的行為不變。預設關閉，僅適用於此裝置。',
+      minimizeToTrayUnavailable: '系統匣無法使用。視窗將正常最小化和關閉。關閉此選項後重新開啟即可重試。',
       none: '無',
       noneParen: '(無)',
       builtinOnly: '僅內建',

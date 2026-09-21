@@ -815,6 +815,9 @@ export interface Translations {
       daysAgo: (count: number) => string
     }
     config: {
+      minimizeToTrayTitle: string
+      minimizeToTrayDesc: string
+      minimizeToTrayUnavailable: string
       none: string
       noneParen: string
       builtinOnly: string

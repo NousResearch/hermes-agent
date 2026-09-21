@@ -623,6 +623,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/web-development/web-development-cloudflare-temporary-deploy',
+                    'user-guide/skills/optional/web-development/web-development-directus',
                     'user-guide/skills/optional/web-development/web-development-har-derived-api-client',
                     'user-guide/skills/optional/web-development/web-development-page-agent',
                     'user-guide/skills/optional/web-development/web-development-publish-site',

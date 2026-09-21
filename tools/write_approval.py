@@ -14,17 +14,24 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import os
 import re
 import threading
 import time
 import uuid
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+    import msvcrt
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +45,7 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 CONFIG_KEY = "write_approval"
 _TRUTHY_STRINGS = frozenset({"on", "true", "yes", "1", "approve", "enabled"})
 _PENDING_WRITE_LOCK = threading.Lock()
+_PENDING_WRITE_LOCK_TIMEOUT_SECONDS = 10.0
 
 
 # --- Config resolution ---
@@ -72,6 +80,48 @@ def _pending_files(subsystem: str) -> list:
     return list(d.glob("*.json")) if d.exists() else []
 
 
+def _kernel_pending_lock(lock_file, acquire: bool) -> None:
+    """Lock or unlock the pending-store transaction file without CLI-layer dependencies."""
+    if fcntl is not None:
+        operation = fcntl.LOCK_UN if not acquire else fcntl.LOCK_EX | fcntl.LOCK_NB
+        fcntl.flock(lock_file.fileno(), operation)
+        return
+    lock_file.seek(0)
+    mode = msvcrt.LK_UNLCK if not acquire else msvcrt.LK_NBLCK
+    msvcrt.locking(lock_file.fileno(), mode, 1)
+
+
+@contextmanager
+def _pending_write_transaction(subsystem: str):
+    """Serialize one pending-store read/decide/write transition across threads and processes."""
+    pending_dir = _pending_path(subsystem, "").parent
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = pending_dir / ".stage.lock"
+    with _PENDING_WRITE_LOCK, lock_path.open("a+b") as lock_file:
+        # Windows byte-range locks require the locked byte to exist.
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b" ")
+            lock_file.flush()
+
+        deadline = time.monotonic() + _PENDING_WRITE_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                _kernel_pending_lock(lock_file, True)
+                break
+            except (BlockingIOError, OSError, PermissionError) as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"Timed out waiting for pending {subsystem} write lock"
+                    ) from exc
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            with suppress(OSError, IOError):
+                _kernel_pending_lock(lock_file, False)
+
+
 def stage_write(
     subsystem: str, payload: Dict[str, Any], *, summary: str, origin: str,
     deduplicate: bool = False, max_pending: Optional[int] = None,
@@ -85,7 +135,7 @@ def stage_write(
     Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
     the safe failure for an approval gate (nothing silently committed)."""
     normalized_origin = origin or "foreground"
-    with _PENDING_WRITE_LOCK:
+    with _pending_write_transaction(subsystem):
         pending = list_pending(subsystem) if deduplicate or max_pending is not None else []
         if deduplicate:
             for existing in pending:

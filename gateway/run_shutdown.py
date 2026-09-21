@@ -1239,7 +1239,7 @@ class GatewayShutdownMixin:
 
         The teardown fires the memory-provider lifecycle hooks (``flush_pending`` → ``on_session_end`` →
         ``shutdown`` → ``close``), which read credentials/home at call time. In-turn callers carry the
-        profile scope through ``_run_in_executor_with_context``; shutdown does not (it runs on the main
+        profile scope through ``_run_housekeeping_in_executor``; shutdown does not (it runs on the main
         loop, outside any adapter handler), so under multiplexing ``on_session_end`` failed closed and the
         session tail was never committed (#110622). ``_run_release_in_profile_scope`` enters the OWNING
         profile's scope from ``session_key`` when the caller has none, exactly like cache eviction."""

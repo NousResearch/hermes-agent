@@ -2994,14 +2994,12 @@ class TestRequestRelayMetadata:
 
 
 # ---------------------------------------------------------------------------
-# Bare-model opt-in gate (direct_model_requests) for _request_agent_overrides
+# Bare-model routing for OpenAI-compatible endpoints
 # ---------------------------------------------------------------------------
 
 
 class TestDirectModelRequestsGate:
-    """Bare ``model`` (no ``provider``) is opt-in on OpenAI-compatible
-    endpoints so generic clients hardcoding "gpt-4o" keep falling back to
-    the gateway default (idea credit: PR #22825 by @mssteuer)."""
+    """OpenAI-compatible requests route non-virtual bare model ids by default."""
 
     def test_bare_model_dropped_when_disallowed(self):
         overrides = _request_agent_overrides(
@@ -3010,18 +3008,20 @@ class TestDirectModelRequestsGate:
         assert "requested_model" not in overrides
 
 
-    def test_adapter_flag_opt_in(self):
-        adapter = APIServerAdapter(
-            PlatformConfig(enabled=True, extra={"direct_model_requests": True})
-        )
+    def test_adapter_honors_bare_models_by_default(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
         assert adapter._direct_model_requests is True
 
 
-    @pytest.mark.asyncio
-    async def test_chat_completions_bare_model_honored_when_enabled(self):
+    def test_adapter_flag_keeps_explicit_legacy_opt_out(self):
         adapter = APIServerAdapter(
-            PlatformConfig(enabled=True, extra={"direct_model_requests": True})
+            PlatformConfig(enabled=True, extra={"direct_model_requests": False})
         )
+        assert adapter._direct_model_requests is False
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_passes_a_bare_model_without_opt_in(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
@@ -3029,15 +3029,80 @@ class TestDirectModelRequestsGate:
                     {"final_response": "ok", "messages": [], "api_calls": 1},
                     {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
                 )
-                resp = await cli.post(
+                response = await cli.post(
                     "/v1/chat/completions",
-                    json={
-                        "model": "openai/gpt-5",
-                        "messages": [{"role": "user", "content": "hi"}],
-                    },
+                    json={"model": "provider/direct-model", "messages": [{"role": "user", "content": "hi"}]},
                 )
+        assert response.status == 200
+        assert mock_run.call_args.kwargs["requested_model"] == "provider/direct-model"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("endpoint", "payload"),
+        [
+            ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}),
+            ("/v1/responses", {"input": "hi"}),
+        ],
+    )
+    async def test_nonstreaming_endpoints_honor_bare_model_and_report_runtime(
+        self, endpoint, payload,
+    ):
+        """Regression for #118254: an alias must not be echoed as the served model."""
+        adapter = _make_routing_adapter(
+            {"client-route": {"model": "provider/served-model"}}
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1,
+                     "runtime": {"model": "provider/served-model"}},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    endpoint, json={"model": "client-route", **payload},
+                )
+                response_data = await resp.json()
         assert resp.status == 200
-        assert mock_run.call_args.kwargs.get("requested_model") == "openai/gpt-5"
+        assert mock_run.call_args.kwargs["requested_model"] == "client-route"
+        assert mock_run.call_args.kwargs["route"] == {"model": "provider/served-model"}
+        assert response_data["model"] == "provider/served-model"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("endpoint", "payload"),
+        [
+            ("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}),
+            ("/v1/responses", {"input": "hi"}),
+        ],
+    )
+    async def test_streaming_endpoints_complete_with_effective_routed_model(self, endpoint, payload):
+        adapter = _make_routing_adapter(
+            {"client-route": {"model": "provider/served-model"}}
+        )
+        app = _create_app(adapter)
+
+        async def _run(**kwargs):
+            callback = kwargs.get("stream_delta_callback")
+            if callback:
+                callback("ok")
+            return (
+                {"final_response": "ok", "messages": [], "api_calls": 1,
+                 "runtime": {"model": "provider/served-model"}},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_run) as mock_run:
+                resp = await cli.post(endpoint, json={"model": "client-route", "stream": True, **payload})
+                body = await resp.text()
+        frames = [json.loads(line[6:]) for line in body.splitlines()
+                  if line.startswith("data: {")]
+        initial = frames[0] if endpoint.endswith("chat/completions") else frames[0]["response"]
+        assert initial["model"] == "provider/served-model"
+        terminal = frames[-1] if endpoint.endswith("chat/completions") else frames[-1]["response"]
+        assert terminal["model"] == "provider/served-model"
+        assert mock_run.call_args.kwargs["requested_model"] == "client-route"
 
 
 class TestRouteWithoutModelKeepsDefault:

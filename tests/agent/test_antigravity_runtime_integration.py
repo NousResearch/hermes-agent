@@ -67,6 +67,36 @@ def test_aiagent_runs_antigravity_turn_reuses_conversation_and_closes_once():
     assert agent._antigravity_session is None
 
 
+def test_live_model_switch_retires_antigravity_session_without_building_openai_client():
+    agent = _agent(model="auto")
+    setattr(agent, "provider", "google-antigravity")
+    setattr(agent, "requested_provider", "google-antigravity")
+    setattr(agent, "base_url", "")
+
+    class ExistingSession:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    session = ExistingSession()
+    setattr(agent, "_antigravity_session", session)
+
+    from agent.agent_runtime_helpers import switch_model as switch_agent_model
+    switch_agent_model(
+        agent, new_model="gemini-test", new_provider="google-antigravity",
+        api_key="no-key-required", base_url="", api_mode="antigravity_runtime",
+    )
+
+    assert getattr(agent, "model") == "gemini-test"
+    assert agent.api_mode == "antigravity_runtime"
+    assert agent.client is None
+    assert getattr(agent, "_antigravity_session") is None
+    assert session.closed == 1
+    agent.close()
+
+
 def test_cold_agent_restores_antigravity_conversation_from_transcript_sidecar():
     client = _Client()
     agent = _agent(cwd="/tmp/ag-cwd")

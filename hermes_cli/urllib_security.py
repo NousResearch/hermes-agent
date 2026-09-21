@@ -7,6 +7,7 @@ import logging
 import os
 import ssl
 import sys
+import threading
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
@@ -82,28 +83,64 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
     https_request = _sanitize
 
 
+_CACHE: dict[tuple[str, ...], ssl.SSLContext | None] = {}
+_CACHE_LOCK = threading.Lock()
+_MISSING = object()  # sentinel: "not in cache yet" (distinct from a cached None)
+
+
 def _resolved_https_context() -> ssl.SSLContext | None:
-    """Return the explicit CA context for Hermes-owned urllib openers."""
+    """Return the explicit CA context for Hermes-owned urllib openers.
+
+    ``ssl.create_default_context(cafile=...)`` parses the whole CA bundle on every call, and
+    nothing in the tree calls ``urllib.request.install_opener`` — so the per-request cost was
+    paid every time. The result depends only on the CA env vars and the bundle file itself, so
+    it is safe to cache process-wide (mirrors ``agent.ssl_verify._context_for_ca_bundle``).
+    """
     ca_bundle = next((value for name in _CA_BUNDLE_ENV_VARS if (value := os.getenv(name, "").strip())), "")
     if ca_bundle:
         ca_path = Path(ca_bundle).expanduser()
         if ca_path.is_file():
+            cache_key = (str(ca_path.resolve()),)
+            with _CACHE_LOCK:
+                ctx = _CACHE.get(cache_key, _MISSING)
+                if ctx is not _MISSING:
+                    return ctx
             try:
-                return ssl.create_default_context(cafile=str(ca_path))
+                ctx = ssl.create_default_context(cafile=str(ca_path))
             except (OSError, ssl.SSLError) as exc:
                 logger.warning(
                     "CA bundle could not be loaded from %s: %s — falling back to default certificates",
                     ca_bundle, exc,
                 )
+                ctx = None
+            with _CACHE_LOCK:
+                _CACHE[cache_key] = ctx
+            return ctx
         else:
             logger.warning("CA bundle path does not exist: %s — falling back to default certificates", ca_bundle)
+            cache_key = (str(ca_path.resolve()),)
+            with _CACHE_LOCK:
+                ctx = _CACHE.get(cache_key, _MISSING)
+                if ctx is not _MISSING:
+                    return None  # cached miss
+            with _CACHE_LOCK:
+                _CACHE[cache_key] = None
+            return None
 
     if sys.platform != "darwin":
         return None
     try:
         import certifi
 
-        return ssl.create_default_context(cafile=certifi.where())
+        cache_key = ("certifi",)
+        with _CACHE_LOCK:
+            ctx = _CACHE.get(cache_key, _MISSING)
+            if ctx is not _MISSING:
+                return ctx
+        ctx = ssl.create_default_context(cafile=certifi.where())
+        with _CACHE_LOCK:
+            _CACHE[cache_key] = ctx
+        return ctx
     except (ImportError, OSError, ssl.SSLError) as exc:
         logger.warning(
             "Could not load certifi for urllib HTTPS verification: %s — falling back to default certificates", exc

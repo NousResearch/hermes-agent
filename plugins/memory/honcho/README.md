@@ -274,14 +274,15 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 | Priority | Source | Example session name |
 |----------|--------|---------------------|
 | 1 | Gateway session key (Telegram, Discord, etc.) | `"agent-main-telegram-dm-8439114563"` |
-| 2 | `per-session` strategy | Hermes session ID (`20260415_a3f2b1`) |
+| 1+ | Gateway key + Hermes session id when `sessionStrategy` is `per-session` | `"agent-main-telegram-dm-8439114563-20260415_a3f2b1"` |
+| 2 | `per-session` strategy (non-gateway) | Hermes session ID (`20260415_a3f2b1`) |
 | 3 | Manual map (`sessions` config) | `"myproject-main"` |
 | 4 | Explicit `/title` command (non-automatic title) | `"refactor-auth"` |
 | 5 | `per-repo` strategy | Git root directory name (`hermes-agent`) |
 | 6 | `per-directory` strategy | Directory basename (`my-project`) |
 | 7 | `global` strategy | Workspace name |
 
-Messaging gateway platforms always resolve via priority 1 (per-chat isolation) regardless of `sessionStrategy`. The strategy setting controls non-gateway sessions such as CLI and Desktop.
+Messaging gateway platforms resolve via priority 1 (stable per-chat isolation) for non-`per-session` strategies. With `sessionStrategy: per-session`, the Hermes session id is appended so `/new` starts a fresh Honcho session while chats remain isolated. Peer-level memory (representation, conclusions, dialectic) stays keyed by peer. Other strategies continue to control non-gateway sessions such as CLI and Desktop.
 
 Directory strategies and manual mappings use the logical session workspace, not the backend process's launch directory. Desktop/TUI and ACP pass the workspace during agent construction; deferred Desktop/TUI builds use the same session cwd. With no non-empty construction cwd, Honcho uses the runtime resolver: session cwd context, scoped `terminal.cwd`, then the launch directory. No process-wide `chdir` is needed.
 
@@ -301,7 +302,7 @@ In bot mode another Hermes profile can DM this agent. The relay marks that turn 
 
 - **`per-directory`** — basename of the logical session working directory. Opening Hermes in `~/code/myapp` and `~/code/other` gives two separate sessions. Same directory = same session across runs.
 - **`per-repo`** — git root directory name. All subdirectories within a repo share one session. Falls back to `per-directory` if not inside a git repo.
-- **`per-session`** — Hermes session ID (timestamp + hex). Every `hermes` invocation starts a fresh Honcho session. Falls back to `per-directory` if no session ID is available.
+- **`per-session`** — Hermes session ID (timestamp + hex). Every `hermes` invocation starts a fresh Honcho session. On messaging gateways, the session id is appended to the stable chat key so `/new` rotates Honcho sessions without mixing chats. Falls back to `per-directory` (CLI) or the bare gateway key (gateway, no session id) if no session ID is available.
 - **`global`** — workspace name. One session for everything. Memory accumulates across all directories and runs.
 
 ### Multi-Profile Pattern

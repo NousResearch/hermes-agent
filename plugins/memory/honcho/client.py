@@ -511,8 +511,9 @@ class HonchoClientConfig:
         session_id: str | None = None, gateway_session_key: str | None = None,
         session_title_source: str | None = None,
     ) -> str | None:
-        """Order: gateway session key (per-chat isolation no cwd/strategy gives) -> per-session
-        strategy's session_id (authoritative, so a generated title never remaps a live conversation)
+        """Order: gateway session key (per-chat isolation; with per-session strategy, append
+        Hermes session_id so /new starts a fresh Honcho session) -> per-session strategy's
+        session_id (authoritative, so a generated title never remaps a live conversation)
         -> sessions map override -> /title -> per-repo (git root name) -> per-directory (basename)
         -> global (workspace)."""
         import re
@@ -521,8 +522,17 @@ class HonchoClientConfig:
             return re.sub(r'[^a-zA-Z0-9_-]+', '-', text).strip('-')
 
         cwd = cwd or os.getcwd()
-        if gateway_session_key and _slug(gateway_session_key):
-            return self._enforce_session_id_limit(_slug(gateway_session_key), gateway_session_key)
+        gateway_slug = _slug(gateway_session_key) if gateway_session_key else ""
+        if gateway_slug:
+            # Default: stable per-chat Honcho session. With per-session strategy, append the
+            # Hermes transcript id so gateway /new rotates the Honcho session while chats stay
+            # isolated. Peer-level memory remains keyed by peer, not session.
+            if self.session_strategy == "per-session" and session_id:
+                composed = f"{gateway_slug}-{session_id}"
+                return self._enforce_session_id_limit(
+                    composed, f"{gateway_session_key}:{session_id}",
+                )
+            return self._enforce_session_id_limit(gateway_slug, gateway_session_key)
         if self.session_strategy == "per-session" and session_id:
             return self._with_peer_prefix(session_id)
         manual = self.sessions.get(cwd)

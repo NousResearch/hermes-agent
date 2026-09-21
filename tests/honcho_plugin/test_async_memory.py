@@ -187,8 +187,9 @@ class TestResolveSessionNameTitle:
         assert result == "20260309_175514_9797dd"
 
 
-    def test_gateway_key_beats_per_session_id(self):
-        # Gateways keep per-chat isolation even in per-session.
+    def test_gateway_per_session_composes_key_with_session_id(self):
+        # per-session appends the Hermes session id so gateway /new rotates
+        # Honcho sessions while the chat key still isolates peers/chats.
         cfg = HonchoClientConfig(session_strategy="per-session")
         result = cfg.resolve_session_name(
             "/some/dir",
@@ -197,7 +198,7 @@ class TestResolveSessionNameTitle:
             gateway_session_key="agent:main:telegram:dm:42",
             session_id="20260309_175514_9797dd",
         )
-        assert result == "agent-main-telegram-dm-42"
+        assert result == "agent-main-telegram-dm-42-20260309_175514_9797dd"
 
     def test_global_strategy_returns_workspace(self):
         cfg = HonchoClientConfig(session_strategy="global", workspace_id="my-workspace")

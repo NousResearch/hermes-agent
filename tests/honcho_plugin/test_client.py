@@ -568,20 +568,37 @@ class TestGetHonchoClient:
 class TestResolveSessionNameGatewayKey:
     """Regression tests for gateway_session_key priority in resolve_session_name.
 
-    Ensures gateway platforms get stable per-chat Honcho sessions even when
-    sessionStrategy=per-session would otherwise create ephemeral sessions.
+    Default strategies keep a stable per-chat Honcho session. With
+    sessionStrategy=per-session, the Hermes session id is appended so gateway
+    /new starts a fresh Honcho session while chats remain isolated (#116166).
     Regression: plugin refactor 924bc67e dropped gateway key plumbing.
     """
 
-    def test_gateway_key_overrides_per_session_strategy(self):
-        """gateway_session_key must win over per-session session_id."""
+    def test_per_session_composes_gateway_key_with_session_id(self):
+        """per-session appends session_id so /new rotates the Honcho session."""
         config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            session_id="20260412_171002_69bb38",
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        assert result == "agent-main-telegram-dm-8439114563-20260412_171002_69bb38"
+
+    def test_non_per_session_keeps_stable_gateway_key(self):
+        """Default strategies keep one Honcho session per chat across /new."""
+        config = HonchoClientConfig(session_strategy="per-directory")
         result = config.resolve_session_name(
             session_id="20260412_171002_69bb38",
             gateway_session_key="agent:main:telegram:dm:8439114563",
         )
         assert result == "agent-main-telegram-dm-8439114563"
 
+    def test_per_session_gateway_key_without_session_id_stays_stable(self):
+        """Missing session_id falls back to the stable per-chat gateway key."""
+        config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        assert result == "agent-main-telegram-dm-8439114563"
 
     def test_gateway_key_sanitizes_special_chars(self):
         """Colons and other non-alphanumeric chars are replaced with hyphens."""
@@ -635,6 +652,24 @@ class TestResolveSessionNameLengthLimit:
         assert result_a != result_b
         assert len(result_a) == self.HONCHO_MAX
         assert len(result_b) == self.HONCHO_MAX
+
+    def test_per_session_composed_long_key_stays_within_limit(self):
+        """Composed gateway+session names must still honor the 100-char limit."""
+        key = "!roomid:matrix.example.org|" + "$event_" + ("a" * 300)
+        config = HonchoClientConfig(session_strategy="per-session")
+        result = config.resolve_session_name(
+            gateway_session_key=key,
+            session_id="20260412_171002_69bb38",
+        )
+        assert result is not None
+        assert len(result) == self.HONCHO_MAX
+        # Distinct Hermes sessions under the same long chat key stay distinct.
+        other = config.resolve_session_name(
+            gateway_session_key=key,
+            session_id="20260412_180000_abcdef",
+        )
+        assert other != result
+        assert len(other) == self.HONCHO_MAX
 
 
 class TestDialecticDepthParsing:

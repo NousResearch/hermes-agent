@@ -137,14 +137,14 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `a2aSessions` | `true` | Write DMs from other bots into their own Honcho session per sender bot, never the human's. `false` skips bot-authored turns entirely |
 
 **Session strategy** controls how Honcho sessions map to your work:
-- `per-session` — each `hermes` run gets a fresh session. Clean starts, memory via tools. Recommended for new users.
+- `per-session` — each `hermes` run gets a fresh session. Clean starts, memory via tools. Recommended for new users. On messaging gateways, `/new` appends the Hermes session id to the chat key so Honcho sessions rotate per conversation.
 - `per-directory` — one Honcho session per working directory. Context accumulates across runs.
 - `per-repo` — one session per git repository.
 - `global` — single session across all directories.
 
 Directory-based strategies and manual `sessions` mappings use the logical session working directory, not the backend's launch directory. Desktop/TUI project workspaces and ACP session directories are passed during agent construction, including deferred builds. When no directory is supplied, Honcho uses the runtime cwd resolver: session context, then the scoped `terminal.cwd` setting, then the process launch directory.
 
-Messaging gateways keep their stable per-chat session key regardless of strategy or title. For other sessions, `per-session` identity takes priority, followed by a manual directory mapping, an explicit title, and the configured strategy.
+Messaging gateways keep a stable per-chat session key for non-`per-session` strategies (and titles never override the gateway key). With `sessionStrategy: per-session`, the Hermes session id is appended to the gateway chat key so `/new` starts a fresh Honcho session while chats remain isolated; peer-level memory stays keyed by peer. For other sessions, `per-session` identity takes priority, followed by a manual directory mapping, an explicit title, and the configured strategy.
 
 Automatically generated Hermes titles (`derived` or `llm`), including lineage titles for Desktop branches, are display metadata and do not override `sessionStrategy`. An explicit user title remains an intentional session-name override for non-gateway, non-`per-session` sessions without a manual mapping.
 

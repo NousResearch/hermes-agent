@@ -98,6 +98,121 @@ def active_session_limit_message(
     )
 
 
+# ── watchdog: a session alive far longer than a normal turn ──────────────────
+#
+# A delivery child is a ONE-SHOT whose turn is bounded (tools.bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS,
+# doubled by the one policy-gated re-run), so a delivery lease still held far past that budget is
+# not a long turn — it is a stuck or ORPHANED session. On 2026-09-20 exactly that shape held
+# ``profiles/firstmate/state.db`` (+ a 9.8 MB WAL) for 1h46m after its requester was killed, and the
+# only way it surfaced was as ``target_busy`` prose on somebody's next delivery.
+#
+# This is a QUERY, deliberately: it flags (WARNING, with pid/surface/age) and never kills. The
+# session's own owner is the only authority on its life — the requester watch in
+# ``hermes_cli.quiet_single_query`` is what ends a delivery child whose consumer died.
+LONG_RUNNING_SESSION_ENV = "HERMES_LONG_RUNNING_SESSION_S"
+# Slack on top of the turn ceiling: a turn that runs its whole budget out to the last second is
+# slow, not stuck. Same order as tools.bot_relay's own wedged-holder margin.
+LONG_RUNNING_SESSION_MARGIN_SECONDS = 300.0
+# Fallback when tools.bot_relay is unimportable: its own ceiling (600s x 2 attempts) plus slack.
+_LONG_RUNNING_SESSION_FALLBACK_SECONDS = 1500.0
+
+
+def long_running_session_seconds() -> float:
+    """Age past which a delivery lease is a stuck/orphaned session (0 disables the watchdog).
+
+    Derived from the delivery turn's own ceiling (``TURN_ATTEMPT_TIMEOUT_SECONDS`` per attempt,
+    ``TURN_MAX_ATTEMPTS`` attempts) plus slack, so a turn that legitimately runs its whole budget
+    is slow, never "stuck".
+    """
+    raw = os.environ.get(LONG_RUNNING_SESSION_ENV, "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning("ignoring invalid %s=%r", LONG_RUNNING_SESSION_ENV, raw)
+    try:
+        from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS, TURN_MAX_ATTEMPTS
+
+        return float(TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS
+                     + LONG_RUNNING_SESSION_MARGIN_SECONDS)
+    except Exception:  # pragma: no cover — tools/ unavailable, or an older bot_relay
+        return _LONG_RUNNING_SESSION_FALLBACK_SECONDS
+
+
+def _is_delivery_child(pid: Any) -> bool:
+    """Whether ``pid`` is a quiet one-shot delivery child (the population the watchdog is for).
+
+    Identified from the process itself, not the lease: an interactive CLI session legitimately
+    lives for hours, so age alone proves nothing. ``HERMES_SINGLE_QUERY_SESSION`` is set by the
+    one-shot CLI path; ``HERMES_QUIET_REQUESTER_PID`` is added by the delivery lanes' child env.
+    Unknown/unreadable processes return False — the watchdog only ever names a provable case.
+    """
+    try:
+        from hermes_cli.quiet_single_query import REQUESTER_PID_ENV
+        from gateway.status import _pid_exists
+    except Exception:  # pragma: no cover — partial install
+        return False
+    try:
+        if not _pid_exists(int(pid)):
+            return False
+    except Exception:
+        return False
+    try:
+        import psutil  # type: ignore
+
+        environ = psutil.Process(int(pid)).environ()
+    except Exception:
+        # psutil absent or /proc unreadable (other user, LXC): fall back to argv, the one
+        # marker every one-shot delivery child carries regardless of env visibility.
+        try:
+            import psutil  # type: ignore
+
+            argv = psutil.Process(int(pid)).cmdline()
+        except Exception:
+            return False
+        return any(part in ("-Q", "--oneshot", "--query-file") for part in argv)
+    return bool(environ.get("HERMES_SINGLE_QUERY_SESSION") or environ.get(REQUESTER_PID_ENV))
+
+
+def long_running_delivery_sessions(
+    *, threshold_seconds: float | None = None, now: float | None = None,
+) -> list[dict[str, Any]]:
+    """Live delivery-child leases held far past a normal turn, newest-first. Never raises.
+
+    Sweeps the root home and every live named profile (a multiplexed server leases across them),
+    and returns the offending registry entries annotated with ``age_seconds`` and
+    ``profile_home``. Callers flag them; nothing here terminates a session.
+    """
+    if threshold_seconds is None:
+        threshold_seconds = long_running_session_seconds()
+    if threshold_seconds <= 0:
+        return []
+    now = time.time() if now is None else now
+    root = get_default_hermes_root()
+    homes = [root]
+    try:
+        homes.extend(p for p in (root / "profiles").iterdir() if named_profile_is_live(p))
+    except OSError:
+        pass
+
+    flagged: list[dict[str, Any]] = []
+    for home in homes:
+        try:
+            entries = active_session_registry_snapshot(registry_home=home)
+        except Exception:
+            logger.debug("long-running session scan skipped %s", home, exc_info=True)
+            continue
+        for entry in entries:
+            started = _optional_float(entry.get("started_at"))
+            age = 0.0 if not started else max(0.0, now - started)
+            if age <= threshold_seconds or not _is_delivery_child(entry.get("pid")):
+                continue
+            flagged.append({**entry, "profile_home": str(home), "age_seconds": age})
+
+    flagged.sort(key=lambda item: item["age_seconds"], reverse=True)
+    return flagged
+
+
 # Machine-readable refusal reasons (the reason is the contract, the message is for
 # people). Capacity = "busy, come back later"; ownership = "a live owner exists and
 # writing would interleave with theirs".

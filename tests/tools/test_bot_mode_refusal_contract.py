@@ -6,10 +6,12 @@ from tools import bot_mode_dm
 
 
 def test_delivery_uses_refusal_code_before_human_wording(tmp_path, capsys):
-    for code, message, busy in (
-        ("SESSION_NOT_OWNED", "Ce chat est occupé.", True),
-        ("SESSION_COORDINATION_UNAVAILABLE", "Cannot verify whether session already has a live owner", False),
-        ("SESSION_NOT_OWNED_EXTRA", "Different failure", False),
+    for code, message, reason in (
+        # The lease refusal gets its own typed code, not the turn lock's 'target_busy' (#93091
+        # follow-up): different condition, different operator action.
+        ("SESSION_NOT_OWNED", "Ce chat est occupé.", "target_session_live"),
+        ("SESSION_COORDINATION_UNAVAILABLE", "Cannot verify whether session already has a live owner", None),
+        ("SESSION_NOT_OWNED_EXTRA", "Different failure", None),
     ):
         dm = tmp_path / "message.txt"
         dm.write_text("isolated probe", encoding="utf-8")
@@ -17,7 +19,7 @@ def test_delivery_uses_refusal_code_before_human_wording(tmp_path, capsys):
         child.write_text(f"import sys\nprint({f'hermes-refusal-reason: {code}'!r}, file=sys.stderr)\nprint({message!r}, file=sys.stderr)\nraise SystemExit(1)\n", encoding="utf-8")
         assert bot_mode_dm._run_delivery([sys.executable, str(child)], str(dm), stdin_file=False) == 1
         output = capsys.readouterr()
-        assert (json.loads(output.out)["reason"] == "target_busy") if busy else not output.out
+        assert (json.loads(output.out)["reason"] == reason) if reason else not output.out
         assert not dm.exists()
 
 

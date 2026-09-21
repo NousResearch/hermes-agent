@@ -3300,22 +3300,56 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it.
     Nested Bot Mode notifies bind this session's key (not the dispatcher's) and resume in-process
     before stdout is printed, so a teammate reply is the quiet run's final answer rather than a
-    stranded receipt."""
+    stranded receipt.
+
+    A SPAWNER-OWNED delivery child (``HERMES_QUIET_REQUESTER_PID``, set by the delivery lanes)
+    also watches its requester: this run is disposable and its output has exactly one consumer, so
+    when that consumer dies the run ends itself rather than outliving it — otherwise it holds the
+    target profile's ``state.db`` and its MCP children with nobody to read the answer, and keeps
+    spawning deliveries on its own account (the 1h46m orphan of 2026-09-20)."""
     from agent.interrupt_compat import _accepts_keyword
     from agent.turn_author import take_turn_author_from_env
     from hermes_cli.quiet_single_query import (
-        adopt_unanswered_turn, bind_quiet_session_key, continue_quiet_notify_completions,
-        exit_single_query, quiet_notify_linger_seconds, take_turn_report_path, write_turn_report,
+        REQUESTER_DEATH_EXIT_CODE, adopt_unanswered_turn, arm_requester_watchdog,
+        bind_quiet_session_key, continue_quiet_notify_completions, exit_single_query,
+        quiet_notify_linger_seconds, take_requester_pid, take_turn_report_path, write_turn_report,
     )
 
     author = take_turn_author_from_env()
     # A spawner that bounds only the turn (cron Bot Chat lane) learns the outcome from this
     # report, written before the linger below; popped so tool subprocesses do not inherit it.
     turn_report_path = take_turn_report_path()
+    # Same contract for the spawner's pid: consumed before the turn so nothing this run starts
+    # mistakes its own parent for the requester.
+    requester_pid = take_requester_pid()
     # A dispatcher's re-run of a failed bot delivery resumes the DM row its first attempt persisted.
     adopt_unanswered_turn(cli, effective_query)
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
+    requester_gone = {"flag": False}
+
+    def _on_requester_death() -> None:
+        """Stop this run the moment the requester is gone (watcher thread; never raises)."""
+        requester_gone["flag"] = True
+        # Break the enclosing turn: the thread signal stops tool loops / foreground commands,
+        # the hard interrupt stops the in-flight model call.
+        with suppress(Exception):
+            from tools.interrupt import set_interrupt
+            set_interrupt(True, _requester_run_thread_id, reason="requester exited")
+        with suppress(Exception):
+            request_hard_interrupt(getattr(cli, "agent", None), "requester exited")
+        # Backstop: if the turn cannot be unwound, still leave — an orphan is the whole defect.
+        _arm_exit_watchdog()
+
+    # The interrupt must reach the thread the turn runs on: the caller's (delivery children run
+    # the turn on their main thread), which is NOT the watcher's.
+    _requester_run_thread_id = threading.current_thread().ident
+    requester_stop = arm_requester_watchdog(requester_pid, _on_requester_death)
+
+    def _requester_ended() -> bool:
+        return requester_gone["flag"]
+
     with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
+        result: Any = None
         try:
             result = cli.agent.run_conversation(
                 user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
@@ -3335,13 +3369,15 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         # at its cap relays the answer instead of a timeout (#114980).
         def _report_turn(res) -> None:
             write_turn_report(
-                turn_report_path, exit_code=_single_query_exit_code(res),
-                error=str(res.get("error") or "") if isinstance(res, dict) else "agent turn did not run",
+                turn_report_path,
+                exit_code=REQUESTER_DEATH_EXIT_CODE if _requester_ended() else _single_query_exit_code(res),
+                error=("requester exited" if _requester_ended()
+                       else str(res.get("error") or "") if isinstance(res, dict) else "agent turn did not run"),
                 reply=res.get("final_response", "") if isinstance(res, dict) else str(res),
             )
 
         _report_turn(result)
-        if isinstance(result, dict) and not result.get("failed"):
+        if isinstance(result, dict) and not result.get("failed") and not _requester_ended():
             history = result.get("messages") or cli.conversation_history
 
             def _follow_up(text):
@@ -3371,11 +3407,26 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 )
             finally:
                 cli._quiet_notify_linger_done = True
-            if isinstance(continued, dict):
+            if isinstance(continued, dict) and not _requester_ended():
                 result = continued
                 # A teammate's reply displaced the answer this run prints; tell the spawner.
                 _report_turn(result)
+        requester_stop.set()
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+    if _requester_ended():
+        # Nothing is left to read this run's answer, and the linger exists only to serve a
+        # consumer that no longer exists: end now, through the normal finalize path, which is
+        # what releases the target profile's state.db lease and reaps the MCP children.
+        cli._quiet_notify_linger_done = True
+        logger.warning("quiet run %s: requester pid %s exited; ending instead of lingering",
+                       os.getpid(), requester_pid)
+        _emit_interrupted_session_end(cli, reason="requester_exited")
+        if emitter is not None:
+            emitter.emit_result({"failed": True, "error": "requester exited"},
+                                session_id=cli.session_id or "", exit_code=REQUESTER_DEATH_EXIT_CODE)
+        else:
+            print("\nsession_id: " + (cli.session_id or ""), file=sys.stderr)
+        exit_single_query(REQUESTER_DEATH_EXIT_CODE)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
     if emitter is not None:

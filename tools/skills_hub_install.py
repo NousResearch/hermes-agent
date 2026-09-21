@@ -219,7 +219,14 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     if install_path.exists():
         shutil.rmtree(install_path)
     lock.record_uninstall(skill_name)
-    append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+    append_audit_log(
+        "UNINSTALL",
+        skill_name,
+        entry.get("source", "unknown"),
+        entry.get("trust_level", "unknown"),
+        "n/a",
+        "user_request",
+    )
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 
 

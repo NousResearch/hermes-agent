@@ -277,7 +277,6 @@ class HubLockFile(_JsonStateFile):
                 f"Invalid skills hub lock file {self.path}: expected installed record mappings"
             )
         for name, entry in data["installed"].items():
-            required_strings = ("source", "trust_level", "install_path")
             if (
                 not isinstance(name, str)
                 or not isinstance(entry, dict)
@@ -297,7 +296,8 @@ class HubLockFile(_JsonStateFile):
                     f"Invalid skills hub lock file {self.path}: invalid record for {name!r}: {exc}"
                 ) from exc
             if (
-                any(not isinstance(entry.get(field), str) for field in required_strings)
+                ("source" in entry and not isinstance(entry["source"], str))
+                or ("trust_level" in entry and not isinstance(entry["trust_level"], str))
                 or ("identifier" in entry and not isinstance(entry["identifier"], str))
                 or ("content_hash" in entry and not isinstance(entry["content_hash"], str))
                 or (

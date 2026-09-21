@@ -924,7 +924,8 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         if not skill_path.exists():
             c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
             continue
-        c.print(format_scan_report(scan_skill(skill_path, source=entry.get("identifier", entry["source"]))))
+        source = entry.get("identifier") or entry.get("source", "")
+        c.print(format_scan_report(scan_skill(skill_path, source=source)))
         if deep:
             c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
         c.print()

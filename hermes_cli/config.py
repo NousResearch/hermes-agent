@@ -2610,6 +2610,8 @@ def save_env_value(key: str, value: str) -> bool:
         return False
     validate_env_var_name_for_write(key)
     value = value.replace("\n", "").replace("\r", "")
+    if "\0" in value:
+        raise ValueError("Environment variable values cannot contain NUL bytes.")
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
@@ -2640,10 +2642,14 @@ def custom_endpoint_key_env(identity: str) -> str:
     return f"HERMES_CUSTOM_{slug}_API_KEY" if slug else "HERMES_CUSTOM_API_KEY"
 
 
-def remove_env_value(key: str) -> bool:
-    """Remove a key from ~/.hermes/.env and os.environ; True if it was found and removed."""
+def remove_env_value(key: str) -> Optional[bool]:
+    """Remove a key from ~/.hermes/.env and os.environ.
+
+    Return ``None`` when policy blocks the write, otherwise whether the key was found. Callers
+    coordinating additional destructive cleanup must distinguish refusal from ordinary absence.
+    """
     if _env_write_blocked(key, "remove"):
-        return False
+        return None
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     env_path = get_env_path()
@@ -3468,7 +3474,9 @@ def set_config_value(key: str, value: str, force: bool = False):
 
         # Unified lifecycle: also rotates any config.yaml mirror of the old value so a stale
         # higher-precedence copy can't win (#62269).
-        save_provider_env_credential(key.upper(), value)
+        result = save_provider_env_credential(key.upper(), value)
+        if not result.get("ok"):
+            _exit_invalid(f"✗ Could not set {key}.")
         print(f"✓ Set {key} in {get_env_path()}")
         return
     from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
@@ -3635,7 +3643,10 @@ def unset_config_value(key: str):
         # See #51071.
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
-        if not remove_provider_env_credential(key.upper()).get("found"):
+        result = remove_provider_env_credential(key.upper())
+        if not result.get("ok"):
+            _exit_invalid(f"✗ Could not unset {key}.")
+        if not result.get("found"):
             _exit_invalid(f"Config key not set: {key}")
         print(f"✓ Unset {key} from {get_env_path()}")
         return

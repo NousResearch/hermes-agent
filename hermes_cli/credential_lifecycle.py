@@ -218,6 +218,16 @@ def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
 
     old_value = load_env().get(env_var)
     removed_from_env = remove_env_value(env_var)
+    if removed_from_env is None:
+        return {
+            "ok": False,
+            "key": env_var,
+            "removed": False,
+            "pool_pruned": [],
+            "providers": [],
+            "config_scrubbed": [],
+            "found": False,
+        }
     refs = purge_env_credential_references(env_var)
     config_scrubbed = _scrub_config_yaml_mirrors(old_value, None) if old_value else []
 

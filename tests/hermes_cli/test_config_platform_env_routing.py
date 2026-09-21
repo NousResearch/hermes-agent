@@ -5,6 +5,39 @@ import pytest
 import yaml
 
 
+@pytest.mark.parametrize("command", ["set", "unset"])
+def test_managed_credential_write_refusal_exits_without_success(
+        tmp_path, monkeypatch, capsys, command):
+    import argparse
+
+    from hermes_cli import managed_scope
+    from hermes_cli.config import config_command, invalidate_env_cache
+
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / ".env").write_text("OPENAI_API_KEY=managed-value\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    managed_scope.invalidate_managed_cache()
+    invalidate_env_cache()
+    args = argparse.Namespace(config_command=command, key="OPENAI_API_KEY")
+    if command == "set":
+        args.value = "replacement"
+        args.force = False
+
+    with pytest.raises(SystemExit) as excinfo:
+        config_command(args)
+
+    assert excinfo.value.code == 1
+    output = capsys.readouterr()
+    action = "set" if command == "set" else "remove"
+    success = "Set" if command == "set" else "Unset"
+    assert f"Cannot {action} OPENAI_API_KEY" in output.err
+    assert f"✓ {success} OPENAI_API_KEY" not in output.out + output.err
+    assert not (tmp_path / ".env").exists()
+    assert (managed / ".env").read_text(encoding="utf-8") == "OPENAI_API_KEY=managed-value\n"
+
+
 def test_platform_env_key_round_trips_without_a_config_yaml_copy(tmp_path, monkeypatch, capsys):
     """``config set/get/unset`` shares the platform setup flow's .env storage."""
     from hermes_cli import config as cfg

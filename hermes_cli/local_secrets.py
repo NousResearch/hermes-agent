@@ -27,6 +27,9 @@ def _read_secret(*, from_stdin: bool) -> str | None:
             print(file=sys.stderr)
             _error("secret input was cancelled.")
             return None
+    if "\0" in value:
+        _error("secret value cannot contain NUL bytes.")
+        return None
     if "\r" in value or "\n" in value:
         _error("secret value must be a single line.")
         return None
@@ -88,6 +91,8 @@ def cmd_delete(args) -> int:
         result = remove_provider_env_credential(name)
     except (RuntimeError, ValueError) as exc:
         return _error(str(exc))
+    if not result.get("ok"):
+        return 1
     if not result.get("found"):
         return _error(f"{name} is not configured for this profile.")
     print(f"Deleted {name} (value hidden).")

@@ -898,6 +898,43 @@ def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypa
     assert "sk-secret" not in yaml.safe_dump(saved)
 
 
+def test_save_custom_provider_keeps_named_scopes_on_the_same_endpoint(monkeypatch):
+    """Named endpoints sharing a URL retain their distinct credential pointers."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    config = {}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    _save_custom_provider(
+        "https://opencode.ai/zen/v1", name="OpenCode Zen (personal)",
+        key_env="OPENCODE_ZEN_PERSONAL_API_KEY")
+    _save_custom_provider(
+        "https://opencode.ai/zen/v1", name="OpenCode Zen (work)",
+        key_env="OPENCODE_ZEN_WORK_API_KEY")
+
+    entries = config["custom_providers"]
+    assert [(entry["name"], entry["key_env"]) for entry in entries] == [
+        ("OpenCode Zen (personal)", "OPENCODE_ZEN_PERSONAL_API_KEY"),
+        ("OpenCode Zen (work)", "OPENCODE_ZEN_WORK_API_KEY"),
+    ]
+
+
+def test_save_custom_provider_updates_unnamed_legacy_endpoint(monkeypatch):
+    """An old nameless endpoint remains the target of an unnamed save."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    config = {"custom_providers": [{"base_url": "http://localhost:11434/v1"}]}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    _save_custom_provider("http://localhost:11434/v1", model="qwen3")
+
+    assert config["custom_providers"] == [{
+        "base_url": "http://localhost:11434/v1", "model": "qwen3",
+    }]
+
+
 
 
 def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
@@ -914,4 +951,3 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
 
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
-

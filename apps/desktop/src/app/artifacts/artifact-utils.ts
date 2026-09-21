@@ -81,7 +81,21 @@ function artifactSessionTitle(session: SessionInfo): string {
 }
 
 function normalizeValue(value: string): string {
-  return value.trim().replace(/[),.;]+$/, '')
+  let trimmed = value.trim()
+
+  for (let i = 0; i < 3; i += 1) {
+    const quote = trimmed[0]
+
+    if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+      trimmed = trimmed.slice(1, -1).trim()
+
+      continue
+    }
+
+    break
+  }
+
+  return trimmed.replace(/[`*]+$/g, '').replace(/[),.;]+$/, '')
 }
 
 function unquoteMediaValue(value: string): string {

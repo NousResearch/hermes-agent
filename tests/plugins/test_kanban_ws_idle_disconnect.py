@@ -170,7 +170,9 @@ async def test_stream_events_reuses_connection_and_closes_after_disconnect(
     assert conn.execute_calls == 2
     assert conn.close_calls == 1
     assert len(set(connect_threads + conn.thread_ids)) == 1
-    assert ws.sent == [{
+    # The empty first poll heartbeats immediately (#118147); the event frame follows.
+    assert ws.sent[0]["type"] == "heartbeat"
+    assert ws.sent[1] == {
         "events": [{
             "id": 7,
             "task_id": "task-1",
@@ -180,7 +182,7 @@ async def test_stream_events_reuses_connection_and_closes_after_disconnect(
             "created_at": 1234,
         }],
         "cursor": 7,
-    }]
+    }
 
 
 @pytest.mark.asyncio
@@ -224,3 +226,121 @@ async def test_stream_events_closes_connection_when_cancelled(monkeypatch):
     assert conn.execute_calls == 1
     assert conn.close_calls == 1
     assert len(set(connect_threads + conn.thread_ids)) == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_events_heartbeats_when_idle(monkeypatch):
+    """An idle board must still prove liveness (#118147): the first idle round
+    heartbeats immediately (last_sent starts overdue) and a following round within
+    the heartbeat interval stays quiet, so the stream is never silently dead."""
+    mod = _load_plugin_module()
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
+
+    conn = _TrackingConnection(rows_by_poll=[[], []])
+
+    def _connect(*, board=None):
+        return conn
+
+    monkeypatch.setattr(mod.kbc, "connect", _connect)
+
+    wait_calls = 0
+
+    async def _idle_twice_then_disconnect(awaitable, timeout):
+        nonlocal wait_calls
+        wait_calls += 1
+        awaitable.close()
+        if wait_calls <= 2:
+            raise asyncio.TimeoutError
+        return {"type": "websocket.disconnect"}
+
+    monkeypatch.setattr(mod.asyncio, "wait_for", _idle_twice_then_disconnect)
+    ws = _PollingWebSocket()
+
+    await mod.stream_events(ws)
+
+    assert conn.execute_calls == 2
+    assert len(ws.sent) == 1
+    heartbeat = ws.sent[0]
+    assert heartbeat["type"] == "heartbeat"
+    assert heartbeat["cursor"] == 0
+    assert isinstance(heartbeat["server_time"], float)
+
+
+@pytest.mark.asyncio
+async def test_stream_events_event_frame_resets_heartbeat_clock(monkeypatch):
+    """An events frame is itself liveness proof: the idle round right after it must
+    not emit a heartbeat, or the stream would double-signal."""
+    mod = _load_plugin_module()
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
+
+    event_row = {
+        "id": 9,
+        "task_id": "task-1",
+        "run_id": None,
+        "kind": "updated",
+        "payload": None,
+        "created_at": 1234,
+    }
+    conn = _TrackingConnection(rows_by_poll=[[event_row], []])
+
+    def _connect(*, board=None):
+        return conn
+
+    monkeypatch.setattr(mod.kbc, "connect", _connect)
+
+    wait_calls = 0
+
+    async def _poll_twice_then_disconnect(awaitable, timeout):
+        nonlocal wait_calls
+        wait_calls += 1
+        awaitable.close()
+        if wait_calls <= 2:
+            raise asyncio.TimeoutError
+        return {"type": "websocket.disconnect"}
+
+    monkeypatch.setattr(mod.asyncio, "wait_for", _poll_twice_then_disconnect)
+    ws = _PollingWebSocket()
+
+    await mod.stream_events(ws)
+
+    assert conn.execute_calls == 2
+    assert len(ws.sent) == 1
+    assert ws.sent[0]["events"][0]["id"] == 9
+    assert not any(frame.get("type") == "heartbeat" for frame in ws.sent)
+
+
+@pytest.mark.asyncio
+async def test_stream_events_heartbeat_send_failure_frees_tail(monkeypatch):
+    """The heartbeat write is what surfaces a half-open connection (#118147): when it
+    raises, the handler must unwind and release the tail's SQLite connection."""
+    mod = _load_plugin_module()
+    monkeypatch.setattr(mod, "_ws_upgrade_authorized", lambda ws: True)
+
+    conn = _TrackingConnection(rows_by_poll=[[]])
+
+    def _connect(*, board=None):
+        return conn
+
+    monkeypatch.setattr(mod.kbc, "connect", _connect)
+
+    # Save the real wait_for before the patch below replaces it on the shared module.
+    real_wait_for = asyncio.wait_for
+
+    async def _idle_once(awaitable, timeout):
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(mod.asyncio, "wait_for", _idle_once)
+
+    class _DeadPeerWebSocket(_PollingWebSocket):
+        async def send_json(self, payload):
+            raise RuntimeError("socket send failed: half-open connection")
+
+    ws = _DeadPeerWebSocket()
+
+    # Bounded: without the heartbeat write this handler would poll forever (the
+    # pre-fix zombie), so a regression must fail fast instead of hanging CI.
+    await real_wait_for(mod.stream_events(ws), timeout=5)
+
+    assert conn.execute_calls == 1
+    assert conn.close_calls == 1  # tail.shutdown() released the connection

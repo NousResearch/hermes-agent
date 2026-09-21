@@ -1443,8 +1443,14 @@ def _locate_launchd_gateway_service(label: str) -> tuple[str | None, int | None]
 
 
 def _probe_launchd_service_running() -> bool:
-    """True when the plist exists AND launchd is running a process for the current label."""
-    return get_launchd_plist_path().exists() and _launchctl_label_supervising_process(get_launchd_label())
+    """True when the plist exists and either launchd domain runs the current label."""
+    if not get_launchd_plist_path().exists():
+        return False
+    try:
+        _domain, pid = _locate_launchd_gateway_service(get_launchd_label())
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return pid is not None
 
 
 def _s6_gateway_snapshot(gateway_pids: tuple[int, ...]) -> GatewayRuntimeSnapshot | None:
@@ -4301,15 +4307,11 @@ def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
     try:
-        result = subprocess.run(["launchctl", "list", label], timeout=10, **_CAPTURE_TEXT)
-        service_listed = result.returncode == 0
-        list_output = result.stdout
-    except subprocess.TimeoutExpired:
+        launchd_domain, launchd_pid = _locate_launchd_gateway_service(label)
+        service_listed = launchd_domain is not None
+    except (subprocess.TimeoutExpired, OSError):
         service_listed = False
-        list_output = ""
-
-    # `launchctl list` exits 0 for any registered definition (even `state = not running`); only a PID proves a process.
-    launchd_pid = _parse_launchd_pid_from_list_output(list_output) if service_listed else None
+        launchd_pid = None
 
     # Hermes PID may be a detached fallback process; when launchd IS supervising both PIDs match — don't double-count.
     from gateway.status import get_running_pid

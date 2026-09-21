@@ -213,6 +213,23 @@ def _check_dispatcher_presence(
 # Argparse builder
 # ---------------------------------------------------------------------------
 
+def _add_worktree_reclaim_args(p: argparse.ArgumentParser) -> None:
+    """Shared by ``gc`` and ``reclaim`` so the disk guard and the GC sweep run
+    the very same code path with the very same knobs."""
+    p.add_argument("--worktree-min-age-hours", type=int, default=6,
+                   help="Only reclaim worktrees of cards completed longer ago "
+                        "than N hours (default: 6)")
+    p.add_argument("--worktree-root", dest="worktree_roots", action="append",
+                   metavar="DIR",
+                   help="Worktree root to sweep (repeatable). Default: "
+                        "~/workspace/*-worktrees, ~/workspace/*/.worktrees and "
+                        "the board's own worktree parents.")
+    p.add_argument("--no-worktrees", action="store_true",
+                   help="Skip the done-card worktree reclaim")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Report what would be reclaimed, remove nothing")
+
+
 def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Attach the ``kanban`` subcommand tree under an existing subparsers.
 
@@ -500,10 +517,25 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "reclaim",
         help="Release an active worker claim on a running task",
     )
-    p_reclaim.add_argument("task_id")
+    p_reclaim.add_argument(
+        "task_id", nargs="?",
+        help="Task id whose worker claim to release. Omit to reclaim the "
+             "worktrees of done cards instead.",
+    )
     p_reclaim.add_argument(
         "--reason", default=None,
         help="Human-readable reason (recorded on the reclaimed event)",
+    )
+    _add_worktree_reclaim_args(p_reclaim)
+    p_reclaim.add_argument(
+        "--logs", action="store_true",
+        help="Also move finished cards' sibling *-pi*.log / *-spec*.md files "
+             "into <root>/logs/",
+    )
+    p_reclaim.add_argument(
+        "--log-min-age-days", type=int, default=7,
+        help="With --logs: only move sibling files of cards done longer ago "
+             "than N days (default: 7)",
     )
 
     p_reassign = sub.add_parser(
@@ -1020,6 +1052,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                       help="Delete task_events older than N days for terminal tasks (default: 30)")
     p_gc.add_argument("--log-retention-days", type=int, default=30,
                       help="Delete worker log files older than N days (default: 30)")
+    _add_worktree_reclaim_args(p_gc)
 
     # --- repair ---
     p_repair = sub.add_parser(
@@ -1926,7 +1959,63 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reclaim_roots(args: argparse.Namespace) -> list:
+    """``--worktree-root`` when given, else the globbed/board-derived defaults."""
+    from hermes_cli import kanban_reclaim as kbr
+    explicit = getattr(args, "worktree_roots", None)
+    if explicit:
+        return [Path(p).expanduser() for p in explicit]
+    return kbr.default_roots()
+
+
+def _reclaim_worktrees(args: argparse.Namespace) -> int:
+    """Reap done cards' worktrees, printing the reason for every refusal.
+
+    A reclaim pass that silently removes nothing is the failure mode this
+    replaces, so refusals are printed, not swallowed.
+    """
+    from hermes_cli import kanban_reclaim as kbr
+    if getattr(args, "no_worktrees", False):
+        return 0
+    roots = _reclaim_roots(args)
+    if not roots:
+        return 0
+    decisions = kbr.reclaim_done_worktrees(
+        roots=roots,
+        min_age_hours=getattr(args, "worktree_min_age_hours", 6),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    print(f"Worktree reclaim over {len(roots)} root(s):")
+    for line in kbr.format_decisions(decisions):
+        print(line)
+    removed = sum(1 for d in decisions if d.removed)
+    print(f"  -> {removed} removed, {len(decisions) - removed} kept")
+    return removed
+
+
+def _cmd_reclaim_worktrees(args: argparse.Namespace) -> int:
+    """``hermes kanban reclaim`` with no task id — the disk-guard entry point."""
+    from hermes_cli import kanban_reclaim as kbr
+    _reclaim_worktrees(args)
+    root_args = _reclaim_roots(args)
+    if getattr(args, "logs", False):
+        for root in root_args:
+            decisions = kbr.reclaim_stale_sibling_logs(
+                root=Path(root).expanduser(),
+                min_age_days=getattr(args, "log_min_age_days", 7),
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+            if decisions:
+                print(f"Sibling logs under {root}:")
+                for line in kbr.format_decisions(decisions):
+                    print(line)
+    return 0
+
+
 def _cmd_reclaim(args: argparse.Namespace) -> int:
+    # No task id: reclaim the worktrees of done cards (the disk-guard tick).
+    if not getattr(args, "task_id", None):
+        return _cmd_reclaim_worktrees(args)
     with kb.connect_closing() as conn:
         ok = kb.reclaim_task(
             conn, args.task_id,
@@ -3310,6 +3399,8 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             shutil.rmtree(path, ignore_errors=True)
             removed_ws += 1
 
+    reclaimed_wt = _reclaim_worktrees(args)
+
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
     with kb.connect_closing() as conn:
@@ -3320,6 +3411,7 @@ def _cmd_gc(args: argparse.Namespace) -> int:
         older_than_seconds=log_days * 24 * 3600,
     )
     print(f"GC complete: {removed_ws} workspace(s), "
+          f"{reclaimed_wt} done-card worktree(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
 

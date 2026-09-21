@@ -129,14 +129,30 @@ def _markers_root(markers: Optional[Sequence[str]], excludes: Sequence[str] = ()
     return lambda fp, ws: _root_or_workspace(fp, ws, markers, excludes=excludes)
 
 
-def _find_binary(ctx: ServerContext, server_id: str, which: Sequence[str], install_pkg: Optional[str]) -> Optional[str]:
-    """Config override → PATH → (optional) auto-install; ``None`` when nothing resolves."""
-    override = ctx.binary_overrides.get(server_id)
-    bin_path = override[0] if override and override[0] and os.path.exists(override[0]) else _which(*which)
+def _override_command(ctx: ServerContext, server_id: str) -> Optional[List[str]]:
+    """The configured ``lsp.servers.<id>.command`` argv for ``server_id``, or ``None``."""
+    parts = [str(p) for p in (ctx.binary_overrides.get(server_id) or []) if p]
+    return parts or None
+
+
+def _find_command(ctx: ServerContext, server_id: str, which: Sequence[str], install_pkg: Optional[str],
+                  default_args: Sequence[str] = ()) -> Optional[List[str]]:
+    """Resolve a server's base argv: config override → PATH → (optional) auto-install; ``None`` when nothing resolves.
+
+    A configured ``command`` is honored as a full argv — ``["node", "langserver.index.js", "--stdio"]`` stays
+    three elements instead of collapsing to ``node`` (which then dies on ``--stdio``).  A multi-element
+    override is the *complete* command, so ``default_args`` are not stacked onto it; a one-element override
+    is just a pinned binary path and keeps today's behavior of having ``default_args`` appended.
+    """
+    override = _override_command(ctx, server_id)
+    if override and os.path.exists(override[0]):
+        # A one-element override is just a pinned binary path: keep appending the server's default args.
+        return [*override, *default_args] if len(override) == 1 else list(override)
+    bin_path = _which(*which)
     if bin_path is None and install_pkg is not None:
         from agent.lsp.install import try_install
         bin_path = try_install(install_pkg, ctx.install_strategy)
-    return bin_path
+    return [bin_path, *default_args] if bin_path else None
 
 
 def _make_spec(root: str, ctx: ServerContext, server_id: str, command: List[str],
@@ -151,27 +167,32 @@ def _simple_spawn(server_id: str, which: Sequence[str], args: Sequence[str] = ()
                   seed: bool = False) -> _SpawnFn:
     """Build a spawn function for the common single-binary server shape."""
     def build(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
-        bin_path = _find_binary(ctx, server_id, which, install_pkg)
-        return None if bin_path is None else _make_spec(root, ctx, server_id, [bin_path, *args], base_init, seed)
+        argv = _find_command(ctx, server_id, which, install_pkg, args)
+        return None if argv is None else _make_spec(root, ctx, server_id, argv, base_init, seed)
     return build
 
 
 # ---- bespoke spawn builders ----
 
 def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
-    bin_path = _find_binary(ctx, "pyright", ("pyright-langserver", "pyright"), "pyright")
-    if bin_path is None:
+    argv = _find_command(ctx, "pyright", ("pyright-langserver", "pyright"), "pyright")
+    if argv is None:
         return None
-    # If we got the cli ``pyright``, the langserver is its sibling — same suffix, since on Windows
-    # the bare sibling is npm's unrunnable POSIX shim.
-    stem, suffix = os.path.splitext(os.path.basename(bin_path))
-    if stem == "pyright":
-        sibling = os.path.join(os.path.dirname(bin_path), f"pyright-langserver{suffix}")
-        if os.path.exists(sibling):
-            bin_path = sibling
+    if len(argv) == 1:
+        # PATH hit / auto-install / a pinned binary: if we got the cli ``pyright``, the langserver is
+        # its sibling — same suffix, since on Windows the bare sibling is npm's unrunnable POSIX shim.
+        # A multi-element ``command`` override is the complete argv and is honored verbatim — the user
+        # already named the langserver and its args.
+        bin_path = argv[0]
+        stem, suffix = os.path.splitext(os.path.basename(bin_path))
+        if stem == "pyright":
+            sibling = os.path.join(os.path.dirname(bin_path), f"pyright-langserver{suffix}")
+            if os.path.exists(sibling):
+                bin_path = sibling
+        argv = [bin_path, "--stdio"]
     # Point pyright at the project venv; its default "python on PATH" rarely is.
     py = _detect_python(root)
-    return _make_spec(root, ctx, "pyright", [bin_path, "--stdio"], {"python": {"pythonPath": py}} if py else {})
+    return _make_spec(root, ctx, "pyright", argv, {"python": {"pythonPath": py}} if py else {})
 
 
 def _detect_python(root: str) -> Optional[str]:
@@ -191,15 +212,15 @@ def _warn_once(key: str, message: str) -> None:
 
 
 def _spawn_bash_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
-    bin_path = _find_binary(ctx, "bash-language-server", ("bash-language-server",), "bash-language-server")
-    if bin_path is None:
+    argv = _find_command(ctx, "bash-language-server", ("bash-language-server",), "bash-language-server", ("start",))
+    if argv is None:
         return None
     # bash-language-server delegates diagnostics to shellcheck; without it the
     # server runs but never reports anything.  Warn once so the gap is visible.
     if _which("shellcheck") is None:
         _warn_once("shellcheck", "bash-language-server: shellcheck not found on PATH — diagnostics will be empty "
                    "until shellcheck is installed (apt: shellcheck, brew: shellcheck, scoop: shellcheck).")
-    return _make_spec(root, ctx, "bash-language-server", [bin_path, "start"])
+    return _make_spec(root, ctx, "bash-language-server", argv)
 
 
 _VUE_REINSTALL = (
@@ -248,9 +269,17 @@ def _typescript_sdk_dir(trees: Sequence[str]) -> Optional[str]:
 
 def _spawn_vue(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     """Spawn @vue/language-server 2.x self-hosting TypeScript (``hybridMode`` off, explicit ``tsdk``)."""
-    bin_path = _find_binary(ctx, "vue-language-server", ("vue-language-server",), "@vue/language-server")
-    if bin_path is None:
+    override = _override_command(ctx, "vue-language-server")
+    if override and len(override) > 1:
+        # A multi-element ``command`` is the complete argv, honored verbatim.  The tsdk/hybridMode
+        # guardrails below infer a layout from *our* resolved binary, which the user has replaced —
+        # enforcing them would just make the override unusable.  Initialization options still merge
+        # normally (`lsp.servers.vue-language-server.init`), so they can supply `tsdk` themselves.
+        return _make_spec(root, ctx, "vue-language-server", list(override))
+    argv = _find_command(ctx, "vue-language-server", ("vue-language-server",), "@vue/language-server", ("--stdio",))
+    if argv is None:
         return None
+    bin_path = argv[0]
     trees = _node_modules_trees(bin_path, root)
     if _vue_server_major(trees) >= 3:
         _warn_once("vue-tunnel", _VUE_TUNNEL_MSG)
@@ -259,7 +288,7 @@ def _spawn_vue(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     if tsdk is None:
         _warn_once("vue-tsdk", _VUE_TSDK_MSG)
         return None
-    return _make_spec(root, ctx, "vue-language-server", [bin_path, "--stdio"],
+    return _make_spec(root, ctx, "vue-language-server", argv,
                       {"typescript": {"tsdk": tsdk}, "vue": {"hybridMode": False}})
 
 

@@ -257,7 +257,10 @@ lsp:
 * `disabled: true` — skip this server entirely even when its
   extensions match a file.
 * `command: [bin, ...args]` — pin a custom binary path. Bypasses
-  auto-install.
+  auto-install. The whole list is spawned as written: with extra args
+  present they replace the server's own defaults, while a one-element
+  list keeps them (so `["/path/to/pyright-langserver"]` still gets
+  `--stdio`).
 * `env: {KEY: value}` — extra env vars passed to the spawned process.
 * `initialization_options: {...}` — merged into the LSP
   `initializationOptions` payload sent in the `initialize`

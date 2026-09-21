@@ -1001,7 +1001,7 @@ export const zhHant = defineLocale({
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
       minimizeToTrayDesc:
-        '將最小化的視窗隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。關閉視窗、Alt+F4 和 Cmd+Q 的行為不變。預設關閉，僅適用於此裝置。',
+        '最小化視窗或關閉主視窗時，將其隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。透過系統匣選單中的「結束 Hermes」或 Cmd+Q 結束。預設關閉，僅適用於此裝置。',
       minimizeToTrayUnavailable: '系統匣無法使用。視窗將正常最小化和關閉。關閉此選項後重新開啟即可重試。',
       none: '無',
       noneParen: '(無)',
@@ -1028,7 +1028,9 @@ export const zhHant = defineLocale({
         '在 Mac 上按下並放開 ⌘ + Option，在 Windows/Linux 上按下並放開 Ctrl + Alt，即可從任何應用程式將 HUD 帶到前景。預設關閉，僅適用於此裝置。',
       permission: '請在系統設定 → 隱私權與安全性 → 輸入監控中允許 Hermes，然後重試。此手勢不會記錄按鍵或擷取畫面。',
       unavailable:
-        '此處無法使用這個手勢。Linux 需要 X11 工作階段；Wayland 不提供全域修飾鍵輕按事件。Hermes 內原有的 HUD 快速鍵仍可使用。'
+        'HUD 手勢輔助程式無法啟動或意外停止。請重試或重新啟動 Hermes。Hermes 內原有的 HUD 快速鍵仍可使用。',
+      missingHelper: '此 Hermes 安裝缺少 HUD 手勢輔助程式。請更新或重新安裝 Hermes，然後重試。',
+      unsupportedSession: '此桌面工作階段不支援全域修飾鍵輕按事件。Linux 需要 X11；不支援 Wayland。'
     },
     screenshot: {
       enabledTitle: '螢幕截圖快速鍵',

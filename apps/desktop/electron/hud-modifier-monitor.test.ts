@@ -72,3 +72,19 @@ test('support policy excludes Wayland even when Xwayland supplies DISPLAY', () =
   assert.ok(path.includes('app.asar.unpacked'))
   assert.ok(path.endsWith(process.platform === 'win32' ? 'hud-modifier-monitor.exe' : 'hud-modifier-monitor'))
 })
+
+test('a missing helper is distinguished from a helper that cannot start', () => {
+  for (const code of ['ENOENT', 'EACCES']) {
+    const child = new Child()
+    const statuses: NativeGestureStatus[] = []
+    const monitor = new NativeGestureMonitor({ path: '/helper', parseGesture: () => null, spawn: () => child })
+    monitor.start(() => {}, status => statuses.push(status))
+    child.emit('error', Object.assign(new Error('spawn failed'), { code }))
+    child.emit('close', -1, null)
+    assert.deepEqual(statuses.at(-1), {
+      type: 'error',
+      code: 'unavailable',
+      ...(code === 'ENOENT' ? { reason: 'missing-helper' } : {})
+    })
+  }
+})

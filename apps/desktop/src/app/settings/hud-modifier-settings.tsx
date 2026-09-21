@@ -86,10 +86,13 @@ export function HudModifierSettings() {
     }
   }
 
+  const unavailableNotice = status?.reason
+    ? { 'missing-helper': copy.missingHelper, 'unsupported-session': copy.unsupportedSession }[status.reason]
+    : copy.unavailable
   const notice =
     error ??
     (status?.enabled && status.state === 'input-permission' ? copy.permission : null) ??
-    (status?.enabled && status.state === 'unavailable' ? copy.unavailable : null)
+    (status?.enabled && status.state === 'unavailable' ? unavailableNotice : null)
 
   return (
     <div id={hudModifierElementId()}>

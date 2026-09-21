@@ -3,7 +3,18 @@ import type { EventEmitter } from 'node:events'
 import type { Readable, Writable } from 'node:stream'
 
 export type NativeGestureStatus =
-  { type: 'starting' | 'ready' | 'stopped' } | { type: 'error'; code: 'permission-required' | 'unavailable' }
+  | { type: 'starting' | 'ready' | 'stopped' }
+  | { type: 'error'; code: 'permission-required' | 'unavailable'; reason?: 'missing-helper' | 'unsupported-session' }
+
+function spawnFailure(error: unknown): NativeGestureStatus {
+  return {
+    type: 'error',
+    code: 'unavailable',
+    ...(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
+      ? { reason: 'missing-helper' as const }
+      : {})
+  }
+}
 
 interface MonitorChild extends EventEmitter {
   stdin: Writable | null
@@ -43,8 +54,8 @@ export class NativeGestureMonitor<T> {
         detached: false,
         windowsHide: true
       })
-    } catch {
-      onStatus({ type: 'error', code: 'unavailable' })
+    } catch (error) {
+      onStatus(spawnFailure(error))
 
       return
     }
@@ -81,6 +92,7 @@ export class NativeGestureMonitor<T> {
     }
 
     const fail = () => terminate({ type: 'error', code: 'unavailable' })
+    const onSpawnError = (error: Error) => terminate(spawnFailure(error))
 
     const onData = (chunk: Buffer | string) => {
       if (!active) {
@@ -154,7 +166,7 @@ export class NativeGestureMonitor<T> {
       dispose()
       clearTimeout(killTimer)
       child.removeListener('close', onClose)
-      child.removeListener('error', fail)
+      child.removeListener('error', onSpawnError)
       child.stdin?.removeListener('error', fail)
       child.stdout?.removeListener('error', fail)
 
@@ -169,7 +181,7 @@ export class NativeGestureMonitor<T> {
     child.stdout?.on('error', fail)
     child.stdin?.on('error', fail)
     child.once('close', onClose)
-    child.on('error', fail)
+    child.on('error', onSpawnError)
     onStatus({ type: 'starting' })
 
     if (!child.stdout || !child.stdin) {

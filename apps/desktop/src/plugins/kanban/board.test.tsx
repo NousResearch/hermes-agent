@@ -10,11 +10,26 @@ describe('card action menu', () => {
   // The menu is the board's only place to block/unblock/send-to-review, so its
   // visibility map is the behavior contract: one row per status.
   it('maps every status to the actions it can run', () => {
-    expect(visible('todo')).toEqual(['block', 'comment', 'reassign', 'addLink', 'addChild'])
-    expect(visible('running')).toEqual(['block', 'comment', 'reassign', 'addLink', 'addChild'])
-    expect(visible('review')).toEqual(['block', 'requestChanges', 'comment', 'reassign', 'addLink', 'addChild'])
+    expect(visible('todo')).toEqual(['comment', 'reassign', 'addLink', 'addChild'])
+    expect(visible('running')).toEqual(['block', 'requestReview', 'comment', 'reassign', 'addLink', 'addChild'])
+    expect(visible('ready')).toEqual(['block', 'requestReview', 'comment', 'reassign', 'addLink', 'addChild'])
+    expect(visible('review')).toEqual(['requestChanges', 'comment', 'reassign', 'addLink', 'addChild'])
     expect(visible('blocked')).toEqual(['unblock', 'comment', 'reassign', 'addLink', 'addChild'])
-    expect(visible('done')).toEqual(['block', 'requestReview', 'comment', 'reassign', 'addLink', 'addChild'])
+    expect(visible('done')).toEqual(['comment', 'reassign', 'addLink', 'addChild'])
+  })
+
+  it('never offers a verb the backend state machine rejects', () => {
+    // Mirrors the SQL guards: block_task and request_review only accept
+    // running/ready source states (kanban_db.py), so the menu must not show
+    // them anywhere else — done→review would 409, and blocking out of
+    // todo/review/done/triage would too.
+    for (const action of CARD_ACTIONS) {
+      if (action.key !== 'block' && action.key !== 'requestReview') continue
+
+      for (const status of ['todo', 'review', 'done', 'triage', 'archived', 'blocked']) {
+        expect(action.when(status as KanbanTask['status']), `${action.key} on ${status}`).toBe(false)
+      }
+    }
   })
 
   it('names the rows that go inert for a multi-card selection', () => {

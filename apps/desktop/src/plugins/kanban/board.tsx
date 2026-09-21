@@ -172,9 +172,12 @@ export interface CardActionDef {
 }
 
 export const CARD_ACTIONS: readonly CardActionDef[] = [
-  { batchSafe: false, icon: 'circle-slash', key: 'block', label: k => k.actBlock, when: s => s !== 'blocked' },
+  // `when` mirrors the backend state machine's accepted source states, so the
+  // menu never offers a verb the endpoint would reject with a 409:
+  // block_task takes running/ready only; request_review takes running/ready.
+  { batchSafe: false, icon: 'circle-slash', key: 'block', label: k => k.actBlock, when: s => s === 'running' || s === 'ready' },
   { batchSafe: true, icon: 'debug-continue', key: 'unblock', label: k => k.actUnblock, when: s => s === 'blocked' },
-  { batchSafe: true, icon: 'eye', key: 'requestReview', label: k => k.actRequestReview, when: s => s === 'done' },
+  { batchSafe: true, icon: 'eye', key: 'requestReview', label: k => k.actRequestReview, when: s => s === 'running' || s === 'ready' },
   {
     batchSafe: false,
     icon: 'request-changes',
@@ -1619,8 +1622,9 @@ export function KanbanBoardPage() {
     moveMut.mutate({ id, status })
   }
 
-  // Card-menu writes fan out per id over the id-scoped endpoints (the bulk
-  // endpoint has no review/blocked transitions); partial failures are named and
+  // Card-menu writes fan out per id over the id-scoped endpoints (BulkTaskBody
+  // carries no block_reason/note, so block/review still need the per-id route);
+  // partial failures are named and
   // successes stand — the refresh then shows the true state.
   const runCardOps = (ops: Array<() => Promise<unknown>>) => {
     void Promise.allSettled(ops.map(op => op())).then(results => {

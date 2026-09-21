@@ -1324,3 +1324,17 @@ def test_triage_signal_absent_for_single_block_and_closed_cards(client, kanban_h
         conn.close()
 
     assert _card(client, tid, "done")["triage_signal"] is False
+
+    # Same closed-lane exclusion for the failures arm: a card that bounced off
+    # a worker twice but later finished must not keep the triage filter pinned
+    # to history (the failures query carries the same status NOT IN guard).
+    conn = kbc.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures=2 WHERE id=?", (tid,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert _card(client, tid, "done")["triage_signal"] is False

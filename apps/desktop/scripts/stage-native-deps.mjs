@@ -536,7 +536,15 @@ export function stageGetWindowsInto(
   if (platform === 'darwin') {
     const helper = join(srcRoot, 'main')
     if (!existsSync(helper)) {
-      throw new Error('[stage-native-deps] get-windows is missing its macOS helper binary (main)')
+      // A half-extracted install (#90829) can keep the package but lose the
+      // helper; the runtime already fails soft on an unstaged module, so lose
+      // only window enumeration rather than the whole Desktop build.
+      removeDirSync(destRoot)
+      console.warn(
+        '[stage-native-deps] get-windows is missing its macOS helper binary (main); ' +
+          'not staged — read_window_below will be unavailable in this build'
+      )
+      return undefined
     }
     copyFileSync(helper, join(destRoot, 'main'))
     makeExecutable(join(destRoot, 'main'))
@@ -560,15 +568,7 @@ export function stageGetWindowsInto(
         : []
     let bindingDirs = scanBindingDirs()
     let installAttempted = false
-    if (bindingDirs.length === 0 && arch === 'arm64') {
-      // get-windows 9.3.0 publishes win32 prebuilds for ia32/x64 only.
-      // The staged windows.js deliberately fails soft when binding/ is absent,
-      // so preserve the desktop build and disable only window enumeration.
-      console.warn(
-        '[stage-native-deps] get-windows has no win32-arm64 prebuilt binding; ' +
-          'staging the fail-soft JS surface without native window enumeration.'
-      )
-    } else if (bindingDirs.length === 0 && typeof install === 'function') {
+    if (bindingDirs.length === 0 && arch !== 'arm64' && typeof install === 'function') {
       // A plain `npm install` won't re-run an install script for a package
       // that is already on disk, so every checkout that installed while
       // get-windows was missing from allowScripts stays bricked even after
@@ -579,14 +579,27 @@ export function stageGetWindowsInto(
         '[stage-native-deps] get-windows has no win32 binding; running its native installer...'
       )
       installAttempted = true
-      install()
+      try {
+        install()
+      } catch (error) {
+        console.warn(
+          `[stage-native-deps] get-windows native installer failed: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
       bindingDirs = scanBindingDirs()
     }
-    if (bindingDirs.length === 0 && arch !== 'arm64') {
+    if (bindingDirs.length === 0) {
+      // get-windows 9.3.0 publishes win32 prebuilds for ia32/x64 only, and a
+      // half-extracted install (#90829) can leave even those without one. The
+      // staged windows.js deliberately fails soft when binding/ is absent, so
+      // preserve the desktop build and disable only window enumeration.
       const reason = installAttempted
-        ? `native installer completed without producing a win32-${arch} binding under lib/binding`
-        : `has no win32-${arch} prebuilt binding under lib/binding`
-      throw new Error(`[stage-native-deps] get-windows ${reason}`)
+        ? `native installer produced no win32-${arch} binding`
+        : `has no win32-${arch} prebuilt binding`
+      console.warn(
+        `[stage-native-deps] get-windows ${reason}; ` +
+          'staging the fail-soft JS surface without native window enumeration.'
+      )
     }
     for (const dir of bindingDirs) {
       const dest = join(destRoot, 'lib', 'binding', dir)
@@ -640,34 +653,60 @@ export function installGetWindowsNativeBinding(
   }
 }
 
+/**
+ * A get-windows directory that exists but does not resolve as a package: an
+ * `npm install` interrupted by a running Desktop/gateway holding files open
+ * (TAR_ENTRY_ERROR on Windows) leaves the binding on disk without
+ * package.json, and npm never revisits a directory that already exists, so the
+ * tree stays broken across every later update. Walks the same
+ * `node_modules` ancestors `require.resolve` does (the workspace root hoist or
+ * the app-local copy).
+ */
+export function findHalfInstalledGetWindowsDir(startDir = projectRoot) {
+  for (let dir = startDir; ; dir = dirname(dir)) {
+    const candidate = join(dir, 'node_modules', 'get-windows')
+    if (existsSync(candidate)) return candidate
+    if (dirname(dir) === dir) return null
+  }
+}
+
+/** The warning printed when get-windows cannot be staged. */
+export function missingGetWindowsWarning({ platform, arch, halfInstalledDir }) {
+  const lines = [
+    `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
+      'read_window_below will be unavailable in this build'
+  ]
+  if (halfInstalledDir) {
+    lines.push(
+      `[stage-native-deps] ${halfInstalledDir} exists but is not a loadable package — an ` +
+        'interrupted npm install left it half-extracted (look for TAR_ENTRY_ERROR in the install log). ' +
+        'To restore read_window_below: close every Hermes window and gateway so the extract is not ' +
+        'interrupted again, then run `hermes desktop --force-build` — it removes the stale dir before npm.'
+    )
+  }
+  return lines.join('\n')
+}
+
 export function stageGetWindows(
   {
     platform = process.platform,
     arch = process.arch,
-    resolveRoot = resolveGetWindowsRoot
+    resolveRoot = resolveGetWindowsRoot,
+    findHalfInstalledDir = findHalfInstalledGetWindowsDir
   } = {}
 ) {
   const srcRoot = resolveRoot()
   const destRoot = resolve(projectRoot, 'dist/node_modules/get-windows')
 
   if (!srcRoot) {
-    // npm may omit an optional dependency whose install script fails. That is
-    // expected on Linux and win32-arm64 because get-windows 9.3.0 publishes no
-    // native prebuilt for either target. The runtime import already fails soft,
-    // so disable only window enumeration instead of failing the Desktop build.
-    // Other Windows architectures and macOS have supported native payloads and
-    // remain fail-closed so a broken package cannot ship silently.
-    const canDegrade = platform === 'linux' || (platform === 'win32' && arch === 'arm64')
-    if (canDegrade) {
-      console.warn(
-        `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
-          'read_window_below will be unavailable in this build'
-      )
-      return undefined
-    }
-    throw new Error(
-      `[stage-native-deps] get-windows is not installed; cannot stage its ${platform}-${arch} native payload`
+    // npm may omit an optional dependency whose install script fails, or an in-place
+    // update may fail to extract it due to file locks (#90829). The runtime import
+    // already fails soft, so we disable only window enumeration instead of failing
+    // the entire Desktop build (which would strand users on an old version).
+    console.warn(
+      missingGetWindowsWarning({ platform, arch, halfInstalledDir: findHalfInstalledDir() })
     )
+    return undefined
   }
 
   // Only a win32 host can produce the win32 binding, so a cross-platform pack

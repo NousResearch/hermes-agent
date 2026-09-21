@@ -204,6 +204,17 @@ The check matrix is platform-aware: `bundle_identity` / `tcc_*` are
 `ax_capability` checks AX on macOS, UIA on Windows, AT-SPI on Linux —
 each with the right diagnostic hint when it can't reach.
 
+On Linux, where the daemon is a hand-written systemd user unit or XDG
+autostart entry rather than a managed autostart, doctor also reads those
+units: a `cua-driver` `ExecStart` pointing at a pruned
+`packages/releases/<version>/` directory is reported as a failing
+`daemon unit (...)` check (point it at `~/.cua-driver/packages/current/cua-driver`),
+and a unit that runs `cua-driver serve` gets a `daemon (...)` check that
+connects to its socket — `fail` when nothing is listening (crash loop,
+stopped, never started), `pass` when the daemon answers. Reinstalling the
+driver does not start a daemon; `systemctl --user status <unit>` does.
+`hermes computer-use status` prints the same dead-daemon line and exits 1.
+
 ## The agent cursor and sessions
 
 When the agent acts, you'll see a **tinted overlay cursor** glide

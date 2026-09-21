@@ -36,7 +36,7 @@ def test_deferred_destination_does_not_follow_root_changes(tmp_path, monkeypatch
         db.close()
     monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _: other)
     run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
-    monkeypatch.setattr(delivery.subprocess, "run", run)
+    monkeypatch.setattr(delivery, "_run_bot_chat_turn", run)
     if recipient == "desktop":
         lease, refusal = try_acquire_active_session(
             session_id="chat", surface="desktop", config={}, registry_home=home,
@@ -53,7 +53,7 @@ def test_deferred_destination_does_not_follow_root_changes(tmp_path, monkeypatch
             assert run.call_count == 1
             argv = run.call_args.args[0]
             assert "-p" not in argv
-            assert Path(run.call_args.kwargs["env"]["HERMES_HOME"]) == home
+            assert Path(run.call_args.args[1]["HERMES_HOME"]) == home
         elif recipient == "desktop":
             run.assert_not_called()
             receipt = read_delivery_result(home, key)

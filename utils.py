@@ -237,8 +237,9 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     gets what ``open(path, "w")`` would have given it (process umask) — the callers this replaced
     wrote at umask, and silently tightening every fresh cache/state file to 0600 breaks shared
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
-    also fsyncs the parent so the rename itself is durable. The temp file is removed on any
-    failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
+    also fsyncs the resolved target's parent so the rename itself is durable. The temp file is
+    removed on any failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still
+    clean up.
     """
     # A profile delete leaves a tombstone beside its removed home.  Background
     # writers may retain that home in a context variable, so a plain mkdir here
@@ -257,9 +258,10 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
             write(f)
             f.flush()
             os.fsync(f.fileno())
-        _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        replaced = Path(atomic_replace(tmp_path, path))  # symlink-preserving actual destination
+        _restore_file_metadata(replaced, original_owner, mode)
         if fsync_dir:
-            fsync_directory(path.parent)
+            fsync_directory(replaced.parent)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)
@@ -581,6 +583,13 @@ def base_url_hostname(base_url: str) -> str:
     otherwise pass as native endpoints and mis-route api_mode and auth.
     """
     return _hostname_of(_parse_base_url(base_url))
+
+
+def base_url_path(base_url: str) -> str:
+    """Lowercased URL path without the trailing slash (``""`` for a bare host); same scheme
+    tolerance as :func:`base_url_hostname` so host and path checks agree on one URL."""
+    parsed = _parse_base_url(base_url)
+    return (parsed.path if parsed else "").lower().rstrip("/")
 
 
 def model_forces_max_completion_tokens(model: str) -> bool:

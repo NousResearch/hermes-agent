@@ -75,6 +75,7 @@ function view(sessionId: string, storedId: string): SessionView {
     $model: atom(''),
     $provider: atom(''),
     $reasoningEffort: atom(''),
+    $reasoningEffortWire: atom(''),
     $runtimeId: atom(sessionId),
     $storedId: atom(storedId),
     $turnStartedAt: atom(null),

@@ -48,9 +48,11 @@ from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
+from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 import hermes_state_lockguard as _lockguard
+from hermes_state_lockowners import log_write_lock_holders
 from hermes_state_dbfile import (
     _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
@@ -442,15 +444,16 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionRewindMixin,
+    SessionMessagesMixin, SessionRewindMixin, SessionProfileRepairMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
     # Only these state-owned producers join automatic stale-open reconciliation; messaging/UI
     # sources have their own lifecycle owners; unknown sources fail closed.
-    # See #60609.
+    # See #60609.  `recovered` = placeholders `hermes sessions recover` synthesizes for
+    # orphaned messages (no live owner, never stamped ended_at); without it they are immortal.
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
-        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool",
+        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered",
     )
 
     # ── Write-contention tuning ──
@@ -535,6 +538,18 @@ class SessionDB(
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
+        # Keep only the opening call site, never a frame (which pins caller locals).
+        self._creation_site = "unknown"
+        caller = None
+        try:
+            caller = sys._getframe(1)
+            self._creation_site = (
+                f"{caller.f_globals.get('__name__', '?')}.{caller.f_code.co_name}:{caller.f_lineno}"
+            )
+        except Exception:
+            pass  # Diagnostic metadata must not prevent opening the database.
+        finally:
+            del caller
         self._lock = threading.Lock()
         # Read-path split (WAL only): reads borrow from a BOUNDED read-only pool so they
         # never queue behind writer flushes on self._lock (see _read_ctx); unbounded
@@ -549,7 +564,6 @@ class SessionDB(
         # per DATABASE PATH, not per instance: the descriptors they ration belong to the file, and one
         # process holds several SessionDB objects on the same state.db (#98573). See _PathReadBudget.
         self._read_budget = _read_budget_for(self.db_path)
-        self._read_budget.register(self)
         self._read_permits = self._read_budget.permits
         self._read_conns_lock = threading.Lock()
         # Set when close() begins; an in-flight reader then closes its own connection
@@ -610,6 +624,9 @@ class SessionDB(
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
             else:
+                # Only a successfully opened handle owns a writer connection. Failed
+                # construction must not leave a diagnostic member behind.
+                self._read_budget.register(self)
                 # Test-isolation runs only (gated inside the helper): register
                 # for the suite-level leak sweep in tests/conftest.py.
                 _register_test_instance(self)
@@ -782,6 +799,7 @@ class SessionDB(
                 self._close_connection_quietly(self._conn)
                 now = time.monotonic()
                 if now >= deadline:
+                    log_write_lock_holders(self.db_path, self._WRITE_PATIENCE_S)
                     raise
                 jitter = random.uniform(self._WRITE_RETRY_SLOW_MIN_S, self._WRITE_RETRY_SLOW_MAX_S)
                 time.sleep(min(jitter, max(deadline - now, 0.001)))
@@ -1000,7 +1018,10 @@ class SessionDB(
                     if "locked" in err_msg or "busy" in err_msg:
                         if self._sleep_before_write_retry(deadline, patience_s):
                             continue
-                        # Say what actually happened, not disk/permission damage.
+                        # Say what actually happened, not disk/permission damage. The holder goes to
+                        # the log, not the message: classify_persistence_error() buckets by phrase and
+                        # a holder's argv (a worktree named fix-corrupt-db) would flip the bucket.
+                        log_write_lock_holders(self.db_path, patience_s)
                         raise sqlite3.OperationalError(
                             f"database is locked (another Hermes process held the "
                             f"state.db write lock for over {patience_s:.0f}s — "
@@ -1024,7 +1045,8 @@ class SessionDB(
                         "not a database" in err_msg or is_malformed_db_error(exc)
                         or self._is_fts_write_corruption_error(exc)
                     ):
-                        self._raise_if_db_replaced()
+                        with self._lock:
+                            self._raise_if_db_replaced()
                     # Corrupt FTS shadow tables fail every write via the sync triggers while canonical
                     # rows are intact: detach the derived indexes atomically and retry (never rebuild here).
                     if self._enter_fts_fail_open(exc):
@@ -1042,15 +1064,21 @@ class SessionDB(
             (conn.executemany if many else conn.execute)(sql, params)
         self._execute_write(_do, patience_s=patience_s)
 
+    @staticmethod
+    def _write_rowcount_on_conn(conn, sql: str, params: Any = ()) -> int:
+        """Execute one UPDATE/DELETE on an existing transaction and return rows changed."""
+        rowcount = conn.execute(sql, params).rowcount
+        if rowcount is None or rowcount < 0:
+            rowcount = conn.execute("SELECT changes()").fetchone()[0]
+        return rowcount
+
     def _write_rowcount(self, sql: str, params: Any = (), *, patience_s: Optional[float] = None) -> int:
         """Run one UPDATE/DELETE through ``_execute_write``; return rows changed
         (``SELECT changes()`` when the driver reports None / negative)."""
-        def _do(conn):
-            rowcount = conn.execute(sql, params).rowcount
-            if rowcount is None or rowcount < 0:
-                rowcount = conn.execute("SELECT changes()").fetchone()[0]
-            return rowcount
-        return self._execute_write(_do, patience_s=patience_s)
+        return self._execute_write(
+            lambda conn: self._write_rowcount_on_conn(conn, sql, params),
+            patience_s=patience_s,
+        )
 
     def _read_one(self, sql: str, params: Any = ()) -> Optional[sqlite3.Row]:
         """``fetchone()`` of one read-only statement via ``_read_ctx``."""
@@ -1475,6 +1503,7 @@ class SessionDB(
                     # Only a clean close ends the generation; retain the recorded
                     # identity when retiring an unsafe handle.
                     self._db_sidecar_identity = {}
+        self._read_budget.unregister(self)  # idempotent: a never-registered (failed-init) handle is a no-op
 
     def __del__(self) -> None:
         """Safety net: close() if the caller forgot. Attribute access stays

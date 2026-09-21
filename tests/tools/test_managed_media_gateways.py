@@ -177,6 +177,7 @@ def _install_fake_openai_module(captured, transcription_response=None):
         APIConnectionError=Exception,
         APITimeoutError=Exception,
         BadRequestError=type("BadRequestError", (Exception,), {}),
+        APIStatusError=type("APIStatusError", (Exception,), {}),
     )
     sys.modules["openai"] = fake_module
 
@@ -185,6 +186,16 @@ def test_managed_fal_submit_uses_gateway_origin_and_nous_token(monkeypatch):
     captured = {}
     _install_fake_tools_package()
     _install_fake_fal_client(captured)
+    # The fake fal_client above answers every SDK touch; the real lazy-dep gate
+    # (a version-pinned metadata check) must not refuse first on an install
+    # without the fal extra. Replace the sys.modules entry itself so the
+    # loader's ``from tools.lazy_deps import ensure`` resolves to the stub no
+    # matter which tools package object a prior test left behind.
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.lazy_deps",
+        types.SimpleNamespace(ensure=lambda *args, **kwargs: None),
+    )
     monkeypatch.delenv("FAL_KEY", raising=False)
     monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
     monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")

@@ -15,13 +15,13 @@ Create, read, edit .pptx decks with python-pptx.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\powerpoint` |
+| Path | `skills/productivity/powerpoint` |
 | Version | `1.1.0` |
 | Author | Nous Research |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `pptx`, `powerpoint`, `presentations`, `slides`, `office`, `python-pptx` |
-| Related skills | [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx), [`xlsx`](/docs/user-guide/skills/bundled/productivity/productivity-xlsx), [`pdf`](/docs/user-guide/skills/bundled/productivity/productivity-pdf) |
+| Related skills | [`docx`](../../bundled/productivity/productivity-docx.md), [`xlsx`](../../bundled/productivity/productivity-xlsx.md), [`pdf`](../../bundled/productivity/productivity-pdf.md) |
 
 ## Reference: full SKILL.md
 

@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
-from tools.bot_mode_probe import _default_home, _hermes_root
+from tools.bot_mode_probe import _default_home, _hermes_root, alias_forms
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -49,8 +49,16 @@ DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
 DESKTOP_DELIVER_TIMEOUT_SECONDS = (
     TURN_WAIT_SECONDS_FALLBACK + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
 )
-# The Desktop posts its own timeout reply at that deadline, so the waiter must still be watching then.
-REPLY_WAIT_SECONDS = DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
+# A claimed envelope still unanswered this long after its claim was taken by a Desktop that died
+# before ``bot_relay.deliver``; the next drain re-offers it, once. The longest a LIVE delivery can
+# be in flight without a reply on disk is the Desktop's own deliver deadline (it posts a
+# ``delivery_timeout`` reply when that passes, and the gateway-side hold — lock wait + the turn
+# attempts — ends before it by construction), so past that point plus posting headroom the silence
+# is provably the Desktop's death, not a slow turn. tests/tools/test_bot_relay.py pins the order.
+REOFFER_AFTER_SECONDS = DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
+# The waiter must outlive the Desktop's timeout reply for the first delivery AND for the one
+# re-offered delivery: re-offer window + a whole deliver budget + posting headroom.
+REPLY_WAIT_SECONDS = REOFFER_AFTER_SECONDS + DESKTOP_DELIVER_TIMEOUT_SECONDS + 60
 # Envelopes/replies older than this are stale artifacts (Desktop closed) and are swept.
 STALE_AFTER_SECONDS = 6 * 3600
 # Only a recent roster is authoritative for the fail-fast offline check: the
@@ -166,32 +174,97 @@ def read_remote_roster(root: Path | str) -> list[dict]:
         return []
 
 
+def _target_ids(row: dict) -> set[str]:
+    """Lower-cased routing ids of a roster row: its @handle and profile folder id."""
+    return {row["handle"].lower(), row["profile"].lower()}
+
+
+def _target_aliases(row: dict) -> set[str]:
+    """Every lower-cased bare form that addresses ``row``: routing ids plus the Bot Mode title's
+    mention slugs (``"CoS Bot"`` → ``cos-bot``/``cosbot``, what the Desktop picker inserts). A remote
+    ``default`` is ``@hermes`` on every gateway, so its title is the only bare form that can single it out."""
+    return _target_ids(row) | alias_forms(row.get("title") or "")
+
+
 def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
-    """Matched row for a bare handle/profile (unique across connections) or
-    ``<handle|profile>@<connection-id>``; ``"ambiguous"`` for a bare form on several connections; None otherwise."""
+    """Matched row for a bare handle/profile/title slug (unique across connections) or
+    ``<handle|profile|title-slug>@<connection-id>``; ``"ambiguous"`` for a bare form on several
+    connections; None otherwise. An exact handle/profile match beats a title slug, so a title
+    colliding with another row's handle never steals it."""
     want, at, conn = (p.strip() for p in str(raw_target or "").strip().lstrip("@").partition("@"))
     if not want or (at and not conn):
         return None
-    matches = [row for row in roster if want.lower() in (row["handle"].lower(), row["profile"].lower())
-               and (not conn or row["connection_id"].lower() == conn.lower())]
+    want = want.lower()
+    rows = [row for row in roster if not conn or row["connection_id"].lower() == conn.lower()]
+    matches = [row for row in rows if want in _target_ids(row)] or [row for row in rows if want in _target_aliases(row)]
     if not matches:
         return None
     return matches[0] if len(matches) == 1 else "ambiguous"
 
 
-def remote_target_forms(roster: list[dict]) -> list[str]:
-    """Target strings: bare handle when unique across connections, else
-    ``handle@connection`` (mirrors ``resolve_remote_target``)."""
-    handles = [row["handle"].lower() for row in roster]
-    return [f"{row['handle']}@{row['connection_id']}" if handles.count(h) > 1 else row["handle"]
-            for row, h in zip(roster, handles)]
+def _title_slug(row: dict) -> str:
+    """The Bot Mode title's slug form (``"CoS Bot"`` → ``cos-bot``, what the picker inserts); "" when the
+    title is empty, reserved (a bot titled "Hermes") or not a valid handle."""
+    title = str(row.get("title") or "")
+    slug = re.sub(r"[^a-z0-9_-]+", "-", title.strip().lower()).strip("-")
+    return slug if slug in alias_forms(title) else ""
+
+
+def remote_target_forms(roster: list[dict], local_taken: "set[str] | frozenset[str]" = frozenset()) -> list[str]:
+    """One unambiguous target string per row, shortest first: the bare handle when no other remote
+    row and no LOCAL profile (``local_taken``: this gateway's handles and friendly-name slugs) answers
+    to it; else the title slug under the same test (a remote ``default`` titled "CoS Bot" is
+    ``@cos-bot``, since bare ``@hermes`` is always this gateway's own default); else
+    ``handle@connection``. Mirrors ``resolve_remote_target``."""
+    taken = {form.lower() for form in local_taken}
+    id_claims: dict[str, int] = {}
+    alias_claims: dict[str, int] = {}
+    for row in roster:
+        for form in _target_ids(row):
+            id_claims[form] = id_claims.get(form, 0) + 1
+        for form in _target_aliases(row):
+            alias_claims[form] = alias_claims.get(form, 0) + 1
+
+    def _form(row: dict) -> str:
+        # The handle needs only be unique among routing ids (resolution gives it precedence over a
+        # colliding title); a title slug must be unique among every alias.
+        for candidate, claims in ((row["handle"], id_claims), (_title_slug(row), alias_claims)):
+            if candidate and candidate.lower() not in taken and claims.get(candidate.lower(), 0) == 1:
+                return candidate
+        return f"{row['handle']}@{row['connection_id']}"
+
+    return [_form(row) for row in roster]
+
+
+_SENDER_STAMP_RE = re.compile(r"^(Message from 🤖 .+? \(@)([A-Za-z0-9_-]+)(\): )", re.DOTALL)
+
+
+def qualify_sender_stamp(message: str, from_handle: Any, from_connection: Any, roster: list[dict],
+                         local_taken: "set[str] | frozenset[str]" = frozenset()) -> str:
+    """Rewrite a relayed DM's ``Message from 🤖 <name> (@<handle>):`` stamp so the handle is the
+    form THIS gateway can reply to: the sender's row in the local relay roster as
+    ``remote_target_forms`` renders it, else ``handle@connection``. A relayed ``@hermes`` is another
+    machine's default — left bare, a reply lands on the recipient's own default (#103731)."""
+    handle, conn = str(from_handle or "").strip().lstrip("@"), str(from_connection or "").strip()
+    match = _SENDER_STAMP_RE.match(str(message or ""))
+    if not match or not conn or not _HANDLE_RE.match(handle) or not _HANDLE_RE.match(conn):
+        return message
+    forms = dict(zip(((r["connection_id"].lower(), r["handle"].lower()) for r in roster), remote_target_forms(roster, local_taken)))
+    form = forms.get((conn.lower(), handle.lower())) or f"{handle}@{conn}"
+    return f"{match.group(1)}{form}{match.group(3)}{message[match.end():]}"
 
 
 def _envelope_ttl_seconds() -> int:
     """Configured drain TTL (``bot_mode.envelope_ttl_seconds``), read per-drain.
     ``0`` (or negative) disables expiry."""
     val = _bot_mode_cfg("envelope_ttl_seconds", loader="load_config_readonly")
-    return DEFAULT_ENVELOPE_TTL_SECONDS if val is None else int(val)
+    if val is None:
+        return DEFAULT_ENVELOPE_TTL_SECONDS
+    try:
+        return int(val)
+    except (TypeError, ValueError, OverflowError):
+        logger.debug("Invalid bot_mode.envelope_ttl_seconds %r; using fallback", val)
+        return DEFAULT_ENVELOPE_TTL_SECONDS
 
 
 def _target_liveness(root: Path | str, target: dict) -> Optional[bool]:
@@ -241,6 +314,8 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     reply so the sender's waiter resolves (best effort). Unreadable envelopes are left for the claim."""
     try:
         env = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(env, dict):
+            raise ValueError(f"expected a JSON object, got {type(env).__name__}")
         created = float(env.get("created_at") or path.stat().st_mtime)
     except (OSError, ValueError):
         return False
@@ -275,7 +350,8 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     _sweep_stale(base)
     ttl = _envelope_ttl_seconds()
     now = time.time()
-    out: list[dict] = []
+    # Re-offers first: they are the oldest mail this drain hands out.
+    out: list[dict] = _reoffer_unanswered(root, base, ttl, now)
     # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
     # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
     # by filename ordered them by ``uuid4().hex`` — at random.
@@ -287,23 +363,85 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         claimed = base / CLAIMED_DIR / path.name
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
-            out.append(json.loads(claimed.read_text(encoding="utf-8")))
+            os.utime(claimed, (now, now))  # the re-offer window counts from the claim, not the enqueue
+            envelope = json.loads(claimed.read_text(encoding="utf-8"))
+            if not isinstance(envelope, dict):
+                raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
+            out.append(envelope)
+    return out
+
+
+def _reoffer_unanswered(root: Path | str, base: Path, ttl: float, now: float) -> list[dict]:
+    """``claimed/`` envelopes unanswered ``REOFFER_AFTER_SECONDS`` after their claim, at most once each.
+
+    The claim is the Desktop's: one that disconnects between ``outbox.drain`` and ``bot_relay.deliver``
+    leaves the envelope here with no reply, silent until the waiter's deadline and then swept, while
+    the reconnected Desktop's drains see an empty outbox (#111021, #111207). Bounds, in check order:
+
+    * ``created_at + REPLY_WAIT_SECONDS`` passed with no reply — the waiter is gone (or about to be);
+      a ``delivery_timeout`` reply is written so it learns, and the envelope is never handed out again.
+    * already re-offered (``reoffered_at`` stamped on the envelope) — one extra delivery per message,
+      never a turn loop against a target nobody is listening for.
+    * ``bot_mode.envelope_ttl_seconds`` applies to the re-offer leg exactly as to the outbox: the
+      message is back in the queue from ``claim + REOFFER_AFTER_SECONDS``; a drain that comes ``ttl``
+      later than that refuses it with ``queued_expired``.
+    """
+    out: list[dict] = []
+    for path in sorted((base / CLAIMED_DIR).glob("*.json"), key=_queued_at):
+        if (base / REPLIES_DIR / path.name).exists():
+            continue
+        with contextlib.suppress(OSError, ValueError):
+            claimed_at = path.stat().st_mtime
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(envelope, dict):
+                raise ValueError(f"expected a JSON object, got {type(envelope).__name__}")
+            env_id = str(envelope.get("id") or "")
+            label = f"@{envelope.get('target_handle') or '?'} on {envelope.get('target_connection') or '?'}"
+            created = float(envelope.get("created_at") or claimed_at)
+            if now - created > REPLY_WAIT_SECONDS:
+                write_reply(root, env_id, reason="delivery_timeout", error=(
+                    f"no reply from {label} within {REPLY_WAIT_SECONDS}s of sending — the Desktop picked "
+                    "the message up but never reported a delivery. It will not be retried; resend if it matters."))
+                continue
+            if envelope.get("reoffered_at"):
+                continue
+            queued_for = now - claimed_at - REOFFER_AFTER_SECONDS
+            if queued_for < 0:
+                continue
+            if ttl > 0 and queued_for > ttl:
+                write_reply(root, env_id, reason="queued_expired", error=(
+                    f"re-queued message to {label} expired after {ttl}s waiting for the Desktop to drain it "
+                    "again — it was NOT delivered. Resend once the Desktop reconnects."))
+                continue
+            envelope["reoffered_at"] = int(now)
+            _atomic_write_json(path, envelope)
+            out.append(envelope)
     return out
 
 
 def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = "") -> Path:
     """Persist the relayed reply (or delivery error) for the waiter. ``reason`` (typed
-    code, ``tools.bot_failure_reasons``) is classified from ``error`` when omitted."""
+    code, ``tools.bot_failure_reasons``) is classified from ``error`` when omitted.
+
+    Idempotent by envelope id — the first settled reply stands, error or not. That is safe because
+    two deliveries of one envelope never overlap: ``_reoffer_unanswered`` waits past the Desktop's own
+    deliver deadline (``REOFFER_AFTER_SECONDS``), so by the time a second delivery can start, the first
+    has either replied (and the waiter may already have read it) or provably died without one. A
+    later write is therefore a duplicate or a bookkeeping timeout, never a truer answer."""
     base = _ensure_dirs(root)
     safe = str(envelope_id or "").strip()
     if not re.match(r"^[0-9a-f]{32}$", safe):
         raise ValueError(f"invalid envelope id: {envelope_id!r}")
+    path = base / REPLIES_DIR / f"{safe}.json"
+    if path.exists():
+        # Idempotent by envelope id: the first settled reply is the one the waiter already read (or
+        # will). A re-offered delivery's second outcome — or a late duplicate — never displaces it.
+        return path
     err, code = str(error or ""), str(reason or "")
     if not code and err:
         from tools.bot_failure_reasons import classify_agent_error
 
         code = classify_agent_error(err)
-    path = base / REPLIES_DIR / f"{safe}.json"
     _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code})
     return path
 
@@ -340,42 +478,24 @@ def cleanup_bot_relay_artifacts(max_age_hours: float | None = None) -> int:
 def waiter_command(root: Path | str, envelope: dict) -> str:
     """Shell command that blocks until the reply file appears, then prints it; spawned
     via ``terminal_tool(background=True, notify_on_complete=True)`` so its stdout arrives
-    as the same completion notification local DMs use. Stdlib-only."""
+    as the same completion notification local DMs use.
+
+    A ``tools/bot_mode_dm.py --wait-reply`` entrypoint, like the local delivery runner — not
+    ``python -c``. The approval gate flags inline interpreter code ("script execution via -e/-c
+    flag"), and ``approvals.single_query_mode`` defaults to ``deny`` for the one-shot ``-Q`` turn a
+    bot replies from, so the reply waiter was refused exactly when a bot answered a teammate: the
+    message was delivered, the reply never woke the sender. Roster fields ride as argv (``shlex``
+    quoted), never as source text, so a hostile handle or connection id stays data.
+    """
     reply_path = str(relay_root(root) / REPLIES_DIR / f"{envelope['id']}.json")
     label = f"@{envelope.get('target_handle', '')} on {envelope.get('target_connection', '')}"
-    # !r keeps roster fields from breaking out of the generated python -c source.
-    # The r-prefix keeps Windows paths viable: the Windows execution layer folds
-    # repr's "\\" back to "\", turning "\U" into an invalid unicode escape; a
-    # raw literal parses the folded backslash literally. No-op on POSIX, and \'
-    # still cannot terminate a raw literal, so the injection defense holds.
-    code = (
-        # Encode label with !r so roster fields cannot break out of the generated python -c source (quotes,
-        # parens, or extra statements in connection_id). See #93590.
-        "import json,os,sys,time\n"
-        f"p = r{reply_path!r}\n"
-        f"label = r{label!r}\n"
-        f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
-        "while time.time() < deadline:\n"
-        "    if os.path.exists(p):\n"
-        "        d = json.load(open(p, encoding='utf-8'))\n"
-        "        if d.get('error'):\n"
-        # Typed reason code rides ahead of the free text so the sender can
-        # branch on it without parsing provider prose.
-        # See #93091.
-        "            code = str(d.get('reason') or '').strip()\n"
-        "            tag = ' [reason: ' + code + ']' if code else ''\n"
-        "            print('Delivery to ' + label + ' failed' + tag + ': ' + d['error'])\n"
-        "            sys.exit(1)\n"
-        "        print('Reply from ' + label + ':')\n"
-        "        print(d.get('reply') or '(empty reply)')\n"
-        "        sys.exit(0)\n"
-        # 250ms cadence: stat is cheap and a longer sleep is pure dead air.
-        "    time.sleep(0.25)\n"
-        f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
-        "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
-        "sys.exit(1)\n"
-    )
-    return f"{shlex.quote(sys.executable or 'python3')} -c {shlex.quote(code)}"
+    runner = str(Path(__file__).resolve().with_name("bot_mode_dm.py"))
+    argv = [sys.executable or "python3", runner, "--wait-reply", reply_path, label, str(REPLY_WAIT_SECONDS)]
+    if sys.platform == "win32":
+        # Same rewrite as the delivery runner: the tracked local backend uses Git Bash on native
+        # Windows, where forward-slash drive paths run and backslash paths parse as command names.
+        argv = [part.replace("\\", "/") for part in argv]
+    return shlex.join(argv)
 
 
 def _hermes_cli() -> str:
@@ -438,6 +558,19 @@ def _delivery_child_session_env_names() -> "tuple[str, ...]":
     from gateway.session_context import _VAR_MAP
 
     return tuple(_VAR_MAP)
+
+
+def relaying_principal_author(principal: str) -> dict:
+    """The author of a relayed DM whose sender fields cannot be trusted: a logged-in client named them.
+
+    Server-derived and unspoofable — the id is built from the caller's minted identity digest, never from
+    anything the client sent — and still a BOT author, because the recipient's memory routes on that:
+    Honcho writes a bot-authored turn into the bot's own a2a session and refuses conclusion / profile /
+    mirror writes for it, while an unattributed turn is treated as the human's (#107598 review). The
+    human-facing signature stays in the message text the sender composed."""
+    from agent.turn_author import bot_author_id
+
+    return {"id": bot_author_id("relay", str(principal or "").strip()), "name": "relayed teammate", "is_bot": True}
 
 
 def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = None) -> dict[str, str]:

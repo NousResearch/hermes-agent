@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $profiles, normalizeProfileKey, profileLabel, refreshProfiles } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, normalizeProfileKey, profileLabel, refreshProfiles } from '@/store/profile'
 import {
   $settingsScopeEditsNonDefault,
   $settingsScopeOverride,
@@ -105,5 +105,34 @@ export function SettingsProfileScope({ className }: { className?: string }) {
         </p>
       ) : null}
     </div>
+  )
+}
+
+/** Read-only note for Providers pages whose requests carry no scope and so
+ *  always edit the app's ACTIVE profile (Custom Endpoints, Local Models) — the
+ *  reporter's "which profile am I editing?" gap. Same string as the selector's
+ *  note above; hidden with fewer than two profiles like the selector itself. */
+export function ActiveProfileNote({ className }: { className?: string }) {
+  const { t } = useI18n()
+  const active = useStore($activeGatewayProfile)
+  const profiles = useStore($profiles)
+
+  if (profiles.length < 2) {
+    return null
+  }
+
+  const key = normalizeProfileKey(active)
+  const profile = profiles.find(candidate => normalizeProfileKey(candidate.name) === key)
+
+  return (
+    <p
+      className={cn(
+        'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)',
+        className
+      )}
+      role="status"
+    >
+      {t.settings.profileScope.editsProfile(profile ? settingsScopeLabel(profile) : key)}
+    </p>
   )
 }

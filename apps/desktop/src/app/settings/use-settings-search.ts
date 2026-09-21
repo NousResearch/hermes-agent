@@ -14,14 +14,18 @@ import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
+import { SECTIONS } from './constants'
+import { OTHER_SUBPAGES } from './other-subpages'
 import {
   APPEARANCE_SETTING_IDS,
   buildConfigSearchEntries,
   buildCredentialSearchEntries,
   type SettingsSearchEntry
 } from './settings-search'
+import { settingsSubpages } from './subpages'
+import type { SettingsView } from './types'
 
-/** An installed plugin row, deep-linkable as `/skills?tab=plugins&plugin=<id>`. */
+/** An installed plugin row, deep-linkable as `/capabilities?tab=plugins&plugin=<id>`. */
 export interface PluginSearchEntry {
   context: string
   description?: string
@@ -200,6 +204,24 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.hideCodeDiffsDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.hideCodeDiffs}`,
+      keywords: ['code', 'diff', 'patch', 'file edits', 'inline', 'added', 'removed'],
+      label: appearance.hideCodeDiffsTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.hideCodeDiffs, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
+      description: appearance.hideThreadTimelineDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.hideThreadTimeline}`,
+      keywords: ['thread', 'conversation', 'timeline', 'bars', 'rail', 'navigation', 'hide'],
+      label: appearance.hideThreadTimelineTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.hideThreadTimeline, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.appActionsDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.appActions}`,
@@ -227,7 +249,33 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     { settings: Settings2, tools: Wrench }
   )
 
+  const pageLabels: Record<string, string> = {
+    ...t.settings.nav,
+    sessions: t.settings.nav.archivedChats
+  }
+
+  const subpageEntries: SettingsSearchEntry[] = [
+    ...SECTIONS.map(section => ({
+      view: `config:${section.id}` as SettingsView,
+      label: t.settings.sections[section.id] ?? section.label,
+      icon: section.icon
+    })),
+    ...Object.keys(OTHER_SUBPAGES).map(view => ({
+      view: view as SettingsView,
+      label: pageLabels[view],
+      icon: Settings2
+    }))
+  ].flatMap(parent => settingsSubpages(parent.view).map(page => ({
+    context: parent.label,
+    icon: parent.icon,
+    id: `settings-page:${parent.view}:${page.id}`,
+    keywords: [parent.label, page.id],
+    label: t.settings.subpages[page.labelKey],
+    target: { view: parent.view, subpage: page.id }
+  })))
+
   return {
+    subpageEntries,
     appearanceEntries,
     configEntries,
     credentialEntries,

@@ -116,6 +116,7 @@ class GatewayProfileReconcileMixin:
                 await self._unserve_profile(name, known[name])
                 result["removed"].append(name)
             claimed = self._live_resource_claims(active)
+            transient_failed = set()
             for name in added + changed:
                 # Only acknowledge the configuration observed before connecting;
                 # a setup save during an awaited handshake needs another scan.
@@ -126,10 +127,15 @@ class GatewayProfileReconcileMixin:
                     # Boot refuses to run with such a profile; at runtime we park just this profile.
                     logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
                     connected = 0
+                    sigs[name] = scan_signature
                 except Exception:
                     logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
                     connected = 0
-                sigs[name] = scan_signature
+                    # A transient failure is not the deliberate park above: leave the signature
+                    # unacknowledged so the next reconcile retries the connect.
+                    transient_failed.add(name)
+                else:
+                    sigs[name] = scan_signature
                 if name in added:
                     logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                     result["added"].append(name)
@@ -145,6 +151,11 @@ class GatewayProfileReconcileMixin:
                 result["removed"].append(name)
                 added = [n for n in added if n != name]
             self._record_served_profiles(active, list(current.items()))
+            # ``_note_served_profiles`` fills a missing signature with the current one; that refill
+            # would park a transiently-failed profile exactly like the config-error case above.
+            for name in transient_failed:
+                if isinstance(self._served_profile_signatures, dict):
+                    self._served_profile_signatures.pop(name, None)
             if added:
                 await self._after_profiles_added([(n, current[n]) for n in added])
             result["served_profiles"] = self.served_profile_names()
@@ -194,7 +205,8 @@ class GatewayProfileReconcileMixin:
             await self._bounded_adapter_teardown(adapter, platform, profile=name)
         # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
         _write_runtime_status_quiet(drop_profile_platforms=name)
-        for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile"):
+        for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
+                     "_busy_text_timing_by_profile", "_human_delay_by_profile"):
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(name, None)
@@ -242,17 +254,36 @@ def _mcp_config_reconciler(runner=None):
             logger.info("MCP servers reconciled with config (%s): removed=%s added=%s",
                         label, result["removed"], result["added"])
 
-    def _tick() -> None:
-        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
-        config = getattr(runner, "config", None)
-        if not getattr(config, "multiplex_profiles", False):
-            _reconcile_current("default")
-            return
-        for profile_name, profile_home in _multiplex_profile_homes(config):
-            with _profile_runtime_scope(Path(profile_home)):
-                _reconcile_current(str(profile_name))
+    return lambda: _for_each_served_profile(runner, _reconcile_current)
 
-    return _tick
+
+def _for_each_served_profile(runner, body) -> None:
+    """Run ``body(profile_label)`` once per served profile, inside that profile's runtime scope.
+
+    Housekeeping runs on a bare thread with no turn on the stack, so nothing binds a profile for it:
+    ``get_hermes_home()`` and ``get_secret()`` see the LAUNCH profile's values, and under
+    ``gateway.multiplex_profiles`` a fail-closed credential read logs ``no profile secret scope on a
+    multiplexed call`` on every tick (the skills-sync pulls resolved Nous credentials this way, four
+    WARNINGs per hourly tick per chore). A single-profile gateway runs ``body`` once, unscoped:
+    there the process env IS the profile's own value — unless a hosted room already flipped the
+    process-wide guard (#112878), in which case the launch profile's OWN scope is bound, as
+    ``run_turn.py::_standalone_launch_scope`` does for turns."""
+    from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False):
+        from gateway.run_turn import GatewayTurnMixin
+        with GatewayTurnMixin._standalone_launch_scope():
+            body("default")
+        return
+    for profile_name, profile_home in _multiplex_profile_homes(config):
+        with _profile_runtime_scope(Path(profile_home)):
+            body(str(profile_name))
+
+
+def profile_scoped_chore(runner, chore):
+    """Wrap a zero-arg housekeeping chore that reads the profile's home, config or credentials so it
+    runs once per served profile under that profile's scope (see ``_for_each_served_profile``)."""
+    return lambda: _for_each_served_profile(runner, lambda _label: chore())
 
 
 def migrate_profile_identity_verb(runner):

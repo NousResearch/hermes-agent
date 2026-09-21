@@ -17,7 +17,7 @@ today's teardown + sentinel behavior.
 import concurrent.futures
 from unittest.mock import MagicMock
 
-from gateway.run import _clarify_send_disposition, _clarify_send_then_wait
+from gateway.run_turn_runner_clarify_delivery import _clarify_send_disposition, _clarify_send_then_wait
 
 SENTINEL = "[clarify prompt could not be delivered]"
 

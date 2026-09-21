@@ -393,9 +393,14 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
             logger.info("Dropping pending title for session %s: %s", _session_key, exc)
         except Exception:
             pass  # transient DB failure — keep pending_title for retry
-    # Voice fallback when the streaming pipeline couldn't start (tts_queue already spoke
-    # everything otherwise); barge-aware.
-    if st.tts_queue is None and isinstance(raw, str) and raw.strip() and _voice_tts_enabled():
+    # Budget exits can return a visible reply without ever feeding the stream callback.
+    # Reuse the existing pipeline (and its cancellation state), never replay streamed text.
+    if isinstance(raw, str) and raw.strip() and _voice_tts_enabled():
+        if st.tts_queue is not None:
+            if not st.tts_text_queued:
+                st.tts_queue.put(raw)
+                st.tts_text_queued = True
+            return
         try:
             threading.Thread(target=_speak_text_with_barge, args=(raw,), daemon=True).start()
         except ImportError:
@@ -476,6 +481,7 @@ class _TurnRun:
     scopes: _TurnScopes = dataclasses.field(default_factory=_TurnScopes)
     result: Any = None  # read after the finally for leftover /steer
     tts_queue: Any = None
+    tts_text_queued: bool = False
     thinking_started: bool = False
     history: list = dataclasses.field(default_factory=list)
     history_version: int = 0
@@ -637,6 +643,7 @@ def _invoke_agent(
             payload["rendered"] = r
         if st.tts_queue is not None and isinstance(delta, str):
             st.tts_queue.put(delta)
+            st.tts_text_queued = st.tts_text_queued or bool(delta.strip())
         _emit("message.delta", sid, payload)
 
     # Interim assistant text (commentary beside tool calls, pre-nudge final answer) is sealed

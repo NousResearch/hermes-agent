@@ -1366,3 +1366,51 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# The per-home author key (kanban.review_profile)
+# ---------------------------------------------------------------------------
+
+def _write_home_author_key(tmp_path, profile: str) -> None:
+    """Declare this home's board identity, beside the fixture's HERMES_PROFILE."""
+    (tmp_path / ".hermes" / "config.yaml").write_text(
+        f'kanban:\n  review_profile: "{profile}"\n', encoding="utf-8",
+    )
+
+
+def test_comment_author_uses_the_home_key_over_the_env(worker_env, tmp_path, monkeypatch):
+    """The key travels with the HOME, so a child process that inherited another profile's (or
+    no) ``HERMES_PROFILE`` still writes as the profile that owns the home."""
+    monkeypatch.setenv("HERMES_PROFILE", "some-other-profile")
+    _write_home_author_key(tmp_path, "home-profile")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_comment({"task_id": worker_env, "body": "receipt"})
+    assert json.loads(out)["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert [c.author for c in kb.list_comments(conn, worker_env)] == ["home-profile"]
+    finally:
+        conn.close()
+
+
+def test_create_created_by_uses_the_home_key(worker_env, tmp_path):
+    _write_home_author_key(tmp_path, "home-profile")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({"title": "child of the key", "assignee": "peer"})
+    assert json.loads(out)["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        task = kb.get_task(conn, json.loads(out)["task_id"])
+        assert task is not None
+        assert task.created_by == "home-profile"
+    finally:
+        conn.close()

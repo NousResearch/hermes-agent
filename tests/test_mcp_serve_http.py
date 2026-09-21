@@ -63,9 +63,28 @@ def test_wildcard_http_bind_requires_client_reachable_public_url(monkeypatch, ca
     assert "wildcard MCP HTTP binds require --public-url" in capsys.readouterr().err
 
 
-def test_http_rejects_invalid_public_url_before_starting_bridge(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    "public_url",
+    [
+        "mcp.example.com/mcp",
+        "http://[bad/mcp",
+        "https://mcp.example.com:bad/mcp",
+        "https://mcp example.com/mcp",
+        "https://mcp.example.com:99999/mcp",
+    ],
+)
+def test_http_rejects_invalid_public_url_before_starting_bridge(
+    monkeypatch, capsys, public_url,
+):
     import mcp_serve
 
+    starts = []
+
+    class Bridge:
+        def start(self):
+            starts.append(True)
+
+    monkeypatch.setattr(mcp_serve, "EventBridge", Bridge)
     monkeypatch.setenv("TEST_MCP_TOKEN", "secret")
     with pytest.raises(SystemExit) as invalid_url:
         mcp_serve.run_mcp_server(
@@ -73,11 +92,12 @@ def test_http_rejects_invalid_public_url_before_starting_bridge(monkeypatch, cap
             host="0.0.0.0",
             token_env="TEST_MCP_TOKEN",
             allowed_hosts=["mcp.example.com:*"],
-            public_url="mcp.example.com/mcp",
+            public_url=public_url,
         )
 
     assert invalid_url.value.code == 2
     assert "absolute http:// or https:// URL" in capsys.readouterr().err
+    assert starts == []
 
 
 def test_remote_http_uses_bearer_auth_and_preserves_transport_settings(monkeypatch):

@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import urlsplit
 
 logger = logging.getLogger("hermes.mcp_serve")
 
@@ -742,8 +741,13 @@ _LOOPBACK_ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
 
 
 def _valid_http_url(value: str) -> bool:
-    parsed = urlsplit(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+    from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
+
+    try:
+        TypeAdapter(AnyHttpUrl).validate_python(value)
+    except (ValidationError, ValueError):
+        return False
+    return True
 
 
 def run_mcp_server(
@@ -801,7 +805,6 @@ def run_mcp_server(
 
     logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING, stream=sys.stderr)
     bridge = EventBridge()
-    bridge.start()
     resource_host = host
     if ":" in resource_host:
         resource_host = f"[{resource_host}]"
@@ -811,6 +814,7 @@ def run_mcp_server(
         bearer_token=bearer_token or None,
         resource_url=resource_url,
     )
+    bridge.start()
     import asyncio
 
     async def _run():

@@ -774,15 +774,20 @@ def _repair_current_checkout(
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
-    """Fast-forward failed: merge on a custom branch (local commits survive) or reset --hard on the
-    same branch (rescue ref first when histories share no ancestor). ``sys.exit(1)`` on failure."""
-    # A custom branch (local commits atop origin/<branch>) also can't ff, and reset --hard
-    # would discard that work: merge instead, stop on conflict.
+    """Fast-forward failed: merge any related history so local commits survive; reset only an
+    orphaned checkout after first writing a rescue ref. ``sys.exit(1)`` on failure."""
+    # Branch names do not establish ownership of commits.  Local commits can exist directly on
+    # the update target (for example main), and reset --hard would discard them when upstream
+    # also advances.  Any histories sharing an ancestor are safely reconcilable by merge; conflicts
+    # abort back to the exact pre-update tree.
     _cur_branch = (_git_run(git_cmd, ["branch", "--show-current"]).stdout or "").strip()
-    if _cur_branch and _cur_branch != branch:
+    merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])
+    has_common_ancestor = merge_base_result.returncode == 0 and merge_base_result.stdout.strip()
+    if has_common_ancestor:
+        branch_label = f"custom branch '{_cur_branch}'" if _cur_branch and _cur_branch != branch else f"branch '{branch}'"
         print(
-            f"  ⚠ Checkout is on custom branch '{_cur_branch}' — "
-            f"merging origin/{branch} instead of resetting so local commits survive...")
+            f"  ⚠ Checkout on {branch_label} diverged from origin/{branch} — "
+            "merging so local commits survive...")
         # Best-effort safety tag as a recovery anchor.
         _git_run(git_cmd, ["tag", f"pre-update-{_time.strftime('%Y%m%d-%H%M%S')}"])
         if _git_run(git_cmd, ["merge", "--no-edit", f"origin/{branch}"]).returncode != 0:
@@ -792,11 +797,8 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: a true upstream force-push/rebase; local changes are stashed, so reset.
     # Orphan divergence (no common ancestor: corrupted HEAD, re-init) would lose the whole
-    # local graph, so park pre_pull_sha behind a rescue ref first.
-    merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])
-    has_common_ancestor = merge_base_result.returncode == 0 and merge_base_result.stdout.strip()
+    # local graph, so park pre_pull_sha behind a rescue ref first before the necessary reset.
     if not has_common_ancestor and pre_pull_sha:
         from datetime import datetime as _dt, timezone
         # SHA suffix so two updates in the same second get distinct refs.

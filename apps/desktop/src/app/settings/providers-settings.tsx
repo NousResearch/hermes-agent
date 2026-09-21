@@ -27,7 +27,7 @@ import { confirm } from '@/store/confirm'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsRequestProfile, $settingsScopeEditsNonDefault } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
@@ -155,6 +155,11 @@ function OAuthPicker({
 }) {
   const { t } = useI18n()
   const p = t.settings.providers
+  // Not `profile`: the request scope is an OVERRIDE, and it is empty in the very case this
+  // explains — opening a Bot Mode chat makes the bot the ACTIVE profile and drops the override
+  // (store/settings-scope.ts), so the page is scoped to the bot while `profile` is undefined.
+  // This store is the one that answers "are we editing a profile other than the default".
+  const editsBotProfile = useStore($settingsScopeEditsNonDefault)
   const [showAll, setShowAll] = useState(false)
   const ordered = useMemo(() => sortProviders(providers), [providers])
 
@@ -180,7 +185,7 @@ function OAuthPicker({
   // collapsed disclosure reads as "the update wiped my sign-ins" (#117325) — the sign-in rows
   // stay open and say why they are empty instead. The launch profile (no `profile` scope) and
   // any bot with a connected account keep the existing collapsed-by-default page.
-  const explainPerBotLogins = Boolean(profile) && connected.length === 0 && collapsible
+  const explainPerBotLogins = editsBotProfile && connected.length === 0 && collapsible
   const showOthers = !collapsible || showAll || explainPerBotLogins
 
   return (

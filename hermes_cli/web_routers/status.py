@@ -113,12 +113,73 @@ async def get_ssh_ownership(request: Request):
             "runtimeIntact": _ssh_runtime_intact()}
 
 
+# TCP peers treated as loopback for session-token bootstrap. Includes Starlette
+# TestClient's synthetic peer. Never consult X-Forwarded-For — a proxy header
+# must not unlock disclosure of the dashboard session token (#117976).
+_TOKEN_BOOTSTRAP_LOOPBACK_PEERS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+
+
+def _request_peer_is_loopback(request: Request) -> bool:
+    peer = request.client.host if request.client else ""
+    return peer in _TOKEN_BOOTSTRAP_LOOPBACK_PEERS
+
+
 @router.get("/api/health")
 async def get_health():
-    """Lightweight process liveness for desktop/backend readiness probes."""
+    """Lightweight process liveness for desktop/backend readiness probes.
+
+    ``auth_required`` reports the OAuth cookie gate. On a loopback bind that gate
+    is off, but ``/api/ws`` still requires the ephemeral session token — so
+    ``session_token_required`` is true whenever the OAuth gate is off. The token
+    itself is never returned here (health stays probe-safe / secret-free); use
+    ``GET /api/session-token`` from a loopback peer for JSON bootstrap.
+    """
     info = get_version_info()
-    return {"ok": True, "version": info.base_version, "displayVersion": info.display_version,
-            "auth_required": bool(getattr(app.state, "auth_required", False))}
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    return {
+        "ok": True,
+        "version": info.base_version,
+        "displayVersion": info.display_version,
+        "auth_required": auth_required,
+        # Legacy ``?token=`` / ``X-Hermes-Session-Token`` still required for WS and
+        # gated /api routes when the OAuth gate is inactive (loopback / --insecure).
+        "session_token_required": not auth_required,
+    }
+
+
+@router.get("/api/session-token")
+async def get_session_token_bootstrap(request: Request):
+    """JSON bootstrap for the loopback dashboard session token (#117976).
+
+    The SPA receives the token via HTML injection (``window.__HERMES_SESSION_TOKEN__``).
+    Headless / native clients of the same ``/api/ws`` wire need a JSON path that does
+    not scrape HTML. Disclosure rules:
+
+    * OAuth-gated binds (``auth_required``): refuse — use ``/api/auth/ws-ticket`` after login.
+    * TCP peer must be loopback (never ``X-Forwarded-For``).
+    * Host-header middleware already rejects DNS-rebinding Host values on loopback binds.
+    """
+    from hermes_cli.web_deps import get_session_token
+
+    if bool(getattr(app.state, "auth_required", False)):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Session token bootstrap is unavailable when dashboard auth is required; "
+                "use /api/auth/ws-ticket after login."
+            ),
+        )
+    if not _request_peer_is_loopback(request):
+        raise HTTPException(
+            status_code=401,
+            detail="Session token bootstrap is restricted to loopback peers",
+        )
+    return {
+        "token": get_session_token(),
+        "header": "X-Hermes-Session-Token",
+        "query_param": "token",
+    }
+
 
 
 @router.get("/api/host/identity")

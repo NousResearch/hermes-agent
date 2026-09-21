@@ -57,6 +57,36 @@ def test_removes_read_only_file_in_writable_directory(tmp_path):
     assert not root.exists()
 
 
+@pytest.mark.require_symlinks
+@pytest.mark.skipif(os.name != "posix", reason="POSIX parent modes drive unlink permission")
+def test_read_only_parent_symlink_does_not_chmod_external_target(tmp_path, monkeypatch):
+    """Permission recovery may make the parent writable, but must never follow a child link."""
+    external = tmp_path / "external"
+    external.write_text("keep", encoding="utf-8")
+    external.chmod(0o400)
+    original_mode = stat.S_IMODE(external.stat().st_mode)
+
+    root = tmp_path / "clone"
+    root.mkdir()
+    (root / "outside").symlink_to(external)
+    root.chmod(0o555)
+
+    # Drive the callback deterministically even under a privileged test runner,
+    # where the kernel may otherwise allow unlink from a 0555 directory.
+    def fail_unlink_once(path, **kwargs):
+        callback = kwargs["onexc"]
+        callback(os.unlink, str(root / "outside"), PermissionError("read-only parent"))
+        os.rmdir(path)
+
+    monkeypatch.setattr(utils.shutil, "rmtree", fail_unlink_once)
+
+    rmtree_readonly(root)
+
+    assert not root.exists()
+    assert external.read_text(encoding="utf-8") == "keep"
+    assert stat.S_IMODE(external.stat().st_mode) == original_mode
+
+
 def test_non_permission_failures_propagate(tmp_path, monkeypatch):
     """Only ``PermissionError`` is retried — everything else keeps rmtree semantics."""
     attempts: list = []

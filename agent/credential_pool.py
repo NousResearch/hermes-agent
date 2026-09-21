@@ -1736,6 +1736,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return auth_mod._xai_access_token_is_expiring(
                 entry.access_token, auth_mod._xai_proactive_refresh_skew_seconds(entry.access_token),
             )
+        if plugin_refresh_hook(self.provider) is not None:
+            if entry.expires_at_ms is None:
+                return False
+            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
         # Nous refresh can require network access and happens when runtime
         # credentials are actually resolved, not on enumeration/selection.
         return False
@@ -1863,7 +1867,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     entry = self._adopt(entry, persist=False, **_MARK_OK)
                     cleared_any = True
             if refresh and self._entry_needs_refresh(entry):
-                if self.provider in _TOKENS_SINGLETON_PROVIDERS:
+                if (
+                    self.provider in _TOKENS_SINGLETON_PROVIDERS
+                    or plugin_refresh_hook(self.provider) is not None
+                ):
                     pending_refresh.append(entry)
                     continue
                 refreshed = self._refresh_entry(entry, force=False)

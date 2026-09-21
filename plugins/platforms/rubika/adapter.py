@@ -38,8 +38,10 @@ class RubikaAdapter(BasePlatformAdapter):
             for item in _extra_or_secret(extra, "allowed_users", "RUBIKA_ALLOWED_USERS", "").split(",")
             if item.strip()
         }
-        self._require_mention = _extra_or_secret(
-            extra, "require_mention", "RUBIKA_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        _require_mention_raw = _extra_or_secret(extra, "require_mention", "RUBIKA_REQUIRE_MENTION", "false")
+        self._require_mention = (
+            _require_mention_raw.lower() in ("true", "1", "yes", "on")
+            if isinstance(_require_mention_raw, str) else bool(_require_mention_raw))
         self._bot_username = _extra_or_secret(extra, "bot_username", "RUBIKA_BOT_USERNAME", "")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:

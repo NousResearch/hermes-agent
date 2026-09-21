@@ -34,3 +34,15 @@ def test_group_with_require_mention_and_mention_processed():
     adapter = _adapter(require_mention="true", bot_username="mybot")
     parsed = ParsedMessage(chat_id="g1", sender_id="u1", text="@mybot hi", message_id="m1", is_group=True)
     assert adapter._should_process_message(parsed) is True
+
+
+def test_require_mention_as_native_bool_true_does_not_crash():
+    # PlatformConfig.extra comes from yaml.safe_load: an unquoted `require_mention: true`
+    # in config.yaml parses to a real Python bool, not the string "true".
+    adapter = _adapter(require_mention=True, bot_username="mybot")
+    assert adapter._require_mention is True
+
+
+def test_require_mention_as_native_bool_false_does_not_crash():
+    adapter = _adapter(require_mention=False, bot_username="mybot")
+    assert adapter._require_mention is False

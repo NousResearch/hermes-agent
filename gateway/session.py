@@ -364,12 +364,32 @@ _STATIC_PLATFORM_NOTES = {
     ),
 }
 
+_TEAMS_PLATFORM_NOTE = (
+    "**Platform notes:** You are in a Microsoft Teams session. There is no `send_message` tool "
+    "in this session — never claim it is missing or unavailable. To deliver a file in THIS chat: "
+    "write it to disk, then include `MEDIA:<absolute_path>` in your final reply text. In a 1:1 "
+    "chat the gateway sends a native FileConsent card. In a channel or group chat, small text "
+    "files (``.txt``, ``.md``, ``.csv``, …) are inlined in the reply; other files are uploaded "
+    "to the team's SharePoint folder via Microsoft Graph and a clickable link is posted here "
+    "(requires Graph app permissions — see the Teams docs). Do not expect a Bot Framework file "
+    "attachment in channels. Do not invent tool names. Normal replies are already posted to this "
+    "chat; no special send tool is required for text."
+)
+
+
+def _teams_platform_notes(context: SessionContext) -> List[str]:
+    return ["", _TEAMS_PLATFORM_NOTE]
+
 # Platform -> extra "Platform notes" lines for the session-context prompt.
 _PLATFORM_NOTES = {
     Platform.SLACK: _slack_platform_notes,
     Platform.DISCORD: _discord_platform_notes,
     **{p: (lambda ctx, note=note: ["", note]) for p, note in _STATIC_PLATFORM_NOTES.items()},
 }
+try:
+    _PLATFORM_NOTES[Platform("teams")] = _teams_platform_notes
+except ValueError:
+    logger.debug("Teams platform plugin not registered; skipping session notes")
 
 
 def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = False) -> str:

@@ -81,6 +81,20 @@ Teams 会议流水线使用**仅限应用**（daemon）身份验证从 Microsoft
 | `ChannelMessage.Send` | 以应用身份向 Teams 频道发布消息。 |
 | `Chat.ReadWrite.All` | 向一对一及群组聊天发布消息（仅在将 `chat_id` 设为投递目标时需要）。 |
 
+### Teams 频道/群聊文件投递所需权限
+
+Teams 机器人无法在频道或群聊中附加二进制文件（Bot Framework 返回 400；FileConsent 仅适用于一对一）。配置 Graph 后，Hermes 将文件上传到该对话的 SharePoint 文件夹并发布可点击链接。若只使用个人聊天 FileConsent，可跳过此表。
+
+| 权限 | 允许应用执行的操作 |
+|------------|--------------------------|
+| `Files.ReadWrite.All` | 读取频道/聊天的 `filesFolder`、PUT driveItem 内容（或创建上传会话）、创建组织范围的查看链接，以及下载入站 SharePoint 文件（uniqueId / shares API）。应用程序权限；**需要管理员同意**。 |
+| `ChannelMessage.Read.Group`（RSC）或 `ChannelMessage.Read.All` | 当 Bot Framework 只投递 `text/html`（没有 `file.download.info`）时 `GET` 频道消息。RSC 已在侧载模板中；`ChannelMessage.Read.All` 是租户范围的 Entra 备选。 |
+| `ChatMessage.Read.Chat`（RSC）或 `Chat.Read.All` | 群聊入站文件的同样 GET。 |
+
+`Files.ReadWrite.All` 是租户范围权限。没有更窄的应用程序权限可以上传到任意团队的频道文件夹。建议使用专用 Graph 应用，并用 `TEAMS_ALLOWED_USERS` 限制谁可以给机器人发消息。
+
+可以复用 Teams 机器人的 Entra 应用：为其授予 `Files.ReadWrite.All`、管理员同意，然后将 `MSGRAPH_*` 设为与 `TEAMS_*` 相同的值，或省略 `MSGRAPH_*` 让适配器回退到机器人凭据。
+
 ### 不推荐的权限
 
 - `OnlineMeetings.ReadWrite.All` / `Chat.ReadWrite`（不带 `.All`）——权限范围超出流水线所需。

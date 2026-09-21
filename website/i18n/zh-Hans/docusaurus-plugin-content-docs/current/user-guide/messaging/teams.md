@@ -157,9 +157,11 @@ platforms:
 
 ## 功能特性
 
-### 表情反应
+### 文件与表情反应
 
-机器人可以对消息添加/移除表情反应（处理中 👀，成功 ✅，失败 ❌），并接收用户的 `messageReaction` 事件。处理状态反应可通过 `TEAMS_REACTIONS=false` 关闭；Agent 的 `send_message` react/unreact 始终可用。流式逐字编辑尚未接入。
+适配器会下载入站文件附件（不仅是图片）并缓存到本地；带提及门控的消息在下载附件之前就会被丢弃。频道/群聊里 Bot Framework 常常只投递无名的 `text/html` 正文镜像（没有 `file.download.info`）：已配置 Graph 时 Hermes 会 `GET` 该频道/群聊消息，再按 SharePoint `contentUrl` 下载。需要 `Files.ReadWrite.All`，以及 `ChannelMessage.Read.Group`（RSC，侧载清单已含）或租户范围的 `ChannelMessage.Read.All`（群聊对应 `ChatMessage.Read.Chat` / `Chat.Read.All`）。未配置或 403 时正文仍到达，并记权限警告。有文件名的 `text/plain` 视为真实附件。个人聊天中的出站文件走 Teams 的文件同意卡片（用户点击接受后上传到 OneDrive）。频道/群聊不支持机器人文件附件（会 400）：小文本会内联到普通消息；其他文件通过 **Microsoft Graph** 上传到团队 SharePoint 频道文件夹（或群聊 files 文件夹），再在同一对话中发布可点击的共享/`webUrl` 链接。需要应用权限 `Files.ReadWrite.All` 及管理员同意（`MSGRAPH_*`，或给 Teams 机器人应用授予该权限并复用 `TEAMS_*`）。未配置 Graph 或上传被拒绝时，机器人会给出明确错误，并仍可在一对一私信中用 FileConsent 发送。机器人可以对消息添加/移除表情反应（处理中 👀，成功 ✅，失败 ❌），并接收用户的 `messageReaction` 事件。流式逐字编辑尚未接入。
+
+应用清单需设置 `"supportsFiles": true` 才能在个人聊天中收发文件。
 
 ### 交互式审批卡片
 

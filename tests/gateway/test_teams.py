@@ -2,6 +2,7 @@
 
 import sys
 import types
+from enum import Enum
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -64,6 +65,10 @@ def _ensure_teams_mock():
 
         def on_message_reaction(self, func):
             self._message_reaction_handler = func
+            return func
+
+        def on_file_consent(self, func):
+            self._file_consent_handler = func
             return func
 
         async def initialize(self):
@@ -472,6 +477,31 @@ class TestTeamsMessageHandling:
         assert event.source.chat_type == "group"
 
     @pytest.mark.anyio
+    async def test_channel_message_stashes_graph_file_target(self):
+        from plugins.platforms.teams.graph_files import GraphFileTarget
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        activity = self._make_activity(
+            conversation_id="19:chan@thread.tacv2", conversation_type="channel")
+        activity.channel_data = {
+            "team": {"aadGroupId": "team-guid", "id": "19:team@thread.skype"},
+            "channel": {"id": "19:chan@thread.tacv2"},
+        }
+        await adapter._on_message(self._make_ctx(activity))
+
+        assert adapter._graph_file_targets["19:chan@thread.tacv2"] == GraphFileTarget(
+            conversation_type="channel",
+            team_id="team-guid",
+            channel_id="19:chan@thread.tacv2",
+        )
+
+    @pytest.mark.anyio
     async def test_aad_user_route_survives_conversation_changes(self, monkeypatch):
         from gateway.profile_routing import parse_profile_routes
         from gateway.run import GatewayRunner
@@ -528,6 +558,7 @@ class TestTeamsAttachmentClassification:
         adapter._app = MagicMock()
         adapter._app.id = "bot-id"
         adapter.handle_message = AsyncMock()
+        adapter._graph_client = False
         return adapter
 
     def _make_activity(self, attachments, text="see attached"):
@@ -616,6 +647,219 @@ class TestTeamsAttachmentClassification:
         event = adapter.handle_message.call_args[0][0]
         assert event.message_type == MessageType.DOCUMENT
         assert len(event.media_urls) == 2
+
+    @pytest.mark.anyio
+    async def test_direct_url_pdf_sets_document_type(self):
+        from gateway.platforms.event import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
+        att = MagicMock()
+        att.content_type = "application/pdf"
+        att.content_url = "https://contoso.sharepoint.com/file.pdf"
+        att.name = "file.pdf"
+        activity = self._make_activity([att])
+        await adapter._on_message(self._make_ctx(activity))
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["application/pdf"]
+        adapter._fetch_attachment_bytes.assert_awaited_once_with(
+            "https://contoso.sharepoint.com/file.pdf")
+
+    @pytest.mark.anyio
+    async def test_camelcase_dict_file_download_info_sets_document_type(self):
+        """Bot Framework JSON uses contentType/contentUrl; dict attachments must work."""
+        from gateway.platforms.event import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
+        att = {
+            "contentType": "application/vnd.microsoft.teams.file.download.info",
+            "contentUrl": None,
+            "name": "report.pdf",
+            "content": {
+                "downloadUrl": "https://contoso.sharepoint.com/download/x",
+                "fileType": "pdf",
+            },
+        }
+        await adapter._on_message(self._make_ctx(self._make_activity([att])))
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 1
+        adapter._fetch_attachment_bytes.assert_awaited_once_with(
+            "https://contoso.sharepoint.com/download/x")
+
+    @pytest.mark.anyio
+    async def test_file_download_info_missing_download_url_warns(self, caplog):
+        import logging
+        from gateway.platforms.event import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(
+            side_effect=AssertionError("must not fetch without a URL"))
+        att = {
+            "contentType": "application/vnd.microsoft.teams.file.download.info",
+            "name": "notes.txt",
+            "content": {
+                "uniqueId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "fileType": "txt",
+            },
+        }
+        with caplog.at_level(logging.WARNING):
+            await adapter._on_message(self._make_ctx(
+                self._make_activity([att], text="are you able to read this")))
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+        assert event.text == "are you able to read this"
+        assert any("downloadUrl" in rec.getMessage() for rec in caplog.records)
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_named_text_plain_is_not_treated_as_body_mirror(self):
+        from gateway.platforms.event import MessageType
+
+        adapter = self._make_adapter()
+        att = MagicMock()
+        att.content_type = "text/plain"
+        att.content_url = None
+        att.name = "notes.txt"
+        att.content = "hello from the file"
+        await adapter._on_message(self._make_ctx(
+            self._make_activity([att], text="are you able to read this")))
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 1
+
+    @pytest.mark.anyio
+    async def test_anonymous_html_body_mirror_is_skipped(self):
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(
+            side_effect=AssertionError("must not fetch body mirror"))
+        await adapter._on_message(self._make_ctx(
+            self._make_activity([self._html_body_attachment()])))
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_missing_download_url_uses_graph_unique_id(self):
+        from gateway.platforms.event import MessageType
+        from plugins.platforms.teams.graph_files import GraphFileTarget
+
+        download = "https://contoso.sharepoint.com/download/notes"
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"hello file")
+
+        async def get_json(path, **kwargs):
+            if "filesFolder" in path:
+                return {"id": "folder-1", "parentReference": {"driveId": "drive-1"}}
+            return {
+                "id": "item-1",
+                "name": "notes.txt",
+                "@microsoft.graph.downloadUrl": download,
+            }
+
+        graph = MagicMock()
+        graph.get_json = get_json
+        adapter._graph_client = graph
+        conv_id = "19:abc@thread.v2"
+        adapter._graph_file_targets[conv_id] = GraphFileTarget(
+            conversation_type="channel", team_id="team-guid", channel_id=conv_id,
+        )
+        att = {
+            "contentType": "application/vnd.microsoft.teams.file.download.info",
+            "name": "notes.txt",
+            "content": {
+                "uniqueId": "{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}",
+                "fileType": "txt",
+            },
+        }
+        activity = self._make_activity([att], text="are you able to read this")
+        activity.conversation.conversation_type = "channel"
+        await adapter._on_message(self._make_ctx(activity))
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 1
+        adapter._fetch_attachment_bytes.assert_awaited_once_with(download)
+
+    @pytest.mark.anyio
+    async def test_channel_html_only_fetches_file_via_graph_message(self):
+        """Channel file drops often arrive as unnamed text/html only — Graph GET message."""
+        from gateway.platforms.event import MessageType
+        from plugins.platforms.teams.graph_files import GraphFileTarget
+
+        download = "https://contoso.sharepoint.com/download/notes"
+        share_url = "https://contoso.sharepoint.com/sites/team/Shared%20Documents/notes.txt"
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"hello from sharepoint")
+        conv_id = "19:abc@thread.v2"
+        adapter._graph_file_targets[conv_id] = GraphFileTarget(
+            conversation_type="channel", team_id="team-guid", channel_id=conv_id,
+        )
+
+        async def get_json(path, **kwargs):
+            if "/messages/" in path:
+                return {
+                    "id": "activity-att-001",
+                    "attachments": [
+                        {
+                            "id": "att-1",
+                            "contentType": "reference",
+                            "contentUrl": share_url,
+                            "name": "notes.txt",
+                        },
+                        {"contentType": "text/html", "content": "<p>caption</p>"},
+                    ],
+                }
+            if "/shares/" in path:
+                return {"@microsoft.graph.downloadUrl": download}
+            return {}
+
+        graph = MagicMock()
+        graph.get_json = get_json
+        adapter._graph_client = graph
+        html = self._html_body_attachment()
+        html.content = "<p>are you able to read this</p>"
+        activity = self._make_activity([html], text="are you able to read this")
+        activity.conversation.conversation_type = "channel"
+        await adapter._on_message(self._make_ctx(activity))
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 1
+        assert event.text == "are you able to read this"
+        adapter._fetch_attachment_bytes.assert_awaited_once_with(download)
+
+    @pytest.mark.anyio
+    async def test_channel_html_only_graph_403_keeps_text_and_warns(self, caplog):
+        import logging
+        from plugins.platforms.teams.graph_files import GraphFileTarget
+        from tools.microsoft_graph_client import MicrosoftGraphAPIError
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(
+            side_effect=AssertionError("must not fetch after Graph 403"))
+        conv_id = "19:abc@thread.v2"
+        adapter._graph_file_targets[conv_id] = GraphFileTarget(
+            conversation_type="channel", team_id="team-guid", channel_id=conv_id,
+        )
+
+        async def get_json(path, **kwargs):
+            raise MicrosoftGraphAPIError(403, "GET", path, "Access denied")
+
+        graph = MagicMock()
+        graph.get_json = get_json
+        adapter._graph_client = graph
+        activity = self._make_activity(
+            [self._html_body_attachment()], text="are you able to read this")
+        activity.conversation.conversation_type = "channel"
+        with caplog.at_level(logging.WARNING):
+            await adapter._on_message(self._make_ctx(activity))
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+        assert event.text == "are you able to read this"
+        assert any("ChannelMessage.Read" in rec.getMessage() for rec in caplog.records)
+        adapter._fetch_attachment_bytes.assert_not_awaited()
 
 
 # ── Bot Framework connector attachments (pasted images) ──────────────────
@@ -1059,6 +1303,220 @@ class TestTeamsStandaloneSend:
         assert "token" in result["error"].lower()
 
 
+class TestTeamsMediaAttachments:
+    """send_document routes personal chats through FileConsent and channel/group
+    chats through inline text or a Graph SharePoint upload."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter._app.send = AsyncMock(return_value=MagicMock(id="msg-001"))
+        adapter._app.activity_sender.send = AsyncMock(return_value=MagicMock(id="msg-001"))
+        # Do not construct a real Graph token client in tests (would hit Azure).
+        adapter._graph_client = False
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_document_local_file_base64(self, tmp_path):
+        adapter = self._make_adapter()
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4 fake")
+        result = await adapter.send_document("19:abc@thread.v2", str(doc))
+        assert result.success
+        adapter._app.send.assert_awaited_once()
+        # Personal/unknown conversation type uses file-consent, so bytes are staged.
+        assert len(adapter._pending_uploads) == 1
+        pending = next(iter(adapter._pending_uploads.values()))
+        assert pending["name"] == "report.pdf"
+        assert pending["bytes"].startswith(b"%PDF")
+
+    @pytest.mark.asyncio
+    async def test_send_document_channel_inlines_small_text(self, tmp_path):
+        adapter = self._make_adapter()
+        adapter._conv_refs["19:abc@thread.v2"] = SimpleNamespace(
+            conversation=SimpleNamespace(conversation_type="channel"))
+        doc = tmp_path / "chess_rules.txt"
+        doc.write_text("1. e4 e5")
+        result = await adapter.send_document(
+            "19:abc@thread.v2", str(doc), file_name="chess_rules.txt")
+        assert result.success
+        assert adapter._pending_uploads == {}
+        adapter._app.send.assert_awaited()
+        sent = adapter._app.send.await_args.args[1]
+        assert "chess_rules.txt" in sent
+        assert "1. e4 e5" in sent
+        adapter._app.activity_sender.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_document_group_inlines_small_text(self, tmp_path):
+        adapter = self._make_adapter()
+        adapter._conv_refs["19:abc@thread.v2"] = SimpleNamespace(
+            conversation=SimpleNamespace(conversation_type="groupChat"))
+        doc = tmp_path / "notes.md"
+        doc.write_text("# hello")
+        result = await adapter.send_document("19:abc@thread.v2", str(doc), file_name="notes.md")
+        assert result.success
+        sent = adapter._app.send.await_args.args[1]
+        assert "notes.md" in sent
+        assert "# hello" in sent
+
+    @pytest.mark.asyncio
+    async def test_send_document_channel_binary_returns_clear_error(self, tmp_path):
+        adapter = self._make_adapter()
+        adapter._conv_refs["19:abc@thread.v2"] = SimpleNamespace(
+            conversation=SimpleNamespace(conversation_type="channel"))
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4 binary")
+        result = await adapter.send_document("19:abc@thread.v2", str(doc), file_name="report.pdf")
+        assert not result.success
+        assert "400" not in (result.error or "")
+        assert "FileConsent" in result.error
+        assert "DM" in result.error or "1:1" in result.error
+        assert "Graph" in result.error or "MSGRAPH_" in result.error
+        adapter._app.activity_sender.send.assert_not_awaited()
+        adapter._app.send.assert_awaited()
+        assert "report.pdf" in adapter._app.send.await_args.args[1]
+        # Never revive Bot Framework document attachments in channels.
+        sent = adapter._app.send.await_args.args[1]
+        assert not hasattr(sent, "add_attachments")
+
+    @pytest.mark.asyncio
+    async def test_send_document_channel_oversize_text_is_not_inlined(self, tmp_path):
+        adapter = self._make_adapter()
+        adapter._conv_refs["19:abc@thread.v2"] = SimpleNamespace(
+            conversation=SimpleNamespace(conversation_type="channel"))
+        doc = tmp_path / "huge.txt"
+        doc.write_text("x" * (_teams_mod._INLINE_CHANNEL_TEXT_MAX_BYTES + 1))
+        result = await adapter.send_document("19:abc@thread.v2", str(doc), file_name="huge.txt")
+        assert not result.success
+        assert "FileConsent" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_document_channel_binary_uploads_via_graph(self, tmp_path):
+        from plugins.platforms.teams.graph_files import GraphFileTarget, GraphUploadedFile
+
+        adapter = self._make_adapter()
+        adapter._conv_refs["19:chan@thread.tacv2"] = SimpleNamespace(
+            conversation=SimpleNamespace(conversation_type="channel"))
+        adapter._graph_file_targets["19:chan@thread.tacv2"] = GraphFileTarget(
+            conversation_type="channel",
+            team_id="team-guid",
+            channel_id="19:chan@thread.tacv2",
+        )
+        adapter._graph_client = object()
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4 binary")
+
+        async def _upload(graph, target, *, file_name, data, content_type="application/octet-stream", **_kw):
+            assert graph is adapter._graph_client
+            assert target.team_id == "team-guid"
+            assert file_name == "report.pdf"
+            assert data.startswith(b"%PDF")
+            return GraphUploadedFile(
+                name="report.pdf",
+                web_url="https://contoso.sharepoint.com/sites/team/report.pdf",
+                share_url="https://contoso.sharepoint.com/:b:/s/team/abc",
+            )
+
+        with patch("plugins.platforms.teams.graph_files.upload_conversation_file", _upload):
+            result = await adapter.send_document(
+                "19:chan@thread.tacv2", str(doc), file_name="report.pdf", caption="Q3 report")
+
+        assert result.success
+        adapter._app.send.assert_awaited()
+        sent = adapter._app.send.await_args.args[1]
+        assert "Q3 report" in sent
+        assert "https://contoso.sharepoint.com/:b:/s/team/abc" in sent
+        assert "report.pdf" in sent
+        adapter._app.activity_sender.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_document_group_binary_uploads_via_graph(self, tmp_path):
+        from plugins.platforms.teams.graph_files import GraphUploadedFile
+
+        adapter = self._make_adapter()
+        adapter._conv_refs["19:chat@thread.v2"] = SimpleNamespace(
+            conversation=SimpleNamespace(conversation_type="groupChat"))
+        adapter._graph_client = object()
+        doc = tmp_path / "deck.pptx"
+        doc.write_bytes(b"PK\x03\x04fake-pptx")
+
+        async def _upload(graph, target, *, file_name, data, **_kw):
+            assert target.conversation_type == "groupChat"
+            assert target.chat_id == "19:chat@thread.v2"
+            return GraphUploadedFile(
+                name="deck.pptx",
+                web_url="https://contoso-my.sharepoint.com/personal/bot/deck.pptx",
+            )
+
+        with patch("plugins.platforms.teams.graph_files.upload_conversation_file", _upload):
+            result = await adapter.send_document(
+                "19:chat@thread.v2", str(doc), file_name="deck.pptx")
+
+        assert result.success
+        sent = adapter._app.send.await_args.args[1]
+        assert "deck.pptx" in sent
+        assert "https://contoso-my.sharepoint.com/personal/bot/deck.pptx" in sent
+
+    @pytest.mark.asyncio
+    async def test_send_document_channel_graph_403_mentions_permissions(self, tmp_path):
+        from plugins.platforms.teams.graph_files import GraphFileTarget
+        from tools.microsoft_graph_client import MicrosoftGraphAPIError
+
+        adapter = self._make_adapter()
+        adapter._conv_refs["19:chan@thread.tacv2"] = SimpleNamespace(
+            conversation=SimpleNamespace(conversation_type="channel"))
+        adapter._graph_file_targets["19:chan@thread.tacv2"] = GraphFileTarget(
+            conversation_type="channel", team_id="team-guid",
+            channel_id="19:chan@thread.tacv2")
+        adapter._graph_client = object()
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4 binary")
+
+        async def _upload(*_a, **_k):
+            raise MicrosoftGraphAPIError(
+                403, "GET", "/teams/team-guid/channels/x/filesFolder", "Access denied")
+
+        with patch("plugins.platforms.teams.graph_files.upload_conversation_file", _upload):
+            result = await adapter.send_document(
+                "19:chan@thread.tacv2", str(doc), file_name="report.pdf")
+
+        assert not result.success
+        assert "403" in (result.error or "")
+        assert "Files.ReadWrite.All" in result.error
+        assert "FileConsent" in result.error
+        sent = adapter._app.send.await_args.args[1]
+        assert "report.pdf" in sent
+        adapter._app.activity_sender.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_document_channel_missing_team_id_is_clear(self, tmp_path):
+        adapter = self._make_adapter()
+        adapter._graph_client = object()
+        adapter._conv_refs["19:chan@thread.tacv2"] = SimpleNamespace(
+            conversation=SimpleNamespace(conversation_type="channel"))
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4 binary")
+        result = await adapter.send_document(
+            "19:chan@thread.tacv2", str(doc), file_name="report.pdf")
+        assert not result.success
+        assert "TEAMS_TEAM_ID" in result.error
+        assert "FileConsent" in result.error
+
+    def test_inlineable_channel_document_helpers(self, tmp_path):
+        f = _teams_mod._is_inlineable_channel_document
+        assert f("/tmp/a.txt")
+        assert f("/tmp/a.bin", "notes.md")
+        assert not f("/tmp/a.pdf")
+        text_path = tmp_path / "ok.txt"
+        text_path.write_text("pawn to e4")
+        assert _teams_mod._read_inline_channel_text(str(text_path)) == "pawn to e4"
+        bin_path = tmp_path / "x.bin"
+        bin_path.write_bytes(b"\x00\x01")
+        assert _teams_mod._read_inline_channel_text(str(bin_path)) is None
 
 
 
@@ -1129,6 +1587,26 @@ class TestTeamsRequireMention:
         assert adapter.handle_message.await_count == (1 if dispatched else 0)
         assert adapter._fetch_attachment_bytes.await_count == (1 if dispatched else 0)
 
+    @pytest.mark.anyio
+    async def test_gate_drops_file_download_info_before_fetch(self):
+        """File attachments must not be downloaded when require_mention drops the message."""
+        adapter = self._make_adapter(require_mention=True)
+        activity = self._activity("channel")
+        att = MagicMock()
+        att.content_type = "application/vnd.microsoft.teams.file.download.info"
+        att.content_url = None
+        att.name = "secret.pdf"
+        att.content = {
+            "downloadUrl": "https://contoso.sharepoint.com/download/secret",
+            "fileType": "pdf",
+        }
+        activity.attachments = [att]
+        ctx = MagicMock()
+        ctx.activity = activity
+        await adapter._on_message(ctx)
+        adapter.handle_message.assert_not_awaited()
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+
     @pytest.mark.parametrize("yaml_value, env_value, expected", [
         (None, None, False),      # opt-in: absent key leaves every conversation ungated
         (True, None, True),
@@ -1146,8 +1624,137 @@ class TestTeamsRequireMention:
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
 
 
+class _FakeTeamsSessionEntry:
+    session_id = "teams-channel-session"
+
+
+class _FakeTeamsSessionStore:
+    def __init__(self):
+        self.sources = []
+        self.messages = []
+
+    def get_or_create_session(self, source):
+        self.sources.append(source)
+        return _FakeTeamsSessionEntry()
+
+    def append_to_transcript(self, session_id, message, skip_db=False):
+        self.messages.append((session_id, message, skip_db))
+
+
+class TestTeamsObserveUnmentioned:
+    """RSC + require_mention: unaddressed posts are observed, not dispatched."""
+
+    APP_ID = "bot-id"
+
+    def _make_adapter(self, **extra):
+        adapter = TeamsAdapter(_make_config(
+            client_id=self.APP_ID, client_secret="secret", tenant_id="tenant",
+            require_mention=True, **extra))
+        adapter._app = MagicMock()
+        adapter._app.id = self.APP_ID
+        adapter.handle_message = AsyncMock()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"\x89PNG" + b"\0" * 32)
+        adapter._session_store = _FakeTeamsSessionStore()
+        return adapter
+
+    def _activity(self, *, text="side chatter", mentioned_id=None, reply_to_id=None):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = "act-obs-1"
+        from_account = MagicMock()
+        from_account.aad_object_id = "aad-456"
+        from_account.name = "Alice"
+        from_account.id = "29:user-123"
+        activity.from_ = from_account
+        activity.recipient = MagicMock()
+        activity.recipient.id = f"28:{self.APP_ID}"
+        activity.conversation = MagicMock(conversation_type="channel", tenant_id="t")
+        activity.conversation.id = "19:conv@thread.v2"
+        activity.conversation.name = "Conv"
+        att = MagicMock(content_type="image/png")
+        att.name = "a.png"
+        att.content_url = "https://smba.trafficmanager.net/emea/v3/attachments/1/views/original"
+        activity.attachments = [att]
+        activity.reply_to_id = reply_to_id
+        activity.entities = []
+        if mentioned_id:
+            entity = MagicMock(type="mention")
+            entity.mentioned = MagicMock()
+            entity.mentioned.id = mentioned_id
+            activity.entities = [entity]
+        return activity
+
+    @pytest.mark.anyio
+    async def test_unmentioned_is_observed_not_dispatched(self):
+        adapter = self._make_adapter()
+        ctx = MagicMock()
+        ctx.activity = self._activity()
+        await adapter._on_message(ctx)
+        adapter.handle_message.assert_not_awaited()
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+        store = adapter._session_store
+        assert len(store.messages) == 1
+        session_id, message, _skip = store.messages[0]
+        assert session_id == "teams-channel-session"
+        assert message["role"] == "user"
+        assert message["content"] == "[Alice] side chatter"
+        assert message["observed"] is True
+        assert message["message_id"] == "act-obs-1"
+        assert store.sources[0].user_id is None
+        assert store.sources[0].chat_id == "19:conv@thread.v2"
+
+    @pytest.mark.anyio
+    async def test_observe_off_drops_without_transcript(self):
+        adapter = self._make_adapter(observe_unmentioned=False)
+        ctx = MagicMock()
+        ctx.activity = self._activity()
+        await adapter._on_message(ctx)
+        adapter.handle_message.assert_not_awaited()
+        adapter._fetch_attachment_bytes.assert_not_awaited()
+        assert adapter._session_store.messages == []
+
+    @pytest.mark.anyio
+    async def test_mention_dispatches_with_observed_context_marker(self):
+        adapter = self._make_adapter()
+        ctx = MagicMock()
+        ctx.activity = self._activity(
+            text="<at>Hermes</at> what did Alice say?", mentioned_id="28:bot-id")
+        await adapter._on_message(ctx)
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args[0][0]
+        assert "observed Teams channel context" in (event.channel_prompt or "")
+        assert event.source.user_id is None
+        assert "[Alice]" in event.text
+        assert "what did Alice say?" in event.text
+        assert adapter._session_store.messages == []
+
+    def test_run_wraps_teams_observed_context_and_keeps_telegram_marker(self):
+        from gateway.run import (
+            _build_gateway_agent_history,
+            _uses_telegram_observed_group_context,
+            _wrap_current_message_with_observed_context,
+        )
+        history = [
+            {"role": "user", "content": "[Alice] side chatter", "observed": True},
+            {"role": "user", "content": "[Bob] what did Alice say?"},
+        ]
+        teams_prompt = "observed Teams channel context may be provided"
+        telegram_prompt = "observed Telegram group context may be provided"
+        assert _uses_telegram_observed_group_context(teams_prompt)
+        assert _uses_telegram_observed_group_context(telegram_prompt)
+        replay, observed = _build_gateway_agent_history(history, channel_prompt=teams_prompt)
+        assert observed == "[Alice] side chatter"
+        assert [row["content"] for row in replay] == ["[Bob] what did Alice say?"]
+        wrapped = _wrap_current_message_with_observed_context("answer me", observed)
+        assert "[Alice] side chatter" in wrapped
+        assert "Current addressed message" in wrapped
+        replay_tg, observed_tg = _build_gateway_agent_history(
+            history, channel_prompt=telegram_prompt)
+        assert observed_tg == observed
+
+
 # ---------------------------------------------------------------------------
-# Tests: reactions
+# Tests: reactions + file consent
 # ---------------------------------------------------------------------------
 
 
@@ -1168,6 +1775,34 @@ class TestTeamsReactionMapping:
         assert _teams_mod._reaction_to_emoji("like") == "👍"
         assert _teams_mod._reaction_to_emoji("1f440_eyes") == "👀"
         assert _teams_mod._reaction_to_emoji("custom_id") == "custom_id"
+
+    def test_onedrive_upload_url_allowlist(self):
+        f = _teams_mod._is_allowed_onedrive_upload_url
+        assert f("https://contoso.sharepoint.com/personal/u/upload")
+        assert f("https://my.sharepoint.com:443/upload")
+        assert not f("http://contoso.sharepoint.com/upload")
+        assert not f("https://evilsharepoint.com/upload")
+        assert not f("https://sharepoint.com.evil.example/upload")
+        assert not f("https://example.com/upload")
+
+    def test_normalize_consent_action_handles_sdk_enum_and_strings(self):
+        # Mirrors microsoft_teams.api.models.action.Action (str, Enum).
+        # On Python 3.11, str(Action.ACCEPT) is 'Action.ACCEPT', not 'accept'.
+        class Action(str, Enum):
+            ACCEPT = "accept"
+            DECLINE = "decline"
+
+        f = _teams_mod._normalize_consent_action
+        # 3.11: str(Action.ACCEPT) == 'Action.ACCEPT'; other versions may stringify to 'accept'.
+        assert str(Action.ACCEPT).lower() in {"action.accept", "accept"}
+        assert Action.ACCEPT.value == "accept"
+        assert f(Action.ACCEPT) == "accept"
+        assert f(Action.DECLINE) == "decline"
+        assert f("Action.ACCEPT") == "accept"
+        assert f("accept") == "accept"
+        assert f("DECLINE") == "decline"
+        assert f(None) == ""
+        assert f("action.accept") == "accept"
 
 
 class TestTeamsReactions:
@@ -1287,3 +1922,181 @@ class TestTeamsReactions:
         assert ok is True
         adapter._react_via_rest.assert_awaited_once_with(
             "19:abc@thread.v2", "act-1", "like", remove=False)
+
+
+class TestTeamsFileConsent:
+    def _make_adapter(self, monkeypatch=None):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter._app.send = AsyncMock(return_value=MagicMock(id="consent-1"))
+        adapter._upload_consented_file = AsyncMock()
+        adapter._send_file_info_card = AsyncMock()
+        return adapter
+
+    def _wire_dismiss(self, adapter):
+        delete = AsyncMock()
+        ops = MagicMock()
+        ops.delete = delete
+        adapter._app.api.conversations.activities = MagicMock(return_value=ops)
+        return delete
+
+    def _ctx(self, *, action, file_id="fid-1", upload_url="https://contoso.sharepoint.com/upload",
+             reply_to_id=None):
+        activity = MagicMock()
+        activity.from_ = MagicMock(id="29:user", aad_object_id="aad-1", name="Ada")
+        activity.conversation = MagicMock(id="19:abc@thread.v2")
+        activity.reply_to_id = reply_to_id
+        activity.replyToId = reply_to_id
+        activity.value = {
+            "action": action,
+            "context": {"file_id": file_id},
+            "uploadInfo": {
+                "uploadUrl": upload_url,
+                "name": "report.pdf",
+                "uniqueId": "uid",
+                "fileType": "pdf",
+                "contentUrl": "https://contoso.sharepoint.com/file",
+            },
+        }
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    @pytest.mark.anyio
+    async def test_accept_uploads_and_clears_pending(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        adapter = self._make_adapter()
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        with patch("tools.url_safety.is_safe_url", lambda url: True):
+            await adapter._on_file_consent(self._ctx(action="accept"))
+        adapter._upload_consented_file.assert_awaited_once()
+        adapter._send_file_info_card.assert_awaited_once()
+        assert "fid-1" not in adapter._pending_uploads
+
+    @pytest.mark.anyio
+    async def test_accept_sdk_enum_uploads_and_clears_pending(self, monkeypatch):
+        """FileConsent invoke types action as Action (str, Enum); str() is not 'accept'."""
+        class Action(str, Enum):
+            ACCEPT = "accept"
+            DECLINE = "decline"
+
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        adapter = self._make_adapter()
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        ctx = self._ctx(action="accept")
+        # SDK models expose attributes, not only dict keys.
+        ctx.activity.value = SimpleNamespace(
+            action=Action.ACCEPT,
+            context=SimpleNamespace(file_id="fid-1"),
+            uploadInfo={
+                "uploadUrl": "https://contoso.sharepoint.com/upload",
+                "name": "report.pdf",
+                "uniqueId": "uid",
+                "fileType": "pdf",
+                "contentUrl": "https://contoso.sharepoint.com/file",
+            },
+        )
+        with patch("tools.url_safety.is_safe_url", lambda url: True):
+            await adapter._on_file_consent(ctx)
+        adapter._upload_consented_file.assert_awaited_once()
+        adapter._send_file_info_card.assert_awaited_once()
+        assert "fid-1" not in adapter._pending_uploads
+
+    @pytest.mark.anyio
+    async def test_accept_rejects_unsafe_upload_url(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        adapter = self._make_adapter()
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        await adapter._on_file_consent(self._ctx(
+            action="accept", upload_url="https://evil.example/steal"))
+        adapter._upload_consented_file.assert_not_awaited()
+        assert "fid-1" in adapter._pending_uploads
+
+    @pytest.mark.anyio
+    async def test_decline_drops_pending(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        adapter = self._make_adapter()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True))
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        await adapter._on_file_consent(self._ctx(action="decline"))
+        adapter._upload_consented_file.assert_not_awaited()
+        assert "fid-1" not in adapter._pending_uploads
+
+    @pytest.mark.anyio
+    async def test_unauthorized_click_does_not_upload(self, monkeypatch):
+        monkeypatch.delenv("TEAMS_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "someone-else")
+        adapter = self._make_adapter()
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        await adapter._on_file_consent(self._ctx(action="accept"))
+        adapter._upload_consented_file.assert_not_awaited()
+        assert "fid-1" in adapter._pending_uploads
+
+    @pytest.mark.anyio
+    async def test_accept_dismisses_consent_card(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        adapter = self._make_adapter()
+        delete = self._wire_dismiss(adapter)
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        with patch("tools.url_safety.is_safe_url", lambda url: True):
+            await adapter._on_file_consent(self._ctx(action="accept", reply_to_id="consent-card-1"))
+        adapter._app.api.conversations.activities.assert_called_once_with("19:abc@thread.v2")
+        delete.assert_awaited_once_with("consent-card-1")
+        adapter._upload_consented_file.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_decline_dismisses_consent_card(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        adapter = self._make_adapter()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True))
+        delete = self._wire_dismiss(adapter)
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        await adapter._on_file_consent(self._ctx(action="decline", reply_to_id="consent-card-1"))
+        delete.assert_awaited_once_with("consent-card-1")
+
+    @pytest.mark.anyio
+    async def test_stale_pending_dismisses_consent_card(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        adapter = self._make_adapter()
+        adapter.send = AsyncMock(return_value=MagicMock(success=True))
+        delete = self._wire_dismiss(adapter)
+        with patch("tools.url_safety.is_safe_url", lambda url: True):
+            await adapter._on_file_consent(self._ctx(action="accept", reply_to_id="consent-card-1"))
+        adapter._upload_consented_file.assert_not_awaited()
+        delete.assert_awaited_once_with("consent-card-1")
+
+    @pytest.mark.anyio
+    async def test_unauthorized_dismisses_consent_card(self, monkeypatch):
+        monkeypatch.delenv("TEAMS_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.setenv("TEAMS_ALLOWED_USERS", "someone-else")
+        adapter = self._make_adapter()
+        delete = self._wire_dismiss(adapter)
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        await adapter._on_file_consent(self._ctx(action="accept", reply_to_id="consent-card-1"))
+        adapter._upload_consented_file.assert_not_awaited()
+        delete.assert_awaited_once_with("consent-card-1")
+
+    @pytest.mark.anyio
+    async def test_dismiss_failure_does_not_fail_upload(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        adapter = self._make_adapter()
+        delete = self._wire_dismiss(adapter)
+        delete.side_effect = RuntimeError("connector 404")
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        with patch("tools.url_safety.is_safe_url", lambda url: True):
+            await adapter._on_file_consent(self._ctx(action="accept", reply_to_id="consent-card-1"))
+        adapter._upload_consented_file.assert_awaited_once()
+        adapter._send_file_info_card.assert_awaited_once()
+        assert "fid-1" not in adapter._pending_uploads
+
+    def test_consent_card_activity_id_reads_camel_and_snake(self):
+        f = _teams_mod._consent_card_activity_id
+        assert f(SimpleNamespace(reply_to_id="act-1", replyToId=None)) == "act-1"
+        assert f(SimpleNamespace(replyToId="act-2")) == "act-2"
+        assert f({"replyToId": "act-3"}) == "act-3"
+        assert f(SimpleNamespace(reply_to_id=None, replyToId=None)) is None
+        assert f(SimpleNamespace()) is None
+

@@ -22,7 +22,9 @@ Need meeting summaries from Microsoft Graph events rather than normal bot conver
 
 Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
 
-Without resource-specific consent (RSC) Teams only delivers messages that @mention the bot, so no filtering is needed. Once the app manifest grants `ChannelMessage.Read.Group` or `ChatMessage.Read.Chat`, Teams delivers **every** message in the conversation — set `require_mention: true` (or `TEAMS_REQUIRE_MENTION=true`) so the bot only answers channel/group-chat messages that @mention it or reply to one of its own messages. Personal chats are never gated, and a gated message is dropped before its attachments are downloaded.
+Without resource-specific consent (RSC) Teams only delivers messages that @mention the bot, so non-@ chatter never reaches Hermes. Once the app manifest grants `ChannelMessage.Read.Group` or `ChatMessage.Read.Chat`, Teams delivers **every** message — set `require_mention: true` (or `TEAMS_REQUIRE_MENTION=true`) so the bot only **answers** channel/group-chat messages that @mention it or reply to one of its own messages.
+
+With `require_mention` on, `observe_unmentioned` (default **true**, or `TEAMS_OBSERVE_UNMENTIONED`) stores the other posts as `observed` transcript rows — Telegram-style channel context — and still does **not** run the agent or download attachments. Set `observe_unmentioned: false` / `TEAMS_OBSERVE_UNMENTIONED=false` to keep the old silent drop. Personal chats are never gated. Observe only helps after RSC sideload; without those permissions Teams never POSTs unmentioned messages.
 
 ---
 
@@ -170,8 +172,13 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
-| `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
+| `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; required once the app has RSC message-read consent) |
+| `TEAMS_OBSERVE_UNMENTIONED` | When `require_mention` is on, store un-@mentioned channel/group posts as observed context (default: `true`). No-op without RSC. Set `false` to drop them. |
 | `TEAMS_REACTIONS` | Set `false` to disable processing-status emoji reactions (👀 while working, ✅/❌ on complete). Default: enabled. Agent `send_message` react/unreact is always available. |
+| `MSGRAPH_TENANT_ID` | Graph tenant ID for channel/group file uploads. Falls back to `TEAMS_TENANT_ID` when the bot app has `Files.ReadWrite.All`. |
+| `MSGRAPH_CLIENT_ID` | Graph application (client) ID. Falls back to `TEAMS_CLIENT_ID`. |
+| `MSGRAPH_CLIENT_SECRET` | Graph client secret. Falls back to `TEAMS_CLIENT_SECRET`. |
+| `TEAMS_TEAM_ID` | Microsoft 365 group GUID for the team; fallback when channel `aadGroupId` has not been stashed yet (also used by meeting-summary Graph delivery). |
 
 ### config.yaml
 
@@ -187,12 +194,67 @@ platforms:
       tenant_id: "your-tenant-id"
       port: 3978
       reactions: true        # processing-status 👀/✅/❌; send_message react is always on
+      observe_unmentioned: true  # RSC + require_mention: store non-@ chatter as context
     require_mention: false   # true once the app has RSC message-read consent
 ```
 
 ---
 
 ## Features
+
+### Files
+
+Inbound file attachments (PDFs, Office docs, and other non-image files) are downloaded and cached locally so the agent can read them — the same path Slack/Discord use. Teams delivers these as `file.download.info` attachments (SharePoint `downloadUrl`) or as a Bot Framework `contentUrl`. **Gated messages are dropped before any attachment is downloaded** (see [How the Bot Responds](#how-the-bot-responds)).
+
+Channel/group file drops are worse: Bot Framework often sends **only** an unnamed `text/html` body mirror (caption in `activity.text`, no `file.download.info`). That is a Teams limitation, not a Hermes skip. When Graph is configured, Hermes `GET`s the channel or chat message (`/teams/{teamId}/channels/{channelId}/messages/{id}` or `/chats/{chatId}/messages/{id}`) and downloads SharePoint `attachments[].contentUrl` via the same filesFolder/shares path. Personal 1:1 chats still use `file.download.info` / FileConsent and do **not** take this Graph GET.
+
+That inbound GET needs **`ChannelMessage.Read.Group`** (RSC — already in `plugins/platforms/teams/manifest.template.json`) or tenant-wide **`ChannelMessage.Read.All`** for channels, and **`ChatMessage.Read.Chat`** (RSC) or **`Chat.Read.All`** for group chats, plus **`Files.ReadWrite.All`** to download. If Graph is missing or GET returns 403, the caption still arrives, a warning names the permission, and `media_urls` stays empty.
+
+Channel activities that *do* include `file.download.info` sometimes omit `downloadUrl`. Hermes then resolves the file via `filesFolder` + `uniqueId`, or the Graph shares API (`u!` encoding of a SharePoint URL).
+
+To receive files in personal chats, the app manifest must set `"supportsFiles": true` under `bots`. Recreate or update the app if the Teams client silently ignores file drops onto the bot.
+
+To receive **every** channel/group message (needed for `observe_unmentioned`), add RSC to the sideload manifest and reinstall:
+
+```json
+"webApplicationInfo": {"id": "<botId>", "resource": "https://Api.botframework.com"},
+"authorization": {"permissions": {"resourceSpecific": [
+  {"name": "ChannelMessage.Read.Group", "type": "Application"},
+  {"name": "ChatMessage.Read.Chat", "type": "Application"}
+]}}
+```
+
+A full sideload skeleton lives at `plugins/platforms/teams/manifest.template.json`.
+
+Outbound files:
+
+- **Personal chats** — the bot sends a native **file consent card**. The user taps Accept, Hermes uploads the bytes to that user's OneDrive, then posts a file-info card. This is the Bot Framework-supported send path (no extra Graph permissions).
+- **Channel / group chats** — FileConsent is personal-scope only, and Bot Framework document attachments return 400. Small text files (``.txt``, ``.md``, ``.csv``, … under ~48 KB) are inlined as a normal message. Other files are uploaded with **app-only Microsoft Graph** into the team's SharePoint channel folder (or the group chat's files folder), then Hermes posts a clickable sharing/`webUrl` link in the same conversation. Configure Graph as below; if Graph is missing or the upload is denied, the bot posts a clear error (and you can still send the file in a 1:1 DM).
+- **Images / video / audio** — sent as Bot Framework attachments (data URI for local files, URL for remote). Images already worked this way.
+
+Size cap for consent uploads and Graph channel uploads is 20 MB.
+
+#### Channel / group file upload (Microsoft Graph)
+
+Hermes reuses the shared Graph client (`tools/microsoft_graph_client.py`) with **client-credentials** (daemon) auth. Preferred credentials are `MSGRAPH_TENANT_ID` / `MSGRAPH_CLIENT_ID` / `MSGRAPH_CLIENT_SECRET`. If those are unset, the adapter falls back to the Teams bot app (`TEAMS_*`) — that works when it is the **same Entra app** and an admin has consented the Graph application permission below.
+
+1. In [Entra app registrations](https://entra.microsoft.com) open the Graph app (or the Teams bot app, if you are reusing it).
+2. **API permissions → Microsoft Graph → Application permissions** → add **`Files.ReadWrite.All`**. For inbound channel files when Bot Framework only sends `text/html`, also add **`ChannelMessage.Read.All`** (or rely on RSC `ChannelMessage.Read.Group` from the sideload manifest). Group chats need **`Chat.Read.All`** or RSC `ChatMessage.Read.Chat`.
+3. Click **Grant admin consent for \<tenant\>**. Status must show a green check. Delegated permissions are not used; the gateway has no user sign-in for this path.
+4. Put the credentials in `~/.hermes/.env` (`chmod 600`):
+
+```bash
+MSGRAPH_TENANT_ID=<directory-tenant-id>
+MSGRAPH_CLIENT_ID=<application-client-id>
+MSGRAPH_CLIENT_SECRET=<client-secret-value>
+# Optional: omit MSGRAPH_* and grant Files.ReadWrite.All on the TEAMS_* bot app instead
+```
+
+`Files.ReadWrite.All` is tenant-wide (it can read/write any SharePoint/OneDrive item the app can reach). There is no narrower application permission that can upload into an arbitrary team's channel folder. Treat the app as a service principal and restrict who can message the bot (`TEAMS_ALLOWED_USERS`).
+
+The first inbound activity in a **channel** stashes `channelData.team.aadGroupId` + channel id so the upload can call `GET /teams/{team-id}/channels/{channel-id}/filesFolder`. The same stash is used when an inbound `file.download.info` attachment omits `downloadUrl`. If the gateway restarted before a file send, set `TEAMS_TEAM_ID` (the Microsoft 365 group GUID) as a fallback. **Group chats** use the Bot Framework conversation id as the Graph chat id (`GET /chats/{id}/filesFolder`) and do not need a team id.
+
+Walkthrough for creating the app registration: [Register a Microsoft Graph application](../../guides/microsoft-graph-app-registration.md#required-for-teams-channelgroup-file-delivery).
 
 ### Reactions
 
@@ -202,10 +264,6 @@ Teams bots can add and remove emoji reactions through the Bot Framework connecto
 - **Agent-facing** `send_message` `action="react"` / `"unreact"`: not gated by `TEAMS_REACTIONS`. Unicode (👍 ❤️ 👀 ✅) and Teams ids (`like`, `heart`, `1f440_eyes`, …) both work.
 
 Inbound `messageReaction` activities are forwarded to gateway reaction hooks (`reaction:added` / `reaction:removed`) so plugins see them. The bot ignores its own reactions.
-
-### Streaming (not yet)
-
-Teams can update an in-flight activity (Bot Framework `conversations.activities.update`), but Hermes does **not** stream replies on Teams yet. Progressive edits would need the gateway's draft-stream contract; that is a follow-up, not part of reactions.
 
 ### Interactive Approval Cards
 
@@ -217,6 +275,10 @@ When the agent needs to run a potentially dangerous command, it sends an Adaptiv
 - **Deny** — reject the command
 
 Clicking a button resolves the approval inline and replaces the card with the decision.
+
+### Streaming (not yet)
+
+Teams can update an in-flight activity (Bot Framework `conversations.activities.update`), but Hermes does **not** stream replies on Teams yet. Progressive edits would need the gateway's draft-stream contract; that is a follow-up, not part of files/reactions.
 
 ### Meeting Summary Delivery (Teams Meeting Pipeline)
 
@@ -299,6 +361,8 @@ Treat `TEAMS_CLIENT_SECRET` like a password — rotate it periodically via the A
 
 - Store credentials in `~/.hermes/.env` with permissions `600` (`chmod 600 ~/.hermes/.env`)
 - The bot only accepts messages from users in `TEAMS_ALLOWED_USERS`; unauthorized messages are silently dropped
+- File-consent Accept/Decline and approval-card clicks use the same allowlist (or `TEAMS_ALLOW_ALL_USERS`)
+- Gated channel/group-chat messages (`require_mention`) are dropped **before** attachment download
 - Your public endpoint (`/api/messages`) is authenticated by the Teams Bot Framework — requests without valid JWTs are rejected
 
 ## Related Docs

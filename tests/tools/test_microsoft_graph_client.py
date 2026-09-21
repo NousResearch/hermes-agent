@@ -116,3 +116,36 @@ class TestMicrosoftGraphClient:
 
         with pytest.raises(MicrosoftGraphClientError):
             await client.get_json("/me")
+
+    async def test_put_bytes_sends_octet_stream_and_query_params(self):
+        captured: dict[str, object] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["method"] = request.method
+            captured["url"] = str(request.url)
+            captured["content_type"] = request.headers.get("Content-Type")
+            captured["accept"] = request.headers.get("Accept")
+            captured["authorization"] = request.headers.get("Authorization")
+            captured["body"] = request.content
+            return httpx.Response(
+                201,
+                json={"id": "item-1", "webUrl": "https://sp.example/file.bin"},
+            )
+
+        client = MicrosoftGraphClient(
+            _make_provider(),
+            transport=httpx.MockTransport(handler),
+        )
+        payload = await client.put_bytes(
+            "/drives/drive-1/items/folder-1:/report.bin:/content",
+            content=b"%PDF-bytes",
+            params={"@microsoft.graph.conflictBehavior": "rename"},
+        )
+
+        assert payload["id"] == "item-1"
+        assert captured["method"] == "PUT"
+        assert captured["content_type"] == "application/octet-stream"
+        assert captured["accept"] == "application/json"
+        assert captured["authorization"] == "Bearer cached-token"
+        assert captured["body"] == b"%PDF-bytes"
+        assert "microsoft.graph.conflictBehavior=rename" in str(captured["url"])

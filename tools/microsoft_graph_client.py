@@ -53,6 +53,16 @@ class MicrosoftGraphClient:
     async def post_json(self, path: str, *, json_body: Any | None = None, headers: Headers = None) -> Any:
         return self._decode_json(await self._request("POST", path, json_body=json_body, headers=headers))
 
+    async def put_bytes(
+        self, path: str, *, content: bytes, content_type: str = "application/octet-stream",
+        headers: Headers = None, params: Params = None,
+    ) -> Any:
+        """PUT raw bytes (driveItem simple upload). Decoded JSON, or ``{}`` if the body is empty."""
+        merged = {"Content-Type": content_type, **(headers or {})}
+        response = await self._request(
+            "PUT", path, content=content, headers=merged, params=params)
+        return self._decode_json(response) if response.status_code != 204 and response.content else {}
+
     async def patch_json(self, path: str, *, json_body: Any | None = None, headers: Headers = None) -> Any:
         """Decoded body, or ``{}`` for a 204 / bodiless response."""
         response = await self._request("PATCH", path, json_body=json_body, headers=headers)
@@ -108,11 +118,19 @@ class MicrosoftGraphClient:
         return {"path": str(target), "size_bytes": target.stat().st_size, "content_type": content_type}
 
     async def _request(self, method: str, path_or_url: str, *, params: Params = None,
-                       json_body: Any | None = None, headers: Headers = None) -> httpx.Response:
+                       json_body: Any | None = None, content: bytes | None = None,
+                       headers: Headers = None) -> httpx.Response:
+        if json_body is not None and content is not None:
+            raise MicrosoftGraphClientError("Specify either json_body or content, not both.")
         url = self._resolve_url(path_or_url)
 
         async def perform(client: httpx.AsyncClient, request_headers: dict[str, str]):
-            response = await client.request(method, url, params=params, json=json_body, headers=request_headers)
+            kwargs: dict[str, Any] = {"params": params, "headers": request_headers}
+            if json_body is not None:
+                kwargs["json"] = json_body
+            if content is not None:
+                kwargs["content"] = content
+            response = await client.request(method, url, **kwargs)
             return response, response
 
         return await self._with_retries(method, url, "application/json", json_body, headers, perform, "request")

@@ -157,6 +157,33 @@ class TestBuildSessionContextPrompt:
 
 
 
+    def test_teams_prompt_notes_media_and_no_send_message(self):
+        """Teams sessions must not invent a send_message tool; files go via MEDIA:."""
+        config = GatewayConfig(
+            platforms={
+                Platform("teams"): PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=Platform("teams"),
+            chat_id="19:abc@thread.v2",
+            chat_name="Ada",
+            chat_type="dm",
+            user_name="Ada",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Microsoft Teams" in prompt
+        assert "send_message" in prompt
+        assert "never claim it is missing" in prompt
+        assert "MEDIA:<absolute_path>" in prompt
+        assert "FileConsent" in prompt
+        assert "inlined" in prompt
+        assert "channel" in prompt.lower()
+        assert "no special send tool is required for text" in prompt
+
+
     def test_local_delivery_path_uses_display_hermes_home(self):
         config = GatewayConfig()
         source = SessionSource(

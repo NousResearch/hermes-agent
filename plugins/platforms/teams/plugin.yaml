@@ -46,6 +46,10 @@ optional_env:
     description: "Only answer channel/group-chat messages that @mention the bot or reply to it (default false; needed once the app has RSC message-read consent)"
     prompt: "Require @mention in channels and group chats? (true/false)"
     password: false
+  - name: TEAMS_OBSERVE_UNMENTIONED
+    description: "When require_mention is on, store un-@mentioned channel/group messages as observed transcript context (default true). No-op without RSC; set false to silently drop."
+    prompt: "Observe unmentioned channel chatter as context? (true/false)"
+    password: false
   - name: TEAMS_REACTIONS
     description: "Add processing-status emoji reactions (👀 while working, ✅/❌ on complete). Default true. Agent send_message react/unreact is always available."
     prompt: "Enable processing-status reactions? (true/false)"
@@ -58,3 +62,15 @@ optional_env:
     description: "Display name for the Teams home channel"
     prompt: "Home channel display name"
     password: false
+  - name: MSGRAPH_TENANT_ID
+    description: "Graph tenant ID for channel/group file upload and inbound HTML-only file GET (falls back to TEAMS_TENANT_ID when the bot app has Files.ReadWrite.All)"
+    prompt: "Microsoft Graph tenant ID (optional if TEAMS_* is the same app)"
+    password: false
+  - name: MSGRAPH_CLIENT_ID
+    description: "Graph application (client) ID for channel/group file upload and inbound downloadUrl fallback (falls back to TEAMS_CLIENT_ID)"
+    prompt: "Microsoft Graph client ID (optional if TEAMS_* is the same app)"
+    password: false
+  - name: MSGRAPH_CLIENT_SECRET
+    description: "Graph client secret for channel/group file upload and inbound downloadUrl fallback (falls back to TEAMS_CLIENT_SECRET)"
+    prompt: "Microsoft Graph client secret (optional if TEAMS_* is the same app)"
+    password: true

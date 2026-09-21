@@ -1,13 +1,13 @@
 name: orbit-desktop
 repo: https://github.com/mojomast/orbitdesktop
-sha: 9b4509a7d756ec3e9437adfc4c2574266ec74ff3
+sha: 762c45b7aae025350a0919efb7051f205b1092d1
 subdir: hermes-plugin
 description: "Bundled, dynamic browser workspace that Hermes can reshape on the fly to suit your task: rearrange windows and panes, customize appearance, and build and rapidly deploy sandboxed web apps as custom workspace tools. Bring chat, terminals, dashboards and purpose-built applications together in an evolving desktop, with scoped agent control, previews and checkpoints for workspace changes. Includes permission-controlled desktop agent-reply notifications (generic alerts while Orbit remains open; browser/OS restrictions apply) and 100,000-character chat messages, guidance and drafts. Includes Devplan Studio for guided interviews, specifications, phased devplans and circular-development handoff exports. Optional conversational interviews require explicit service setup and a working Hermes provider login, and send project context to that provider. Disclosure — adapter talks only to the configured local Orbit server (loopback, Bearer capability from runtime_dir); mutations off by default. Optional orbit.py setup runs npm ci / node. Bundled VNC/Xpra launchers use the Orbit page's hostname and scheme; optional Linux apps require separate provisioning. Optional api.typesafe.ai requests require explicit consent and a user-supplied key."
 maintainer: mojomast
 tier: community
 category: desktop
 version: "0.2.3"
-docs_url: https://github.com/mojomast/orbitdesktop/blob/9b4509a7d756ec3e9437adfc4c2574266ec74ff3/hermes-plugin/README.md
+docs_url: https://github.com/mojomast/orbitdesktop/blob/762c45b7aae025350a0919efb7051f205b1092d1/hermes-plugin/README.md
 platforms: [linux]
 capabilities:
   provides_tools: [orbit_workspace]

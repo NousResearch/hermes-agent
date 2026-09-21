@@ -63,15 +63,22 @@ def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
 
 def default_gateway_multiplexes(default_home: Optional[Path] = None) -> bool:
     """Does the default profile's gateway serve every profile? For CLI/dashboard processes: the LIVE
-    gateway's ``served_profiles`` record when one runs (it settled the unset default itself), else the
-    explicit flag, else False — an unset flag is decided by the gateway at boot, never guessed here."""
+    gateway's ``served_profiles`` record when one runs (it settled the unset default itself), else
+    the explicit flag, else False — an unset flag is decided by the gateway at boot, never guessed
+    here.
+
+    The one thing that can no longer report "standalone" is an explicit ``false``: it is RETIRED
+    (warned about and ignored at boot, see :func:`resolve_multiplex_mode`), so answering False from
+    it made every CLI surface contradict the gateway that was about to multiplex anyway.
+    """
     from hermes_constants import get_default_hermes_root
     from hermes_cli.gateway_multiplex_served import recorded_served_profiles
     root = Path(default_home) if default_home is not None else get_default_hermes_root()
     recorded = recorded_served_profiles(root)
     if recorded is not None:
         return bool(recorded)
-    return bool(explicit_multiplex_flag(root))
+    flag = explicit_multiplex_flag(root)
+    return False if flag is None else True
 
 
 @dataclass(frozen=True)

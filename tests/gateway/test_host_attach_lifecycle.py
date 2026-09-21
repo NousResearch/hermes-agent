@@ -209,8 +209,12 @@ def test_the_claim_time_record_publishes_no_served_set(tmp_path, monkeypatch):
         hr.clear_record(hr.ROLE_GATEWAY)
 
 
-def test_served_profiles_honours_a_multiplex_off_setting(monkeypatch):
-    """``served_profiles()`` forced ``multiplex=True`` and claimed profiles it would never serve."""
+def test_served_profiles_ignores_the_retired_opt_out_but_honours_an_explicit_argument(monkeypatch):
+    """``served_profiles()`` forced ``multiplex=True`` and claimed profiles it would never serve,
+    so it learned to read ``gateway.multiplex_profiles``. That key is now RETIRED as a topology
+    opt-out: reading it here was the last place an explicit ``false`` still narrowed the record,
+    which is why the CLI reported "standalone, serving default" while the runtime multiplexed.
+    The caller's explicit argument — the RUNTIME verdict — still decides."""
     asked: list[bool] = []
 
     def _roster(*, multiplex):
@@ -219,13 +223,12 @@ def test_served_profiles_honours_a_multiplex_off_setting(monkeypatch):
                 else [("default", Path("/x"))])
 
     monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", _roster)
-    # The operator's explicit `gateway.multiplex_profiles: false` — stubbed at the reader every
-    # tree has, so a tree that ignores the setting fails on the OUTCOME below.
     monkeypatch.setattr(
         "hermes_cli.gateway_multiplex_mode.explicit_multiplex_flag", lambda home: False)
 
-    assert hr.served_profiles() == ("default",)
-    assert asked == [False]
+    assert hr.served_profiles() == ("default", "other")
+    assert hr.served_profiles(multiplex=False) == ("default",)
+    assert asked == [True, False]
 
 
 @pytest.mark.skipif(sys.platform == "win32",

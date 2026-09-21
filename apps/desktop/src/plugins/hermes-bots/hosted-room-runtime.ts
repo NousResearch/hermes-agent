@@ -115,8 +115,7 @@ const hostedRoomObservations = new HostedRoomObservations()
 let hostedRoomSyncTimer: ReturnType<typeof setTimeout> | null = null
 let hostedRoomSyncRunning = false
 let hostedRoomRefreshPromise: Promise<void> | null = null
-let hostedRoomRefreshSuccessorPromise: Promise<void> | null = null
-const hostedRoomRefreshSuccessorGuards = new Set<() => boolean>()
+let hostedRoomManualCheckTail: Promise<unknown> = Promise.resolve()
 let hostedRoomSyncDisposed = true
 let hostedRoomLifecycleGeneration = 0
 let hostedOutboxDispatchPromise: Promise<void> | null = null
@@ -436,7 +435,9 @@ export function checkHostedRoomGateway(group: string): Promise<boolean> {
     )
   }
 
-  const check = (async () => {
+  // Serialize explicit checks before invalidation: a later room must never
+  // retire the observation that an earlier room is still awaiting.
+  const check = hostedRoomManualCheckTail.catch(() => undefined).then(async () => {
     const routes = await hostedDefaultRoutes()
 
     if (!current() || !routes.some(candidate => candidate.connectionId === connectionId)) {
@@ -453,13 +454,14 @@ export function checkHostedRoomGateway(group: string): Promise<boolean> {
     }
 
     return String($groupChats.get()[group]?.hostedStatus?.checkConnectionId || '') !== connectionId
-  })().finally(() => {
+  }).finally(() => {
     if (hostedRoomManualChecks.get(key) === check) {
       hostedRoomManualChecks.delete(key)
     }
   })
 
   hostedRoomManualChecks.set(key, check)
+  hostedRoomManualCheckTail = check
 
   return check
 }
@@ -510,9 +512,8 @@ export function refreshHostedRooms(stillCurrent?: () => boolean): Promise<void> 
   return refresh
 }
 
-/** Manual invalidation during a running observation needs one successor. All
- * callers await the same refresh-only promise; maintenance dispatch is never
- * part of this path. */
+/** Explicit checks are serialized, while identical owner requests share their
+ * promise. An ordinary in-flight poll may need one refresh-only successor. */
 function refreshHostedRoomsAfterCurrent(stillCurrent: () => boolean): Promise<void> {
   const active = hostedRoomRefreshPromise
 
@@ -520,31 +521,9 @@ function refreshHostedRoomsAfterCurrent(stillCurrent: () => boolean): Promise<vo
     return refreshHostedRooms(stillCurrent)
   }
 
-  hostedRoomRefreshSuccessorGuards.add(stillCurrent)
-
-  if (hostedRoomRefreshSuccessorPromise) {
-    return hostedRoomRefreshSuccessorPromise
-  }
-
-  const lifecycleGeneration = hostedRoomLifecycleGeneration
-  const anyCurrent = () => [...hostedRoomRefreshSuccessorGuards].some(guard => guard())
-  const successor = active
+  return active
     .catch(() => undefined)
-    .then(() =>
-      !hostedRoomSyncDisposed && lifecycleGeneration === hostedRoomLifecycleGeneration && anyCurrent()
-        ? refreshHostedRooms(anyCurrent)
-        : undefined
-    )
-    .finally(() => {
-      if (hostedRoomRefreshSuccessorPromise === successor) {
-        hostedRoomRefreshSuccessorPromise = null
-        hostedRoomRefreshSuccessorGuards.clear()
-      }
-    })
-
-  hostedRoomRefreshSuccessorPromise = successor
-
-  return successor
+    .then(() => refreshHostedRooms(stillCurrent))
 }
 
 async function performHostedRoomRefresh(stillCurrent?: () => boolean) {
@@ -2132,8 +2111,7 @@ export function stopHostedRoomRuntime() {
   hostedRoomLifecycleGeneration += 1
   hostedRoomSyncDisposed = true
   hostedRoomRefreshPromise = null
-  hostedRoomRefreshSuccessorPromise = null
-  hostedRoomRefreshSuccessorGuards.clear()
+  hostedRoomManualCheckTail = Promise.resolve()
   hostedRoomManualChecks.clear()
   hostedRoomSyncRunning = false
   stopHostedRoomCleanup()

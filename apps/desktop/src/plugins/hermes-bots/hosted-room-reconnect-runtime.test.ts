@@ -920,6 +920,70 @@ describe('hosted Group Chat runtime', () => {
     loaded.runtime.stopHostedRoomRuntime()
   })
 
+  it.each([false, true])('does not retire another room’s manual check (later owner replaced: %s)', async replaceSecond => {
+    let upgraded = false
+    let probes = 0
+    let enterFirst!: () => void
+    let releaseFirst!: () => void
+    let releaseLater!: () => void
+    const firstEntered = new Promise<void>(resolve => { enterFirst = resolve })
+    const firstProbe = new Promise<void>(resolve => { releaseFirst = resolve })
+    const laterProbe = new Promise<void>(resolve => { releaseLater = resolve })
+    const serverRooms = ['Alpha', 'Beta'].map((name, index) => ({
+      authority_epoch: 1,
+      authority_gateway_id: 'install:home',
+      disbanded_at: null,
+      latest_seq: 0,
+      members: MEMBERS,
+      name,
+      revision: 1,
+      room_id: `room-${index + 1}`
+    }))
+    const loaded = await loadRuntime(async (method, params) => {
+      if (method === 'groups.capabilities') {
+        if (!upgraded) {throw Object.assign(new Error('Method not found'), { code: -32601 })}
+        probes += 1
+        if (probes === 1) {enterFirst(); await firstProbe}
+        else {await laterProbe}
+        return { authority_gateway_id: 'install:home', driver: true, persistent_process: true }
+      }
+      if (method === 'groups.list') {return { rooms: serverRooms }}
+      if (method === 'groups.state') {
+        return { driver_status: { working: false }, room: serverRooms.find(item => item.room_id === params.room_id) }
+      }
+      if (method === 'groups.log') {return { events: [], has_more: false, latest_seq: 0 }}
+      throw new Error(`unexpected mutation: ${method}`)
+    })
+    loaded.chat.$groupChats.set({ Alpha: room(), Beta: room({ roomId: 'room-2' }) })
+    await loaded.runtime.startHostedRoomRuntime(scriptedStorage(loaded.storage).storage)
+    expect(loaded.chat.$groupChats.get().Alpha.hostedStatus?.checkConnectionId).toBe('gateway-a')
+    expect(loaded.chat.$groupChats.get().Beta.hostedStatus?.checkConnectionId).toBe('gateway-a')
+    upgraded = true
+    const first = loaded.runtime.checkHostedRoomGateway('Alpha')
+    await firstEntered
+    const second = loaded.runtime.checkHostedRoomGateway('Beta')
+    // Drain the second click's async route lookup without releasing the first probe.
+    await vi.advanceTimersByTimeAsync(0)
+    if (replaceSecond) {
+      loaded.chat.$groupChats.set({ ...loaded.chat.$groupChats.get(), Beta: room({ roomId: 'replacement' }) })
+    }
+    releaseFirst()
+    try {
+      await expect(first).resolves.toBe(true)
+      expect(loaded.chat.$groupChats.get().Alpha.hostedStatus?.state).toBe('ready')
+      // Distinct rooms may need separate reads, but the later read must not
+      // retire or delay completion of the first room's successful check.
+      expect(probes).toBeLessThanOrEqual(2)
+    } finally {
+      releaseLater()
+      await second
+      loaded.runtime.stopHostedRoomRuntime()
+    }
+    if (!replaceSecond) {
+      expect(loaded.chat.$groupChats.get().Beta.hostedStatus?.state).toBe('ready')
+    }
+  })
+
   it('awaits one refresh-only successor when a manual check interrupts an in-flight poll', async () => {
     let releaseState: () => void = () => undefined
     let stateStarted: () => void = () => undefined

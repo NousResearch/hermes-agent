@@ -368,6 +368,22 @@ def _cmd_repair(args: argparse.Namespace) -> int:
         }, ascii=True)
         return 0 if report.status in {"ok", "repaired", "missing"} else 1
 
+    if report.status == "replaced":
+        print(
+            f"{report.db_path}: REPLACED — a board was initialized here and its file is gone.",
+            file=sys.stderr,
+        )
+        for line in (report.messages or [])[:5]:
+            print(f"  {line}", file=sys.stderr)
+        print(
+            "  Refusing to recreate an empty board. Restore the file (or its newest backup),",
+            file=sys.stderr,
+        )
+        print(
+            "  or run `hermes kanban init` if you want a fresh board at this path.",
+            file=sys.stderr,
+        )
+        return 1
     if report.status == "missing":
         print(f"No kanban DB at {report.db_path} — nothing to repair.")
         return 0

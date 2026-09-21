@@ -619,8 +619,10 @@ def create_board(
         normed, name=name, description=description, icon=icon, color=color,
         default_workdir=default_workdir, project_id=project_id,
     )
-    # Touch the DB so list_boards() sees it immediately.
-    init_db(board=normed)
+    # Touch the DB so list_boards() sees it immediately. Recreating is the
+    # point of this verb, so it opts into it explicitly (a deleted board's file
+    # is otherwise refused; see kanban_db_connect's replaced-board guard).
+    init_db(board=normed, allow_recreate=True)
     return meta
 
 

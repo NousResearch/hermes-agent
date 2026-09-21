@@ -290,7 +290,10 @@ def _parse_duration(val) -> Optional[int]:
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    path = kb.init_db()
+    # The one verb that means "make me a board here": it may recreate a board
+    # whose file was deleted or replaced. Nothing else opts in (see the
+    # replaced-board guard in kanban_db_connect).
+    path = kb.init_db(allow_recreate=True)
     print(f"Kanban DB initialized at {path}")
     print()
     # Profiles on disk == assignees already addressable.

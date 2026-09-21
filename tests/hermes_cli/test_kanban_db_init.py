@@ -5,6 +5,8 @@ import sqlite3
 import threading
 from pathlib import Path
 
+import pytest
+
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -160,14 +162,17 @@ def _tables(path: Path) -> set[str]:
         conn.close()
 
 
-def test_connect_reinitializes_schema_when_db_file_vanished(tmp_path, monkeypatch):
-    """#83445: the schema cache is process-local, but the schema is on disk.
+def test_connect_refuses_when_db_file_vanished(tmp_path, monkeypatch):
+    """A vanished board file is NOT a fresh board (#83445 follow-up).
 
-    A long-lived process (gateway, dispatcher, dashboard API) that already
-    initialized a path keeps taking the ``_INITIALIZED_PATHS`` fast path after
-    the file is deleted underneath it. SQLite recreates an empty DB on the next
-    open, so every query then fails with ``no such table: tasks`` and the board
-    renders empty until that process itself is restarted.
+    The schema cache is process-local, but the schema is on disk. A long-lived
+    process (gateway, dispatcher, dashboard API) that already initialized a path
+    keeps taking the ``_INITIALIZED_PATHS`` fast path after the file is deleted
+    underneath it. Re-running the schema script there recreated an EMPTY board:
+    the cards were already gone, and the board came back looking alive with
+    nothing on it, so the loss read as "my tasks disappeared" instead of an
+    error. Refuse, and leave nothing behind for the next reader to mistake for a
+    live board.
     """
     db_path = _default_board_db(tmp_path, monkeypatch)
 
@@ -183,14 +188,18 @@ def test_connect_reinitializes_schema_when_db_file_vanished(tmp_path, monkeypatc
     for suffix in ("", "-wal", "-shm"):
         db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
 
-    with kbc.connect_closing(db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
-    assert "tasks" in _tables(db_path)
+    with pytest.raises(kbc.KanbanDbReplacedError):
+        with kbc.connect_closing(db_path):
+            pass
+    # The refusal is not a tidy-up: no empty board is minted on the way out.
+    assert not db_path.exists()
 
 
-def test_connect_reinitializes_schema_when_db_replaced_by_empty_file(tmp_path, monkeypatch):
-    """Same defect, restore shape: the file still exists and passes both the
-    header and the integrity probes, but carries no schema at all."""
+def test_connect_refuses_when_db_replaced_by_empty_file(tmp_path, monkeypatch):
+    """Same defect, restore shape: the file exists and passes the header probe,
+    but carries no schema at all. Re-running the schema script on it would hand
+    back an empty board — so it is refused, and the replacement's bytes are left
+    exactly as they were (they are the evidence)."""
     db_path = _default_board_db(tmp_path, monkeypatch)
 
     with kbc.connect_closing(db_path):
@@ -198,21 +207,21 @@ def test_connect_reinitializes_schema_when_db_replaced_by_empty_file(tmp_path, m
 
     for suffix in ("", "-wal", "-shm"):
         db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
-    sqlite3.connect(str(db_path)).close()
-    assert "tasks" not in _tables(db_path)
+    db_path.write_bytes(b"")
 
-    with kbc.connect_closing(db_path) as conn:
-        conn.execute(
-            "INSERT INTO tasks (id, title, status, created_at) VALUES ('t-2', 'T', 'ready', 1000)"
-        )
-        conn.commit()
-    assert "tasks" in _tables(db_path)
+    with pytest.raises(kbc.KanbanDbReplacedError):
+        with kbc.connect_closing(db_path):
+            pass
+    # Untouched: the replacement's bytes are the evidence, and no empty board is
+    # grafted on top of them.
+    assert db_path.stat().st_size == 0
+    assert "tasks" not in _tables(db_path)
 
 
 def test_healthy_fast_path_stays_lock_free(tmp_path, monkeypatch):
-    """The self-heal must cost nothing in steady state: an intact cached path
-    still skips the cross-process init lock (#36644), and only pays for it when
-    the schema is actually gone."""
+    """The check must cost nothing in steady state: an intact cached path still
+    skips the cross-process init lock (#36644), and a board that is gone is
+    refused before the lock — nothing is written, so nothing needs serializing."""
     db_path = _default_board_db(tmp_path, monkeypatch)
 
     with kbc.connect_closing(db_path):
@@ -234,6 +243,7 @@ def test_healthy_fast_path_stays_lock_free(tmp_path, monkeypatch):
     assert locks == []
 
     db_path.unlink()
-    with kbc.connect_closing(db_path):
-        pass
-    assert len(locks) == 1
+    with pytest.raises(kbc.KanbanDbReplacedError):
+        with kbc.connect_closing(db_path):
+            pass
+    assert locks == []

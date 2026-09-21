@@ -188,6 +188,21 @@ class _KanbanDispatcher:
             conn = _kbc().connect(board=slug)
             return _kbd().dispatch_once(conn, board=slug, **kwargs)
         except Exception as exc:
+            if isinstance(exc, _kbc().KanbanDbReplacedError):
+                # Deleted or swapped under a live process: pausing is the whole
+                # point (recreating would hand the board back empty). Same
+                # fingerprint-based quarantine as corruption: any change to the
+                # file lifts it, so a restore resumes dispatch on its own.
+                self.disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
+                logger.error(
+                    "kanban dispatcher: board %s DB %s was deleted or replaced; "
+                    "refusing to recreate an empty board, pausing dispatch for "
+                    "this board until the file changes, the gateway restarts, or "
+                    "the quarantine timer expires. Restore the file (or its "
+                    "newest backup), or run `hermes kanban init` for a fresh board.",
+                    slug, fingerprint[0],
+                )
+                return None
             if self.is_corrupt_board_db_error(exc):
                 self.disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
                 logger.error(

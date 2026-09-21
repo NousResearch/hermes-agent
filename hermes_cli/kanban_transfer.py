@@ -345,7 +345,7 @@ def import_board(
     )
     # Bring the imported schema up to this install's version before the
     # relocation pass writes to it.
-    kb.init_db(board=target)
+    kb.init_db(board=target, allow_recreate=True)
 
     with kbc.connect_closing(board=target) as conn:
         stats, warnings = _relocate_imported_rows(conn, target)

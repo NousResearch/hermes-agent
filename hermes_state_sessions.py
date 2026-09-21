@@ -93,10 +93,14 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str = None, sources: List[str] = None,
     session_key: str = None, exclude_sources: List[str] = None, cwd_prefix: str = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
+    titled_only: bool = False,
 ) -> Tuple[List[str], List[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
-    (``_LISTABLE_CHILD_SQL``). Clause order is part of the SQL text contract."""
+    (``_LISTABLE_CHILD_SQL``). ``titled_only`` drops rows that can NEVER display a title, so a
+    caller's LIMIT is spent on rows it can show; a compression root is kept even when its own title
+    is NULL, because ``_project_compression_tips`` surfaces it under its live tip's title. Clause
+    order is part of the SQL text contract."""
     where: List[str] = []
     params: List[Any] = []
     if exclude_children:
@@ -124,6 +128,10 @@ def _session_filter_where(
         where.append("s.archived = 1")
     elif not include_archived:
         where.append("s.archived = 0")
+    if titled_only:
+        # A compression root's title may live on its live tip (_project_compression_tips), so a bare
+        # ``s.title IS NOT NULL`` would drop a lineage the caller can in fact display.
+        where.append("(s.title IS NOT NULL OR s.end_reason = 'compression')")
     return where, params
 
 
@@ -1249,15 +1257,18 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str = None, search_query: str = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str = None, include_hidden: bool = False,
+        titled_only: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
-        ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
+        ``include_pinned`` back-fills pins the page missed, still obeying the other filters.
+        ``titled_only`` filters to named sessions in SQL, so a caller that shows only named sessions
+        spends its LIMIT on rows it can display instead of discarding unnamed ones after the fact."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
-            archived_only=archived_only, include_archived=include_archived,
+            archived_only=archived_only, include_archived=include_archived, titled_only=titled_only,
         )
         # The archived-only view is the recovery surface for rows that dropped out of every
         # default list: a session that is archived AND hidden (Bot Mode marks its sessions

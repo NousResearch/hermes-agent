@@ -352,6 +352,71 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_bare_resume_lists_named_session_behind_newer_unnamed_ones(self, tmp_path):
+        """A named session must stay listable however many unnamed sessions a lane accumulates.
+
+        The picker used to fetch a LIMIT-10 page and drop untitled rows afterwards, so a lane whose
+        ten most recent sessions were unnamed answered "No named sessions found" while the name was
+        still resolvable by `/resume <title>` — the listing and the resolver disagreeing.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume")
+        lane_key = _session_key_for_event(event)
+        now = time.time()
+        db.create_session(
+            "named_old", "telegram", session_key=lane_key, user_id="12345", chat_id="67890",
+        )
+        db.set_session_title("named_old", "Branding Plan")
+        for i in range(12):
+            db.create_session(
+                f"unnamed_{i}", "telegram", session_key=lane_key,
+                user_id="12345", chat_id="67890",
+            )
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (now - 9999, "named_old"))
+        for i in range(12):
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?", (now + i, f"unnamed_{i}"))
+        db._conn.commit()
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        # The name the resolver can still find must be the name the listing offers.
+        assert db.resolve_session_by_title("Branding Plan") == "named_old"
+        assert "Branding Plan" in result
+        assert "No named sessions found" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_bare_resume_keeps_lineage_titled_only_on_its_tip(self, tmp_path):
+        """A compression root carries no title of its own; the listing shows it under its live
+        tip's title. Filtering titles in SQL must not drop that lineage."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/resume")
+        lane_key = _session_key_for_event(event)
+        db.create_session(
+            "root", "telegram", session_key=lane_key, user_id="12345", chat_id="67890",
+        )
+        db.create_session(
+            "tip", "telegram", session_key=lane_key, user_id="12345", chat_id="67890",
+            parent_session_id="root",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET end_reason='compression', ended_at=? WHERE id='root'", (time.time(),))
+        db._conn.commit()
+        db.set_session_title("tip", "Titled On Tip")
+
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Titled On Tip" in result
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_numeric_resume_fallback_uses_exact_lane_candidates(self, tmp_path):
         from hermes_state import SessionDB
 

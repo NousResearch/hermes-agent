@@ -142,9 +142,15 @@ def test_diagnostics_keep_generation_without_mutating_payload(sink, isolated, tm
             monkeypatch.setattr(loop, "_signal_reconnect_and_wait", Mock(return_value=True))
         else:
             fail = Mock(side_effect=ValueError(value))
+        fail = Mock(side_effect=fail) if sink == "recovery_generation" else fail
         monkeypatch.setattr(loop, "_run_on_mcp_loop", fail)
         error_output = handlers._make_tool_handler("private", value, 1)({})
         assert "error" in json.loads(error_output)
+        if sink == "recovery_generation":
+            assert json.loads(error_output)["outcome_uncertain"] is True
+            assert fail.call_count == 1, "An uncertain write must never be replayed"
+            loop._signal_reconnect_and_wait.assert_called_once()
+            assert value not in loop._signal_reconnect_and_wait.call_args.kwargs["op_description"]
         if sink.startswith("trust"):
             assert value in consent.call_args.args[0]
     elif sink == "utility_generation":

@@ -79,6 +79,42 @@
       }
     },
     {
+      "name": "assets.list",
+      "summary": "Index of delivered/attached/generated files, newest first, filterable by kind, project, or session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/AssetsListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AssetsListResult"
+        }
+      }
+    },
+    {
+      "name": "assets.status",
+      "summary": "Is the server-side asset index reachable.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AssetsStatusResult"
+        }
+      }
+    },
+    {
       "name": "billing.auto_reload",
       "summary": "Enable/disable auto top-up with its threshold and reload amount (billing:manage).",
       "params": [
@@ -723,6 +759,96 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/FileAttachResult"
+        }
+      }
+    },
+    {
+      "name": "filing.apply",
+      "summary": "Accept: record the rule and mirror it into projects.db.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/FilingApplyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FilingApplyResult"
+        }
+      }
+    },
+    {
+      "name": "filing.reject",
+      "summary": "Reject: record an exclusion with retroactive unfile.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/FilingRejectParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FilingRejectResult"
+        }
+      }
+    },
+    {
+      "name": "filing.rules",
+      "summary": "Contract rules / exclusions with the recent audit trail.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FilingRulesResult"
+        }
+      }
+    },
+    {
+      "name": "filing.status",
+      "summary": "Is the filing contract installed; hook presence and counts.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FilingStatusResult"
+        }
+      }
+    },
+    {
+      "name": "filing.suggest",
+      "summary": "Deterministic filing suggestions (contract rule / cwd match).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/FilingSuggestResult"
         }
       }
     },
@@ -1641,6 +1767,78 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ModelSaveKeyResult"
+        }
+      }
+    },
+    {
+      "name": "organization.archive",
+      "summary": "Batch archive/unarchive with per-session outcomes and a durable undo record.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/OrganizationBatchParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OrganizationBatchResult"
+        }
+      }
+    },
+    {
+      "name": "organization.history",
+      "summary": "List recorded batches, newest last.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OrganizationHistoryResult"
+        }
+      }
+    },
+    {
+      "name": "organization.pin",
+      "summary": "Batch pin/unpin with per-session outcomes and a durable undo record.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/OrganizationBatchParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OrganizationBatchResult"
+        }
+      }
+    },
+    {
+      "name": "organization.undo",
+      "summary": "Reverse one batch (by id, or the newest not-yet-undone).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/OrganizationUndoParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OrganizationUndoResult"
         }
       }
     },
@@ -4599,6 +4797,185 @@
         ],
         "title": "ArgumentMode",
         "type": "string"
+      },
+      "AssetRow": {
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "modified_at": {
+            "title": "Modified At",
+            "type": "number"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "session_title": {
+            "title": "Session Title",
+            "type": "string"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "project_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Name"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "path",
+          "mime_type",
+          "size_bytes",
+          "modified_at",
+          "session_id",
+          "session_title"
+        ],
+        "title": "AssetRow",
+        "type": "object"
+      },
+      "AssetsListParams": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "AssetsListParams",
+        "type": "object"
+      },
+      "AssetsListResult": {
+        "additionalProperties": true,
+        "properties": {
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/AssetRow"
+            },
+            "title": "Assets",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "assets",
+          "total"
+        ],
+        "title": "AssetsListResult",
+        "type": "object"
+      },
+      "AssetsStatusResult": {
+        "additionalProperties": true,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "attachments_dir": {
+            "title": "Attachments Dir",
+            "type": "string"
+          },
+          "attachments_present": {
+            "title": "Attachments Present",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "available",
+          "attachments_dir",
+          "attachments_present"
+        ],
+        "title": "AssetsStatusResult",
+        "type": "object"
       },
       "AttachedImageResult": {
         "additionalProperties": false,
@@ -10660,6 +11037,255 @@
         "title": "FileAttachResult",
         "type": "object"
       },
+      "FilingApplyParams": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "project": {
+            "title": "Project",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          }
+        },
+        "required": [
+          "path",
+          "project"
+        ],
+        "title": "FilingApplyParams",
+        "type": "object"
+      },
+      "FilingApplyResult": {
+        "additionalProperties": true,
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "db": {
+            "default": null,
+            "title": "Db"
+          }
+        },
+        "required": [
+          "applied",
+          "note"
+        ],
+        "title": "FilingApplyResult",
+        "type": "object"
+      },
+      "FilingRejectParams": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Project"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "FilingRejectParams",
+        "type": "object"
+      },
+      "FilingRejectResult": {
+        "additionalProperties": true,
+        "properties": {
+          "recorded": {
+            "title": "Recorded",
+            "type": "boolean"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "db": {
+            "default": null,
+            "title": "Db"
+          }
+        },
+        "required": [
+          "recorded",
+          "note"
+        ],
+        "title": "FilingRejectResult",
+        "type": "object"
+      },
+      "FilingRulesResult": {
+        "additionalProperties": true,
+        "properties": {
+          "rules": {
+            "items": {},
+            "title": "Rules",
+            "type": "array"
+          },
+          "exclusions": {
+            "items": {},
+            "title": "Exclusions",
+            "type": "array"
+          },
+          "audit": {
+            "items": {},
+            "title": "Audit",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rules",
+          "exclusions",
+          "audit"
+        ],
+        "title": "FilingRulesResult",
+        "type": "object"
+      },
+      "FilingStatusResult": {
+        "additionalProperties": true,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "hook_installed": {
+            "title": "Hook Installed",
+            "type": "boolean"
+          },
+          "contract_path": {
+            "title": "Contract Path",
+            "type": "string"
+          },
+          "rules": {
+            "title": "Rules",
+            "type": "integer"
+          },
+          "exclusions": {
+            "title": "Exclusions",
+            "type": "integer"
+          },
+          "audit_entries": {
+            "title": "Audit Entries",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "available",
+          "hook_installed",
+          "contract_path",
+          "rules",
+          "exclusions",
+          "audit_entries"
+        ],
+        "title": "FilingStatusResult",
+        "type": "object"
+      },
+      "FilingSuggestResult": {
+        "additionalProperties": true,
+        "properties": {
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/FilingSuggestionRow"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "suggestions"
+        ],
+        "title": "FilingSuggestResult",
+        "type": "object"
+      },
+      "FilingSuggestionRow": {
+        "additionalProperties": true,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "project_name": {
+            "title": "Project Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "number"
+          }
+        },
+        "required": [
+          "session_id",
+          "title",
+          "project_id",
+          "project_name",
+          "reason",
+          "confidence"
+        ],
+        "title": "FilingSuggestionRow",
+        "type": "object"
+      },
       "ForeignSessionRow": {
         "additionalProperties": false,
         "description": "``hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` \u2014 ``id`` is an opaque\nhandle, never a path.",
@@ -16180,6 +16806,242 @@
           }
         },
         "title": "OptionalProjectResult",
+        "type": "object"
+      },
+      "OrganizationBatchParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pinned"
+          },
+          "archived": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Archived"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_ids"
+        ],
+        "title": "OrganizationBatchParams",
+        "type": "object"
+      },
+      "OrganizationBatchResult": {
+        "additionalProperties": true,
+        "properties": {
+          "batch_id": {
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "applied": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Applied",
+            "type": "array"
+          },
+          "failed": {
+            "items": {
+              "$ref": "#/components/schemas/OrganizationFailureRow"
+            },
+            "title": "Failed",
+            "type": "array"
+          },
+          "partial": {
+            "title": "Partial",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "batch_id",
+          "applied",
+          "failed",
+          "partial"
+        ],
+        "title": "OrganizationBatchResult",
+        "type": "object"
+      },
+      "OrganizationFailureRow": {
+        "additionalProperties": true,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "error": {
+            "title": "Error",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "error"
+        ],
+        "title": "OrganizationFailureRow",
+        "type": "object"
+      },
+      "OrganizationHistoryResult": {
+        "additionalProperties": true,
+        "properties": {
+          "batches": {
+            "items": {
+              "$ref": "#/components/schemas/OrganizationHistoryRow"
+            },
+            "title": "Batches",
+            "type": "array"
+          }
+        },
+        "required": [
+          "batches"
+        ],
+        "title": "OrganizationHistoryResult",
+        "type": "object"
+      },
+      "OrganizationHistoryRow": {
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "ts": {
+            "title": "Ts",
+            "type": "number"
+          },
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "undone": {
+            "title": "Undone",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "ts",
+          "action",
+          "value",
+          "count",
+          "undone"
+        ],
+        "title": "OrganizationHistoryRow",
+        "type": "object"
+      },
+      "OrganizationUndoParams": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Batch Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "OrganizationUndoParams",
+        "type": "object"
+      },
+      "OrganizationUndoResult": {
+        "additionalProperties": true,
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Batch Id"
+          },
+          "restored": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Restored",
+            "type": "array"
+          },
+          "failed": {
+            "items": {
+              "$ref": "#/components/schemas/OrganizationFailureRow"
+            },
+            "title": "Failed",
+            "type": "array"
+          },
+          "partial": {
+            "title": "Partial",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "restored",
+          "failed",
+          "partial"
+        ],
+        "title": "OrganizationUndoResult",
         "type": "object"
       },
       "PaneRevealPayload": {

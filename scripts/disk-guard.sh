@@ -103,6 +103,15 @@ if [ "${1:-}" = "--top-reclaimable" ]; then
   exit 0
 fi
 
+# The threshold is ONE decision with ONE owner. The cron wrapper renders a "no
+# path over NMB" message and used to carry its own `:-100` default literal; the
+# two could drift and the operator would read a threshold the ranking never
+# applied. Wrapper asks, guard answers.
+if [ "${1:-}" = "--rank-min-mb" ]; then
+  printf '%s\n' "$RANK_MIN_MB"
+  exit 0
+fi
+
 reclaim_workspaces() {
   local freed=0 n=0 id sz
   [ -d "$WORKSPACES" ] || return 0

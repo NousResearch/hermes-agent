@@ -26,6 +26,7 @@ from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
 from tools import file_state
+from tools.file_tools_near_duplicate import near_duplicate_hint
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
     _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
@@ -864,12 +865,16 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             if blocker:
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
-            rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
+            file_ops = _get_file_ops(task_id)
+            # Mutually exclusive by construction: the rewrite hint needs an existing file, the
+            # near-duplicate hint a new one — so both share the single ``hint`` key.
+            hint = (_whole_file_rewrite_hint(task_id, _resolved, content)
+                    or near_duplicate_hint(file_ops, _resolved, content))
+            result_dict = file_ops.write_file(_resolved or path, content).to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
-            if rewrite_hint and not result_dict.get("error"):
-                result_dict["hint"] = rewrite_hint
+            if hint and not result_dict.get("error"):
+                result_dict["hint"] = hint
             if _resolved:
                 # Always report the ABSOLUTE path written so a wrong-cwd mismatch
                 # is visible in the response instead of silently landing elsewhere.

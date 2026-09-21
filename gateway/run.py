@@ -85,8 +85,6 @@ def _get_or_create_pool(
             setattr(owner, attr, executor)
         return executor
 
-
-_EXECUTOR_WAIT_WARN_SECS = 5.0
 # End reasons meaning the USER deliberately closed this thread. Shared by _classify_completion_target and
 # _resolve_async_delegation_session so they never disagree (else a "delivered" reason is acked, then lost).
 _USER_BOUNDARY_END_REASONS = ("session_reset", "user_exit", "session_switch", "new_session")
@@ -4310,9 +4308,11 @@ class GatewayRunner(
 
     async def _run_in_executor_with_context(self, func, *args):
         """Run blocking work in the thread pool while preserving session contextvars."""
-        return await self._submit_with_context(self._get_executor(), "turn", func, *args)
+        loop = asyncio.get_running_loop()
+        ctx = copy_context()
+        return await loop.run_in_executor(self._get_executor(), ctx.run, func, *args)
 
-    async def _run_housekeeping_in_executor(self, label, func, *args):
+    async def _run_housekeeping_in_executor(self, func, *args):
         """Run best-effort session housekeeping off the TURN pool.
 
         Callers of this helper bound their await with ``asyncio.wait_for`` and, on timeout, log
@@ -4324,39 +4324,9 @@ class GatewayRunner(
         its own bounded pool; exhausting that one delays only more housekeeping, which is
         best-effort by construction.
         """
-        return await self._submit_with_context(
-            self._get_housekeeping_executor(), label, func, *args
-        )
-
-    async def _submit_with_context(self, executor, pool, func, *args):
-        """Submit to ``executor`` preserving contextvars, logging excessive queue latency.
-
-        Queue latency on these pools is otherwise invisible: nothing between "inbound message"
-        and the turn body names the wait, so a saturated pool looks like a hung agent.
-        """
         loop = asyncio.get_running_loop()
-        ctx = copy_context()
-        submitted_at = time.monotonic()
-        warn_after = _EXECUTOR_WAIT_WARN_SECS
-
-        def _timed(*call_args):
-            waited = time.monotonic() - submitted_at
-            if waited >= warn_after:
-                try:
-                    max_workers = getattr(executor, "_max_workers", -1)
-                    inflight = len(getattr(executor, "_threads", ()) or ())
-                    queued = executor._work_queue.qsize()
-                except Exception:
-                    max_workers = inflight = queued = -1
-                logger.warning(
-                    "PHASE=executor_wait pool=%s key=%s waited=%.1f inflight=%s queued=%s "
-                    "max_workers=%s",
-                    pool, getattr(func, "__name__", type(func).__name__), waited,
-                    inflight, queued, max_workers,
-                )
-            return ctx.run(func, *call_args)
-
-        return await loop.run_in_executor(executor, _timed, *args)
+        return await loop.run_in_executor(
+            self._get_housekeeping_executor(), copy_context().run, func, *args)
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""

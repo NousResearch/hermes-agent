@@ -44,7 +44,6 @@ def _runner(cleanup=None, *, cleanup_timeout=1.0):
     for name in (
         "_get_executor",
         "_get_housekeeping_executor",
-        "_submit_with_context",
         "_run_in_executor_with_context",
         "_run_housekeeping_in_executor",
         "_shutdown_executor",
@@ -66,9 +65,7 @@ async def _abandon_housekeeping(runner, count, timeout):
     async def one():
         try:
             await asyncio.wait_for(
-                runner._run_housekeeping_in_executor(
-                    "cleanup", runner._cleanup_agent_resources, object()
-                ),
+                runner._run_housekeeping_in_executor(runner._cleanup_agent_resources, object()),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
@@ -217,7 +214,7 @@ def test_contextvars_survive_both_pools():
     async def exercise():
         probe.set("scoped")
         turn = await runner._run_in_executor_with_context(probe.get)
-        hk = await runner._run_housekeeping_in_executor("cleanup", probe.get)
+        hk = await runner._run_housekeeping_in_executor(probe.get)
         return turn, hk
 
     try:
@@ -262,7 +259,7 @@ def test_args_results_and_errors_round_trip():
     async def exercise():
         assert await runner._run_in_executor_with_context(lambda a, b: a + b, 2, 3) == 5
         with pytest.raises(ValueError, match="boom"):
-            await runner._run_housekeeping_in_executor("cleanup", _raise_boom)
+            await runner._run_housekeeping_in_executor(_raise_boom)
 
     try:
         asyncio.run(exercise())

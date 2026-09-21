@@ -190,8 +190,22 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
         # same ``x-opencode-session`` affinity as the turn it belongs to (#112717).
         main_runtime = {
             k: getattr(agent, k, None)
-            for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")
+            for k in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")
         }
+
+        def title_runtime_is_current() -> bool:
+            """Keep an auto title attached to a provider fallback, not a stale primary route."""
+            if getattr(agent, "_provider_fallback_active", False):
+                main_runtime.update({
+                    k: getattr(agent, k, None)
+                    for k in ("model", "provider", "base_url", "api_key", "api_mode", "auth_mode", "session_id")
+                })
+                return True
+            return (
+                getattr(agent, "model", None) == main_runtime["model"]
+                and getattr(agent, "provider", None) == main_runtime["provider"]
+            )
+
         # See #19027.
         upgrade = maybe_auto_title(
             session_db,
@@ -204,10 +218,7 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
             ),
             main_runtime=main_runtime,
             title_callback=getattr(agent, "_on_session_title", None),
-            runtime_validator=lambda: (
-                getattr(agent, "model", None) == main_runtime["model"]
-                and getattr(agent, "provider", None) == main_runtime["provider"]
-            ),
+            runtime_validator=title_runtime_is_current,
             title_preview=title_preview,
         )
         # Unstarted = the title call would share a self-hosted endpoint with this turn's request

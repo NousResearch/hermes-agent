@@ -549,3 +549,35 @@ def test_prologue_forwards_the_submit_title_preview_to_the_titler():
               "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
         )
     assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"
+
+
+def test_prologue_title_runtime_adopts_an_active_provider_fallback():
+    """A deferred auto title follows the route that completed its parent turn."""
+    from agent import turn_context
+
+    agent = _TitlingAgent("cli")
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            agent, [{"role": "user", "content": "Fix the fallback route"}]
+        )
+
+    runtime = titler.call_args.kwargs["main_runtime"]
+    validator = titler.call_args.kwargs["runtime_validator"]
+    agent.model = "qwen/qwen3.6-35b-a3b"
+    agent.provider = "fallback-gateway"
+    agent.base_url = "https://fallback.example/v1"
+    agent.api_key = "fallback-key"
+    agent.api_mode = "chat_completions"
+    agent.auth_mode = "api-key"
+    agent._provider_fallback_active = True
+
+    assert validator() is True
+    assert runtime == {
+        "model": "qwen/qwen3.6-35b-a3b",
+        "provider": "fallback-gateway",
+        "base_url": "https://fallback.example/v1",
+        "api_key": "fallback-key",
+        "api_mode": "chat_completions",
+        "auth_mode": "api-key",
+        "session_id": "sess-1",
+    }

@@ -690,25 +690,118 @@ def test_startup_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
 
 
 def test_stream_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
+    opens = []
+
     class _FailingStream(_FakeStream):
         def read(self, _n):
             raise OSError("device disconnected")
 
-    fake_sd = types.SimpleNamespace(InputStream=lambda **kw: _FailingStream(**kw))
+    def _stream(**kw):
+        stream = _FailingStream(**kw)
+        opens.append(stream)
+        return stream
+
+    fake_sd = types.SimpleNamespace(InputStream=_stream)
     engine = _FakeEngine(fire=False)
     lock_path = tmp_path / "wake.lock"
     monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
     monkeypatch.setattr(ww, "_build_engine", lambda cfg: engine)
     monkeypatch.setattr(ww, "_lock_path", lambda: lock_path)
+    monkeypatch.setattr(ww, "_READ_RESTART_BACKOFF_SECONDS", 0.0)
     owner = object()
 
     ww.start_listening(lambda: None, owner=owner, config={})
-    deadline = time.time() + 2
+    deadline = time.time() + 5
     while ww.owns_listener(owner) and time.time() < deadline:
         time.sleep(0.01)
 
     assert ww.owns_listener(owner) is False
     assert engine.closed is True
+    assert len(opens) == 1 + ww._READ_ERROR_RESTARTS  # bounded, not endless, re-opening
+    handle = ww._acquire_machine_lock(lock_path)
+    ww._release_machine_lock(handle)
+
+
+def test_transient_stream_error_reopens_capture_and_keeps_listening(monkeypatch, tmp_path):
+    """A transient read error (BT headset HFP re-negotiation, driver reload) must not
+    kill the listener: the capture is re-opened and detection keeps working (#118001)."""
+    opens = []
+    processed = []
+
+    class _FlakyStream(_LoudStream):
+        def read(self, n):
+            if len(opens) == 1:
+                raise OSError("Unanticipated host error [PaErrorCode -9999]")
+            return super().read(n)
+
+    def _stream(**kw):
+        stream = _FlakyStream(**kw)
+        opens.append(stream)
+        return stream
+
+    class _RecordingEngine(_FakeEngine):
+        def process(self, frame):
+            processed.append(frame)
+            return False
+
+    fake_sd = types.SimpleNamespace(InputStream=_stream)
+    engine = _RecordingEngine(fire=False)
+    lock_path = tmp_path / "wake.lock"
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
+    monkeypatch.setattr(ww, "_build_engine", lambda cfg: engine)
+    monkeypatch.setattr(ww, "_lock_path", lambda: lock_path)
+    monkeypatch.setattr(ww, "_READ_RESTART_BACKOFF_SECONDS", 0.0)
+    owner = object()
+
+    ww.start_listening(lambda: None, owner=owner, config={})
+    deadline = time.time() + 5
+    while len(opens) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert len(opens) == 2  # first capture died, a second was re-opened
+    assert opens[0].closed is True
+    deadline = time.time() + 5
+    while not processed and time.time() < deadline:
+        time.sleep(0.01)
+    assert processed  # the re-opened capture keeps feeding the engine
+    assert ww.owns_listener(owner) is True
+    assert engine.closed is False
+    assert ww.stop_listening(owner=owner) is True
+
+
+def test_stream_error_backoff_is_interruptible_by_stop(monkeypatch, tmp_path):
+    """The backoff between re-open attempts waits on ``_stop``, so stop/pause never
+    hangs behind the retry schedule."""
+    opened = []
+
+    class _FailingStream(_FakeStream):
+        def read(self, _n):
+            raise OSError("device disconnected")
+
+    def _stream(**kw):
+        stream = _FailingStream(**kw)
+        opened.append(stream)
+        return stream
+
+    fake_sd = types.SimpleNamespace(InputStream=_stream)
+    engine = _FakeEngine(fire=False)
+    lock_path = tmp_path / "wake.lock"
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
+    monkeypatch.setattr(ww, "_build_engine", lambda cfg: engine)
+    monkeypatch.setattr(ww, "_lock_path", lambda: lock_path)
+    monkeypatch.setattr(ww, "_READ_RESTART_BACKOFF_SECONDS", 30.0)  # hostile schedule
+    owner = object()
+
+    ww.start_listening(lambda: None, owner=owner, config={})
+    deadline = time.time() + 5
+    while not opened and time.time() < deadline:
+        time.sleep(0.01)
+    assert opened
+    time.sleep(0.05)  # let the reader thread enter the backoff wait
+
+    stopped_at = time.monotonic()
+    assert ww.stop_listening(owner=owner) is True
+    assert time.monotonic() - stopped_at < 5  # returned despite the 30 s backoff
     handle = ww._acquire_machine_lock(lock_path)
     ww._release_machine_lock(handle)
 

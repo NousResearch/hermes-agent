@@ -33,6 +33,13 @@ _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
 _READ_POLL_SECONDS = 0.05  # slice between read_available polls; bounds halt latency
 
+# Transient read recovery: a host error (BT headset re-negotiating its HFP profile,
+# USB re-plug, driver reload) breaks the stream without removing the device, so
+# re-open the capture a bounded number of times, with exponential backoff and any
+# successfully read frame restoring the budget, before declaring the listener dead.
+_READ_ERROR_RESTARTS = 3
+_READ_RESTART_BACKOFF_SECONDS = 1.0
+
 # Ambient-speech rejection: N consecutive over-threshold frames before firing
 # (a stray phoneme spikes one frame; a real phrase holds several).
 _DEFAULT_CONFIRMATION_FRAMES = 3
@@ -655,6 +662,7 @@ class WakeWordDetector:
                     frame_length, SAMPLE_RATE, self.external_audio)
         ready.set()
         failed = False
+        read_errors = 0
         silent_alert_frames = max(1, int(_SILENCE_ALERT_SECONDS * SAMPLE_RATE / max(1, frame_length)))
         try:
             while not self._stop.is_set():
@@ -662,8 +670,25 @@ class WakeWordDetector:
                     data = cap.read(self._stop)
                 except Exception as e:
                     logger.warning("wake word: stream read error: %s", e)
-                    failed = not self._stop.is_set()
-                    break
+                    cap.close()
+                    read_errors += 1
+                    if read_errors > _READ_ERROR_RESTARTS or self._stop.is_set():
+                        failed = not self._stop.is_set()
+                        break
+                    if self._stop.wait(_READ_RESTART_BACKOFF_SECONDS * 2 ** (read_errors - 1)):
+                        break
+                    try:
+                        cap = self._open_capture(frame_length)
+                    except Exception as reopen_error:
+                        logger.warning("wake word: re-opening microphone failed (attempt %d/%d): %s",
+                                       read_errors, _READ_ERROR_RESTARTS, reopen_error)
+                        continue
+                    with suppress(Exception):
+                        self.engine.reset()
+                    logger.info("wake word: microphone re-opened after a stream read error "
+                                "(attempt %d/%d)", read_errors, _READ_ERROR_RESTARTS)
+                    continue
+                read_errors = 0  # a healthy read restores the transient-error budget
                 if data is None:  # no client frames yet — counts as silence for status
                     self._note_silence(None, silent_alert_frames)
                     continue

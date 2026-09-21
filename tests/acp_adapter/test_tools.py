@@ -6,6 +6,7 @@ import pytest
 from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
+    build_delegation_progress,
     build_tool_complete,
     build_tool_start,
     build_tool_title,
@@ -165,6 +166,71 @@ class TestBuildToolStart:
         item = result.content[0]
         assert isinstance(item, FileEditToolCallContent)
         assert item.path == "/tmp/acp.txt"
+
+    def test_delegate_task_start_preserves_structured_input(self):
+        """ACP hosts need child goals and metadata to project subagent lifecycle rows."""
+        args = {
+            "tasks": [
+                {"goal": "Review cancellation", "role": "reviewer", "context": "private details"},
+                {"goal": "Check retry behavior", "model": "openai/gpt-5"},
+            ]
+        }
+
+        result = build_tool_start("tc-delegate", "delegate_task", args)
+
+        assert result.raw_input == {
+            "toolName": "delegate_task",
+            "tasks": [
+                {"goal": "Review cancellation", "role": "reviewer"},
+                {"goal": "Check retry behavior", "model": "openai/gpt-5"},
+            ]
+        }
+
+    def test_delegate_task_progress_omits_child_thought_text_and_bounds_completion(self):
+        thinking = build_delegation_progress(
+            "tc-delegate",
+            "subagent.thinking",
+            4,
+            task_index=0,
+            preview="private chain of thought",
+        )
+        completed = build_delegation_progress(
+            "tc-delegate",
+            "subagent.complete",
+            5,
+            task_index=0,
+            status="completed",
+            summary="x" * 2_000,
+        )
+
+        assert thinking.raw_output == {
+            "toolName": "delegate_task",
+            "taskProgress": {
+                "sequence": 4,
+                "taskIndex": 0,
+                "type": "thinking",
+                "status": "running",
+                "summary": "Thinking",
+            },
+        }
+        assert "private chain of thought" not in str(thinking.raw_output)
+        assert completed.raw_output["taskProgress"]["status"] == "completed"
+        summary = completed.raw_output["taskProgress"]["summary"]
+        assert len(summary) <= 1_000
+        assert summary.endswith("... (2000 chars total, truncated)")
+
+    def test_auto_approved_edit_start_tail_keeps_old_and_new_text(self):
+        """The auto-approved diff card carries both sides of the edit, end to end."""
+        args = {"path": "/tmp/acp.txt", "old_string": "old", "new_string": "new"}
+        result = build_tool_start(
+            "tc-auto-edit",
+            "patch",
+            args,
+            edit_diff=EditProposal("patch", "/tmp/acp.txt", "old\n", "new\n", args),
+        )
+
+        item = result.content[0]
+        assert isinstance(item, FileEditToolCallContent)
         assert item.old_text == "old\n"
         assert item.new_text == "new\n"
 
@@ -197,6 +263,21 @@ class TestBuildToolStart:
 
 
 class TestBuildToolComplete:
+    def test_build_tool_complete_keeps_background_delegation_in_progress(self):
+        result = build_tool_complete(
+            "tc-delegate",
+            "delegate_task",
+            '{"status":"dispatched","mode":"background","delegation_id":"deleg-1","count":1}',
+            function_args={"goal": "Inspect retries", "context": "private"},
+        )
+
+        assert result.status == "in_progress"
+        assert result.raw_output == {
+            "toolName": "delegate_task",
+            "lifecycle": {"status": "dispatched", "mode": "background"},
+        }
+        assert "private" not in str(result.raw_output)
+
     def test_build_tool_complete_for_terminal(self):
         """Completed terminal call should include output text."""
         result = build_tool_complete("tc-2", "terminal", "total 42\ndrwxr-xr-x 2 root root 4096 ...")

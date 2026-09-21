@@ -1731,8 +1731,12 @@ class TestDelegateEventEnum(unittest.TestCase):
         cb = _build_child_progress_callback(0, "test goal", parent, task_count=1)
         self.assertIsNotNone(cb)
 
-        cb("tool.started", tool_name="terminal", preview="ls")
+        cb("tool.started", name="terminal", preview="ls")
         parent._delegate_spinner.print_above.assert_called()
+        parent.tool_progress_callback.assert_called_once()
+        self.assertEqual(parent.tool_progress_callback.call_args.args[0], "subagent.tool")
+        self.assertEqual(parent.tool_progress_callback.call_args.args[1], "terminal")
+        self.assertEqual(parent.tool_progress_callback.call_args.kwargs["tool_event"], "tool.started")
 
 
     def test_progress_callback_ignores_unknown_events(self):

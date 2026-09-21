@@ -2,6 +2,7 @@
 
 import asyncio
 import gc
+import threading
 import uuid
 import warnings
 from concurrent.futures import Future
@@ -69,7 +70,194 @@ class TestToolProgressCallback:
         # The coroutine should be conn.session_update
         assert mock_conn.session_update.called or coro is not None
 
+    def test_relays_sanitized_child_tool_progress_to_its_delegate_call(self, mock_conn, event_loop_fixture):
+        tool_call_ids = {}
+        tool_call_meta = {}
 
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-delegate"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb = make_tool_progress_cb(
+                mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+            )
+            cb(
+                "tool.started",
+                "delegate_task",
+                None,
+                {
+                    "tasks": [
+                        {"goal": "Review cancellation", "context": "private context"},
+                        {"goal": "Check retries"},
+                    ]
+                },
+            )
+            cb(
+                "subagent.tool",
+                "search_files",
+                "secret preview",
+                {"pattern": "secret pattern"},
+                task_index=1,
+                goal="Check retries",
+                delegation_id="deleg-1",
+                tool_event="tool.started",
+            )
+
+        assert mock_send.call_count == 2
+        progress = mock_send.call_args_list[1].args[3]
+        assert progress.tool_call_id == "tc-delegate"
+        assert progress.status == "in_progress"
+        assert progress.raw_output == {
+            "toolName": "delegate_task",
+            "taskProgress": {
+                "sequence": 1,
+                "taskIndex": 1,
+                "type": "tool.started",
+                "status": "running",
+                "lastToolName": "search_files",
+                "summary": "Running search_files",
+            },
+        }
+        assert "secret" not in str(progress.raw_output)
+
+    def test_child_progress_matches_the_correct_parallel_delegate_call(self, mock_conn, event_loop_fixture):
+        tool_call_ids = {}
+        tool_call_meta = {}
+
+        with patch(
+            "acp_adapter.events.make_tool_call_id", side_effect=["tc-first", "tc-second"]
+        ), patch("acp_adapter.events._send_update") as mock_send:
+            cb = make_tool_progress_cb(
+                mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+            )
+            cb("tool.started", "delegate_task", None, {"goal": "First goal"})
+            cb("tool.started", "delegate_task", None, {"goal": "Second goal"})
+            cb(
+                "subagent.tool",
+                "terminal",
+                task_index=0,
+                goal="Second goal",
+                delegation_id="deleg-second",
+                tool_event="tool.started",
+            )
+            cb(
+                "subagent.thinking",
+                task_index=0,
+                goal="Second goal",
+                delegation_id="deleg-second",
+                preview="private thought",
+            )
+
+        progress_updates = [call.args[3] for call in mock_send.call_args_list[2:]]
+        assert [update.tool_call_id for update in progress_updates] == ["tc-second", "tc-second"]
+        assert [update.raw_output["taskProgress"]["sequence"] for update in progress_updates] == [1, 2]
+
+    def test_background_delegation_keeps_routing_progress_after_tool_returns(self, mock_conn, event_loop_fixture):
+        tool_call_ids = {}
+        tool_call_meta = {}
+        dispatched = '{"status":"dispatched","mode":"background","delegation_id":"deleg-1","count":1}'
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-delegate"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb = make_tool_progress_cb(
+                mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+            )
+            cb("tool.started", "delegate_task", None, {"goal": "Check retries"})
+            cb("tool.completed", "delegate_task", result=dispatched)
+            cb(
+                "subagent.tool",
+                "search_files",
+                task_index=0,
+                goal="Check retries",
+                delegation_id="deleg-1",
+                tool_event="tool.started",
+            )
+            cb(
+                "subagent.complete",
+                task_index=0,
+                goal="Check retries",
+                delegation_id="deleg-1",
+                status="completed",
+                summary="Retries are correct",
+            )
+
+        updates = [call.args[3] for call in mock_send.call_args_list]
+        assert [update.status for update in updates] == [None, "in_progress", "in_progress", "completed"]
+        assert updates[1].raw_output == {
+            "toolName": "delegate_task",
+            "lifecycle": {"status": "dispatched", "mode": "background"},
+        }
+        assert updates[2].raw_output["taskProgress"]["sequence"] == 1
+        assert updates[3].raw_output["taskProgress"] == {
+            "sequence": 2,
+            "taskIndex": 0,
+            "type": "completed",
+            "status": "completed",
+            "summary": "Retries are correct",
+        }
+        assert "delegate_task" not in tool_call_ids
+        assert "tc-delegate" not in tool_call_meta
+
+    def test_step_fallback_keeps_background_delegation_routing_open(self, mock_conn, event_loop_fixture):
+        tool_call_ids = {}
+        tool_call_meta = {}
+        turn_state = {}
+        lock = threading.RLock()
+        dispatched = '{"status":"dispatched","mode":"background","delegation_id":"deleg-step","count":1}'
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-step"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            progress_cb = make_tool_progress_cb(
+                mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta,
+                turn_state=turn_state, tool_call_lock=lock,
+            )
+            step_cb = make_step_cb(
+                mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta,
+                turn_state, tool_call_lock=lock,
+            )
+            progress_cb("tool.started", "delegate_task", None, {"goal": "Check fallback"})
+            step_cb(1, [{"name": "delegate_task", "result": dispatched}])
+
+            assert "delegate_task" not in tool_call_ids
+            assert tool_call_meta["tc-step"]["background_delegation"] is True
+            assert tool_call_meta["tc-step"]["delegation_id"] == "deleg-step"
+
+            progress_cb(
+                "subagent.complete",
+                "delegate_task",
+                task_index=0,
+                goal="Check fallback",
+                delegation_id="deleg-step",
+                status="completed",
+                summary="Fallback is correct",
+            )
+
+        updates = [call.args[3] for call in mock_send.call_args_list]
+        assert [update.status for update in updates] == [None, "in_progress", "completed"]
+        assert "tc-step" not in tool_call_meta
+
+    def test_child_can_finish_before_background_dispatch_result(self, mock_conn, event_loop_fixture):
+        tool_call_ids = {}
+        tool_call_meta = {}
+        dispatched = '{"status":"dispatched","mode":"background","delegation_id":"deleg-fast","count":1}'
+
+        with patch("acp_adapter.events.make_tool_call_id", return_value="tc-fast"), \
+             patch("acp_adapter.events._send_update") as mock_send:
+            cb = make_tool_progress_cb(
+                mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+            )
+            cb("tool.started", "delegate_task", None, {"goal": "Fast child"})
+            cb(
+                "subagent.complete",
+                task_index=0,
+                goal="Fast child",
+                delegation_id="deleg-fast",
+                status="completed",
+                summary="Done",
+            )
+            cb("tool.completed", "delegate_task", result=dispatched)
+
+        updates = [call.args[3] for call in mock_send.call_args_list]
+        assert [update.status for update in updates] == [None, "completed", "completed"]
+        assert "tc-fast" not in tool_call_meta
 
     def test_duplicate_same_name_tool_calls_use_fifo_ids(self, mock_conn, event_loop_fixture):
         """Multiple same-name tool calls should be tracked independently in order."""

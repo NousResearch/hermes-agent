@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 # Runs the synchronous AIAgent off the event loop.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 
+# Completion-driven model passes belong to the outer session/prompt RPC. They
+# bypass the public prompt admission gate without releasing its session lease.
+_BACKGROUND_FOLLOWUP = contextvars.ContextVar("acp_background_followup", default=False)
+
 # ListSessionsRequest has no client-side limit; clients paginate via `cursor`/`next_cursor`.
 _LIST_SESSIONS_PAGE_SIZE = 50
 
@@ -228,6 +232,7 @@ class _TurnCallbacks:
     streamed: bool = False
     tool_call_ids: Any = None
     tool_call_meta: Any = None
+    tool_call_lock: Any = None
 
 
 class HermesACPAgent(SlashCommandsMixin, acp.Agent):
@@ -836,15 +841,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 await self._drain_queued_prompts(state, session_id, self._conn)
                 return PromptResponse(stop_reason="end_turn")
 
-        absorbed = self._claim_turn_or_queue(state, session_id, user_text, user_content, text_only_prompt)
-        if absorbed is not None:
-            if self._conn:
-                await self._conn.session_update(session_id, acp.update_agent_message_text(absorbed))
-            return PromptResponse(stop_reason="end_turn")
+        internal_followup = _BACKGROUND_FOLLOWUP.get()
+        if not internal_followup:
+            absorbed = self._claim_turn_or_queue(state, session_id, user_text, user_content, text_only_prompt)
+            if absorbed is not None:
+                if self._conn:
+                    await self._conn.session_update(session_id, acp.update_agent_message_text(absorbed))
+                return PromptResponse(stop_reason="end_turn")
 
         logger.info("Prompt on session %s: %s", session_id, user_text[:100])
         conn, loop = self._conn, asyncio.get_running_loop()
-        if state.cancel_event:
+        if state.cancel_event and not internal_followup:
             state.cancel_event.clear()
         cbs = self._wire_turn_callbacks(state, session_id, conn, loop)
 
@@ -882,7 +889,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if not conn or cbs.tool_call_ids is None:
             return
         try:
-            flush_open_tool_calls(conn, session_id, loop, cbs.tool_call_ids, cbs.tool_call_meta or {})
+            flush_open_tool_calls(
+                conn, session_id, loop, cbs.tool_call_ids, cbs.tool_call_meta or {}, cbs.tool_call_lock
+            )
         except Exception:
             logger.debug("Could not flush open ACP tool calls for %s", session_id, exc_info=True)
 
@@ -894,14 +903,17 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if conn:
             tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
             tool_call_meta: dict[str, dict[str, Any]] = {}
-            cbs.tool_call_ids, cbs.tool_call_meta = tool_call_ids, tool_call_meta
+            tool_call_lock = threading.RLock()
+            cbs.tool_call_ids, cbs.tool_call_meta, cbs.tool_call_lock = (
+                tool_call_ids, tool_call_meta, tool_call_lock
+            )
             # Shared with the step callback so a runtime that projects
             # ``tool.completed`` closes each call once, not twice.
             turn_state: dict[str, Any] = {}
             policy_getter = lambda: self._edit_approval_policy_for_state(state)  # noqa: E731
             cbs.tool_progress_cb = make_tool_progress_cb(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter,
-                turn_state=turn_state,
+                turn_state=turn_state, tool_call_lock=tool_call_lock,
             )
             # Per-session allocator: a new turn must never reuse a previous turn's
             # assistant messageId (ACP clients replace the bubble with that id).
@@ -909,7 +921,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.message_ids = AssistantMessageIdAllocator()
             state.message_ids.close()  # new turn -> next chunk opens a fresh id
             cbs.reasoning_cb = make_thinking_cb(conn, session_id, loop, state.message_ids)
-            cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta, turn_state)
+            cbs.step_cb = make_step_cb(
+                conn, session_id, loop, tool_call_ids, tool_call_meta, turn_state,
+                tool_call_lock=tool_call_lock,
+            )
             message_cb = make_message_cb(conn, session_id, loop, state.message_ids)
 
             def stream_delta_cb(text: str) -> None:
@@ -981,12 +996,26 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     state.message_ids.close()
                 await conn.session_update(session_id, update)
 
+            # Keep the prompt RPC open until this session's background delegations
+            # have delivered their results (unless the turn was cancelled — the
+            # user asked to stop, and their completions requeue for next prompt).
+            if not (_BACKGROUND_FOLLOWUP.get() or bool(state.cancel_event and state.cancel_event.is_set())):
+                await self._run_background_followups(state, session_id)
+
         finally:
-            # Go idle before draining so recursive prompt() calls can acquire the session.
-            with state.runtime_lock:
-                state.is_running = False
-                state.current_prompt_text = ""
-            await self._drain_queued_prompts(state, session_id, conn)
+            if not _BACKGROUND_FOLLOWUP.get():
+                # The outer RPC owns the session while completion-driven model
+                # passes run. Release it only after their results are ingested;
+                # the queue drain itself self-guards on ``is_running``.
+                with state.runtime_lock:
+                    state.is_running = False
+                    state.current_prompt_text = ""
+                await self._drain_queued_prompts(state, session_id, conn)
+
+        # A follow-up turn may have been cancelled while waiting for children:
+        # the whole RPC reports cancelled, not end_turn.
+        if state.cancel_event and state.cancel_event.is_set():
+            cancelled = True
 
         usage = None
         if any(result.get(k) is not None for k in ("prompt_tokens", "completion_tokens", "total_tokens")):
@@ -997,6 +1026,29 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             )
         await self._send_usage_update(state)
         return PromptResponse(stop_reason="cancelled" if cancelled else "end_turn", usage=usage)
+
+    async def _run_background_followups(self, state: SessionState, session_id: str) -> None:
+        """Ingest this session's child results before its prompt RPC returns."""
+        from acp_adapter.background_followups import run_background_followups
+
+        if _BACKGROUND_FOLLOWUP.get():
+            return
+
+        async def prompt_followup(text: str) -> PromptResponse:
+            token = _BACKGROUND_FOLLOWUP.set(True)
+            try:
+                return await self.prompt(
+                    prompt=[TextContentBlock(type="text", text=text)],
+                    session_id=session_id,
+                )
+            finally:
+                _BACKGROUND_FOLLOWUP.reset(token)
+
+        await run_background_followups(
+            state=state,
+            session_id=session_id,
+            prompt=prompt_followup,
+        )
 
     async def _drain_queued_prompts(self, state: SessionState, session_id: str, conn: Any) -> None:
         """Run queued prompts while the session is idle. Reached from ``_finish_turn`` and

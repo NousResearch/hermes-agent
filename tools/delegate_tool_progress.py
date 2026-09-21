@@ -404,12 +404,17 @@ class _ChildProgressRelay:
             short = _short(preview, 35) if preview else ""
             self._tree_line(f'{line}  "{short}"' if short else line)
         if self.parent_cb:
-            self._relay("subagent.tool", tool_name, preview, args)
+            # ``tool_event`` tells the ACP producer whether this child tool began
+            # or finished; the TUI/gateway ignore the extra kwarg.
+            self._relay("subagent.tool", tool_name, preview, args, tool_event="tool.started")
             self.batch.append(tool_name or "")
             if len(self.batch) >= self._BATCH_SIZE:
                 self._flush()
 
     def __call__(self, event_type, tool_name: str = None, preview: str = None, args=None, **kwargs):
+        if tool_name is None and isinstance(kwargs.get("name"), str):
+            # Keyword-emitters (``name=``) land in the tool_name slot positionally.
+            tool_name = kwargs.pop("name")
         key = _normalize_event(event_type)
         method = None if key is None else _EVENT_HANDLERS.get(key, "_on_tool_started")
         if method is not None:

@@ -23,6 +23,54 @@ logger = logging.getLogger("tools.code_execution_tool")
 
 # Terminal parameters that must not be used from ephemeral sandbox scripts.
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns"}
+_DISCONNECTED_TASKS: set[str] = set()
+_DISCONNECTED_TASKS_LOCK = threading.Lock()
+
+
+def _mark_tasks_disconnected(task_ids) -> None:
+    with _DISCONNECTED_TASKS_LOCK:
+        _DISCONNECTED_TASKS.update(value for value in task_ids if value)
+
+
+def _clear_task_disconnected(task_id: str) -> None:
+    with _DISCONNECTED_TASKS_LOCK:
+        _DISCONNECTED_TASKS.discard(task_id)
+
+
+def _is_task_disconnected(task_id: str | None) -> bool:
+    if not task_id:
+        return False
+    with _DISCONNECTED_TASKS_LOCK:
+        return task_id in _DISCONNECTED_TASKS
+
+
+def _kill_task_environment_processes(task_id: str) -> int:
+    if not task_id:
+        return 0
+    from tools.terminal_tool import _active_environments, _env_lock, _resolve_container_task_id
+    effective = _resolve_container_task_id(task_id)
+    with _env_lock:
+        env = _active_environments.get(effective)
+    killer = getattr(env, "kill_active_processes", None) if env is not None else None
+    return int(killer(task_id)) if callable(killer) else 0
+
+
+def _reap_task_processes(task_ids) -> None:
+    try:
+        from tools.terminal_tool import _resolve_container_task_id
+    except Exception:
+        _resolve_container_task_id = lambda value: value
+    for raw in dict.fromkeys(value for value in task_ids if value):
+        for process_task in dict.fromkeys((raw, _resolve_container_task_id(raw))):
+            try:
+                from tools.process_registry import process_registry
+                process_registry.kill_all(process_task, source="execute_code.rpc_disconnect", consume_output=True)
+            except Exception:
+                logger.debug("RPC disconnect process cleanup failed for task %s", process_task, exc_info=True)
+        try:
+            _kill_task_environment_processes(raw)
+        except Exception:
+            logger.debug("RPC disconnect foreground cleanup failed for task %s", raw, exc_info=True)
 
 
 def _default_dispatch(task_id):
@@ -69,7 +117,8 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
 
 def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: list,
                      tool_call_counter: list, max_tool_calls: int, allowed_tools: frozenset,
-                     stop_event: threading.Event, rpc_token: str, dispatch=None):
+                     stop_event: threading.Event, rpc_token: str, dispatch=None,
+                     cleanup_task_ids=None):
     """Accept one client and serve newline-delimited JSON requests until it disconnects, idles
     300s, or the call limit is reached. ``tool_call_counter`` is a mutable ``[int]``. ``dispatch``
     overrides how an allowed, budgeted call runs: per-call sandboxes use the default (the thread
@@ -78,6 +127,8 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
     if dispatch is None:
         dispatch = _default_dispatch(task_id)
     conn = None
+    disconnect_cleanup_done = False
+    peer_disconnected = False
     try:
         server_sock.settimeout(0.05)
         while not stop_event.is_set():
@@ -96,6 +147,7 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
             except socket.timeout:
                 break
             if not chunk:
+                peer_disconnected = True
                 break
             buf += chunk
             while b"\n" in buf:
@@ -109,15 +161,51 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                     resp = tool_error(f"Invalid RPC request: {exc}")
                 else:
-                    resp = _handle_rpc_request(
-                        request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
-                        max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
-                        call_start=call_start, where="sandbox",
-                    ) if _rpc_token_ok(request, rpc_token) else tool_error("Unauthorized RPC request")
+                    if not _rpc_token_ok(request, rpc_token):
+                        resp = tool_error("Unauthorized RPC request")
+                    else:
+                        # Run the potentially long terminal call away from
+                        # the socket loop so EOF can trigger cleanup.
+                        box = {}
+                        def run_dispatch():
+                            box["result"] = _handle_rpc_request(
+                                request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
+                                max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
+                                call_start=call_start, where="sandbox",
+                            )
+                        worker = threading.Thread(target=run_dispatch, daemon=True)
+                        worker.start()
+                        conn.settimeout(0.1)
+                        while worker.is_alive():
+                            try:
+                                if conn.recv(1, socket.MSG_PEEK) == b"":
+                                    peer_disconnected = True
+                                    ids = cleanup_task_ids() if callable(cleanup_task_ids) else [task_id]
+                                    _mark_tasks_disconnected(ids)
+                                    _reap_task_processes(ids)
+                                    disconnect_cleanup_done = True
+                                    worker.join(timeout=5)
+                                    if not worker.is_alive():
+                                        for value in ids:
+                                            _clear_task_disconnected(value)
+                                    break
+                            except socket.timeout:
+                                continue
+                            except (BlockingIOError, InterruptedError):
+                                continue
+                            except OSError:
+                                peer_disconnected = True
+                                break
+                        if peer_disconnected:
+                            break
+                        worker.join()
+                        resp = box.get("result", tool_error("Tool dispatch returned no result"))
+                        conn.settimeout(300)
                 conn.sendall((resp + "\n").encode())
     except socket.timeout:
         logger.debug("RPC listener socket timeout")
     except OSError as e:
+        peer_disconnected = True
         logger.debug("RPC listener socket error: %s", e, exc_info=True)
     finally:
         if conn:
@@ -125,6 +213,17 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                 conn.close()
             except OSError as e:
                 logger.debug("RPC conn close error: %s", e)
+        ids = []
+        if callable(cleanup_task_ids):
+            try:
+                ids = [value for value in cleanup_task_ids() if value]
+            except Exception:
+                ids = []
+        elif task_id:
+            ids = [task_id]
+        if not disconnect_cleanup_done and (peer_disconnected or stop_event.is_set()):
+            _mark_tasks_disconnected(ids)
+            _reap_task_processes(ids)
 
 
 def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_call_counter: list,

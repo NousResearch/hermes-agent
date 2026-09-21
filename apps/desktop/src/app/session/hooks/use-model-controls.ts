@@ -333,37 +333,21 @@ export function useModelControls({
         return true
       }
 
-      // Overlapping picks on one session settle through the shared ledger: a
-      // failed pick repaints the newest pick still in flight, else the last
-      // confirmed selection — never its own pre-pick snapshot, which may be an
-      // earlier pick's optimistic paint that never applied. A primary session
-      // switch while config.set is in flight means nothing is repainted. The
-      // composer selection generation is deliberately not consulted: effort
-      // steps and preset edits bump it without touching the model.
-      // Per owner: another owner can hold a session with the same id (imports).
-      const pickKey = `${composerScope}\n${liveSessionId}`
-      const pickToken = beginModelPick(pickKey, before, readSnapshot())
-
-      // The snapshot to repaint after this pick failed to apply, or null to leave the paint alone.
-      const settleUnapplied = () => {
-        const repaint = settleModelPick(pickKey, pickToken, false)
-
-        if (repaint && touchesPrimary && $activeSessionId.get() !== liveSessionId) {
-          // Its chat is no longer on screen to repaint, but the failed pick is still the saved one.
-          releaseComposerModelSelection(selection, composerScope)
-
-          return null
-        }
-
-        return repaint
-      }
-
-      // Composer picks are ALWAYS this-session. A primary pick without
-      // `--session` let resolve_persist_behavior (or a provider default)
-      // rewrite the live agent, and the one global sticky then rode onto
-      // every other open chat on send / gateway restart. Settings → Model
-      // remains the only door for the profile default.
-      const scope = ' --session'
+      // The PRIMARY profile's main agent lets the gateway decide persistence
+      // (resolve_persist_behavior): session-only by default, persisted when
+      // model.persist_switch_by_default is true or when no default has ever
+      // been configured (the first-ever pick, so resolve_provider never falls
+      // through to a leftover OPENAI_API_KEY env var — #86414). A plain pick
+      // no longer silently rewrites config.yaml (#90235); Settings → Model
+      // remains the explicit "set as default" door.
+      //
+      // Two things stay --session, deliberately:
+      //  - a SECONDARY chat tile: picking a model there must not rewrite the
+      //    profile default (the cross-session-contamination guard).
+      //  - MoA (mixture-of-agents) presets: a transient orchestration choice
+      //    that must never become the persisted global gateway default.
+      const isSessionOnlyPreset = (selection.provider || '').toLowerCase() === 'moa'
+      const scope = touchesPrimary && !isSessionOnlyPreset ? '' : ' --session'
 
       const requestSwitch = (confirmExpensiveModel = false) =>
         requestGateway<ModelSwitchResponse>('config.set', {

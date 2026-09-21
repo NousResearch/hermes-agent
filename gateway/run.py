@@ -24,7 +24,7 @@ import threading
 import time
 import traceback
 from collections import OrderedDict
-from contextvars import copy_context
+from contextvars import Context, copy_context
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Tuple, cast
@@ -4785,12 +4785,21 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = 
     wildcard call (under the launch profile's own scope) stops the shared loop and reaps anything
     the per-profile passes did not own.
 
+    ``timeout`` is a TOTAL budget: each pass gets ``timeout / (N + 1)``, because the default 15s
+    per-pass wait inside ``shutdown_mcp_servers`` let N profiles consume the whole caller budget and
+    the trailing wildcard pass — the only one that stops the shared loop — never ran.
+
+    The worker runs in a FRESH context, not ``copy_context()``: the caller may sit inside a served
+    profile's scope, and ``launch_profile_scope_if_multiplexed`` documents "no HERMES_HOME override"
+    — inheriting one made the wildcard pass resolve the live home to that profile.
+
     See #82874.
     """
     from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
     profile_homes = (
         _multiplex_profile_homes(config) if getattr(config, "multiplex_profiles", False) else [])
+    pass_timeout = max(1.0, timeout / (len(profile_homes) + 1))
 
     def _do() -> None:
         from tools.mcp_tool_common import _core
@@ -4798,16 +4807,16 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = 
         for profile_name, profile_home in profile_homes:
             try:
                 with _profile_runtime_scope(Path(profile_home), hydrate_secrets=False):
-                    shutdown_mcp_servers(scope=_core._mcp_registry_scope())
+                    shutdown_mcp_servers(scope=_core._mcp_registry_scope(), timeout=pass_timeout)
             except Exception:
                 logger.debug("MCP shutdown raised for profile '%s'", profile_name, exc_info=True)
         try:
             with launch_profile_scope_if_multiplexed():
-                shutdown_mcp_servers()
+                shutdown_mcp_servers(timeout=pass_timeout)
         except Exception:
             logger.debug("MCP shutdown raised", exc_info=True)
 
-    thread = threading.Thread(target=copy_context().run, args=(_do,), name="mcp-shutdown", daemon=True)
+    thread = threading.Thread(target=Context().run, args=(_do,), name="mcp-shutdown", daemon=True)
     thread.start()
     done = await _await_thread_exit(thread, timeout=timeout)
     if not done:
@@ -5374,8 +5383,12 @@ async def _start_gateway_shutdown_tail(
     _planned_stop_watcher_stop.set()
     _planned_stop_watcher_thread.join(timeout=2)
 
-    with suppress(Exception):
+    # Never suppressed: a raise here is a real teardown failure (it once hid a changed signature,
+    # leaving every MCP connection and the shared loop up while the gateway reported a clean exit).
+    try:
         await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
+    except Exception:
+        logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
 
     # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
     # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
@@ -5521,8 +5534,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # Startup aborted by restart/shutdown before running mode; preserve that path without starting cron.
         try:
             await runner.wait_for_shutdown()
-            with suppress(Exception):
+            try:
                 await _shutdown_mcp_servers_nonblocking(config=getattr(runner, "config", None))
+            except Exception:
+                logger.warning("MCP shutdown failed; connections may be left open", exc_info=True)
             return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
         finally:
             _shutdown_gateway_health_export(runner)

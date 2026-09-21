@@ -1,10 +1,11 @@
 """Is there ONE live host gateway, and does it already serve this profile?
 
-Multiplex-only (Teknium ruling): exactly one ``hermes gateway run`` per host, multiplexing every
-profile. The lifecycle verbs therefore answer a different question than they used to — not "does
-THIS home hold a ``gateway.pid``?" but "is the host process live, and is this profile in its served
-set?" — and when it is not, they ask that process to serve the profile instead of starting a second
-one. Four outcomes, in order:
+Multiplex-only (Teknium ruling): exactly one MULTIPLEXING ``hermes gateway run`` per host, serving
+every profile; standalone per-profile gateways coexist until that migration is forced (#109417).
+The lifecycle verbs therefore answer a different question than they used to — not "does THIS home
+hold a ``gateway.pid``?" but "is the host process live, and is this profile in its served set?" —
+and when it is not, they ask that process to serve the profile instead of starting a second one.
+Five outcomes, in order:
 
 * ``ATTACH``       — a live host gateway already serves this profile. Nothing to start; exit 0.
 * ``RESCAN``→ATTACH — it does not serve it yet: ask it to reconcile ``profiles/`` now (control
@@ -79,8 +80,8 @@ class HostGateway:
     #: False when the owner has not answered ``identify`` yet: an owner exists, but which profiles
     #: it serves is UNKNOWN. Never conflate that with "serves nothing" — see the module doc.
     served_known: bool = True
-    #: True once the owner has said ``multiplex: False``: it is a per-profile gateway (the documented
-    #: one-process-per-profile topology), not a multiplexer that can be asked to serve anyone else.
+    #: True once the owner has said ``multiplex: False``: a per-profile gateway that cannot be asked
+    #: to serve anyone else — see ``START`` in the module doc.
     standalone: bool = False
 
     def serves(self, profile: str) -> bool:
@@ -222,13 +223,12 @@ def request_serve_profile(profile: str, *, timeout: float = 8.0,
         return None
     if not isinstance(answer, dict):
         return None
-    if answer.get("multiplex") is False:
-        return HostGateway(gateway.pid, gateway.home, gateway.profiles, standalone=True)
     served = answer.get("served_profiles")
     rescanned = HostGateway(
         gateway.pid, gateway.home,
-        tuple(str(p) for p in served) if isinstance(served, list) else ())
-    return rescanned if rescanned.serves(profile) else None
+        tuple(str(p) for p in served) if isinstance(served, list) else (),
+        standalone=answer.get("multiplex") is False)
+    return rescanned if rescanned.standalone or rescanned.serves(profile) else None
 
 
 @dataclass(frozen=True)
@@ -273,7 +273,7 @@ def _refuse_message(gateway: HostGateway, profile: str) -> str:
 
 
 def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
-    """Attach, rescan-then-attach, replace or refuse — never a second gateway.
+    """Attach, rescan-then-attach, replace or refuse — never a second gateway beside a multiplexer.
 
     Never raises: a broken probe degrades to ``START``, i.e. exactly the pre-rendezvous behaviour.
     """
@@ -312,7 +312,7 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         # here exits 78, which every supervisor treats as permanent — on a launchd fleet that parked
         # every unit but the first to claim the host lock. Start beside it; the host-lock claim logs
         # the topology and the `gateway migrate --multiplex` path stays the way to converge.
-        return HostAttachDecision(START, "", attached)
+        return HostAttachDecision(START, "")
     if not gateway.served_known:
         # The owner never answered, so we know only that it exists. ATTACH here (on the record's
         # word) parked a supervised unit against a served set nobody had committed to yet.

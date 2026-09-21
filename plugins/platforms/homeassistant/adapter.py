@@ -64,6 +64,20 @@ _DEFAULT_TEMPLATE = "[Home Assistant] {name} ({entity_id}): changed from '{old}'
 _TRIGGERED = ("cleared", "triggered")  # binary_sensor wording, indexed by ``state == "on"``
 
 
+def _connect_error_detail(exc: BaseException) -> str:
+    """Annotate macOS Local Network Privacy denials so launchd HA failures are actionable (#71206)."""
+    text = str(exc)
+    os_error = getattr(exc, "os_error", None) or getattr(exc, "__cause__", None) or exc
+    errno_val = getattr(os_error, "errno", None)
+    if errno_val == 65 or "No route to host" in text or "EHOSTUNREACH" in text:
+        return (
+            f"{text} — macOS Local Network Privacy is blocking this launchd gateway from the LAN. "
+            "Run `hermes gateway install` to regenerate the launchd job, then `hermes gateway restart`. "
+            "https://github.com/NousResearch/hermes-agent/issues/71206"
+        )
+    return text
+
+
 class HomeAssistantAdapter(BasePlatformAdapter):
     """``state_changed`` -> MessageEvents with domain/entity filtering and per-entity cooldowns."""
 
@@ -123,7 +137,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             self._wire_plugin_handlers(None)
             return True
         except Exception as e:
-            logger.error("[%s] Failed to connect: %s", self.name, e)
+            logger.error("[%s] Failed to connect: %s", self.name, _connect_error_detail(e))
             return False
 
     async def _ws_connect(self) -> bool:
@@ -185,7 +199,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.warning("[%s] WebSocket error: %s", self.name, e)
+                logger.warning("[%s] WebSocket error: %s", self.name, _connect_error_detail(e))
             if not self._running:
                 return
             delay = self._BACKOFF_STEPS[min(backoff_idx, len(self._BACKOFF_STEPS) - 1)]
@@ -198,7 +212,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     backoff_idx = 0
                     logger.info("[%s] Reconnected", self.name)
             except Exception as e:
-                logger.warning("[%s] Reconnection failed: %s", self.name, e)
+                logger.warning("[%s] Reconnection failed: %s", self.name, _connect_error_detail(e))
 
     async def _read_events(self) -> None:
         """Read events from WebSocket until disconnected."""

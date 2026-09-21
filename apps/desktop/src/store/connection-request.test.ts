@@ -43,10 +43,7 @@ type Snapshot = Parameters<typeof applyOperationStatus>[1]
 type Frame = Parameters<typeof applyConnectionUpdate>[1]
 
 /** Every `connection.update` frame carries the operation snapshot; `states` overrides per-target state. */
-function frame(
-  states: Record<string, Snapshot['targets'][number]['state']>,
-  extra: Partial<Frame> = {}
-): Frame {
+function frame(states: Record<string, Snapshot['targets'][number]['state']>, extra: Partial<Frame> = {}): Frame {
   return {
     deadline_at: WIRE.deadline_at,
     op_id: 'op-1',
@@ -114,7 +111,10 @@ describe('connection-request store', () => {
     expect(overlaid.targets[0]).toMatchObject({ connectUrl: 'https://l/gmail', state: 'initiated' })
 
     const updated = applyConnectionUpdate(overlaid, {
-      ...frame({ gmail: 'connected' }, { actor: 'backend_watcher', from: 'initiated', target: 'gmail', to: 'connected' }),
+      ...frame(
+        { gmail: 'connected' },
+        { actor: 'backend_watcher', from: 'initiated', target: 'gmail', to: 'connected' }
+      ),
       deadline_at: 42 // a frame must never move the deadline the card already holds from the request
     })
 
@@ -129,7 +129,10 @@ describe('connection-request store', () => {
 
     expect(foreign).toBe(req)
 
-    const settled = applyConnectionUpdate(req, frame({ gmail: 'not_connected', notion: 'not_connected' }, { settled: true, settled_by: 'deadline' }))
+    const settled = applyConnectionUpdate(
+      req,
+      frame({ gmail: 'not_connected', notion: 'not_connected' }, { settled: true, settled_by: 'deadline' })
+    )
 
     expect(settled.settled).toBe(true)
     expect(settled.settledBy).toBe('deadline')
@@ -177,7 +180,10 @@ describe('connection-request store', () => {
     expect(rpc.mock.calls[0][1].result).toEqual({ targets: [{ name: 'notion', status: 'skipped' }] })
     expect($connectionRequests.get().a).toBeDefined()
 
-    updateConnectionRequest('a', frame({ gmail: 'connected', notion: 'skipped' }, { settled: true, settled_by: 'all_resolved' }))
+    updateConnectionRequest(
+      'a',
+      frame({ gmail: 'connected', notion: 'skipped' }, { settled: true, settled_by: 'all_resolved' })
+    )
     expect(await respondToConnectionRequest(req, { settled_by: 'continue' })).toBe(false)
     expect(hasConnectionRequest('a')).toBe(false)
   })

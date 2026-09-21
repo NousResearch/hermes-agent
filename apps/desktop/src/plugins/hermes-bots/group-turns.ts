@@ -94,7 +94,8 @@ function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: numb
  *  passes in range → the last pass; no anchor row → scan from `before`. */
 function pickStrandedGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: number): null | string {
   const anchor = messages.findIndex(
-    (msg, i) => i >= before && msg?.role === 'user' && groupTranscriptRowText(msg).startsWith(GROUP_PROMPT_HEADER_PREFIX)
+    (msg, i) =>
+      i >= before && msg?.role === 'user' && groupTranscriptRowText(msg).startsWith(GROUP_PROMPT_HEADER_PREFIX)
   )
 
   let passText: null | string = null
@@ -922,7 +923,11 @@ export function strandedMarkerIsLive(marker: unknown): boolean {
  *  member's gateway (a remote member's most of all: its gateway outlives this Desktop), and only
  *  a persisted marker lets the next boundary harvest the finished reply instead of dropping it
  *  and re-driving a live session. */
-function markGroupTurnInFlight(group: string, member: GroupMember, marker: { before: number; thread: string; turn: string }) {
+function markGroupTurnInFlight(
+  group: string,
+  member: GroupMember,
+  marker: { before: number; thread: string; turn: string }
+) {
   updateGroupChat(group, (r: GroupChatRoom) => {
     r.stranded = {
       ...(r.stranded || {}),
@@ -1315,12 +1320,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
         member: groupMemberKey(member),
         thread: strandedThread
       })
-      appendGroupChatEntry(
-        group,
-        groupMemberAuthor(member),
-        reply,
-        strandedThread
-      )
+      appendGroupChatEntry(group, groupMemberAuthor(member), reply, strandedThread)
       updateGroupChat(group, (r: GroupChatRoom) => {
         const markKey = `${strandedThread}::${memberKey}`
 

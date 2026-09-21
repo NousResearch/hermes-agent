@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
 import {
+  bindConfigReadOrigin,
   deleteSession,
   getHermesConfigRecord,
   listAllProfileSessions,
@@ -210,7 +211,6 @@ function AutoArchiveSetting() {
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [days, setDays] = useState(DEFAULT_AUTO_ARCHIVE_DAYS)
-  const writeScopeRef = useRef<ReturnType<typeof peekConfigReadOrigin>>(undefined)
 
   useEffect(() => {
     // Config REST is only reachable through the Electron bridge; skip in
@@ -229,7 +229,6 @@ function AutoArchiveSetting() {
 
         const sessions = (record.sessions ?? {}) as Record<string, unknown>
         const parsedDays = Number(sessions.auto_archive_days)
-        writeScopeRef.current = peekConfigReadOrigin(record)
         setConfig(record)
         setEnabled(Boolean(sessions.auto_archive))
         setDays(Number.isFinite(parsedDays) && parsedDays > 0 ? Math.round(parsedDays) : DEFAULT_AUTO_ARCHIVE_DAYS)
@@ -255,14 +254,22 @@ function AutoArchiveSetting() {
         auto_archive_days: archiveDays
       }
 
+      // Read the route at save time from the record itself, and carry it onto
+      // the replacement snapshot so the next save still targets the gateway
+      // that served the original GET.
+      const writeScope = peekConfigReadOrigin(config)
       const updated = { ...config, sessions }
+
+      if (writeScope) {
+        bindConfigReadOrigin(updated, writeScope)
+      }
+
       setConfig(updated)
 
       try {
         // Sparse patch: PUT /api/config deep-merges, and echoing the cached
         // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScopeRef.current)
-
+        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
       } catch (err) {
         notifyError(err, s.autoArchiveFailed)
       }

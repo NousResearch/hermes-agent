@@ -1090,12 +1090,6 @@ class GatewayBusySessionMixin:
             "Slash command /%s denied for %s:%s (not admin, not in user_allowed_commands)",
             canonical_cmd, source.platform.value if source.platform else "?", source.user_id,
         )
-        platform_config = self.config.platforms.get(source.platform)
-        extra = getattr(platform_config, "extra", platform_config)
-        message = extra.get("command_denied_message") if isinstance(extra, dict) else None
-        if isinstance(message, str):
-            # Empty string is a silent denial, not permission: callers check ``is not None``.
-            return message
         allowed_preview = sorted(policy.user_allowed_commands)
         if allowed_preview:
             suffix = (

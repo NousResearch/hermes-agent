@@ -414,26 +414,6 @@ gateway:
 
 **Backward compat:** if `allow_admin_from` is not set for a scope, the tier split is disabled for that scope and every allowed user has full access. Existing installs keep working with no changes — opt in when you want the distinction.
 
-#### Customizing command refusals
-
-For customer-facing channels, set `command_denied_message` in the platform's
-`extra` block to replace the admin-only refusal with your own text:
-
-```yaml
-platforms:
-  telegram:
-    extra:
-      allow_admin_from: ["111"]
-      command_denied_message: "Please contact support for this request."
-```
-
-An empty string (`command_denied_message: ""`) silently rejects gated commands.
-Omitting the setting, using `null`, or providing a non-string retains the default
-refusal. Text is used literally, without placeholder expansion. This changes only
-the reply: denied commands remain blocked, including while an agent is busy.
-It does not hide `/help` or `/whoami`, change their always-allowed status, or
-suppress unrelated notices.
-
 #### Inspecting your access
 
 Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. When an admin list is configured, `/help` and `/commands` show a non-admin only the commands they can actually run (`/help`, `/whoami`, plus `user_allowed_commands`); admins see the full catalog. See the [Telegram](./telegram.md#slash-command-access-control) and [Discord](./discord.md#slash-command-access-control) pages for platform-specific examples.

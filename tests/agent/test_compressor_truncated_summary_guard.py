@@ -65,6 +65,10 @@ class TestSummaryRefusalGuard:
         [
             "I can't produce this summary as requested. The instructions conflict with my operating rules.",
             "Sorry, I am unable to create a context checkpoint for this conversation.",
+            "I'm sorry, but I can't provide the requested summary.",
+            "I’m sorry, but I can’t provide the requested summary.",
+            "I apologize, but I cannot create a summary of this conversation.",
+            "As an AI, I cannot provide the requested context checkpoint.",
         ],
     )
     def test_rejects_refusal_body(self, content):
@@ -238,3 +242,29 @@ class TestMicroSummarizeTruncationGuard:
         ):
             result = c._micro_summarize_one("user: hi\nassistant: hello")
         assert result == "merged summary"
+
+    def test_refusal_leaves_exchange_and_cursor_unchanged(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+                config_context_length=40960,
+            )
+        c._micro_compact_enabled = True
+        messages = _msgs()
+        cursor_before = c._micro_compact_cursor
+        refusal = "I’m sorry, but I can’t provide the requested summary."
+        response_content = f"<think>Check the applicable policy.</think>\n{refusal}"
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=_mock_response(response_content, "stop"),
+        ):
+            result = c._micro_compact(list(messages))
+
+        assert result == messages
+        assert c._micro_compact_cursor == cursor_before
+        assert c._micro_compact_rolling_summary == ""
+        assert not any(refusal in str(message.get("content")) for message in result)

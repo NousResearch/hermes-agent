@@ -1,6 +1,7 @@
 """Post-turn threshold compaction stays off the gateway reply path."""
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -22,7 +23,11 @@ async def test_post_turn_compaction_is_background_deduped_and_fenced_to_session(
         turn=SimpleNamespace(agent=agent),
         persistent=SimpleNamespace(run_generation=7),
     )
-    store = SimpleNamespace(lookup_by_session_key=lambda key: entry)
+    store = SimpleNamespace(
+        _lock=threading.Lock(),
+        _entries={session_key: entry},
+        lookup_by_session_key=lambda key: entry,
+    )
     runner = SimpleNamespace(
         _post_turn_compaction_tasks={},
         _session_key_for_source=lambda source: session_key,
@@ -109,7 +114,11 @@ async def test_post_turn_compaction_drops_stale_route_while_transcript_load_is_b
         _peek_session_state=lambda key: state,
         _is_session_run_current=lambda key, generation: generation == state.persistent.run_generation,
         _retain_background_task=lambda task: task,
-        session_store=SimpleNamespace(lookup_by_session_key=lambda key: live["entry"]),
+        session_store=SimpleNamespace(
+            _lock=threading.Lock(),
+            _entries={session_key: entry},
+            lookup_by_session_key=lambda key: live["entry"],
+        ),
         async_session_store=SimpleNamespace(load_transcript=AsyncMock(side_effect=load_transcript)),
         _hmwa_run_session_hygiene=AsyncMock(),
     )
@@ -120,6 +129,7 @@ async def test_post_turn_compaction_drops_stale_route_while_transcript_load_is_b
     )
     await load_started.wait()
     live["entry"] = SimpleNamespace(session_id="sid-2")
+    runner.session_store._entries[session_key] = live["entry"]
     state.persistent.run_generation = 8
     release_load.set()
     await task

@@ -208,7 +208,7 @@ def _tcc_row(field: str, label: str, platform_bound: bool, ctx: Report) -> _Row:
         off_platform = platform_bound and ctx["plat"] != "darwin"
         return "skip", f"not applicable on {ctx['plat']}" if off_platform else f"{field} field absent from check_permissions", {}
     if not granted:
-        return "fail", f"{label} is not granted.", {"hint": f"{_TCC_HINT.format(label)} {stale_tcc_grant_hint(field)}", "data": {field: False}}
+        return "fail", f"{label} is not granted.", {"hint": _TCC_HINT.format(label), "data": {field: False}}
     data = {field: True, **({"screen_recording_capturable": perms.get("screen_recording_capturable")} if field == "screen_recording" else {})}
     if data.get("screen_recording_capturable") is False:  # the granted-but-not-capturable row wins over plain pass
         return "fail", "Screen Recording granted but not capturable.", {"hint": (
@@ -272,6 +272,19 @@ def _compose_fallback_report(binary: str, *, reason: str = "", timeout: float = 
             "driver_version": str(ver_value if ver_status == "pass" else (ver_value or "?")),
             "overall": _overall_from(checks), "checks": checks,
             "fallback": True, "fallback_reason": reason or "health_report unavailable"}
+
+_TCC_CHECK_FIELDS = {"tcc_accessibility": "accessibility", "tcc_screen_recording": "screen_recording"}
+
+def _apply_stale_tcc_guard(report: Report) -> Report:
+    """Append the stale-row recovery to every failed ``tcc_*`` check. Applied at the report seam so the driver's
+    own health_report rows (0.22+) get it too, not only the 0.10 fallback probes — the users hit by a stale row
+    are on current drivers (trycua/cua#3170)."""
+    checks = report.get("checks")
+    for check in (c for c in (checks if isinstance(checks, list) else ()) if isinstance(c, dict)):
+        field = _TCC_CHECK_FIELDS.get(check.get("name"))
+        if field and check.get("status") == "fail":
+            check["hint"] = f"{check.get('hint') or ''} {stale_tcc_grant_hint(field)}".strip()
+    return report
 
 def _apply_display_count_guard(report: Report) -> Report:
     """Fail an 'ok' screen_capture_capability with ``display_count=0``: macOS ScreenCaptureKit reports 0 on headless
@@ -442,6 +455,7 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2
     report = _apply_display_count_guard(report)
+    report = _apply_stale_tcc_guard(report)
     report = _apply_stale_unit_guard(report)
     report = _apply_daemon_liveness_guard(report, binary)
     identity = _build_identity(binary, report)

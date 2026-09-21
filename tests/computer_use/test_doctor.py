@@ -442,15 +442,26 @@ class TestDoctorVersionIdentity:
 
 
 
-def test_fallback_tcc_row_hint_names_the_stale_row_reset_for_that_service():
-    """The fallback ``tcc_*`` fail row must carry the stale-grant recovery for its own TCC service (Screen Recording
-    is the ``ScreenCapture`` row), because System Settings can show the toggle ON while the daemon is denied."""
+def test_failed_tcc_row_from_health_report_names_the_stale_row_reset_for_that_service():
+    """A failed ``tcc_*`` row from the driver's own health_report (0.22+, not only the 0.10 fallback probes) must
+    carry the stale-grant recovery for its own TCC service, because System Settings can show the toggle ON while
+    the daemon is denied (trycua/cua#3170)."""
     from tools.computer_use import doctor
 
-    ctx = {"perms": {"accessibility": True, "screen_recording": False}, "perm_err": None, "plat": "darwin"}
-    status, message, extra = doctor._tcc_row("screen_recording", "Screen Recording", True, ctx)
+    report = _ok_report()
+    report["checks"] = [{"name": "tcc_screen_recording", "status": "fail", "message": "Screen Recording is not granted.",
+                         "hint": "Grant it in System Settings."},
+                        {"name": "tcc_accessibility", "status": "pass", "message": "granted"}]
+    proc = _fake_proc_with_responses(
+        {"jsonrpc": "2.0", "id": 1, "result": {}},
+        {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": report}},
+    )
+    with patch("shutil.which", return_value="/fake/cua-driver"), patch("subprocess.Popen", return_value=proc), \
+         patch("sys.stdout", new_callable=StringIO) as out:
+        doctor.run_doctor(json_output=True)
+    checks = {c["name"]: c for c in json.loads(out.getvalue())["checks"]}
 
-    assert status == "fail"
-    assert "tccutil reset ScreenCapture com.trycua.driver" in extra["hint"]
-    assert "reset Accessibility" not in extra["hint"]
-    assert extra["data"] == {"screen_recording": False}
+    assert checks["tcc_screen_recording"]["hint"].startswith("Grant it in System Settings.")
+    assert "tccutil reset ScreenCapture com.trycua.driver" in checks["tcc_screen_recording"]["hint"]
+    assert "reset Accessibility" not in checks["tcc_screen_recording"]["hint"]
+    assert "tccutil" not in checks["tcc_accessibility"].get("hint", "")

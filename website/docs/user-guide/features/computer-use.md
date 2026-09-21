@@ -623,9 +623,6 @@ tccutil reset ScreenCapture com.trycua.driver
 hermes computer-use permissions grant
 ```
 
-cua-driver 0.22+ installers repair this automatically on update, so
-`hermes computer-use install --upgrade` prevents a recurrence.
-
 **Element indices are stale** — SOM indices are only valid until the
 next `capture`. Re-capture after any state-changing action. The
 wrapper carries opaque `element_token`s for stale detection — you'll

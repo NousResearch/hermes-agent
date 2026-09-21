@@ -270,6 +270,52 @@ def test_detect_admission_returns_false_on_error():
     assert _probe(_FakePage(), _ADMISSION_PROBE_JS) is False
 
 
+def test_captions_enabled_via_trusted_keypress_only_after_admission(tmp_path):
+    """Meet ignores the synthetic KeyboardEvent a page.evaluate(...dispatchEvent...) can send —
+    only a genuine ``page.keyboard.press`` is trusted (#118049). The toggle must also fire once
+    admission is confirmed, not while the bot is still sitting in the lobby."""
+    from plugins.google_meet.meet_bot import _ADMISSION_PROBE_JS, _BotConfig, _BotState, _drain_loop
+
+    class _Keyboard:
+        def __init__(self, page): self.page = page
+        def press(self, key): self.page.pressed.append(key)
+
+    class _Page:
+        def __init__(self, admitted, stop):
+            self.admitted, self.stop, self.pressed = admitted, stop, []
+            self.keyboard = _Keyboard(self)
+
+        def locator(self, sel):
+            return _Toggle(self, lambda: False, sel)  # no mic toggle visible either way
+
+        def evaluate(self, js):
+            if js is _ADMISSION_PROBE_JS:
+                return self.admitted
+            self.stop["stop"] = True  # one caption-drain / denial-probe pass, then exit
+            return []
+
+        def is_closed(self): return False
+
+    def run(admitted, out_dir):
+        stop = {"stop": False}
+        page = _Page(admitted=admitted, stop=stop)
+        state = _BotState(tmp_path / out_dir, "abc-defg-hij", "https://meet.google.com/abc-defg-hij")
+        with patch("plugins.google_meet.meet_bot.time.sleep"):
+            _drain_loop(page, _BotConfig(guest_name="Bot", duration_s=0, lobby_timeout=30), state,
+                        {"session": None}, stop)
+        return page, state
+
+    # Still in the lobby: no admission yet, so no keypress and no attempt recorded.
+    page, state = run(admitted=False, out_dir="lobby")
+    assert page.pressed == []
+    assert state.captions_enabled_attempted is False
+
+    # Admitted: a real, trusted keypress fires and the attempt is recorded.
+    page, state = run(admitted=True, out_dir="admitted")
+    assert page.pressed == ["c"]
+    assert state.captions_enabled_attempted is True
+
+
 # ---------------------------------------------------------------------------
 # Realtime join path: late Join button, muted mic, PCM pump fed after start-up (#80875)
 # ---------------------------------------------------------------------------

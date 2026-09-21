@@ -159,11 +159,6 @@ _CAPTION_OBSERVER_JS = r"""
 })();
 """
 
-# Best-effort caption toggle: Meet binds it to the ``c`` key; click targeting is too brittle.
-_ENABLE_CAPTIONS_JS = (
-    "(() => { document.body.dispatchEvent(new KeyboardEvent('keydown', "
-    "{ key: 'c', code: 'KeyC', keyCode: 67, which: 67, bubbles: true })); return true; })();")
-
 _LEAVE_CALL_JS = (
     "() => { const b = document.querySelector('button[aria-label*=\"eave call\"]');"
     " if (b) b.click(); }")
@@ -191,6 +186,15 @@ _DENIED_PROBE_JS = r"""
 def _probe(page, js: str) -> bool:
     """Evaluate a boolean JS probe; conservative — False on any error."""
     return bool(_quiet(page.evaluate, js))
+
+
+def _enable_captions(page) -> bool:
+    """Toggle Meet's live captions with a real ``c`` keypress. Meet binds the shortcut to a
+    trusted-events-only keydown handler, so a synthetic ``page.evaluate(...dispatchEvent...)``
+    is silently ignored — ``page.keyboard.press`` drives it through the browser's real input
+    pipeline instead. Must run after admission: the captions shortcut has no effect in the
+    lobby, where the caption button/region doesn't exist yet."""
+    return bool(_quiet(lambda: (page.keyboard.press("c"), True)))
 
 
 def _visible(locator):
@@ -398,7 +402,8 @@ def _drain_loop(page, cfg: _BotConfig, state: _BotState, rt: dict, stop_flag: di
         if not state.in_call and (now - last_admission_check) > 3.0:
             last_admission_check = now
             if _probe(page, _ADMISSION_PROBE_JS):
-                state.set(in_call=True, lobby_waiting=False, joined_at=now, mic_state=_ensure_mic_on(page))
+                state.set(in_call=True, lobby_waiting=False, joined_at=now, mic_state=_ensure_mic_on(page),
+                          captions_enabled_attempted=_enable_captions(page))
             elif now > lobby_deadline:
                 waited = int(lobby_deadline - state.join_attempted_at) if state.join_attempted_at else 0
                 state.set(error=f"lobby timeout — host never admitted the bot within {waited}s",
@@ -481,8 +486,6 @@ def run_bot() -> int:
                 state.set(error=f"navigate failed: {e}", exited=True)
                 return 4
             _join(page, cfg, state)
-            if _quiet(page.evaluate, _ENABLE_CAPTIONS_JS):
-                state.set(captions_enabled_attempted=True)
             try:
                 page.evaluate(_CAPTION_OBSERVER_JS)
             except Exception as e:

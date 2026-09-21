@@ -1395,6 +1395,32 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
+
+        # Duplicate-send guard: suppress an identical body re-sent to the same room within a
+        # short window. Agents occasionally emit the same final response twice (sub-second to a
+        # few seconds apart, observed with image + text extractors resolving the same content),
+        # producing visible double-posts. Only substantial bodies are deduped (short ACK/status
+        # lines may legitimately repeat) and only a *successful* send populates the cache, so a
+        # retry after a failed send is never suppressed.
+        _DEDUP_WINDOW_SEC = 12
+        _dedup_key = None
+        if len(content.strip()) >= 40:
+            _now = time.time()
+            _cache = getattr(self, "_recent_sends", None)
+            if _cache is None:
+                _cache = self._recent_sends = {}
+            for _k, _ts in list(_cache.items()):
+                if _now - _ts > _DEDUP_WINDOW_SEC:
+                    del _cache[_k]
+            _dedup_key = (chat_id, content)
+            _prev = _cache.get(_dedup_key)
+            if _prev is not None and (_now - _prev) < _DEDUP_WINDOW_SEC:
+                logger.warning(
+                    "Matrix: suppressed duplicate send to %s (identical body within %ss)",
+                    chat_id, _DEDUP_WINDOW_SEC,
+                )
+                return SendResult(success=True)
+
         last_event_id = None
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
@@ -1413,6 +1439,10 @@ class MatrixAdapter(BasePlatformAdapter):
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
+        # Record only after a successful send so a retry of a failed send is not mistaken for
+        # a duplicate.
+        if _dedup_key is not None:
+            self._recent_sends[_dedup_key] = time.time()
         return SendResult(success=True, message_id=last_event_id)
 
     async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:

@@ -995,6 +995,7 @@ compression:
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   tail_mode: lean                                   # Tail retention: "lean" (default — clamped 2.5% tail, 10K-25K, never above 20% of the window, with a detailed session log + anchor index + session_search recovery pointers in the summary, all from ONE auxiliary summarizer call; ~3x fewer retained tokens after compaction) or "legacy" (0.20×threshold verbatim tail)
   protect_last_n: 20                                # Min recent messages to keep uncompressed
+  max_tail_message_floor: 0                         # Cap on the protected tail (0 = default 8) — see below
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   in_place: true                                    # Compact on the same session id (no rotation) — see below
   idle_compact_after_seconds: 0                     # Opt-in idle compaction (0 = disabled) — see below
@@ -1016,6 +1017,10 @@ auxiliary:
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
 ```
+
+:::tip `max_tail_message_floor`
+`protect_last_n` is honored up to a cap of 8 messages by default (`compression.max_tail_message_floor: 0` = that built-in 8). The cap stops a run of bulky tool results from forcing the whole `protect_last_n` window verbatim into the tail. Set it higher (e.g. 20) to keep more recent messages verbatim; on a lean tail the floor has no token bound yet, so a raised floor keeps N messages regardless of their size (#108647).
+:::
 
 :::info Legacy config migration
 Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17). No manual action needed.

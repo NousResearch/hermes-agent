@@ -182,6 +182,14 @@ def _codex_auth_payload(entry, *, refresher=None) -> dict:
         derived = _account_id_from_id_token(tokens.get("id_token"))
         if derived:
             tokens["account_id"] = derived
+    # Codex CLI refreshes (and burns the single-use refresh token) whenever
+    # the payload lacks ``last_refresh`` — even when the access token is
+    # long-lived and valid. Emitting the entry's last_refresh keeps the CLI
+    # on the stored access token instead of a doomed rotation.
+    last_refresh = getattr(entry, "last_refresh", None)
+    if last_refresh:
+        return {"auth_mode": "chatgpt", "last_refresh": last_refresh,
+                "tokens": tokens}
     return {"tokens": tokens}
 
 

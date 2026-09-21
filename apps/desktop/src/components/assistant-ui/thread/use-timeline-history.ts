@@ -33,25 +33,28 @@ export function useTimelineHistory() {
   const [index, setIndex] = useState<{ key: string; value: TimelineIndex } | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
 
-  const loadMore = useCallback(async (beyondRowId?: number) => {
-    if (!storedId) {
-      return
-    }
-
-    try {
-      const value = await fetchTimelineIndex(storedId, scope, beyondRowId)
-
-      if (view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId) {
-        setIndex({ key, value })
-        setFailed(null)
+  const loadMore = useCallback(
+    async (beyondRowId?: number) => {
+      if (!storedId) {
+        return
       }
-    } catch {
-      // Old backends keep the loaded rail and their explicit Show earlier path.
-      setFailed(key)
-    }
-    // Owner is represented by key; do not restart on object identity alone.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, storedId, runtimeId, view])
+
+      try {
+        const value = await fetchTimelineIndex(storedId, scope, beyondRowId)
+
+        if (view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId) {
+          setIndex({ key, value })
+          setFailed(null)
+        }
+      } catch {
+        // Old backends keep the loaded rail and their explicit Show earlier path.
+        setFailed(key)
+      }
+      // Owner is represented by key; do not restart on object identity alone.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [key, storedId, runtimeId, view]
+  )
 
   useEffect(() => {
     if (!storedId) {
@@ -86,7 +89,8 @@ export function useTimelineHistory() {
   // chronological), page it forward once per new prompt — no timer; an
   // incomplete index still pages on demand.
   const last = value?.entries.at(-1)?.rowId
-  const stale = value?.complete === true && newestPromptRowId !== undefined && (last === undefined || last < newestPromptRowId)
+  const stale =
+    value?.complete === true && newestPromptRowId !== undefined && (last === undefined || last < newestPromptRowId)
 
   useEffect(() => {
     if (!stale || failed === key) {

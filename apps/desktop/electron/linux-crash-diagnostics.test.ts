@@ -3,11 +3,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import {
-  CHROMIUM_LOG_FILENAME,
-  enableLinuxCrashDiagnostics,
-  linuxCrashDiagnostics
-} from './linux-crash-diagnostics'
+import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 
 // Regression for #100573: the Linux shell died with SIGTRAP at Chromium's
 // shared fatal-handler address and no launcher kept the FATAL message. The

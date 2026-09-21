@@ -330,7 +330,11 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
 
           return (
             <ConnectorSummary
-              connector={{ iconUrl: connectorIconUrl(target.name), name: target.name, title: connectorTitle(target.name) }}
+              connector={{
+                iconUrl: connectorIconUrl(target.name),
+                name: target.name,
+                title: connectorTitle(target.name)
+              }}
               key={target.name}
               meta={meta}
               tone={tone}
@@ -370,7 +374,11 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
           return (
             <ConnectorRow
               action={action}
-              connector={{ iconUrl: connectorIconUrl(target.name), name: target.name, title: connectorTitle(target.name) }}
+              connector={{
+                iconUrl: connectorIconUrl(target.name),
+                name: target.name,
+                title: connectorTitle(target.name)
+              }}
               cue={phase.mark === 'waiting' ? copy.waiting : undefined}
               key={target.name}
               mark={phase.mark}

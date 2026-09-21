@@ -34,6 +34,7 @@ export function registerNativeNotifications({
 
     // Peer renderers share one OS notification for the same event.
     const key = `${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`
+
     if (isDuplicateNotification(key)) {
       return deliveries.get(key) ?? false
     }

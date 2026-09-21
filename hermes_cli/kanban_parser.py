@@ -322,6 +322,18 @@ _SPECS = [
                   "blocked for a human; 'transient' marks a maybe-flaky failure. "
                   "Repeated same-kind re-blocks after unblock route the task to "
                   "triage to break unblock loops. Omit for a generic block."),
+        _arg("--due", metavar="WHEN",
+             help="Auto-release time for the hold: ISO-8601 local (2026-09-16T01:40), "
+                  "an offset from now (+90m, +2h, +1d), or epoch seconds. The "
+                  "dispatcher tick unblocks the task once it passes (deferred to "
+                  "the close of a reserved execution band) -- no cron entry needed. "
+                  "Applies to the 'blocked' outcome only (not a dependency wait or "
+                  "a triage). Reason words must come BEFORE the flags."),
+        _arg("--window-policy", choices=["defer", "ambient"], metavar="POLICY",
+             help="What to do when the auto-release time lands inside an execution "
+                  "band: 'defer' (default) holds the wake until the band closes; "
+                  "'ambient' wakes anyway, for a wake that is a lightweight check "
+                  "and has to tick around the clock."),
     ], help="Mark one or more tasks blocked"),
     _cmd("schedule", [
         _TASK_ID,

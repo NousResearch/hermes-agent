@@ -998,6 +998,25 @@ def _cmd_block(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
+    due_raw = getattr(args, "due", None)
+    window_policy = getattr(args, "window_policy", None)
+    if kind == "dependency" and (due_raw or window_policy):
+        return _err("--due/--window-policy are meaningless on a dependency block: "
+                    "it waits on parent completion, not a clock")
+    due_at: Any = None
+    if due_raw:
+        from hermes_cli import kanban_due as kdue
+        try:
+            due_at = kdue.parse_due(due_raw)
+        except ValueError as exc:
+            return _err(f"--due {due_raw!r}: {exc}")
+    due_note = ""
+    if due_at is not None:
+        due_note = (
+            f" -- auto-release {_fmt_ts(int(due_at))} "
+            f"({window_policy or kb.DEFAULT_DUE_WINDOW_POLICY})"
+        )
+    failures: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def ok_msg(tid):
             # Report where it landed: dependency blocks -> todo, tripped unblock-loop breaker -> triage.
@@ -1012,11 +1031,19 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 verdict = ("needs a human decision" if (landed.block_kind if landed else kind) == "needs_input"
                            else "orchestration attention needed")
                 return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
-            return f"Blocked {tid}{suffix}"
+            return f"Blocked {tid}{suffix}{due_note}"
+        def op(tid: str) -> bool:
+            try:
+                return kb.block_task(
+                    conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid),
+                    due_at=due_at, window_policy=window_policy,
+                )
+            except ValueError as exc:  # e.g. --window-policy with no due time
+                failures[tid] = f"{tid}: {exc}"
+                return False
 
-        op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
-        return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
+        op = _commented(conn, reason, author, "BLOCKED", op)
+        return _bulk_apply(ids, op, ok_msg, lambda tid: failures.get(tid) or f"cannot block {tid}")
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:

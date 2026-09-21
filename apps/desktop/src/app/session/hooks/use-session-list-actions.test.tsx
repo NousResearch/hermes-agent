@@ -480,6 +480,17 @@ describe('refreshSessions batches slices into one request', () => {
         messagingExclude: expect.arrayContaining(['cron'])
       })
     )
+
+    const call = listSidebarSessions.mock.calls[0][0] as {
+      recentsExclude: string[]
+      messagingExclude: string[]
+    }
+
+    // Recents must exclude a2a by default so paging is not polluted. The
+    // messaging slice is a different denylist and must stay a2a-free.
+    expect(call.recentsExclude).toContain('a2a')
+    expect(call.messagingExclude).not.toContain('a2a')
+    expect(call.messagingExclude).toEqual(expect.arrayContaining(['cron']))
   })
 
   it('does not start a refresh callback captured before a profile switch', async () => {

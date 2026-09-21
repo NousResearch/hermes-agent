@@ -372,6 +372,18 @@ def _finish_kwargs(api_kwargs: dict[str, Any], sanitized: list, params: dict, *,
     return api_kwargs
 
 
+def _blank_tool_call_content(msg: dict) -> bool:
+    """True for an assistant tool-call turn whose ``content`` is an empty/whitespace string.
+
+    History stores ``""`` for textless tool-call turns; strict validators (Bedrock-backed Claude
+    "text content blocks must be non-empty", Mistral, Fireworks) reject it beside ``tool_calls``,
+    and ``null`` is the schema-compatible form. A missing key is already valid and left alone.
+    """
+    content = msg.get("content")
+    return (msg.get("role") == "assistant" and bool(msg.get("tool_calls"))
+            and isinstance(content, str) and not content.strip())
+
+
 def _sanitize_message(
     msg: Any, strip_extra_content: bool, strip_reasoning_details: bool = False,
     native_reasoning_details_type: str | None = None,
@@ -384,6 +396,8 @@ def _sanitize_message(
     on tool results (schema-valid only on user/assistant messages; strict
     providers reject it with ``contains item with unknown key name``), and
     ``reasoning_details`` unless the route replays it (``_route_replays_reasoning_details``).
+    Empty/whitespace assistant ``content`` beside real ``tool_calls`` becomes ``null``
+    (``_blank_tool_call_content``).
     On a replaying route, private ``<provider>.native_assistant`` carriers still go only to the
     profile that declared that exact type: another provider's signed replay is meaningless (or
     rejected) elsewhere, and stored history keeps it for a return to the original provider.
@@ -430,7 +444,10 @@ def _sanitize_message(
                 copied_tool_calls[tc_idx] = {k: v for k, v in tc.items() if k not in keys}
         if copied_tool_calls is not None:
             out_msg["tool_calls"] = copied_tool_calls
-    return out_msg if strip_keys or copied_tool_calls is not None else None
+    blank_content = _blank_tool_call_content(msg)
+    if blank_content:
+        out_msg["content"] = None
+    return out_msg if strip_keys or copied_tool_calls is not None or blank_content else None
 
 
 class ChatCompletionsTransport(ProviderTransport):

@@ -799,10 +799,12 @@ class TestSendTimeEmptyAssistantPad:
             None,
         )
         assert tc_turn is not None
-        assert tc_turn["content"] == "", (
-            "Tool-call turns are exempt from the pad: content:'' alongside "
-            "tool_calls is accepted by every provider and normalizing it "
-            "would alter prompt-cache keys."
+        assert tc_turn["content"] in ("", None), (
+            "Tool-call turns are exempt from the placeholder pad: the tool_calls "
+            "ARE the payload. The transport may still send the empty text as "
+            "``null`` (strict validators such as Bedrock-backed Claude reject "
+            "content:'' beside tool_calls, #31615); that mapping is deterministic "
+            "on every send, so prompt-cache prefixes stay stable across turns."
         )
 
 

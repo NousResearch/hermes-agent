@@ -184,10 +184,12 @@ class ReasoningParamsMixin:
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
-        from agent.transports.chat_completions import _model_consumes_thought_signature
+        from agent.transports.chat_completions import _blank_tool_call_content, _model_consumes_thought_signature
         strip = {"call_id", "response_item_id"} | (set() if _model_consumes_thought_signature(model) else {"extra_content"})
         api_msg["tool_calls"] = [{k: v for k, v in tc.items() if k not in strip} if isinstance(tc, dict) else tc
                                  for tc in tool_calls]
+        if _blank_tool_call_content(api_msg):
+            api_msg["content"] = None
         return api_msg
 
     _sanitize_tool_call_arguments = _forward_static("agent.agent_runtime_helpers", "sanitize_tool_call_arguments")

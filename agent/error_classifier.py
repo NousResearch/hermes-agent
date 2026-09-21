@@ -997,11 +997,20 @@ def _off_route_host(c: _Ctx) -> str:
 # Structured codes some gateways put on a 403 that mean "the upstream is down,
 # retry later" — not a credential refusal (#75388). Checked before the auth
 # default so the configured retry budget applies and no credential is benched.
-# ``server_error`` is the same shape from a relay whose own upstream answered with
-# something it could not parse (OpenCode Go/Console: "Upstream request failed:
-# Upstream response was not valid JSON"); benching the key there drops a healthy
-# sole credential and cascades the fallback chain for the whole cooldown.
-_403_TRANSIENT_CODES = frozenset({"upstream_unavailable", "server_error"})
+_403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
+
+# The relay wrapping its OWN upstream failure in a 403 (OpenCode Go/Console answer an
+# unparseable upstream body with HTTP 403 + ``error.code=server_error``) — on this route the
+# structured code is the signal and the prose is the relay's wrapper. Scoped per provider so a
+# coincidentally named code from another backend keeps its own verdict, as in
+# ``_PROVIDER_CODE_VERDICTS``; the opencode aliases collapse to the profile name before lookup.
+# Read LAST in ``_status_403``, so billing/credit exhaustion and WAF evidence still win.
+_403_TRANSIENT_CODES_BY_PROVIDER: Dict[str, frozenset] = {
+    "opencode-go": frozenset({"server_error"}),
+}
+_403_TRANSIENT_PROVIDER_ALIASES = {
+    "opencode_go": "opencode-go", "opencode-go-sub": "opencode-go", "go": "opencode-go",
+}
 
 
 def _status_403(c: _Ctx) -> Verdict:
@@ -1017,6 +1026,11 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    # Provider-scoped relay failure, last: nothing above claimed the body, so a structured
+    # "our upstream broke" code is the only evidence left and outranks the 403 auth default.
+    slug = _403_TRANSIENT_PROVIDER_ALIASES.get(c.provider_slug, c.provider_slug)
+    if c.code in _403_TRANSIENT_CODES_BY_PROVIDER.get(slug, frozenset()):
+        return _V_OVERLOADED
     return _V_AUTH_FALLBACK
 
 

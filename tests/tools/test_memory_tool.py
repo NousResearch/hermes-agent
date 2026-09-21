@@ -188,10 +188,46 @@ class TestMemoryStoreAdd:
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):
         store.add("memory", "Python 3.11 project")
-        result = store.replace("memory", "3.11", "Python 3.12 project")
+        result = store.replace("memory", "3.11", "3.12")
         assert result["success"] is True
         assert "Python 3.12 project" in store.memory_entries
         assert "Python 3.11 project" not in store.memory_entries
+
+    def test_replace_whole_entry_still_supported(self, store):
+        """old_text matching the ENTIRE entry (not just a substring) still
+        replaces it wholesale -- unchanged, pre-existing behavior."""
+        store.add("memory", "short entry")
+        result = store.replace("memory", "short entry", "a completely different entry")
+        assert result["success"] is True
+        assert store.memory_entries == ["a completely different entry"]
+
+    def test_replace_partial_substring_preserves_the_rest_of_the_entry(self, store):
+        """Regression for issue #117952: a replace whose old_text matches only
+        a SPAN within a longer entry must substitute just that span, not
+        overwrite the whole entry and silently drop everything else in it."""
+        store.add(
+            "memory",
+            "ON-DEMAND: openai-codex requires the config flag. "
+            "kanban tool gate = enabled. Something else too.",
+        )
+        result = store.replace(
+            "memory", "kanban tool gate = enabled.", "kanban tool gate = disabled."
+        )
+        assert result["success"] is True
+        entry = store.memory_entries[0]
+        assert "ON-DEMAND: openai-codex requires the config flag." in entry
+        assert "Something else too." in entry
+        assert "kanban tool gate = disabled." in entry
+        assert "kanban tool gate = enabled." not in entry
+
+    def test_replace_fails_closed_on_ambiguous_position_within_one_entry(self, store):
+        """old_text occurring more than once WITHIN a single matched entry is
+        ambiguous about which occurrence to replace -- must fail closed
+        rather than guessing (e.g. always replacing the first)."""
+        store.add("memory", "test connects to test server, then tests test again")
+        result = store.replace("memory", "test", "PROD")
+        assert result["success"] is False
+        assert "test connects to test server, then tests test again" in store.memory_entries
 
 
     def test_replace_ambiguous_match(self, store):
@@ -414,6 +450,30 @@ class TestMemoryToolDispatcher:
 
 class TestMemoryBatch:
     """The 'operations' batch shape: atomic, all-or-nothing, final-budget."""
+
+    def test_batch_partial_replace_preserves_the_rest_of_the_entry(self, store):
+        """Regression for issue #117952, via the batch path specifically --
+        the real incident's own delivery mechanism (/memory approve ->
+        apply_memory_pending -> MemoryStore.apply_batch)."""
+        store.add(
+            "memory",
+            "GATE FACTS: kanban tool gate = enabled. approval gate = strict. "
+            "extra clause here.",
+        )
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[
+                {"action": "replace", "old_text": "approval gate = strict.",
+                 "content": "approval gate = relaxed."},
+            ],
+            store=store,
+        ))
+        assert result["success"] is True
+        entry = store.memory_entries[0]
+        assert "GATE FACTS: kanban tool gate = enabled." in entry
+        assert "extra clause here." in entry
+        assert "approval gate = relaxed." in entry
+        assert "approval gate = strict." not in entry
 
     def test_batch_add_and_remove_atomic(self, store):
         store.add("memory", "stale one")
@@ -924,7 +984,8 @@ class TestBackgroundReviewDeleteGate:
         att = set_review_attended(True)
         try:
             result = json.loads(memory_tool(
-                action="replace", old_text="entry an explicit", content="rewritten by refine", store=store))
+                action="replace", old_text="entry an explicit refine may rewrite",
+                content="rewritten by refine", store=store))
         finally:
             reset_review_attended(att)
             reset_current_write_origin(token)

@@ -64,6 +64,22 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     return (matches[0] if matches else None), False
 
 
+def _resolve_replace_content(entry: str, old_text: str, content: str) -> Tuple[Optional[str], Optional[str]]:
+    """``(new_entry_text, error)`` for a "replace" op whose ``old_text`` matched *entry*
+    (via ``_find_unique_match``). ``old_text == entry`` is a whole-entry match: the entry
+    becomes ``content`` verbatim (unchanged behavior). A partial (substring) match instead
+    substitutes only the matched span, ``patch``-tool style (``entry.replace(old_text,
+    content, 1)``), so a mid-entry replace doesn't silently discard the rest of the entry
+    (#117952). Fails closed -- ``(None, error)`` -- if ``old_text`` occurs more than once
+    within the entry: which occurrence to replace would be ambiguous.
+    """
+    if old_text == entry:
+        return content, None
+    if entry.count(old_text) > 1:
+        return None, f"'{old_text}' matches {entry.count(old_text)} positions within the entry; be more specific."
+    return entry.replace(old_text, content, 1), None
+
+
 class MemoryStore:
     """Bounded curated memory with file persistence; one instance per AIAgent.
     ``_system_prompt_snapshot`` is frozen at load time (prefix-cache stable);
@@ -297,9 +313,13 @@ class MemoryStore:
                 return self._consolidation_failure(_error(
                     f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
                     f"of the entry you want to {'replace' if new_content else 'remove'}.", current_entries=entries))
-            replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
             if new_content is None:
+                replaced = entries[:idx] + entries[idx + 1:]
                 return replaced, "Entry removed."
+            resolved, resolve_error = _resolve_replace_content(entries[idx], old_text, new_content)
+            if resolve_error:
+                return self._consolidation_failure(_error(resolve_error, current_entries=entries))
+            replaced = entries[:idx] + [resolved] + entries[idx + 1:]
             new_total = len(ENTRY_DELIMITER.join(replaced))
             if new_total > limit:
                 return self._failure_with_entries(target, (
@@ -329,7 +349,13 @@ class MemoryStore:
             return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific."
         if idx is None:
             return f"{pos}: no entry matched '{old_text}'."
-        working[idx:idx + 1] = [content] if act == "replace" else []
+        if act == "remove":
+            working[idx:idx + 1] = []
+            return None
+        resolved, resolve_error = _resolve_replace_content(working[idx], old_text, content)
+        if resolve_error:
+            return f"{pos}: {resolve_error}"
+        working[idx] = resolved
         return None
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:

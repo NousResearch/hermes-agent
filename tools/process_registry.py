@@ -738,6 +738,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "task_id": session.task_id,
             "owner_task_id": session.owner_task_id or session.task_id,
             "command": session.command,
+            "started_at": session.started_at,
             **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
         }
 

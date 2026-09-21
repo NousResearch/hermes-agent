@@ -2260,9 +2260,19 @@ class CLICommandsMixin:
                 focus=focus or None, explicit=True)
         except Exception as exc:
             return _cp(f"  /refine failed to start: {exc}")
+        try:
+            from tools import write_approval as _wa
+            _n = _wa.pending_count(_wa.MEMORY)
+        except Exception:
+            _n = 0
+        _pending = (
+            f" {_n} staged memory write(s) already waiting — /memory pending."
+            if _n
+            else ""
+        )
         tail = f" (focus: {focus})" if focus else ""
         _cp(f"  ⚗ Reviewing this conversation in the background{tail} — "
-            f"any memory/skill updates will be reported when done.")
+            f"any memory/skill updates will be reported when done.{_pending}")
 
     def _handle_review_command(self, cmd: str) -> None:
         """Dispatch /review — snapshot the last N messages (+ argument text as instructions) and

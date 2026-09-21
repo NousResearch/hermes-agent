@@ -980,6 +980,32 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         except Exception:
             logger.debug("browser backend notice failed", exc_info=True)
 
+    def _show_pending_writes_notice(self):
+        """Startup notice for staged memory/skill writes nobody has reviewed yet.
+
+        An unattended review fork stages its consolidation proposals in the pending store; the
+        staging hint lands in the fork's tool result, which no human reads. Without a count
+        here the queue grows unbounded and invisible — 53 staged records over 10 days with
+        zero ever applied. The store knows the count; this is its one surface."""
+        try:
+            from tools import write_approval as wa
+
+            parts = [
+                f"{n} /{s} write(s)"
+                for s in (wa.MEMORY, wa.SKILLS)
+                if (n := wa.pending_count(s)) > 0
+            ]
+            if parts:
+                from gateway.warning_notifications import render_notification
+                render_notification(
+                    lambda: self._console_print(
+                        f"[yellow]⚠ {', '.join(parts)} staged and awaiting your review — "
+                        f"review with /memory pending or /skills pending (approve to apply, reject to drop).[/yellow]"
+                    ),
+                    platform="cli")
+        except Exception:
+            logger.debug("pending writes notice failed", exc_info=True)
+
     def finalize_preloaded_skills(self) -> None:
         """Join the background --skills preload and fold it into the prompt (idempotent).
 

@@ -1972,6 +1972,55 @@ def _run_agent_with_watchdog(
     return result
 
 
+def _cron_turn_user_message(messages) -> object | None:
+    """Return this turn's user content, if the result retained it.
+
+    The degenerate-final predicate needs the user's script to distinguish a
+    fragment from a legitimate terse non-Latin answer.  Missing transcript
+    metadata deliberately returns ``None`` so the cron boundary fails open.
+    """
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "user":
+            return message.get("content")
+    return None
+
+
+def _is_degenerate_stop_completion(result: dict, final_response: str) -> bool:
+    """Whether a verified ``finish_reason=stop`` response has no usable content.
+
+    This is intentionally narrower than a length limit.  Cron does not know
+    whether a job expects a one-word answer, an explicit ``[SILENT]`` reply,
+    or a short script, so it only rejects the fragment shapes the agent already
+    identifies and the observed emoji-plus-unclosed-Markdown stub.  If either
+    the stop metadata or the originating user message is unavailable, it
+    fails open rather than guessing.
+    """
+    if result.get("turn_exit_reason") != "text_response(finish_reason=stop)":
+        return False
+    user_message = _cron_turn_user_message(result.get("messages"))
+    if not user_message:
+        return False
+
+    from agent.agent_runtime_helpers import looks_like_degenerate_final
+
+    if looks_like_degenerate_final(final_response, user_message=user_message):
+        return True
+
+    text = final_response.strip()
+    # A bare emoji (for example ✅) is a valid terse response.  The reported
+    # ``🔍 **`` shape is different: it contains a non-ASCII presentation symbol
+    # followed by Markdown emphasis delimiters but no letters or digits, so it
+    # cannot communicate a report and is not a script token such as ``{}``.
+    return (
+        len(text) <= 24
+        and "*" in text
+        and not any(char.isalnum() for char in text)
+        and any(not char.isascii() and not char.isspace() for char in text)
+    )
+
+
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
     """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
     `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
@@ -1991,6 +2040,8 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     )
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+    if _is_degenerate_stop_completion(result, final_response_text):
+        raise RuntimeError("agent returned a degenerate near-empty stop completion")
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

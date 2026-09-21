@@ -1,7 +1,12 @@
 import { replaceEqualDeep, useQuery } from '@tanstack/react-query'
 
-import { type ProfileScope, profileScopeKey } from '@/api/client'
-import { getHermesConfigRecord, peekConfigReadOrigin, retainConfigReadOrigin } from '@/hermes'
+import {
+  getHermesConfigRecord,
+  peekConfigReadOrigin,
+  type ProfileScope,
+  profileScopeKey,
+  retainConfigReadOrigin
+} from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type { HermesConfigRecord } from '@/types/hermes'
 

@@ -409,6 +409,31 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
     return None
 
 
+def _turn_tool_activity_summary(messages) -> List[str]:
+    """Compact list of tool names called in the CURRENT turn only (same turn-boundary rule as
+    :func:`_last_turn_reasoning`: stop at the most recent user message, never cross into prior
+    turns). Lets an output-side ``transform_llm_output`` plugin judge "was this claim looked
+    up?" without maintaining its own parallel ledger of the turn's tool calls (#109815)."""
+    messages = messages or []
+    turn_start = 0
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            turn_start = i + 1
+            break
+    names: List[str] = []
+    for msg in messages[turn_start:]:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if isinstance(tc, dict):
+                    name = tc.get("function", {}).get("name")
+                    if name:
+                        names.append(name)
+    return names
+
+
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
     messages,
@@ -424,6 +449,7 @@ def _apply_output_hooks(
         model=agent.model,
         platform=platform,
         turn_id=turn_id,  # per-turn identity for the hook callback gate
+        tool_activity=_turn_tool_activity_summary(messages),
     ):
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True

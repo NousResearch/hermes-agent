@@ -274,6 +274,52 @@ def _patch_update_flow(monkeypatch, repo, run_real_git=True):
     monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
 
 
+def test_same_target_branch_update_merges_and_preserves_carried_commit(tmp_path, monkeypatch, capsys):
+    """A carried patch directly on main survives when origin/main also advances.
+
+    This runs the updater's real git apply path against a disposable origin/clone pair.  The
+    regression shape is deliberately same-branch: prior code treated it as force-push divergence
+    and reset --hard, dropping the carried commit.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "test@example.com")
+    _git(origin, "config", "user.name", "Test")
+    (origin / "base.txt").write_text("base\n")
+    _git(origin, "add", "base.txt")
+    _git(origin, "commit", "-qm", "base")
+
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(origin), str(clone))
+    _git(clone, "config", "user.email", "test@example.com")
+    _git(clone, "config", "user.name", "Test")
+    (clone / "mem0_rerank_patch.py").write_text("carried patch\n")
+    _git(clone, "add", "mem0_rerank_patch.py")
+    _git(clone, "commit", "-qm", "carry mem0 rerank patch")
+    carried_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+
+    (origin / "upstream.txt").write_text("upstream advance\n")
+    _git(origin, "add", "upstream.txt")
+    _git(origin, "commit", "-qm", "upstream advance")
+    _git(clone, "fetch", "-q", "origin", "main")
+    upstream_sha = _git(clone, "rev-parse", "origin/main").stdout.strip()
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", clone)
+    update_cmd._pull_updates(
+        GIT, "main", None, prompt_for_restore=False, gw_input_fn=None,
+        discard_local_changes=False, keep_stash=False,
+    )
+
+    out = capsys.readouterr().out
+    assert "merging so local commits survive" in out
+    assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main"
+    assert _git(clone, "merge-base", "--is-ancestor", carried_sha, "HEAD", check=False).returncode == 0
+    assert _git(clone, "merge-base", "--is-ancestor", upstream_sha, "HEAD", check=False).returncode == 0
+    assert (clone / "mem0_rerank_patch.py").read_text() == "carried patch\n"
+    assert (clone / "upstream.txt").read_text() == "upstream advance\n"
+
+
 def test_update_skips_and_warns_on_dirty_parked_branch(
     repo_pair, monkeypatch, capsys
 ):

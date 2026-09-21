@@ -101,7 +101,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 | `Ctrl+B` | 语音模式启用时开始/停止录音（`voice.record_key`，默认：`ctrl+b`） |
 | `Ctrl+G` | 在 `$EDITOR`（vim/nvim/nano/VS Code 等）中打开当前输入缓冲区。保存并退出后，编辑后的文本将作为下一条 prompt 发送——适合编写长篇多段落 prompt。 |
 | `Ctrl+X Ctrl+E` | 外部编辑器的 Emacs 风格备用绑定（与 `Ctrl+G` 行为相同）。 |
-| `Ctrl+C` | 中断 agent（2 秒内双击强制退出） |
+| `Ctrl+C` | 中断 agent；第一次按下还会检查未完成任务（2 秒内双击强制退出） |
 | `Ctrl+D` | 退出 |
 | `Ctrl+Z` | 将 Hermes 挂起到后台（仅 Unix）。在 shell 中运行 `fg` 恢复。 |
 | `Tab` | 接受自动建议（ghost text）或自动补全斜杠命令 |
@@ -241,6 +241,11 @@ personalities:
 
 - **输入新消息 + Enter**，在 agent 工作时——中断并处理你的新指令
 - **`Ctrl+C`**——中断当前操作（2 秒内双击强制退出）
+
+第一次按下 `Ctrl+C` 后，Hermes 会执行本地安全退出检查，并报告仍在
+运行的后台任务、待处理的 memory/skill 写入，或上一次被中断的 turn。
+可以使用 `/leave` 再次检查后退出；`/leave --stop` 还会停止运行中的后台
+进程和 delegation。待处理写入已经持久化，不会被自动批准或丢弃。
 - 正在进行的终端命令会立即被终止（SIGTERM，1 秒后 SIGKILL）
 - 中断期间输入的多条消息会合并为一条 prompt
 

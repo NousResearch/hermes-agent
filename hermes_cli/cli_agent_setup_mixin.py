@@ -753,6 +753,18 @@ class CLIAgentSetupMixin:
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
         display_history = getattr(self, "_resume_display_history", self.conversation_history)
+        interrupted_marker = None
+        try:
+            interrupted_marker = self._get_interrupted_turn_marker()
+        except Exception:
+            interrupted_marker = None
+        if interrupted_marker:
+            prompt = str(interrupted_marker.get("prompt") or "").strip()
+            suffix = f": {prompt[:120]}" if prompt else ""
+            self._console_print(
+                f"[bold yellow]⚠ Previous turn was interrupted{suffix}. "
+                "Review pending writes before continuing.[/]"
+            )
         if not display_history:
             return
 

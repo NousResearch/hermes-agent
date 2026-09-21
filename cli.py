@@ -10162,7 +10162,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if canonical not in {"resume", "sessions"}:
             self._pending_resume_sessions = None
 
-        if canonical in {"quit", "exit"}:
+        if canonical == "leave":
+            return self._handle_leave_command(cmd_original)
+        elif canonical in {"quit", "exit"}:
             # Parse --delete flag: /exit --delete also removes the current
             # session's transcripts + SQLite history. Ported from
             # google-gemini/gemini-cli#19332.
@@ -14651,6 +14653,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass
 
+            # Persist an interruption marker so a later /leave or resumed CLI
+            # session can warn the user even after the in-memory turn state is gone.
+            try:
+                if _interrupted_this_turn:
+                    self._persist_interrupted_turn_marker(pending_message)
+                else:
+                    self._clear_interrupted_turn_marker()
+            except Exception:
+                pass
+
             response_previewed = result.get("response_previewed", False) if result else False
 
             # Display reasoning (thinking) box if enabled and available.
@@ -16290,6 +16302,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._last_ctrl_c_time = now
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 request_hard_interrupt(self.agent)
+                try:
+                    self._print_leave_preflight(self._leave_preflight(), interrupted=True)
+                except Exception:
+                    pass
             # If there's text or images, clear them (like bash).
             # If everything is already empty, exit.
             elif event.app.current_buffer.text or self._attached_images:

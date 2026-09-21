@@ -340,6 +340,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[nous|local]"),
 
     # Exit
+    CommandDef("leave", "Safely check pending work before leaving the CLI", "Exit",
+               cli_only=True, args_hint="[--stop]"),
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
                cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]

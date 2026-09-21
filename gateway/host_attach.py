@@ -17,9 +17,16 @@ one. Four outcomes, in order:
 publishes its rendezvous record when it claims its PID file and binds its control socket a moment
 later (``gateway/run.py``: claim → socket), so for a short window the record exists and the channel
 does not. A reader that took "no socket" for "no owner" would start exactly the second gateway this
-module prevents. Hence: the record's own ``profiles`` list answers ATTACH with no channel at all,
-and only the RESCAN path needs the channel — it waits a bounded :data:`ATTACH_CHANNEL_WAIT_S` for it
-to appear. Nothing here depends on the *calling* process having started anything.
+module prevents — but a reader that took the RECORD's word for the served set is worse: the
+claim-time record is published before the process knows what it will serve, so a supervised unit
+for a profile nobody serves would stand down forever. Hence the split:
+
+* the record proves an OWNER exists (PID + createTime), and that alone never yields ATTACH;
+* the served set comes ONLY from a live ``identify`` answer, waited for a bounded
+  :data:`ATTACH_CHANNEL_WAIT_S`;
+* owner present + served set unknown is a TRANSIENT verdict — do not start, do not park.
+
+Nothing here depends on the *calling* process having started anything.
 """
 
 from __future__ import annotations
@@ -66,8 +73,13 @@ class HostGateway:
     pid: int
     home: Path
     profiles: tuple[str, ...]
+    #: False when the owner has not answered ``identify`` yet: an owner exists, but which profiles
+    #: it serves is UNKNOWN. Never conflate that with "serves nothing" — see the module doc.
+    served_known: bool = True
 
     def serves(self, profile: str) -> bool:
+        if not self.served_known:
+            return False
         wanted = _normalize(profile)
         return any(_normalize(p) == wanted for p in self.profiles)
 
@@ -76,7 +88,10 @@ class HostGateway:
         return profile_name_for_home(self.home)
 
     def describe(self) -> str:
-        served = ", ".join(self.profiles) if self.profiles else "unknown"
+        if not self.served_known:
+            served = "not published yet (its control socket has not answered)"
+        else:
+            served = ", ".join(self.profiles) if self.profiles else "nothing"
         return f"PID {self.pid} (launched by profile '{self.profile_label}'; serves: {served})"
 
 
@@ -107,30 +122,74 @@ def _served_from_identity(identity: dict) -> tuple[str, ...]:
     return (str(identity.get("profile") or "default"),)
 
 
-def host_gateway(*, wait_for_channel: float = 0.0) -> Optional[HostGateway]:
-    """The one live host gateway, or ``None``.
+def _identity_matches(identity, record, home: Path) -> bool:
+    """Is this ``identify`` answer really the record's owner?
 
-    The served set comes from the owner's control socket when it answers (live and authoritative),
-    else from the record it published (available from the PID claim onward).
+    PID alone is not enough: a record naming an arbitrary home makes us dial whatever listens
+    there, so the answer must also agree about the home it was launched from.
     """
+    if not isinstance(identity, dict) or identity.get("pid") != record.pid:
+        return False
+    reported = identity.get("hermes_home")
+    if not reported:
+        return True  # older gateway: PID + a socket keyed by this home is all it can prove
+    try:
+        from gateway.status import _same_hermes_home
+
+        return bool(_same_hermes_home(Path(str(reported)), home))
+    except Exception:
+        return str(reported) == str(home)
+
+
+#: A CLI invocation asks this question once per profile (``gateway status`` across N profiles,
+#: doctor, the lifecycle guards); a gateway PROCESS asks it for the life of the process, so the
+#: memo is time-bounded rather than permanent. Writes invalidate it eagerly.
+HOST_GATEWAY_CACHE_TTL_S = 2.0
+_cached_probe: Optional[tuple[float, Optional[HostGateway]]] = None
+
+
+def invalidate_host_gateway_cache() -> None:
+    """Forget the memoized probe (called by ``host_rendezvous`` on every record write)."""
+    global _cached_probe
+    _cached_probe = None
+
+
+def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
     from gateway import host_rendezvous as hr
 
     record = hr.read_record(hr.ROLE_GATEWAY)
     if record is None:
         return None
+    # Liveness BEFORE the dial. A record we cannot prove live must not make us open a socket at an
+    # address it chose; proving the PID first is also what keeps a stale record from naming a peer.
+    if not hr.liveness_is_proven(record):
+        return None
     home = _record_home(record)
     deadline = time.monotonic() + max(0.0, wait_for_channel)
     while True:
         identity = _identify(home)
-        if isinstance(identity, dict) and identity.get("pid") == record.pid:
+        if _identity_matches(identity, record, home):
             return HostGateway(record.pid, home, _served_from_identity(identity))
         if time.monotonic() >= deadline:
             break
         time.sleep(_CHANNEL_POLL_S)
-    # No channel yet (or ever): the record still proves an owner when PID + createTime match.
-    if not hr.liveness_is_proven(record):
-        return None
-    return HostGateway(record.pid, home, tuple(record.profiles))
+    # An owner exists and has not answered: the served set is UNKNOWN, never the record's word.
+    return HostGateway(record.pid, home, (), served_known=False)
+
+
+def host_gateway(*, wait_for_channel: float = 0.0) -> Optional[HostGateway]:
+    """The one live host gateway, or ``None``.
+
+    The served set comes from the owner's control socket and nowhere else; a record with no live
+    answer behind it yields ``served_known=False`` — an owner whose served set nobody knows yet.
+    """
+    global _cached_probe
+    now = time.monotonic()
+    if wait_for_channel <= 0 and _cached_probe is not None and now - _cached_probe[0] < HOST_GATEWAY_CACHE_TTL_S:
+        return _cached_probe[1]
+    result = _probe_host_gateway(wait_for_channel)
+    _cached_probe = (time.monotonic(), result)
+    return result
 
 
 def host_gateway_serving(profile: str, *, wait_for_channel: float = 0.0) -> Optional[HostGateway]:
@@ -139,10 +198,11 @@ def host_gateway_serving(profile: str, *, wait_for_channel: float = 0.0) -> Opti
     return gateway if gateway is not None and gateway.serves(profile) else None
 
 
-def request_serve_profile(profile: str, *, timeout: float = 8.0) -> Optional[HostGateway]:
+def request_serve_profile(profile: str, *, timeout: float = 8.0,
+                          owner: Optional[HostGateway] = None) -> Optional[HostGateway]:
     """Ask the live host gateway to reconcile ``profiles/`` now; return it once it serves
     ``profile``. ``None`` when nobody answered or the answer still excludes the profile."""
-    gateway = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
+    gateway = owner if owner is not None else host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
     if gateway is None or gateway.serves(profile):
         return gateway
     try:
@@ -166,6 +226,10 @@ class HostAttachDecision:
     outcome: str
     message: str
     owner: Optional[HostGateway] = None
+    #: True when the verdict is a RUNTIME observation ("someone else serves me right now", "the
+    #: owner has not answered yet") rather than a config-derived permanent refusal. A supervisor
+    #: must RETRY a transient verdict; parking the unit on one strands the profile forever.
+    transient: bool = False
 
 
 def attach_message(gateway: HostGateway, profile: str) -> str:
@@ -176,6 +240,17 @@ def attach_message(gateway: HostGateway, profile: str) -> str:
         f"`hermes -p {gateway.profile_label} gateway restart`.")
 
 
+def _unknown_served_message(gateway: HostGateway, profile: str) -> str:
+    return (
+        f"⏳ A gateway already owns this host and has not published its served set yet.\n"
+        f"   {gateway.describe()}\n"
+        f"   Whether it will serve profile '{profile}' is unknown, so starting a second gateway\n"
+        f"   now could double-bind this profile's platforms. Nothing was started; this is a\n"
+        f"   transient state and a service supervisor will retry.\n"
+        f"   Take the host over:  hermes gateway run --replace\n"
+        f"   Start anyway:        hermes gateway run --force")
+
+
 def _refuse_message(gateway: HostGateway, profile: str) -> str:
     return (
         f"❌ A gateway already owns this host and will not serve profile '{profile}'.\n"
@@ -183,7 +258,8 @@ def _refuse_message(gateway: HostGateway, profile: str) -> str:
         f"   Exactly one gateway per host serves every profile, so starting a second one\n"
         f"   would double-bind this profile's platforms.\n"
         f"   Fold this profile into it:   hermes gateway migrate --multiplex\n"
-        f"   Or take the host over:       hermes gateway run --replace")
+        f"   Or take the host over:       hermes gateway run --replace\n"
+        f"   Or start one anyway:         hermes gateway run --force")
 
 
 def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
@@ -204,12 +280,26 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         # whichever home launched it.
         return HostAttachDecision(REPLACE_HOST, "", gateway)
     if gateway.serves(profile):
-        return HostAttachDecision(ATTACH, attach_message(gateway, profile), gateway)
+        return HostAttachDecision(ATTACH, attach_message(gateway, profile), gateway, transient=True)
+    if not gateway.served_known:
+        # Give the owner its bounded window to answer before judging it: during the boot race the
+        # record lands a moment before the control socket binds.
+        waited = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
+        if waited is None:
+            return HostAttachDecision(START, "")
+        gateway = waited
+        if gateway.serves(profile):
+            return HostAttachDecision(ATTACH, attach_message(gateway, profile), gateway, transient=True)
     try:
-        attached = request_serve_profile(profile)
+        attached = request_serve_profile(profile, owner=gateway)
     except Exception:
         logger.debug("host gateway rescan request failed", exc_info=True)
         attached = None
-    if attached is not None:
-        return HostAttachDecision(ATTACH, attach_message(attached, profile), attached)
+    if attached is not None and attached.serves(profile):
+        return HostAttachDecision(ATTACH, attach_message(attached, profile), attached, transient=True)
+    if not gateway.served_known:
+        # The owner never answered, so we know only that it exists. ATTACH here (on the record's
+        # word) parked a supervised unit against a served set nobody had committed to yet.
+        return HostAttachDecision(
+            REFUSE, _unknown_served_message(gateway, profile), gateway, transient=True)
     return HostAttachDecision(REFUSE, _refuse_message(gateway, profile), gateway)

@@ -5297,8 +5297,12 @@ def _claim_host_gateway_role() -> None:
     try:
         outcome, error = hr.claim_host_lock(hr.ROLE_GATEWAY)
         if outcome is hr.HostLockOutcome.ACQUIRED:
-            hr.publish_record(
-                hr.ROLE_GATEWAY, profiles=hr.served_profiles(), home=str(get_hermes_home()))
+            # PROVISIONAL: an owner exists, its served set is not decided yet (multiplex is
+            # settled by the runner, and the attach channel is not bound for another moment).
+            # Publishing a guessed set here parked a second profile's supervised unit against
+            # profiles this process may never serve; _refresh_host_gateway_record() fills it in
+            # once the control socket answers.
+            hr.publish_record(hr.ROLE_GATEWAY, profiles=(), home=str(get_hermes_home()))
             # SIGTERM (systemd stop, docker stop, the update relaunch) does not run atexit.
             hr.cleanup_on_exit(hr.ROLE_GATEWAY)
             return
@@ -5318,35 +5322,44 @@ def _claim_host_gateway_role() -> None:
 
 
 def _refresh_host_gateway_record(runner) -> None:
-    """Republish the host record once the attach channel is bound and multiplex is settled.
+    """Republish the host record with the SETTLED served set, now that the channel answers.
 
-    The claim-time publish can only guess the served set from config — the runner settles the
-    implicit default itself. Republishing here also means a record that names a served profile is
-    backed by a control socket that is already answering.
+    The claim-time publish is deliberately empty: only the runner knows whether multiplex ended up
+    on and which profiles it took. A standalone gateway serves exactly its own profile — not the
+    whole roster ``served_profiles()`` would have guessed for it.
     """
     from gateway import host_rendezvous as hr
+    from gateway.host_attach import profile_name_for_home
 
     try:
         if not hr.owns_host_lock(hr.ROLE_GATEWAY):
             return
-        served = runner.served_profile_names() if getattr(
-            runner.config, "multiplex_profiles", False) else []
-        hr.publish_record(
-            hr.ROLE_GATEWAY,
-            profiles=tuple(served) or hr.served_profiles(),
-            home=str(get_hermes_home()))
+        home = get_hermes_home()
+        if getattr(runner.config, "multiplex_profiles", False):
+            served = tuple(runner.served_profile_names())
+        else:
+            served = (profile_name_for_home(home),)
+        hr.publish_record(hr.ROLE_GATEWAY, profiles=served, home=str(home))
     except Exception:
         logger.debug("host gateway record refresh failed", exc_info=True)
 
 
-async def _host_attach_or_none(replace: bool) -> Optional[bool]:
+async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[bool]:
     """Attach / rescan / refuse against the ONE host gateway; ``None`` = start normally.
 
     Returns ``True`` when this invocation is satisfied by the running host process (exit 0, nothing
     spawned) and ``False`` when it must refuse. The per-home duplicate guard below cannot answer
     this at all: another profile's gateway lives in another home, so it sees no PID and starts a
     second process — the shape multiplex-only forbids.
+
+    ``force`` is the operator's escape hatch when the owner is wedged or lying: skip the whole
+    question and start. Ignoring it here made ``--force`` print the starting banner and then attach
+    anyway, leaving no supported way to start a gateway at all.
     """
+    if force:
+        logger.warning("--force: starting a gateway without asking the host owner.")
+        return None
+
     from gateway.host_attach import ATTACH, REFUSE, REPLACE_HOST, decide
 
     decision = decide(get_hermes_home(), replace=replace)
@@ -5566,9 +5579,11 @@ async def _start_gateway_shutdown_tail(
     return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
 
 
-async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
+async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
+                        verbosity: Optional[int] = 0, force: bool = False) -> bool:
     """Start the gateway and run until interrupted; False if it failed to start (non-zero exit so
-    systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop deadlocks)."""
+    systemd can auto-restart). ``replace`` kills any existing instance first (avoids restart-loop
+    deadlocks); ``force`` starts without consulting the host owner at all."""
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
 
@@ -5581,7 +5596,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
     # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.
-    _host_decision = await _host_attach_or_none(replace)
+    _host_decision = await _host_attach_or_none(replace, force)
     if _host_decision is not None:
         return _host_decision
 

@@ -36,6 +36,7 @@ import hashlib
 import json
 import logging
 import os
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -136,6 +137,47 @@ def host_state_dir() -> Path:
     from gateway.status import _get_lock_dir
 
     return _get_lock_dir()
+
+
+def ensure_host_state_dir() -> Path:
+    """The rendezvous dir, created owner-only (``0o700``) and tightened if it is not.
+
+    A bare ``mkdir`` under the common ``umask 002`` leaves the dir group-writable, and the record
+    inside it is what every lifecycle verb believes: a same-group process could unlink+replace it
+    and choose this host's ATTACH answers (which home to dial, which profiles are "served").
+    Ownership of the dir is ours, so widening is repaired rather than refused.
+    """
+    directory = host_state_dir()
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if sys.platform != "win32":
+        with contextlib.suppress(OSError):
+            if stat.S_IMODE(directory.stat().st_mode) & 0o077:
+                os.chmod(directory, 0o700)
+    return directory
+
+
+def _record_is_own(path: Path) -> bool:
+    """True when ``path`` was written by THIS OS user inside a dir this user owns.
+
+    ``read_record`` hands its result straight to :mod:`gateway.host_attach`, which dials the home
+    it names and believes the served set it carries. A hand-written record therefore buys an
+    attacker the lifecycle verdict for every profile on the host, so the file's ``st_uid`` — not
+    its contents — is what makes it a record at all. Windows sets no ACLs from mode bits; there
+    the dir already lives under the user's own state root.
+    """
+    if sys.platform == "win32":
+        return True
+    try:
+        info = path.stat()
+        parent = path.parent.stat()
+    except OSError:
+        return False
+    uid = os.getuid()  # windows-footgun: ok — unreachable on Windows (early return above)
+    if info.st_uid != uid or parent.st_uid != uid:
+        logger.warning(
+            "ignoring host record %s: owned by uid %s (expected %s)", path, info.st_uid, uid)
+        return False
+    return True
 
 
 def _validated_role(role: str) -> str:
@@ -247,9 +289,12 @@ def probe_owner(record: HostRecord, *, timeout: float = PROBE_TIMEOUT_S) -> Opti
 
 
 def read_record(role: str, *, include_stale: bool = False) -> Optional[HostRecord]:
-    """Published record for ``role``; ``None`` when absent, corrupt or (by default) stale."""
+    """Published record for ``role``; ``None`` when absent, foreign, corrupt or (by default) stale."""
+    path = record_path(role)
+    if not _record_is_own(path):
+        return None
     try:
-        raw = record_path(role).read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
     try:
@@ -350,7 +395,7 @@ def claim_host_lock(role: str) -> tuple[HostLockOutcome, Optional[OSError]]:
 
     path = Path(key[1])
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_host_state_dir()
         handle = open(path, "a+", encoding="utf-8")
     except OSError as exc:
         logger.debug("host %s lock could not be opened at %s", role, path, exc_info=True)
@@ -409,7 +454,7 @@ def publish_record(
         home=str(home or ""),
     )
     try:
-        record_path(role).parent.mkdir(parents=True, exist_ok=True)
+        ensure_host_state_dir()
         if token:
             # No record without its token: publishing one an attaching client cannot
             # authenticate against would degrade to a silent "attach refused forever".
@@ -418,7 +463,36 @@ def publish_record(
     except OSError:
         logger.warning("host %s record could not be published; discovery will not find it", role, exc_info=True)
         return None
+    _invalidate_attach_cache()
     return record
+
+
+def _invalidate_attach_cache() -> None:
+    """Drop :mod:`gateway.host_attach`'s memo: the record it summarises just changed."""
+    with contextlib.suppress(Exception):
+        from gateway.host_attach import invalidate_host_gateway_cache
+
+        invalidate_host_gateway_cache()
+
+
+def discard_dead_record(role: str) -> bool:
+    """Retract the record for ``role`` when its owner is provably gone; True when one was removed.
+
+    A confirmed stop must retract the record too. Leaving it made ``gateway restart --all`` a
+    silent no-op: the re-entered ``gateway run`` read the corpse's record, decided ATTACH and
+    exited 0, so the host ended up with no gateway at all.
+    """
+    role = _validated_role(role)
+    record = read_record(role, include_stale=True)
+    if record is None:
+        return False
+    if record.pid != os.getpid() and _pid_incarnation_matches(record.pid, record.create_time) is not False:
+        return False
+    for path in (record_path(role), token_path(role)):
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
+    _invalidate_attach_cache()
+    return True
 
 
 def clear_record(role: str) -> None:
@@ -430,6 +504,7 @@ def clear_record(role: str) -> None:
     for path in (record_path(role), token_path(role)):
         with contextlib.suppress(OSError):
             path.unlink(missing_ok=True)
+    _invalidate_attach_cache()
 
 
 # Roles this process must clean up on the way out, and the signal handlers we prepended.
@@ -495,12 +570,31 @@ def cleanup_on_exit(role: str) -> None:
             _prev_signal_handlers[signum] = prev
 
 
-def served_profiles() -> tuple[str, ...]:
-    """Profiles this process multiplexes; ``()`` when the roster cannot be read."""
+def _multiplex_profiles_enabled() -> bool:
+    """Will THIS process multiplex? Explicit config wins; unset means the default (on)."""
+    try:
+        from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+        from hermes_constants import get_hermes_home
+
+        flag = explicit_multiplex_flag(get_hermes_home())
+    except Exception:
+        logger.debug("multiplex flag unreadable; assuming the default (on)", exc_info=True)
+        return True
+    return True if flag is None else bool(flag)
+
+
+def served_profiles(*, multiplex: Optional[bool] = None) -> tuple[str, ...]:
+    """Profiles this process multiplexes; ``()`` when the roster cannot be read.
+
+    ``multiplex`` defaults to what this process's own config says. Hard-coding ``True`` here
+    published a record claiming EVERY profile from a gateway that would only ever serve its own,
+    and a second profile's supervised unit then stood down against a set nobody serves.
+    """
     try:
         from hermes_cli.profiles import profiles_to_serve
 
-        return tuple(name for name, _ in profiles_to_serve(multiplex=True))
+        enabled = _multiplex_profiles_enabled() if multiplex is None else bool(multiplex)
+        return tuple(name for name, _ in profiles_to_serve(multiplex=enabled))
     except Exception:
         logger.debug("served profile roster unavailable", exc_info=True)
         return ()

@@ -81,7 +81,12 @@ rather than "this profile's gateway":
   that still runs its own gateway is reported, never killed, with the
   `hermes gateway migrate --multiplex` one-liner.
 - `hermes gateway run --replace` takes the host role over, whichever profile
-  launched the running process.
+  launched the running process; `hermes gateway run --force` starts a separate
+  gateway without asking the host process at all (the escape hatch when it is
+  wedged or answering wrongly).
+- Under a service supervisor the attach exits 75, not 0 — systemd, s6 and
+  launchd all restart a 75 after a short delay, so the unit keeps retrying and
+  takes over by itself the moment the host process goes away.
 
 Multiplexing is **on by default** (`gateway.multiplex_profiles` defaults to
 `true`), with one safety rule: an *unset* flag is a request the default gateway

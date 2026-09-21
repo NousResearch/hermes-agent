@@ -3745,26 +3745,50 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
     sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
 
-def _attach_to_host_gateway_or_guard(force: bool = False) -> None:
-    """``gateway run`` against the ONE host gateway: attach, rescan-then-attach, or refuse.
+def _host_decision_exit_code(decision) -> int:
+    """Exit code for a host-attach verdict a supervisor may be watching.
+
+    ``GATEWAY_FATAL_CONFIG_EXIT_CODE`` (78) is the PERMANENT refusal: systemd parks the unit on it
+    (``RestartPreventExitStatus``), the s6 finish script maps it to 125, launchd maps it to a
+    deliberate stop. That is right for a config-derived refusal and wrong for a runtime one — "some
+    other process serves me right now" ends the moment that process goes away, and parking the unit
+    on it strands the profile until a human notices. Transient verdicts therefore use
+    ``GATEWAY_SERVICE_RESTART_EXIT_CODE`` (75, EX_TEMPFAIL), which every supervisor we generate
+    already retries: systemd has ``RestartForceExitStatus=75`` with ``RestartSec=5``, the s6 finish
+    script passes it through, and launchd relaunches a non-78 failure. Exit 0 would NOT do: s6
+    parks a clean exit too.
+    """
+    if getattr(decision, "transient", False):
+        return GATEWAY_SERVICE_RESTART_EXIT_CODE
+    return GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+
+def _attach_to_host_gateway_or_guard(force: bool = False, replace: bool = False) -> None:
+    """``gateway run`` against the ONE host gateway: attach, rescan-then-attach, replace, or refuse.
 
     A profile the host process already serves has nothing to run: print who serves it and exit 0
-    without spawning anything. Under a service supervisor the SAME situation exits 78 (EX_CONFIG)
-    instead — systemd (Restart=always, RestartPreventExitStatus=78) and launchd would restart-loop
-    an exit-0 unit forever, which is why the refusal used 78 in the first place.
+    without spawning anything. Under a service supervisor the SAME situation exits 75 instead, so
+    the unit is RETRIED rather than parked (see :func:`_host_decision_exit_code`).
+
+    ``--replace`` and ``--force`` are the two escape hatches this guard must not eat: both return
+    here so ``start_gateway`` can act on them (it owns the signalling and the PID claim).
     """
     if force:
         return
     try:
-        from gateway.host_attach import ATTACH, REFUSE, decide
-        decision = decide(get_hermes_home())
+        from gateway.host_attach import ATTACH, REFUSE, REPLACE_HOST, decide
+        decision = decide(get_hermes_home(), replace=replace)
     except Exception:
         logger.debug("Host gateway attach probe failed", exc_info=True)
         decision = None
+    if decision is not None and decision.outcome == REPLACE_HOST:
+        return  # start_gateway replaces the owner; the config guard below must not pre-empt it
     if decision is not None and decision.outcome in (ATTACH, REFUSE):
         print(decision.message)
-        if decision.outcome == REFUSE or _running_under_gateway_supervisor():
-            sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+        if decision.outcome == REFUSE:
+            sys.exit(_host_decision_exit_code(decision))
+        if _running_under_gateway_supervisor():
+            sys.exit(_host_decision_exit_code(decision))
         sys.exit(0)
     # No host record (older gateway, unwritable lock dir): the config-derived refusal still applies.
     _guard_named_profile_under_multiplexer(force=force)
@@ -3982,7 +4006,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     """Run the gateway in foreground. verbose 1=INFO/2+=DEBUG on stderr; quiet: no stderr logs; replace:
     kill an existing instance first (avoids systemd restart loops); force: skip the supervised guard."""
     _guard_official_docker_root_gateway()
-    _attach_to_host_gateway_or_guard(force=force)
+    _attach_to_host_gateway_or_guard(force=force, replace=replace)
     _guard_supervised_gateway_conflict(force=force)
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -4042,7 +4066,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     success = False
     try:
-        success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+        success = asyncio.run(start_gateway(replace=replace, force=force, verbosity=verbosity))
         _exit_diag("asyncio.run.returned", success=success)
     except KeyboardInterrupt:
         # Detached Windows runs absorb SIGINT above; keep the handler for console runs.
@@ -4753,6 +4777,17 @@ def _stop_host_multiplexer(owner) -> int:
         return 0
 
 
+def _discard_dead_host_record() -> bool:
+    """Drop the host rendezvous record once its owner is provably gone (after a confirmed stop)."""
+    try:
+        from gateway.host_rendezvous import ROLE_GATEWAY, discard_dead_record
+
+        return discard_dead_record(ROLE_GATEWAY)
+    except Exception:
+        logger.debug("Host record retraction failed", exc_info=True)
+        return False
+
+
 def _restart_all(system: bool) -> None:
     owner = _host_multiplexer_for_all_verb()
     if owner is not None and not _host_multiplexer_is_ours(owner):
@@ -4782,12 +4817,17 @@ def _restart_all(system: bool) -> None:
             print(f"✓ Stopped {total} gateway process(es) across all profiles")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     _wait_for_api_server_port_free()
+    # Retract the stopped owner's rendezvous record. Leaving it made this very function a silent
+    # no-op: the re-entered `gateway run` below read the corpse's record and ATTACHED to it.
+    _discard_dead_host_record()
 
     print("Starting gateway...")
     # Even without a registered task, gateway_windows.start() uses the detached launcher.
     kind = _installed_service_kind_for(is_windows)
     if kind is None:
-        run_gateway(verbose=0)
+        # replace=True: if the old owner is still draining (a long drain, an ineffective SIGKILL, a
+        # foreign-home owner the scan never saw), take the host over instead of attaching to it.
+        run_gateway(verbose=0, replace=True)
     else:
         _service_call(kind, "start", system)
 
@@ -4797,7 +4837,11 @@ def _cmd_restart(args):
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
-    _guard_named_profile_under_multiplexer(force=force)
+    # `--all` targets the ONE host multiplexer and _restart_all does its own ownership check with
+    # the right one-liner; running the generic named-profile guard first made that branch
+    # unreachable for `-p X gateway restart --all` (it printed a bare `gateway restart` instead).
+    if not restart_all:
+        _guard_named_profile_under_multiplexer(force=force)
     if restart_all and _dispatch_all_via_service_manager_if_s6("restart"):
         return
     if not restart_all and _dispatch_via_service_manager_if_s6("restart"):

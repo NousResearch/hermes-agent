@@ -12,6 +12,7 @@ import { createMinimizeToTray } from '../minimize-to-tray'
 
 app.setPath('userData', process.argv[2])
 app.on('window-all-closed', () => {})
+
 const watchdog = setTimeout(() => {
   console.error('Native tray probe timed out')
   app.exit(1)
@@ -35,8 +36,10 @@ async function run() {
 
   controller.registerWindow(primary)
   controller.registerWindow(peer)
+
   const html =
     'data:text/html,<title>Hermes tray lifecycle probe</title><p>Isolated tray lifecycle probe</p><script>window.draft="preserved"</script>'
+
   await Promise.all([primary.loadURL(html), peer.loadURL(html)])
   primary.show()
   peer.show()
@@ -53,6 +56,7 @@ async function run() {
   if (process.platform === 'darwin') {
     assert.equal(app.dock!.isVisible(), true)
   }
+
   const minimized = once(peer, 'minimize')
   peer.minimize()
   await minimized
@@ -62,6 +66,7 @@ async function run() {
   if (process.platform === 'darwin') {
     assert.equal(app.dock!.isVisible(), false)
   }
+
   assert.equal(await primary.webContents.executeJavaScript('window.draft'), 'preserved')
   controller.restore()
   await delay(250)
@@ -72,6 +77,7 @@ async function run() {
   if (process.platform === 'darwin') {
     assert.equal(app.dock!.isVisible(), true)
   }
+
   primary.minimize()
   await delay(250)
   peer.close()

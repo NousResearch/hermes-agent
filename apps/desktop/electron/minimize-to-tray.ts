@@ -49,6 +49,7 @@ export function createMinimizeToTray(options: Options) {
     if (process.platform !== 'darwin') {
       return
     }
+
     // A hidden primary must not remove a visible peer from Cmd-Tab/the Dock.
     const foreground = [...windows].some(win => !win.isDestroyed() && win.isVisible() && !win.isMinimized())
 
@@ -68,6 +69,7 @@ export function createMinimizeToTray(options: Options) {
     if (process.platform === 'win32') {
       win.setSkipTaskbar(false)
     }
+
     showDock()
   }
 
@@ -86,6 +88,7 @@ export function createMinimizeToTray(options: Options) {
       if (win.isMinimized()) {
         win.restore()
       }
+
       win.showInactive()
     }
   }
@@ -140,6 +143,7 @@ export function createMinimizeToTray(options: Options) {
         if (icon.isEmpty()) {
           throw new Error('No usable tray icon')
         }
+
         tray = new Tray(
           icon.resize({
             width: process.platform === 'darwin' ? 18 : 24,
@@ -160,6 +164,7 @@ export function createMinimizeToTray(options: Options) {
         if (process.platform !== 'darwin') {
           tray.on('click', restore)
         }
+
         tray.on('double-click', restore)
       } catch (error) {
         restoreHidden()
@@ -180,11 +185,13 @@ export function createMinimizeToTray(options: Options) {
       if (!enabled || !status().available || quitting || options.isQuittingForHandoff()) {
         return
       }
+
       hidden.add(win)
 
       if (process.platform === 'win32') {
         win.setSkipTaskbar(true)
       }
+
       win.hide()
       syncDock()
     }

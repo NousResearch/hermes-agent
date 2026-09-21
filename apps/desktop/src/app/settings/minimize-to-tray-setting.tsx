@@ -19,6 +19,7 @@ export function MinimizeToTraySetting() {
     if (!bridge) {
       return
     }
+
     const version = ++revision.current
     setLoadFailed(false)
 
@@ -75,6 +76,7 @@ export function MinimizeToTraySetting() {
       if (revision.current === version) {
         setStatus(previous)
       }
+
       notifyError(error, c.autosaveFailed)
     } finally {
       setSaving(false)

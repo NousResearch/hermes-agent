@@ -49,12 +49,14 @@ afterEach(() => {
 
 test('native truth drives both mounted settings rows and survives remount without renderer writes', async () => {
   const { api, listeners } = bridge({ enabled: false, available: false })
+
   const view = render(
     <>
       <MinimizeToTraySetting />
       <MinimizeToTraySetting />
     </>
   )
+
   const toggles = await screen.findAllByRole('switch', { name: c.minimizeToTrayTitle })
   await waitFor(() => expect(toggles.every(toggle => !toggle.hasAttribute('disabled'))).toBe(true))
   expect(api.set).not.toHaveBeenCalled()

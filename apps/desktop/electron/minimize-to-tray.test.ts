@@ -29,6 +29,7 @@ vi.mock('electron', () => ({
       if (native.fail) {
         throw new Error('Unavailable tray')
       }
+
       native.trays.push(this)
     }
     setToolTip() {}
@@ -148,6 +149,7 @@ test('opt-in minimize preserves windows and restoration, without intercepting Cl
   if (process.platform === 'darwin') {
     expect(native.app.dock.hide).not.toHaveBeenCalled()
   }
+
   peer.minimize()
   expect(peer.visible).toBe(false)
 
@@ -158,6 +160,7 @@ test('opt-in minimize preserves windows and restoration, without intercepting Cl
   if (process.platform === 'win32') {
     expect(main.skipped && peer.skipped).toBe(true)
   }
+
   native.trays[0].menu[0].click()
   expect(main.visible && peer.visible).toBe(true)
   expect(main.minimized || peer.minimized).toBe(false)

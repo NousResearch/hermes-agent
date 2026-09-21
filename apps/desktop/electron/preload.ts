@@ -375,6 +375,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     onChanged: callback => {
       const listener = (_event, status) => callback(status)
       ipcRenderer.on('hermes:minimize-to-tray:changed', listener)
+
       return () => ipcRenderer.removeListener('hermes:minimize-to-tray:changed', listener)
     }
   },

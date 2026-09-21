@@ -18765,6 +18765,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 
   if (quitPromptOpen) {
     event.preventDefault()
+
     return true
   }
 

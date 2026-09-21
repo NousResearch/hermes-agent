@@ -22,6 +22,7 @@ export async function watchLinuxTrayHost(onLost: () => void): Promise<() => void
     if (disposed) {
       return
     }
+
     disposed = true
     bus.connection.stream.destroy()
   }
@@ -30,6 +31,7 @@ export async function watchLinuxTrayHost(onLost: () => void): Promise<() => void
     if (disposed) {
       return
     }
+
     dispose()
 
     if (ready) {
@@ -94,6 +96,7 @@ export async function watchLinuxTrayHost(onLost: () => void): Promise<() => void
     if (disposed || value.value !== true) {
       throw new Error('No system tray host is available')
     }
+
     ready = true
 
     return dispose

@@ -14,6 +14,8 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _COMPRESSION_MARKER_PREFIX,
     _COMPRESSION_MARKER_TEMPLATE,
+    _DEFAULT_ARG_HEAD_CHARS,
+    _PROSE_ARG_HEAD_CHARS,
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
@@ -2521,6 +2523,45 @@ class TestTruncationMarkerNotImitable:
             omitted=1800, total=2000
         )
         assert _truncate_tool_call_args_json(once) == once
+
+
+class TestProseToolArgsKeepTheirPayload:
+    """A tool call whose arguments ARE authored prose must survive the args shrink.
+
+    The shrunken list is PERSISTED (``session_db.archive_and_compact``), so the narrow default
+    leaves the session's record of a ``message_agent`` DM as a 200-char head plus a marker: what
+    was actually sent is no longer readable from that session.
+    """
+
+    BODY = "a line of the message. " * 100  # ~2.2K chars per leaf, past the 500-char args floor
+
+    @staticmethod
+    def _msgs(tool_name, body):
+        args = json.dumps({"target": "another-agent", "message": body, "content": body})
+        return [{"role": "assistant", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": tool_name, "arguments": args}},
+        ]}]
+
+    def test_a_dm_body_survives_the_pass_intact(self):
+        msgs = self._msgs("message_agent", self.BODY)
+        assert ContextCompressor._truncate_tool_call_args_at(msgs, 0) is False
+        sent = json.loads(msgs[0]["tool_calls"][0]["function"]["arguments"])
+        assert sent["message"] == self.BODY  # the record of what was actually sent
+
+    def test_the_head_is_per_tool(self):
+        # A prose payload is still bounded, just at the wider head.
+        prose = self._msgs("message_agent", "x" * (_PROSE_ARG_HEAD_CHARS * 3))
+        assert ContextCompressor._truncate_tool_call_args_at(prose, 0) is True
+        body = json.loads(prose[0]["tool_calls"][0]["function"]["arguments"])["message"]
+        assert body[: _PROSE_ARG_HEAD_CHARS] == "x" * _PROSE_ARG_HEAD_CHARS
+        assert body[_PROSE_ARG_HEAD_CHARS:].startswith(_COMPRESSION_MARKER_PREFIX)
+        # Every other tool keeps the narrow head.
+        other = self._msgs("write_file", self.BODY)
+        assert ContextCompressor._truncate_tool_call_args_at(other, 0) is True
+        parsed = json.loads(other[0]["tool_calls"][0]["function"]["arguments"])
+        assert parsed["content"][: _DEFAULT_ARG_HEAD_CHARS] == self.BODY[: _DEFAULT_ARG_HEAD_CHARS]
+        assert parsed["content"][_DEFAULT_ARG_HEAD_CHARS:].startswith(_COMPRESSION_MARKER_PREFIX)
+        assert parsed["target"] == "another-agent"
 
 
 class TestLazyContextResolution:

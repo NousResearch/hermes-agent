@@ -1431,7 +1431,15 @@ _COMPRESSION_MARKER_TEMPLATE = (
 )
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
+# A tool whose string leaves are AUTHORED PROSE that *is* the payload gets a wider head than the
+# bulk-data default. The pruned list is PERSISTED (session_db.archive_and_compact), so a narrow
+# head erodes the session's record of what was actually sent. ``message_agent`` sends a DM body.
+_DEFAULT_ARG_HEAD_CHARS = 200
+_PROSE_ARG_HEAD_CHARS = 4_000
+_PROSE_ARG_TOOLS = frozenset({"message_agent"})
+
+
+def _truncate_tool_call_args_json(args: str, head_chars: int = _DEFAULT_ARG_HEAD_CHARS) -> str:
     """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
 
     Only leaves where the replacement is a net reduction are changed (``head_chars`` plus the
@@ -2943,8 +2951,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return False
         new_tcs = []
         for tc in msg["tool_calls"]:
-            args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
+            fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+            args = fn.get("arguments", "") or ""
+            # Args whose leaves ARE the authored payload (a message_agent DM body) keep a wider head:
+            # the pruned list is persisted, so the narrow default erodes the record of what was sent.
+            head = _PROSE_ARG_HEAD_CHARS if fn.get("name") in _PROSE_ARG_TOOLS else _DEFAULT_ARG_HEAD_CHARS
+            new_args = _truncate_tool_call_args_json(args, head) if len(args) > 500 else args
             new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
         if modified:

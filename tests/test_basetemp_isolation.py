@@ -6,6 +6,8 @@ inside the home silently turns the sandbox back into the live install (#111101).
 """
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,3 +67,61 @@ def test_fallback_root_escapes_a_repo_checked_out_inside_the_native_home(tmp_pat
 
     relocated = config._tmp_path_factory._given_basetemp
     assert relocated is not None and not relocated.resolve().is_relative_to(native.resolve())
+
+
+def _relocating_config(tmp_path, monkeypatch):
+    native = tmp_path / "native-home"
+    native.mkdir()
+    monkeypatch.setattr(
+        hermes_constants, "_get_platform_default_hermes_home", lambda: native
+    )
+    monkeypatch.setattr(
+        suite_conftest.tempfile, "gettempdir", lambda: str(native / "tmp")
+    )
+    monkeypatch.delenv("PYTEST_DEBUG_TEMPROOT", raising=False)
+    return native, _config_with_basetemp(native / ".repro")
+
+
+def test_successful_sessionfinish_removes_the_relocated_basetemp(tmp_path, monkeypatch):
+    native, config = _relocating_config(tmp_path, monkeypatch)
+    suite_conftest._RELOCATED_BASETEMPS.clear()
+
+    suite_conftest._relocate_basetemp_outside_operator_home(config)
+    relocated = config._tmp_path_factory._given_basetemp
+    assert relocated is not None and relocated.exists()
+
+    suite_conftest.pytest_sessionfinish(None, exitstatus=0)
+
+    assert not relocated.exists()
+    assert suite_conftest._RELOCATED_BASETEMPS == []
+
+
+def test_failed_sessionfinish_keeps_the_relocated_basetemp(tmp_path, monkeypatch):
+    native, config = _relocating_config(tmp_path, monkeypatch)
+    suite_conftest._RELOCATED_BASETEMPS.clear()
+
+    suite_conftest._relocate_basetemp_outside_operator_home(config)
+    relocated = config._tmp_path_factory._given_basetemp
+
+    suite_conftest.pytest_sessionfinish(None, exitstatus=1)
+
+    assert relocated is not None and relocated.exists()
+    suite_conftest._RELOCATED_BASETEMPS.clear()
+
+
+def test_next_session_sweeps_only_long_abandoned_basetemps(tmp_path, monkeypatch):
+    native, config = _relocating_config(tmp_path, monkeypatch)
+    suite_conftest._RELOCATED_BASETEMPS.clear()
+    parent = native.parent
+    stale = parent / "hermes-pytest-basetemp-stale"
+    stale.mkdir()
+    fresh = parent / "hermes-pytest-basetemp-fresh"
+    fresh.mkdir()
+    abandoned = suite_conftest._STALE_BASETEMP_RETENTION_S + 600
+    os.utime(stale, (time.time() - abandoned,) * 2)
+
+    suite_conftest._relocate_basetemp_outside_operator_home(config)
+
+    assert not stale.exists()
+    assert fresh.exists()
+    suite_conftest._RELOCATED_BASETEMPS.clear()

@@ -27,6 +27,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -1292,6 +1293,18 @@ _OS_MARKS = {
 }
 
 
+_STALE_BASETEMP_RETENTION_S = 24 * 60 * 60
+"""How long an orphaned basetemp must have been untouched before the pre-run sweep may remove it."""
+
+_RELOCATED_BASETEMPS: list[Path] = []
+"""Basetemps this harness relocated out of the operator's Hermes home.
+
+pytest never deletes them: setting ``factory._given_basetemp`` marks the path as
+user-owned, which is precisely what disables its own session cleanup — so the
+harness owns the removal instead (see ``pytest_sessionfinish`` below).
+"""
+
+
 def _relocate_basetemp_outside_operator_home(config) -> None:
     """Move pytest's basetemp out of the operator's platform-native Hermes home.
 
@@ -1317,12 +1330,52 @@ def _relocate_basetemp_outside_operator_home(config) -> None:
     # home is outside it by construction.
     safe_root = None if not Path(tempfile.gettempdir()).resolve().is_relative_to(native) else native.parent
     safe = Path(tempfile.mkdtemp(prefix="hermes-pytest-basetemp-", dir=safe_root))
+    _RELOCATED_BASETEMPS.append(safe)
+    _sweep_stale_relocated_basetemps(safe_root)
     assert not safe.resolve().is_relative_to(native), (
         f"pytest basetemp {safe} still resolves inside the operator's Hermes home {native}; "
         "refusing to run the suite against the live install (pass --basetemp outside it)"
     )
     factory._given_basetemp = safe
     config.option.basetemp = str(safe)
+
+
+def _sweep_stale_relocated_basetemps(safe_root: Path | None) -> None:
+    """Best-effort removal of basetemps orphaned by interrupted runs.
+
+    SIGKILL or a hard interruption skips ``pytest_sessionfinish``, leaving a
+    ``hermes-pytest-basetemp-*`` sibling behind forever. The next session that
+    relocates into the same ``safe_root`` reclaims that residue before adding
+    its own directory. Only clearly abandoned directories are touched: a live
+    sibling session's basetemp keeps receiving per-test subdirectories, so its
+    root mtime stays fresh — anything modified within the retention window is
+    left alone.
+    """
+    if safe_root is None:
+        return
+    cutoff = time.time() - _STALE_BASETEMP_RETENTION_S
+    for stale in safe_root.glob("hermes-pytest-basetemp-*"):
+        try:
+            if stale in _RELOCATED_BASETEMPS or stale.stat().st_mtime > cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+def pytest_sessionfinish(session, exitstatus: int) -> None:
+    """Remove basetemps this harness relocated, mirroring pytest's own policy.
+
+    ``_given_basetemp`` marks the path as user-owned, so pytest's built-in
+    session cleanup never fires for it. The harness removes the directory
+    itself on success; on failure the sandbox is kept for post-mortem
+    inspection, exactly like pytest's keep-for-debugging behaviour.
+    """
+    if exitstatus != 0:
+        return
+    for path in _RELOCATED_BASETEMPS:
+        shutil.rmtree(path, ignore_errors=True)
+    _RELOCATED_BASETEMPS.clear()
 
 
 def _pinned_mcp_sdk_version() -> str:

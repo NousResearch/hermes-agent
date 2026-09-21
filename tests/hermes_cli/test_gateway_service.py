@@ -25,9 +25,11 @@ from gateway.restart import (
 )
 
 
-def _osascript_exec_argv(script: str) -> list[str]:
-    """The argv ``/usr/bin/osascript -e <script>`` hands to ``exec`` — undoing the AppleScript string
-    escaping, then POSIX shell quoting, the way osascript and /bin/sh will."""
+def _osascript_exec_argv(program_args: list[str]) -> list[str]:
+    """The argv a launchd ``ProgramArguments`` of ``/usr/bin/osascript -e <script>`` hands to ``exec`` —
+    undoing the AppleScript string escaping, then POSIX shell quoting, the way osascript and /bin/sh will."""
+    assert program_args[:2] == ["/usr/bin/osascript", "-e"] and len(program_args) == 3, program_args
+    script = program_args[2]
     prefix, suffix = 'do shell script "', '"'
     assert script.startswith(prefix) and script.endswith(suffix), script
     shell = re.sub(r"\\(.)", r"\1", script[len(prefix):-len(suffix)])
@@ -1859,8 +1861,7 @@ class TestProfileArg:
 
         # The job is launched through osascript so macOS Local Network Privacy attributes the
         # gateway's sockets to a platform binary (#71206); the real command is the exec'd child.
-        assert program_args[:2] == ["/usr/bin/osascript", "-e"]
-        assert _osascript_exec_argv(program_args[2]) == [
+        assert _osascript_exec_argv(program_args) == [
             "/usr/bin/python3",
             "-m",
             "hermes_cli.stderr_timestamp",
@@ -1891,10 +1892,12 @@ class TestProfileArg:
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(profile_dir / "bin dir" / "python"))
 
         program_args = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))["ProgramArguments"]
-        argv = _osascript_exec_argv(program_args[2])
+        argv = _osascript_exec_argv(program_args)
 
         assert argv[0] == str(profile_dir / "bin dir" / "python")
         assert argv[-3:] == [str(profile_dir / "logs" / "gateway.log"), "2>>", str(profile_dir / "logs" / "gateway.error.log")]
+        # The wrapper's own ps line must never be taken for the gateway (stop/status would signal osascript).
+        assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -2610,7 +2613,7 @@ class TestServiceTakeoverGovernance:
         # The whole bug class: no --replace anywhere in the supervised argv.
         assert "--replace" not in plist
         # It still runs the plain gateway command under KeepAlive (inside the osascript wrapper).
-        argv = _osascript_exec_argv(plistlib.loads(plist.encode("utf-8"))["ProgramArguments"][2])
+        argv = _osascript_exec_argv(plistlib.loads(plist.encode("utf-8"))["ProgramArguments"])
         assert argv[argv.index("gateway") + 1] == "run"
         assert "<key>KeepAlive</key>" in plist
         assert "<true/>" in plist

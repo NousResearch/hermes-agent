@@ -4,6 +4,7 @@ Tests real logic: state change formatting, event filtering pipeline,
 cooldown behavior, config integration, and adapter initialization.
 """
 
+import errno
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -320,12 +321,19 @@ class TestWsUrlConstruction:
 
 
 class TestLocalNetworkConnectHint:
-    def test_ehostunreach_names_the_launchd_remedy(self):
+    @pytest.mark.macos_only
+    def test_ehostunreach_under_launchd_names_the_remedy(self, monkeypatch):
+        """Only the launchd-supervised gateway can be denied by Local Network Privacy; the same errno from a
+        Terminal-run gateway is a genuinely unreachable host and must not be blamed on macOS (#71206)."""
         from plugins.platforms.homeassistant.adapter import _connect_error_detail
 
-        err = OSError(65, "No route to host")
+        err = OSError(errno.EHOSTUNREACH, "No route to host")
+        monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
+        assert _connect_error_detail(err) == str(err)
+
+        monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
         detail = _connect_error_detail(err)
-        assert "No route to host" in detail
+        assert detail.startswith(str(err))
         assert "Local Network" in detail
         assert "hermes gateway install" in detail
         assert "71206" in detail

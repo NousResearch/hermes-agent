@@ -223,7 +223,9 @@ def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: 
     spawns its child as osascript-responsible — an Apple platform binary — so the child is exempt;
     ``/bin/sh -c exec …`` and ``/usr/bin/time`` wrappers are NOT (the launchd job identity is the
     non-entitled first executable). ``do shell script`` buffers the child's stdout/stderr until it exits,
-    so the command redirects both to the log files the plist would otherwise route; ``exec`` keeps the
+    so the command appends both to the same files the plist's ``StandardOutPath``/``StandardErrorPath``
+    name (those keys stay: they are where osascript's own output lands — an empty result line per exit
+    and an un-timestamped ``execution error`` line on non-zero exit); ``exec`` keeps the
     gateway a direct child in the job's process group, so ``launchctl bootout`` / ``kickstart -k`` still
     deliver SIGTERM to it and KeepAlive's ``SuccessfulExit`` semantics are preserved (osascript exits 0
     exactly when the shell did).
@@ -340,10 +342,10 @@ def generate_launchd_plist() -> str:
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
     # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).
-    command = _timestamped_stderr_gateway_command(log_dir / "gateway.error.log", external_supervisor=True)
+    stdout_log, stderr_log = log_dir / "gateway.log", log_dir / "gateway.error.log"
+    command = _timestamped_stderr_gateway_command(stderr_log, external_supervisor=True)
     prog_args_xml = "\n        ".join(
-        f"<string>{escape(part)}</string>"
-        for part in launchd_program_arguments(command, log_dir / "gateway.log", log_dir / "gateway.error.log")
+        f"<string>{escape(part)}</string>" for part in launchd_program_arguments(command, stdout_log, stderr_log)
     )
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
@@ -424,10 +426,10 @@ def generate_launchd_plist() -> str:
     <integer>60</integer>
 {nofile_block}
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    <string>{stdout_log}</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    <string>{stderr_log}</string>
 </dict>
 </plist>
 """

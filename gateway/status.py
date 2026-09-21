@@ -518,6 +518,10 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
+    # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
+    # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
+    if basenames[0] == "osascript":
+        return None
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
         return "run"

@@ -2624,6 +2624,16 @@ def test_broker_refuses_writable_socket_directory(tmp_path):
 
 
 @pytest.mark.linux_only
+def test_empty_publication_slot_is_reclaimable(tmp_path):
+    broker = _load_broker()
+    slot = tmp_path / broker._PUBLISH_SUFFIXES[0]
+    slot.mkdir(mode=0o700)
+
+    assert broker._reclaim_stale_publish_dir(str(slot)) is True
+    assert not slot.exists()
+
+
+@pytest.mark.linux_only
 def test_publication_slots_reclaim_only_stale_broker_sockets(tmp_path, request):
     broker = _load_broker()
     root = _staging_root(tmp_path)

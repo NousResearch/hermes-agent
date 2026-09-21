@@ -1511,7 +1511,7 @@ def _clear_stale_socket(sock_path: str) -> None:
 
 
 def _reclaim_stale_publish_dir(path: str) -> bool:
-    """Reclaim only a private slot containing one unreachable broker socket."""
+    """Reclaim an empty private slot or one unreachable broker socket."""
     try:
         info = os.lstat(path)
         entries = os.listdir(path)
@@ -1521,8 +1521,15 @@ def _reclaim_stale_publish_dir(path: str) -> bool:
         not stat.S_ISDIR(info.st_mode)
         or info.st_uid != os.geteuid()  # windows-footgun: ok — Linux-only broker
         or stat.S_IMODE(info.st_mode) != 0o700
-        or entries != ["s"]
     ):
+        return False
+    if not entries:
+        try:
+            os.rmdir(path)
+        except OSError:
+            return False
+        return True
+    if entries != ["s"]:
         return False
     socket_path = os.path.join(path, "s")
     try:

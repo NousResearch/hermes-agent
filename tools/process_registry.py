@@ -1214,7 +1214,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
-        the correct sandbox context."""
+        the correct sandbox context. A configured local broker deliberately owns these
+        workers: restarting that broker terminates them rather than abandoning processes
+        outside its containment boundary."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
@@ -1450,10 +1452,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
 
-                if (
+                broker_background = bool(
                     getattr(env, "_local_exec_broker_socket", None)
-                    and not broker_pid_artifact_confirmed
-                ):
+                )
+                if broker_background and not broker_pid_artifact_confirmed:
                     pid_str = env.execute(
                         f"cat {q(pid_path)} 2>/dev/null", timeout=5
                     ).get("output", "").strip()
@@ -1483,6 +1485,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
                             )
                             self._move_to_finished(session)
                             return
+
+                if broker_background:
+                    # This is a host PID supplied by the broker, not merely a sandbox
+                    # artifact. Keep checking its immutable start time so PID reuse cannot
+                    # turn an unrelated process into permanent proof that the worker lives.
+                    if (
+                        session.host_start_time is not None
+                        and self._host_pid_is_ours(
+                            session.pid, session.host_start_time
+                        )
+                    ):
+                        continue
+                    exit_str = env.execute(
+                        f"cat {q(exit_path)} 2>/dev/null", timeout=5
+                    ).get("output", "").strip()
+                    try:
+                        exit_code = int(exit_str.splitlines()[-1].strip())
+                    except (ValueError, IndexError):
+                        exit_code = -1
+                    session.exit_code = exit_code
+                    self._finish_exited(session, exit_code)
+                    return
 
                 check = env.execute(
                     f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)

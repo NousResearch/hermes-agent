@@ -1195,6 +1195,54 @@ class TestSpawnEnvSanitization:
 
         assert env.pid_reads == 1
         assert session.exit_code == 0
+
+    @pytest.mark.linux_only
+    def test_broker_background_recycled_pid_is_not_a_live_worker(
+        self, registry, tmp_path, monkeypatch
+    ):
+        class FakeLocalBrokerEnv:
+            _local_exec_broker_socket = "/run/hermes-broker/broker.sock"
+
+            def execute(self, command, **_kwargs):
+                if "wc -c" in command:
+                    return {"output": "0 0\n"}
+                if command.startswith("cat ") and command.endswith(".pid 2>/dev/null"):
+                    return {"output": "4242\n"}
+                if command.startswith("kill -0"):
+                    return {"output": "0\n"}
+                if command.startswith("cat ") and command.endswith(".exit 2>/dev/null"):
+                    return {"output": "0\n"}
+                raise AssertionError(command)
+
+        session = registry._new_session(
+            "recycled launcher", "", "", "", None,
+            env_ref=FakeLocalBrokerEnv(), pid_scope="sandbox",
+        )
+        session.pid = 4242
+        session.host_start_time = 9876
+        monkeypatch.setattr(registry, "_host_pid_is_ours", lambda *_args: False)
+        sleep_calls = 0
+
+        def one_poll_only(_seconds):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls > 1:
+                raise AssertionError("recycled launcher pid was still treated as live")
+
+        monkeypatch.setattr("tools.process_registry.time.sleep", one_poll_only)
+
+        registry._env_poller_loop(
+            session,
+            session.env_ref,
+            str(tmp_path / "recycled.log"),
+            str(tmp_path / "recycled.pid"),
+            str(tmp_path / "recycled.exit"),
+        )
+
+        assert session.exited is True
+        assert session.completion_reason == "exited"
+        assert session.exit_code == 0
+
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
         session.exited = False

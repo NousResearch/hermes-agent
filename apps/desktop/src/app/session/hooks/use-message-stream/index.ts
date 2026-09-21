@@ -753,10 +753,10 @@ export function useMessageStream({
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
-            } else if (finalText) {
+            } else if (finalText || completionError) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }
-          } else if (finalText) {
+          } else if (finalText || completionError) {
             nextMessages = [...prev, newAssistantFromCompletion()]
           }
         }

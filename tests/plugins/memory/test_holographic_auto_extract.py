@@ -24,6 +24,8 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER,
+    _SUMMARY_END_MARKER,
+    _append_text_to_content,
     is_compaction_summary_message,
 )
 from plugins.memory.holographic import HolographicMemoryProvider
@@ -103,6 +105,55 @@ def test_merged_into_tail_summary_suffix_not_harvested_prefix_content_ignored(tm
     )
     provider.on_session_end([merged])
     assert _fact_contents(provider) == []
+    provider.shutdown()
+
+
+def test_delimiter_merged_list_harvests_only_authentic_prior_text(tmp_path):
+    """Multimodal delimiter carriers keep the genuine blocks before the
+    summary, but the generated summary itself must never become a fact."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+    authentic_prior = "I prefer PostgreSQL settings from the genuine user turn"
+    prior_blocks = [
+        {"type": "text", "text": authentic_prior},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        },
+    ]
+    suffix = (
+        f"\n\n{_MERGED_SUMMARY_DELIMITER}\n\n"
+        f"{SUMMARY_MSG}\n\n{_SUMMARY_END_MARKER}"
+    )
+    merged = _append_text_to_content(
+        _append_text_to_content(prior_blocks, suffix, prepend=False),
+        f"{_MERGED_PRIOR_CONTEXT_HEADER}\n",
+        prepend=True,
+    )
+
+    provider.on_session_end([_user(merged)])
+
+    assert _fact_contents(provider) == [authentic_prior]
+    provider.shutdown()
+
+
+def test_force_user_leading_list_harvests_only_authentic_tail_text(tmp_path):
+    """A force-user-leading list puts the summary before the real multimodal
+    request; extraction must retain only the request after the end marker."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+    authentic_tail = "I prefer tabs from the genuine user request"
+    real_blocks = [
+        {"type": "text", "text": authentic_tail},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,BBBB"},
+        },
+    ]
+    prefix = f"{SUMMARY_MSG}\n\n{_SUMMARY_END_MARKER}\n\n"
+    merged = _append_text_to_content(real_blocks, prefix, prepend=True)
+
+    provider.on_session_end([_user(merged)])
+
+    assert _fact_contents(provider) == [authentic_tail]
     provider.shutdown()
 
 

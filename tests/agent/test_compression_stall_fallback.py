@@ -26,8 +26,15 @@ from unittest.mock import patch
 
 from agent.context_compressor import (
     ContextCompressor,
+    HISTORICAL_TASK_HEADING,
     pin_summary_route,
     take_pinned_summary_route,
+)
+from agent.context_compressor_continuation import (
+    CURRENT_SUBTASK_HEADING,
+    GOVERNING_OUTCOME_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
 )
 from agent.conversation_compression import (
     CompressionCommitFence,
@@ -357,6 +364,14 @@ def _msgs():
 
 
 def _ok_response(content="SUMMARY BODY"):
+    content = "\n\n".join((
+        f"{HISTORICAL_TASK_HEADING}\nUser asked to continue the requested work.",
+        f"{GOVERNING_OUTCOME_HEADING}\nDeliver the requested result.",
+        f"{CURRENT_SUBTASK_HEADING}\nContinue the current grounded step.",
+        f"{LATEST_USER_CORRECTION_HEADING}\nNone.",
+        f"{NEXT_OUTCOME_STEP_HEADING}\nComplete the next grounded step.",
+        f"## Critical Context\n{content}",
+    ))
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
     )

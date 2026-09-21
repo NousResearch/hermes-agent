@@ -4,6 +4,9 @@ Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
+`agent/context_compressor_summary.py` (summary dispatch and prompts),
+`agent/context_compressor_continuation.py` (local continuation schema and fallback),
+`agent/context_compressor_handoff.py` (handoff boundaries and projections),
 `agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
 
@@ -103,6 +106,35 @@ in long gateway sessions.
 Located in `agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
 API-reported token counts.
+
+#### Local batch handoff contract
+
+New local batch summaries begin with these ordered, nonempty sections:
+
+1. `Historical Task Snapshot` — literal source evidence, never the selector for what to resume.
+2. `Governing User Outcome` — the final result still requested, distinct from a method or intermediate step.
+3. `Current Subtask` — the pending intermediate step and its relationship to that result.
+4. `Latest User Correction` — the latest applicable correction and the route it invalidates.
+5. `Next Outcome-Relevant Step (Reference Only)` — one grounded next action or a clarification question.
+
+The handoff alone never activates work. Later real user instructions, including
+`/steer` corrections and cancellations, take precedence. A context-dependent
+message such as "continue" may use these fields as background; if they are
+missing or unknown, preserved real-user context is consulted before clarification.
+Finishing a subtask does not by itself complete the governing outcome.
+
+Validation checks section structure and contradictory terminal state, not the
+truth of model-generated intent. Reserved headings inside fenced code are inert.
+A deterministic fallback leaves unverified intent `Unknown` and labels previous
+values as reference only. If no valid fallback can be built, the original
+transcript is retained. Superseded attempts cannot publish or roll back a newer
+attempt's summary.
+
+This contract applies only to newly generated local batch summaries. Historical
+handoffs remain readable, native provider checkpoints keep their own format,
+and micro-compaction uses noncanonical pointers to the surviving real-user
+sequence. Mixed handoffs preserve authentic user content and in-flight replay
+separately from the synthetic summary, including multimodal content.
 
 #### Token accounting: provider anchors and explicit heuristic fallbacks
 

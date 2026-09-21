@@ -6,7 +6,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import (
+    ContextCompressor,
+    HISTORICAL_TASK_HEADING,
+)
+from agent.context_compressor_continuation import (
+    CURRENT_SUBTASK_HEADING,
+    GOVERNING_OUTCOME_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
+)
 
 
 def _make_compressor():
@@ -38,10 +47,30 @@ def _make_compressor():
     return compressor
 
 
-def _summary_response(content="## Goal\nCompaction complete."):
+def _valid_user_summary(content: str) -> str:
+    return f"""{HISTORICAL_TASK_HEADING}
+User asked to continue the current work.
+
+{GOVERNING_OUTCOME_HEADING}
+Complete the user's requested work.
+
+{CURRENT_SUBTASK_HEADING}
+Continue the current grounded step.
+
+{LATEST_USER_CORRECTION_HEADING}
+None.
+
+{NEXT_OUTCOME_STEP_HEADING}
+Complete the next grounded step.
+
+## Critical Context
+{content}"""
+
+
+def _summary_response(content="Compaction complete."):
     response = MagicMock()
     response.choices = [MagicMock()]
-    response.choices[0].message.content = content
+    response.choices[0].message.content = _valid_user_summary(content)
     return response
 
 
@@ -81,7 +110,7 @@ def test_memory_context_injected_into_iterative_summary_prompt():
 
     def mock_call_llm(**kwargs):
         prompts.append(kwargs["messages"][0]["content"])
-        return _summary_response("## Goal\nMigration updated.")
+        return _summary_response("Migration updated.")
 
     with patch("agent.context_compressor.call_llm", mock_call_llm):
         compressor._generate_summary(
@@ -163,7 +192,5 @@ def test_whitespace_memory_context_is_not_injected():
 
     assert len(prompts) == 1
     assert "MEMORY PROVIDER CONTEXT" not in prompts[0]
-
-
 
 

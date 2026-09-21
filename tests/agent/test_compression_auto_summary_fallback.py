@@ -7,7 +7,11 @@ user-visible warning names it instead of only appearing in errors.log.
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
+from agent.context_compressor_continuation import (
+    CURRENT_SUBTASK_HEADING, GOVERNING_OUTCOME_HEADING,
+    LATEST_USER_CORRECTION_HEADING, NEXT_OUTCOME_STEP_HEADING,
+)
 
 
 def _msgs():
@@ -30,7 +34,14 @@ def test_auto_resolved_summary_model_falls_back_to_main_on_empty_content():
         kwargs["route_info"].update(provider="openrouter", model="main-model")
         ok = MagicMock()
         ok.choices = [MagicMock()]
-        ok.choices[0].message.content = "summary via main model"
+        ok.choices[0].message.content = (
+            f"{HISTORICAL_TASK_HEADING}\nUser asked: 'do something'\n\n"
+            f"{GOVERNING_OUTCOME_HEADING}\nComplete the requested work.\n\n"
+            f"{CURRENT_SUBTASK_HEADING}\nResolve the next action.\n\n"
+            f"{LATEST_USER_CORRECTION_HEADING}\nNone.\n\n"
+            f"{NEXT_OUTCOME_STEP_HEADING}\nClarify the requested result.\n\n"
+            "## Completed Actions\nsummary via main model"
+        )
         return ok
 
     with patch("agent.context_compressor.get_model_context_length", return_value=100000):

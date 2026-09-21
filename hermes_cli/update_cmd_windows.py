@@ -1106,11 +1106,12 @@ def _refresh_windows_gateway_launchers() -> None:
     Launchers are written once at install, so old installs kept launching via ``pythonw.exe`` (``sys.stderr is
     None`` death). The task's /TR points at a stable path, so rewriting in place retargets it without UAC.
 
-    The Scheduled Task / Startup-folder launchers (``gateway.cmd`` + ``gateway.vbs``) are persistence
-    artifacts written once at install time — ``hermes update`` never touched them, so installs created
+    The Scheduled Task / Startup-folder launchers (``gateway.cmd`` + ``gateway.ps1``/``.lnk``) are
+    persistence artifacts written once at install time — older updates never touched them, so installs created
     before the hidden-console rework (aa2ae36c3f) kept launching the gateway through ``pythonw.exe``
     forever: every descendant spawn flashed a conhost (#54220/#56747) and, since #70344, the console-less
-    gateway died at startup with ``RuntimeError: sys.stderr is None`` (#71671).
+    gateway died at startup with ``RuntimeError: sys.stderr is None`` (#71671). Refreshing also migrates
+    an installed legacy Startup VBScript entry to the managed PowerShell shortcut.
     """
     from hermes_cli.update_cmd import _m
     if not _m()._is_windows():

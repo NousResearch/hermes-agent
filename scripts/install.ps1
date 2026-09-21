@@ -2699,7 +2699,7 @@ function Install-Venv {
             # re-locks the venv's .pyd files between our kill sweep and
             # venv parking/cleanup (the July 2026 _brotlicffi.pyd incident). schtasks
             # /End stops a running task instance; /Change /DISABLE stops it
-            # from re-firing mid-install. (The Startup-folder .vbs fallback is
+            # from re-firing mid-install. (The Startup-folder .lnk fallback is
             # NOT touched: it only fires at logon, so it cannot respawn a
             # gateway mid-install.) Re-enabled in the finally below -- including
             # on failure -- but only for tasks that were enabled to begin with.

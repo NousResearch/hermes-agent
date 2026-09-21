@@ -691,10 +691,10 @@ hermes gateway stop                  # Drain and stop the service
 hermes gateway status                # Check status, including registration drift
 ```
 
-The Scheduled Task runs `wscript.exe` on a generated `.vbs` launcher under `%USERPROFILE%\.hermes\gateway-service\`. The launcher starts `python.exe -m hermes_cli.main gateway run` with a hidden window and **exits immediately** — by design: `wscript.exe` has no console, so at logon it never receives the `CTRL_CLOSE_EVENT` that kills a `cmd.exe`-hosted gateway, and the gateway inherits one hidden console instead of every subprocess flashing its own (see `hermes_cli/gateway_windows.py::_build_gateway_vbs_script`).
+The Scheduled Task runs a generated, UTF-8 BOM PowerShell launcher under `%USERPROFILE%\.hermes\gateway-service\`. PowerShell starts the gateway in a real but hidden console, waits for it, and returns its exit status to Task Scheduler. The Startup-folder fallback is a hidden `.lnk` to the same launcher in asynchronous mode; it delegates to Hermes' detached, Job-breakaway spawn path and does not require the VBScript engine.
 
-:::warning RestartOnFailure covers the launcher, not the gateway
-Because the launcher returns as soon as the gateway is spawned, Task Scheduler only ever sees the launcher's exit code. The `<RestartOnFailure>` policy in the registered task therefore fires only when `wscript.exe` itself fails to start the gateway — it does **not** restart a gateway that crashes or is killed later. Gateway auto-restart on Windows relies on the gateway's own in-process restart path (`/restart`, updates, and the `hermes gateway restart` command); a gateway killed from outside stays down until `hermes gateway start` or `schtasks /Run /TN <task>`.
+:::info RestartOnFailure observes gateway failures
+The supervised launcher keeps the Scheduled Task active for the gateway's lifetime. Transient failures such as exit code `75` reach Task Scheduler and activate `<RestartOnFailure>`; fatal configuration exit code `78` maps to a clean stop so an invalid configuration does not create a retry loop.
 :::
 
 `hermes gateway install` writes the task from the current template; a task registered by an older build would otherwise keep its old settings (no `RestartOnFailure`, no logon `Delay`, an older launcher command line) indefinitely. `hermes gateway status` compares the registered task with the current template and warns when it predates it:

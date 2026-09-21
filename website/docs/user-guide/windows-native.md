@@ -176,11 +176,11 @@ hermes gateway install
 
 What happens under the hood:
 
-1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN Hermes_Gateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
-2. If schtasks is blocked by group policy, falls back to writing a small `Hermes_Gateway.vbs` launcher (run hidden via `wscript.exe`) into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same effect, slightly cruder. A VBScript is used rather than a `cmd.exe` shortcut because a console allocated at logon can receive a close event that kills the gateway before it finishes starting.
-3. Spawns the gateway **detached via `pythonw.exe`** — not `python.exe`. `pythonw.exe` has no console attached, which immunizes it against `CTRL_C_EVENT` broadcasts from sibling processes (a real issue that used to kill the gateway when you Ctrl+C'd anything in the same process group).
+1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN Hermes_Gateway_<profile>` — registers a profile-specific task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
+2. If schtasks is blocked by group policy, writes a hidden `Hermes_Gateway*.lnk` into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. The shortcut invokes the same generated PowerShell launcher asynchronously; no VBScript engine is required.
+3. Manual and Startup launches use the virtual environment's console `python.exe` through Hermes' detached spawn path. Scheduled Tasks use supervised mode, which owns a real hidden console and returns the gateway's exit status to Task Scheduler.
 
-Flags used when spawning: `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`.
+Detached launches use `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB`. Supervised launches use `CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP` with `STARTF_USESHOWWINDOW/SW_HIDE`.
 
 ### Manage
 

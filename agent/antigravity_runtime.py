@@ -59,6 +59,7 @@ def _ensure_antigravity_session(agent) -> None:
         configured_client_factory = default_client_factory
     agent._antigravity_session = session_factory(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()),
+        model=getattr(agent, "model", None),
         client_factory=configured_client_factory,
         projector_factory=getattr(agent, "_antigravity_projector_factory", None),
         event_callback=_event_bridge(agent),

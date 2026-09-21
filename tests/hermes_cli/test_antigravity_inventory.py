@@ -16,13 +16,15 @@ def test_model_options_exposes_detected_antigravity_runtime(monkeypatch):
             sandbox=True,
             resume=True,
             authenticated=True,
+            models=("gemini-test", "claude-opus-test-thinking"),
         ),
     )
 
     payload = build_model_options_payload(load_picker_context())
     row = next(provider for provider in payload["providers"] if provider["slug"] == "google-antigravity")
 
-    assert row["models"] == ["auto"]
+    assert row["models"] == ["auto", "gemini-test", "claude-opus-test-thinking"]
+    assert row["total_models"] == 3
     assert row["authenticated"] is True
     assert row["runtime_status"] == {
         "installed": True,

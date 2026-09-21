@@ -24,9 +24,11 @@ class AntigravityTurnResult:
 class AntigravitySession:
     """One external Antigravity conversation, owned by one ``AIAgent``."""
 
-    def __init__(self, *, cwd: str, client: Any = None, client_factory: Optional[Callable[..., Any]] = None,
+    def __init__(self, *, cwd: str, model: Optional[str] = None, client: Any = None,
+                 client_factory: Optional[Callable[..., Any]] = None,
                  projector_factory: Optional[Callable[[], Any]] = None, event_callback: Optional[Callable[..., Any]] = None):
         self.cwd = cwd
+        self.model = model
         self._client = client
         self._client_factory = client_factory
         self._projector_factory = projector_factory
@@ -86,7 +88,8 @@ class AntigravitySession:
 
         try:
             response = self._get_client().run_turn(
-                prompt, conversation_id=self.conversation_id, event_callback=on_event, cancel_event=self._cancel_event,
+                prompt, conversation_id=self.conversation_id, model=self.model,
+                event_callback=on_event, cancel_event=self._cancel_event,
             )
         except Exception as exc:
             from agent.transports.antigravity_cli import AntigravityCancelled

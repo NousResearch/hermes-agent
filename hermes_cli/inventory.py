@@ -261,13 +261,15 @@ def build_model_options_payload(
         authenticated = bool(capabilities is not None and capabilities.authenticated)
         version = ".".join(map(str, capabilities.version)) if capabilities and capabilities.version else ""
         warning = "" if authenticated else (capabilities.message if capabilities else "Antigravity CLI not found")
+        runtime_models = ["auto", *(capabilities.models if capabilities is not None else ())]
+        runtime_models = list(dict.fromkeys(runtime_models))
         payload["providers"].append({
             "slug": "google-antigravity",
             "name": "Google Antigravity",
             "is_current": current_antigravity,
             "is_user_defined": False,
-            "models": ["auto"],
-            "total_models": 1,
+            "models": runtime_models,
+            "total_models": len(runtime_models),
             "source": "local-runtime",
             "authenticated": authenticated,
             "auth_type": "external_runtime",
@@ -275,8 +277,8 @@ def build_model_options_payload(
             "warning": warning,
             "runtime_status": {"installed": available, "version": version,
                                "authentication": "authenticated" if authenticated else "authentication_required"},
-            "capabilities": {"auto": {"reasoning": True}},
-            "featured_models": ["auto"],
+            "capabilities": {model: {"reasoning": True} for model in runtime_models},
+            "featured_models": runtime_models,
         })
     if not refresh:
         _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,

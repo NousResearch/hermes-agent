@@ -1,0 +1,29 @@
+name: hermes-lcm
+repo: https://github.com/misterdas/hermes-lcm
+sha: 2747d512b701c2718c7ebc4dabff0bea7de58ea2
+description: Lossless Context Management — SQLite-backed DAG context engine that never loses a message. Full retrieval drill-down after compression.
+maintainer: misterdas
+tier: community
+category: memory
+requires_hermes: ">=0.19"
+docs_url: https://github.com/misterdas/hermes-lcm
+capabilities:
+  provides_tools:
+    - lcm_grep
+    - lcm_recall
+    - lcm_query_state
+    - lcm_compute
+    - lcm_compile_evidence
+    - lcm_evidence_pack
+    - lcm_retrieve
+    - lcm_recent
+    - lcm_load_session
+    - lcm_describe
+    - lcm_expand
+    - lcm_expand_query
+    - lcm_status
+    - lcm_inspect
+    - lcm_doctor
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

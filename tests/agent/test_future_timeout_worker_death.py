@@ -15,6 +15,7 @@ pytest-timeout is not a project dependency, so a ``pytest.mark.timeout`` marker 
 
 import concurrent.futures
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,7 @@ from agent.conversation_compression import (
     _await_worker_within_budget,
     _join_cancelled_worker,
 )
+from agent.tool_executor import _poll_sequential_future
 
 
 def _settled_dead_future(pool, exc):
@@ -62,3 +64,20 @@ def test_in_flight_commit_surfaces_worker_timeout_instead_of_looping():
         elapsed = time.monotonic() - started
 
     assert elapsed < 0.5, f"commit wait hung {elapsed:.2f}s on a dead worker"
+
+
+def test_sequential_tool_poll_surfaces_worker_timeout_instead_of_looping():
+    """_poll_sequential_future re-waits on the future after each slice; without the done() guard
+    a worker that died with TimeoutError kept it spinning until the deadline. With a 2s deadline
+    on base this returns ("timeout", None) after 2s — post-fix the worker's error propagates at
+    once."""
+    agent = SimpleNamespace(_interrupt_requested=False, _touch_activity=lambda msg: None)
+    gate = SimpleNamespace(excluded_seconds=lambda: 0.0)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = _settled_dead_future(pool, TimeoutError("tool stream stalled"))
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="tool stream stalled"):
+            _poll_sequential_future(agent, future, "some_tool", deadline=started + 2.0, started=started, authorization_gate=gate)
+        elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5, f"sequential poll hung {elapsed:.2f}s on a dead worker"

@@ -7,7 +7,8 @@ nothing when reasoning was *enabled*, so a configured ``reasoning_effort``
 was silently dropped for every custom endpoint.
 
 These tests pin the wire-shape contract:
-    - disabled on Ollama  → extra_body.think = False + reasoning_effort=none
+    - disabled on thinking-capable Ollama → extra_body.think = False + reasoning_effort=none
+    - disabled on non-thinking Ollama → no reasoning fields
     - disabled elsewhere  → reasoning_effort=none, no think (strict APIs 422)
     - enabled + effort    → top-level reasoning_effort (native OpenAI-compat
                           format GLM/ARK expect), passed through verbatim
@@ -61,6 +62,7 @@ class TestCustomReasoningWireShape:
             reasoning_config={"enabled": False},
             model="qwen3",
             base_url="http://127.0.0.1:11434/v1",
+            supports_reasoning=True,
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
@@ -71,6 +73,7 @@ class TestCustomReasoningWireShape:
             reasoning_config={"enabled": True, "effort": "none"},
             model="qwen3",
             base_url="http://localhost:11434/v1",
+            supports_reasoning=True,
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
@@ -115,9 +118,20 @@ class TestCustomReasoningWireShape:
             reasoning_config={"enabled": False},
             model="qwen3",
             base_url="https://ollama.com/v1",
+            supports_reasoning=True,
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
+
+    def test_non_thinking_ollama_omits_all_reasoning_fields(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="devstral-small-2:24b",
+            base_url="http://127.0.0.1:11434/v1",
+            supports_reasoning=False,
+        )
+        assert eb == {}
+        assert tl == {}
 
     @pytest.mark.parametrize(
         "base_url",
@@ -169,6 +183,25 @@ class TestCustomReasoningWireShape:
         )
         assert eb.get("think") is not True
 
+    @pytest.mark.parametrize(
+        "reasoning_config, expected",
+        [({"enabled": True, "effort": "high"}, "default"), ({"enabled": False, "effort": "medium"}, "none")],
+    )
+    def test_groq_host_clamps_effort_to_groq_vocabulary(self, custom_profile, reasoning_config, expected):
+        """api.groq.com accepts top-level reasoning_effort only as 'none' / 'default' (#75089).
+
+        Drives the main transport so the clamp is proven where production reads it.
+        """
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="qwen/qwen3.6-27b", messages=[{"role": "user", "content": "ping"}], tools=None,
+            provider_profile=custom_profile, reasoning_config=reasoning_config,
+            base_url="https://api.groq.com/openai/v1", provider_name="custom",
+        )
+        assert kwargs["reasoning_effort"] == expected
+        assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
+
 
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""
@@ -180,3 +213,39 @@ class TestCustomReasoningWithNumCtx:
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {}
 
+
+class TestCustomResponsesEffortVocabulary:
+    """The Responses transport honours a custom endpoint's configured ``max`` (#114249).
+
+    A custom relay's models are not on the OpenAI per-model ladder; without the
+    profile declaration the Responses transport clamped a configured ``max`` to
+    ``xhigh`` while chat-completions on the same provider forwarded ``max``.
+    """
+
+    def test_named_relay_keeps_configured_max_where_chat_completions_does(self, custom_profile):
+        from agent.transports.codex import _resolve_reasoning
+
+        reasoning = {"enabled": True, "effort": "max"}
+        _, top_level = custom_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning, base_url="https://relay.example/v1"
+        )
+        effort, enabled = _resolve_reasoning(
+            "deepseek-flash",
+            {"provider": "custom:relay", "base_url": "https://relay.example/v1", "reasoning_config": reasoning},
+        )
+        assert (effort, enabled) == (top_level["reasoning_effort"], True) == ("max", True)
+
+    def test_custom_entry_at_the_official_openai_origin_keeps_the_per_model_ladder(self):
+        """api.openai.com's vocabulary is known per model; the custom declaration must not
+        put ``max`` on the wire for a slug OpenAI rejects it on."""
+        from agent.transports.codex import _resolve_reasoning
+
+        effort, enabled = _resolve_reasoning(
+            "gpt-5.2",
+            {
+                "provider": "custom:oai",
+                "base_url": "https://api.openai.com/v1",
+                "reasoning_config": {"enabled": True, "effort": "max"},
+            },
+        )
+        assert (effort, enabled) == ("xhigh", True)

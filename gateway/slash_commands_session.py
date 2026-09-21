@@ -15,12 +15,16 @@ import shlex
 from typing import Optional, Union
 
 from agent.i18n import t
+from agent.conversation_worktree import ConversationWorktreeError
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key, is_shared_multi_user_session
 from gateway.session_transcript import TranscriptReadError
+from gateway.slash_commands_branch_thread import (
+    BRANCH_THREAD_PLATFORMS, branch_dest_source, branch_thread_parent, format_thread_ref, parse_branch_args,
+)
 from gateway.slash_commands_status import HISTORY_UNREADABLE
 
 logger = logging.getLogger("gateway.run")  # log-record parity with gateway/run.py
@@ -153,6 +157,13 @@ class GatewaySessionCommandsMixin:
         """Handle /new or /reset command."""
         source = event.source
         session_key = self._session_key_for_source(source)
+        old_entry = self.session_store._entries.get(session_key)
+        try:
+            new_entry = await self.async_session_store.reset_session(
+                session_key, conversation_kind="interactive"
+            )
+        except ConversationWorktreeError as exc:
+            return f"conversation worktree setup failed: {exc}"
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
@@ -163,7 +174,6 @@ class GatewaySessionCommandsMixin:
         # release (run_generation=old) will return False and leave its dead agent behind; clearing here
         # keeps the slot from becoming a zombie that silently drops all later messages (#28686). Idempotent,
         # so the run's finally calling it again is harmless.
-        old_entry = self.session_store._entries.get(session_key)
         await self._cleanup_old_agent_for_reset(session_key)
         self._evict_cached_agent(session_key)
         # Conversation boundary: ALL conversation-scoped per-session state + security state in one
@@ -177,7 +187,6 @@ class GatewaySessionCommandsMixin:
                                   parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
         _reset_process_scoped_tool_state()
 
-        new_entry = await self.async_session_store.reset_session(session_key)
         _old_sid = old_entry.session_id if old_entry else None
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
@@ -483,7 +492,8 @@ class GatewaySessionCommandsMixin:
         compressor = getattr(agent, "context_compressor", None)
         count_before = getattr(compressor, "compression_count", 0)
         try:
-            await self._run_in_executor_with_context(lambda: agent._compress_context([], "", force=True))
+            await self._run_in_executor_with_context(
+                lambda: agent._compress_context([], "", force=True, task_id=session_id or "default"))
         except Exception as exc:
             return t("gateway.compress.failed", error=exc)
         if getattr(compressor, "compression_count", 0) > count_before:
@@ -544,13 +554,17 @@ class GatewaySessionCommandsMixin:
         if platform_key is not None:
             runtime_kwargs["platform"] = platform_key
         runtime_kwargs["gateway_session_key"] = session_key
+        # Same reasoning setting as a live turn (session ``/reasoning`` > per-model > global): without it
+        # the transport applies its default effort — a 400 on non-reasoning models.
+        runtime_kwargs["reasoning_config"] = self._resolve_session_reasoning_config(source=source, model=model)
 
         tmp_agent = await self._build_manual_compression_agent(session_entry.session_id, model, runtime_kwargs)
         try:
             # Not a bare run_in_executor: the profile secret scope is a contextvar the default
             # executor hop would drop, failing aux-client credential resolution closed.
             result = await self._run_in_executor_with_context(
-                lambda: compress_now(tmp_agent, msgs, request, system_message="", skip_without_window=True))
+                lambda: compress_now(tmp_agent, msgs, request, system_message="", skip_without_window=True,
+                                     task_id=session_entry.session_id or "default"))
             if result.status == "nothing_to_do":
                 return t("gateway.compress.nothing_to_do")
             if result.status != "compressed":
@@ -737,7 +751,8 @@ class GatewaySessionCommandsMixin:
                     f.write(rendered)
 
             await asyncio.to_thread(_render_and_write)
-            adapter = self.get_adapter(source.platform)
+            # Profile-aware: under multiplex the requester's bot lives in _profile_adapters, not self.adapters.
+            adapter = self._delivery_adapter_for(source)
             if not adapter:
                 return "Platform adapter not found to send the document."
             await adapter.send_document(chat_id=source.chat_id, file_path=temp_path,
@@ -799,9 +814,11 @@ class GatewaySessionCommandsMixin:
     async def _list_titled_sessions(self, source, session_key: str, allow_all: bool) -> list[dict]:
         """Titled sessions visible to the caller (origin-scoped unless admin ``--all``)."""
         widen = allow_all and self._resume_caller_is_admin(source)
+        # Rank by lineage activity, not root started_at: a lineage compressed for days is projected
+        # onto its live tip and must sit where the user last touched it (#114271).
         sessions = await self._session_db.list_sessions_rich(
             source=source.platform.value if source.platform else None,
-            session_key=None if widen else session_key, limit=10)
+            session_key=None if widen else session_key, limit=10, order_by_last_active=True)
         titled = [s for s in sessions if s.get("title")][:10]
         return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
 
@@ -979,7 +996,12 @@ class GatewaySessionCommandsMixin:
     # ----------------------------------------------------------------------- /branch
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
-        """Handle /branch [name] — fork the current session into an independent copy."""
+        """Handle /branch [--here] [name] — fork the current session into an independent copy.
+
+        Thread-capable platforms (Discord/Telegram/Slack/Matrix) open a NEW sibling thread bound
+        to the clone and leave this chat on the original session; ``--here`` (and every platform
+        without threads) switches the current chat onto the clone instead (#66023).
+        """
         import json as _json
         import uuid as _uuid
         from datetime import datetime as _dt
@@ -996,17 +1018,25 @@ class GatewaySessionCommandsMixin:
         if not history:
             return t("gateway.branch.no_conversation")
         new_session_id = f"{_dt.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
-        branch_title = event.get_command_args().strip()
+        stay_here, branch_title = parse_branch_args(event.get_command_args())
         if not branch_title:
             current_title = await self._session_db.get_session_title(current_entry.session_id)
             branch_title = await self._session_db.get_next_title_in_lineage(current_title or "branch")
         parent_session_id = current_entry.session_id
-        # Full parent origin (same shape as the reset path in gateway/session.py); the live entry's
-        # origin may hold richer metadata than the triggering event's source.
-        # See #82633.
+        # The thread is created BEFORE the clone so a failed create never orphans a branch row;
+        # ``None`` = branch in place (--here, no threads here, or the adapter could not open one).
+        dest_source = None if stay_here else await self._branch_open_thread(source, branch_title)
+        in_place = dest_source is None
+        if in_place:
+            dest_source = source
+        dest_key = session_key if in_place else self._session_key_for_source(dest_source)
+        # Full origin (same shape as the reset path in gateway/session.py); the live entry's origin
+        # may hold richer metadata than the triggering event's source (#82633). A thread branch
+        # is routed by the NEW thread, so its origin is the destination.
         _branch_origin_json = None
         with contextlib.suppress(Exception):
-            _branch_origin_json = _json.dumps((current_entry.origin or source).to_dict())
+            _origin = (current_entry.origin or source) if in_place else dest_source
+            _branch_origin_json = _json.dumps(_origin.to_dict())
         # ``_branched_from`` keeps the branch visible in /resume and /sessions after the parent is
         # reopened and re-ended. ALL routing columns go in at CREATE time: a crash before
         # switch_session() records the peer would otherwise leave the branch unroutable.
@@ -1016,9 +1046,9 @@ class GatewaySessionCommandsMixin:
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
-                parent_session_id=parent_session_id, user_id=source.user_id,
-                session_key=session_key, chat_id=source.chat_id, chat_type=source.chat_type,
-                thread_id=source.thread_id, origin_json=_branch_origin_json,
+                parent_session_id=parent_session_id, user_id=dest_source.user_id,
+                session_key=dest_key, chat_id=dest_source.chat_id, chat_type=dest_source.chat_type,
+                thread_id=dest_source.thread_id, origin_json=_branch_origin_json,
                 display_name=current_entry.display_name)
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
@@ -1033,11 +1063,43 @@ class GatewaySessionCommandsMixin:
                 new_session_id, [_branch_row(msg) for msg in history], chunk_rows=500)
         with contextlib.suppress(Exception):
             await self._session_db.set_session_title(new_session_id, branch_title)
-        new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
+        if not in_place:
+            # Materialize the thread's own entry, then point IT at the clone; ``session_key`` (this
+            # chat) is never touched, so the original conversation stays live here.
+            await self.async_session_store.get_or_create_session(dest_source)
+        new_entry = await self.async_session_store.switch_session(dest_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
-        self._evict_cached_agent(session_key)
+        self._clear_session_boundary_security_state(dest_key)
+        self._evict_cached_agent(dest_key)
         msg_count = len([m for m in history if m.get("role") == "user"])
-        key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
-        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+        if in_place:
+            key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
+            reply = t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+            if not stay_here and source.platform in BRANCH_THREAD_PLATFORMS:
+                reply += "\n" + t("gateway.branch.thread_fallback")
+            return reply
+        key = "gateway.branch.branched_thread_one" if msg_count == 1 else "gateway.branch.branched_thread_many"
+        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id,
+                 thread=format_thread_ref(source.platform, dest_source.thread_id))
+
+    async def _branch_open_thread(self, source: SessionSource, title: str) -> Optional[SessionSource]:
+        """Open the sibling thread a plain ``/branch`` clones into; the destination source, or
+        None when this chat cannot host one (in-place fallback)."""
+        parent_id = branch_thread_parent(source)
+        adapter = self._delivery_adapter_for(source) if parent_id else None
+        if adapter is None:
+            return None
+        try:
+            thread_id = await adapter.create_handoff_thread(parent_id, title)
+        except Exception:
+            logger.warning("Branch: create_handoff_thread failed on %s; branching in place",
+                           source.platform.value, exc_info=True)
+            return None
+        if not thread_id:
+            return None
+        # Discord only answers un-mentioned follow-ups in threads it has participated in.
+        threads = getattr(adapter, "_threads", None)
+        if threads is not None:
+            threads.mark(str(thread_id))
+        return branch_dest_source(source, parent_id=parent_id, thread_id=str(thread_id), title=title)

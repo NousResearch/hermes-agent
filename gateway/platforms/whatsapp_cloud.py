@@ -40,6 +40,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
@@ -86,6 +87,10 @@ _WHATSAPP_MIME_EXTENSION_OVERRIDES: Dict[str, str] = {
 }
 
 _INBOUND_MEDIA_KINDS = {"image", "video", "audio", "voice", "document", "sticker"}
+# ``system`` = user_changed_number / user_changed_user_id (BSUID rotation, Aug 2026);
+# ``reaction`` = emoji tap (extension point if emoji-approval flows ever land);
+# ``unsupported``/``unknown`` = payloads the Cloud API cannot render.
+_CONTENTLESS_KINDS = {"system", "reaction", "unsupported", "unknown"}
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
 _MESSAGE_TYPE_BY_KIND = {
@@ -192,9 +197,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             extra.get("group_policy") or _get_wsecret("WHATSAPP_CLOUD_GROUP_POLICY")
             or _get_wsecret("WHATSAPP_GROUP_POLICY", default="open") or "open"
         ).strip().lower()
-        self._group_allow_from: set[str] = self._normalize_allow_ids(self._coerce_allow_list(
-            extra.get("group_allow_from") or extra.get("groupAllowFrom") or _get_wsecret("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
-        ))
+        _, raw_groups = self._select_allowlist(
+            extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_CLOUD_GROUP_ALLOW_FROM",), _get_wsecret)
+        self._group_allow_from: set[str] = self._normalize_allow_ids(self._coerce_allow_list(raw_groups))
         self._mention_patterns = self._compile_mention_patterns()
         # Webhook dedup state (in-memory, FIFO-evicted) and counters.
         self._seen_wamids: "OrderedDict[str, bool]" = OrderedDict()
@@ -463,7 +468,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             interactive = {"type": "list", "body": {"text": body_text}, "action": {"button": "Choose", "sections": [{"title": "Options", "rows": rows}]}}
         return await self._send_interactive(chat_id, interactive, metadata, self._clarify_state, clarify_id, session_key)
 
-    _EA_HEADER = "⚠️ *Command Approval Required*\n\n"
+    _EA_HEADER = f"⚠️ *{EA_HEADER_TEXT}*\n\n"
     _EA_CODE_CLOSE = "\n```\n\n"
     _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
 
@@ -928,9 +933,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return [local_path], [dl_mime or inbound_mime or "application/octet-stream"], body
 
     @staticmethod
-    def _inject_document_text(media_urls: list[str], body: str) -> str:
-        """Prepend text-readable document contents (≤100KB) to the body."""
-        for doc in map(Path, media_urls):
+    def _inject_document_text(media_urls: list[str], body: str) -> tuple[str, list[bool]]:
+        """Prepend text-readable document contents (≤100KB) to the body; returns
+        ``(body, media_text_inlined)`` with one flag per ``media_urls`` entry (True = injected)."""
+        inlined = [False] * len(media_urls)
+        for i, doc in enumerate(map(Path, media_urls)):
             if doc.suffix.lower() not in _TEXT_INJECT_EXTS:
                 continue
             try:
@@ -940,15 +947,21 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     continue
                 injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8', errors='replace')}"
                 body = f"{injection}\n\n{body}" if body else injection
+                inlined[i] = True
             except OSError:
                 logger.exception("[whatsapp_cloud] failed to read document text: %s", doc)
-        return body
+        return body, inlined
 
     async def _build_message_event_from_cloud(
         self, raw_message: Dict[str, Any], contacts_by_waid: Dict[str, str], metadata: Dict[str, Any],
     ) -> Optional[MessageEvent]:
         """Convert a Cloud-API message object into a MessageEvent, or None if gated out."""
         msg_type_str = str(raw_message.get("type") or "text").lower()
+        # Contentless envelopes arrive on the same ``messages`` webhook field and carry no
+        # user utterance; falling through would start a blank agent turn (#90157).
+        if msg_type_str in _CONTENTLESS_KINDS:
+            logger.debug("[whatsapp_cloud] skipping contentless %s envelope (wamid=%s)", msg_type_str, raw_message.get("id"))
+            return None
         # Button taps route to the gateway resolver BEFORE text dispatch — the
         # resolver unblocks the waiting agent, so don't also start a fresh turn.
         if msg_type_str == "interactive" and await self._dispatch_interactive_reply(raw_message, contacts_by_waid):
@@ -968,11 +981,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
         if not self._should_process_message({"chatId": chat_id, "senderId": sender_id, "isGroup": False, "body": body}):
             return None
-        media_urls, media_types = [], []
+        media_urls, media_types, media_text_inlined = [], [], []
         if msg_type_str in _INBOUND_MEDIA_KINDS:
             media_urls, media_types, body = await self._collect_inbound_media(msg_type_str, raw_message, body)
             if msg_type_str == "document" and media_urls:
-                body = self._inject_document_text(media_urls, body)
+                body, media_text_inlined = self._inject_document_text(media_urls, body)
         # Meta's ``context`` gives only the quoted message's id (+ author), never its text or
         # bytes; resolve both from rich_sent_store so run.py can build "[Replying to: ...]" and
         # the quoted attachment reaches the vision/audio pipeline like a direct one.
@@ -1004,5 +1017,5 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             ),
             raw_message=raw_message, message_id=wamid, reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text, reply_to_is_own_message=reply_to_is_own,
-            media_urls=media_urls, media_types=media_types,
+            media_urls=media_urls, media_types=media_types, media_text_inlined=media_text_inlined,
         )

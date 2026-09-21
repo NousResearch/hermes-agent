@@ -6,12 +6,14 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from tools.file_tools import (
     PATCH_SCHEMA,
+    read_file_tool,
 )
 
 
@@ -25,11 +27,15 @@ class TestReadFileHandler:
         mock_ops.read_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
+        from pathlib import Path
+
         from tools.file_tools import read_file_tool
         result = json.loads(read_file_tool("/tmp/test.txt"))
         assert result["content"] == "line1\nline2"
         assert result["total_lines"] == 2
-        mock_ops.read_file.assert_called_once_with("/tmp/test.txt", 1, 2000)
+        # The task-resolved (symlink-resolved) path is passed through, not the raw operand —
+        # a shared backend's own cwd must not re-resolve it downstream.
+        mock_ops.read_file.assert_called_once_with(str(Path("/tmp/test.txt").resolve()), 1, 2000)
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -58,6 +64,147 @@ class TestReadFileHandler:
         assert "terminal not available" in result["error"]
 
 
+def test_successful_bounded_read_issues_opaque_grant(tmp_path):
+    from agent.source_provenance import SourceProvenanceRegistry, activate_source_provenance
+    from tools.file_tools import read_file_tool
+
+    source = tmp_path / "source.py"
+    source.write_text("one\ntwo\nthree\n", encoding="utf-8")
+    registry = SourceProvenanceRegistry()
+    with activate_source_provenance(
+        registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    ):
+        result = json.loads(read_file_tool(str(source), offset=2, limit=1))
+
+    assert result["content"]
+    grant = registry.grants_for_request("request-1")[0]
+    assert (grant.line_start, grant.line_end) == (2, 2)
+    assert grant.content_sha256 == __import__("hashlib").sha256(b"two\n").hexdigest()
+
+
+def test_read_errors_or_untrusted_tool_text_cannot_issue_grants(tmp_path):
+    from agent.source_provenance import SourceProvenanceRegistry, activate_source_provenance
+    from tools.file_tools import read_file_tool
+
+    registry = SourceProvenanceRegistry()
+    with activate_source_provenance(
+        registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    ):
+        read_file_tool(str(tmp_path / "missing.py"), offset=1, limit=1)
+
+    assert registry.grants_for_request("request-1") == ()
+
+
+def test_symlink_read_cannot_issue_a_grant(tmp_path):
+    from agent.source_provenance import SourceProvenanceRegistry, activate_source_provenance
+    from tools.file_tools import read_file_tool
+
+    source = tmp_path / "source.py"
+    source.write_text("one\n", encoding="utf-8")
+    linked = tmp_path / "linked.py"
+    linked.symlink_to(source)
+    registry = SourceProvenanceRegistry()
+
+    with activate_source_provenance(
+        registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    ):
+        result = json.loads(read_file_tool(str(linked), offset=1, limit=1))
+
+    assert result["content"]
+    assert registry.grants_for_request("request-1") == ()
+
+
+def test_symlinked_ancestor_read_cannot_issue_a_grant(tmp_path):
+    from agent.source_provenance import SourceProvenanceRegistry, activate_source_provenance
+    from tools.file_tools import read_file_tool
+
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    source = real_dir / "source.py"
+    source.write_text("one\n", encoding="utf-8")
+    linked_dir = tmp_path / "linked"
+    linked_dir.symlink_to(real_dir, target_is_directory=True)
+    registry = SourceProvenanceRegistry()
+
+    with activate_source_provenance(
+        registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    ):
+        result = json.loads(read_file_tool(str(linked_dir / "source.py"), offset=1, limit=1))
+
+    assert result["content"]
+    assert registry.grants_for_request("request-1") == ()
+
+
+def test_line_display_truncation_cannot_issue_a_grant(tmp_path):
+    from agent.source_provenance import SourceProvenanceRegistry, activate_source_provenance
+    from tools.file_tools import read_file_tool
+
+    source = tmp_path / "source.py"
+    source.write_text("x" * 20_000 + "\n", encoding="utf-8")
+    registry = SourceProvenanceRegistry()
+
+    with activate_source_provenance(
+        registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    ):
+        result = json.loads(read_file_tool(str(source), offset=1, limit=1))
+
+    assert result["content"]
+    assert registry.grants_for_request("request-1") == ()
+
+
+def test_forged_read_result_cannot_issue_a_grant(tmp_path, monkeypatch):
+    from agent.source_provenance import SourceProvenanceRegistry, activate_source_provenance
+    from tools.file_operations import ReadResult
+    from tools.file_tools import read_file_tool
+
+    source = tmp_path / "source.py"
+    source.write_text("actual\n", encoding="utf-8")
+
+    class ForgedFileOps:
+        env = None
+
+        @staticmethod
+        def read_file(*_args):
+            return ReadResult(content="1|forged", total_lines=1, file_size=7)
+
+        @staticmethod
+        def _add_line_numbers(content, offset):
+            return f"{offset}|{content}"
+
+    monkeypatch.setattr("tools.file_tools._get_file_ops", lambda _task_id: ForgedFileOps())
+    registry = SourceProvenanceRegistry()
+    with activate_source_provenance(
+        registry,
+        session_id="session-1",
+        turn_id="turn-1",
+        request_id="request-1",
+        policy_digest="policy-1",
+    ):
+        read_file_tool(str(source), offset=1, limit=1)
+
+    assert registry.grants_for_request("request-1") == ()
+
+
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_writes_content(self, mock_get):
@@ -70,7 +217,9 @@ class TestWriteFileHandler:
         from tools.file_tools import write_file_tool
         result = json.loads(write_file_tool("/tmp/out.txt", "hello world!\n"))
         assert result["status"] == "ok"
-        mock_ops.write_file.assert_called_once_with("/tmp/out.txt", "hello world!\n")
+        mock_ops.write_file.assert_called_once_with(
+            os.path.realpath("/tmp/out.txt"), "hello world!\n"
+        )
 
     @patch("tools.file_tools._get_file_ops")
     def test_permission_error_returns_error_json_without_error_log(self, mock_get, caplog):
@@ -161,7 +310,9 @@ class TestPatchHandler:
             old_string="foo", new_string="bar"
         ))
         assert result["status"] == "ok"
-        mock_ops.patch_replace.assert_called_once_with("/tmp/f.py", "foo", "bar", False)
+        mock_ops.patch_replace.assert_called_once_with(
+            os.path.realpath("/tmp/f.py"), "foo", "bar", False
+        )
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -732,7 +883,7 @@ class TestDedupInvalidationTaskResolution:
 
         task_id = "acp-dedup"
         monkeypatch.setattr(tt, "_task_env_overrides", {task_id: {"cwd": str(workspace)}})
-        (workspace / "data.txt").write_text("v1\n")
+        (workspace / "data.txt").write_text("v1\n", encoding="utf-8")
 
         # The task resolves the relative path into the workspace; the default
         # task (the old buggy resolution) would resolve into proc.
@@ -976,7 +1127,7 @@ class TestNotFoundCache:
         assert _check_not_found_cache("read", str(target), tid) is not None
 
         # Out-of-band creation: plain filesystem write, no tool hook fires.
-        target.write_text("real content\n")
+        target.write_text("real content\n", encoding="utf-8")
 
         # The cached miss must NOT be served once the path exists…
         assert _check_not_found_cache("read", str(target), tid) is None, (
@@ -1000,7 +1151,7 @@ class TestNotFoundCache:
         assert _check_not_found_cache("search", str(missing_dir), tid) is not None
 
         missing_dir.mkdir()
-        (missing_dir / "x.txt").write_text("hi\n")
+        (missing_dir / "x.txt").write_text("hi\n", encoding="utf-8")
 
         assert _check_not_found_cache("search", str(missing_dir), tid) is None, (
             "stale 'Path not found' served after the directory was created"
@@ -1055,3 +1206,99 @@ class TestSSHConfigWriteGateSingleQuery:
             f"required kwargs {missing}; it would raise TypeError instead "
             f"of showing an approval prompt"
         )
+
+
+class TestSecretFileReadRedaction:
+    """#110567: read_file / search_files must classify the RESOLVED path and run the
+    assignment passes for a secret-bearing file, instead of returning an opaque
+    prefix-less credential in cleartext. Same classifier the terminal side uses
+    (``_is_secret_file_arg``), so the two surfaces cannot drift."""
+
+    SYNTH = "3JcQ1UqZ8mNp4Rt6vWx2Yb9Ad0Ef7Gh5Ij2kS"  # 40-char opaque, no vendor prefix
+
+    class _Match:
+        def __init__(self, path, content):
+            self.path = path
+            self.content = content
+
+    class _SearchResult:
+        def __init__(self, matches):
+            self.matches = matches
+            self.files = []
+            self.counts = {}
+
+        def to_dict(self, densify=False):
+            return {
+                "total_count": len(self.matches),
+                "matches": [{"path": m.path, "content": m.content} for m in self.matches],
+            }
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path, monkeypatch):
+        """A Hermes home with no ``.hermes`` segment, like ``%LOCALAPPDATA%\\hermes``."""
+        import agent.file_safety as file_safety
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: home)
+        monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: home)
+        return home
+
+    @staticmethod
+    def _read_ops(body):
+        ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = body
+        result_obj.to_dict.return_value = {"content": body, "total_lines": body.count("\n")}
+        ops.read_file.return_value = result_obj
+        return ops
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_of_hermes_config_masks_opaque_token(self, mock_get, hermes_home):
+        # read_file renders line-numbered content ("5|      ADS_API_TOKEN: …"); the gutter is
+        # part of the text the redactor sees, so the fixture must carry it (a gutter-free
+        # fixture would pass even though the real read leaks).
+        body = (f"1|mcp_servers:\n2|  nasa_ads:\n3|    env:\n"
+                f"4|      ADS_API_TOKEN: {self.SYNTH}\n5|MAX_TOKENS: 100\n")
+        mock_get.return_value = self._read_ops(body)
+
+        from tools.file_tools import read_file_tool
+        out = json.loads(read_file_tool(str(hermes_home / "config.yaml"), task_id="secret-read"))
+
+        assert self.SYNTH not in out["content"]
+        assert "«redacted" in out["content"]
+        assert "5|MAX_TOKENS: 100" in out["content"]  # non-secret scalar and rendered gutter survive
+
+        # A project's own config.yaml is NOT secret-bearing: source dumps are never mangled.
+        mock_get.return_value = self._read_ops(f"4|      ADS_API_TOKEN: {self.SYNTH}\n")
+        out = json.loads(read_file_tool(str(hermes_home.parent / "proj-config.yaml"), task_id="plain-read"))
+        assert self.SYNTH in out["content"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_in_hermes_home_masks_opaque_token(self, mock_get, hermes_home):
+        config = hermes_home / "config.yaml"
+        ops = MagicMock()
+        ops.search.return_value = self._SearchResult(
+            [self._Match(str(config), f"      ADS_API_TOKEN: {self.SYNTH}")])
+        mock_get.return_value = ops
+
+        from tools.file_tools import search_tool
+        raw = search_tool(pattern="ADS_API_TOKEN", path=str(hermes_home),
+                          task_id="secret-search")
+
+        assert self.SYNTH not in raw
+        assert "«redacted" in raw
+
+
+class TestConflictMarkerFlag:
+    def test_read_flags_balanced_conflict_blocks_only(self, tmp_path):
+        conflicted = tmp_path / "c.py"
+        conflicted.write_text("x=1\n<<<<<<< HEAD\ny=2\n=======\ny=3\n>>>>>>> feature\nz=4\n", encoding="utf-8")
+        result = json.loads(read_file_tool(str(conflicted)))
+        assert result["conflict_blocks"] == 1
+        assert "merge-conflict" in result["_hint"]
+
+        prose = tmp_path / "p.py"
+        prose.write_text("print('<<<<<<< not a conflict')\n", encoding="utf-8")
+        assert "conflict_blocks" not in json.loads(read_file_tool(str(prose)))
+

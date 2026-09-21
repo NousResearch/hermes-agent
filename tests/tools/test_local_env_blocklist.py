@@ -11,6 +11,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -50,8 +51,9 @@ def _run_with_env(extra_os_env=None, self_env=None):
     captured = {}
     test_environ = {
         "PATH": "/usr/bin:/bin",
-        "HOME": "/home/user",
-        "USER": "testuser",
+            "HOME": "/home/user",
+            "USER": "testuser",
+            "HERMES_INTERACTIVE": "1",
     }
     if extra_os_env:
         test_environ.update(extra_os_env)
@@ -120,6 +122,46 @@ class TestProviderEnvBlocklist:
         assert "AWS_BEARER_TOKEN_BEDROCK" not in result_env, (
             "AWS_BEARER_TOKEN_BEDROCK leaked into subprocess env (see #32314)"
         )
+
+    def test_case_variant_blocked_vars_are_stripped(self):
+        """A blocklisted credential stored under variant casing must not reach
+        subprocess env: on Windows the environment block is case-insensitive,
+        so a lowercase-stored ``openai_api_key`` IS the real credential."""
+        leaked_vars = {
+            "openai_api_key": "sk-fake-key",
+            "Anthropic_Api_Key": "ant-fake-key",
+            "aws_bearer_token_bedrock": "bedrock-bearer-secret",
+        }
+        result_env = _run_with_env(extra_os_env=leaked_vars)
+
+        for var in leaked_vars:
+            assert var not in result_env, (
+                f"{var} (case variant of a blocklisted credential) leaked"
+            )
+
+    def test_strip_launch_profile_env_folds_case(self, monkeypatch, tmp_path):
+        """The routed-profile residue strip must match names the way the
+        platform resolves them: on Windows a lowercase-stored
+        ``openai_api_key`` IS the launch profile's credential and must not
+        ride into a sibling profile's child env."""
+        from tools.environments.local import strip_launch_profile_env
+
+        launch = tmp_path / "launch"
+        launch.mkdir()
+        (launch / ".env").write_text(
+            "OPENAI_API_KEY=sk-launch\nTERMINAL_ENV={}\n", encoding="utf-8")
+        target = tmp_path / "target"
+        target.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+
+        env = {"openai_api_key": "sk-launch", "terminal_env": "{}",
+               "PATH": "/usr/bin:/bin", "MY_OWN_KEY": "keep"}
+        strip_launch_profile_env(env, target)
+
+        assert "openai_api_key" not in env
+        assert "terminal_env" not in env
+        assert env["PATH"] == "/usr/bin:/bin"
+        assert env["MY_OWN_KEY"] == "keep"
 
     def test_vertex_credentials_path_is_stripped(self):
         """The Vertex AI service-account JSON path must not leak into
@@ -211,8 +253,6 @@ class TestProviderEnvBlocklist:
             "HERMES_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
             "BROWSERBASE_PROJECT_ID": "bb-project",
             "ELEVENLABS_API_KEY": "el-secret",
-            "GITHUB_TOKEN": "ghp_secret",
-            "GH_TOKEN": "gh_alias_secret",
             "GATEWAY_ALLOW_ALL_USERS": "true",
             "GATEWAY_ALLOWED_USERS": "alice,bob",
             "MODAL_TOKEN_ID": "modal-id",
@@ -371,6 +411,36 @@ class TestTerminalFirstPartyPlatformEnv:
         for var in buzz_vars:
             assert var not in run_env, f"{var} leaked into non-Buzz foreground env"
             assert var not in sanitized, f"{var} leaked into non-Buzz background env"
+
+    def test_case_variant_buzz_var_carveout(self, monkeypatch):
+        """The first-party prefix check folds case symmetrically with the
+        blocklist: on Windows a lowercase-stored ``buzz_private_key`` IS
+        BUZZ_PRIVATE_KEY, so under Buzz context it must still reach terminal
+        children, and without context it stays stripped."""
+        from gateway.session_context import _SESSION_PLATFORM
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        monkeypatch.delenv("BUZZ_MANAGED_AGENT", raising=False)
+        monkeypatch.setenv("buzz_private_key", "nsec1faketestkey")
+        buzz_vars = {"buzz_private_key": "nsec1faketestkey"}
+
+        token = _SESSION_PLATFORM.set("buzz")
+        try:
+            run_env = _make_run_env({})
+            sanitized = _sanitize_subprocess_env({**buzz_vars, "HOME": "/home/user"})
+        finally:
+            _SESSION_PLATFORM.reset(token)
+        assert run_env.get("buzz_private_key") == "nsec1faketestkey"
+        assert sanitized.get("buzz_private_key") == "nsec1faketestkey"
+
+        token = _SESSION_PLATFORM.set("telegram")
+        try:
+            run_env = _make_run_env({})
+            sanitized = _sanitize_subprocess_env({**buzz_vars, "HOME": "/home/user"})
+        finally:
+            _SESSION_PLATFORM.reset(token)
+        assert "buzz_private_key" not in run_env
+        assert "buzz_private_key" not in sanitized
 
     def test_session_platform_buzz_enables_carveout(self, monkeypatch):
         """A live gateway session whose platform is ``buzz`` gets the
@@ -976,8 +1046,13 @@ class TestPythonpathSelectiveStrip:
             captured["env"] = kwargs.get("env", {})
             captured["staging"] = os.path.dirname(cmd[1])
             proc = MagicMock()
+            # The kernel's reader threads drain with read1(); a bare MagicMock never returns
+            # EOF there, so the stderr thread spins forever appending mocks (a 1 GB/min leak
+            # that outlived the test and OOM-killed the worker five times).
             proc.stdout.read.return_value = b""
+            proc.stdout.read1.return_value = b""
             proc.stderr.read.return_value = b""
+            proc.stderr.read1.return_value = b""
             proc.wait.return_value = 0
             proc.returncode = 0
             proc.poll.return_value = 0
@@ -1027,6 +1102,15 @@ class TestPythonpathSelectiveStrip:
         else:
             assert norm_root not in norm_parts, \
                 "repo root must stay absent for an external-env child"
+        # The fake streams must hit EOF: the kernel's reader threads consume
+        # ``read1()``, and an unconfigured MagicMock there is a truthy value
+        # forever — the stderr reader spins after the test returns, growing
+        # the pytest process by hundreds of MB per second (#115912).
+        for thread in threading.enumerate():
+            if "_reader" in thread.name:
+                thread.join(timeout=2)
+                assert not thread.is_alive(), \
+                    f"{thread.name} is still spinning on the fake kernel stream"
 
 
     def test_repo_root_direct_child_preserved(self):
@@ -1116,6 +1200,7 @@ class TestPythonpathSelectiveStrip:
         physical_root = physical_home / "hermes-agent"
         physical_root.mkdir(parents=True)
         (physical_home / "profiles" / "coder").mkdir(parents=True)
+        (physical_home / "profiles" / "coder" / "config.yaml").write_text("{}\n")  # identity marker
         configured_home = tmp_path / "configured-home"
         try:
             _make_directory_link(configured_home, physical_home)
@@ -1784,6 +1869,73 @@ class TestHermesInternalDynamicSecrets:
         assert "AUXILIARY_VISION_API_KEY" not in run_env
         assert "GATEWAY_RELAY_SECRET" not in run_env
         assert run_env.get("AUXILIARY_VISION_PROVIDER") == "openai"
+
+    def test_make_run_env_preserves_operator_git_auth_configuration(self):
+        """The foreground terminal must retain the user's authenticated Git path."""
+        from tools.environments.local import _make_run_env
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "GH_CONFIG_DIR": "/home/operator/.config/gh",
+            "GIT_CONFIG_GLOBAL": "/home/operator/.gitconfig",
+            "GH_TOKEN": "ghp-operator-token",
+            "GIT_TERMINAL_PROMPT": "1",
+            "HERMES_INTERACTIVE": "1",
+        }, clear=True):
+            run_env = _make_run_env({})
+
+        assert run_env["GH_CONFIG_DIR"] == "/home/operator/.config/gh"
+        assert run_env["GIT_CONFIG_GLOBAL"] == "/home/operator/.gitconfig"
+        assert run_env["GH_TOKEN"] == "ghp-operator-token"
+        assert run_env["GIT_TERMINAL_PROMPT"] == "1"
+
+    def test_make_run_env_trusted_terminal_uses_home_git_defaults(self):
+        from tools.environments.local import _make_run_env
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/operator",
+            "HERMES_INTERACTIVE": "1",
+        }, clear=True):
+            run_env = _make_run_env({})
+
+        assert run_env.get("GH_CONFIG_DIR") != os.devnull
+        assert run_env.get("GIT_CONFIG_GLOBAL") != os.devnull
+
+        assert "GIT_TERMINAL_PROMPT" not in run_env
+
+    def test_make_run_env_gateway_does_not_restore_operator_git_auth(self):
+        from tools.environments.local import _make_run_env
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/operator",
+            "HERMES_INTERACTIVE": "1",
+            "HERMES_SESSION_PLATFORM": "discord",
+            "GH_CONFIG_DIR": "/home/operator/.config/gh",
+            "GH_TOKEN": "ghp-operator-token",
+        }, clear=True):
+            run_env = _make_run_env({})
+
+        assert run_env["GH_CONFIG_DIR"] == os.devnull
+        assert "GH_TOKEN" not in run_env
+
+    def test_protected_kanban_terminal_scrubs_operator_git_auth(self):
+        """Protected workers retain the credential boundary despite using a terminal."""
+        from tools.environments.local import _make_run_env
+
+        with patch.dict(os.environ, {
+            "PATH": "/usr/bin:/bin",
+            "HERMES_KANBAN_TASK": "task-1",
+            "GH_CONFIG_DIR": "/home/operator/.config/gh",
+            "GIT_CONFIG_GLOBAL": "/home/operator/.gitconfig",
+            "GH_TOKEN": "ghp-operator-token",
+        }, clear=True):
+            run_env = _make_run_env({})
+
+        assert run_env["GH_CONFIG_DIR"] == os.devnull
+        assert run_env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert "GH_TOKEN" not in run_env
 
     def test_gateway_relay_static_names_in_blocklist(self):
         """The static relay names are also added to the name-based blocklist so

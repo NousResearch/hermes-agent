@@ -71,16 +71,20 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
         # Memory-derived default when unset — same fallback the gateway applies.
         max_in_progress = kbd.resolve_max_in_progress(
-            kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
+            kbd._positive_int(_kanban_cfg.get("max_in_progress"), None),
+            priority_runtime_guard=_kanban_cfg.get("priority_runtime_guard", {}),
         )
         # CLI --max is the more explicit signal, so it wins over kanban.max_spawn.
         cli_max = getattr(args, "max", None)
         max_spawn = (
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
-    except Exception:
-        default_assignee = max_in_progress_per_profile = max_in_progress = None
-        max_spawn = getattr(args, "max", None)
+    except Exception as exc:
+        if getattr(args, "json", False):
+            _print_json({"error": type(exc).__name__, "status": "config_unavailable"})
+        else:
+            print(f"Dispatch paused: configuration unavailable ({type(exc).__name__}).")
+        return 1
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -90,11 +94,15 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_by_profile=_kanban_cfg.get("max_in_progress_by_profile"),
+            max_in_progress_per_model=_kanban_cfg.get("max_in_progress_per_model"),
+            max_in_progress_by_model=_kanban_cfg.get("max_in_progress_by_model"),
         )
     if getattr(args, "json", False):
         _print_json({
             **{k: getattr(res, k)
-               for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted")},
+               for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted",
+                         "reaped_terminal_workers")},
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
             ],
@@ -105,9 +113,18 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.respawn_guarded
+            ],
+            "rate_limited": res.rate_limited,
+            "skipped_locked": res.skipped_locked,
+            "memory_pressure": res.memory_pressure,
         }, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
+    if res.reaped_terminal_workers:
+        print(f"Reaped workers of finished tasks: {', '.join(res.reaped_terminal_workers)}")
     for label, items in (
         ("Crashed:     ", res.crashed),
         ("Timed out:   ", res.timed_out),
@@ -136,6 +153,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    for tid, reason in res.respawn_guarded:
+        print(f"Guarded ({reason}): {tid}")
+    if res.rate_limited:
+        print(f"Rate-limited (released to ready, no failure counted): {', '.join(res.rate_limited)}")
+    if res.skipped_locked:
+        print("Skipped: another dispatcher holds this board's lock (no writes this tick)")
+    if res.memory_pressure:
+        print(f"Memory pressure {res.memory_pressure}: new workers restricted this tick")
     return 0
 
 
@@ -205,10 +230,12 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         if health_state["bad_ticks"] >= HEALTH_WINDOW:
             now = int(time.time())
             if now - health_state["last_warn_at"] >= 300:
+                held = kbd.describe_suppression([res])
+                held = f" Last tick held back: {held}." if held else ""
                 print(
                     f"[{_fmt_ts(now)}] WARN dispatcher stuck: ready queue non-empty for "
                     f"{health_state['bad_ticks']} consecutive ticks but 0 workers spawned "
-                    f"successfully. Check profile health (venv, PATH, credentials) and `hermes "
+                    f"successfully.{held} Check profile health (venv, PATH, credentials) and `hermes "
                     f"kanban list --status ready` / `hermes kanban list --status blocked` for "
                     f"recent spawn_failed tasks.",
                     file=sys.stderr, flush=True,

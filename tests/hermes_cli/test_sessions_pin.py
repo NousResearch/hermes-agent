@@ -43,7 +43,7 @@ def _run(monkeypatch, capsys, argv_tail, db):
     import hermes_cli.main as main_mod
     import hermes_state
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: db)
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: db)
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", *argv_tail])
     try:
         main_mod.main()
@@ -74,7 +74,7 @@ def test_pin_multiple_ids_one_missing(monkeypatch, capsys):
     code, out = _run(monkeypatch, capsys, ["pin", "aaa", "nope", "bbb"], db)
     assert ("aaa111", True) in db.pin_calls
     assert ("bbb222", True) in db.pin_calls
-    assert "Session 'nope' not found." in out
+    assert "No session 'nope'" in out and "hermes sessions list" in out
     assert code == 1
 
 

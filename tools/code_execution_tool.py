@@ -46,9 +46,39 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
+
+
+def _tool_call_limit_reached(counter: int, max_calls: int) -> bool:
+    """Return True when the tool call budget is exhausted. 0 means unlimited."""
+    return max_calls != 0 and counter >= max_calls
+
+
+def _configured_max_tool_calls(cfg: dict) -> int:
+    """Validate and return max_tool_calls from a config dict. Raises ValueError on negative."""
+    value = int(cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS))
+    if value < 0:
+        raise ValueError(f"max_tool_calls must be 0 (unlimited) or positive, got {value}")
+    return value
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 # Hard ceiling on the spilled file (as web_tools' MAX_STORED_TEXT_CHARS): a runaway print loop must not fill the disk.
+
+
+def _tool_call_limit_reached(count: int, max_tool_calls: int) -> bool:
+    """``max_tool_calls <= 0`` disables the limit (unbounded); a positive limit is exceeded
+    once *count* reaches it."""
+    return max_tool_calls > 0 and count >= max_tool_calls
+
+
+def _configured_max_tool_calls(cfg: dict) -> int:
+    """``code_execution.max_tool_calls`` from *cfg*. Any value ``<= 0`` (including negative,
+    per the documented example) disables the limit; see ``_tool_call_limit_reached``."""
+    value = cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"code_execution.max_tool_calls must be an integer: {value!r}")
+    return value
+
+
 MAX_SPILLED_STDOUT_BYTES = 5_000_000
 
 
@@ -469,7 +499,7 @@ def _env_temp_dir(env: Any) -> str:
     for candidate in (temp_dir, tempfile.gettempdir()):
         if isinstance(candidate, str) and candidate.startswith("/"):
             return candidate.rstrip("/") or "/"
-    return "/tmp"
+    return tempfile.gettempdir()
 
 
 def _format_interrupted_output(stdout_text: str) -> str:
@@ -495,9 +525,12 @@ def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
     return stdout_text + f"\n\n⏰ {timeout_msg}" if stdout_text else f"⏰ {timeout_msg}"
 
 
-def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0) -> str:
-    return json.dumps({"status": "error", "error": error, "tool_calls_made": tool_calls_made,
-                       "duration_seconds": duration}, ensure_ascii=False)
+def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0,
+                  user_summary: Optional[str] = None) -> str:
+    body = {"status": "error", "error": error, "tool_calls_made": tool_calls_made, "duration_seconds": duration}
+    if user_summary:
+        body["user_summary"] = user_summary  # one human sentence; surfaces show it before the model text
+    return json.dumps(body, ensure_ascii=False)
 
 
 def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int) -> str:
@@ -620,7 +653,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
     _cfg = _load_config()
-    timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
+    timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _configured_max_tool_calls(_cfg)
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
@@ -691,10 +724,29 @@ def execute_code(
     # execute_code is a straight bypass — the terminal() path refuses `launchctl bootout ai.hermes.gateway`,
     # but the identical command inside `os.system(...)` / `subprocess.run([...])` here sailed through and
     # SIGTERM'd the gateway mid-task.
+    # The identity probe ends in a kernel process query that has wedged on macOS
+    # (#111922); share the cell's own deadline and fail CLOSED when it renders no verdict.
+    from agent.deadline import run_bounded_sync
     from tools.process_registry import _is_supervised_gateway_process
-    if _is_supervised_gateway_process():
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+    from tools.terminal_tool import _PRE_EXEC_GUARD_MIN_TIMEOUT_S
+    _probe_timeout = max(_load_config().get("timeout", DEFAULT_TIMEOUT), _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
+    _probe = run_bounded_sync(
+        _is_supervised_gateway_process, _probe_timeout, label="execute_code.lifecycle-guard",
+    )
+    if _probe.timed_out:
+        return tool_error(
+            f"execute_code lifecycle guard did not finish within {_probe_timeout}s "
+            "(process-identity probe wedged); the code was not run. Retry the call."
+        )
+    if _probe.value:
+        from cron.lifecycle_guard import (
+            HOST_INTERPRETER_KILL_REJECTION,
+            contains_gateway_lifecycle_command,
+            contains_host_interpreter_kill,
+        )
         if contains_gateway_lifecycle_command(code):
+            if contains_host_interpreter_kill(code):
+                return tool_error(HOST_INTERPRETER_KILL_REJECTION)
             return tool_error(
                 "Blocked: cannot restart or stop the gateway from inside the "
                 "gateway process. The gateway would kill this script before "
@@ -711,7 +763,8 @@ def execute_code(
     from tools.approval import check_execute_code_guard
     _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config))
     if not _guard.get("approved", False):
-        return _error_result(_guard.get("message") or "execute_code blocked by approval guard.")
+        return _error_result(_guard.get("message") or "execute_code blocked by approval guard.",
+                             user_summary=_guard.get("user_summary"))
     # Clear a stale interrupt bit that landed during the blocking approval-wait so it can't
     # kill the just-approved run on the first poll. A genuine post-clear interrupt re-sets it.
     if _guard.get("user_approved"):
@@ -730,7 +783,7 @@ def execute_code(
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
-        max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+        max_tool_calls=_configured_max_tool_calls(_cfg),
         reset=bool(reset), is_interrupted=_is_interrupted,
     )
 

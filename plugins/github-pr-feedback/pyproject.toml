@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=75.8.0,<81"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,3 +11,4 @@ dependencies = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["windows_only: exercises native-Windows behavior"]

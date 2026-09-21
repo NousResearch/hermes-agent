@@ -10,6 +10,7 @@ import subprocess
 import pytest
 
 from hermes_cli import worktree_ops
+from hermes_cli.cli_conversation_worktree_mixin import _should_use_legacy_worktree
 from pathlib import Path
 
 
@@ -639,6 +640,66 @@ class TestCLIFlagLogic:
         use_worktree = worktree or w or config_worktree
         assert not use_worktree
 
+    def test_top_level_worktree_setting_preserved_when_policy_disabled(self, monkeypatch):
+        import cli
+
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        config = {"worktree": True, "conversation_worktree": {"enabled": False}}
+
+        assert _should_use_legacy_worktree(
+            worktree=False,
+            shorthand=False,
+            config=config,
+        ) is True
+
+    def test_top_level_worktree_setting_does_not_double_create_managed_root(
+        self, monkeypatch
+    ):
+        import cli
+
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        config = {
+            "worktree": True,
+            "conversation_worktree": {
+                "enabled": True,
+                "source_worktree": "/repo/stable",
+                "worktree_root": "/repo/.worktrees",
+            },
+        }
+
+        assert _should_use_legacy_worktree(
+            worktree=False,
+            shorthand=False,
+            config=config,
+        ) is False
+
+    def test_start_worktree_setup_does_not_create_legacy_tree_for_managed_root(
+        self, monkeypatch
+    ):
+        import cli
+
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.setattr(
+            cli,
+            "CLI_CONFIG",
+            {
+                "worktree": True,
+                "conversation_worktree": {
+                    "enabled": True,
+                    "source_worktree": "/repo/stable",
+                    "worktree_root": "/repo/.worktrees",
+                },
+            },
+        )
+        monkeypatch.setattr(
+            cli, "_setup_worktree", lambda **_kwargs: pytest.fail("legacy worktree started")
+        )
+
+        assert cli._start_worktree_setup(False, False, True, False) is None
+
 
 class TestTerminalCWDIntegration:
     """Test that TERMINAL_CWD is correctly set to the worktree path."""
@@ -869,6 +930,80 @@ class TestWorktreeLockReaping:
         cli._prune_stale_worktrees(str(git_repo))
         assert not wt.exists(), "clean unlocked stale worktree should be reaped"
 
+    def test_aged_manager_owned_conversation_tree_survives(self, git_repo, tmp_path):
+        import cli
+        from agent.conversation_worktree import ConversationWorktreeManager
+        from agent.conversation_worktree_policy import ConversationWorktreePolicy
+        from hermes_state import SessionDB
+
+        stable_source = tmp_path / "managed-stable-source"
+        subprocess.run(
+            [
+                "git",
+                "worktree",
+                "add",
+                str(stable_source),
+                "-b",
+                "stable/managed-pruner-test",
+                "HEAD",
+            ],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+        )
+        db = SessionDB(tmp_path / "managed-state.db")
+        manager = ConversationWorktreeManager(
+            ConversationWorktreePolicy(
+                enabled=True,
+                source_worktree=stable_source,
+                worktree_root=git_repo / ".worktrees",
+                branch_prefix="hermes/session",
+                bootstrap=False,
+                bootstrap_command=(),
+                bootstrap_timeout=1.0,
+                create_timeout=3.0,
+                retain_until_explicit_cleanup=True,
+            ),
+            db,
+        )
+        binding = manager.bind_new_root_session(
+            "startup-pruner-owned-root", conversation_kind="interactive"
+        )
+        assert binding is not None
+        self._age(binding.path, 24 * 365)
+        try:
+            cli._prune_stale_worktrees(str(git_repo))
+            assert binding.path.exists(), (
+                "startup pruner must never remove a manager-owned conversation worktree"
+            )
+        finally:
+            db.close()
+
+    def test_manager_ownership_appearing_after_classification_blocks_mutation(
+        self, git_repo, monkeypatch
+    ):
+        import cli
+        from agent import conversation_worktree as worktrees
+
+        wt = self._mk(cli, git_repo, "hermes-owned-race", age_h=100)
+        inspections = 0
+
+        def ownership_appears(_path):
+            nonlocal inspections
+            inspections += 1
+            return inspections >= 2
+
+        monkeypatch.setattr(
+            worktrees, "conversation_worktree_is_manager_owned", ownership_appears
+        )
+
+        cli._prune_stale_worktrees(str(git_repo))
+
+        assert inspections >= 2
+        assert wt.exists(), (
+            "startup mutation must re-inspect under the conversation manager lock"
+        )
+
     def test_dirty_survives_over_72h(self, git_repo):
         import cli
         wt = self._mk(cli, git_repo, "hermes-dirty72", pid=None, dirty=True, age_h=100)
@@ -1015,7 +1150,8 @@ class TestWidenedPruner:
 
 
     def test_merged_predicate_fails_safe_without_upstream(self, git_repo_no_remote):
-        import cli
+        """No remote: the local trunk is the baseline (a tree at trunk IS merged). No trunk at
+        all — detached main checkout, no main/master — leaves nothing to compare against -> False."""
         repo = git_repo_no_remote
         p = repo / ".worktrees" / "hermes-noremote"
         (repo / ".worktrees").mkdir(exist_ok=True)
@@ -1023,7 +1159,15 @@ class TestWidenedPruner:
             ["git", "worktree", "add", str(p), "-b", "wt/noremote", "HEAD"],
             cwd=repo, capture_output=True,
         )
+        assert worktree_ops._worktree_commits_all_merged_upstream(str(p)) is True
+
+        trunk = subprocess.run(["git", "branch", "--show-current"], cwd=repo, capture_output=True,
+                               text=True).stdout.strip()
+        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "branch", "-m", trunk, "scratch/not-a-trunk"], cwd=repo, capture_output=True)
+        assert worktree_ops._worktree_merge_base_ref(str(p)) is None
         assert worktree_ops._worktree_commits_all_merged_upstream(str(p)) is False
+        assert worktree_ops._worktree_has_unpushed_commits(str(p)) is True
 
 
     # -- preserved-work warning ----------------------------------------------

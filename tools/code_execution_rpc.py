@@ -48,7 +48,9 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     if tool_name not in allowed_tools:
         return tool_error(f"Tool '{tool_name}' is not available in execute_code. "
                           f"Available: {', '.join(sorted(allowed_tools))}")
-    if tool_call_counter[0] >= max_tool_calls:
+    from tools.code_execution_tool import _tool_call_limit_reached
+
+    if _tool_call_limit_reached(tool_call_counter[0], max_tool_calls):
         return tool_error(f"Tool call limit reached ({max_tool_calls}). "
                           "No more tool calls allowed in this execution.")
     if tool_name == "terminal" and isinstance(tool_args, dict):

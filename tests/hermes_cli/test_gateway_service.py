@@ -332,6 +332,21 @@ class TestGeneratedSystemdUnits:
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
 
+    def test_user_unit_carries_ld_library_path_escaped_for_systemd(self, monkeypatch, tmp_path):
+        """#14613: glibc reads LD_LIBRARY_PATH only at process start, so the unit file is the
+        only place it can reach CUDA-backed tools; quotes/backslashes must survive systemd quoting."""
+        # The absent-env branch falls back to the installed unit: keep the host's real one out.
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "hermes-gateway.service")
+        monkeypatch.setenv("LD_LIBRARY_PATH", '/opt/cu"da/lib64:/opt/back\\slash/lib')
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cu\\"da/lib64:/opt/back\\\\slash/lib"' in unit
+
+        monkeypatch.setenv("LD_LIBRARY_PATH", "")
+        assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
+        monkeypatch.delenv("LD_LIBRARY_PATH")
+        assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
+
     def test_unit_stop_budget_beats_drain_only_formula_with_real_loaders(
         self, monkeypatch
     ):
@@ -419,6 +434,77 @@ class TestGeneratedSystemdUnits:
 
 
 class TestGatewayStopCleanup:
+    def test_gateway_start_clears_stale_desktop_drain_request(
+        self, tmp_path, monkeypatch
+    ):
+        """A desktop-close drain marker must not wedge the next gateway start."""
+        marker = tmp_path / ".drain_request.json"
+        marker.write_text('{"action":"drain"}', encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli, "_dispatch_via_service_manager_if_s6", lambda action: False
+        )
+        monkeypatch.setattr(gateway_cli, "launchd_start", lambda: calls.append("start"))
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="start", all=False, system=False)
+        )
+
+        assert not marker.exists()
+        assert calls == ["start"]
+
+    def test_stop_all_drain_waits_before_stopping_service(self, tmp_path, monkeypatch):
+        """Desktop drain must finish before a supervisor or gateway is stopped."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("unit\n", encoding="utf-8")
+        events = []
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "systemd_stop", lambda system=False: events.append("stop"))
+        monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda **kwargs: 0)
+        monkeypatch.setattr(gateway_cli, "_dispatch_all_via_service_manager_if_s6", lambda action: False)
+        monkeypatch.setattr(gateway_cli.atexit, "register", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            "hermes_cli.gateway_desktop_drain.desktop_profile_homes",
+            lambda: (tmp_path,),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_desktop_drain.drain_all_desktop_work",
+            lambda **kwargs: events.append(("drain", kwargs)),
+        )
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="stop", all=True, system=False, drain=True)
+        )
+
+        assert events[:2] == [("drain", {"all_profiles": True}), "stop"]
+
+    def test_stop_without_all_does_not_drain_every_profile(self, monkeypatch):
+        drained = []
+        monkeypatch.setattr(gateway_cli, "_dispatch_via_service_manager_if_s6", lambda action: False)
+        monkeypatch.setattr(gateway_cli, "_stop_installed_service", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "stop_profile_gateway", lambda: False)
+        monkeypatch.setattr(
+            "hermes_cli.gateway_desktop_drain.drain_all_desktop_work",
+            lambda: drained.append(True),
+        )
+
+        gateway_cli.gateway_command(
+            SimpleNamespace(gateway_command="stop", all=False, system=False, drain=True)
+        )
+
+        assert drained == []
+
     @pytest.mark.linux_only
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call
@@ -816,6 +902,58 @@ class TestLaunchdDomainDetection:
         assert domain == "user/501"
 
 
+class TestLaunchdUnsupportedFallbackPolicy:
+    """A 5/125 launchctl exit must not brand a domain the host is demonstrably managing.
+
+    Regression for the recurrence where ``hermes gateway install --force`` over the LIVE job
+    returned EIO (5) — launchctl's answer for an already-loaded label — which
+    ``_launchd_degrade_or_raise`` read as "this macOS cannot manage launchd services". It wrote the
+    permanent launchd-unsupported marker and started a detached gateway beside the supervised one,
+    and the marker made ``wait_for_launchd_gateway_supervision()`` answer True unconditionally, so
+    no later install/update could see that nothing tied the gateway to launchd any more.
+    """
+
+    def _spy_fallback(self, monkeypatch):
+        """Record the two side effects of degrading; return the lists."""
+        marker_writes, spawned = [], []
+        monkeypatch.setattr(
+            gateway_cli, "_write_launchd_unsupported_marker", lambda: marker_writes.append("marker")
+        )
+        monkeypatch.setattr(
+            gateway_cli, "_spawn_detached_gateway", lambda: spawned.append("detached") or True
+        )
+        return marker_writes, spawned
+
+    def test_eio_on_a_supervised_label_does_not_degrade_to_detached(self, monkeypatch):
+        exc = subprocess.CalledProcessError(
+            5, ["launchctl", "bootstrap"], stderr="Bootstrap failed: 5: Input/output error"
+        )
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(
+            gateway_cli, "_launchctl_label_supervising_process", lambda label: True
+        )
+        marker_writes, spawned = self._spy_fallback(monkeypatch)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            gateway_cli._launchd_degrade_or_raise(exc, "launchctl bootstrap")
+
+        assert marker_writes == [], "a supervised job's domain must not be branded unsupported"
+        assert spawned == [], "no detached gateway beside a supervised one"
+
+    def test_eio_without_a_supervised_process_still_falls_back(self, monkeypatch):
+        """The detached fallback for a domain that really cannot manage the job is unchanged."""
+        exc = subprocess.CalledProcessError(125, ["launchctl", "kickstart"])
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(
+            gateway_cli, "_launchctl_label_supervising_process", lambda label: False
+        )
+        marker_writes, spawned = self._spy_fallback(monkeypatch)
+
+        gateway_cli._launchd_degrade_or_raise(exc, "launchctl kickstart")
+
+        assert marker_writes == ["marker"]
+        assert spawned == ["detached"]
+
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
@@ -1062,6 +1200,27 @@ class TestGatewaySystemServiceRouting:
 
         assert result is False
         assert replacement_observed == [True]
+
+    def test_wait_accepts_a_degraded_replacement_as_restarted(self, monkeypatch, capsys):
+        """A replacement serving with a parked platform stamps ``degraded`` for its whole life; the
+        restart verifier must report a restart (with a warning), not wait out the timeout (#91547)."""
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            lambda system=False, properties=None: {"ActiveState": "active", "MainPID": "777"},
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 777)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_gateway_runtime_status",
+            lambda: {"pid": 777, "gateway_state": "degraded"},
+        )
+
+        result = gateway_cli._wait_for_systemd_service_restart(previous_pid=654, timeout=1.0)
+
+        assert result is True
+        assert "DEGRADED" in capsys.readouterr().out
 
     def test_launchd_restart_uses_sigusr1_and_exit_wait_budget(self, monkeypatch, capsys):
         """launchd_restart must take the same graceful path as systemd_restart.
@@ -1352,6 +1511,36 @@ class TestSystemUnitHermesHome:
         assert "After=user@1001.service" in unit_section
         assert "Wants=user@1001.service" in unit_section
         assert "user@" not in user_unit
+
+    def test_installed_unit_keeps_ld_library_path_when_the_shell_lacks_it(self, monkeypatch, tmp_path):
+        """The unit is regenerated and compared on every start/restart/status; a later shell without
+        the export (ssh, cron, sudo) must see the installed unit as current, not "repair" the line away."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/cuda/lib64:/opt/pct%dir/lib")
+        unit_path.write_text(gateway_cli.generate_systemd_unit(system=False), encoding="utf-8")
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cuda/lib64:/opt/pct%%dir/lib"' in unit_path.read_text()
+
+        monkeypatch.delenv("LD_LIBRARY_PATH")
+
+        assert gateway_cli.systemd_unit_is_current(system=False)
+        assert 'LD_LIBRARY_PATH=/opt/cuda/lib64:/opt/pct%%dir/lib' in gateway_cli.generate_systemd_unit(system=False)
+
+    def test_system_unit_remaps_caller_home_ld_library_path_components(self, monkeypatch):
+        """#14613: under sudo the caller's /root/... library dirs are unreadable to the target
+        user, so each colon-separated component is remapped like the PATH entries are."""
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice", 1001),
+        )
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/root/cuda/lib:/opt/cuda/lib64")
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'Environment="LD_LIBRARY_PATH=/home/alice/cuda/lib:/opt/cuda/lib64"' in unit
 
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice
@@ -1825,7 +2014,9 @@ class TestDockerAwareGateway:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
-        with pytest.raises(RuntimeError, match="systemctl is not available"):
+        from hermes_cli.gateway_command_errors import SystemctlUnavailableError
+
+        with pytest.raises(SystemctlUnavailableError):
             gateway_cli._run_systemctl(["start", "hermes-gateway"])
 
     def test_run_systemctl_passes_through_on_success(self, monkeypatch):
@@ -1862,6 +2053,58 @@ class TestDockerAwareGateway:
         out = capsys.readouterr().out
         assert "Docker" in out or "docker" in out
         assert "restart" in out.lower()
+
+    def test_install_in_systemd_container_refuses_user_scope(self, monkeypatch, capsys):
+        """A bind-mounted home must not receive a host-visible user unit."""
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_install_systemd_from_cli",
+            lambda *args, **kwargs: pytest.fail("must not install a user unit in a container"),
+        )
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=False, run_as_user=None)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(args)
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "--system" in out
+        assert "user-scope" in out
+
+    def test_install_in_systemd_container_keeps_explicit_system_scope(self, monkeypatch):
+        """Explicit system installs stay available for systemd-managed containers."""
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_install_systemd_from_cli",
+            lambda *args, **kwargs: calls.append(kwargs),
+        )
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=True, run_as_user=None)
+        gateway_cli.gateway_command(args)
+
+        assert calls == [{"force": False, "system": True, "run_as_user": None}]
+
+    def test_setup_wizard_user_scope_in_container_skips_install(self, monkeypatch, capsys):
+        """The wizard's default "user service" choice is the same host-visible unit (#112323):
+        inside a container it prints the guidance and reports no install instead of writing it."""
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        monkeypatch.setattr(gateway_cli, "prompt_linux_gateway_install_scope", lambda: "user")
+        monkeypatch.setattr(
+            gateway_cli, "systemd_install",
+            lambda **kwargs: pytest.fail("must not install a user unit in a container"),
+        )
+
+        assert gateway_cli.install_linux_gateway_from_setup(force=False, enable_on_startup=True) == ("user", False)
+        assert "--system" in capsys.readouterr().out
 
 
 class TestLegacyHermesUnitDetection:
@@ -2407,6 +2650,22 @@ class TestServiceTakeoverGovernance:
         assert "<string>run</string>" in plist
         assert "<key>KeepAlive</key>" in plist
         assert "<true/>" in plist
+
+    def test_launchd_plist_parks_ex_config_instead_of_keepalive_loop(self, tmp_path, monkeypatch):
+        """Token-collision EX_CONFIG (78) must not KeepAlive-respawn on macOS.
+
+        systemd parks via RestartPreventExitStatus=78; launchd cannot gate on a
+        specific status. Unconditional KeepAlive=true turned that exit into a
+        30s crash loop (#89477). SuccessfulExit=false plus the stderr wrapper
+        mapping 78→0 is the launchd twin: a clean stop stays down, exit 75 and
+        crashes still relaunch.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        parsed = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        assert parsed["KeepAlive"] == {"SuccessfulExit": False}
+        assert parsed["RunAtLoad"] is True
 
     def test_systemd_unit_does_not_arm_takeover(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"

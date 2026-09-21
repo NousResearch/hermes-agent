@@ -26,6 +26,21 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     return PhotonAdapter(cfg)
 
 
+def test_read_receipts_is_behavioral_config_with_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    monkeypatch.setenv("PHOTON_READ_RECEIPTS", "true")
+    configured = PhotonAdapter(
+        PlatformConfig(enabled=True, token="", extra={"read_receipts": False})
+    )
+    assert configured._read_receipts is False
+
+    env_only = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={}))
+    assert env_only._read_receipts is True
+
+
 class _ProbeClient:
     """Fake httpx.AsyncClient whose /healthz probe behavior is injectable."""
 
@@ -138,6 +153,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+    assert kwargs["env"]["PHOTON_READ_RECEIPTS"] == "true"
     assert spawned["patch_kwargs"]["creationflags"] == hidden_flags
     assert kwargs["creationflags"] == hidden_flags
 

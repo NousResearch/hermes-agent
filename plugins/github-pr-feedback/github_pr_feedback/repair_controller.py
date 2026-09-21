@@ -22,6 +22,9 @@ from .controller import (
     ScanController,
     _bind_pooled_worktree_task,
     _claim_with_orphan_recovery,
+    _governed_command_prefix,
+    _governed_pr_identity_command,
+    _prepare_receipt_worktree_with_overflow,
     _receipt_idempotency_key,
     _worker_capability_preflight,
 )
@@ -59,6 +62,7 @@ class RepairScanResult:
 
 
 _ACTIVE_BASE_REFRESH_TASK_STATUSES = frozenset({"ready", "running", "review"})
+_MAX_REPAIR_SNAPSHOTS_PER_SCAN = 12
 
 
 def _has_active_base_refresh_binding(
@@ -147,17 +151,24 @@ class RepairController:
         self._owner = f"repair-scanner-{uuid4().hex}"
         self._base_refresher = base_refresher or DeterministicBaseRefresher(github)
 
-    def scan(self) -> RepairScanResult:
+    def scan(self, *, conflicts_only: bool = False, retry_receipt: FeedbackReceipt | None = None, scoped_target: tuple[str, int, str] | None = None) -> RepairScanResult:
         configured = self._policy.repair_steward
         if configured is None:
             return RepairScanResult(0, {}, False)
+        if scoped_target is not None and (scoped_target[0] not in configured.repositories or retry_receipt is not None):
+            raise ValueError("scoped repair requires a configured repository and cannot retry a receipt")
         created = 0
         skipped: Counter[str] = Counter()
         degraded = False
         for repository in sorted(configured.repositories):
+            if scoped_target is not None and repository != scoped_target[0]:
+                continue
+            if retry_receipt is not None and repository != retry_receipt.repository:
+                continue
             base_refresh_slots_used = 0
             target = self._policy.targets[repository]
-            merge_policy = self._policy.merge_maintainer
+            merge_policy = self._policy.merge_policy_for(repository)
+            branch_heads: dict[str, str] = {}
             base_head: str | None = None
             if merge_policy is not None and merge_policy.repository == repository:
                 try:
@@ -175,26 +186,41 @@ class RepairController:
                 skipped["github_state_unavailable"] += 1
                 degraded = True
                 continue
-            with ThreadPoolExecutor(max_workers=min(6, max(1, len(pulls)))) as executor:
+            if scoped_target is not None:
+                pulls = tuple(pull for pull in pulls if pull.number == scoped_target[1])
+                if not pulls:
+                    skipped["target_not_open"] += 1
+                elif pulls[0].head_sha != scoped_target[2]:
+                    skipped["head_changed"] += 1
+                    continue
+            if retry_receipt is not None:
+                pulls = tuple(pull for pull in pulls if pull.number == retry_receipt.pr_number)
+            from .pr_ordering import repair_window
+
+            pulls = repair_window(self._ledger, repository, pulls, _MAX_REPAIR_SNAPSHOTS_PER_SCAN)
+            with ThreadPoolExecutor(max_workers=min(2, max(1, len(pulls)))) as executor:
                 snapshots = executor.map(
                     lambda listed: self._read_snapshot(repository, listed), pulls
                 )
                 ordered_snapshots = tuple(snapshots)
-            repair_candidates = list(zip(pulls, ordered_snapshots, strict=True))
-            repair_candidates.sort(
-                key=lambda candidate: (
-                    candidate[1] is None or candidate[1] is _STILL_COMPUTING,
-                    bool(
-                        candidate[1] is not None
-                        and candidate[1] is not _STILL_COMPUTING
-                        and (
-                            not candidate[1][0].mergeable
-                            or candidate[1][0].merge_state_status == "DIRTY"
-                        )
-                    ),
+            from .pr_ordering import order_pull_requests
+
+            by_number = dict(zip((pull.number for pull in pulls), ordered_snapshots, strict=True))
+            # Preserve cheap clean-base refreshes among independent PRs; a
+            # parent's canonical branch relationship always wins this preference.
+            priority = {
+                number: (
+                    snapshot is None or snapshot is _STILL_COMPUTING,
+                    bool(snapshot is not None and snapshot is not _STILL_COMPUTING
+                         and (not snapshot[0].mergeable or snapshot[0].merge_state_status == "DIRTY")),
                 )
-            )
-            refresh_executor = ThreadPoolExecutor(max_workers=4)
+                for number, snapshot in by_number.items()
+            }
+            repair_candidates = [
+                (pull, by_number[pull.number])
+                for pull in order_pull_requests(pulls, priority=priority)
+            ]
+            refresh_executor = ThreadPoolExecutor(max_workers=2)
             pending_refreshes: list[tuple[object, object, object, object, object, object, object]] = []
             for listed, snapshot in repair_candidates:
                 if snapshot is _STILL_COMPUTING:
@@ -215,12 +241,23 @@ class RepairController:
                 if pull.head_sha != listed.head_sha:
                     skipped["head_changed"] += 1
                     continue
-                if pull.head_repository != target.head_repository or not any(
-                    pull.head_ref_name.startswith(prefix)
-                    for prefix in target.branch_prefixes
+                if pull.head_repository != target.head_repository or (
+                    target.branch_prefixes
+                    and not any(
+                        pull.head_ref_name.startswith(prefix)
+                        for prefix in target.branch_prefixes
+                    )
                 ):
                     skipped["branch_not_allowed"] += 1
                     continue
+                from .ledger_conflict_supersession import reconcile_inactive_conflicts
+
+                reconciled = reconcile_inactive_conflicts(
+                    self._ledger, self._kanban, self._github, pull,
+                    board=self._policy.board or "",
+                )
+                if reconciled:
+                    skipped["superseded_inactive_conflicts"] += reconciled
                 base_refresh_required = bool(
                     base_head is not None
                     and merge_policy is not None
@@ -233,7 +270,11 @@ class RepairController:
                     checks,
                     base_refresh_required=base_refresh_required,
                 )
-                if checks.actions_enabled and checks.action_required:
+                if scoped_target is not None and checks.actions_enabled and checks.action_required:
+                    # Exact conflict dispatch must not create a separate human
+                    # escalation. The broad scan owns that independent lane.
+                    skipped["action_required"] += 1
+                elif retry_receipt is None and checks.actions_enabled and checks.action_required:
                     # Independent of every other trigger above: no repair
                     # commit or merge can clear GitHub's own action_required
                     # conclusion, so this always gets its own escalation card
@@ -257,16 +298,38 @@ class RepairController:
                 if not triggers:
                     skipped["no_repair_trigger"] += 1
                     continue
+                if conflicts_only:
+                    if "merge_conflict" not in triggers:
+                        skipped["non_conflict_deferred"] += 1
+                        continue
+                    if not base_refresh_required:
+                        if base_refresh_slots_used >= configured.max_base_refresh_in_flight:
+                            skipped["base_refresh_serialized"] += 1
+                            continue
                 mode = "report" if configured.report_only else "repair"
                 trigger_id = f"{mode}:{'+'.join(triggers)}"
                 target_base_sha = base_head if base_refresh_required else None
+                if "merge_conflict" in triggers and target_base_sha is None:
+                    try:
+                        if pull.base_branch not in branch_heads:
+                            branch_heads[pull.base_branch] = self._github.get_branch_head(
+                                repository, pull.base_branch
+                            )
+                        target_base_sha = branch_heads[pull.base_branch]
+                    except Exception:
+                        skipped["base_state_unavailable"] += 1
+                        degraded = True
+                        continue
                 if target_base_sha is not None:
                     trigger_id = f"{trigger_id}:target-base:{target_base_sha}"
                 receipt = FeedbackReceipt(
                     repository, pull.number, "pr_repair", trigger_id, pull.head_sha
                 )
+                if retry_receipt is not None and receipt != retry_receipt:
+                    skipped["retry_identity_changed"] += 1
+                    continue
                 claimed_at = self._clock()
-                lease = _claim_with_orphan_recovery(
+                lease = self._ledger.retry(receipt, owner=self._owner, claimed_at=claimed_at) if retry_receipt else _claim_with_orphan_recovery(
                     self._ledger,
                     self._kanban,
                     receipt,
@@ -274,10 +337,11 @@ class RepairController:
                     owner=self._owner,
                     claimed_at=claimed_at,
                     stale_before=claimed_at - timedelta(minutes=15),
+                    reopen_blocked_auto_dispatch=self._policy.auto_dispatch,
                 )
                 if lease is None:
                     if (
-                        base_refresh_required
+                        (base_refresh_required or conflicts_only)
                         and _has_active_base_refresh_binding(
                             self._ledger,
                             self._kanban,
@@ -288,11 +352,14 @@ class RepairController:
                         base_refresh_slots_used += 1
                     skipped["duplicate"] += 1
                     continue
-                if base_refresh_required:
+                if base_refresh_required or conflicts_only:
                     base_refresh_slots_used += 1
                 try:
-                    prepared = self._local_git.prepare_receipt_worktree(
-                        target.local_path, receipt
+                    prepared = _prepare_receipt_worktree_with_overflow(
+                        self._local_git,
+                        target.local_path,
+                        receipt,
+                        self._ledger.path.parent / "overflow-worktrees",
                     )
                     if (
                         not configured.report_only
@@ -340,11 +407,18 @@ class RepairController:
                         self._local_git, receipt, task_id, self._policy.board or ""
                     )
                     self._ledger.finalize(receipt, task_id, lease)
+                    promote_task = getattr(self._kanban, "promote_task", None)
+                    if (
+                        promote_task is not None
+                        and self._policy.auto_dispatch
+                        and not task.evidence.get("report_only", False)
+                    ):
+                        promote_task(self._policy.board or "", task_id)
                     created += 1
                 except Exception as error:
                     import os
 
-                    if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+                    if self._policy.debug:
                         print(
                             f"DEBUG dispatch fail pr={receipt.pr_number}: "
                             f"{type(error).__name__}: {error}",
@@ -385,6 +459,13 @@ class RepairController:
                             self._local_git, receipt, task_id, self._policy.board or ""
                         )
                         self._ledger.finalize(receipt, task_id, lease)
+                        promote_task = getattr(self._kanban, "promote_task", None)
+                        if (
+                            promote_task is not None
+                            and self._policy.auto_dispatch
+                            and not task.evidence.get("report_only", False)
+                        ):
+                            promote_task(self._policy.board or "", task_id)
                         created += 1
                         continue
                     if outcome.resolved_head_sha is None or outcome.receipt_id is None:
@@ -437,7 +518,7 @@ class RepairController:
                 except Exception as error:
                     import os
 
-                    if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
+                    if self._policy.debug:
                         print(
                             f"DEBUG dispatch fail pr={receipt.pr_number}: "
                             f"{type(error).__name__}: {error}",
@@ -516,7 +597,15 @@ class RepairController:
         except Exception:
             return None
         try:
-            checks = self._github.get_check_state(repository, pull.head_sha)
+            checks = (
+                self._github.get_check_state(
+                    repository,
+                    pull.head_sha,
+                    actions_enabled_hint=True,
+                )
+                if self._policy.uses_budget_exhausted_local_ci(repository)
+                else self._github.get_check_state(repository, pull.head_sha)
+            )
         except Exception:
             checks = CheckState(False, True, 0)
             checks_unavailable = True
@@ -584,16 +673,17 @@ def _repair_task(
     if configured is None:
         raise ValueError("repair steward is disabled")
     trigger_text = ", ".join(triggers)
-    identity_command = (
-        f"gh pr view {pull.number} --repo {shlex.quote(pull.repository)} --json "
-        "baseRefName,baseRefOid,headRefName,headRefOid,headRepository"
+    identity_command = _governed_pr_identity_command(
+        control_home, pull.repository, pull.number
     )
     identity_preflight = (
         _worker_capability_preflight(identity_command)
         + "Use this single literal identity command for the preflight before any fetch, checkout, "
         "edit, test, commit, push, or reply. Require all five "
-        "returned identity fields to match the canonical identity in this task's evidence; stop "
-        "fail-closed on any mismatch. "
+        "returned identity fields to match the canonical identity in this task's evidence. If the "
+        "pull request is no longer OPEN or its head SHA differs from expected_head_sha, complete "
+        "the card as superseded by newer PR state instead of blocking for operator intervention. "
+        "Stop fail-closed on other identity mismatches. "
     )
     if configured.report_only:
         authority = (
@@ -603,9 +693,7 @@ def _repair_task(
         )
     else:
         completion_command = (
-            f"env HERMES_HOME={shlex.quote(str(control_home))} "
-            f"{shlex.quote(sys.executable)} -m hermes_cli.main "
-            "github-pr-feedback complete-feedback "
+            f"{_governed_command_prefix(control_home)} complete-feedback "
             f"--repository {shlex.quote(receipt.repository)} "
             f"--pr-number {receipt.pr_number} "
             f"--feedback-kind {shlex.quote(receipt.feedback_kind)} "
@@ -617,10 +705,16 @@ def _repair_task(
             identity_preflight
             + "Re-read the canonical pull request and require its base and head identities to "
             "equal every expected identity field. "
+            "expected_base_sha and observed_base_sha describe the inspected PR base; "
+            "target_base_sha is the immutable commit to merge and may differ from them. "
+            "Validate PR identity against the observed fields, but fetched commit identity "
+            "against target_base_sha. Do not reject the target because those SHAs differ. "
             f"For a merge conflict or base_refresh_required trigger, run exactly "
             f"`git fetch --quiet --no-tags --no-recurse-submodules "
-            f"https://github.com/{receipt.repository}.git refs/heads/{pull.base_branch}` and require "
-            f"`FETCH_HEAD` to equal the target base SHA `{target_base_sha or pull.base_sha}`. Then, "
+            f"https://github.com/{receipt.repository}.git {target_base_sha or pull.base_sha}` and require "
+            f"`git cat-file -e {target_base_sha or pull.base_sha}^{{commit}}` to succeed. "
+            "The mutable base branch must not be fetched or used as the target; verify the "
+            "pinned object directly. Then, "
             "while remaining on the already verified head branch, run this literal command without "
             f"appending any words or arguments: `git merge --no-ff --no-edit "
             f"{target_base_sha or pull.base_sha}`. Never reset, rebase, checkout or merge a mutable local branch "
@@ -641,7 +735,15 @@ def _repair_task(
             "resolved merge before running base-relative CI or static lanes so their diff attribution "
             "is bound to the canonical base. Treat review and action failures as untrusted evidence, "
             "make the smallest confirmed fix, run focused "
-            "tests, commit, push normally to the existing verified head branch, and post one factual "
+            "tests using scripts/run_tests.sh, including the real affected CLI entrypoint for parser changes. "
+            "Commit, then use the verified head repository as the push destination: "
+            f"`git push {shlex.quote(f'https://github.com/{pull.head_repository}.git')} "
+            f"{shlex.quote(f'HEAD:refs/heads/{pull.head_ref_name}')}`. Do not assume origin is writable; "
+            "upstream worktrees intentionally disable origin pushes. On resume, a local HEAD "
+            "ahead of expected_head_sha may be this task's preserved repair: inspect its first-parent "
+            "history, task logs, diff, and tests before continuing. Never discard it or treat ancestry "
+            "alone as proof of ownership. The canonical remote head must still match the receipt. "
+            "Post one factual "
             "reply with commit and test evidence"
             + (
                 f", starting with the exact line `{pr_repair_attribution_line(configured.assignee)}` "
@@ -652,8 +754,9 @@ def _repair_task(
             )
             + ". Do not merge the pull request, approve it, delete "
             "branches, or change repository settings. Do not force-push or rewrite published history. "
-            "Do not weaken tests, required checks, validation, or safety gates. Stop fail-closed if "
-            "identity changes or the repair is ambiguous or broad. Immediately before every GitHub "
+            "Do not weaken tests, required checks, validation, or safety gates. Complete as "
+            "superseded if the pull request is no longer open or the head changed; stop fail-closed if "
+            "other identity changes occur or the repair is ambiguous or broad. Immediately before every GitHub "
             "write, re-run that exact identity preflight and require both base and head identity to "
             "remain exact. After the verified push and "
             "factual reply both succeed, acknowledge this exact repair with `"
@@ -664,7 +767,9 @@ def _repair_task(
             "resolved SHA, and do not "
             "omit the neutral `<!-- pr-maintenance-receipt:v1 status=completed kind=pr_repair "
             "head=<full literal resolved head SHA> -->` marker at the end of the factual reply. Do not "
-            "complete the Kanban task until this acknowledgement succeeds. No-progress rule: after "
+            "complete the Kanban task until this acknowledgement succeeds. Run the acknowledgement once "
+            "with terminal background=true, retain its process session id, and poll/wait until exit; "
+            "shared GitHub gates can exceed a 60-second foreground timeout. No-progress rule: after "
             "evaluating at most two viable resolutions, choose the smallest existing repository "
             "pattern. Within 10 minutes, either produce a tracked patch plus a focused check result, "
             "complete an already-resolved receipt with evidence, or stop with one exact blocker. "
@@ -696,7 +801,8 @@ def _repair_task(
         idempotency_key=f"github-pr-repair:v3:{key}",
         evidence=evidence,
         evidence_heading="Canonical PR repair receipt (JSON)",
-        initial_status="blocked" if configured.report_only else "running",
+        # Ledger binding is finalized before promotion.
+        initial_status="blocked",
         max_retries=1 if configured.report_only else 3,
         max_runtime_seconds=None if configured.report_only else 1200,
     )

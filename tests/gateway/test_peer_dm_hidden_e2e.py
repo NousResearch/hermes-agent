@@ -18,6 +18,9 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
 from aiohttp import web
 
 from gateway.config import PlatformConfig
@@ -177,4 +180,3 @@ def test_peer_dm_reaches_compressed_hidden_bot_chat_e2e(
 
     # No duplicate "Bot Chat" row was minted; the title still lives on the root.
     assert gw.db.get_session_by_title("Bot Chat")["id"] == gw.hidden_id
-

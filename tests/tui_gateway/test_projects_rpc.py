@@ -38,7 +38,7 @@ def _fast_git_probe(monkeypatch):
         d = str(cwd)
         while d and d not in ("/", os.path.dirname(d)):
             if os.path.isdir(os.path.join(d, ".git")):
-                return d
+                return os.path.join(d, ".git") if _a and _a[-1] == "--git-common-dir" else d
             d = os.path.dirname(d)
         return ""
 
@@ -886,5 +886,4 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert _cached_repo_labels(launch_home) == ["only"]
     assert not (coder_home / "projects.db").exists()
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
-
 

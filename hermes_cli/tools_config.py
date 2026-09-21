@@ -14,6 +14,7 @@ from hermes_cli.nous_subscription import (
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
 from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
+from hermes_cli.toolset_validation import parse_platform_toolsets_value
 # Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving.
 from hermes_cli.tools_config_cua import (  # noqa: F401
     _post_setup_no_window_flags, _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
@@ -68,7 +69,7 @@ CONFIGURABLE_TOOLSETS = [
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
-    ("connections",     "🔌 Connections",               "remote connector tools and account authorization"),
+    ("inter_agent",     "🤝 Inter-Agent Messaging",    "persistent messaging between Hermes agents"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
@@ -278,11 +279,14 @@ TOOL_CATEGORIES = {
     },
     "image_gen": {
         "name": "Image Generation", "icon": "🎨",
-        # Provider rows (FAL, OpenAI, OpenAI Codex, xAI) come from plugins.image_gen.<vendor> via
-        # _plugin_image_gen_providers(). Only the managed "Nous Subscription" row lives here — fal backend, distinct UX.
+        # Provider rows (FAL, OpenAI, OpenAI Codex, xAI, Krea, …) come from plugins.image_gen.<vendor> via
+        # _plugin_image_gen_providers(). Only the managed "Nous Subscription" row lives here: ONE row for the
+        # FAL, Krea and Portal gateways, whose union catalog is `imagegen_backend: "nous"`; the stored model id
+        # picks the gateway at run time (tools/image_generation_managed.py).
         "providers": [
-            _row("Nous Subscription", "subscription", "Managed FAL image generation billed to your subscription", **_NOUS,
-                 managed_nous_feature="image_gen", override_env_vars=["FAL_KEY"], imagegen_backend="fal"),
+            _row("Nous Subscription", "subscription",
+                 "Managed image generation (FAL, Krea 2, Nous Portal models) billed to your subscription", **_NOUS,
+                 managed_nous_feature="image_gen", override_env_vars=["FAL_KEY"], imagegen_backend="nous"),
         ],
     },
     "video_gen": {
@@ -545,10 +549,32 @@ def _context_engine_active(config: dict) -> bool:
     return bool(name) and name != "compressor"
 
 
+def _coerce_platform_toolsets_value(value, platform: str):
+    """Read a list-literal string saved for ``platform_toolsets.<platform>`` as the list it encodes.
+
+    The parser is shared with ``hermes doctor`` and ``hermes plugins`` (``toolset_validation``
+    ``parse_platform_toolsets_value``) so every surface agrees on the user's selection (#115866).
+    Any other non-list value is warned about once (naming the expected shape) and left as-is, so
+    the default fallback below is loud rather than silent.
+    """
+    if value is None:
+        return None
+    parsed = parse_platform_toolsets_value(value)
+    if parsed is not None:
+        return parsed
+    if platform not in _warned_invalid_platform_toolsets:
+        _warned_invalid_platform_toolsets.add(platform)
+        logger.warning(
+            "platform_toolsets.%s is %r, expected a YAML list of toolset names "
+            "(e.g. [terminal, file, web]) - falling back to the platform default. "
+            "Run `hermes tools` to reconfigure.", platform, value)
+    return value
+
+
 def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_servers: bool = True) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
     platform_toolsets = config.get("platform_toolsets") or {}
-    toolset_names = platform_toolsets.get(platform)
+    toolset_names = _coerce_platform_toolsets_value(platform_toolsets.get(platform), platform)
     # An explicitly saved list (even a composite like ``hermes-discord``) is an opt-in to the platform's
     # native default-off toolsets — see _default_off_toolsets.
     # Track whether the user explicitly saved a toolset list for this platform (vs. falling back to the
@@ -573,7 +599,11 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
     else:
         enabled_toolsets = _composite_toolsets(toolset_names, platform, explicitly_configured)
 
-    _recover_platform_native_toolsets(enabled_toolsets, platform, skip=configurable_keys | plugin_ts_keys | platform_default_keys)
+    # A saved platform list is an explicit allowlist. Native recovery belongs only
+    # to implicit composite resolution; otherwise [] or [file] gains capabilities
+    # the user did not select.
+    if not explicitly_configured:
+        _recover_platform_native_toolsets(enabled_toolsets, platform, skip=configurable_keys | plugin_ts_keys | platform_default_keys)
     if plugin_ts_keys:
         enabled_toolsets |= _enabled_plugin_toolsets(config, platform, toolset_names, plugin_ts_keys)
 
@@ -583,7 +613,14 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         enabled_toolsets.add("context_engine")
 
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.
-    explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
+    # ``all``/``*`` are composite expansion sentinels, never toolset names to
+    # forward after the composite has already been expanded above.
+    explicit_passthrough = {
+        ts for ts in toolset_names
+        if ts not in explicit_known_keys
+        and ts not in platform_default_keys
+        and ts not in {"all", "*"}
+    }
     enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
 
     # Legacy profile opt-in is a fallback only. A saved platform list (even
@@ -600,7 +637,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
         enabled_toolsets = _prune_toolsets_stripped_by_disabled(enabled_toolsets, disabled_names)
 
     if explicitly_configured and toolset_names:
-        _warn_all_invalid_platform_toolsets(platform, platform_toolsets[platform])
+        _warn_all_invalid_platform_toolsets(platform, toolset_names)
     return enabled_toolsets
 
 
@@ -689,7 +726,9 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     # unchecked selections on the next read. Saving from the picker is consent to clear the "no_mcp" sentinel
     # (no checkbox for it; users who once set it by hand could otherwise never re-enable MCP via the UI).
     drop = _configurable_keys() | plugin_keys | _platform_default_keys() | {"no_mcp"}
-    existing_toolsets = cfg_get(config, "platform_toolsets", platform, default=[])
+    existing_toolsets = _coerce_platform_toolsets_value(
+        cfg_get(config, "platform_toolsets", platform, default=[]), platform
+    )
     preserved_entries = {str(e) for e in (existing_toolsets if isinstance(existing_toolsets, list) else [])
                          if str(e) not in drop}
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
@@ -919,7 +958,7 @@ def _platform_menu_label(config: dict, pkey: str) -> str:
 def _print_tools_summary(config: dict, enabled_platforms: List[str]) -> None:
     """``hermes tools --summary``: enabled toolsets per platform, non-interactive."""
     total = len(_get_effective_configurable_toolsets())
-    print(color("☤ Tool Summary", Colors.CYAN, Colors.BOLD))
+    print(color("⚕ Tool Summary", Colors.CYAN, Colors.BOLD))
     print()
     for pkey, enabled in _platform_toolset_summary(config, enabled_platforms).items():
         print(color(f"  {PLATFORMS[pkey]['label']}", Colors.BOLD) + color(f"  ({len(enabled)}/{total})", Colors.DIM))
@@ -1026,7 +1065,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if getattr(args, "summary", False):
         _print_tools_summary(config, enabled_platforms)
         return
-    print(color("☤ Hermes Tool Configuration", Colors.CYAN, Colors.BOLD))
+    print(color("⚕ Hermes Tool Configuration", Colors.CYAN, Colors.BOLD))
     print(color("  Enable or disable tools per platform.", Colors.DIM))
     print(color("  Tools that need API keys will be configured when enabled.", Colors.DIM))
     print(color("  Guide: https://hermes-agent.nousresearch.com/docs/user-guide/features/tools", Colors.DIM))

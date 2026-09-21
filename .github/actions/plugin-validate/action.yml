@@ -1,7 +1,7 @@
 name: Hermes Plugin Validate
 description: >-
   Validate a Hermes Agent plugin (plugin.yaml manifest schema AND
-  declared-vs-actually-registered capabilities) using
+  declared capabilities compared with literal registration calls) using
   `hermes plugins validate`. Drop this into your plugin repo's CI:
 
     - uses: actions/checkout@<sha>
@@ -35,9 +35,10 @@ runs:
         _HERMES_REF: ${{ inputs.hermes-ref }}
       run: |
         set -euo pipefail
-        # CI-context install from git; the ref lets plugin authors validate
-        # against a pinned hermes release instead of main.
-        pip install "git+https://github.com/NousResearch/hermes-agent@${_HERMES_REF}"
+        # Editable VCS installs use the supported source-install path and do
+        # not invoke the wheel build that fails in plugin repositories whose
+        # CI environment does not carry the Hermes packaging toolchain.
+        pip install -e "git+https://github.com/NousResearch/hermes-agent@${_HERMES_REF}#egg=hermes-agent"
 
     - name: Validate plugin
       shell: bash
@@ -46,8 +47,8 @@ runs:
       run: |
         set -uo pipefail
         # `hermes plugins validate` checks the plugin.yaml manifest schema
-        # and loads the plugin in a scratch subprocess to verify that the
-        # capabilities it DECLARES match what it actually registers.
+        # and statically inspects literal registration calls to compare the
+        # declared capabilities with those calls. Candidate code is never executed.
         if hermes plugins validate "$_PLUGIN_PATH"; then
           echo "✅ PASS: plugin at '$_PLUGIN_PATH' validated cleanly"
         else

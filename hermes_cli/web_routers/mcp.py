@@ -7,6 +7,7 @@ web_server — reached via the late-binding seam so tests that mutate
 
 import asyncio
 import hashlib
+from contextlib import contextmanager
 import re
 import secrets
 import threading
@@ -16,7 +17,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from hermes_cli.web_deps import LateState, late
+from hermes_cli.web_deps import late
 from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, _normalize_mcp_server_create
 from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
 from hermes_cli.web_routers._common import (
@@ -36,6 +37,23 @@ save_env_value = late("save_env_value", "hermes_cli.config")
 _mcp_oauth_flows_lock = threading.Lock()
 _MCP_DASHBOARD_OAUTH_TTL = 15 * 60
 _MAX_PENDING_MCP_OAUTH_FLOWS = 8
+
+
+@contextmanager
+def _profile_secret_scope(profile: Optional[str]):
+    """Home + secret scope for a probe-class request (#109901). ``_config_profile_scope`` now binds
+    the secret scope itself; this stays the probe/OAuth callers' name. Home-only, NOT
+    ``_profile_scope``: the body can block for seconds and the latter holds the process-global
+    skills lock."""
+    with _config_profile_scope(profile):
+        yield
+
+
+def _secret_scoped(profile: Optional[str], fn):
+    def _run():
+        with _profile_secret_scope(profile):
+            return fn()
+    return _run
 
 
 def _gc_mcp_oauth_flows() -> None:
@@ -77,7 +95,8 @@ def _mcp_install_action_name(name: str) -> str:
 async def list_mcp_servers(profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers
 
-    servers = await scoped_to_thread(profile, _get_mcp_servers)
+    # ``url`` may carry a ``${VAR}`` ref — expand it against the requested profile, not this process.
+    servers = await asyncio.to_thread(_secret_scoped(profile, _get_mcp_servers))
     return {"servers": [_mcp_server_summary(name, cfg) for name, cfg in sorted(servers.items())]}
 
 
@@ -149,7 +168,7 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     """Connect to the server, list its tools, disconnect."""
     from hermes_cli.mcp_config import _get_mcp_servers, _oauth_tokens_present, _probe_single_server
 
-    servers = await scoped_to_thread(profile, _get_mcp_servers)
+    servers = await asyncio.to_thread(_secret_scoped(profile, _get_mcp_servers))
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
@@ -158,17 +177,12 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     # with no token — a false green. Require a token on disk, matching /auth.
     needs_oauth_token = servers[name].get("auth") == "oauth"
 
-    def _probe_scoped():
-        # Home-only scope (contextvar), NOT _profile_scope: a probe can block for
-        # seconds (stdio `npx` cold start) and _profile_scope holds the
-        # process-global skills lock for its whole body, serializing every other
-        # endpoint. The probe only needs HERMES_HOME for .env + token resolution.
-        with _config_profile_scope(profile):
-            tools = _probe_single_server(name, servers[name], details=details)
-            return tools, (_oauth_tokens_present(name) if needs_oauth_token else True)
+    def _probe():
+        tools = _probe_single_server(name, servers[name], details=details)
+        return tools, (_oauth_tokens_present(name) if needs_oauth_token else True)
 
     try:  # probe blocks on a dedicated MCP event loop — keep it off the FastAPI loop
-        tools, token_present = await asyncio.to_thread(_probe_scoped)
+        tools, token_present = await asyncio.to_thread(_secret_scoped(profile, _probe))
     except Exception as exc:
         from hermes_cli.mcp_config import redact_mcp_probe_text
 
@@ -198,7 +212,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     """Start MCP OAuth and hand the authorization URL to the dashboard browser."""
     from hermes_cli.mcp_config import _get_mcp_servers
     from hermes_constants import get_hermes_home
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, exception_message
 
     _require_token(request)
     _gc_mcp_oauth_flows()
@@ -209,7 +223,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     process_home = _home()
 
     def _read():
-        with _profile_scope(profile):
+        with _profile_secret_scope(profile):
             return _get_mcp_servers(), _home()
 
     servers, flow_home = await asyncio.to_thread(_read)
@@ -242,7 +256,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     try:
         await flow.wait_for_authorization_url(timeout=30)
     except Exception as exc:
-        flow.mark_error(str(exc))
+        flow.mark_error(exception_message(exc))
     return flow.snapshot()
 
 
@@ -268,7 +282,7 @@ async def cancel_mcp_oauth_flow(flow_id: str, request: Request):
     flow = _mcp_oauth_flows.get(flow_id)
     if flow is None:  # expired/GC'd is the goal state of a cancel — not an error
         return {"ok": True, "status": "expired"}
-    flow.mark_error("Cancelled by user")
+    flow.mark_error("Cancelled by user", cancelled=True)
     return {"ok": True, "status": flow.snapshot()["status"]}
 
 
@@ -278,6 +292,7 @@ async def mcp_oauth_callback(
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
+    iss: Optional[str] = None,
 ):
     _gc_mcp_oauth_flows()
     with _mcp_oauth_flows_lock:
@@ -293,7 +308,7 @@ async def mcp_oauth_callback(
     if flow is None:
         return HTMLResponse("<h1>OAuth flow expired</h1><p>Return to Hermes and try again.</p>", status_code=404)
     try:
-        flow.deliver_callback(code=code, state=state, error=error)
+        flow.deliver_callback(code=code, state=state, error=error, iss=iss)
     except ValueError as exc:
         return HTMLResponse(
             "<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>",
@@ -351,7 +366,12 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
         "post_install": entry.post_install or "",
         # Composer-suggestion triggers (desktop brand pills), only when the
         # manifest declares a `suggest` block.
-        "suggest": {"keywords": list(entry.suggest.keywords), "hosts": list(entry.suggest.hosts)} if entry.suggest else None,
+        "suggest": {
+            "keywords": list(entry.suggest.keywords), "hosts": list(entry.suggest.hosts),
+            "applications": list(getattr(entry.suggest, "applications", [])),
+            "examples": list(getattr(entry.suggest, "examples", [])),
+            "requires_app": getattr(entry.suggest, "requires_app", False),
+        } if entry.suggest else None,
         "needs_install": install is not None,
         "installed": installed,
         "enabled": enabled,
@@ -359,9 +379,10 @@ def _catalog_entry_json(entry: Any, installed: bool, enabled: bool) -> Dict[str,
 
 
 @router.get("/api/mcp/catalog")
-async def list_mcp_catalog(profile: Optional[str] = None):
+async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = False):
     """Browse the Nous-approved MCP catalog (optional-mcps/ manifests), each
-    entry annotated with installed/enabled state for ``profile``."""
+    entry annotated with installed/enabled state for ``profile``. Opt-in app
+    signals describe this backend machine, never the client or terminal sandbox."""
     with http_failure("mcp_catalog import failed", 500, "Catalog unavailable"):
         from hermes_cli import mcp_catalog
 
@@ -387,7 +408,36 @@ async def list_mcp_catalog(profile: Optional[str] = None):
         diagnostics = [{"name": n, "kind": k, "message": m} for (n, k, m) in mcp_catalog.catalog_diagnostics()]
     except Exception:
         pass
-    return {"entries": entries, "diagnostics": diagnostics}
+    result = {"entries": entries, "diagnostics": diagnostics}
+    if detect_apps:
+        import sys
+
+        try:
+            from hermes_cli.mcp_app_detection import discover_catalog_apps, validate_applications
+
+            applications = {}
+            for entry in entries:
+                labels = (entry["suggest"] or {}).get("applications") or [
+                    entry["name"].replace("-", " ").replace("_", " ")
+                ]
+                try:
+                    applications[entry["name"]] = validate_applications(labels)
+                except ValueError:
+                    # Catalog identifiers allow more than app labels; one unusable
+                    # inference must not suppress valid observations for other entries.
+                    applications[entry["name"]] = []
+
+            # Keep backend-local filesystem work off the event loop and profile lock.
+            detected = await asyncio.to_thread(discover_catalog_apps, applications)
+        except Exception:
+            _log.warning("Backend application discovery unavailable")
+            detected = {"matches": {}, "discovery": {
+                "scope": "backend", "status": "unavailable", "platform": sys.platform,
+            }}
+        for entry in entries:
+            entry["detected_apps"] = detected["matches"].get(entry["name"], [])
+        result["discovery"] = detected["discovery"]
+    return result
 
 
 @router.post("/api/mcp/catalog/install")

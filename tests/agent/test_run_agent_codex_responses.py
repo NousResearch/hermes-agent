@@ -1,4 +1,8 @@
+from hashlib import sha256
+import json
+from pathlib import Path
 import sys
+import tempfile
 import types
 from types import SimpleNamespace
 
@@ -54,6 +58,10 @@ def _build_agent(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
+    agent.session_id = "session-codex-tests"
+    agent._current_turn_id = "turn-codex-tests"
+    agent._current_api_request_id = "turn-codex-tests:api:1"
+    agent._llm_egress_state_dir = Path(tempfile.mkdtemp(prefix="hermes-codex-egress-"))
     return agent
 
 
@@ -331,6 +339,99 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
+def test_build_api_kwargs_codex_carries_trusted_read_sidecar_to_authorization(
+    tmp_path, monkeypatch
+):
+    """The live builder preserves trusted read provenance until authorization."""
+
+    from agent.llm_egress_runtime import authorize_agent_sdk_kwargs
+    from agent.source_provenance_tools import (
+        attach_trusted_source_provenance_metadata,
+        source_provenance_activation,
+    )
+    from agent.tool_dispatch_helpers import make_tool_result_message
+    from tools.file_tools import read_file_tool
+
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    agent = _build_agent(monkeypatch)
+    agent.session_id = "session-builder-replay"
+    agent._current_turn_id = "turn-builder-replay"
+    agent._current_api_request_id = "turn-builder-replay:api:1"
+    agent._llm_egress_policy_digest = sha256(b"builder-replay-policy").hexdigest()
+    agent._llm_egress_state_dir = tmp_path / "egress"
+
+    with tempfile.TemporaryDirectory(
+        prefix="hermes-builder-replay-", dir=Path.cwd()
+    ) as source_root:
+        source = Path(source_root) / "source.py"
+        source.write_text("safe = True\n", encoding="utf-8")
+        source_argument = str(source.relative_to(Path.cwd()))
+
+        with source_provenance_activation(agent, "read_file"):
+            result = read_file_tool(
+                source_argument, task_id="codex-builder-replay-read"
+            )
+        metadata = attach_trusted_source_provenance_metadata(
+            agent, "read_file", content=result
+        )
+        tool_result = make_tool_result_message(
+            "read_file",
+            result,
+            "call_read_file_builder_replay",
+            source_provenance=metadata,
+        )
+        api_messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Inspect the granted source."},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read_file_builder_replay",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": json.dumps({"path": source_argument}),
+                        },
+                    }
+                ],
+            },
+            tool_result,
+        ]
+
+        built = agent._build_api_kwargs(api_messages, tools_for_api=[])
+
+        sidecar = built["_hermes_source_provenance"]
+        assert len(sidecar) == 1
+        assert sidecar[0]["tool_call_id"] == "call_read_file_builder_replay"
+        assert sidecar[0]["content_sha256"] == sha256(
+            result.encode("utf-8")
+        ).hexdigest()
+        assert result not in json.dumps(sidecar)
+        converted_result = next(
+            item
+            for item in built["input"]
+            if item.get("type") == "function_call_output"
+        )
+        assert converted_result["output"] == result
+        assert "_source_provenance" not in converted_result
+        assert "_hermes_source_provenance" not in converted_result
+
+        agent._current_api_request_id = "turn-builder-replay:api:2"
+        authorized, receipt = authorize_agent_sdk_kwargs(agent, built)
+
+        authorized_result = next(
+            item
+            for item in authorized["input"]
+            if item.get("type") == "function_call_output"
+        )
+        assert authorized_result["output"] == result
+        assert "_source_provenance" not in json.dumps(authorized)
+        assert "_hermes_source_provenance" not in authorized
+        assert receipt.decision.source_grant_count == 1
+        assert receipt.decision.source_segment_count == 1
+
+
 def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
@@ -590,6 +691,51 @@ def test_run_codex_stream_strips_relay_added_retention_at_consumer_wire(
     )
 
 
+def test_run_codex_stream_keeps_provenance_sidecar_internal(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    agent.session_id = "session-1"
+    agent._current_turn_id = "turn-1"
+    agent._current_api_request_id = "turn-1:api:2"
+    agent._llm_egress_policy_digest = "a" * 64
+    agent._llm_egress_state_dir = tmp_path / "egress"
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        return _FakeCreateStream([
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            )
+        ])
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+    request = {
+        **_codex_request_kwargs(),
+        "_hermes_source_provenance": [],
+    }
+
+    agent._run_codex_stream(request)
+
+    assert "_hermes_source_provenance" not in captured
+
+
+def test_codex_preflight_preserves_internal_provenance_sidecar():
+    from agent.transports.codex import ResponsesApiTransport
+
+    sidecar = [{"tool_call_id": "call_read_1", "content_sha256": "a" * 64}]
+    request = {
+        **_codex_request_kwargs(),
+        "_hermes_source_provenance": sidecar,
+    }
+
+    normalized = ResponsesApiTransport().preflight_kwargs(request)
+
+    assert normalized["_hermes_source_provenance"] is sidecar
+
+
 def test_run_codex_stream_strips_nested_request_override_retention(
     monkeypatch,
     caplog,
@@ -845,6 +991,55 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
     assert response.output_text == ""
 
 
+def test_consume_codex_stream_collects_refusal_deltas_as_text(monkeypatch):
+    """A refusal-only Responses stream yields usable text, not RuntimeError.
+
+    The model declines and streams the
+    explanation via ``response.refusal.delta`` with no output_text and (on
+    some compatible backends) no output_item.done — without collecting the
+    refusal the consumer sees zero usable content.
+    """
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.refusal.delta", delta="I can't"),
+            SimpleNamespace(type="response.refusal.delta", delta=" help with that."),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+    )
+
+    assert response.output_text == "I can't help with that."
+    # Synthesized message item so downstream normalization has content.
+    assert response.output and response.output[0].type == "message"
+
+
+def test_extract_responses_message_text_reads_refusal_parts():
+    """Refusal content parts inside a message item surface as text."""
+    from agent.codex_responses_adapter import _extract_responses_message_text
+
+    item = SimpleNamespace(
+        type="message",
+        role="assistant",
+        content=[
+            SimpleNamespace(type="refusal", refusal="I must decline."),
+        ],
+    )
+    assert _extract_responses_message_text(item) == "I must decline."
+
+    mixed = SimpleNamespace(
+        type="message",
+        role="assistant",
+        content=[
+            SimpleNamespace(type="output_text", text="Hello. "),
+            SimpleNamespace(type="refusal", refusal="But no more."),
+        ],
+    )
+    assert _extract_responses_message_text(mixed) == "Hello. But no more."
+
+
 def test_consume_codex_stream_separates_commentary_from_analysis(monkeypatch):
     from agent.codex_runtime import _consume_codex_event_stream
 
@@ -1029,6 +1224,130 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     assert any(
         "finalization" in record.message for record in caplog.records
     )
+
+
+def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
+    """A relay that keeps SSE open after completion cannot discard the billed response."""
+    import threading
+    import time
+
+    import agent.codex_runtime as codex_runtime
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    closed = threading.Event()
+
+    class _HeldOpenAfterTerminalStream:
+        def __init__(self):
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        status="completed", usage=usage, id="resp_held_open",
+                    ),
+                ),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                closed.wait(3.0)
+                raise
+
+        def close(self):
+            closed.set()
+
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        return _HeldOpenAfterTerminalStream()
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
+
+    started = time.monotonic()
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 2.0
+    assert calls["count"] == 1
+    assert response.status == "completed"
+    assert response.usage is usage
+    assert response.id == "resp_held_open"
+    assert closed.wait(1.0)
+
+
+def test_run_codex_stream_drain_timeout_closes_raw_stream_when_managed_close_raises(monkeypatch):
+    """A Relay-managed wrapper whose close() raises (running loop) must not leak the provider stream."""
+    import threading
+
+    import agent.codex_runtime as codex_runtime
+    from agent import relay_llm
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message", status="completed", content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    raw_closed = threading.Event()
+
+    class _HeldOpenRawStream:
+        def __init__(self):
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(type="response.completed",
+                                response=SimpleNamespace(status="completed", usage=usage, id="resp_managed")),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raw_closed.wait(3.0)
+                raise
+
+        def close(self):
+            raw_closed.set()
+
+    class _ManagedWrapper:
+        final_response = None
+
+        def __init__(self, request, stream_factory, *, on_stream_created=None, **_kwargs):
+            raw = stream_factory(request)
+            on_stream_created(raw)
+            self._iter = iter(raw)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._iter)
+
+        def close(self):
+            raise RuntimeError("Cannot close a running event loop")
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: _HeldOpenRawStream()))
+    monkeypatch.setattr(relay_llm, "stream", _ManagedWrapper)
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.id == "resp_managed"
+    assert raw_closed.wait(1.0)
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):
@@ -1948,6 +2267,31 @@ def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(mon
     }
 
 
+def test_app_server_bridge_commentary_then_final_agent_messages_are_each_already_streamed(monkeypatch):
+    """#74248 boundary 2: codex app-server emits commentary deltas + completed, then final deltas +
+    completed. The completed final must compare against ITS OWN deltas, not "commentary + final", or
+    it is re-delivered with already_streamed=False and the gateway posts a second copy."""
+    from agent.codex_runtime import make_codex_app_server_event_bridge
+
+    agent = _build_agent(monkeypatch)
+    agent.stream_delta_callback = lambda text: None
+    deliveries = []
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: deliveries.append(
+        (text, already_streamed)
+    )
+    on_event = make_codex_app_server_event_bridge(agent)
+
+    def _agent_message(item_id, text, phase):
+        on_event({"method": "item/agentMessage/delta", "params": {"itemId": item_id, "delta": text}})
+        on_event({"method": "item/completed", "params": {
+            "item": {"id": item_id, "type": "agentMessage", "text": text, "phase": phase}}})
+
+    _agent_message("m1", "Checking the config.", "commentary")
+    _agent_message("m2", "Native compaction is active.", "final_answer")
+
+    assert deliveries == [("Checking the config.", True), ("Native compaction is active.", True)]
+    assert agent._current_streamed_assistant_text == ""
+
 
 
 def test_interim_content_was_streamed_matches_prefix_not_exact(monkeypatch):
@@ -2124,7 +2468,7 @@ def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
 
     dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
 
 
@@ -2148,8 +2492,28 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
         reason="preflight",
     )
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
+
+
+def test_dump_api_request_debug_reads_the_anthropic_client_and_messages_url(monkeypatch, tmp_path):
+    """anthropic_messages keeps its SDK client on ``_anthropic_client`` (``client`` is None):
+    the dump must show the masked key and /messages, not 'Bearer None' + /chat/completions (#24293)."""
+    import json
+    from types import SimpleNamespace
+    agent = _build_agent(monkeypatch)
+    agent.api_mode = "anthropic_messages"
+    agent.base_url = "https://relay.example.com/anthropic"
+    agent.client = None
+    agent._anthropic_client = SimpleNamespace(api_key="sk-ant-api03-abcdefghijklmnopqrstuvwxyz")
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_request_debug({"model": "claude", "messages": []}, reason="preflight")
+
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
+    assert payload["request"]["url"] == "https://relay.example.com/anthropic/messages"
+    assert "None" not in payload["request"]["headers"]["Authorization"]
+    assert "abcdefghijklmnopqrstuvwxyz" not in payload["request"]["headers"]["Authorization"]
 
 
 
@@ -2624,3 +2988,196 @@ def test_run_codex_stream_retired_request_stops_firing_callbacks(monkeypatch):
 
     assert streamed == ["keep"]
     assert "DROPPED" not in streamed
+
+
+def _raise_prestream_transport_error(request):
+    """Raise the #103673 shape: APIConnectionError <- ReadError <- ReadError."""
+    import httpx
+
+    from openai import APIConnectionError
+
+    inner = httpx.ReadError("receive failed", request=request)
+    mid = httpx.ReadError("receive failed", request=request)
+    try:
+        raise mid from inner
+    except httpx.ReadError as chained:
+        raise APIConnectionError(request=request) from chained
+
+
+def _completed_create_stream():
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="Recovered.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+    return _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed",
+                    usage=usage,
+                    id="resp_prestream_retry_1",
+                ),
+            ),
+        ]
+    )
+
+
+def test_run_codex_stream_retries_prestream_apiconnectionerror(monkeypatch):
+    """Regression test for issue #103673.
+
+    A pre-stream ``APIConnectionError`` wrapping an httpx transport error
+    (``ReadError`` before the first SSE event, stream never opened) must retry
+    with a fresh physical request like a raw transport error does, instead of
+    failing the turn on a transient connect/receive failure.
+    """
+    import httpx
+
+    agent = _build_agent(monkeypatch)
+    request = httpx.Request(
+        "POST",
+        "https://chatgpt.com/backend-api/codex/responses",
+        content=b'{"model":"gpt-5-codex"}',
+    )
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            _raise_prestream_transport_error(request)
+        return _completed_create_stream()
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["count"] == 2
+    assert response.status == "completed"
+    assert response.id == "resp_prestream_retry_1"
+
+
+def test_run_codex_stream_prestream_retry_exhaustion_logs_telemetry(
+    monkeypatch, caplog
+):
+    """Regression test for issue #103673 (observability half).
+
+    When the pre-stream retry is exhausted, the turn still raises, but the
+    single WARNING must carry the byte count, the stream-open state, the
+    exception chain, and the attempt count -- without prompt content.
+    """
+    import logging
+
+    import httpx
+    from openai import APIConnectionError
+
+    agent = _build_agent(monkeypatch)
+    body = b'{"model":"gpt-5-codex"}'
+    request = httpx.Request(
+        "POST", "https://chatgpt.com/backend-api/codex/responses", content=body
+    )
+    calls = {"count": 0}
+
+    def _fake_create(**kwargs):
+        calls["count"] += 1
+        _raise_prestream_transport_error(request)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+        with pytest.raises(APIConnectionError):
+            agent._run_codex_stream(_codex_request_kwargs())
+
+    assert calls["count"] == 2
+    failures = [
+        record
+        for record in caplog.records
+        if "Codex Responses request failed" in record.message
+    ]
+    assert len(failures) == 1
+    message = failures[0].message
+    assert f"serialized_request_body_bytes={len(body)}" in message
+    assert "stream_opened=false" in message
+    assert "APIConnectionError <- ReadError <- ReadError" in message
+    assert "attempt=2/2" in message
+
+
+def test_run_codex_stream_prestream_exhaustion_buffers_one_user_line_with_host_attempts_size(monkeypatch):
+    """#97548: when the pre-stream connect retries are spent the user gets ONE line naming the
+    endpoint host, the attempt count and the serialized request size (agent.log was the only place
+    those lived), and re-entering the stream call from the outer retry loop does not add a copy."""
+    import httpx
+    from openai import APIConnectionError
+
+    agent = _build_agent(monkeypatch)
+    body = b'{"model":"gpt-5-codex","input":"' + b"x" * (829 * 1024) + b'"}'
+    request = httpx.Request("POST", "https://api.example.com/backend-api/codex/responses", content=body)
+    agent.client = SimpleNamespace(responses=SimpleNamespace(
+        create=lambda **kwargs: _raise_prestream_transport_error(request)))
+
+    for _outer_retry in range(2):
+        with pytest.raises(APIConnectionError):
+            agent._run_codex_stream(_codex_request_kwargs())
+
+    lines = [str(msg) for _kind, msg in agent._retry_status_buffer]
+    assert len(lines) == 1, lines
+    assert "api.example.com" in lines[0]
+    assert "after 2 attempts" in lines[0]
+    assert f"request {round(len(body) / 1024)} KB" in lines[0]
+    assert "reject requests this large" in lines[0]
+
+
+def _codex_truncated_tool_call_response():
+    """``status=incomplete`` (max_output_tokens) whose function_call item was cut mid-arguments
+    and settled as ``completed`` — the self-hosted /v1/responses shape from #91770."""
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal",
+                arguments='{"command": "echo hel', status="completed",
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=50, output_tokens=8, total_tokens=58),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5.4",
+    )
+
+
+def test_codex_truncated_tool_call_is_retried_with_boosted_output_budget(monkeypatch):
+    """A tool call cut off by max_output_tokens on the Responses wire gets the same
+    budget-boost retry as chat modes instead of a refused partial turn (#91770)."""
+    agent = _build_copilot_agent(monkeypatch)
+    agent.max_tokens = 1000
+    responses = [_codex_truncated_tool_call_response(), _codex_message_response("Done.")]
+    seen_caps: list = []
+
+    def _fake_call(api_kwargs):
+        seen_caps.append(api_kwargs.get("max_output_tokens"))
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_call)
+
+    result = agent.run_conversation("run it")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Done."
+    assert seen_caps == [1000, 2000]
+    # The retry re-issues the same call: no interim assistant row, no continuation nudge.
+    assert [m["role"] for m in result["messages"] if m["role"] != "system"] == ["user", "assistant"]
+
+
+def test_codex_text_only_max_output_incomplete_keeps_codex_continuation(monkeypatch):
+    """Text truncation is not rerouted: it stays on the Codex incomplete continuation and
+    never takes the length path's nudge (no double continuation, #91770)."""
+    agent = _build_copilot_agent(monkeypatch)
+    responses = [_codex_max_output_incomplete_response("Partial"), _codex_message_response("rest.")]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("write")
+
+    assert result["completed"] is True
+    assert not any(m.get("_length_continuation_nudge") for m in result["messages"])
+    assert any(m.get("finish_reason") == "incomplete" for m in result["messages"] if m["role"] == "assistant")

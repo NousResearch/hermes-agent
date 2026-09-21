@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .ci_contract import manifest_path as ci_manifest_path
+
 import hashlib
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -92,7 +94,7 @@ class GroupedCICoordinator:
                 raise ValueError("each exact PR head may be queued only once")
             worktrees.add(job.worktree)
             identities.add(job.identity)
-            manifest = job.worktree / "tests/manifests/test_lanes.toml"
+            manifest = ci_manifest_path(job.worktree)
             if not manifest.is_file():
                 raise ValueError("CI lane manifest is unavailable")
             key = CIGroupKey(
@@ -156,8 +158,13 @@ class GroupedCICoordinator:
     def _run_one(self, job: CIAuditJob, expected_manifest_digest: str) -> CIAuditOutcome:
         try:
             receipt = self._runner_factory().run(job.identity, job.worktree)
-        except Exception:  # noqa: BLE001 - preserve an outcome for every queued exact head.
-            return CIAuditOutcome(job.identity, None, "audit_failed")
+        except Exception as error:  # noqa: BLE001 - preserve an outcome for every queued exact head.
+            # Keep the typed exception and its bounded message in the outcome.
+            # The caller cannot manufacture a receipt when the runner failed
+            # before returning one, but it must still be able to distinguish a
+            # lease/ledger problem from an environment or provider failure.
+            reason = f"{type(error).__name__}: {error}"[:1000]
+            return CIAuditOutcome(job.identity, None, f"audit_failed: {reason}")
         if receipt.identity != job.identity:
             return CIAuditOutcome(job.identity, None, "receipt_identity_mismatch")
         if receipt.manifest_digest != expected_manifest_digest:

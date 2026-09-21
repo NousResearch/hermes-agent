@@ -55,6 +55,18 @@ def _run(cmd: list, timeout: int, cwd: Optional[str] = None) -> subprocess.Compl
                           timeout=timeout, cwd=cwd)
 
 
+@dataclass
+class ExternalTreeRecord:
+    """A linked worktree registered on the repo but living OUTSIDE
+    ``.worktrees/`` — created by hand or by another tool. Reported for
+    visibility only; the reclaim paths never touch these."""
+
+    path: str
+    branch: str           # branch name, or "detached @<sha>" when detached
+    locked: bool
+    missing: bool         # registered but the directory no longer exists
+
+
 def _git(args: list, cwd: str, timeout: int = 15) -> subprocess.CompletedProcess:
     """Run git, translating timeouts into returncode 124. Every verdict fails safe toward "keep"
     on nonzero, so a slow ``git cherry`` on a huge repo degrades to keep instead of aborting the
@@ -114,6 +126,13 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     path = str(entry)
     if _KANBAN_RE.match(entry.name):
         return "keep", "kanban task tree (owned by kanban gc)", []
+    from agent.conversation_worktree import conversation_worktree_is_manager_owned
+
+    ownership = conversation_worktree_is_manager_owned(entry)
+    if ownership is True:
+        return "keep", "manager-owned conversation worktree", []
+    if ownership is None:
+        return "keep", "conversation ownership could not be verified", []
     if _ops._worktree_lock_is_live(repo_root, path, timeout=5) == "live":
         return "keep", "in use by a running hermes session", []
     tracked_dirty, untracked = _dirty_split(path)
@@ -135,8 +154,89 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     return "reap", "clean and fully merged/pushed", []
 
 
-def audit_worktrees(repo_root: str, *, with_sizes: bool = True) -> List[TreeRecord]:
-    """Classify every tree under ``.worktrees/`` without mutating anything."""
+def audit_external_trees(repo_root: str) -> List[ExternalTreeRecord]:
+    """List linked worktrees registered OUTSIDE ``.worktrees/``.
+
+    ``hermes -w`` scratch trees all live under ``<repo>/.worktrees/``, but
+    ``git worktree list --porcelain`` also knows about trees the user (or
+    another tool) registered elsewhere. Those are someone else's state, so
+    the reclaim paths never touch them — but hiding them entirely makes the
+    audit lie about what the repo is carrying. Report them read-only, and
+    flag registrations whose directory has vanished (safe to
+    ``git worktree prune``).
+    """
+    result = _git(["worktree", "list", "--porcelain"], cwd=repo_root, timeout=10)
+    if result.returncode != 0:
+        return []
+
+    managed_root = os.path.realpath(str(Path(repo_root) / ".worktrees"))
+    main_root = os.path.realpath(repo_root)
+
+    records: List[ExternalTreeRecord] = []
+    current: dict = {}
+
+    def _flush():
+        path = current.get("path")
+        if not path:
+            return
+        real = os.path.realpath(path)
+        if real == main_root:
+            return  # the main checkout itself
+        if real == managed_root or real.startswith(managed_root + os.sep):
+            return  # hermes-managed scratch tree — covered by audit_worktrees
+        branch = current.get("branch", "")
+        if not branch and current.get("head"):
+            branch = f"detached @{current['head'][:10]}"
+        records.append(ExternalTreeRecord(
+            path=path,
+            branch=branch,
+            locked=bool(current.get("locked")),
+            missing=not os.path.exists(path),
+        ))
+
+    for line in result.stdout.splitlines():
+        line = line.rstrip()
+        if not line:
+            _flush()
+            current = {}
+            continue
+        if line.startswith("worktree "):
+            current["path"] = line[len("worktree "):]
+        elif line.startswith("branch refs/heads/"):
+            current["branch"] = line[len("branch refs/heads/"):]
+        elif line.startswith("HEAD "):
+            current["head"] = line[len("HEAD "):]
+        elif line == "locked" or line.startswith("locked "):
+            current["locked"] = True
+    _flush()
+    return records
+
+
+def prune_missing_registrations(repo_root: str, *, dry_run: bool = False) -> List[str]:
+    """Drop registrations whose directory no longer exists (any location).
+
+    The equivalent of a targeted ``git worktree prune``: purely
+    metadata-level, never removes files, so it is safe even for external
+    trees — a missing directory means there is nothing left to protect.
+    """
+    stale = [r for r in audit_external_trees(repo_root) if r.missing and not r.locked]
+    if not stale:
+        return []
+    if dry_run:
+        return [f"would prune stale registration {r.path}" for r in stale]
+    result = _git(["worktree", "prune"], cwd=repo_root, timeout=15)
+    if result.returncode != 0:
+        return [f"failed to prune stale registrations: {result.stderr.strip()}"]
+    return [f"pruned stale registration {r.path}" for r in stale]
+
+
+def audit_worktrees(repo_root: str, *, with_sizes: bool = True,
+                    older_than_days: Optional[float] = None) -> List[TreeRecord]:
+    """Classify every tree under ``.worktrees/`` without mutating anything.
+
+    ``older_than_days`` only ever RESTRICTS: a reapable tree younger than the threshold is kept
+    ("too recent"). It never widens eligibility — age alone can't doom a tree carrying unmerged work.
+    """
     from hermes_cli import worktree_ops as _ops
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
@@ -164,6 +264,9 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True) -> List[TreeReco
         except Exception:
             branch = ""
         verdict, reason, untracked = _classify_tree(_ops, repo_root, entry, merge_cache, remote_heads)
+        if older_than_days is not None and verdict in _REAP_VERDICTS and age_days < older_than_days:
+            verdict, reason, untracked = "keep", (
+                f"reapable but only {age_days:.1f}d old (--older-than {older_than_days:g})"), []
         records.append(TreeRecord(
             name=entry.name, path=str(entry), branch=branch,
             age_days=age_days, size_mb=_tree_size_mb(entry) if with_sizes else None,
@@ -184,6 +287,37 @@ def reclaim_worktrees(
     destructive loop, so trees created by concurrent sessions after the audit are out of scope."""
     if records is None:
         records = audit_worktrees(repo_root, with_sizes=False)
+    from agent.conversation_worktree import conversation_worktree_reclaim_guard
+
+    def reclaim_one(record: TreeRecord) -> List[str]:
+        record_actions: List[str] = []
+        entry = Path(record.path)
+        if record.untracked:
+            archive = _archive_untracked(entry, record.untracked)
+            if archive is None:
+                return [f"kept {record.name} (archive of untracked files failed)"]
+            record_actions.append(
+                f"archived {len(record.untracked)} untracked file(s) → {archive}"
+            )
+
+        # Dead-pid locks must be unlocked or `remove --force` refuses.
+        with contextlib.suppress(Exception):
+            _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
+        try:
+            remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
+            if remove_result.returncode != 0:
+                record_actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
+                return record_actions
+            if record.verdict == "reap-keep-branch":
+                record_actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
+                return record_actions
+            if record.branch and record.branch not in _PROTECTED_BRANCHES:
+                _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
+            record_actions.append(f"removed {record.name}")
+        except Exception as exc:
+            record_actions.append(f"failed to remove {record.name}: {exc}")
+        return record_actions
+
     actions: List[str] = []
     for record in records:
         if record.verdict not in _REAP_VERDICTS:
@@ -192,30 +326,26 @@ def reclaim_worktrees(
             actions.append(f"would remove {record.name} ({record.reason})")
             continue
 
-        entry = Path(record.path)
-        if record.untracked:
-            archive = _archive_untracked(entry, record.untracked)
-            if archive is None:
-                actions.append(f"kept {record.name} (archive of untracked files failed)")
-                continue
-            actions.append(f"archived {len(record.untracked)} untracked file(s) → {archive}")
-
-        # Dead-pid locks must be unlocked or `remove --force` refuses.
-        with contextlib.suppress(Exception):
-            _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
         try:
-            remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
-            if remove_result.returncode != 0:
-                actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
-                continue
-            if record.verdict == "reap-keep-branch":
-                actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
-                continue
-            if record.branch and record.branch not in _PROTECTED_BRANCHES:
-                _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
-            actions.append(f"removed {record.name}")
+            with conversation_worktree_reclaim_guard(
+                Path(repo_root), Path(record.path)
+            ) as manager_owned:
+                if manager_owned is True:
+                    actions.append(
+                        f"kept {record.name} (manager-owned conversation worktree)"
+                    )
+                    continue
+                if manager_owned is None:
+                    actions.append(
+                        f"kept {record.name} (conversation ownership could not be verified)"
+                    )
+                    continue
+                actions.extend(reclaim_one(record))
         except Exception as exc:
-            actions.append(f"failed to remove {record.name}: {exc}")
+            logger.warning("Could not lock worktree reclaim for %s: %s", record.name, exc)
+            actions.append(
+                f"kept {record.name} (conversation ownership could not be verified)"
+            )
 
     if not dry_run:
         with contextlib.suppress(Exception):
@@ -233,10 +363,11 @@ def audit_branches(repo_root: str) -> List[BranchRecord]:
     def _lines(result) -> List[str]:
         return [b.strip() for b in result.stdout.splitlines() if b.strip()]
 
-    upstream = next(
-        (c for c in ("origin/HEAD", "origin/main", "origin/master")
-         if _git(["rev-parse", "--verify", "--quiet", c], cwd=repo_root, timeout=5).returncode == 0),
-        None)
+    # No remote at all -> the local trunk; no trunk either -> nothing can be judged, report nothing.
+    try:
+        upstream = _ops._worktree_merge_base_ref(repo_root)
+    except Exception:
+        upstream = None
     if upstream is None:
         return []
 

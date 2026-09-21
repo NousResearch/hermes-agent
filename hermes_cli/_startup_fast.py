@@ -12,7 +12,7 @@ import os
 import sys
 
 __all__ = [
-    "project_root_str", "ensure_project_root_on_path", "is_termux_env",
+    "project_root_str", "normalize_hermes_home_env", "ensure_project_root_on_path", "is_termux_env",
     "is_termux_fast_version_argv", "is_global_fast_version_argv",
     "is_container_startup_environment", "active_profile_may_override_home",
     "container_mode_may_be_active", "read_openai_version", "read_install_method",
@@ -34,12 +34,45 @@ def project_root_str() -> str:
     return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 
 
+def normalize_hermes_home_env() -> None:
+    """Expand ``~``/``$VAR`` in ``HERMES_HOME`` once, at process entry, and write it back.
+
+    fish does not expand ``~`` inside ``VAR=~/...`` and every shell passes a quoted value
+    through verbatim, so a literal tilde reaches the process. ``Path("~/.hermes")`` is
+    *relative*: the many raw ``os.environ["HERMES_HOME"]`` readers (this fast path, the
+    active_profile probe, profile re-home, the dotenv loader) would each resolve it against
+    cwd and scaffold a full home under ``<cwd>/~/.hermes``. One expansion here gives every
+    reader the same absolute spelling; ``hermes_constants`` expands as well for non-CLI
+    entry points. A relative value that is not tilde/variable-shaped is left alone.
+    """
+    raw = os.environ.get("HERMES_HOME", "")
+    if not raw.strip():
+        return
+    expanded = os.path.expanduser(os.path.expandvars(raw.strip()))
+    if expanded != raw:
+        os.environ["HERMES_HOME"] = expanded
+
+
+def _realpath_or_self(path: str) -> str:
+    """``os.path.realpath`` that survives a deleted cwd.
+
+    A relative ``sys.path`` entry is resolved through ``os.getcwd()``, which raises
+    ``FileNotFoundError`` once the directory the process started in has been removed
+    (a cron delivery child spawned from a reaped scratch workspace, #102941); the CLI
+    then dies before it can parse argv.
+    """
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+
 def ensure_project_root_on_path() -> None:
     """Put the project root at sys.path[0], deduping realpath-equivalents."""
     project_root = project_root_str()
-    normalized_root = os.path.normcase(os.path.realpath(project_root))
+    normalized_root = os.path.normcase(_realpath_or_self(project_root))
     sys.path[:] = [entry for entry in sys.path
-                   if not entry or os.path.normcase(os.path.realpath(entry)) != normalized_root]
+                   if not entry or os.path.normcase(_realpath_or_self(entry)) != normalized_root]
     sys.path.insert(0, project_root)
 
 
@@ -51,7 +84,7 @@ def is_termux_env() -> bool:
 
 
 def is_termux_fast_version_argv(argv: list[str]) -> bool:
-    return argv in (["--version"], ["-V"])
+    return argv in (["--version"], ["-V"], ["--version-local"])
 
 
 is_global_fast_version_argv = is_termux_fast_version_argv
@@ -188,6 +221,7 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
     """
     if argv is None:
         argv = sys.argv[1:]
+    local_only = argv == ["--version-local"]
     is_termux = is_termux_env()
     if is_termux and os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
         return False
@@ -196,5 +230,5 @@ def try_fast_version(argv: list[str] | None = None) -> bool:
             return False
     elif not is_global_fast_version_argv(argv) or container_mode_may_be_active():
         return False
-    print_fast_version_info()
+    print_fast_version_info(check_updates=not local_only)
     return True

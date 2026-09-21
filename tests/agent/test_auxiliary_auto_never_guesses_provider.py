@@ -43,8 +43,21 @@ def test_quarantined_fallback_hands_over_to_the_next_configured_entry():
     """A stale first fallback (401, refresh failed) is quarantined mid-request; the second
     configured entry must still get its turn instead of the request dying on the original error."""
     healthy = MagicMock(name="second-fallback")
-    route = aux._LadderRoute(None, "compression", "", False, "", "xai-oauth", None, None, None, None, None,
-                             {"provider": "xai-oauth"}, None)
+    route = aux._LadderRoute(
+        client=None,
+        task="compression",
+        tag="",
+        async_mode=False,
+        base_info="",
+        resolved_provider="xai-oauth",
+        resolved_model=None,
+        resolved_base_url=None,
+        resolved_api_key=None,
+        resolved_api_mode=None,
+        final_model=None,
+        main_runtime={"provider": "xai-oauth"},
+        route_info=None,
+    )
     with patch.object(aux, "_try_configured_fallback_chain", return_value=(healthy, "m2", "fallback_chain[1](nous)")), \
          patch.object(aux, "_try_payment_fallback") as discovery:
         client, model, label = aux._next_fallback_after_quarantine(

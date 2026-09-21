@@ -23,8 +23,8 @@ def test_agent_build_arms_only_consented_profile_policy(tmp_path, monkeypatch):
     monkeypatch.setattr(server, '_get_db', lambda: None)
     # Only provider resolution is a fixture; registration, agent, hook process,
     # consent, manager selection and public dispatch are the real implementation.
-    monkeypatch.setattr(server, '_resolve_agent_model_runtime', lambda *_a: (
-        'fixture-model', {'provider': 'openai-compat', 'base_url': 'http://127.0.0.1:18019/v1', 'api_key': 'fixture-key'}))
+    monkeypatch.setattr(server, '_resolve_agent_model_runtime', lambda *_a, **_kw: (
+        'fixture-model', {'provider': 'openai-compat', 'base_url': 'http://127.0.0.1:18019/v1', 'api_key': 'fixture-key'}, None))
     plugins._reset_plugin_managers_for_tests()
     shell_hooks.reset_for_tests()
     try:

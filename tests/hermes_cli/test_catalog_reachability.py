@@ -56,4 +56,3 @@ def test_every_catalog_file_resolves():
         print("\nADVISORY size drift (downloads tolerate this; refresh when convenient):")
         print("\n".join(drift))
     assert not problems, "\n".join(problems)
-

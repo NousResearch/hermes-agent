@@ -57,6 +57,55 @@ def _captured_context_cwd(agent):
     return captured["cwd"]
 
 
+@pytest.mark.parametrize("task_id, expected", [(None, False), ("t_worker", True)])
+def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id, expected):
+    """A profile can expose kanban tools without making the session a worker."""
+    from agent.agent_init import _load_tools
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    import model_tools
+
+    if task_id is None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **_kwargs: [{"function": {"name": "kanban_show"}}],
+    )
+    agent = SimpleNamespace(quiet_mode=True)
+
+    _load_tools(agent, enabled_toolsets=["kanban"], disabled_toolsets=None)
+
+    assert (agent._kanban_worker_guidance == KANBAN_GUIDANCE) is expected
+
+
+@pytest.mark.parametrize("task_id, owner, expected", [
+    (None, True, False),        # interactive session with the kanban toolset enabled
+    ("t_worker", True, True),   # the dispatcher-owned worker
+    ("t_worker", False, False), # cron run / delegate child inheriting the worker's env
+])
+def test_kanban_guidance_fallback_requires_owned_worker_task(monkeypatch, task_id, owner, expected):
+    """Prompt fallback preserves the worker boundary when init was bypassed: tool access
+    is not identity, and an inherited HERMES_KANBAN_TASK is not ownership (#112486)."""
+    from contextlib import nullcontext
+
+    from agent.delegation_context import non_dispatcher_owned_context
+    from agent.prompt_builder import KANBAN_GUIDANCE
+    from agent.system_prompt import _tool_guidance_block
+
+    if task_id is None:
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    agent = _make_agent(valid_tool_names={"kanban_show"})
+    delattr(agent, "_kanban_worker_guidance")
+
+    with nullcontext() if owner else non_dispatcher_owned_context():
+        assert (_tool_guidance_block(agent) == KANBAN_GUIDANCE) is expected
+
+
 @pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
 @pytest.mark.parametrize("names", [
     set(), {"memory"}, {"memory", "skill_view", "skills_list"},
@@ -151,6 +200,87 @@ def _prompt_parts(agent):
         patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)
+
+
+def test_guarded_prompt_replaces_verbose_coaching_and_compacts_skills():
+    """The local profile is smaller, but never drops the execution contract."""
+    from agent.prompt_builder import (
+        OPENAI_MODEL_EXECUTION_GUIDANCE,
+        PARALLEL_TOOL_CALL_GUIDANCE,
+        TASK_COMPLETION_GUIDANCE,
+        TOOL_USE_ENFORCEMENT_GUIDANCE,
+    )
+    from agent.system_prompt import GUARDED_EXECUTION_CONTRACT
+
+    agent = _make_agent(
+        valid_tool_names=["read_file", "skills_list", "skill_view"],
+        _task_completion_guidance=True,
+        _parallel_tool_call_guidance=True,
+        _tool_use_enforcement=True,
+        _execution_guidance=True,
+        platform="desktop",
+        provider="ollama-launch",
+        model="hermes-qwen3-fast",
+    )
+    with (
+        patch("agent.coding_context.guarded_prompt_enabled", return_value=True),
+        patch("agent.prompt_builder.build_skills_system_prompt", return_value="SKILLS") as skills,
+    ):
+        stable = _stable_prompt(agent)
+
+    assert GUARDED_EXECUTION_CONTRACT in stable
+    assert "worktree" in GUARDED_EXECUTION_CONTRACT.lower()
+    assert "verify" in GUARDED_EXECUTION_CONTRACT.lower()
+    assert TASK_COMPLETION_GUIDANCE in stable
+    assert TOOL_USE_ENFORCEMENT_GUIDANCE in stable
+    assert PARALLEL_TOOL_CALL_GUIDANCE not in stable
+    assert OPENAI_MODEL_EXECUTION_GUIDANCE not in stable
+    assert skills.call_args.kwargs["compact_all_categories"] is True
+
+
+def test_guarded_prompt_keeps_kanban_worker_lifecycle_guidance():
+    agent = _make_agent(
+        valid_tool_names=["kanban_show", "read_file"],
+        _kanban_worker_guidance="KANBAN_WORKER_LIFECYCLE",
+        platform="desktop",
+        provider="ollama-launch",
+        model="hermes-qwen3-fast",
+    )
+    with patch("agent.coding_context.guarded_prompt_enabled", return_value=True):
+        stable = _stable_prompt(agent)
+
+    assert "KANBAN_WORKER_LIFECYCLE" in stable
+
+
+def test_remote_kanban_worker_forces_compact_path_neutral_prompt(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_remote")
+    agent = _make_agent(
+        valid_tool_names=["kanban_show", "read_file", "skill_view"],
+        _kanban_worker_guidance="KANBAN_WORKER_LIFECYCLE",
+        platform="cli",
+        provider="openai-codex",
+        model="gpt-5.4",
+    )
+    with (
+        patch("agent.coding_context.guarded_prompt_enabled", return_value=False),
+        patch("agent.prompt_builder.build_skills_system_prompt", return_value="SKILLS") as skills,
+        patch("agent.system_prompt._frozen_plugin_prompt_sections") as plugins,
+    ):
+        parts = _prompt_parts(agent)
+
+    assert "KANBAN_WORKER_LIFECYCLE" in parts["stable"]
+    assert "/Users/" not in "\n".join(parts.values())
+    assert skills.call_args.kwargs["compact_all_categories"] is True
+    plugins.assert_not_called()
+
+
+def test_computer_use_tool_does_not_require_removed_legacy_prompt_builder_api():
+    """Computer-use guidance now comes from response verdicts, not prompt_builder."""
+    agent = _make_agent(valid_tool_names=["computer_use"], platform="desktop")
+
+    stable = _stable_prompt(agent)
+
+    assert isinstance(stable, str)
 
 
 def _init_code_repo(path):
@@ -834,4 +964,3 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
-

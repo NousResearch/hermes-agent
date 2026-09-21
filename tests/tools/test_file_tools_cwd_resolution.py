@@ -257,6 +257,32 @@ def test_unregistered_session_never_inherits_another_sessions_record(
     assert resolved == (main / "target.py").resolve()
 
 
+def test_read_file_uses_resolved_workspace_not_shared_backend_cwd(
+    _isolated_cwd, monkeypatch
+):
+    """A shared local backend must not re-resolve a relative read elsewhere."""
+    import json
+
+    workspace, decoy = _isolated_cwd
+    task_id = "sess-read-workspace"
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    env = LocalEnvironment(cwd=str(decoy))
+    monkeypatch.setattr(
+        ft, "_get_file_ops", lambda task_id="default": ShellFileOperations(env)
+    )
+
+    result = json.loads(ft.read_file_tool("target.py", task_id=task_id))
+
+    assert result["content"].startswith("1|WORKSPACE_ORIGINAL")
+    assert "DECOY_ORIGINAL" not in result["content"]
+
+
 def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     _isolated_cwd, monkeypatch
 ):

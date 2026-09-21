@@ -83,6 +83,10 @@ class TestFallbackChainInit:
         (FailoverReason.server_error, "provider server error"),
         (FailoverReason.timeout, "request timeout"),
         (FailoverReason.model_not_found, "model not found"),
+        (
+            FailoverReason.egress_policy_blocked,
+            "local egress policy blocked the request",
+        ),
         (FailoverReason.unknown, "provider failure"),
     ],
 )
@@ -92,6 +96,68 @@ def test_fallback_reason_text_is_operator_friendly(reason, expected):
 
 def test_fallback_reason_text_defaults_when_reason_is_missing():
     assert chat_completion_helpers._fallback_reason_text(None) == "provider failure"
+
+
+def test_unsupported_thinking_never_activates_remote_fallback():
+    agent = _make_agent(
+        fallback_model={"provider": "nous", "model": "solar-pro"},
+    )
+    with patch("agent.auxiliary_client.resolve_provider_client") as resolve_client:
+        assert agent._try_activate_fallback(FailoverReason.unsupported_thinking) is False
+
+    resolve_client.assert_not_called()
+    assert agent._fallback_index == 0
+
+
+def test_kanban_local_only_suppresses_profile_fallback_chain(monkeypatch):
+    """A local CI child must not escape to a remote configured fallback."""
+    monkeypatch.setenv("HERMES_KANBAN_LOCAL_ONLY", "1")
+    agent = _make_agent(
+        fallback_model=[
+            {"provider": "openai-codex", "model": "gpt-5.6-luna"},
+            {"provider": "nous", "model": "hermes-4"},
+        ],
+    )
+
+    assert agent._fallback_chain == []
+    assert agent._fallback_model is None
+
+
+def test_egress_policy_skips_remote_fallbacks_and_uses_loopback():
+    """Unsafe remote payloads must go directly to a local fallback.
+
+    The firewall has already rejected the current request, so retrying the
+    same payload against another remote provider only creates noisy false
+    provider failures and cannot succeed.
+    """
+    agent = _make_agent(
+        fallback_model=[
+            {
+                "provider": "openai-codex",
+                "model": "gpt-5.5",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            },
+            {
+                "provider": "ollama-launch",
+                "model": "hermes-review-fast:latest",
+                "base_url": "http://127.0.0.1:11434/v1",
+            },
+        ]
+    )
+    clients = [_mock_client(base_url="http://127.0.0.1:11434/v1")]
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(clients[0], "hermes-review-fast:latest"),
+    ) as resolve_client:
+        assert (
+            agent._try_activate_fallback(FailoverReason.egress_policy_blocked)
+            is True
+        )
+
+    assert agent.provider == "ollama-launch"
+    assert agent.model == "hermes-review-fast:latest"
+    assert agent._fallback_index == 2
+    resolve_client.assert_called_once()
 
 
 class TestFallbackChainAdvancement:
@@ -510,3 +576,68 @@ class TestFallbackExtraBodyReResolution:
         agent.request_overrides["temperature"] = 0.2
         self._activate(agent)
         assert agent.request_overrides.get("temperature") == 0.2
+
+
+# ── MoA preset as a fallback entry (#112525, #112623) ─────────────────────
+
+
+def _write_moa_home(tmp_path, monkeypatch):
+    """Real config.yaml with a MoA preset under a temp HERMES_HOME (genuine preset resolution)."""
+    import yaml
+
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "moa": {"default_preset": "default", "presets": {"default": {
+            "enabled": True,
+            "reference_models": [{"provider": "xai", "model": "grok-4-fast"}],
+            "aggregator": {"provider": "xai", "model": "grok-4.6"},
+        }}},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def _assert_bound_to_moa_preset(agent, preset="default"):
+    from agent.conversation_loop import _moa_client_consumes_prepared_request
+
+    assert (agent.provider, agent.requested_provider, agent.model) == ("moa", "moa", preset)
+    assert (agent.base_url, agent.api_mode) == ("moa://local", "chat_completions")
+    assert agent._client_kwargs == {}
+    assert _moa_client_consumes_prepared_request(agent.client)
+
+
+class TestMoaPresetFallback:
+    def test_runtime_fallback_to_moa_preset_binds_the_facade(self, tmp_path, monkeypatch):
+        """#112525 / #112623: a ``{provider: moa, model: <preset>}`` fallback entry activates the
+        preset (facade, ``moa://local``), never the aggregator's HTTP client wearing the virtual
+        identity (preset name on the aggregator wire → 404; ``provider == "moa"`` guards misfire)."""
+        _write_moa_home(tmp_path, monkeypatch)
+        agent = _make_agent(fallback_model={"provider": "moa", "model": "default"})
+        aggregator_client = _mock_client(base_url="https://api.x.ai/v1/", api_key="xai-key")
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(aggregator_client, "grok-4.6")):
+            assert agent._try_activate_fallback() is True
+        _assert_bound_to_moa_preset(agent)
+        assert agent.client is not aggregator_client
+        assert agent._provider_fallback_route == ("default", "moa")
+
+    def test_init_time_fallback_to_moa_preset_binds_the_facade(self, tmp_path, monkeypatch):
+        """Primary without credentials at init walks the chain: a MoA entry lands on the preset
+        with virtual pins, not on the aggregator slug with the aggregator's kwargs."""
+        _write_moa_home(tmp_path, monkeypatch)
+        aggregator_client = _mock_client(base_url="https://api.x.ai/v1/", api_key="xai-key")
+
+        def _route(provider, model=None, **_kw):
+            return (aggregator_client, "grok-4.6") if provider == "moa" else (None, None)
+
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.auxiliary_client.resolve_provider_client", side_effect=_route),
+        ):
+            agent = AIAgent(model="anthropic/claude-sonnet-4.5", provider="openrouter",
+                            quiet_mode=True, skip_context_files=True, skip_memory=True,
+                            fallback_model={"provider": "moa", "model": "default"})
+        _assert_bound_to_moa_preset(agent)
+        assert agent._fallback_activated is True

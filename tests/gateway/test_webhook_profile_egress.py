@@ -49,7 +49,11 @@ def profile_homes(tmp_path, monkeypatch):
     (sec / "config.yaml").write_text(
         "gateway:\n  multiplex_profiles: true\nplatforms:\n  slack:\n    enabled: true\n"
         "    home_channel:\n      platform: slack\n      chat_id: SEC-HOME\n")
-    (sec / ".env").write_text("GH_TOKEN=sec-token\n")
+    (sec / ".env").write_text(
+        "GH_TOKEN=sec-token\n"
+        "HERMES_GITHUB_BOT_LOGIN=mrkillbobbot\n"
+        "HERMES_GITHUB_BOT_TOKEN=sec-token\n"
+    )
     monkeypatch.setenv("GH_TOKEN", "default-token")  # multiplex: os.environ == the default profile
     default_cfg = GatewayConfig()
     default_cfg.platforms[Platform.SLACK] = PlatformConfig(
@@ -95,7 +99,9 @@ async def test_github_comment_authenticates_with_routed_profile_token(profile_ho
 
     def fake_run(cmd, **kw):
         seen["GH_TOKEN"] = kw["env"].get("GH_TOKEN") if kw.get("env") is not None else os.environ.get("GH_TOKEN")
-        return MagicMock(returncode=0, stderr="")
+        if cmd[:3] == ["gh", "api", "user"]:
+            return MagicMock(returncode=0, stdout='{"login":"mrkillbobbot"}', stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("gateway.platforms.webhook.subprocess.run", fake_run)
     adapter = _webhook(_Runner({}, {"sec": {}}, profile_homes))

@@ -771,19 +771,22 @@ class TestWebServerEndpoints:
 
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
+        (worker_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
 
         seen = {}
 
         def _pid(pid_path=None, **kw):
             seen["pid_path"] = pid_path
+            seen.setdefault("pid_paths", []).append(pid_path)
             return None
 
         def _runtime(path=None):
             seen["status_path"] = path
+            seen.setdefault("status_paths", []).append(path)
             return None
 
         def _runtime_pid(runtime=None, *, expected_home=None):
-            seen["expected_home"] = expected_home
+            seen.setdefault("expected_homes", []).append(expected_home)
             return None
 
         monkeypatch.setattr(_gw_status, "get_running_pid_cached", _pid)
@@ -795,9 +798,10 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/messaging/platforms?profile=worker")
 
         assert resp.status_code == 200
-        assert seen["pid_path"] == worker_home / "gateway.pid"
-        assert seen["status_path"] == worker_home / "gateway_state.json"
-        assert seen["expected_home"] == worker_home
+        assert worker_home / "gateway.pid" in seen["pid_paths"]
+        assert worker_home / "gateway_state.json" in seen["status_paths"]
+        assert seen["expected_homes"]
+        assert set(seen["expected_homes"]) == {worker_home}
 
 
 
@@ -1243,6 +1247,33 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["session_id"] == "cyc-b"
 
+    def test_latest_descendant_never_resumes_into_a_subagent_or_branch_child(self):
+        """#115092: after a ws_orphan_reap the dashboard resumes the predecessor's newest descendant. A
+        subagent run (``_delegate_from``) or a /branch fork (``_branched_from``) is its own conversation and
+        never listed as a continuation, so following it parks the user's chat in a hidden row; only
+        compression continuations are followed."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="primary", source="tui")
+            db.create_session(session_id="primary-sub", source="tui", parent_session_id="primary",
+                              model_config={"_delegate_from": "primary"})
+            db.create_session(session_id="primary-fork", source="tui", parent_session_id="primary",
+                              model_config={"_branched_from": "primary"})
+            db.end_session("primary", "ws_orphan_reap")
+            assert self.client.get("/api/sessions/primary/latest-descendant").json()["session_id"] == "primary"
+
+            db._conn.execute("UPDATE sessions SET end_reason='compression' WHERE id='primary'")
+            db._conn.commit()
+            db.create_session(session_id="primary-cont", source="tui", parent_session_id="primary")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/primary/latest-descendant")
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == "primary-cont"
+
 
 
 
@@ -1501,6 +1532,38 @@ class TestWebServerEndpoints:
         assert data["ok"] is True
         assert data["provider"] == "openrouter"
         assert data["model"] == "moonshotai/kimi-k2.6"
+
+
+    def test_model_set_flips_a_stale_setup_record(self, monkeypatch):
+        """POST /api/model/set landed a provider on disk; the serve process's boot record
+        (``provider_configured: false`` since a failed boot-time mint) must follow at once, with
+        the ``setup.ready`` broadcast, or the web chat stays gated on "need setup" until a restart
+        (setup.status answers from the record)."""
+        from hermes_cli import free_tier_bootstrap as fb
+
+        fb.reset_for_tests()
+        monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *_a, **_k: None)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+        broadcasts = []
+        monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
+        with fb._lock:
+            fb._record = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
+                                        has_identity=False, other_providers=False)
+            fb._started = True
+            fb._done.set()
+        try:
+            resp = self.client.post(
+                "/api/model/set",
+                json={"scope": "main", "provider": "custom", "model": "local-model",
+                      "base_url": "http://127.0.0.1:8081/v1", "api_key": "sk-local"},
+            )
+            assert resp.status_code == 200 and resp.json()["ok"] is True
+            record = fb.current_record()
+            assert record.provider_configured is True and record.other_providers is True
+            assert record.inference_provider == "custom"
+            assert broadcasts == [record]
+        finally:
+            fb.reset_for_tests()
 
 
 
@@ -1873,6 +1936,79 @@ class TestWebServerEndpoints:
         assert 2070 not in providers
         assert "2070" not in providers
 
+    def test_punctuated_provider_key_round_trips_through_activate_edit_and_delete(self):
+        """A stored ``providers.<key>`` with dots/colons or mixed case is what the
+        list route returns as ``id``; the same spelling must reach the entry on
+        activate, save (edit) and delete instead of being slugified into a
+        non-existent twin (404 / duplicate row), and delete must still clear
+        the model mirror ``switch_model`` wrote for it.
+        """
+        from urllib.parse import quote
+
+        from hermes_cli.config import get_config_path, load_config
+
+        get_config_path().write_text(
+            "model:\n"
+            "  provider: openrouter\n"
+            "  default: some/model\n"
+            "providers:\n"
+            "  local-127.0.0.1:8283:\n"
+            "    name: Local (127.0.0.1:8283)\n"
+            "    base_url: http://127.0.0.1:8283/v1\n"
+            "    model: Qwen.gguf\n"
+            "  EXllamav3:\n"
+            "    name: EXllamav3\n"
+            "    base_url: http://127.0.0.1:8290/v1\n"
+            "    model: Qwen3-27B\n",
+            encoding="utf-8",
+        )
+        dotted = "local-127.0.0.1:8283"
+        listed = [e["id"] for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]]
+        assert dotted in listed and "EXllamav3" in listed
+
+        # Edit by the listed id updates the entry in place — no slugged twin.
+        saved = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={"id": dotted, "name": "Local (127.0.0.1:8283)",
+                  "base_url": "http://127.0.0.1:8283/v1", "model": "Qwen2.gguf"},
+        )
+        assert saved.status_code == 200, saved.text
+        providers = load_config()["providers"]
+        assert providers[dotted]["model"] == "Qwen2.gguf"
+        assert "local-127-0-0-1-8283" not in providers
+
+        for key in (dotted, "EXllamav3"):
+            path = f"/api/providers/custom-endpoints/{quote(key, safe='')}"
+            activate = self.client.post(f"{path}/activate", json={})
+            assert activate.status_code == 200, activate.text
+            assert load_config()["model"].get("base_url"), key
+            current = [e["id"] for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
+                       if e["is_current"]]
+            assert current == [key], f"{key}: list does not mark the endpoint just activated as current: {current}"
+            deleted = self.client.request("DELETE", path)
+            assert deleted.status_code == 200, deleted.text
+            cfg = load_config()
+            assert key not in (cfg.get("providers") or {})
+            assert not cfg["model"].get("base_url"), f"{key}: deleted endpoint's host still routed to"
+            assert not cfg["model"].get("provider"), key
+
+    def test_unslugged_display_name_still_resolves_to_its_slug_key(self):
+        """Compatibility fallback: a caller sending the display name reaches the
+        dashboard-minted slug key; an unknown id is still a 404."""
+        from hermes_cli.config import get_config_path, load_config
+
+        get_config_path().write_text(
+            "providers:\n"
+            "  local-8000:\n"
+            "    name: Local 8000\n"
+            "    base_url: http://127.0.0.1:8000/v1\n"
+            "    model: m\n",
+            encoding="utf-8",
+        )
+        assert self.client.request("DELETE", "/api/providers/custom-endpoints/nope.nope").status_code == 404
+        assert self.client.request("DELETE", "/api/providers/custom-endpoints/Local%208000").status_code == 200
+        assert "local-8000" not in (load_config().get("providers") or {})
+
 
     def test_custom_endpoint_save_scopes_to_the_requested_profile(self):
         """``?profile=<name>`` must write into that profile's config.yaml.
@@ -1891,6 +2027,7 @@ class TestWebServerEndpoints:
         default_home = get_hermes_home()
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
+        (worker_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
 
         assert self.client.post(
             "/api/providers/custom-endpoints?profile=worker",
@@ -1951,6 +2088,146 @@ class TestWebServerEndpoints:
         assert get_env_value(env_var) == "sk-super-secret"
         assert "sk-super-secret" not in yaml.safe_dump(cfg)
 
+
+    def test_custom_endpoint_save_pins_api_mode_and_resolves_reasoning_alias(self):
+        """Desktop's Custom Endpoints form pins the transport and keeps alias metadata (#93622).
+
+        A Responses-only host 404s on the runtime's Chat Completions default, so the chosen
+        ``api_mode`` must land on the providers entry and read back; a discovered reasoning
+        alias resolves to its canonical model + ``agent.reasoning_overrides`` instead of being
+        saved as a literal upstream model id.
+        """
+        from hermes_cli.config import load_config
+
+        response = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": "custom-responses", "name": "custom-responses",
+                "base_url": "https://responses-gateway.example.com/v1",
+                "model": "gpt-5.6-sol-high", "api_mode": "codex_responses", "make_default": True,
+                "models": ["gpt-5.6-sol", "gpt-5.6-sol-high"],
+                "model_details": [
+                    {"id": "gpt-5.6-sol"},
+                    {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
+                ],
+            },
+        )
+        assert response.status_code == 200
+        row = next(e for e in response.json()["endpoints"] if e["id"] == "custom-responses")
+        assert row["api_mode"] == "codex_responses"
+        assert row["model"] == "gpt-5.6-sol"
+
+        cfg = load_config()
+        entry = cfg["providers"]["custom-responses"]
+        assert entry["api_mode"] == "codex_responses"
+        assert entry["model"] == "gpt-5.6-sol"
+        assert entry["models"]["gpt-5.6-sol-high"] == {"canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"}
+        assert cfg["model"]["default"] == "gpt-5.6-sol"
+        assert cfg["agent"]["reasoning_overrides"]["gpt-5.6-sol"] == "high"
+
+        # An older UI payload (no api_mode) leaves the pinned transport alone; "" clears it.
+        self.client.post("/api/providers/custom-endpoints", json={
+            "id": "custom-responses", "name": "custom-responses",
+            "base_url": "https://responses-gateway.example.com/v1", "model": "gpt-5.6-sol"})
+        assert load_config()["providers"]["custom-responses"]["api_mode"] == "codex_responses"
+        self.client.post("/api/providers/custom-endpoints", json={
+            "id": "custom-responses", "name": "custom-responses", "api_mode": "",
+            "base_url": "https://responses-gateway.example.com/v1", "model": "gpt-5.6-sol"})
+        listed = self.client.get("/api/providers/custom-endpoints").json()["endpoints"]
+        assert next(e for e in listed if e["id"] == "custom-responses")["api_mode"] == ""
+        assert "api_mode" not in load_config()["providers"]["custom-responses"]
+
+    def test_custom_endpoint_validate_keeps_model_alias_metadata(self, monkeypatch):
+        """``validate`` returns the bare id list older clients read AND ``model_details`` with
+        the ``canonical_model`` / ``reasoning_effort`` a gateway advertises (#93622)."""
+        import contextlib
+
+        from hermes_cli.web_routers import config_env
+
+        class FakeResp:
+            status_code = 200
+            is_success = True
+
+            def json(self):
+                return {"data": [
+                    {"id": "gpt-5.6-sol", "object": "model"},
+                    {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
+                ]}
+
+        class FakeClient:
+            async def get(self, url, headers=None):
+                return FakeResp()
+
+            async def post(self, url, json=None, headers=None):
+                return FakeResp()
+
+        @contextlib.asynccontextmanager
+        async def fake_probe_client(url, timeout):
+            yield FakeClient()
+
+        monkeypatch.setattr(config_env, "_endpoint_probe_client", fake_probe_client)
+        body = self.client.post("/api/providers/custom-endpoints/validate", json={
+            "name": "x", "base_url": "https://responses-gateway.example.com/v1", "model": ""}).json()
+        assert body["ok"] is True
+        assert body["models"] == ["gpt-5.6-sol", "gpt-5.6-sol-high"]
+        assert body["model_details"] == [
+            {"id": "gpt-5.6-sol"},
+            {"id": "gpt-5.6-sol-high", "canonical_model": "gpt-5.6-sol", "reasoning_effort": "high"},
+        ]
+
+    @staticmethod
+    def _responses_only_host(monkeypatch, posted):
+        """A gateway that lists models on GET /models and serves POST /responses but 404s
+        POST /chat/completions — the #93622 reporter's host."""
+        import contextlib
+
+        from hermes_cli.web_routers import config_env
+
+        class Resp:
+            def __init__(self, status):
+                self.status_code, self.is_success = status, status < 400
+
+            def json(self):
+                return {"data": [{"id": "gpt-5.6-sol"}]}
+
+        class Client:
+            async def get(self, url, headers=None):
+                return Resp(200)
+
+            async def post(self, url, json=None, headers=None):
+                posted.append((url, json))
+                return Resp(400 if url.endswith("/responses") else 404)
+
+        @contextlib.asynccontextmanager
+        async def probe_client(url, timeout):
+            yield Client()
+
+        monkeypatch.setattr(config_env, "_endpoint_probe_client", probe_client)
+
+    def test_custom_endpoint_validate_fails_when_the_transport_route_is_missing(self, monkeypatch):
+        """Test must exercise the leg the runtime will use: a Responses-only host answers /models
+        fine, so validation also POSTs the resolved transport's route and fails on 404 (#93622)."""
+        posted = []
+        self._responses_only_host(monkeypatch, posted)
+        for api_mode in ("", "chat_completions"):  # auto-detect resolves to chat_completions here
+            body = self.client.post("/api/providers/custom-endpoints/validate", json={
+                "name": "x", "base_url": "https://gw.example.com/v1", "model": "", "api_mode": api_mode}).json()
+            assert body["ok"] is False and body["reachable"] is True
+            assert body["transport_checked"] == "chat_completions"
+            assert "/chat/completions" in body["message"] and "Chat Completions" in body["message"]
+            assert body["models"] == ["gpt-5.6-sol"], "discovered models still returned so the user can re-pick"
+        assert posted[-1][0] == "https://gw.example.com/v1/chat/completions"
+        assert posted[-1][1]["model"] == "gpt-5.6-sol" and posted[-1][1]["max_tokens"] == 1
+
+    def test_custom_endpoint_validate_passes_when_the_pinned_transport_is_served(self, monkeypatch):
+        posted = []
+        self._responses_only_host(monkeypatch, posted)
+        body = self.client.post("/api/providers/custom-endpoints/validate", json={
+            "name": "x", "base_url": "https://gw.example.com/v1", "model": "", "api_mode": "codex_responses"}).json()
+        assert body["ok"] is True and body["message"] == ""
+        assert body["transport_checked"] == "codex_responses"
+        assert posted == [("https://gw.example.com/v1/responses",
+                           {"model": "gpt-5.6-sol", "input": "hi", "max_output_tokens": 16})]
 
     def test_custom_endpoint_save_leaves_a_hand_written_env_ref_alone(self, monkeypatch):
         """``api_key: ${MY_KEY}`` is already safe — don't copy it elsewhere.
@@ -2069,6 +2346,53 @@ class TestWebServerEndpoints:
         self.client.post("/api/providers/custom-endpoints/legacy/activate", json={})
         model_cfg = load_config()["model"]
         assert model_cfg["api_key"] == "sk-legacy"
+
+    def test_legacy_custom_providers_entries_get_a_row_and_can_be_deleted(self):
+        """A post-migration ``custom_providers:`` list entry is still routed by the
+        runtime (``get_compatible_custom_providers``), so Custom Endpoints must show
+        it — and Delete must remove it from the legacy list, not 404 (#114471)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["providers"] = {
+            "modern": {"name": "Modern", "base_url": "https://llm.modern.com/v1", "model": "m"},
+        }
+        cfg["custom_providers"] = [
+            {"name": "Old Box", "base_url": "http://10.0.0.5:8080/v1", "model": "qwen"},
+        ]
+        save_config(cfg)
+
+        rows = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert set(rows) == {"modern", "old-box"}
+        assert rows["old-box"]["source"] == "custom_providers"
+        assert rows["old-box"]["base_url"] == "http://10.0.0.5:8080/v1"
+        assert rows["old-box"]["model"] == "qwen"
+
+        deleted = self.client.request("DELETE", "/api/providers/custom-endpoints/old-box")
+        assert deleted.status_code == 200, deleted.text
+        assert [e["id"] for e in deleted.json()["endpoints"]] == ["modern"]
+        cfg = load_config()
+        assert cfg.get("custom_providers") == []
+        assert "modern" in cfg["providers"]
+
+    def test_activating_a_legacy_custom_providers_entry_promotes_it(self):
+        """Use on a legacy row moves the entry under ``providers:`` (the v12+ shape the
+        main slot names by key) instead of 404ing on a row the list just rendered."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["custom_providers"] = [
+            {"name": "Old Box", "base_url": "http://10.0.0.5:8080/v1", "model": "qwen", "api_key": "sk-old"},
+        ]
+        save_config(cfg)
+
+        activated = self.client.post("/api/providers/custom-endpoints/old-box/activate", json={})
+        assert activated.status_code == 200, activated.text
+        cfg = load_config()
+        assert cfg.get("custom_providers") == []
+        assert cfg["providers"]["old-box"]["api"] == "http://10.0.0.5:8080/v1"
+        assert cfg["model"]["provider"] == "old-box"
+        assert cfg["model"]["default"] == "qwen"
 
     def test_get_sessions_rejects_negative_limit(self):
         """limit=-1 must be rejected (422), not passed through to SQLite as
@@ -4538,6 +4862,51 @@ class TestDashboardPluginManifestExtensions:
         assert len(entries) == 1
         assert entries[0]["tab"]["path"] == "/from-profile"
 
+    def test_unreadable_plugin_paths_do_not_block_discovery(self, tmp_path, monkeypatch, caplog):
+        """A denied plugin directory or manifest must not prevent valid plugins loading."""
+        from pathlib import Path
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "valid", {
+            "name": "valid",
+            "label": "Valid Plugin",
+            "entry": "dist/index.js",
+        })
+        denied_root = tmp_path / "denied-root"
+        denied_root.mkdir()
+        denied_plugin = tmp_path / "plugins" / "denied"
+        (denied_plugin / "dashboard").mkdir(parents=True)
+        (denied_plugin / "dashboard" / "manifest.json").write_text("{}", encoding="utf-8")
+
+        from hermes_cli import web_server_dashboard
+        original_search_dirs = web_server_dashboard._dashboard_plugin_search_dirs
+        original_scandir = web_server_dashboard.os.scandir
+        original_exists = Path.exists
+
+        def search_dirs():
+            return [(denied_root, "user"), *original_search_dirs()]
+
+        def guarded_scandir(path):
+            if Path(path) == denied_root:
+                raise PermissionError("[WinError 5] Access is denied")
+            return original_scandir(path)
+
+        def guarded_exists(path):
+            if path == denied_plugin / "dashboard" / "manifest.json":
+                raise PermissionError("[WinError 5] Access is denied")
+            return original_exists(path)
+
+        monkeypatch.setattr(web_server_dashboard, "_dashboard_plugin_search_dirs", search_dirs)
+        monkeypatch.setattr(web_server_dashboard.os, "scandir", guarded_scandir)
+        monkeypatch.setattr(Path, "exists", guarded_exists)
+
+        plugins = web_server_dashboard._discover_dashboard_plugins()
+
+        assert "valid" in {plugin["name"] for plugin in plugins}
+        assert "denied" not in {plugin["name"] for plugin in plugins}
+        assert "Skipping unreadable dashboard plugin root" in caplog.text
+        assert "Skipping unreadable dashboard plugin" in caplog.text
+
 
 
 
@@ -4668,7 +5037,7 @@ class TestPtyWebSocket:
             notice = conn.receive_text()
             with pytest.raises(WebSocketDisconnect) as exc:
                 conn.receive_text()
-        assert "Chat unavailable" in notice
+        assert "Chat could not start" in notice
         assert exc.value.code == 1011
         if expect_detail is not None:
             assert expect_detail in notice
@@ -5025,6 +5394,10 @@ class TestValidateProviderCredential:
                 captured["headers"] = headers
                 return _Resp()
 
+            async def post(self, url, *args, json=None, headers=None, **kwargs):
+                captured["posted"] = url
+                return _Resp()
+
         monkeypatch.setattr("httpx.AsyncClient", _Client)
 
         response = self.client.post(
@@ -5042,6 +5415,9 @@ class TestValidateProviderCredential:
             "reachable": True,
             "message": "",
             "models": ["local-model"],
+            "resolved_base_url": "http://localhost:8000/v1",
+            "model_details": [{"id": "local-model"}],
+            "transport_checked": "chat_completions",
         }
         assert captured == {
             "url": "http://localhost:8000/v1/models",
@@ -5049,6 +5425,7 @@ class TestValidateProviderCredential:
                 "Accept": "application/json",
                 "Authorization": "Bearer local-secret",
             },
+            "posted": "http://localhost:8000/v1/chat/completions",
         }
 
 
@@ -5074,6 +5451,26 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
+
+    def test_ticker_does_not_run_in_desktop_pool_backend(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import threading
+        import hermes_cli.web_server as web_server
+
+        called = threading.Event()
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DESKTOP_POOL", "1")
+        monkeypatch.setattr(
+            web_server,
+            "_start_desktop_cron_ticker",
+            lambda *_args, **_kwargs: called.set(),
+        )
+
+        with self._client():
+            assert not called.wait(0.25), (
+                "pooled profile backends must not become duplicate cron authorities"
+            )
 
 
 class TestServeIndexMissingIndex:
@@ -5473,3 +5870,32 @@ def test_mount_spa_dynamic_web_dist_recheck(tmp_path, monkeypatch):
     res2 = client.get("/")
     assert res2.status_code == 200
     assert "Test" in res2.text
+
+
+class TestSubmittedCustomEndpointSurvivesAssignment:
+    """#115661 follow-up: a bare-``custom`` main-slot pick carries the submitted endpoint as the
+    current one (see ``_validated_main_model_selection``). Once the switch's credential step
+    re-resolves that target, an env endpoint (``CUSTOM_BASE_URL`` / ``OPENROUTER_BASE_URL``) could
+    replace what the user typed and had persisted."""
+
+    def test_submitted_custom_endpoint_wins_over_an_env_endpoint(self, monkeypatch):
+        from hermes_cli.web_server_config import _apply_main_model_assignment, _validated_main_model_selection
+
+        monkeypatch.setenv("CUSTOM_BASE_URL", "http://127.0.0.1:9999/v1")
+        monkeypatch.setattr(
+            "hermes_cli.models_validate.validate_requested_model",
+            lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None})
+        monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+        cfg = {"model": {"provider": "openrouter", "default": "m"}}
+        result = _validated_main_model_selection(
+            cfg, "custom", "qwen3:8b", "https://api.anthropic.com", "submitted-key")
+
+        assert result.base_url == "https://api.anthropic.com"
+        # The wire protocol follows the endpoint that gets persisted, not the displaced env host.
+        assert result.api_mode == "anthropic_messages"
+        applied = _apply_main_model_assignment(cfg.get("model", {}), result, "submitted-key")
+        assert applied["base_url"] == "https://api.anthropic.com"
+        assert applied["api_mode"] == "anthropic_messages"
+        assert applied["api_key"] == "submitted-key"

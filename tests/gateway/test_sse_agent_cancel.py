@@ -10,6 +10,12 @@ import asyncio
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from gateway.platforms.api_server import ThreadSafeAsyncQueue
 
 
@@ -247,7 +253,7 @@ class TestSSEAgentCancelOnDisconnect:
                 )
 
             # agent.interrupt() must have been called
-            mock_agent.interrupt.assert_called_once_with("SSE client disconnected")
+            mock_agent.interrupt.assert_called_once_with("SSE client disconnected", tool_reason="sse client disconnected")
             # Clean up
             agent_done.set()
 

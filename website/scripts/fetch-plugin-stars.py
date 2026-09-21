@@ -132,8 +132,15 @@ def probe_stars(
         _log(f"GraphQL probe failed ({e}); keeping previous counts")
         return {slug: previous[slug] for slug in slugs if slug in previous}, False
     else:
-        for err in payload.get("errors") or []:
-            _log(f"GraphQL: {err.get('message')}")
+        if not isinstance(payload, dict):
+            _log("GraphQL probe returned a malformed payload; keeping previous counts")
+            return {slug: previous[slug] for slug in slugs if slug in previous}, False
+        errors = payload.get("errors")
+        if isinstance(errors, list):
+            for err in errors:
+                _log(f"GraphQL: {err.get('message') if isinstance(err, dict) else err}")
+        elif errors is not None:
+            _log("GraphQL probe returned malformed errors")
         data = payload.get("data")
         if not isinstance(data, dict):
             _log("GraphQL probe returned no repository data; keeping previous counts")
@@ -147,11 +154,19 @@ def probe_stars(
     for slug in (slug for slug in slugs if slug not in fresh):
         try:
             payload = _http_json(f"https://api.github.com/repos/{slug}", headers)
+            if not isinstance(payload, dict):
+                _log(f"REST fallback returned a malformed payload for {slug}")
+                continue
             count = payload.get("stargazers_count")
             if isinstance(count, int):
                 fresh[slug] = count
             else:
                 _log(f"REST fallback returned no star count for {slug}")
+        except urllib.error.HTTPError as e:
+            _log(f"REST fallback failed for {slug} ({e})")
+            if e.code in (403, 429):
+                _log("REST fallback rate limited; keeping previous counts for remaining repos")
+                break
         except (urllib.error.URLError, OSError, ValueError) as e:
             _log(f"REST fallback failed for {slug} ({e})")
 

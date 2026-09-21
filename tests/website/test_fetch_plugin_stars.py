@@ -79,7 +79,9 @@ def test_probe_starts_with_one_graphql_request_and_rest_fills_missing_counts(mod
     assert data["fetched_at"] > "2026-01-01"
 
 
-@pytest.mark.parametrize("failure_mode", ["exception", "payload"])
+@pytest.mark.parametrize(
+    "failure_mode", ["exception", "no_data", "malformed_errors", "malformed_payload"],
+)
 def test_failed_graphql_probe_stops_fallback_and_keeps_cache(
     mod, tmp_path, monkeypatch, capsys, failure_mode,
 ):
@@ -94,7 +96,11 @@ def test_failed_graphql_probe_stops_fallback_and_keeps_cache(
     def limited(query, token):
         if failure_mode == "exception":
             raise urllib.error.HTTPError("u", 401, "unauthorized", hdrs=None, fp=None)
-        return {"data": None, "errors": [{"message": "API rate limit exceeded"}]}
+        if failure_mode == "no_data":
+            return {"data": None, "errors": [None]}
+        if failure_mode == "malformed_errors":
+            return {"data": None, "errors": 1}
+        return None
     monkeypatch.setattr(mod, "_graphql", limited)
 
     def unexpected_rest(*args, **kwargs):
@@ -105,3 +111,38 @@ def test_failed_graphql_probe_stops_fallback_and_keeps_cache(
     data = json.loads(out.read_text())
     assert data == {"fetched_at": timestamp, "stars": {"a/one": 7}}
     assert "::warning::Plugin star probe incomplete; missing cached counts for: b/two" in capsys.readouterr().err
+
+
+def test_rest_fallback_stops_after_rate_limit_and_ignores_malformed_payload(
+    mod, tmp_path, monkeypatch,
+):
+    cat = _catalog(
+        tmp_path,
+        "https://github.com/a/one",
+        "https://github.com/b/two",
+        "https://github.com/c/three",
+    )
+    out = tmp_path / "plugin-stars.json"
+    timestamp = "2026-01-01T00:00:00+00:00"
+    out.write_text(json.dumps({
+        "fetched_at": timestamp,
+        "stars": {"a/one": 1, "b/two": 2, "c/three": 3},
+    }), encoding="utf-8")
+    monkeypatch.setattr(mod, "_graphql", lambda query, token: {
+        "data": {"r0": None, "r1": None, "r2": None},
+    })
+    calls: list[str] = []
+
+    def rest(url, headers):
+        calls.append(url)
+        if len(calls) == 1:
+            return []
+        raise urllib.error.HTTPError(url, 429, "rate limited", hdrs=None, fp=None)
+    monkeypatch.setattr(mod, "_http_json", rest)
+
+    assert mod.main(catalog_dir=cat, output=out, probe=True, live_url=None, token="t") == 0
+    assert len(calls) == 2
+    assert json.loads(out.read_text()) == {
+        "fetched_at": timestamp,
+        "stars": {"a/one": 1, "b/two": 2, "c/three": 3},
+    }

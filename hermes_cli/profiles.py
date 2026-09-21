@@ -214,7 +214,7 @@ _PROFILE_NAME_RULE = (
 def _suggest_profile_name(name: str) -> str:
     """Best-effort valid id derived from *name* (``'My Work'`` -> ``'my-work'``); ``my-work`` if nothing usable."""
     candidate = re.sub(r"[^a-z0-9_-]+", "-", name.strip().lower()).strip("-_")[:64]
-    return candidate if _PROFILE_ID_RE.match(candidate) else "my-work"
+    return candidate if _PROFILE_ID_RE.fullmatch(candidate) else "my-work"
 
 
 def _invalid_profile_name_error(name: str) -> ValueError:
@@ -254,7 +254,7 @@ def validate_profile_name(name: str) -> None:
     """
     if name == "default":
         return  # special alias for ~/.hermes
-    if not _PROFILE_ID_RE.match(name):
+    if not _PROFILE_ID_RE.fullmatch(name):
         raise _invalid_profile_name_error(name)
     if name in _RESERVED_NAMES:
         raise ValueError(
@@ -267,7 +267,7 @@ def validate_profile_name(name: str) -> None:
 def validate_alias_name(name: str) -> None:
     """Raise ``ValueError`` unless *name* is a safe wrapper filename: it is used verbatim
     under ``~/.local/bin``, so ``../../.bashrc`` must never escape the wrapper dir."""
-    if not _PROFILE_ID_RE.match(name):
+    if not _PROFILE_ID_RE.fullmatch(name):
         raise ValueError(f"Invalid alias name {name!r}. {_PROFILE_NAME_RULE}.")
 
 
@@ -297,7 +297,7 @@ def get_profile_dir(name: str) -> Path:
     # prefixes, tool args) fails closed instead of escaping the root. The
     # regex only, not _RESERVED_NAMES: a pre-reserved-list dir like
     # profiles/hermes may still exist and must keep resolving.
-    if not _PROFILE_ID_RE.match(canon):
+    if not _PROFILE_ID_RE.fullmatch(canon):
         raise _invalid_profile_name_error(canon)
     return _get_profiles_root() / canon
 
@@ -344,7 +344,7 @@ def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
         entry for entry in sorted(profiles_root.iterdir())
         if entry.is_dir()
         and entry.name != "default"
-        and _PROFILE_ID_RE.match(entry.name)
+        and _PROFILE_ID_RE.fullmatch(entry.name)
         and named_profile_has_identity(entry)
         and not (live_only and named_profile_is_deleted(entry))
     ]
@@ -1774,7 +1774,7 @@ def get_active_profile_name() -> str:
     profiles_root = _get_profiles_root().resolve()
     try:
         parts = resolved.relative_to(profiles_root).parts
-        if len(parts) == 1 and _PROFILE_ID_RE.match(parts[0]):
+        if len(parts) == 1 and _PROFILE_ID_RE.fullmatch(parts[0]):
             return parts[0]
     except ValueError:
         pass

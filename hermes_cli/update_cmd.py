@@ -1564,9 +1564,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
     on the OLD checkout in an exit-2 loop); it runs right before the dependency sync."""
-    opts = _resolve_update_options(args, gateway_mode)
-    gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
-
     # A child spawned off hermes.exe already outwaited its parent in ``cmd_update`` (before the
     # update lock, so the lock it now holds is its own — the parent's marker left with it).
     from hermes_cli.update_handoff import adopt_handed_off_gateway_resume
@@ -1575,6 +1572,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Second half of a run whose pre-pull interpreter stopped at the code swap.
         _run_post_swap_phase(args, gateway_mode)
         return
+
+    opts = _resolve_update_options(args, gateway_mode)
+    gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
     print("☤ Updating Hermes Agent...")
     print()

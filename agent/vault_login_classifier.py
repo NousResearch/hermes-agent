@@ -34,6 +34,9 @@ ADDRESS_AUTOFILL_TOKENS = ("address-line1", "address-line2", "address-level2", "
                            "postal-code", "country-name", "country")
 _CHECKOUT_HEURISTICS = (
     (re.compile(r"\b(?:card\s*number|cardnumber|ccnumber|cc\s*num|pan)\b"), "cc-number"),
+    # Hosted gateways such as NewebPay split the PAN into card1..card4 or card_1..card_4 inputs.
+    # Normalization turns the underscore variant into "card 1" before matching.
+    (re.compile(r"\bcard\s*\d+\b"), "cc-number"),
     (re.compile(r"\b(?:name\s*on\s*card|cardholder|cc\s*name|ccname)\b"), "cc-name"),
     (re.compile(r"\b(?:cvc|cvv|csc|security\s*code|card\s*code)\b"), "cc-csc"),
     (re.compile(r"\b(?:exp(?:iry|iration)?\s*month|exp\s*mm|ccmonth)\b"), "cc-exp-month"),
@@ -186,7 +189,13 @@ def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLogin
     for token in PAYMENT_AUTOFILL_TOKENS + ADDRESS_AUTOFILL_TOKENS:
         if token in tokens:
             return ClassifiedLoginControl(control, 100, "country-name" if token == "country" else token)
-    if control.type in ("password", "email"):
+    if control.type == "password":
+        # NewebPay's unlabeled CVC is a password input with maxlength=3; ordinary
+        # login passwords are not checkout targets and remain excluded.
+        if control.max_length == 3:
+            return ClassifiedLoginControl(control, 70, "cc-csc")
+        return None
+    if control.type == "email":
         return None
     searchable = _normalize_text(" ".join(part for part in (control.name, control.label) if part))
     for pattern, token in _CHECKOUT_HEURISTICS:
@@ -210,6 +219,16 @@ def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict
     fills: List[Dict[str, Any]] = []
     for token, value in values.items():
         candidates = sorted((c for c in classified if c.token == token), key=lambda c: (-c.score, c.control.index))
+        if token == "cc-number":
+            # Some hosted gateways expose four maxlength=4 inputs instead of one PAN input.
+            # Keep the secret in-process and split only the selected controls' values.
+            split = sorted((c for c in candidates if c.control.max_length == 4), key=lambda c: c.control.index)
+            digits = re.sub(r"\D", "", value)
+            if (len(split) >= 2 and len(digits) == len(split) * 4
+                    and all(b.control.index - a.control.index == 1 for a, b in zip(split, split[1:]))):
+                fills.extend({"index": c.control.index, "token": token,
+                              "value": digits[i * 4:(i + 1) * 4]} for i, c in enumerate(split))
+                continue
         if candidates:
             fills.append({"index": candidates[0].control.index, "token": token, "value": value})
     if any(f["token"] == "cc-exp" for f in fills):
@@ -325,6 +344,10 @@ _FILL_JS_TEMPLATE = """(() => {
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }
       el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
+      // Segmented hosted card widgets may aggregate their model on keyup rather than input/change.
+      if (f.token === "cc-number") {
+        el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+      }
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }

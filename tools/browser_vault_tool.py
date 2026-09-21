@@ -183,7 +183,7 @@ def _current_page_origin(task_id: str) -> Optional[str]:
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
 _TAB_PROBES = {
     "login": "!!document.querySelector('input[type=password]')",
-    "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
+    "payment": "!!document.querySelector('input[autocomplete^=cc-], input[id*=card i], input[name*=card i], input[placeholder*=card i], input[name*=cvc i], input[name*=cvv i], input[placeholder*=cvc i], input[placeholder*=cvv i], input[placeholder*=mm i][placeholder*=yy i]')",
     "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
 }
 

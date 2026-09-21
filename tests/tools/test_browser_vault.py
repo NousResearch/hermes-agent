@@ -29,10 +29,13 @@ from agent.vault_login_classifier import (  # noqa: E402
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
+    classify_checkout_control,
     classify_login_control,
+    select_checkout_fills,
     select_password_fill,
 )
 from agent.vault_store import (  # noqa: E402
+    PAYMENT_FIELDS,
     VaultError,
     VaultStore,
     normalize_origin,
@@ -201,6 +204,37 @@ class TestClassifier:
 
     def test_unmatched_returns_none(self):
         assert classify_login_control(_ctrl(label="Search the docs")) is None
+
+    @pytest.mark.parametrize("prefix", ["card", "card_"])
+    def test_newebpay_split_card_variants_and_cvc_are_fillable(self, prefix):
+        controls = [
+            _ctrl(index=i, name=f"{prefix}{i - 2}", type="tel", max_length=4)
+            for i in range(3, 7)
+        ] + [
+            _ctrl(index=7, label="MM ／ YY"),
+            _ctrl(index=8, type="password", max_length=3),
+        ]
+        classified = [classify_checkout_control(c) for c in controls]
+        classified = [c for c in classified if c is not None]
+        fills = select_checkout_fills(classified, _CARD, PAYMENT_FIELDS)
+        by_index = {f["index"]: f for f in fills}
+        assert [(i, by_index[i]["token"]) for i in sorted(by_index)] == [
+            (3, "cc-number"), (4, "cc-number"), (5, "cc-number"), (6, "cc-number"),
+            (7, "cc-exp"), (8, "cc-csc"),
+        ]
+        assert [by_index[i]["value"] for i in range(3, 7)] == ["4111", "1111", "1111", "1111"]
+
+    def test_newebpay_probe_and_split_fill_emit_provider_events(self):
+        from tools.browser_vault_tool import _TAB_PROBES
+
+        probe = _TAB_PROBES["payment"]
+        js = build_fill_js(
+            [{"index": 0, "token": "cc-number", "value": "4111"}],
+            expected_origin="https://example.com",
+        )
+        assert "input[id*=card i]" in probe
+        assert "input[placeholder*=mm i][placeholder*=yy i]" in probe
+        assert 'new KeyboardEvent("keyup"' in js
 
     def test_select_password_fill_picks_best_password(self):
         user = ClassifiedLoginControl(_ctrl(index=0, form_index=0, autocomplete="username"), 100, "username")

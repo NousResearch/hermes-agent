@@ -159,14 +159,14 @@ def _is_delivery_child(pid: Any) -> bool:
         return False
     try:
         import psutil  # type: ignore
-
+    except Exception:  # pragma: no cover — psutil absent: nothing can identify the process
+        return False
+    try:
         environ = psutil.Process(int(pid)).environ()
     except Exception:
-        # psutil absent or /proc unreadable (other user, LXC): fall back to argv, the one
-        # marker every one-shot delivery child carries regardless of env visibility.
+        # /proc unreadable (other user, LXC, hardened container): fall back to argv, the
+        # one marker every one-shot delivery child carries regardless of env visibility.
         try:
-            import psutil  # type: ignore
-
             argv = psutil.Process(int(pid)).cmdline()
         except Exception:
             return False

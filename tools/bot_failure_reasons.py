@@ -147,7 +147,7 @@ def classify_agent_error(text: str) -> str:
 
 # ``hermes_cli.active_sessions.SESSION_NOT_OWNED``, mirrored as a literal: this module is imported
 # by both delivery lanes and must not drag in the CLI's session layer (import cycle). The two are
-# pinned together by ``tests/tools/test_bot_failure_reasons.py``.
+# pinned together by ``tests/tools/test_bot_delivery_refusal_codes.py``.
 SESSION_NOT_OWNED_REASON = "SESSION_NOT_OWNED"
 _REFUSAL_MARKER = "hermes-refusal-reason: "
 

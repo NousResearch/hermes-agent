@@ -128,9 +128,9 @@ _IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.
 # excluded browser-profile/ snapshot) but must come back owner-only.
 _SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "vault.key", "vault.json.enc"}
 
-# Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.honcho, via
-# MemoryProvider.backup_paths()), stored and restored relative to the user's home; paths not
-# under home are skipped.
+# Reserved archive subtree for provider-owned state OUTSIDE HERMES_HOME (for example
+# MemoryProvider/ConversationStore.backup_paths()), stored and restored relative to the user's
+# home; paths outside home are skipped.
 _EXTERNAL_PREFIX = "_external/"
 
 
@@ -203,9 +203,26 @@ def _is_within(path: Path, root: Path) -> bool:
     return path.resolve().is_relative_to(root)
 
 
+def _existing_declared_backup_paths(declared) -> List[Path]:
+    """Normalize provider-declared backup paths, dropping missing/unresolvable entries."""
+    out: Dict[Path, Path] = {}  # resolved -> first declared spelling
+    for raw in declared or []:
+        try:
+            path = Path(raw).expanduser()
+        except Exception:
+            continue
+        if not path.exists():
+            continue
+        try:
+            resolved = path.resolve()
+        except (OSError, ValueError):
+            continue
+        out.setdefault(resolved, path)
+    return list(out.values())
+
+
 def _collect_memory_provider_external_paths() -> List[Path]:
-    """Existing paths the active memory provider declares via ``backup_paths()``; ``[]`` on any
-    provider failure (backup must never fail because of a flaky plugin)."""
+    """Existing paths the active memory provider declares via ``backup_paths()``."""
     try:
         from plugins.memory import _get_active_memory_provider, load_memory_provider
         active = _get_active_memory_provider()
@@ -215,24 +232,32 @@ def _collect_memory_provider_external_paths() -> List[Path]:
     if provider is None:
         return []
     try:
-        declared = provider.backup_paths() or []
+        return _existing_declared_backup_paths(provider.backup_paths())
     except Exception as exc:
         logger.warning("backup_paths() failed for memory provider %r: %s", active, exc)
         return []
-    out: Dict[Path, Path] = {}  # resolved -> first declared spelling
-    for raw in declared:
+
+
+def _collect_conversation_store_external_paths() -> List[Path]:
+    """Local durable paths declared by the configured external conversation store."""
+    try:
+        from plugins.conversation_store import load_configured_conversation_store
+        store = load_configured_conversation_store()
+    except Exception as exc:
+        logger.warning("Could not load configured conversation store for backup: %s", exc)
+        return []
+    if store is None:
+        return []
+    try:
+        return _existing_declared_backup_paths(store.backup_paths())
+    except Exception as exc:
+        logger.warning("backup_paths() failed for conversation store %r: %s", store.name, exc)
+        return []
+    finally:
         try:
-            p = Path(raw).expanduser()
+            store.close()
         except Exception:
-            continue
-        if not p.exists():
-            continue
-        try:
-            resolved = p.resolve()
-        except (OSError, ValueError):
-            continue
-        out.setdefault(resolved, p)
-    return list(out.values())
+            logger.debug("Conversation-store cleanup after backup path discovery failed", exc_info=True)
 
 
 def _iter_external_files(base: Path) -> List[Path]:
@@ -645,12 +670,19 @@ def _resolve_backup_output_path(output: Optional[str]) -> Path:
 
 
 def _collect_external_entries() -> tuple[list[tuple[Path, str]], list[str]]:
-    """``([(abs_path, arcname)], [skipped])`` for the memory provider's external state, arc-named
-    ``_external/<home-relative>``; paths outside home are skipped (security + portability)."""
+    """Provider-owned state outside HERMES_HOME, archived as ``_external/<home-relative>``.
+
+    Both memory and conversation-store providers may declare local durable paths.
+    Paths outside the user home are skipped for portability and traversal safety.
+    """
     home_dir = Path.home().resolve()
-    external_to_add: list[tuple[Path, str]] = []
+    external_by_arcname: Dict[str, Path] = {}
     skipped_external: list[str] = []
-    for base in _collect_memory_provider_external_paths():
+    bases = [
+        *_collect_memory_provider_external_paths(),
+        *_collect_conversation_store_external_paths(),
+    ]
+    for base in bases:
         try:
             base.resolve().relative_to(home_dir)
         except (ValueError, OSError):
@@ -659,8 +691,9 @@ def _collect_external_entries() -> tuple[list[tuple[Path, str]], list[str]]:
         for fpath in _iter_external_files(base):
             with suppress(ValueError, OSError):
                 rel_to_home = fpath.resolve().relative_to(home_dir)
-                external_to_add.append((fpath, _EXTERNAL_PREFIX + rel_to_home.as_posix()))
-    return external_to_add, skipped_external
+                arcname = _EXTERNAL_PREFIX + rel_to_home.as_posix()
+                external_by_arcname.setdefault(arcname, fpath)
+    return [(path, arcname) for arcname, path in external_by_arcname.items()], skipped_external
 
 
 def run_backup(args) -> bool:
@@ -717,12 +750,18 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
             zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
             on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
-        # External memory-provider state never includes ``.db`` files in practice, so a
-        # straight zf.write is fine.
+        # Provider-owned SQLite files need the same WAL-safe snapshot treatment as state.db.
         for abs_path, arcname in external_to_add:
             try:
-                zf.write(abs_path, arcname=arcname)
-                total_bytes += abs_path.stat().st_size
+                if abs_path.suffix == ".db":
+                    size = _zip_sqlite_snapshot(zf, abs_path, Path(arcname), out_path)
+                    if size is None:
+                        errors.append(f"{arcname}: SQLite safe copy failed")
+                    else:
+                        total_bytes += size
+                else:
+                    zf.write(abs_path, arcname=arcname)
+                    total_bytes += abs_path.stat().st_size
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
     elapsed = time.monotonic() - t0
@@ -735,9 +774,9 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
           f"  Compressed:  {_format_size(zip_size)}\n"
           f"  Time:        {elapsed:.1f}s")
     if external_to_add:
-        print(f"\n  Included {len(external_to_add)} memory-provider file(s) stored outside {display_hermes_home()}.")
+        print(f"\n  Included {len(external_to_add)} provider file(s) stored outside {display_hermes_home()}.")
     if skipped_external:
-        print(f"\n  Skipped {len(skipped_external)} memory-provider path(s) outside your home directory "
+        print(f"\n  Skipped {len(skipped_external)} provider path(s) outside your home directory "
               "(not portable):\n" + "\n".join(f"    {p}" for p in sorted(skipped_external)[:10]))
     if skipped_dirs:
         print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
@@ -1018,7 +1057,7 @@ def run_import(args) -> None:
         elapsed = time.monotonic() - t0
         print(f"\nImport complete: {restored} files restored in {elapsed:.1f}s\n  Target: {display_hermes_home()}")
         if restored_external:
-            print(f"\n  Restored {restored_external} memory-provider file(s) to "
+            print(f"\n  Restored {restored_external} provider file(s) to "
                   f"their original location(s) outside {display_hermes_home()}.")
         if errors:
             _print_capped(f"\n  Warnings ({len(errors)} files skipped):", errors, "  ")

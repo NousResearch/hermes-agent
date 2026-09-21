@@ -81,6 +81,15 @@ class ConversationStore(ABC):
     def close(self) -> None:
         """Release provider resources. Must be idempotent."""
 
+    def backup_paths(self) -> list[str]:
+        """Local durable paths that ``hermes backup`` should include.
+
+        Remote or provider-managed stores may return an empty list. Hermes
+        archives declared paths only when they resolve inside the user home,
+        and restores them to the same home-relative location.
+        """
+        return []
+
     # Phase 2: canonical read surface.
     def get_conversation(self, conversation_id: str):
         raise NotImplementedError

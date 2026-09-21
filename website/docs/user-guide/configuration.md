@@ -1101,6 +1101,19 @@ auxiliary:
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
 :::
 
+## Conversation Storage
+
+Hermes keeps `SessionDB` as the session API, but canonical transcript storage is selectable per profile:
+
+```yaml
+sessions:
+  store: sqlite   # default
+```
+
+`sqlite` keeps canonical messages in `$HERMES_HOME/state.db`. An external value must match an installed `hermes_agent.conversation_stores` entry point. In external mode, SQLite still keeps local operational/session-accounting state, while message history is owned by the selected store. Hermes does not silently fall back to SQLite transcript payloads if the provider is unavailable or a write fails.
+
+Third-party conversation stores are profile-scoped and exclusive: one store is active for a profile at a time. See [Session Storage](../developer-guide/session-storage.md#conversation-store-authority) for the provider contract and persistence semantics.
+
 ## Gateway Turn Lease Timeout
 
 The gateway serializes turns by their resolved session ID so two routing keys

@@ -153,6 +153,7 @@ class InsightsEngine:
     def __init__(self, db):
         self.db = db
         self._conn = db._conn
+        self._canonical_message_cache: Dict[tuple[float, Optional[str]], List[Dict[str, Any]]] = {}
         try:
             self._has_assistant_calls_index = bool(self._conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?", (self._MESSAGES_ASSISTANT_CALLS_INDEX,)).fetchone())
@@ -214,32 +215,75 @@ class InsightsEngine:
                 row[col] = coerce_epoch(row.get(col), session_id=row.get("id"), field=col)
         return rows
 
-    def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
-        by the gateway) and ``tool_calls`` JSON on assistant rows (covers CLI,
-        where tool_name is not populated). The two views are reconciled PER
-        SESSION (max — they describe the same calls), then summed across
-        sessions: a global max dropped every call from a session that only
-        carried the other representation (#9814)."""
-        by_session_tool = Counter()
-        for row in self._query("_GET_TOOL_NAMES", cutoff, source):
-            by_session_tool[(row["session_id"], row["tool_name"])] += row["count"]
-        calls_by_session_tool = Counter()
-        for row in self._query("_GET_TOOL_CALLS", cutoff, source):
-            try:
-                names = filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"])))
-                calls_by_session_tool.update((row["session_id"], name) for name in names)
-            except (TypeError, AttributeError):
+    def _canonical_message_rows(self, cutoff: float, source: str = None) -> List[Dict[str, Any]]:
+        """Canonical transcript rows for locally-accounted sessions.
+
+        Session/token/cost accounting remains SQLite operational state. When an
+        external conversation store owns history, only transcript-derived
+        analytics cross the provider boundary; SQLite message payloads are not
+        consulted.
+        """
+        key = (cutoff, source)
+        cached = self._canonical_message_cache.get(key)
+        if cached is not None:
+            return cached
+        rows: List[Dict[str, Any]] = []
+        for session in self._get_sessions(cutoff, source):
+            session_id = session.get("id")
+            if not session_id:
                 continue
+            for message in self.db.get_messages(str(session_id), include_inactive=True):
+                row = dict(message)
+                row.setdefault("session_id", str(session_id))
+                rows.append(row)
+        self._canonical_message_cache[key] = rows
+        return rows
+
+    def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Tool call counts from canonical transcript history.
+
+        SQLite keeps the indexed fast path. External stores use provider-delegated
+        SessionDB reads while preserving the historical per-session max reconciliation
+        between assistant tool_calls and tool-result rows.
+        """
+        by_session_tool = Counter()
+        calls_by_session_tool = Counter()
+        if getattr(self.db, "uses_external_conversation_store", False):
+            for row in self._canonical_message_rows(cutoff, source):
+                session_id = row.get("session_id")
+                if row.get("role") == "tool" and row.get("tool_name"):
+                    by_session_tool[(session_id, row["tool_name"])] += 1
+                if row.get("role") == "assistant" and row.get("tool_calls"):
+                    try:
+                        names = filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"])))
+                        calls_by_session_tool.update((session_id, name) for name in names)
+                    except (TypeError, AttributeError):
+                        continue
+        else:
+            for row in self._query("_GET_TOOL_NAMES", cutoff, source):
+                by_session_tool[(row["session_id"], row["tool_name"])] += row["count"]
+            for row in self._query("_GET_TOOL_CALLS", cutoff, source):
+                try:
+                    names = filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"])))
+                    calls_by_session_tool.update((row["session_id"], name) for name in names)
+                except (TypeError, AttributeError):
+                    continue
         tool_counts = Counter()
         for key in set(by_session_tool) | set(calls_by_session_tool):
             tool_counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
         return [{"tool_name": name, "count": count} for name, count in tool_counts.most_common()]
 
     def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:
-        """Extract per-skill usage from assistant tool calls."""
+        """Extract per-skill usage from canonical assistant tool calls."""
         skill_counts: Dict[str, Dict[str, Any]] = {}
-        for row in self._query("_GET_SKILL_CALLS", cutoff, source):
+        if getattr(self.db, "uses_external_conversation_store", False):
+            rows = (
+                row for row in self._canonical_message_rows(cutoff, source)
+                if row.get("role") == "assistant" and row.get("tool_calls")
+            )
+        else:
+            rows = self._query("_GET_SKILL_CALLS", cutoff, source)
+        for row in rows:
             timestamp = row["timestamp"]
             for func in _iter_functions(row["tool_calls"]):
                 tool_name = func.get("name")
@@ -255,6 +299,14 @@ class InsightsEngine:
         return list(skill_counts.values())
 
     def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
+        if getattr(self.db, "uses_external_conversation_store", False):
+            counts = Counter(row.get("role") for row in self._canonical_message_rows(cutoff, source))
+            return {
+                "total_messages": sum(counts.values()),
+                "user_messages": counts.get("user", 0),
+                "assistant_messages": counts.get("assistant", 0),
+                "tool_messages": counts.get("tool", 0),
+            }
         rows = self._query("_GET_MESSAGE_STATS", cutoff, source)
         return dict(rows[0]) if rows else {"total_messages": 0, "user_messages": 0, "assistant_messages": 0, "tool_messages": 0}
 

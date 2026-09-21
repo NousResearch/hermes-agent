@@ -502,7 +502,7 @@ Use `/title My Session Name` inside a chat to name the current session, or `herm
 
 ### Session Storage
 
-CLI sessions are stored in Hermes's SQLite state database under `~/.hermes/state.db`. The database keeps:
+CLI session persistence goes through `SessionDB`. SQLite under `~/.hermes/state.db` is the default canonical transcript store and always keeps Hermes operational/session-accounting state; when `sessions.store` selects an external `ConversationStore`, that provider owns canonical message history instead. Session persistence keeps:
 
 - session metadata (ID, title, timestamps, token counters)
 - message history

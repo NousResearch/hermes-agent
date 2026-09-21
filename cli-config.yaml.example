@@ -28,6 +28,16 @@ database:
   # synchronous: FULL
 
 # =============================================================================
+# Session Storage
+# =============================================================================
+# SQLite remains the zero-config default. Set this to the name of an installed
+# hermes_agent.conversation_stores entry point to make that provider the
+# canonical conversation-history store for this profile. Hermes still keeps
+# operational/session-accounting state in state.db.
+sessions:
+  store: "sqlite"
+
+# =============================================================================
 # Runtime Limits
 # =============================================================================
 # Long-running Hermes server processes raise their RLIMIT_NOFILE soft limit to

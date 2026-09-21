@@ -12,11 +12,9 @@ Hermes Agent automatically saves every conversation as a session. Sessions enabl
 
 ## How Sessions Work
 
-Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in:
+Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. First-party surfaces use `SessionDB` for session persistence. SQLite (`~/.hermes/state.db`) is the zero-config default and always stores Hermes operational/session metadata; with the default `sessions.store: sqlite`, it also owns canonical message history and FTS5 search. If `sessions.store` selects an external `ConversationStore`, that provider owns canonical transcript history instead.
 
-1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search, plus full message history
-
-The SQLite database stores:
+The session store tracks:
 - Session ID, source platform, user ID
 - **Session title** (unique, human-readable name)
 - Model name and configuration
@@ -121,7 +119,7 @@ hermes chat --continue
 hermes chat -c
 ```
 
-This looks up the most recent `cli` session from the SQLite database and loads its full conversation history.
+This looks up the most recent `cli` session through `SessionDB` and loads its canonical conversation history from the configured conversation store.
 
 #### Per-Terminal Continue
 
@@ -954,8 +952,8 @@ holds across gateway crashes, restarts, and updates:
 
 | What | Path | Description |
 |------|------|-------------|
-| SQLite database | `~/.hermes/state.db` | All session metadata + messages with FTS5 |
-| Gateway messages    | `~/.hermes/state.db`   | SQLite — canonical store for all session messages |
+| SQLite database | `~/.hermes/state.db` | Hermes operational/session metadata; canonical messages + FTS5 when `sessions.store: sqlite` |
+| Canonical message history | Configured `sessions.store` | SQLite by default; an installed `ConversationStore` may own transcript history instead |
 | Gateway routing index | `gateway_routing` table in `~/.hermes/state.db` | Maps session keys to active session IDs (origin metadata, expiry flags) |
 | Legacy routing mirror | `~/.hermes/sessions/sessions.json` | Backward-compat mirror of the routing index, written when `gateway.write_sessions_json: true` (the default) |
 
@@ -971,18 +969,20 @@ It only ever contains gateway/messaging entries, so if you run a messaging
 platform you'll see only those (e.g. `agent:main:whatsapp:dm:...`).
 
 This is **expected** and does **not** mean your CLI sessions are missing.
-`hermes sessions list`, `/sessions`, and the dashboard all read `state.db`,
-which holds **every** session (CLI, TUI, and gateway). The `/save` snapshots
-under `~/.hermes/sessions/saved/*.json` are convenience exports, not the index.
+`hermes sessions list`, `/sessions`, and the dashboard all use `SessionDB`,
+which exposes **every** session (CLI, TUI, and gateway) while delegating canonical
+message history to the configured conversation store. The `/save` snapshots under
+`~/.hermes/sessions/saved/*.json` are convenience exports, not the index.
 
-If CLI sessions genuinely don't appear in `hermes sessions list`, the cause is
-`state.db` not receiving them — run `hermes sessions repair` and watch for a
-`⚠ Session store unavailable` warning at CLI startup, which means SQLite
-persistence failed for that run.
+If CLI sessions genuinely don't appear in `hermes sessions list`, run
+`hermes sessions repair` and watch for a `⚠ Session store unavailable` warning
+at CLI startup. With the default store this indicates SQLite persistence failed;
+with an external store, provider availability/write failures fail closed rather
+than falling back to a stale SQLite transcript.
 :::
 
 :::note Legacy JSONL transcripts
-Sessions created before state.db became canonical may have leftover
+Sessions created before SQLite `state.db` became the default canonical store may have leftover
 `*.jsonl` files in `~/.hermes/sessions/`. They are no longer written or
 read by Hermes. Safe to delete after verifying the corresponding session
 exists in state.db.

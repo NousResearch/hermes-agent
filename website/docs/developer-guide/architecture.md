@@ -40,9 +40,9 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
            ▼                                    ▼
 ┌───────────────────┐              ┌──────────────────────┐
 │ Session Storage   │              │ Tool Backends         │
-│ (SQLite + FTS5)   │              │ Terminal (7 backends) │
-│ hermes_state.py   │              │ Browser (5 backends)  │
-│ gateway/session.py│              │ Web (4 backends)      │
+│ SessionDB facade  │              │ Terminal (7 backends) │
+│ SQLite default /  │              │ Browser (5 backends)  │
+│ ConversationStore│              │ Web (4 backends)      │
 └───────────────────┘              │ MCP (dynamic)         │
                                    │ File, Vision, etc.    │
                                    └──────────────────────┘
@@ -56,7 +56,8 @@ hermes-agent/
 ├── cli.py                    # HermesCLI facade — mixins in hermes_cli/cli_*_mixin.py
 ├── model_tools.py            # Tool discovery, schema collection, dispatch
 ├── toolsets.py               # Tool groupings and platform presets
-├── hermes_state.py           # SQLite session/state database facade (+ hermes_state_*.py siblings)
+├── hermes_state.py           # SessionDB facade; SQLite operational/default storage (+ hermes_state_*.py siblings)
+├── conversation_store.py     # Provider-neutral canonical conversation-history contract
 ├── hermes_constants.py       # HERMES_HOME, profile-aware paths
 ├── batch_runner.py           # Batch trajectory generation
 │
@@ -182,7 +183,7 @@ If you are new to the codebase:
 4. **[Provider Runtime Resolution](./provider-runtime.md)** — how providers are selected
 5. **[Adding Providers](./adding-providers.md)** — practical guide to adding a new provider
 6. **[Tools Runtime](./tools-runtime.md)** — tool registry, dispatch, environments
-7. **[Session Storage](./session-storage.md)** — SQLite schema, FTS5, session lineage
+7. **[Session Storage](./session-storage.md)** — storage authority, SQLite schema/FTS5, session lineage
 8. **[Gateway Internals](./gateway-internals.md)** — messaging platform gateway
 9. **[Context Compression & Prompt Caching](./context-compression-and-caching.md)** — compression and caching
 10. **[ACP Internals](./acp-internals.md)** — IDE integration
@@ -219,7 +220,7 @@ Central tool registry (`tools/registry.py`) with 70+ registered tools across ~28
 
 ### Session Persistence
 
-SQLite-based session storage with FTS5 full-text search. Sessions have lineage tracking (parent/child across compressions), per-platform isolation, and atomic writes with contention handling.
+`SessionDB` is the persistence facade. SQLite remains the default conversation store and owns Hermes operational/session-accounting state; an optional `ConversationStore` can own canonical transcript history instead. The default SQLite backend provides FTS5 search, while sessions retain lineage tracking (parent/child across compressions), per-platform isolation, and concurrency-safe mutation semantics.
 
 → [Session Storage](./session-storage.md)
 

@@ -217,8 +217,8 @@ Memory entries are scanned for injection and exfiltration patterns before being 
 
 Beyond MEMORY.md and USER.md, the agent can search its past conversations using the `session_search` tool:
 
-- All CLI and messaging sessions are stored in SQLite (`~/.hermes/state.db`) with FTS5 full-text search
-- Search queries return actual messages from the DB — no LLM summarization, no truncation
+- CLI and messaging session history is read through `SessionDB`; the default SQLite store uses FTS5, while external `ConversationStore` providers supply equivalent transcript search
+- Search queries return actual stored messages — no LLM summarization, no truncation
 - The agent can find things it discussed weeks ago, even if they're not in its active memory
 - The agent can also scroll forward/backward inside any session it finds
 

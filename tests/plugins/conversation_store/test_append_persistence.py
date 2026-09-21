@@ -107,7 +107,7 @@ def test_turn_flush_persists_only_to_external_store_and_stamps_live_messages(tmp
         live = [deepcopy(row) for row in batch_rows]
         agent = SimpleNamespace(_session_db=db, session_id="s1")
 
-        _db_flush_write(agent, batch_rows, live)
+        _db_flush_write(agent, batch_rows, live, live)
 
         assert len(store.messages["s1"]) == 2
         assert _local_counts(db) == (0, 2, 1)

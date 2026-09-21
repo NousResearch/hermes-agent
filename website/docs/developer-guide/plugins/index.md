@@ -20,6 +20,7 @@ Hermes has several distinct pluggable interfaces — some use Python `register_*
 | An **LLM / inference backend** (new provider) | [Model Provider Plugins](../model-provider-plugin.md) |
 | A **gateway channel** (Discord/Telegram/IRC/Teams/etc.) | [Adding Platform Adapters](../adding-platform-adapters.md) |
 | A **memory backend** (Honcho/Mem0/Supermemory/etc.) | [Memory Provider Plugins](../memory-provider-plugin.md) |
+| A **canonical conversation-history backend** | [Session Storage — Conversation-store authority](../session-storage.md#conversation-store-authority) |
 | A **context-compression engine** | [Context Engine Plugins](../context-engine-plugin.md) |
 | An **image-generation backend** | [Image Generation Provider Plugins](../image-gen-provider-plugin.md) |
 | A **video-generation backend** | [Video Generation Provider Plugins](../video-gen-provider-plugin.md) |
@@ -1554,6 +1555,33 @@ Memory providers are single-select — only one is active at a time, chosen via 
 If a provider also loads as a general plugin, general discovery owns its lifecycle hooks. The memory loader supplies hooks only as a fallback until that same plugin source loads successfully through general discovery. Repeated provider loads replace the fallback hook group; distinct callbacks within the group are preserved. This does not deduplicate hooks from different plugin sources or change provider activation.
 
 **Full guide:** [Memory Provider Plugins](../memory-provider-plugin.md) — full `MemoryProvider` ABC, threading contract, profile isolation, CLI command registration via `cli.py`.
+
+### Conversation-store providers — replace canonical transcript storage
+
+Conversation stores are exclusive, profile-scoped providers selected with
+`sessions.store`. They do **not** register through the general
+`hermes_agent.plugins` group. A pip package publishes one named entry point in
+`hermes_agent.conversation_stores` whose loaded object is a
+`ConversationStore`, a `ConversationStore` subclass, or a callable/register
+function that supplies one:
+
+```toml
+[project.entry-points."hermes_agent.conversation_stores"]
+my-store = "my_package:MyConversationStore"
+```
+
+```yaml
+sessions:
+  store: my-store
+```
+
+SQLite is represented by the built-in `sqlite` selector and requires no plugin.
+External providers fail closed when unavailable. Core callers remain on
+`SessionDB`; providers implement canonical reads/writes, stable integer message
+IDs, revision/CAS mutation fencing, compaction publication, and optional
+`backup_paths()` for local durable artifacts.
+
+**Full contract:** [Session Storage — Conversation-store authority](../session-storage.md#conversation-store-authority) and `conversation_store.py`.
 
 ### Context engine plugins — replace the context compressor
 

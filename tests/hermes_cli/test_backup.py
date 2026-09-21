@@ -2148,6 +2148,43 @@ class TestMemoryProviderExternalPaths:
         (hermes_home / ".env").write_text("OPENROUTER_API_KEY=sk-test\n")
         (hermes_home / "state.db").write_bytes(b"x")
 
+    def test_external_entries_include_conversation_store_paths_and_dedupe(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        shared = home / ".shared-provider"
+        shared.mkdir()
+        (shared / "state.json").write_text('{"ok":true}')
+        conversation_only = home / ".conversation-store"
+        conversation_only.mkdir()
+        (conversation_only / "history.rel").write_text("history")
+
+        import hermes_cli.backup as backup_mod
+        import plugins.conversation_store as store_plugins
+
+        class Store:
+            name = "fake"
+
+            def __init__(self):
+                self.closed = False
+
+            def backup_paths(self):
+                return [shared, conversation_only]
+
+            def close(self):
+                self.closed = True
+
+        store = Store()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(backup_mod, "_collect_memory_provider_external_paths", lambda: [shared])
+        monkeypatch.setattr(store_plugins, "load_configured_conversation_store", lambda: store)
+
+        entries, skipped = backup_mod._collect_external_entries()
+        arcnames = [arcname for _path, arcname in entries]
+        assert skipped == []
+        assert arcnames.count("_external/.shared-provider/state.json") == 1
+        assert "_external/.conversation-store/history.rel" in arcnames
+        assert store.closed is True
+
 
     def test_backup_skips_external_paths_outside_home(self, tmp_path, monkeypatch):
         """A declared path outside the home dir is not portable and must be

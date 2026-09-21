@@ -144,34 +144,114 @@ def _blocked_tool_call_ids(con: sqlite3.Connection, since_ts: float) -> set:
     }
 
 
-def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> list[tuple[str, str]]:
-    """``(command, dangerous_class_description)`` records for dangerous-classified terminal commands
-    that actually executed (i.e. carried an implied user approval).
-    """
+def _message_in_window(message: dict, since_ts: float) -> bool:
+    if since_ts <= 0:
+        return True
+    from hermes_cli.timefmt import coerce_epoch
+    timestamp = coerce_epoch(message.get("timestamp"), field="approval history timestamp")
+    return timestamp is not None and timestamp >= since_ts
+
+
+def _approval_records_from_messages(messages: Iterable[dict], since_ts: float) -> list[tuple[str, str]]:
+    """Mine implied approvals from canonical message dictionaries."""
     from tools.approval_detection import detect_dangerous_command, detect_hardline_command
-    path = Path(db_path) if db_path else default_db_path()
-    if not path.exists():
-        return []
 
-    since_ts = 0.0 if days <= 0 else time.time() - days * 86400
-
+    rows = [dict(message) for message in messages if _message_in_window(message, since_ts)]
+    blocked = {
+        message.get("tool_call_id")
+        for message in rows
+        if message.get("role") == "tool"
+        and message.get("tool_call_id")
+        and isinstance(message.get("content"), str)
+        and any(marker in message["content"] for marker in _BLOCK_MARKERS)
+    }
     records: list[tuple[str, str]] = []
-    con = _connect_readonly(path)
-    try:
-        blocked = _blocked_tool_call_ids(con, since_ts)
-        for tool_call_id, command in _iter_terminal_calls(con, since_ts):
-            if tool_call_id in blocked:
+    for message in rows:
+        if message.get("role") != "assistant" or not message.get("tool_calls"):
+            continue
+        calls = message.get("tool_calls")
+        calls = _json_or_none(calls) if isinstance(calls, str) else calls
+        for call in calls if isinstance(calls, list) else ():
+            fn = call.get("function") or {} if isinstance(call, dict) else {}
+            if fn.get("name") != "terminal":
                 continue
-            # Hardline commands are unconditionally blocked at runtime; never mine them (defense in
-            # depth against stale DB rows).
-            if detect_hardline_command(command)[0]:
+            args = fn.get("arguments") or {}
+            args = _json_or_none(args) if isinstance(args, str) else args
+            command = args.get("command") if isinstance(args, dict) else None
+            if not isinstance(command, str) or not command.strip():
+                continue
+            if (call.get("id") or "") in blocked or detect_hardline_command(command)[0]:
                 continue
             is_dangerous, _key, description = detect_dangerous_command(command)
             if is_dangerous:
                 records.append((command, description))
-    finally:
-        con.close()
     return records
+
+
+def _canonical_approval_messages(db) -> Iterator[dict]:
+    """Yield canonical history through SessionDB, including archived/hidden children."""
+    page_size = 200
+    offset = 0
+    seen: set[str] = set()
+    while True:
+        sessions = db.list_sessions_rich(
+            limit=page_size, offset=offset, include_children=True,
+            include_archived=True, project_compression_tips=False, include_hidden=True,
+        )
+        if not sessions:
+            break
+        for session in sessions:
+            session_id = session.get("id")
+            if not session_id or session_id in seen:
+                continue
+            seen.add(session_id)
+            yield from db.get_messages(session_id, include_inactive=True)
+        if len(sessions) < page_size:
+            break
+        offset += len(sessions)
+
+
+def scan_approval_history(
+    db_path: Optional[Path] = None, days: int = 90, *, session_db=None,
+) -> list[tuple[str, str]]:
+    """Return dangerous terminal commands that actually executed.
+
+    An explicit ``db_path`` is an offline/legacy SQLite inspection. The default
+    path uses SessionDB so a configured external conversation store remains the
+    canonical transcript source.
+    """
+    since_ts = 0.0 if days <= 0 else time.time() - days * 86400
+    if db_path is not None:
+        path = Path(db_path)
+        if not path.exists():
+            return []
+        from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+        records: list[tuple[str, str]] = []
+        con = _connect_readonly(path)
+        try:
+            blocked = _blocked_tool_call_ids(con, since_ts)
+            for tool_call_id, command in _iter_terminal_calls(con, since_ts):
+                if tool_call_id in blocked or detect_hardline_command(command)[0]:
+                    continue
+                is_dangerous, _key, description = detect_dangerous_command(command)
+                if is_dangerous:
+                    records.append((command, description))
+        finally:
+            con.close()
+        return records
+
+    owned = session_db is None
+    if owned:
+        path = default_db_path()
+        if not path.exists():
+            return []
+        from hermes_state import SessionDB
+        session_db = SessionDB(read_only=True)
+    try:
+        return _approval_records_from_messages(_canonical_approval_messages(session_db), since_ts)
+    finally:
+        if owned:
+            session_db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +395,8 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
 
 def suggest_command(args) -> int:
     """Entry point for ``hermes approvals suggest``."""
-    db_path = Path(args.db) if getattr(args, "db", None) else default_db_path()
+    explicit_db = getattr(args, "db", None)
+    db_path = Path(explicit_db) if explicit_db else default_db_path()
     days = getattr(args, "days", 90)
     if not db_path.exists():
         print(f"Session database not found: {db_path}")
@@ -324,7 +405,7 @@ def suggest_command(args) -> int:
     import tools.approval as approval_module
     existing = set(approval_module.load_permanent_allowlist())
     proposals = build_proposals(
-        scan_approval_history(db_path, days=days), existing=existing,
+        scan_approval_history(db_path if explicit_db else None, days=days), existing=existing,
         min_count=getattr(args, "min_count", 2), limit=getattr(args, "limit", 20),
     )
     as_json = getattr(args, "json", False)

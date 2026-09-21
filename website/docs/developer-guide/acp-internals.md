@@ -182,7 +182,7 @@ ACP temporarily installs an approval callback on the terminal tool during prompt
 
 ## Current limitations
 
-- ACP sessions are persisted to the shared `~/.hermes/state.db` (SessionDB) and transparently restored across process restarts; they appear in `session_search`
+- ACP persists through the shared `SessionDB` facade and transparently restores across process restarts. SQLite is the default transcript store; when `sessions.store` selects an external `ConversationStore`, ACP uses that same canonical history without a second persistence path. Sessions still appear in `session_search`.
 - non-text prompt blocks are currently ignored for request text extraction
 - editor-specific UX varies by ACP client implementation
 

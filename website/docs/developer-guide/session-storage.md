@@ -1,10 +1,34 @@
 # Session Storage
 
-Hermes Agent uses a SQLite database (`~/.hermes/state.db`) to persist session
-metadata, full message history, and model configuration across CLI and gateway
-sessions. This replaces the earlier per-session JSONL file approach.
+Hermes Agent exposes session persistence through `SessionDB`. SQLite
+(`$HERMES_HOME/state.db`) remains the zero-config default and always owns
+operational/session-accounting state. Canonical conversation history can instead
+be delegated to one configured external `ConversationStore`.
 
-Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
+Source files: `hermes_state.py` (facade), the `hermes_state_*.py` siblings
+(schema, FTS, search, compression, portability, gateway, ...),
+`conversation_store.py` (provider-neutral contract), and
+`plugins/conversation_store/__init__.py` (provider discovery).
+
+## Conversation-store authority
+
+`sessions.store` selects the canonical transcript store for the active profile.
+The default is `sqlite`. Any other value must name an installed
+`hermes_agent.conversation_stores` entry point.
+
+External mode deliberately keeps `SessionDB` as the first-party API: CLI, TUI,
+Desktop/dashboard, ACP, gateway, search, mutations, and compaction continue to
+call the same facade. SQLite may retain operational shadow metadata, but canonical
+message payloads have one durable authority: the selected conversation store.
+Hermes does not silently double-write message bodies to SQLite and does not fall
+back to SQLite history when an external provider fails.
+
+Providers own stable integer message IDs, replay-fidelity sidecars, semantic
+search/history reads, revision/CAS fencing for destructive mutations, and
+compaction publication. A provider may return local durable paths from
+`backup_paths()`; `hermes backup` includes those paths when they reside under
+the user's home directory. Remote/provider-managed stores can return an empty
+list.
 
 ## Hermes home and profile isolation
 
@@ -55,10 +79,13 @@ pytest run.
 
 ### Desktop profile isolation and compaction generations
 
-Each named profile stores its transcript in its own `$HERMES_HOME/state.db`,
-including when one `hermes serve` process serves several profiles. In-session
-agent rebuilds (Bot Chat capability refresh and `tools.configure`) must retain
-that session's database handle and bind its profile home during construction.
+Each named profile has its own `SessionDB` generation and conversation-store
+selection, including when one `hermes serve` process serves several profiles.
+With the default `sqlite` store, that profile's transcript lives in its own
+`$HERMES_HOME/state.db`; an external store is initialized against the same
+profile home and owns canonical message payloads instead. In-session agent
+rebuilds (Bot Chat capability refresh and `tools.configure`) must retain that
+session's database handle and bind its profile home during construction.
 Releasing the outgoing agent must not close the handle inherited by its replacement.
 `tools.configure` resolves configuration from the live session's `profile_home`,
 even when the client supplies only `session_id`. Rebuilds prepare model configuration
@@ -113,6 +140,10 @@ Historical rows are not rewritten; unmarked historical inputs cannot establish
 ownership for a redelivered event.
 
 ## Architecture Overview
+
+The schema below is the built-in `sqlite` conversation-store implementation.
+External stores replace canonical transcript/message authority, not the local
+operational tables that Hermes still keeps in `state.db`.
 
 ```
 ~/.hermes/state.db (SQLite, WAL mode)

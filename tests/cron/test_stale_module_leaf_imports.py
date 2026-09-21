@@ -12,6 +12,8 @@ import logging
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_primary_client_ignores_stale_auxiliary_router(monkeypatch):
     from agent import agent_runtime_helpers, auxiliary_client
@@ -86,8 +88,7 @@ def test_chat_completion_helpers_binds_shim_from_leaf():
     before the symbol is bound) then fails that eager import with
     ``ImportError: cannot import name 'is_router_timeout_shim'``. The predicates now live
     in the leaf ``agent.transports.router_timeout_shim``, which has no heavy imports, so
-    the consumer binds them atomically. The heavy transport keeps a re-export so
-    ``validate_response`` and ``auxiliary_client`` are unchanged.
+    the consumer binds them atomically.
     """
     from agent import chat_completion_helpers as cch
     from agent.transports import router_timeout_shim
@@ -95,8 +96,40 @@ def test_chat_completion_helpers_binds_shim_from_leaf():
     assert cch.is_router_timeout_shim is router_timeout_shim.is_router_timeout_shim
     assert cch.router_timeout_shim_may_follow is router_timeout_shim.router_timeout_shim_may_follow
 
-    # Backward compat: the heavy transport still re-exports the same object for
-    # ``validate_response`` and ``auxiliary_client``'s lazy import.
-    from agent.transports.chat_completions import is_router_timeout_shim as reexported
 
-    assert reexported is router_timeout_shim.is_router_timeout_shim
+def test_chat_completions_no_longer_reexports_shim():
+    """The heavy transport no longer re-exports the predicates.
+
+    Internal paths are not API (root AGENTS.md: "No re-export shims for internal moves"),
+    so the only import path for the predicates is the defining leaf module. Importing them
+    from ``agent.transports.chat_completions`` must raise ``ImportError``.
+    """
+    with pytest.raises(ImportError):
+        from agent.transports.chat_completions import is_router_timeout_shim  # noqa: F401
+
+
+def test_auxiliary_client_binds_shim_from_leaf(monkeypatch):
+    """``auxiliary_client._validate_llm_response`` binds the predicate from the leaf at
+    call time (lazy import), not from a re-export on the heavy transport.
+
+    A monkeypatch on the leaf's ``is_router_timeout_shim`` is observed by the lazy import
+    only if the function imports from the leaf; the old re-export bound the object at
+    import time and would not be intercepted.
+    """
+    from agent import auxiliary_client
+    from agent.transports import router_timeout_shim
+
+    seen: list = []
+    monkeypatch.setattr(
+        router_timeout_shim,
+        "is_router_timeout_shim",
+        lambda response: seen.append(response) or False,
+    )
+
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="hi", tool_calls=None))],
+        usage=SimpleNamespace(completion_tokens=1),
+        model="m",
+    )
+    assert auxiliary_client._validate_llm_response(response, "title") is response
+    assert seen == [response]

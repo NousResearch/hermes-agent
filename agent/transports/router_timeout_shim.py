@@ -1,7 +1,9 @@
 """Router-timeout shim predicates (#68396), extracted to a leaf module.
 
-``agent.chat_completion_helpers`` (and, lazily, ``agent.auxiliary_client``) import these
-two pure predicates. They used to live in ``agent.transports.chat_completions``, a heavy
+Every consumer imports these two pure predicates from this leaf: ``agent.chat_completion_helpers``
+(eagerly at module load) and, lazily inside the function, ``agent.auxiliary_client`` and
+``agent.transports.chat_completions.validate_response``. They used to live in
+``agent.transports.chat_completions``, a heavy
 transport module whose own top-level imports (``prompt_builder``, ``reasoning_effort``,
 ``message_sanitization``, ``moonshot_schema``, ...) pull in a large import graph.
 ``is_router_timeout_shim`` was defined ~110 lines BELOW those imports, so the eager
@@ -15,9 +17,9 @@ Incident: 2026-09-21, agent-cron turns died with
 'agent.transports.chat_completions'`` inside a long-lived gateway. This is the bug class
 pinned by ``tests/cron/test_stale_module_leaf_imports.py``: a foundational symbol must
 live in a LEAF module with no heavy imports, so a consumer binds it atomically and can
-never observe a partial or stale ``chat_completions``. ``agent.transports.chat_completions``
-keeps a re-export so existing importers (``validate_response`` in that module, and
-``auxiliary_client``'s lazy import) are unchanged.
+never observe a partial or stale ``chat_completions``. There is no re-export shim in
+``agent.transports.chat_completions``: internal paths are not API, so in-tree consumers
+import from the defining leaf module (root AGENTS.md "no re-export shims for internal moves").
 """
 
 from typing import Any

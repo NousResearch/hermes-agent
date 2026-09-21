@@ -110,13 +110,6 @@ def _add_prompt_cache_key(
         api_kwargs["prompt_cache_key"] = cache_key
 
 
-# Router-timeout shim predicates live in the leaf module agent.transports.router_timeout_shim
-# (no heavy imports) so consumers bind them atomically, never from this heavy module's
-# partially-initialised or stale namespace. Re-exported here for backward compat:
-# validate_response (below) and auxiliary_client's lazy import still read them from here.
-from agent.transports.router_timeout_shim import is_router_timeout_shim, router_timeout_shim_may_follow  # noqa: E402
-
-
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
     """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
@@ -633,6 +626,8 @@ class ChatCompletionsTransport(ProviderTransport):
         """Check that response has valid choices and is not a router failure shim."""
         if response is None or not getattr(response, "choices", None):
             return False
+        from agent.transports.router_timeout_shim import is_router_timeout_shim
+
         return not is_router_timeout_shim(response)
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:

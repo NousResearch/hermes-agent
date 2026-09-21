@@ -13738,7 +13738,8 @@ def test_interrupt_only_clears_own_session_pending():
         server_requests.reset_for_tests()
 
 
-def test_interrupt_resumes_voice_owned_wake_detector(monkeypatch):
+@pytest.mark.parametrize("isolated_turn", [False, True])
+def test_interrupt_resumes_voice_owned_wake_detector(monkeypatch, isolated_turn):
     """An accepted interrupt must release the wake pause held by the voice turn."""
     resumed = []
     session = _session()
@@ -13746,6 +13747,8 @@ def test_interrupt_resumes_voice_owned_wake_detector(monkeypatch):
     server._sessions["sid"] = session
 
     try:
+        monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: isolated_turn)
+        monkeypatch.setattr(server, "_interrupt_session_turn", lambda *args, **kwargs: None)
         monkeypatch.setattr(server, "_resume_voice_wake", lambda: resumed.append(True))
 
         response = server.handle_request(

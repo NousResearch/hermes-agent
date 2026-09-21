@@ -158,6 +158,23 @@ class RubikaAdapter(BasePlatformAdapter):
         except OSError as exc:
             return SendResult(success=False, error=f"Could not read file: {exc}")
 
+    async def edit_message(self, chat_id: str, message_id: str, content: str,
+                           *, finalize: bool = False) -> SendResult:
+        try:
+            await self._client.call("editMessageText", chat_id=chat_id, message_id=message_id, text=content)
+            return SendResult(success=True, message_id=message_id)
+        except RubikaAPIError as exc:
+            logger.warning("[%s] edit_message failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        try:
+            await self._client.call("deleteMessage", chat_id=chat_id, message_id=message_id)
+            return True
+        except RubikaAPIError as exc:
+            logger.debug("[%s] delete_message failed: %s", self.name, exc)
+            return False
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         raise NotImplementedError  # Task 10
 

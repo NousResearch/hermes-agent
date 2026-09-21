@@ -8,9 +8,9 @@ deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
 ``_check_cross_profile_path`` (sandbox-mirror lost-work), ``_is_internal_file_tool_content``.
 ``_stale_overwrite_blocker`` (write_file only, under the per-path lock) refuses a
 whole-file overwrite of content this task never saw or that changed since;
-temp-dir paths (``/tmp``, ``$TMPDIR``, ``/var/folders``) skip that staleness
-refusal (world-writable scratch space; overwriting a previous run's artifact
-is the intended outcome), while the sensitive-path hard-deny and
+temp-dir paths (``/tmp``, ``/var/tmp``, ``$TMPDIR``, ``/var/folders``) skip that
+staleness refusal (world-writable scratch space; overwriting a previous run's
+artifact is the intended outcome), while the sensitive-path hard-deny and
 binary-document guards still apply to them.
 """
 
@@ -505,7 +505,32 @@ def _temp_path_exempt(resolved: str | None) -> bool:
     ``/var/folders`` spellings are required because macOS ``realpath``
     canonicalises ``/var/...`` to ``/private/var/...`` (``/var`` is a symlink
     to ``/private/var``), which makes a lone ``"/var/folders/"`` prefix check
-    dead code there.
+    dead code there. The same dual form covers ``/var/tmp``: where ``/tmp``
+    is a symlink to ``/var/tmp`` (some container setups), ``realpath``
+    canonicalises out of the ``/tmp`` rule, so the ``/var/tmp`` spellings
+    keep the exemption for the cron-reuse case, and ``_check_sensitive_path``
+    already classifies ``/private/var/tmp`` as non-sensitive, so the two
+    guards stay consistent.
+
+    The ``$TMPDIR`` match is SEPARATOR-ANCHORED: ``realpath($TMPDIR)``
+    trailing slashes are stripped, then the path must start with
+    ``root + "/"``. A bare prefix match would exempt a SIBLING directory that
+    merely shares the spelling: with ``$TMPDIR=/tmp`` the unrelated ``/tmpfoo``,
+    with ``$TMPDIR=D:/Hermes/tmpdir-probe`` its sibling ``tmpdir-probe2``; and
+    an empty or root ``$TMPDIR`` would match (and so exempt) every path, hence
+    the ``root`` and ``root != "/"`` guards.
+
+    Consequence, stated plainly: the early return in ``_stale_overwrite_blocker``
+    skips the WHOLE staleness refusal for temp paths, that is the
+    sibling/external/partial-read findings, the mtime-drift refusal and the
+    never-read refusal, not just the last one. Hermes points every process's
+    and child's ``TMPDIR``/``TMP``/``TEMP`` at ``<HERMES_HOME>/cache/scratch``
+    (``hermes_constants.SCRATCH_TMP_ENV_VARS``), so sibling subagents sharing
+    a job's scratch dir may overwrite each other's artifacts there by design.
+
+    Known limitation (TOCTOU): the exemption is decided before the write; a
+    symlink swapped between check and write escapes resolution. Fixing that
+    needs ``O_NOFOLLOW``-style open semantics, out of scope for this change.
     """
     if not resolved:
         return False
@@ -513,9 +538,15 @@ def _temp_path_exempt(resolved: str | None) -> bool:
     if real.startswith("/private/tmp/") or real.startswith("/tmp/"):
         return True
     tmpdir = os.environ.get("TMPDIR", "")
-    if tmpdir and real.startswith(os.path.realpath(tmpdir)):
-        return True
-    return real.startswith("/var/folders/") or real.startswith("/private/var/folders/")
+    if tmpdir:
+        root = os.path.realpath(tmpdir).rstrip("/")
+        if root and root != "/" and real.startswith(root + "/"):
+            return True
+    return (
+        real.startswith("/var/folders/")
+        or real.startswith("/private/var/folders/")
+        or real.startswith("/var/tmp/")
+        or real.startswith("/private/var/tmp/"))
 
 
 def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) -> str | None:

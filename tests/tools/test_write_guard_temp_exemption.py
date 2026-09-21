@@ -4,13 +4,22 @@ Cron agents reuse canonical temp-file names across runs (e.g.
 ``/tmp/clawdtalk-report.txt``), so the stale-overwrite blocker refused the
 fresh run's write: this task never read the previous run's artifact. Temp
 dirs are world-writable scratch space, so ``_temp_path_exempt`` skips the
-staleness refusal for them. Two load-bearing properties:
+staleness refusal for them. Load-bearing properties:
 
 - The decision runs on the REALPATH, so a symlink planted in a temp dir
   pointing at a real user file resolves to the real path and is NOT exempt.
 - Both ``/var/folders`` spellings must be checked: macOS realpath
   canonicalises ``/var/...`` to ``/private/var/...``, so a lone
-  ``"/var/folders/"`` prefix is dead code there.
+  ``"/var/folders/"`` prefix is dead code there. The same dual form covers
+  ``/var/tmp`` (where ``/tmp`` is a symlink to ``/var/tmp``, the ``/tmp``
+  rule canonicalises away).
+- The ``$TMPDIR`` match is separator-anchored: a bare prefix match would
+  exempt a SIBLING directory sharing the spelling (``$TMPDIR=/tmp`` also
+  matching ``/tmpfoo``) and a root ``$TMPDIR`` would exempt everything.
+
+Every rule is a POSIX path prefix, so both test classes skip on Windows
+(win32 realpath resolves these probes to drive-relative paths and uses
+``\\`` separators; the POSIX prefix checks are simply False there).
 """
 
 import os
@@ -19,7 +28,14 @@ import pytest
 
 from tools.file_tools_write_guards import _stale_overwrite_blocker, _temp_path_exempt
 
+# The hard-coded rules and the probes below are POSIX realpath semantics;
+# on win32 ``realpath`` returns drive-letter paths with backslashes, so the
+# ``/tmp``-style prefix checks cannot hold there. (Not ``_OS_MARKS`` markers:
+# those mean "run on ONE host", while these pass on Linux AND macOS.)
+_POSIX_ONLY = pytest.mark.skipif(os.name == "nt", reason="POSIX realpath semantics")
 
+
+@_POSIX_ONLY
 class TestTempPathExempt:
     def test_tmp_prefix_exempt(self, monkeypatch):
         monkeypatch.delenv("TMPDIR", raising=False)
@@ -45,6 +61,36 @@ class TestTempPathExempt:
         monkeypatch.setenv("TMPDIR", str(tmp_path))
         assert _temp_path_exempt(str(tmp_path / "send-clawdtalk-report.py")) is True
         assert _temp_path_exempt("/Users/tester/documents/outside.md") is False
+
+    def test_tmpdir_rule_requires_separator(self, monkeypatch):
+        # A bare prefix match would exempt a SIBLING of $TMPDIR that merely
+        # shares the spelling: with $TMPDIR=D:/Hermes/tmpdir-probe the
+        # unrelated D:/Hermes/tmpdir-probe2, with $TMPDIR=/tmp the unrelated
+        # /tmpfoo. The probe is anchored OUTSIDE every hard-coded temp prefix
+        # (pytest's own tmp_path lives under /private/var/folders on macOS
+        # and /tmp on Linux, so a sibling of it is exempt via those rules
+        # whatever $TMPDIR says).
+        monkeypatch.setenv("TMPDIR", "/opt/tmpdir-probe")
+        assert _temp_path_exempt("/opt/tmpdir-probe/clawdtalk-report.txt") is True
+        assert _temp_path_exempt("/opt/tmpdir-probe2/clawdtalk-report.txt") is False
+
+    def test_tmpdir_root_exempts_nothing(self, monkeypatch):
+        # $TMPDIR="/" would make a bare prefix match (or even the
+        # separator-anchored one, without the guard) exempt every path.
+        monkeypatch.setenv("TMPDIR", "/")
+        assert _temp_path_exempt("/Users/tester/notes.md") is False
+
+    def test_var_tmp_prefix_exempt(self, monkeypatch):
+        # Where /tmp is a symlink to /var/tmp (some container setups),
+        # realpath canonicalises out of the /tmp rule; the /var/tmp spelling
+        # keeps the exemption. Matches via /var on Linux, via /private/var
+        # on macOS.
+        monkeypatch.delenv("TMPDIR", raising=False)
+        assert _temp_path_exempt("/var/tmp/build-cache.json") is True
+
+    def test_private_var_tmp_prefix_exempt(self, monkeypatch):
+        monkeypatch.delenv("TMPDIR", raising=False)
+        assert _temp_path_exempt("/private/var/tmp/build-cache.json") is True
 
     def test_symlink_to_real_user_file_not_exempt(self, tmp_path, monkeypatch):
         monkeypatch.delenv("TMPDIR", raising=False)
@@ -73,9 +119,13 @@ class TestTempPathExempt:
         assert _temp_path_exempt("") is False
 
 
+@_POSIX_ONLY
 class TestStaleOverwriteBlockerExemption:
     """The early return in ``_stale_overwrite_blocker``: a temp path skips the
-    staleness refusal even when the existing file was never read by this task."""
+    staleness refusal even when the existing file was never read by this task.
+    POSIX-only like the helper tests: on win32 the tmp_path fixture lives
+    under a drive-letter path no rule covers, so the exemption (correctly)
+    does not fire and the never-read refusal would."""
 
     def test_temp_artifact_overwrite_allowed_without_read(self, tmp_path, monkeypatch):
         # The production failure: a fresh task reusing last run's canonical

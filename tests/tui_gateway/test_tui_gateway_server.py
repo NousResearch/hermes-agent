@@ -13739,24 +13739,73 @@ def test_interrupt_only_clears_own_session_pending():
 
 
 @pytest.mark.parametrize("isolated_turn", [False, True])
-def test_interrupt_resumes_voice_owned_wake_detector(monkeypatch, isolated_turn):
-    """An accepted interrupt must release the wake pause held by the voice turn."""
-    resumed = []
-    session = _session()
+def test_interrupt_resumes_callers_paused_wake_detector(monkeypatch, isolated_turn):
+    """Only an accepted interrupt may resume the caller-owned direct wake pause."""
+    from tools import wake_word
+
+    owner = types.SimpleNamespace(_closed=False)
+    state = {"paused": False, "resumed": []}
+    session = _session(running=True, _hosted_room_task={"task_id": "active"})
     session["agent"] = types.SimpleNamespace(interrupt=lambda: None)
     server._sessions["sid"] = session
+
+    def pause_listening(*, owner: object) -> bool:
+        if owner is not server._wake_owner_transport:
+            return False
+        state["paused"] = True
+        return True
+
+    def resume_listening(*, owner: object) -> bool:
+        if owner is not server._wake_owner_transport:
+            return False
+        state["paused"] = False
+        state["resumed"].append(owner)
+        return True
 
     try:
         monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: isolated_turn)
         monkeypatch.setattr(server, "_interrupt_session_turn", lambda *args, **kwargs: None)
-        monkeypatch.setattr(server, "_resume_voice_wake", lambda: resumed.append(True))
+        monkeypatch.setattr(server, "_wake_owner_transport", owner)
+        monkeypatch.setattr(server, "_voice_wake_owner", None)
+        monkeypatch.setattr(wake_word, "pause_listening", pause_listening)
+        monkeypatch.setattr(wake_word, "resume_listening", resume_listening)
 
-        response = server.handle_request(
-            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        paused = _dispatch_sync(
+            {"id": "pause", "method": "wake.pause", "params": {}}, transport=owner
+        )
+        response = _dispatch_sync(
+            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid"}},
+            transport=owner,
         )
 
+        assert paused["result"]["paused"] is True
         assert response.get("result"), f"got error: {response.get('error')}"
-        assert resumed == [True]
+        assert state == {"paused": False, "resumed": [owner]}
+
+        _dispatch_sync({"id": "pause-2", "method": "wake.pause", "params": {}}, transport=owner)
+        mismatch = _dispatch_sync(
+            {
+                "id": "2",
+                "method": "session.interrupt",
+                "params": {"session_id": "sid", "expected_hosted_task_id": "stale"},
+            },
+            transport=owner,
+        )
+        assert mismatch["result"]["status"] == "not_interrupted"
+        assert state == {"paused": True, "resumed": [owner]}
+
+        if isolated_turn:
+            monkeypatch.setattr(
+                server,
+                "_interrupt_session_turn",
+                lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("host failed")),
+            )
+            failed = _dispatch_sync(
+                {"id": "3", "method": "session.interrupt", "params": {"session_id": "sid"}},
+                transport=owner,
+            )
+            assert failed["error"]["code"] == 5019
+            assert state == {"paused": True, "resumed": [owner]}
     finally:
         server._sessions.pop("sid", None)
 

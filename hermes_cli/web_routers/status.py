@@ -19,9 +19,9 @@ from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
-    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
-    runtime_status_heartbeat_age_s, runtime_status_is_stale)
+    _sanitize_fallback_status, derive_gateway_busy, derive_gateway_drainable, normalize_updated_at,
+    parse_active_agents, profile_platforms_from_multiplexer, resolve_gateway_liveness,
+    retained_gateway_state, runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
@@ -317,6 +317,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     gateway_exit_reason = None
     gateway_updated_at = None
     gateway_heartbeat_stale_s = None
+    fallback_status = None
     if runtime:
         gateway_state = runtime.get("gateway_state")
         if not gateway_running:
@@ -336,6 +337,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         gateway_platforms = _project_gateway_platforms(
             runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
         gateway_exit_reason = None if gateway_state == "stopped" else runtime.get("exit_reason")
+        fallback_status = _sanitize_fallback_status(runtime.get("fallback_status"))
         # Contract: gateway_updated_at is RFC3339 string | null, never a number. ``runtime``
         # may be the local gateway_state.json (legacy gateways wrote epoch floats; hand
         # edits can inject anything) or a remote /health/detailed body — normalize both.
@@ -353,6 +355,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
         "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
+        "fallback_status": fallback_status,
         "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
@@ -508,6 +511,7 @@ async def get_status(profile: Optional[str] = None):
             # Seconds since housekeeping last stamped the heartbeat, only when the PID is alive but the
             # stamp is past the freshness TTL (loop/housekeeping wedged, #113372); else null.
             "gateway_heartbeat_stale_s": gateway["gateway_heartbeat_stale_s"],
+            "fallback_status": gateway["fallback_status"],
             # Non-null only for a profile served by the shared multiplexer: every profile that process carries.
             "gateway_shared_with": gateway["gateway_shared_with"],
             "active_agents": active_agents,

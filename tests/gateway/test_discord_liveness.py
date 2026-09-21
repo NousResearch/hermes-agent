@@ -355,3 +355,124 @@ async def test_disconnect_cancels_liveness_task(monkeypatch):
     await adapter.disconnect()
     assert task.done()
     assert adapter._liveness_task is None
+
+
+@pytest.mark.asyncio
+async def test_socket_closed_first_strike_forces_reconnect(monkeypatch, caplog):
+    """A closed transport is a confirmed death — strike 1 must reconnect (#118487).
+
+    Pre-fix, the first ``socket_closed`` strike logged ``1/2`` and waited for a
+    confirming strike that never came: discord.py swaps in a fresh socket while
+    resuming, the next transport-side sample reads healthy, and the counter
+    silently resets while a resumed-but-deaf session stays event-starved until
+    the multi-hour event-silence default elapses.
+    """
+    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=2)
+    handler = AsyncMock()
+    adapter.set_fatal_error_handler(handler)
+
+    calls = 0
+
+    def factory(**kwargs):
+        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
+        bot.fetch_user = AsyncMock()
+        return bot
+
+    def _probe(client):
+        nonlocal calls
+        calls += 1
+        return False, "socket_closed"
+
+    monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
+
+    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+        await _connect(adapter, monkeypatch, factory)
+        await _wait_until(
+            lambda: handler.called,
+            "fatal handler not called after first socket_closed strike",
+        )
+
+    assert calls == 1, "first socket_closed strike must escalate without a confirming strike"
+    assert adapter._disconnecting is True
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any("transport closed (socket_closed, 1/2)" in m for m in errors)
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_soft_unhealthy_signal_still_requires_threshold_strikes(monkeypatch):
+    """Soft signals (ack staleness, latency, silence) keep the confirmation threshold.
+
+    The strike-1 escalation is reserved for ``socket_closed`` only; treating every
+    unhealthy reason as terminal would turn one slow heartbeat sample into a reconnect.
+    """
+    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=3)
+    handler = AsyncMock()
+    adapter.set_fatal_error_handler(handler)
+
+    calls = 0
+
+    def factory(**kwargs):
+        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
+        bot.fetch_user = AsyncMock()
+        return bot
+
+    def _probe(client):
+        nonlocal calls
+        calls += 1
+        return False, "ack_stale"
+
+    monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
+
+    await _connect(adapter, monkeypatch, factory)
+    await _wait_until(
+        lambda: handler.called,
+        "fatal handler not called after threshold strikes",
+    )
+
+    assert calls >= 3, "soft unhealthy signals must not reconnect before the threshold"
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_recovery_after_unhealthy_streak_is_logged(monkeypatch, caplog):
+    """A counter reset must leave a trace (#118487).
+
+    Pre-fix, ``failures = 0`` on a healthy sample was silent, so an incident log
+    showing one strike and then nothing was indistinguishable between "probe
+    turned healthy again" and "probe task died".
+    """
+    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=3)
+    handler = AsyncMock()
+    adapter.set_fatal_error_handler(handler)
+
+    calls = 0
+
+    def factory(**kwargs):
+        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
+        bot.fetch_user = AsyncMock()
+        return bot
+
+    def _probe(client):
+        nonlocal calls
+        calls += 1
+        # One soft unhealthy sample, then healthy forever: far below the threshold.
+        return (False, "ack_stale") if calls == 1 else (True, "healthy")
+
+    monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
+
+    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+        await _connect(adapter, monkeypatch, factory)
+        await _wait_until(
+            lambda: any(
+                "healthy again after 1 unhealthy sample" in r.getMessage()
+                for r in caplog.records
+            ),
+            "counter reset after an unhealthy streak was never logged",
+        )
+
+    handler.assert_not_called()
+
+    await adapter.disconnect()

@@ -264,6 +264,9 @@ def _business_notice_runner():
         ),
     )
     runner._adapter_for_source = lambda source: adapter
+    # Upstream renamed the method to _delivery_adapter_for in newer gateway code; keep
+    # the mock under both names so this test stays valid across rebase points.
+    runner._delivery_adapter_for = lambda source: adapter
     return runner, adapter
 
 
@@ -837,6 +840,7 @@ async def test_business_drain_ack_preserves_event_bound_send_authority():
     runner._is_user_authorized = lambda _source: True
     runner._effective_busy_input_mode = lambda _source: "interrupt"
     runner._adapter_for_source = lambda _source: adapter
+    runner._delivery_adapter_for = lambda _source: adapter
     runner._reply_anchor_for_event = lambda _event: "42"
     runner._queue_during_drain_enabled = lambda _mode: False
     runner._status_action_gerund = lambda: "restarting"
@@ -881,6 +885,7 @@ async def test_business_busy_ack_preserves_event_bound_send_authority():
     runner._effective_busy_input_mode = lambda _source: "steer"
     runner._effective_busy_text_mode = lambda _source: "interrupt"
     runner._adapter_for_source = lambda _source: adapter
+    runner._delivery_adapter_for = lambda _source: adapter
     runner._peek_session_state = lambda _session_key: state
     runner._session_state = lambda _session_key: state
     runner._prepare_busy_steer_text = AsyncMock(return_value="follow up")

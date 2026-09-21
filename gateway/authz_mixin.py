@@ -663,7 +663,7 @@ class GatewayAuthorizationMixin:
             ):
                 return False
             try:
-                adapter = self._adapter_for_source(source)
+                adapter = self._delivery_adapter_for(source)
                 business_config = getattr(adapter, "_business_config", None)
                 cfg = business_config() if callable(business_config) else {}
                 if not isinstance(cfg, dict):

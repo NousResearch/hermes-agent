@@ -46,6 +46,7 @@ def test_compression_wait_returns_promptly_when_worker_dies(exc):
     from agent.conversation_compression import (
         CompressionCommitFence,
         _await_worker_within_budget,
+        _join_cancelled_worker,
     )
 
     def worker():
@@ -66,6 +67,9 @@ def test_compression_wait_returns_promptly_when_worker_dies(exc):
     assert elapsed < 5.0, f"host waited {elapsed:.1f}s on an already-dead worker"
     assert settled is False
     assert result is None
+    # Sibling guard: the teardown join must report the dead worker as EXITED (its lease is then
+    # released) rather than as a still-running orphan.
+    assert _join_cancelled_worker(future, 0.5) is True
 
 
 def test_compression_wait_still_polls_a_live_worker():

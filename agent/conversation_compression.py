@@ -693,7 +693,9 @@ def _join_cancelled_worker(future: Any, grace_seconds: float) -> bool:
         future.result(timeout=grace)
         return True
     except concurrent.futures.TimeoutError:
-        return False
+        # Aliases builtin TimeoutError (3.11+): also raised when the worker DIED with a timeout-class
+        # error. That worker has exited, so report it settled or the caller orphans the lease (#63892).
+        return future.done()
     except concurrent.futures.CancelledError:
         # Never started; nothing can be in flight.
         return True

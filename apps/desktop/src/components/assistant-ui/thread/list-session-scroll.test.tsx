@@ -118,6 +118,74 @@ function ScrollHarness({
 }
 
 describe('list session-scroll restore', () => {
+  it('follows streaming content growth before paint while the reader is pinned', async () => {
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const { container, unmount } = render(
+      <ScrollHarness isRunning messages={sessionMessages('stream-follow')} sessionKey="stream-follow" />
+    )
+
+    try {
+      const vp = viewportEl(container)
+      await settleScroll(10)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(scrollHeightValue - CLIENT_H - 1)
+
+      const deliverContentResize = () => {
+        for (const observer of observers) {
+          const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+          if (targets.length) {
+            observer.callback(
+              targets.map(target => ({
+                target,
+                contentRect: { height: scrollHeightValue }
+              })) as ResizeObserverEntry[],
+              observer as unknown as ResizeObserver
+            )
+          }
+        }
+      }
+
+      act(deliverContentResize)
+
+      const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(() => 0)
+
+      try {
+        act(() => {
+          scrollHeightValue += 168
+          deliverContentResize()
+        })
+
+        expect(vp.scrollTop).toBe(scrollHeightValue - CLIENT_H)
+      } finally {
+        raf.mockRestore()
+      }
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
   it('lets a reader escape bottom-follow when a running transcript grows during the scroll gesture', async () => {
     // #116273: a pending clarify keeps the turn running while the transcript
     // can still resize. If that resize lands in the same frame as scroll-up,

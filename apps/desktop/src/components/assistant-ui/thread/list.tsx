@@ -202,6 +202,24 @@ export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, {
  *  use-stick-to-bottom uses for resize follow — a follow-up sent a line or two
  *  off the bottom should still track, but a reader in history must not yank. */
 export const RUN_START_SNAP_THRESHOLD_PX = 64
+export const STREAM_FOLLOW_BOTTOM_SLACK_PX = 8
+
+interface ThreadScrollMetrics {
+  clientHeight: number
+  scrollHeight: number
+  scrollTop: number
+}
+
+export function shouldFollowStreamingGrowth(
+  previous: ThreadScrollMetrics,
+  nextScrollHeight: number,
+  slackPx = STREAM_FOLLOW_BOTTOM_SLACK_PX
+): boolean {
+  return (
+    nextScrollHeight > previous.scrollHeight &&
+    previous.scrollHeight - previous.scrollTop - previous.clientHeight <= slackPx
+  )
+}
 
 export function shouldSnapOnRunStart(remainingPx: number, thresholdPx = RUN_START_SNAP_THRESHOLD_PX): boolean {
   return remainingPx < thresholdPx
@@ -804,7 +822,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // the recorded distance-from-bottom honest: async relayout (images,
   // highlight, the budget backfill) changes scrollHeight WITHOUT a scroll
   // event, so a scroll-only cache records a stale offset (the gap #70478's
-  // review threads flagged). Both legs write stateFromMetrics(el).
+  // review threads flagged). The resize leg also follows streaming growth
+  // synchronously when the PREVIOUS metrics were at the bottom. The library's
+  // normal follow is rAF-scheduled, which otherwise exposes the old scrollTop
+  // for a paint and produces a visible drift/snap on busy turns (#118482).
+  // A reader who moved up keeps their position because their last scroll
+  // metrics no longer qualify.
   // Bind persistence to this transcript, not whichever Bot most recently
   // changed the global profile. Visibility changes do not transfer ownership.
   const [scrollOwner, setScrollOwner] = useState(() => ({
@@ -836,19 +859,43 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
+    const metrics = (): ThreadScrollMetrics => ({
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      scrollTop: el.scrollTop
+    })
+
+    let previous = metrics()
+
     const update = () => {
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
+      previous = metrics()
+    }
+
+    const onResize = () => {
+      const nextScrollHeight = el.scrollHeight
+
+      if (
+        isRunning &&
+        loadSettledRef.current &&
+        shouldFollowStreamingGrowth(previous, nextScrollHeight) &&
+        !hasTranscriptTextSelection(el)
+      ) {
+        el.scrollTop = Math.max(0, nextScrollHeight - el.clientHeight)
+      }
+
+      update()
     }
 
     el.addEventListener('scroll', update, { passive: true })
-    const observer = new ResizeObserver(update)
+    const observer = new ResizeObserver(onResize)
     observer.observe(content)
 
     return () => {
       el.removeEventListener('scroll', update)
       observer.disconnect()
     }
-  }, [contentRef, paneVisible, scrollRef])
+  }, [contentRef, isRunning, paneVisible, scrollRef, sessionKey])
 
   // Persist the live position on app close, so a reading position survives a
   // quit without a session switch (the switch cleanup below only runs on

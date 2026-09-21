@@ -13,6 +13,7 @@ import {
   RUN_START_SNAP_THRESHOLD_PX,
   shouldAnchorBeforePrepend,
   shouldClampTranscriptBudget,
+  shouldFollowStreamingGrowth,
   shouldRePinOnTranscriptReload,
   shouldSnapOnRunStart,
   subscribeToThreadForeground,
@@ -135,6 +136,20 @@ describe('shouldAnchorBeforePrepend', () => {
   it('never anchors an unsettled offset restore still being applied', () => {
     expect(shouldAnchorBeforePrepend(false, { fromBottom: 3000, kind: 'offset' })).toBe(false)
     expect(shouldAnchorBeforePrepend(true, { fromBottom: 3000, kind: 'offset' })).toBe(true)
+  })
+})
+
+describe('shouldFollowStreamingGrowth', () => {
+  const previous = (gap: number) => ({ clientHeight: 600, scrollHeight: 5000, scrollTop: 4400 - gap })
+
+  it('follows taller streamed content when the prior frame was at or just off the bottom', () => {
+    expect(shouldFollowStreamingGrowth(previous(0), 5168)).toBe(true)
+    expect(shouldFollowStreamingGrowth(previous(8), 5168)).toBe(true)
+  })
+
+  it('preserves reading intent and ignores non-growth resizes', () => {
+    expect(shouldFollowStreamingGrowth(previous(9), 5168)).toBe(false)
+    expect(shouldFollowStreamingGrowth(previous(0), 5000)).toBe(false)
   })
 })
 

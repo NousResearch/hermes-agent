@@ -36,13 +36,14 @@ async def test_post_turn_compaction_is_background_deduped_and_fenced_to_session(
         await release.wait()
 
     runner._hmwa_run_session_hygiene = AsyncMock(side_effect=run_hygiene)
+    event = SimpleNamespace(_agent_turn_succeeded=True)
     first = GatewayRunner._schedule_post_turn_background_compaction(
         runner, session_entry=entry, source=object(),
-        agent_result={"final_response": "done"}, final_response="done", event=object(),
+        agent_result="done", final_response="done", event=event,
     )
     second = GatewayRunner._schedule_post_turn_background_compaction(
         runner, session_entry=entry, source=object(),
-        agent_result={"final_response": "done"}, final_response="done", event=object(),
+        agent_result="done", final_response="done", event=event,
     )
 
     assert first is second
@@ -53,3 +54,23 @@ async def test_post_turn_compaction_is_background_deduped_and_fenced_to_session(
 
     release.set()
     await first
+
+
+def test_failed_turn_text_cannot_schedule_post_turn_compaction():
+    runner = SimpleNamespace(
+        _session_key_for_source=lambda source: "agent:main:test",
+        _peek_session_state=lambda key: (_ for _ in ()).throw(
+            AssertionError("failed turn must stop before session state lookup")
+        ),
+    )
+
+    task = GatewayRunner._schedule_post_turn_background_compaction(
+        runner,
+        session_entry=SimpleNamespace(session_id="sid-1"),
+        source=object(),
+        agent_result="Provider request failed",
+        final_response="Provider request failed",
+        event=SimpleNamespace(_agent_turn_succeeded=False),
+    )
+
+    assert task is None

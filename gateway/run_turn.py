@@ -2063,6 +2063,10 @@ class GatewayTurnMixin:
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        # The public handler returns shaped response text, which otherwise loses the agent
+        # envelope's failure bit before post-turn hooks run. Default closed on every entry;
+        # only an explicit completed agent envelope may arm detached provider work.
+        event._agent_turn_succeeded = False
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         logger.info(
@@ -2162,6 +2166,13 @@ class GatewayTurnMixin:
                 response=response, agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
+            )
+            # Arm provider-dependent post-turn work only after the completed turn has crossed
+            # the transcript persistence boundary. Every exception/early-return path stays false.
+            event._agent_turn_succeeded = bool(
+                isinstance(agent_result, dict)
+                and agent_result.get("completed") is True
+                and not agent_result.get("failed")
             )
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,

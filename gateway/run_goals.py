@@ -355,7 +355,10 @@ class GatewayGoalsMixin:
         and in-place persistence. A following turn may proceed on the old transcript while that
         worker runs; the fenced commit preserves rows appended after this snapshot.
         """
-        if (isinstance(agent_result, dict) and agent_result.get("failed")) or not final_response.strip():
+        # _handle_message_with_agent returns shaped text to this outer hook, so the original
+        # result envelope (including ``failed``) is no longer available here. Require the
+        # explicit success marker propagated on the event; missing/early-exit paths fail closed.
+        if not bool(getattr(event, "_agent_turn_succeeded", False)) or not final_response.strip():
             return None
         session_key = self._session_key_for_source(source)
         state = self._peek_session_state(session_key) if session_key else None

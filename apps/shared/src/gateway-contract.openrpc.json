@@ -30754,6 +30754,18 @@
             ],
             "default": null,
             "title": "Revision"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
           }
         },
         "required": [

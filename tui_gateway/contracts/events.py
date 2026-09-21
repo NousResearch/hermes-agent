@@ -269,6 +269,9 @@ class ToolCompletePayload(Payload):
     inline_diff: str | None = None
     todos: list[JsonValue] | None = None
     revision: int | None = None
+    # Set only when the result reads as a failure (``agent.display._detect_tool_failure``): the
+    # desktop pet flashes its failed pose off this flag, and the TUI flags the row.
+    error: bool | None = None
 
 
 event("tool.complete", ToolCompletePayload, doc="A tool call finished: parsed result, summary, optional diff / todo snapshot.")

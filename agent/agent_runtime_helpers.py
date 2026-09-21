@@ -3717,9 +3717,18 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
         reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in {None, ""}), None)
         if reset is not None:
             context["reset_at"] = reset
-        elif isinstance(payload.get("resets_in_seconds"), (int, float)):
-            # Codex/ChatGPT usage-limit bodies carry a relative window beside (or instead of) the epoch.
-            context["reset_at"] = time.time() + float(payload["resets_in_seconds"])
+        else:
+            resets_in = payload.get("resets_in_seconds")
+            if (
+                isinstance(resets_in, (int, float)) and not isinstance(resets_in, bool)
+                and resets_in > 0
+            ):
+                # Codex/ChatGPT usage-limit bodies carry a relative window beside (or
+                # instead of) the epoch. Duration form of a structured 429 reset:
+                # absolute park timestamp for the usage-limit gate plumbing (the
+                # credential pool normalizes ``reset_at``). Passed through unclamped
+                # like ``resets_at`` — consumers (park sleep) clamp.
+                context["reset_at"] = time.time() + float(resets_in)
         _set_reset_from_retry_after(context, payload.get("retry_after"))
     headers = getattr(getattr(error, "response", None), "headers", None)
     if headers:

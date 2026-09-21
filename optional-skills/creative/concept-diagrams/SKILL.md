@@ -1,6 +1,6 @@
 ---
 name: concept-diagrams
-description: Generate flat, minimal educational SVG visuals as HTML.
+description: Use when you need a flat SVG concept diagram.
 version: 0.1.0
 author: v1k22 (original PR), ported into hermes-agent
 license: MIT

@@ -1,6 +1,6 @@
 ---
 name: pdf
-description: "PDF files: create, read, merge, fill, OCR, edit text."
+description: Use when creating, reading, merging, or filling PDFs.
 version: 1.1.0
 author: Nous Research
 license: MIT

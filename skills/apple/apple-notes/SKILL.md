@@ -1,6 +1,6 @@
 ---
 name: apple-notes
-description: "Manage Apple Notes via memo CLI: create, search, edit."
+description: Use when creating, viewing, or searching Apple Notes.
 version: 1.0.1
 author: Hermes Agent
 license: MIT

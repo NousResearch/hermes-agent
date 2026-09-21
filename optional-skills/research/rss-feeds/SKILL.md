@@ -1,6 +1,6 @@
 ---
 name: rss-feeds
-description: "Read RSS, Atom, JSON feeds; discover feeds behind a page."
+description: Use when reading or discovering RSS, Atom, or JSON feeds.
 version: 1.0.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT

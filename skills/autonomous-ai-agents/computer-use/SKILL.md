@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: "Drive the desktop background-first; escalate on signal."
+description: Use when driving the desktop GUI with the computer_use tool.
 version: 2.1.0
 author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT

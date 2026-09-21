@@ -1,6 +1,6 @@
 ---
 name: reddit-reading
-description: "Read Reddit: subreddits, search, threads, users. No browser."
+description: Use when reading subreddits, threads, or users on Reddit.
 version: 1.0.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT

@@ -1,6 +1,6 @@
 ---
 name: weekly-review-planning
-description: "Weekly reset: commitments, stalled work, next-week plan."
+description: Use when running a weekly review or planning next week.
 version: 0.1.0
 author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT

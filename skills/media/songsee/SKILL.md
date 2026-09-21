@@ -1,6 +1,6 @@
 ---
 name: songsee
-description: "Audio spectrograms/features (mel, chroma, MFCC) via CLI."
+description: Use when rendering audio spectrograms or feature panels.
 version: 1.0.0
 author: community
 license: MIT

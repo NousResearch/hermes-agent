@@ -1,6 +1,6 @@
 ---
 name: subagent-driven-development
-description: "Execute plans via delegate_task subagents (2-stage review)."
+description: Use when executing a plan via delegate_task subagents.
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT

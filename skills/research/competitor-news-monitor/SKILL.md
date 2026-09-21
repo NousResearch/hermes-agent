@@ -1,6 +1,6 @@
 ---
 name: competitor-news-monitor
-description: "Watch named companies for material news; cited digests."
+description: Use when watching named companies for material news.
 version: 0.1.0
 author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT

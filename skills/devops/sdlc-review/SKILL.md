@@ -1,6 +1,6 @@
 ---
 name: sdlc-review
-description: Review Kanban handoffs and route verified outcomes.
+description: Use when reviewing a kanban handoff from the review lane.
 version: 1.1.0
 author: Jakub Wolniewicz (@frizikk) + Hermes Agent
 license: MIT

@@ -146,4 +146,84 @@ describe('handleSessionInfoEvent workspace ownership', () => {
 
     expect(next).toBe(original)
   })
+
+  // A running turn re-enters the busy branch on every ~1/s session.info
+  // heartbeat (`runningChanged` only means the key is *present*, not that the
+  // value flipped). Once the clock is set, each tick recomputes the same
+  // {busy, turnLive, turnStartedAt} triple, so the updater must hand back the
+  // same reference and let updateSessionState skip the store write —
+  // otherwise every tick churns $sessionStates and its computed atoms.
+  it('keeps runtime state identity across running-turn heartbeats', () => {
+    const startedAt = 12345000
+    const original = {
+      ...createClientSessionState('stored-1'),
+      busy: true,
+      cwd: '/repo/mine',
+      turnLive: true,
+      turnStartedAt: startedAt
+    }
+
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-1',
+      cwd: '/repo/mine',
+      explicitSid: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+    ctx.payload = { ...ctx.payload, running: true }
+    ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-1', original)
+
+    let next: ClientSessionState | undefined
+    ctx.deps.updateSessionState = vi.fn(
+      (_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
+        const updated = updater(original)
+        next = updated
+        return updated
+      }
+    )
+
+    handleSessionInfoEvent(ctx)
+    expect(next).toBe(original)
+
+    // The second tick must land the same way.
+    handleSessionInfoEvent(ctx)
+    expect(next).toBe(original)
+  })
+
+  // The short-circuit above must not swallow the edge that this PR exists for:
+  // the first running heartbeat on a session whose clock is not yet known has
+  // to adopt the gateway clock (or seed one) and publish it.
+  it('seeds the turn clock on the first running heartbeat of a live turn', () => {
+    const original = {
+      ...createClientSessionState('stored-1'),
+      busy: false,
+      cwd: '/repo/mine',
+      turnLive: false,
+      turnStartedAt: null
+    }
+
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-1',
+      cwd: '/repo/mine',
+      explicitSid: 'runtime-1',
+      storedSessionId: 'stored-1'
+    })
+    ctx.payload = { ...ctx.payload, running: true, turn_started_at: 1234.5 }
+    ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-1', original)
+
+    let next: ClientSessionState | undefined
+    ctx.deps.updateSessionState = vi.fn(
+      (_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) => {
+        const updated = updater(original)
+        next = updated
+        return updated
+      }
+    )
+
+    handleSessionInfoEvent(ctx)
+
+    expect(next).not.toBe(original)
+    expect(next?.busy).toBe(true)
+    expect(next?.turnLive).toBe(true)
+    expect(next?.turnStartedAt).toBe(1234500)
+  })
 })

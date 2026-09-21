@@ -120,6 +120,15 @@ class TestValidateFrontmatter:
         content = "---\n: invalid: yaml: {{{\n---\n\nBody.\n"
         assert "YAML frontmatter parse error" in _validate_frontmatter(content)
 
+    def test_loader_compatible_legacy_yaml_is_editable_but_not_creatable(self):
+        content = (
+            "---\nname: legacy-skill\n"
+            "description: Use when testing: an unquoted colon is accepted by the loader.\n"
+            "---\n\nBody.\n"
+        )
+        assert _validate_frontmatter(content) is None
+        assert "YAML frontmatter parse error" in _validate_frontmatter(content, new_skill=True)
+
 
 # ---------------------------------------------------------------------------
 # _validate_file_path — path traversal prevention
@@ -253,6 +262,27 @@ class TestPatchSkill:
         assert result["success"] is True
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "Do the new thing." in content
+
+    def test_patch_existing_skill_with_loader_compatible_legacy_frontmatter(self, tmp_path):
+        legacy_content = """\
+---
+name: legacy-skill
+description: Use when testing: an unquoted colon is accepted by the loader.
+---
+
+# Legacy Skill
+
+Old body.
+"""
+        with _skill_dir(tmp_path):
+            skill_dir = tmp_path / "legacy-skill"
+            skill_dir.mkdir()
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text(legacy_content, encoding="utf-8")
+            result = _patch_skill("legacy-skill", "Old body.", "New body.")
+
+        assert result["success"] is True, result.get("error")
+        assert "New body." in skill_md.read_text(encoding="utf-8")
 
 
     def test_patch_ambiguous_match_rejected(self, tmp_path):

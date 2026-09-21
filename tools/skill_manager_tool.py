@@ -168,7 +168,14 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     try:
         parsed = yaml.safe_load(content[3:end_match.start() + 3])
     except yaml.YAMLError as e:
-        return f"YAML frontmatter parse error: {e}"
+        strict_error = f"YAML frontmatter parse error: {e}"
+        if new_skill:
+            return strict_error
+        # The loader accepts legacy frontmatter through its line-based fallback.
+        # Keep those existing skills maintainable while new skills stay strict.
+        parsed, _ = _parse_frontmatter(content)
+        if not isinstance(parsed, dict) or not all(field in parsed for field in ("name", "description")):
+            return strict_error
     if not isinstance(parsed, dict):
         return "Frontmatter must be a YAML mapping (key: value pairs)."
     for field in ("name", "description"):

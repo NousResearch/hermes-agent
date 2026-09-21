@@ -367,6 +367,24 @@
       }
     },
     {
+      "name": "client.capabilities",
+      "summary": "What the calling client handles, sent once per connection (after gateway.ready); returns the server\u2192client request methods this backend may send.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ClientCapabilitiesParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ClientCapabilitiesResult"
+        }
+      }
+    },
+    {
       "name": "clipboard.paste",
       "summary": "Save the host clipboard image into the session and queue it for the next turn.",
       "params": [
@@ -4145,6 +4163,18 @@
             "default": null,
             "title": "Catalog Sha"
           },
+          "catalog_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Version"
+          },
           "update_available": {
             "anyOf": [
               {
@@ -7119,6 +7149,35 @@
         "title": "CliExecResult",
         "type": "object"
       },
+      "ClientCapabilitiesParams": {
+        "additionalProperties": false,
+        "properties": {
+          "server_requests": {
+            "default": false,
+            "title": "Server Requests",
+            "type": "boolean"
+          }
+        },
+        "title": "ClientCapabilitiesParams",
+        "type": "object"
+      },
+      "ClientCapabilitiesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "server_requests": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Server Requests",
+            "type": "array"
+          }
+        },
+        "required": [
+          "server_requests"
+        ],
+        "title": "ClientCapabilitiesResult",
+        "type": "object"
+      },
       "ClipboardPasteParams": {
         "additionalProperties": false,
         "properties": {
@@ -7556,6 +7615,7 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
         "properties": {
           "text": {
             "anyOf": [
@@ -7568,6 +7628,18 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         },
         "title": "CompleteSlashParams",
@@ -9039,6 +9111,46 @@
         "title": "ContextCategory",
         "type": "object"
       },
+      "ContextFileSource": {
+        "additionalProperties": false,
+        "description": "One row of ``agent.context_file_sources.list_context_file_sources``.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "chars": {
+            "title": "Chars",
+            "type": "integer"
+          },
+          "est_tokens": {
+            "title": "Est Tokens",
+            "type": "integer"
+          },
+          "loaded": {
+            "title": "Loaded",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "path",
+          "chars",
+          "est_tokens",
+          "loaded",
+          "status"
+        ],
+        "title": "ContextFileSource",
+        "type": "object"
+      },
       "ControllerScope": {
         "additionalProperties": false,
         "properties": {
@@ -10254,7 +10366,7 @@
       },
       "ErrorSurface": {
         "additionalProperties": true,
-        "description": "``agent/error_surface.py::_surface`` \u2014 advisory {layer, code, retryable} (+ identity, + auth hint).",
+        "description": "``agent/error_surface.py::_surface`` \u2014 advisory {layer, code, retryable} (+ identity, + auth hint,\n+ ``resets_at`` epoch seconds when the provider named when its limit lifts).",
         "properties": {
           "layer": {
             "title": "Layer",
@@ -10291,6 +10403,18 @@
             ],
             "default": null,
             "title": "Model"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
           }
         },
         "required": [
@@ -12635,6 +12759,31 @@
             "title": "User",
             "type": "string"
           },
+          "display_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Kind"
+          },
+          "display_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Metadata"
+          },
           "corrections": {
             "anyOf": [
               {
@@ -14114,6 +14263,7 @@
           "disabled",
           "connecting",
           "failed",
+          "lazy",
           "configured"
         ],
         "title": "McpRuntimeStatus",
@@ -18615,6 +18765,30 @@
             "default": null,
             "title": "Exit Code"
           },
+          "exited_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Exited At"
+          },
+          "completion_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completion Reason"
+          },
           "detached": {
             "anyOf": [
               {
@@ -18924,7 +19098,7 @@
       },
       "ProfileMirrored": {
         "additionalProperties": false,
-        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` under ``share_auth``.",
+        "description": "What was copied from the launch profile.",
         "properties": {
           "env": {
             "default": false,
@@ -18932,17 +19106,9 @@
             "type": "boolean"
           },
           "auth": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "const": "shared",
-                "type": "string"
-              }
-            ],
             "default": false,
-            "title": "Auth"
+            "title": "Auth",
+            "type": "boolean"
           },
           "model_inherited": {
             "default": false,
@@ -20640,6 +20806,13 @@
             },
             "title": "Previewsessions",
             "type": "array"
+          },
+          "sessionIds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sessionids",
+            "type": "array"
           }
         },
         "required": [
@@ -21753,6 +21926,18 @@
             ],
             "default": null,
             "title": "Voice Context"
+          },
+          "title_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title Preview"
           },
           "truncate_before_user_ordinal": {
             "anyOf": [
@@ -24445,7 +24630,7 @@
       },
       "SessionContextBreakdownResult": {
         "additionalProperties": false,
-        "description": "``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds).",
+        "description": "``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)\nplus the per-file context manifest (empty until the agent exists).",
         "properties": {
           "categories": {
             "items": {
@@ -24481,6 +24666,14 @@
           "model": {
             "title": "Model",
             "type": "string"
+          },
+          "context_files": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ContextFileSource"
+            },
+            "title": "Context Files",
+            "type": "array"
           }
         },
         "required": [
@@ -25058,6 +25251,11 @@
           "reasoning_effort": {
             "default": "",
             "title": "Reasoning Effort",
+            "type": "string"
+          },
+          "reasoning_effort_wire": {
+            "default": "",
+            "title": "Reasoning Effort Wire",
             "type": "string"
           },
           "service_tier": {
@@ -25908,6 +26106,11 @@
           "reasoning_effort": {
             "default": "",
             "title": "Reasoning Effort",
+            "type": "string"
+          },
+          "reasoning_effort_wire": {
+            "default": "",
+            "title": "Reasoning Effort Wire",
             "type": "string"
           },
           "service_tier": {
@@ -27245,6 +27448,42 @@
             "title": "Error",
             "type": "string"
           },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After"
+          },
           "finished_at": {
             "title": "Finished At",
             "type": "number"
@@ -28020,7 +28259,21 @@
       },
       "SkillsReloadParams": {
         "additionalProperties": false,
-        "properties": {},
+        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills).",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          }
+        },
         "title": "SkillsReloadParams",
         "type": "object"
       },

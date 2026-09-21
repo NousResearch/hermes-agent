@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 PLATFORM_MAP = {"macos": "darwin", "linux": "linux", "windows": "win32"}
 
 EXCLUDED_SKILL_DIRS = frozenset((
-    ".git", ".github", ".hub", ".archive", ".curator_backups",
+    ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
@@ -208,7 +208,7 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     return any(_detect_environment(tag) for tag in tags if tag)
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
@@ -216,11 +216,11 @@ def _raw_config_cache_clear() -> None:
     _RAW_CONFIG_CACHE.clear()
 
 
-def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int]]:
-    """``(path, mtime_ns, size)`` identity of config.yaml, or None when unreadable/absent."""
+def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int, int, int]]:
+    """``(path, *file_signature)`` identity of config.yaml, or None when unreadable/absent."""
     try:
-        stat = config_path.stat()
-        return (str(config_path), stat.st_mtime_ns, stat.st_size)
+        from utils import file_signature
+        return (str(config_path), *file_signature(config_path.stat()))
     except OSError:
         return None
 
@@ -316,7 +316,7 @@ def _normalize_string_set(values) -> Set[str]:
 
 # config identity -> resolved external dirs. Called once per skill during
 # banner / tool-registry scans; re-resolving each time dominated cold-start.
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int, int, int, int], List[Path]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -341,7 +341,7 @@ def get_external_skills_dirs() -> List[Path]:
     if not config_path.exists():
         return []
     full_key = _config_cache_key(config_path)
-    cache_key = full_key[:2] if full_key is not None else None
+    cache_key = full_key
     cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
     if cached is not None:
         return list(cached)  # copy so callers can't mutate the cache
@@ -419,20 +419,20 @@ _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
-    Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
-    cron/API surfaces inherit an interactive trust decision by project identity.
-
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    Without *start*, the surface's effective working directory wins over the process cwd — the same
+    ladder every other cwd consumer reads (``resolve_agent_cwd``: session-bound cwd, then the scope's
+    ``TERMINAL_CWD``, then the process cwd). The session cwd comes first because a multi-session host
+    (TUI/desktop gateway) pins each session's workspace there while its terminal scope resolves a
+    placeholder ``terminal.cwd`` to ``$HOME``; reading only the scope made every project skill invisible
+    on those surfaces (#114359). ``TERMINAL_CWD`` is the per-surface workdir the terminal tool and cron
+    jobs use (a cron job sets it from its per-job ``workdir`` without chdir'ing the scheduler process),
+    which lets non-interactive surfaces inherit a prior interactive trust decision by project identity —
+    and a surface with no workdir in a trusted repo simply resolves no project and loads nothing (#48975).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import resolve_agent_cwd
+            start = resolve_agent_cwd()
         cur = Path(start).resolve()
     except OSError:
         return None

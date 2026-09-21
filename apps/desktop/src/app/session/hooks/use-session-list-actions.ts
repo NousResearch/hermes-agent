@@ -43,12 +43,13 @@ import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
 
 // The recents list is local-only: cron rows have their own section, kanban
-// dispatcher workers are read on the board, and each messaging platform
+// dispatcher workers are read on the board, finite one-shot runs (`hermes -z`,
+// `chat -q`) are not conversations, and each messaging platform
 // (telegram, discord, …) is fetched separately into its own self-managed
 // sidebar section (refreshMessagingSessions). Excluding them here keeps
 // "Load more" paging through interactive local chats instead of
 // interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'oneshot', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
 // The messaging slice is the inverse: drop cron + every local source so only
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]

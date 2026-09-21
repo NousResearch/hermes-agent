@@ -47,11 +47,12 @@ def nous_logged_in() -> bool:
 
 
 def fetch_nous_account(timeout: float):
-    """Wall-clock-bounded fresh portal account fetch. Raises on failure/timeout."""
-    import concurrent.futures
-    from hermes_cli.nous_account import get_nous_portal_account_info
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(get_nous_portal_account_info, force_fresh=True).result(timeout=timeout)
+    """Wall-clock-bounded fresh portal account fetch. Raises on failure/timeout.
+
+    Shares the one bounded implementation so a stalled portal releases the
+    /billing surface at ``timeout`` too (see ``_fetch_portal_account``)."""
+    from agent.account_usage import _fetch_portal_account
+    return _fetch_portal_account(timeout)
 
 
 def format_renews(value: Optional[str]) -> Optional[str]:

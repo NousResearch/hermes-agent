@@ -574,6 +574,7 @@ export interface SessionLiveInfo {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean
@@ -1378,6 +1379,12 @@ export interface PingResult {
 export interface GatewayCapabilitiesResult {
   per_session_exclusive_submit: boolean
 }
+export interface ClientCapabilitiesParams {
+  server_requests?: boolean
+}
+export interface ClientCapabilitiesResult {
+  server_requests: string[]
+}
 /** ``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` / ``session_id`` pick the directory the listing resolves against. */
 export interface CompletePathParams {
   profile?: string | null
@@ -1395,8 +1402,10 @@ export interface CompletionItem {
   meta?: string
   kind?: string | null
 }
+/** ``session_id`` binds skill completions to that session's profile and workspace (project skills). */
 export interface CompleteSlashParams {
   text?: string | null
+  session_id?: string | null
 }
 /** ``replace_from`` is the column the accepted item replaces from. */
 export interface CompleteSlashResult {
@@ -1505,10 +1514,10 @@ export interface ProfilesCreateResult {
   model_set?: boolean
   mirrored: ProfileMirrored
 }
-/** What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``. */
+/** What was copied from the launch profile. */
 export interface ProfileMirrored {
   env?: boolean
-  auth?: boolean | 'shared'
+  auth?: boolean
   model_inherited?: boolean
   voice?: boolean
 }
@@ -1950,6 +1959,7 @@ export interface ProjectTreeNode {
   totalCostUsd?: number
   repos?: ProjectTreeRepo[]
   previewSessions?: ProjectTreeSession[]
+  sessionIds?: string[]
 }
 export interface ProjectTreeRepo {
   id: string
@@ -2125,6 +2135,7 @@ export interface PromptSubmitParams {
   queued?: boolean | null
   surface?: string | null
   voice_context?: string | null
+  title_preview?: string | null
   truncate_before_user_ordinal?: number | null
   truncate_before_row_id?: number | null
   truncate_before_message_id?: string | null
@@ -2523,6 +2534,8 @@ export interface InflightTurn {
   assistant?: string
   streaming?: boolean
   user?: string
+  display_kind?: string | null
+  display_metadata?: Record<string, unknown> | null
   corrections?: string[] | null
   correction_offsets?: number[] | null
   error?: string | null
@@ -2682,6 +2695,7 @@ export interface SessionCwdSetResult {
   model?: string
   provider?: string
   reasoning_effort?: string
+  reasoning_effort_wire?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean
@@ -2798,7 +2812,7 @@ export interface SessionContextBreakdownParams {
   session_id: string
   profile?: string | null
 }
-/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds). */
+/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds) plus the per-file context manifest (empty until the agent exists). */
 export interface SessionContextBreakdownResult {
   categories: ContextCategory[]
   context_max: number
@@ -2808,12 +2822,22 @@ export interface SessionContextBreakdownResult {
   context_estimated: boolean
   context_source: string
   model: string
+  context_files?: ContextFileSource[]
 }
 export interface ContextCategory {
   color: string
   id: string
   label: string
   tokens: number
+}
+/** One row of ``agent.context_file_sources.list_context_file_sources``. */
+export interface ContextFileSource {
+  label: string
+  path: string
+  chars: number
+  est_tokens: number
+  loaded: boolean
+  status: string
 }
 export interface SessionCompressParams {
   session_id: string
@@ -3017,6 +3041,8 @@ export interface ProcessEntry {
   watch_hit?: boolean | null
   notify_on_complete?: boolean | null
   exit_code?: number | null
+  exited_at?: number | null
+  completion_reason?: string | null
   detached?: boolean | null
   [key: string]: unknown
 }
@@ -3391,7 +3417,10 @@ export interface SkillInspectInfo {
   skill_md_preview?: string | null
   [key: string]: unknown
 }
-export type SkillsReloadParams = Record<string, never>
+/** ``session_id`` binds the rescan to that session's profile and workspace (project skills). */
+export interface SkillsReloadParams {
+  session_id?: string | null
+}
 export interface SkillsReloadResult {
   output: string
   result: SkillsReloadDiff
@@ -3523,7 +3552,7 @@ export interface McpServerRuntimeRow {
   disabled: boolean
   status: McpRuntimeStatus
 }
-export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'configured'
+export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'lazy' | 'configured'
 /** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
 export interface McpServersAddParams {
   profile?: string | null
@@ -3671,6 +3700,7 @@ export interface AgentPluginRow {
   catalog_tier?: string | null
   installed_sha?: string | null
   catalog_sha?: string | null
+  catalog_version?: string | null
   update_available?: boolean | null
   pinned_sha?: string | null
 }
@@ -3828,6 +3858,9 @@ export interface SetupReadyPayload {
   has_identity: boolean
   other_providers: boolean
   error?: string
+  error_code?: string | null
+  retryable?: boolean | null
+  retry_after?: number | null
   finished_at: number
   [key: string]: unknown
 }
@@ -3878,13 +3911,14 @@ export interface BillingBlock {
   message: string
   unverified?: boolean | null
 }
-/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint). */
+/** ``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint, + ``resets_at`` epoch seconds when the provider named when its limit lifts). */
 export interface ErrorSurface {
   layer: string
   code: string
   retryable: boolean
   provider?: string | null
   model?: string | null
+  resets_at?: number | null
   [key: string]: unknown
 }
 /** ``server._status_update`` and the direct emitters (goal / loop / heartbeat / process). */
@@ -4200,6 +4234,8 @@ export interface RpcMethods {
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Run ``hermes <argv>`` non-interactively and capture its output; ``blocked`` explains a refusal. */
   'cli.exec': { params: CliExecParams; result: CliExecResult }
+  /** What the calling client handles, sent once per connection (after gateway.ready); returns the server→client request methods this backend may send. */
+  'client.capabilities': { params: ClientCapabilitiesParams; result: ClientCapabilitiesResult }
   /** Save the host clipboard image into the session and queue it for the next turn. */
   'clipboard.paste': { params: ClipboardPasteParams; result: AttachedImageResult }
   /** Run a quick/plugin/bundle/skill/built-in slash command and answer a structured directive. */
@@ -4617,6 +4653,7 @@ export const RPC_METHODS = [
   'browser.manage',
   'clarify.lock',
   'cli.exec',
+  'client.capabilities',
   'clipboard.paste',
   'command.dispatch',
   'command.resolve',

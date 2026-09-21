@@ -19,6 +19,7 @@ def home(tmp_path, monkeypatch):
     path = tmp_path / ".hermes"
     path.mkdir()
     (path / "profiles" / "ops").mkdir(parents=True)
+    (path / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: local roster
     monkeypatch.setenv("HERMES_HOME", str(path))
     monkeypatch.setattr(srv, "_run_idempotency_store", DurableRunStore(), raising=False)
     methods_groups.stop_hosted_room_service(timeout=1.0)
@@ -244,6 +245,7 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
 
     reviewer_home = home / "profiles" / "reviewer"
     reviewer_home.mkdir(parents=True)
+    (reviewer_home / "config.yaml").write_text("{}\n")  # identity marker
     reviewer_key = "reviewer-api-key-1234567890"
     default_key = "default-api-key-1234567890"
     (reviewer_home / ".env").write_text(
@@ -287,6 +289,7 @@ def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
 
     reviewer_home = home / "profiles" / "reviewer"
     reviewer_home.mkdir(parents=True)
+    (reviewer_home / "config.yaml").write_text("{}\n")  # identity marker
     gateway_key = "gateway-api-key-1234567890"
     monkeypatch.setenv("API_SERVER_KEY", gateway_key)
 

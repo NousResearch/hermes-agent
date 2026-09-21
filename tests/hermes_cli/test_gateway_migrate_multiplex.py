@@ -78,6 +78,18 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(gm, "_service_op", _service_op)
     monkeypatch.setattr(gm, "_stop_gateway_process", lambda home: state.pids.pop(_name(home), None))
     monkeypatch.setattr(gm, "_host_supports_migration", lambda: None)
+    # Part of the faked service layer: the real check asks systemd's questions (root, NSS user).
+    monkeypatch.setattr(gm, "_preflight_apply", lambda plan, target, run_as_user: None)
+    # Identity inputs are pinned too, or the verdict depends on the HOST: the fake pids 4101/4102 may
+    # name a real root-owned process in /proc on a CI runner (a spurious "UNIX privilege boundary"
+    # blocker), and the user-scope unit path lives under the real $HOME. The whole fleet runs as this
+    # user with no unit files on disk unless a test writes some (it repoints _SYSTEM_UNIT_DIR itself).
+    from hermes_cli import gateway as gw
+    from hermes_cli import gateway_migrate_guards as guards
+    monkeypatch.setattr(guards, "_pid_uid", lambda pid: root.stat().st_uid if pid in state.pids.values() else None)
+    _unit_path = gw.get_systemd_unit_path
+    monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: _unit_path(system=True) if system
+                        else tmp_path / "user-units" / f"{gw.get_service_name()}.service")
     state.root = root
     return state
 
@@ -90,6 +102,9 @@ def _units(recorded) -> list:
     if recorded is None:
         return []
     return list(recorded) if isinstance(recorded, list) else [recorded]
+
+
+_real_preflight = gm._preflight_apply
 
 
 def _config_flag(root: Path):
@@ -564,3 +579,111 @@ def test_opt_out_reads_effective_config_managed_false_wins_and_string_false_is_f
     assert auto_migration_opted_out(fleet.root) is True
     gm.maybe_auto_migrate_after_update()
     assert fleet.ops == [] and _config_flag(fleet.root) is None
+
+
+@pytest.mark.parametrize("default_unit_preinstalled", [False, True])
+def test_interruption_after_the_default_unit_exists_is_still_interrupted_not_already_multiplexed(
+    fleet, monkeypatch, capsys, default_unit_preinstalled,
+):
+    """``systemd_install`` writes the unit before the start that can be killed; an existing stopped
+    default unit can be interrupted mid-restart. Either way the flag is on and a default unit exists
+    but nothing serves anyone: that is an interrupted migration to resume, not a completed one. Only
+    a LIVE multiplexer that recorded ``served_profiles`` counts as already multiplexed."""
+    if default_unit_preinstalled:
+        fleet.services["default"] = ("systemd", False)
+    real_op = gm._service_op
+
+    def _killed_at_start(kind, system, verb, home, *, run_as_user=None):
+        if verb in ("start", "restart") and _name(home) == "default":
+            raise KeyboardInterrupt()
+        real_op(kind, system, verb, home, run_as_user=run_as_user)
+
+    with pytest.MonkeyPatch.context() as dying:
+        dying.setattr(gm, "_service_op", _killed_at_start)
+        with pytest.raises(KeyboardInterrupt):
+            gm.apply_migration(gm.build_migration_plan(), served_wait=0.1)
+    assert _config_flag(fleet.root) is True and fleet.services == {"default": ("systemd", False)}
+    assert (fleet.root / gm.MANIFEST_NAME).exists()
+
+    plan = gm.build_migration_plan()
+    assert plan.interrupted and not plan.already_multiplexed
+    fleet.ops.clear()
+    assert gm.apply_migration(plan, served_wait=5.0) is True
+    assert fleet.ops[-1] == ("default", "restart") and "serves 3 profiles" in capsys.readouterr().out
+    # Postcondition met: the next plan sees the live multiplexer and stops.
+    assert gm.build_migration_plan().already_multiplexed
+
+
+@pytest.mark.parametrize("failing_op", [("ops", "stop"), ("coder", "uninstall"), ("default", "flag")])
+def test_failure_anywhere_in_the_destructive_phase_restores_the_removed_secondaries(fleet, monkeypatch, capsys, failing_op):
+    """The compensation boundary covers the whole destructive phase, not only the default bring-up:
+    a later secondary's stop, a unit unlink/daemon-reload, or the flag write failing after an earlier
+    secondary was removed must put that secondary back (the manifest alone is not a restored fleet)."""
+    name, verb = failing_op
+    real_op = gm._service_op
+
+    def _failing(kind, system, verb_, home, *, run_as_user=None):
+        if (_name(home), verb_) == (name, verb):
+            raise RuntimeError(f"{name} {verb} failed")
+        real_op(kind, system, verb_, home, run_as_user=run_as_user)
+
+    monkeypatch.setattr(gm, "_service_op", _failing)
+    if verb == "flag":
+        real_flag = gm._write_multiplex_flag
+        monkeypatch.setattr(gm, "_write_multiplex_flag",
+                            lambda home, value: (_ for _ in ()).throw(OSError("read-only config")) if value else real_flag(home, value))
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=0.1) is False
+    out = capsys.readouterr().out
+    assert "Rolling back" in out and "Rolled back" in out
+    assert _config_flag(fleet.root) is not True
+    assert fleet.services == {"coder": ("systemd", False), "ops": ("systemd", False)}
+    assert not (fleet.root / gm.MANIFEST_NAME).exists()
+    assert gm.build_migration_plan().eligible_for_migration()
+
+
+def test_known_bringup_refusal_is_rejected_before_any_secondary_is_touched(fleet, monkeypatch, capsys):
+    """A system-unit fleet with no recorded User= run by root is the #110850 refusal: known from the plan,
+    so it is refused before a working gateway is stopped rather than discovered and rolled back."""
+    from hermes_cli import gateway as gw
+    fleet.services.update({"coder": ("systemd", True), "ops": ("systemd", True)})
+    monkeypatch.setattr(gm, "_systemd_service_user", lambda home, services: None)
+    monkeypatch.setattr(gm, "_preflight_apply", _real_preflight)
+    monkeypatch.setattr(gw, "_require_root_for_system_service", lambda action: None)  # we are "root"
+    for var in ("SUDO_USER", "USER", "LOGNAME"):
+        monkeypatch.setenv(var, "root")
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=0.1) is False
+    out = capsys.readouterr().out
+    assert "before changing anything" in out and "--run-as-user root" in out
+    assert fleet.ops == [] and _config_flag(fleet.root) is None and not (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def test_unknown_default_system_principal_blocks_the_update_hook(fleet, tmp_path, monkeypatch, capsys):
+    """Mirror of the unknown-secondary case: the default's system unit names a User= this host cannot
+    resolve while both secondaries are known root system units. Folding INTO an unidentifiable
+    principal is the same boundary; known-same uid still folds, known-different still refuses."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.gateway_migrate_guards import auto_migration_blockers, gateway_identity
+    unit_dir = tmp_path / "system"; unit_dir.mkdir()
+    monkeypatch.setattr(gw, "_SYSTEM_UNIT_DIR", unit_dir)
+    with gm._home_env(fleet.root):
+        gw.get_systemd_unit_path(system=True).write_text("[Service]\nUser=no-such-pr111062-user\n", encoding="utf-8")
+    for name in ("coder", "ops"):
+        with gm._home_env(fleet.root / "profiles" / name):
+            gw.get_systemd_unit_path(system=True).write_text("[Service]\nUser=root\n", encoding="utf-8")
+    fleet.services.update({"default": ("systemd", True), "coder": ("systemd", True), "ops": ("systemd", True)})
+    fleet.pids.clear()  # stopped units everywhere: identity comes from User=, resolved for real
+    plan = gm.build_migration_plan()
+    assert plan.default.uid is None and {p.uid for p in plan.standalone_secondaries} == {0}
+    assert gateway_identity(fleet.root, None, [("systemd", True)])[0] is None
+    blockers = auto_migration_blockers(plan)
+    assert len(blockers) == 1 and "default gateway" in blockers[0] and "cannot be resolved" in blockers[0]
+    gm.maybe_auto_migrate_after_update()
+    out = capsys.readouterr().out
+    assert "cannot be resolved" in out and gm.MIGRATE_COMMAND in out
+    assert fleet.ops == [] and _config_flag(fleet.root) is None
+
+    # Controls: same known uid folds; a different known uid refuses.
+    monkeypatch.setattr(gm, "_gateway_identity", lambda home, pid, services: (0, home))
+    assert auto_migration_blockers(gm.build_migration_plan()) == []
+    monkeypatch.setattr(gm, "_gateway_identity", lambda home, pid, services: (0 if _name(home) == "default" else 1000, home))
+    assert any("UNIX privilege boundary" in b for b in auto_migration_blockers(gm.build_migration_plan()))

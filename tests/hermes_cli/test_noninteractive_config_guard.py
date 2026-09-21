@@ -54,10 +54,10 @@ def test_noninteractive_guard_rejects_malformed_yaml(args, tmp_path, caplog, cap
             main_mod._guard_noninteractive_user_config(args)
 
     assert exc_info.value.code == 2
-    assert "Refusing non-interactive startup" in capsys.readouterr().err
+    assert "Hermes stopped because your settings file" in capsys.readouterr().err
     assert any(
         record.levelno == logging.ERROR
-        and "Refusing non-interactive startup" in record.getMessage()
+        and "Hermes stopped because your settings file" in record.getMessage()
         for record in caplog.records
     )
     assert config_path.read_text(encoding="utf-8") == broken

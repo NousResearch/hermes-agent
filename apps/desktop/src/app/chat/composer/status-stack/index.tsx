@@ -3,6 +3,8 @@ import { type ReactNode, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
+import { useComposerSurfaceId } from '@/app/chat/composer/scope'
+import { useSessionView } from '@/app/chat/session-view'
 import { AGENTS_ROUTE } from '@/app/routes'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
@@ -15,7 +17,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { useSessionSlice } from '@/lib/use-session-slice'
+import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
 import {
@@ -30,7 +32,7 @@ import {
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
-import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
@@ -96,6 +98,7 @@ interface ComposerStatusStackProps {
 export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const storedSessionId = useStore(useSessionView().$storedId)
   useSubagentSnapshot(sessionId)
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
@@ -107,7 +110,13 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const previews = useSessionSlice($previewStatusBySession, sessionId)
   const controlEntry = useSessionValue($sessionControlBySession, sessionId)
 
-  const scrolledUp = useStore($threadScrolledUp)
+  const surfaceId = useComposerSurfaceId()
+  const scrollSessionId = sessionId ?? surfaceId
+
+  const scrolledUp = useStoreSelector($threadScrolledUpBySession, map =>
+    Boolean(scrollSessionId && map[scrollSessionId])
+  )
+
   const billing = useStore($billingBlock)
   const freeTierStatus = useStore($freeTierStatus)
   const freeTierRoute = useStore($freeTierRoute)
@@ -178,7 +187,11 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const previewRows =
     visiblePreviews.length > 0 && sessionId
       ? visiblePreviews.map(item => (
-          <PreviewStatusRow item={item} key={item.id} onDismiss={id => dismissPreviewArtifact(sessionId, id)} />
+          <PreviewStatusRow
+            item={item}
+            key={item.id}
+            onDismiss={id => dismissPreviewArtifact(sessionId, id, storedSessionId ?? sessionId)}
+          />
         ))
       : []
 
@@ -273,7 +286,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // Artifact links stay visible at the bottom, nearest the composer, even when
   // the queue or background group expands.
   if (previewRows.length > 0) {
-    sections.push({ key: 'preview', node: <div className="px-1 py-0.5">{previewRows}</div> })
+    sections.push({ key: 'preview', node: <div className="status-artifacts">{previewRows}</div> })
   }
 
   // Micro actions are the TOP-MOST thing in the whole overlay lane — above the
@@ -295,7 +308,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       // In flow in the dock column, directly above the composer. The dock is
       // bottom-anchored, so this grows upward over the thread without needing
       // to be positioned — and it shares the dock's left edge for free.
-      className="flex max-h-[40vh] min-h-0 flex-col overflow-y-auto"
+      className="flex max-h-[40vh] min-h-0 flex-col overflow-hidden"
       data-slot="composer-status-stack"
       onPointerDownCapture={() => blurComposerInput()}
     >
@@ -311,18 +324,23 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             composerDockCard('top'),
             // Inset (mx-2) so the stack reads slightly narrower than the composer
             // surface below it — the original look.
-            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent'
+            'mx-2 flex min-h-0 max-h-[inherit] shrink flex-col overflow-hidden rounded-b-none border-b border-b-transparent'
           )}
         >
-          <div
-            className={cn(
-              'transition-opacity duration-200 ease-out',
-              scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
-            )}
-          >
-            {sections.map(section => (
-              <div key={section.key}>{section.node}</div>
-            ))}
+          <div className="min-h-0 overflow-y-auto overscroll-y-contain" data-slot="status-stack-scroll">
+            <div
+              className={cn(
+                'transition-opacity duration-200 ease-out',
+                scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+              )}
+              data-slot="status-stack-content"
+            >
+              {sections.map(section => (
+                <div data-slot="status-stack-section" key={section.key}>
+                  {section.node}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

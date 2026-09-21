@@ -28,10 +28,12 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -45,10 +47,29 @@ _GITHUB_REPO_RE = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+?)(?:\.g
 CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# Keep in sync with scripts/validate_plugin_catalog.py (cosmetic fields attached to the pin).
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
+IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
+IMAGE_HOST_SUFFIX = ".githubusercontent.com"
 
 
 def _log(msg: str) -> None:
     print(f"[extract-plugins] {msg}", file=sys.stderr)
+
+
+def _is_allowed_image_url(url: str) -> bool:
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
+
+
+def _cosmetic(value, accept, file_name: str, entry: str, key: str) -> str:
+    """A cosmetic field is dropped, never fatal: the site must not lose an entry a reviewer merged."""
+    text = str(value or "").strip()
+    if text and not accept(text):
+        _log(f"{file_name} ({entry}): dropping invalid {key} {text!r}")
+        return ""
+    return text
 
 
 def _str_list(value) -> list[str]:
@@ -84,14 +105,76 @@ def _repo_stars(repo: str, stars: dict[str, int]) -> int | None:
     return stars.get(f"{m.group(1)}/{m.group(2)}") if m else None
 
 
-def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None) -> list[dict]:
+def load_git_dates(catalog_dir: Path) -> dict[str, dict[str, str]]:
+    """``{"<file>.yaml": {"addedAt": iso, "updatedAt": iso}}`` from the catalog's git history.
+
+    One ``git log`` over the directory, newest first: the first commit seen touching a file is
+    its last update, the last one is when it entered the catalog. Renames (``R``) carry the
+    old path's history onto the new name so a renamed entry keeps its original addedAt.
+    Committer dates, not author dates: rebase-merged PRs are stamped when they LAND on main,
+    which is when the entry actually became installable.
+
+    Empty when git is unavailable or the checkout is shallow — a depth-1 clone would report
+    every entry as added in the tip commit, which is worse than no dates (deploy-site.yml
+    checks out with ``fetch-depth: 0`` for this reason).
+    """
+    if not catalog_dir.is_dir():
+        return {}
+    try:
+        shallow = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=catalog_dir, capture_output=True, text=True, check=True, timeout=30,
+        ).stdout.strip()
+        if shallow == "true":
+            _log("shallow checkout: skipping addedAt/updatedAt (need fetch-depth: 0)")
+            return {}
+        log = subprocess.run(
+            ["git", "log", "--format=%x00%cI", "--name-status", "--relative", "-M", "--", "."],
+            cwd=catalog_dir, capture_output=True, text=True, check=True, timeout=120,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        _log(f"git history unavailable, skipping addedAt/updatedAt ({e})")
+        return {}
+
+    dates: dict[str, dict[str, str]] = {}
+    alias: dict[str, str] = {}  # old file name → current name, for renamed entries
+
+    def touch(name: str, when: str) -> None:
+        if "/" in name or not name.endswith(".yaml"):
+            return
+        while name in alias:
+            name = alias[name]
+        rec = dates.setdefault(name, {"addedAt": when, "updatedAt": when})
+        rec["addedAt"] = when  # newest-first walk: the last write wins = oldest commit
+
+    when = ""
+    for line in log.splitlines():
+        if line.startswith("\x00"):
+            when = line[1:].strip()
+            continue
+        parts = line.split("\t")
+        if len(parts) < 2 or not when:
+            continue
+        if parts[0].startswith("R") and len(parts) == 3:
+            old, new = parts[1], parts[2]
+            touch(new, when)
+            alias[old] = new
+            continue
+        touch(parts[-1], when)
+    return dates
+
+
+def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
+                         dates: dict[str, dict[str, str]] | None = None) -> list[dict]:
     """Parse all ``*.yaml`` files (except removed.yaml) into page entries.
 
     Entries missing any of name/repo/sha are skipped with a stderr log —
     a malformed community entry must never break the docs deploy.
+    ``dates`` is ``load_git_dates()`` output keyed by file name; absent → null addedAt/updatedAt.
     """
     entries: list[dict] = []
     stars = stars or {}
+    dates = dates or {}
     if not catalog_dir.is_dir():
         return entries
 
@@ -145,12 +228,16 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None)
             "platforms": _str_list(raw.get("platforms")),
             "capabilities": _normalize_capabilities(raw.get("capabilities")),
             "docsUrl": str(raw.get("docs_url") or "").strip(),
+            "version": _cosmetic(raw.get("version"), VERSION_RE.match, path.name, name, "version"),
+            "image": _cosmetic(raw.get("image"), _is_allowed_image_url, path.name, name, "image"),
             "installCommand": f"hermes plugins install {name}",
             "stars": _repo_stars(repo, stars),
+            "addedAt": dates.get(path.name, {}).get("addedAt"),
+            "updatedAt": dates.get(path.name, {}).get("updatedAt"),
         })
 
-    # Official first, then by stars (unknown = 0), then name so the order is stable.
-    entries.sort(key=lambda e: (0 if e["tier"] == "official" else 1, -(e["stars"] or 0), e["name"]))
+    # Most-starred first (unknown = 0), then name so the order is stable; tier does not rank.
+    entries.sort(key=lambda e: (-(e["stars"] or 0), e["name"]))
     return entries
 
 
@@ -207,7 +294,7 @@ def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output_dir: Path = DEFAULT_OUT
 
     stars_path = stars_file if stars_file is not None else output_dir / "plugin-stars.json"
     stars = load_stars(stars_path)
-    entries = load_catalog_entries(catalog_dir, stars)
+    entries = load_catalog_entries(catalog_dir, stars, load_git_dates(catalog_dir))
     removed_count = count_removed(catalog_dir)
 
     by_tier = Counter(e["tier"] for e in entries)

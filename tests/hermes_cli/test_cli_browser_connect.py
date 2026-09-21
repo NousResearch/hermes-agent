@@ -48,13 +48,13 @@ class TestChromeDebugLaunch:
                 return _FakeResponse()
             raise OSError("unexpected probe")
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("urllib.request.OpenerDirector.open", side_effect=fake_urlopen):
             assert is_browser_debug_ready("http://127.0.0.1:9222", timeout=0.1) is True
 
         assert requested == ["http://127.0.0.1:9222/json/version"]
 
     def test_browser_debug_ready_rejects_non_cdp_listener(self):
-        with patch("urllib.request.urlopen", side_effect=OSError("not cdp")):
+        with patch("urllib.request.OpenerDirector.open", side_effect=OSError("not cdp")):
             assert is_browser_debug_ready("http://127.0.0.1:9222", timeout=0.1) is False
 
 

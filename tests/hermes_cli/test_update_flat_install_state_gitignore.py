@@ -9,6 +9,7 @@ every transcript when the restore is declined or fails its health check. The
 tracked .gitignore must cover the runtime state set, mirroring the
 .hermes-bootstrap-complete / .install_method precedent (#38529 / #66189).
 """
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -28,7 +29,18 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "state.db-shm",
     "state.db-journal",
     "state.db.retired-wal-20260914T000000Z-1234/manifest.json",
+    # Dot-suffixed `<db>.db.*` runtime artifacts (#112974): cross-process lock
+    # files from hermes_state_dbfile / hermes_state_repair / hermes_state_common /
+    # hermes_cli/kanban_db_*, the repair-attempts ledger and malformed backups.
+    "state.db.quarantine.lock",
+    "state.db.repair.lock",
+    "state.db.fts_rebuild.lock",
+    "state.db.auto-maintenance.lock",
+    "state.db.repair-attempts.json",
+    "state.db.malformed-backup-20260914_060000",
     "kanban.db",
+    "kanban.db.init.lock",
+    "kanban.db.dispatch.lock",
     "response_store.db",
     "response_store.db-wal",
     "gateway/discord_message_recovery.db",
@@ -38,12 +50,24 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "cron/executions.db",
     "cron/executions.db-wal",
     "cron/executions.db-shm",
+    "cron/deliveries.db",
+    "cron/deliveries.db-wal",
+    "cron/notepad.db",
     "cron/jobs.json",
+    "cron/.jobs.lock",
+    "cron/ticker_heartbeat",
+    "cron/output/job1/2026-09-14T06-00-00.md",
     "cron.pid",
     "gateway.lock",
     "gateway.pid",
     "gateway_state.json",
     "processes.json",
+    "gateway-starts.log",
+    ".update_check",
+    ".clean_shutdown",
+    "active_profile",
+    ".hermes_history",
+    "slack_tokens.json",
     "hook_outputs/2026-09-14_06-00-00/tool.json",
     "hooks/on_session_end.sh",
     "cache/banner_snapshot.json",
@@ -68,6 +92,9 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "mcp-tokens/server.json",
     "pairing/telegram.json",
     "platforms/pairing/x.json",
+    "backups/2026-09-14T06-00-00-pre-update/state.db",
+    "vault.key",
+    "vault.json.enc",
 )
 
 
@@ -159,3 +186,30 @@ def test_untracked_autostash_leaves_open_wal_database_readable(flat_install_repo
             assert reader.execute("SELECT status FROM executions").fetchall() == [("ok",)]
     finally:
         conn.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fcntl is POSIX-only")
+def test_untracked_autostash_cannot_split_live_database_lock_inode(flat_install_repo):
+    """The updater's real stash step must leave a held ``state.db.quarantine.lock``
+    on its original inode (#112974). Unlinking a flocked path does not release the
+    lock, so a swept pathname would be re-created on a new inode and a second
+    exclusive lock would succeed while the first holder is still live."""
+    import fcntl
+
+    from hermes_cli.update_cmd_stash import _stash_local_changes_if_needed
+
+    lock_path = flat_install_repo / "state.db.quarantine.lock"
+    with lock_path.open("a+b") as first:
+        fcntl.flock(first.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        first_stat = os.fstat(first.fileno())
+        # A tracked local change makes the updater actually enter its stash step.
+        (flat_install_repo / "app.py").write_text("print('changed')\n")
+
+        assert _stash_local_changes_if_needed(["git"], flat_install_repo)
+
+        assert lock_path.exists()
+        after = lock_path.stat()
+        assert (after.st_dev, after.st_ino) == (first_stat.st_dev, first_stat.st_ino)
+        with lock_path.open("a+b") as second:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(second.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

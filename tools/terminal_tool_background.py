@@ -7,6 +7,7 @@ monkeypatch points authoritative.
 
 import json
 import logging
+import sys
 from typing import Any, List, Optional
 
 logger = logging.getLogger("tools.terminal_tool")
@@ -41,7 +42,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     '"$2==\\"pending\\""`) for sharded matrices. Load '
     "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
     'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
-    "each tick to a known file (`tee -a /tmp/ci.log`) and rely on `process(action='log')` to "
+    "each tick to a known file (`tee -a $TMPDIR/ci.log`) and rely on `process(action='log')` to "
     'read THAT file — do not rely on background-process stdout capture for line-buffered shell '
     'loops.'
 )
@@ -115,21 +116,33 @@ def _apply_async_support(proc_session, result_data, notify_on_complete, watch_pa
 
 def _register_completion_watcher(process_registry, proc_session, session_key) -> None:
     """Gateway mode: register a fast watcher so completion triggers a new
-    agent turn (CLI mode uses the completion_queue directly)."""
+    agent turn (CLI mode uses the completion_queue directly).
+
+    Armed on the live gateway loop right away: the post-turn drain alone leaves a
+    process that finishes while its launching turn is still running unwatched, and
+    the chat mute for as long as that turn lasts (#112033). Before the gateway
+    serves, or while it stops, the descriptor waits in ``pending_watchers`` for the
+    startup / post-turn drain instead."""
     proc_session.watcher_interval = 5
-    process_registry.pending_watchers.append({
+    watcher = {
         "session_id": proc_session.id, "check_interval": 5, "session_key": session_key,
         "platform": proc_session.watcher_platform,
         **{attr.removeprefix("watcher_"): getattr(proc_session, attr)
            for attr, _ in _ROUTING_FIELDS[:-1]},
         "notify_on_complete": True, "parent_session_id": proc_session.parent_session_id,
-    })
+    }
+    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    runner = runner_ref() if callable(runner_ref) else None
+    if runner is not None and runner.arm_process_watcher(watcher):
+        return
+    process_registry.pending_watchers.append(watcher)
 
 
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
+    completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
@@ -175,6 +188,8 @@ def spawn_background_process(
         if notify_on_complete:
             proc_session.notify_on_complete = True
             result_data["notify_on_complete"] = True
+            if completion_output_chars:
+                proc_session.completion_output_chars = int(completion_output_chars)
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
             from agent.delegation_context import is_delegated_child_context

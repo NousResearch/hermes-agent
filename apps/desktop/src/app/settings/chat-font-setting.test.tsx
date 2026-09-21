@@ -8,8 +8,10 @@ import { ChatFontSetting } from './chat-font-setting'
 
 const mocks = vi.hoisted(() => ({
   cache: vi.fn(),
+  configUpdatedAt: 1,
   loadedConfig: {} as Record<string, unknown>,
   notifyError: vi.fn(),
+  profileSwitch: null as null | (() => void),
   save: vi.fn()
 }))
 
@@ -41,11 +43,13 @@ vi.mock('@/store/notifications', () => ({
 
 vi.mock('../hooks/use-config-record', () => ({
   setHermesConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
-  useHermesConfigRecord: () => ({ data: mocks.loadedConfig })
+  useHermesConfigRecord: () => ({ data: mocks.loadedConfig, dataUpdatedAt: mocks.configUpdatedAt })
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
-  useOnProfileSwitch: () => {}
+  useOnProfileSwitch: (callback: () => void) => {
+    mocks.profileSwitch = callback
+  }
 }))
 
 async function flushAutosave() {
@@ -59,8 +63,10 @@ async function flushAutosave() {
 describe('ChatFontSetting', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    mocks.configUpdatedAt = 1
     mocks.loadedConfig = { desktop: { font_family: '', repo_scan_enabled: true } }
     mocks.save.mockResolvedValue({ ok: true })
+    mocks.profileSwitch = null
     $chatFontFamily.set('')
   })
 
@@ -94,6 +100,23 @@ describe('ChatFontSetting', () => {
     expect(input.value).toBe('Lexend')
     expect($chatFontFamily.get()).toBe('Lexend')
     expect(mocks.notifyError).toHaveBeenCalledWith(expect.any(Error), 'Autosave failed')
+  })
+
+  it('reseeds after a profile refetch reuses the cached config record', () => {
+    const sharedConfig = { desktop: { font_family: 'Avenir' } }
+    mocks.loadedConfig = sharedConfig
+    const view = render(<ChatFontSetting />)
+
+    expect($chatFontFamily.get()).toBe('Avenir')
+    act(() => mocks.profileSwitch?.())
+    expect($chatFontFamily.get()).toBe('')
+    expect((screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement).disabled).toBe(true)
+
+    mocks.configUpdatedAt = 2
+    view.rerender(<ChatFontSetting />)
+
+    expect((screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement).value).toBe('Avenir')
+    expect($chatFontFamily.get()).toBe('Avenir')
   })
 })
 

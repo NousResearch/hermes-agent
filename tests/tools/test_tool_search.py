@@ -46,6 +46,25 @@ class TestConfigParsing:
         assert cfg.enabled == "auto"
         assert cfg.threshold_pct == 5.0
 
+    def test_defer_default_is_the_registered_list_and_a_user_list_replaces_it(self, caplog):
+        """#116404: the curated deferral set lives in DEFAULT_CONFIG (so ``hermes config set``
+        recognizes the key); a user list replaces it wholesale, [] keeps every tool eager, and a
+        scalar is warned about (naming the expected shape) before falling back to the default."""
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from tools.tool_search import ToolSearchConfig, _DEFAULT_DEFERRED_TOOLS
+
+        configured = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
+        assert isinstance(DEFAULT_CONFIG["tools"]["tool_search"]["defer"], list) and configured
+        assert _DEFAULT_DEFERRED_TOOLS == configured
+        assert ToolSearchConfig.from_raw(None).effective_defer_tools == configured
+        assert ToolSearchConfig.from_raw({"defer": ["terminal"]}).effective_defer_tools == {"terminal"}
+        assert ToolSearchConfig.from_raw({"defer": []}).effective_defer_tools == set()
+
+        with caplog.at_level("WARNING", logger="tools.tool_search"):
+            assert ToolSearchConfig.from_raw({"defer": "todo_list"}).effective_defer_tools == configured
+        assert any("tools.tool_search.defer" in r.getMessage() and "expected a YAML list" in r.getMessage()
+                   for r in caplog.records)
+
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig
         cfg = ToolSearchConfig.from_raw(True)
@@ -471,6 +490,17 @@ class TestBridgeDispatch:
         assert err is not None
         assert "bridge tool" in err.lower()
 
+    @pytest.mark.parametrize("raw_args", ["", "  \n", None])
+    def test_resolve_underlying_call_treats_blank_arguments_as_no_arguments(self, raw_args):
+        """An OpenAI-compatible gateway emitting ``arguments: ""`` for a parameterless deferred tool
+        must execute with {} instead of looping on a JSON parse error (#83937); malformed
+        non-blank arguments still fail closed."""
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call({"calls": [{"name": "todo_list", "arguments": raw_args}]})
+        assert (name, args, err) == ("todo_list", {}, None)
+        _, _, err = resolve_underlying_call({"calls": [{"name": "todo_list", "arguments": '{"todos": ['}]})
+        assert err and "not valid JSON" in err
+
 
 # ---------------------------------------------------------------------------
 # End-to-end via the real handle_function_call (smoke test).
@@ -581,7 +611,7 @@ class TestRegression_OpenClawCron84141:
             "arguments": {"command": "echo hi"},
         })
         assert err is not None
-        assert "not a deferrable" in err
+        assert "directly-listed tool" in err and "call it directly" in err.lower()
 
 
 class TestRegression_ToolsetScoping:

@@ -3,12 +3,12 @@ import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } 
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
-import { settlePendingClarifyToolCall } from '@/lib/chat-messages'
+import { settlePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { normalizeConnectionRequest, setConnectionRequest, updateConnectionRequest } from '@/store/connection-request'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { notify } from '@/store/notifications'
 import {
-  $approvalRequests,
   $secretRequests,
   $sudoRequests,
   $vaultCodeRequests,
@@ -19,11 +19,16 @@ import {
   clearSudoRequest,
   clearVaultCodeRequest,
   clearVaultSaveLoginRequest,
-  clearVaultUnlockRequest
+  clearVaultUnlockRequest,
+  sessionApprovalRequests
 } from '@/store/prompts'
+import { requestRoute } from '@/store/recovery-requests'
 import { forgetServerRequest } from '@/store/server-requests'
 
 import type { GatewayEventContext } from './types'
+
+/** Settings → Safety, where `approvals.timeout` lives (settings/constants.ts). */
+const SAFETY_SETTINGS_ROUTE = '/settings?tab=config:safety'
 
 type ConnectionRequestEvent = GatewayEvent<'connection.request'> & { payload: ConnectionRequestPayload }
 type ConnectionUpdateEvent = GatewayEvent<'connection.update'> & { payload: ConnectionUpdatePayload }
@@ -116,8 +121,36 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if ($approvalRequests.get()[key]?.serverRequestId === id) {
-    clearApprovalRequest(sessionId, $approvalRequests.get()[key]?.requestId)
+  const approval = sessionApprovalRequests(sessionId ?? null)
+    .get()
+    .find(request => request.serverRequestId === id)
+
+  if (approval) {
+    clearApprovalRequest(sessionId, approval.requestId)
+
+    // The Run/Reject bar vanishing is the only thing the user would otherwise
+    // see; the tool row then shows a model-facing "BLOCKED" result. Say what
+    // happened in human terms and point at the setting that controls the wait.
+    if (payload?.reason === 'timeout' && sessionId) {
+      const line = translateNow('assistant.approval.timedOutSystemLine')
+
+      deps.flushQueuedDeltas(sessionId)
+      deps.updateSessionState(sessionId, state => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          { id: `approval-timeout-${id}`, role: 'system', parts: [textPart(line, occurredAt)], timestamp: occurredAt }
+        ]
+      }))
+      notify({
+        kind: 'warning',
+        message: line,
+        action: {
+          label: translateNow('assistant.approval.openSafetySettings'),
+          onClick: () => requestRoute(SAFETY_SETTINGS_ROUTE)
+        }
+      })
+    }
   } else if ($sudoRequests.get()[key]?.requestId === id) {
     clearSudoRequest(sessionId, id)
   } else if ($secretRequests.get()[key]?.requestId === id) {

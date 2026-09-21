@@ -334,6 +334,7 @@ export const zhHant = defineLocale({
       gatewayManagedUpdatesUnavailable: '遠端更新需要支援受管理 SSH 更新的桌面版本。',
       gatewayManagedUpdatesEmpty: '請在已儲存的連線中新增 SSH 連線，即可在此管理更新。',
       keyboardShortcuts: '按鍵繫結',
+      hudGesture: 'HUD 手勢',
       screenCapture: '螢幕擷取',
       notificationAlerts: '桌面通知',
       notificationSounds: '聲音',
@@ -1025,8 +1026,6 @@ export const zhHant = defineLocale({
       title: '輕按叫出 HUD',
       description:
         '在 Mac 上按下並放開 ⌘ + Option，在 Windows/Linux 上按下並放開 Ctrl + Alt，即可從任何應用程式將 HUD 帶到前景。預設關閉，僅適用於此裝置。',
-      statusTitle: 'HUD 手勢狀態',
-      ready: '已就緒。請在半秒內放開兩個按鍵，期間不要按其他鍵或操作滑鼠。其他快速鍵不受影響。',
       permission: '請在系統設定 → 隱私權與安全性 → 輸入監控中允許 Hermes，然後重試。此手勢不會記錄按鍵或擷取畫面。',
       unavailable:
         '此處無法使用這個手勢。Linux 需要 X11 工作階段；Wayland 不提供全域修飾鍵輕按事件。Hermes 內原有的 HUD 快速鍵仍可使用。'

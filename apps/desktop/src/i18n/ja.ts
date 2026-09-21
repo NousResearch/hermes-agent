@@ -343,6 +343,7 @@ export const ja = defineLocale({
       gatewayManagedUpdatesUnavailable: 'リモート更新には、管理対象 SSH の更新に対応したデスクトップ版が必要です。',
       gatewayManagedUpdatesEmpty: '保存済みの接続に SSH 接続を追加すると、ここで更新を管理できます。',
       keyboardShortcuts: 'キー割り当て',
+      hudGesture: 'HUDジェスチャー',
       screenCapture: '画面キャプチャ',
       notificationAlerts: 'デスクトップ通知',
       notificationSounds: 'サウンド',
@@ -987,9 +988,6 @@ export const ja = defineLocale({
       title: 'キーをタップして HUD を呼び出す',
       description:
         'Mac では ⌘ + Option、Windows/Linux では Ctrl + Alt を押して離すと、どのアプリからでも HUD を前面に表示できます。初期設定はオフで、このデバイスにのみ適用されます。',
-      statusTitle: 'HUD ジェスチャーの状態',
-      ready:
-        '使用できます。他のキーやマウスを操作せず、0.5 秒以内に両方のキーを離してください。他のショートカットは変わりません。',
       permission:
         'システム設定 → プライバシーとセキュリティ → 入力監視で Hermes を許可し、再試行してください。このジェスチャーはキー入力の記録や画面の撮影を行いません。',
       unavailable:

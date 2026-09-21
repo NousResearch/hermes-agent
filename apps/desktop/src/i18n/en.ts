@@ -531,6 +531,7 @@ export const en: Translations = {
       gatewayManagedUpdatesUnavailable: 'Remote updates need a desktop version with managed SSH update support.',
       gatewayManagedUpdatesEmpty: 'Add an SSH connection in Saved connections to manage its updates here.',
       keyboardShortcuts: 'Key bindings',
+      hudGesture: 'HUD gesture',
       screenCapture: 'Screen capture',
       notificationAlerts: 'Desktop alerts',
       notificationSounds: 'Sounds',
@@ -1033,9 +1034,6 @@ export const en: Translations = {
       title: 'Tap to summon HUD',
       description:
         'Tap and release ⌘ + Option on Mac, or Ctrl + Alt on Windows/Linux, to bring the HUD forward from any app. Off by default; applies only to this device.',
-      statusTitle: 'HUD gesture status',
-      ready:
-        'Ready. Release both keys within half a second, without another key or mouse action. Other shortcuts stay unchanged.',
       permission:
         'Allow Hermes in System Settings → Privacy & Security → Input Monitoring, then retry. This gesture does not record keystrokes or capture your screen.',
       unavailable:

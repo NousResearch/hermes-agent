@@ -17,6 +17,7 @@ No live gateway, no network. Git and restart are mocked.
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -678,6 +679,24 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "should_warn"),
+    [
+        (["hermes", "gateway", "run"], False),
+        (["hermes", "--profile", "work", "gateway", "run", "--replace"], False),
+        (["hermes", "serve", "--host", "127.0.0.1"], False),
+        (["hermes", "gateway", "status", "--full"], True),
+        (["hermes", "chat"], True),
+    ],
+)
+def test_startup_pending_restart_hint_is_only_for_client_invocations(
+    monkeypatch, argv, should_warn
+):
+    monkeypatch.setattr(sys, "argv", argv)
+
+    assert hermes_main._startup_should_warn_pending_fleet_restart() is should_warn
 
 
 # ── Self-heal: marker left behind by a supervisor-level restart (#105417 / #111272) ──

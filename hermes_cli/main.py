@@ -2748,6 +2748,25 @@ def _first_positional_argv() -> str | None:
     return None
 
 
+def _startup_should_warn_pending_fleet_restart() -> bool:
+    """Whether this invocation can usefully surface the interactive update hint.
+
+    Long-lived runtimes inherit stderr from their supervisor, so warning while a
+    freshly restarted gateway or serve backend is racing the updater's verification
+    records a false alarm in the service journal. Keep the marker and its checks
+    intact for interactive commands; the updater still owns clearing it.
+    """
+    command = _first_positional_argv()
+    if command == "serve":
+        return False
+    if command != "gateway":
+        return True
+
+    from gateway.status import looks_like_gateway_command_line
+
+    return not looks_like_gateway_command_line(subprocess.list2cmdline(sys.argv))
+
+
 def _plugin_cli_discovery_needed() -> bool:
     """True when the CLI might be invoking a plugin-registered subcommand.
 
@@ -3460,12 +3479,13 @@ def main():
             _recover_from_interrupted_install()
         except Exception:
             pass
-        try:
-            from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
+        if _startup_should_warn_pending_fleet_restart():
+            try:
+                from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
 
-            _warn_pending_fleet_restart_on_startup()
-        except Exception:
-            pass
+                _warn_pending_fleet_restart_on_startup()
+            except Exception:
+                pass
 
     if _try_termux_fast_tui_launch():
         return

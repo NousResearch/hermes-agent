@@ -28,8 +28,8 @@ from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, 
 from acp_adapter.commands import HERMES_VERSION, SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
 from acp_adapter.events import (
-    AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update, flush_open_tool_calls,
-    make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
+    _PLAN_TOOL_NAMES, AssistantMessageIdAllocator, _build_plan_update_from_todo_result, _send_update,
+    flush_open_tool_calls, make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
 )
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
@@ -161,7 +161,10 @@ def _history_replay_updates(history: list[dict[str, Any]]):
             result = message.get("content")
             result_text = result if isinstance(result, str) else None
             yield build_tool_complete(tool_call_id, tool_name, result=result_text, function_args=function_args)
-            if tool_name == "todo":
+            # Same constant as the live path in events.py: a transcript written
+            # before e16ad33a9d carries "todo", one written after carries
+            # "todo_list", and both must replay their plan.
+            if tool_name in _PLAN_TOOL_NAMES:
                 plan_update = _build_plan_update_from_todo_result(result_text)
                 if plan_update is not None:
                     yield plan_update

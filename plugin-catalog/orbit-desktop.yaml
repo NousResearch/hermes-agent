@@ -2,7 +2,7 @@ name: orbit-desktop
 repo: https://github.com/mojomast/orbitdesktop
 sha: f416de74333f09e252c8509779a10e4b5888ffc0
 subdir: hermes-plugin
-description: "Bundled Orbit browser desktop with explicit local setup, scoped control, previews and checkpoints. Disclosure — adapter talks only to the configured local Orbit server (loopback, Bearer capability from runtime_dir); mutations off by default. Optional orbit.py setup runs npm ci / node. Bundled VNC/Xpra launchers use the Orbit page's hostname and scheme; optional Linux apps require separate provisioning. Optional api.typesafe.ai requests require explicit consent and a user-supplied key."
+description: "Bundled, dynamic browser workspace that Hermes can reshape on the fly to suit your task: rearrange windows and panes, customize appearance, and build and rapidly deploy sandboxed web apps as custom workspace tools. Bring chat, terminals, dashboards and purpose-built applications together in an evolving desktop, with scoped agent control, previews and checkpoints for workspace changes. Disclosure — adapter talks only to the configured local Orbit server (loopback, Bearer capability from runtime_dir); mutations off by default. Optional orbit.py setup runs npm ci / node. Bundled VNC/Xpra launchers use the Orbit page's hostname and scheme; optional Linux apps require separate provisioning. Optional api.typesafe.ai requests require explicit consent and a user-supplied key."
 maintainer: mojomast
 tier: community
 category: desktop

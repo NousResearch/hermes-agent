@@ -20,7 +20,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
-from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
+from agent.retry_utils import (
+    console_go_overload_retry_ceiling, is_console_go_overload_error, is_zai_coding_overload_error,
+    zai_coding_overload_retry_ceiling,
+)
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
@@ -1360,10 +1363,20 @@ def interruptible_backoff_sleep(
     return None
 
 
-_ZAI_POLICY_NOTES = {
+_BACKOFF_POLICY_NOTES = {
     "zai_coding_overload_long": " (Z.AI Coding overload adaptive long backoff)",
     "zai_coding_overload_short": " (Z.AI Coding overload short retry)",
+    "console_go_overload_long": " (Console Go overload patient backoff)",
+    "console_go_overload_short": " (Console Go overload short retry)",
+    "rate_limit_park": " (parked until provider reset)",
 }
+
+# Interactive-turn sleep cap: a user-facing turn never blocks on a single
+# 3600s park — it sleeps at most this long, then the retry loop re-enters and
+# reaches fallback/surface. Non-interactive callers may opt out via
+# ``compute_error_backoff(..., interactive=False)`` to honour full parks.
+_INTERACTIVE_SLEEP_CAP_S = 300.0
+_INTERACTIVE_CAPPED_POLICIES = frozenset({"console_go_overload_long", "rate_limit_park"})
 
 
 def reset_hint(api_error: Exception) -> str:
@@ -1384,15 +1397,21 @@ def reset_hint(api_error: Exception) -> str:
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
     is_zai_coding_overload: bool, base_url: Any, model: Any,
+    is_console_go_overload: bool = False, interactive: bool = True,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
     reset in ~171s, so a 120s cap re-tripped the limit); otherwise jittered backoff,
-    replaced by the adaptive policy for 429s / Z.AI overloads. Normal retries are
-    buffered; long Z.AI Coding waits surface immediately."""
+    replaced by the adaptive policy for 429s / Z.AI overloads, the patient Console Go
+    ladder (300→1200→3600s) for relay overloads, or a structured-reset park
+    (``resets_at`` / ``resets_in_seconds``, clamped at 3600s). Normal retries are
+    buffered; long Z.AI Coding / Console Go / park waits surface immediately."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
-    from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, parse_retry_after_seconds
+    from agent.retry_utils import (
+        adaptive_rate_limit_backoff, console_go_overload_backoff, jittered_backoff,
+        parse_retry_after_seconds, park_seconds_from_error,
+    )
 
     # Respect Retry-After on every retryable provider error, not just 429s. Retryable
     # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
@@ -1421,20 +1440,53 @@ def compute_error_backoff(
             _retry_after = None
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
-    _adaptive = is_rate_limited or is_zai_coding_overload
+    _adaptive = is_rate_limited or is_zai_coding_overload or is_console_go_overload
     if _adaptive and _retry_after is None:
-        wait_time, _backoff_policy = adaptive_rate_limit_backoff(
-            retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
-        )
+        # A structured reset parks the turn until the provider's own window
+        # instead of hot-looping; unparseable/missing fields return None and
+        # fall through to the ladder/default paths below — never freeze.
+        # Park-first: a stated provider window dominates the heuristic adaptive
+        # wait; the Console Go ladder sits between park and adaptive fallback.
+        _park_seconds = park_seconds_from_error(api_error)
+        if _park_seconds is not None:
+            wait_time, _backoff_policy = _park_seconds, "rate_limit_park"
+            logger.info(
+                "Parking turn until provider reset (%.0fs, attempt %s/%s) %s policy=%s error=%s",
+                _park_seconds, retry_count, max_retries, agent._client_log_context(),
+                _backoff_policy, api_error,
+            )
+        elif is_console_go_overload:
+            wait_time, _backoff_policy = console_go_overload_backoff(
+                retry_count, error=api_error, default_wait=wait_time,
+            )
+        else:
+            wait_time, _backoff_policy = adaptive_rate_limit_backoff(
+                retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
+            )
+        if interactive and _backoff_policy in _INTERACTIVE_CAPPED_POLICIES and wait_time > _INTERACTIVE_SLEEP_CAP_S:
+            # Interactive guard: never block a user-facing turn on one 3600s
+            # sleep. The capped sleep is interruptible; the loop then re-enters
+            # and the reduced Console Go ceiling still drives fallback/surface.
+            logger.info(
+                "Capping interactive %s wait %.0fs → %.0fs (attempt %s/%s) %s",
+                _backoff_policy, wait_time, _INTERACTIVE_SLEEP_CAP_S,
+                retry_count, max_retries, agent._client_log_context(),
+            )
+            wait_time = _INTERACTIVE_SLEEP_CAP_S
     _reset = reset_hint(api_error) if _adaptive else ""
-    _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
+    if is_console_go_overload and not is_rate_limited:
+        _wait_reason = "Console Go relay overloaded"
+    elif is_zai_coding_overload and not is_rate_limited:
+        _wait_reason = "Provider overloaded"
+    else:
+        _wait_reason = "Rate limited"
     if _adaptive:
-        _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
+        _policy_note = _BACKOFF_POLICY_NOTES.get(_backoff_policy or "", "")
         _rate_limit_status = (
             f"⏱️ {_wait_reason}.{f' Resets in {_reset}.' if _reset else ''} Waiting {wait_time:.1f}s "
             f"(attempt {retry_count + 1}/{max_retries}){_policy_note}..."
         )
-        if _backoff_policy == "zai_coding_overload_long":
+        if _backoff_policy in ("zai_coding_overload_long", "console_go_overload_long", "rate_limit_park"):
             agent._emit_diagnostic_status(_rate_limit_status)
         else:
             agent._buffer_diagnostic_status(_rate_limit_status)
@@ -1639,6 +1691,7 @@ class ClassifiedErrorVerdict:
     is_rate_limited: bool
     wrapped_output_cap_budget: Optional[int]
     is_zai_coding_overload: bool
+    is_console_go_overload: bool = False
 
 
 _OVERFLOW_REASONS = frozenset({
@@ -1773,6 +1826,7 @@ def route_classified_error(
     is_rate_limited = False
     _wrapped_output_cap_budget = None
     _is_zai_coding_overload = False
+    _is_console_go_overload = False
     status_code = getattr(api_error, "status_code", None)
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ClassifiedErrorVerdict:
@@ -1784,6 +1838,7 @@ def route_classified_error(
             provider_overflow_recovery_pending=_provider_overflow_recovery_pending,
             is_rate_limited=is_rate_limited, wrapped_output_cap_budget=_wrapped_output_cap_budget,
             is_zai_coding_overload=_is_zai_coding_overload,
+            is_console_go_overload=_is_console_go_overload,
         )
 
     def _fallback_break() -> ClassifiedErrorVerdict:
@@ -1875,6 +1930,13 @@ def route_classified_error(
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+    # Console Go relay overloads classify `overloaded` / `rate_limit`, which the
+    # eager-fallback and backoff paths below do not otherwise stretch. Detect
+    # directly so the patient ladder runs, and *shrink* the ceiling to reach
+    # fallback/surface instead of parking for hours (min, not max).
+    _is_console_go_overload = is_console_go_overload_error(base_url=str(base_url), model=model, error=api_error)
+    if _is_console_go_overload:
+        max_retries = min(max_retries, console_go_overload_retry_ceiling())
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)

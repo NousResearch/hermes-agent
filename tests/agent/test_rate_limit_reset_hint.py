@@ -45,7 +45,10 @@ def test_rate_limit_retry_status_names_the_reset_window():
         base_url="https://example.test/v1", model="test/model",
     )
 
-    text = agent._buffer_status.call_args.args[0]
+    # Parkable 429s (structured reset present) surface immediately on the emit
+    # rail; plain adaptive waits stay buffered. Either rail must name the window.
+    _rail = agent._buffer_status.call_args or agent._emit_diagnostic_status.call_args
+    text = _rail.args[0]
     assert "~13m" in text
 
 

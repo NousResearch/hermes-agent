@@ -529,7 +529,7 @@ class GatewayBusySessionMixin:
         )
         return (enriched_text or text).strip() if successful_transcripts else text
 
-    def _steer_text_with_origin(self, text: str, event: MessageEvent) -> str:
+    def _steer_text_with_origin(self: GatewayRunner, text: str, event: MessageEvent) -> str:
         """Keep event origin in this injection, never in the cached system prompt."""
         if not text.strip():
             return text
@@ -552,6 +552,7 @@ class GatewayBusySessionMixin:
         # Adapter busy callbacks can bypass the routed normal-message scope.
         with self._profile_scope_for_source(source):
             redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+        text = self._prepend_inbound_reply_context(event, source, text, redact_pii=redact_pii)
         if _should_redact_pii(source.platform, redact_pii):
             # Only the model-facing copy changes; event/source remain valid routing state.
             hashers = {

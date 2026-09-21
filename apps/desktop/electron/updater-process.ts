@@ -168,10 +168,17 @@ export function wrapHandoffForDetachedConsole(
   /** Spawn NON-detached so the wrapper gets a hidden console the script inherits. */
   detached: false
 } {
-  const parameters: Record<string, string> = {}
+  const parameters: Record<string, string | boolean> = {}
   const allowed = new Set(['InstallRoot', 'Branch', 'DesktopPid', 'RelaunchExe'])
 
-  for (let index = 0; index < extraArgs.length; index += 2) {
+  for (let index = 0; index < extraArgs.length; index += 1) {
+    if (extraArgs[index] === '-NoGateway') {
+      // Remote-served Desktop updates must not start a competing local gateway.
+      parameters.NoGateway = true
+
+      continue
+    }
+
     const name = extraArgs[index].slice(1)
 
     if (!extraArgs[index].startsWith('-') || !allowed.has(name) || index + 1 >= extraArgs.length) {
@@ -179,6 +186,7 @@ export function wrapHandoffForDetachedConsole(
     }
 
     parameters[name] = extraArgs[index + 1]
+    index += 1
   }
 
   const payload = Buffer.from(
@@ -190,7 +198,7 @@ export function wrapHandoffForDetachedConsole(
 $ErrorActionPreference = 'Stop'
 $data = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
 $parameters = @{}
-foreach ($property in $data.Parameters.PSObject.Properties) { $parameters[$property.Name] = [string]$property.Value }
+foreach ($property in $data.Parameters.PSObject.Properties) { $parameters[$property.Name] = $property.Value }
 & $data.ScriptPath @parameters
 exit $LASTEXITCODE
 `

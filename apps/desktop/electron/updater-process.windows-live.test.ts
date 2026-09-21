@@ -14,7 +14,7 @@ const run = promisify(execFile)
 // Harmless stand-in for windows.ps1: no update, installer, or Hermes runtime.
 // It records actual parameter binding and the native interactive-console state.
 const fixture = String.raw`
-param([string]$InstallRoot, [string]$Branch, [int]$DesktopPid, [string]$RelaunchExe)
+param([string]$InstallRoot, [string]$Branch, [int]$DesktopPid, [string]$RelaunchExe, [switch]$NoGateway)
 $ErrorActionPreference = 'Stop'
 Add-Type @'
 using System;
@@ -39,6 +39,7 @@ while ((Get-Process -Id $env:HERMES_UPDATER_TEST_PARENT -ErrorAction SilentlyCon
 }
 $result = @{
   InstallRoot = $InstallRoot; Branch = $Branch; DesktopPid = $DesktopPid; RelaunchExe = $RelaunchExe
+  NoGateway = $NoGateway.IsPresent
   Console = ($window -ne [IntPtr]::Zero); Visible = [UpdaterConsoleProbe]::IsWindowVisible($window)
   Interactive = $interactive; ParentGone = !(Get-Process -Id $env:HERMES_UPDATER_TEST_PARENT -ErrorAction SilentlyContinue)
 }
@@ -46,9 +47,14 @@ $result = @{
 [IO.File]::Move(($env:HERMES_UPDATER_TEST_RESULT + '.tmp'), $env:HERMES_UPDATER_TEST_RESULT)
 `
 
-test.skipIf(process.platform !== 'win32').each(['control', 'adversarial'])(
-  'Windows updater %s preserves data, stays hidden, and survives its parent exiting',
-  async launchMode => {
+test.skipIf(process.platform !== 'win32').each([
+  { launchMode: 'control', noGateway: false },
+  { launchMode: 'control', noGateway: true },
+  { launchMode: 'adversarial', noGateway: false },
+  { launchMode: 'adversarial', noGateway: true }
+])(
+  'Windows updater $launchMode (NoGateway=$noGateway) preserves data, stays hidden, and survives its parent exiting',
+  async ({ launchMode, noGateway }) => {
     const temporary = mkdtempSync(path.join(os.tmpdir(), 'hermes-updater-test-'))
 
     try {
@@ -90,7 +96,7 @@ test.skipIf(process.platform !== 'win32').each(['control', 'adversarial'])(
           contents: `
             import { resolveUpdateScriptHandoff, wrapHandoffForDetachedConsole, spawnUpdaterProcess } from './updater-process';
             const handoff = resolveUpdateScriptHandoff(${JSON.stringify(root)});
-            const extra = ${JSON.stringify(['-InstallRoot', root, '-Branch', branch, '-DesktopPid', '42', '-RelaunchExe', relaunchExe])};
+            const extra = ${JSON.stringify(['-InstallRoot', root, '-Branch', branch, '-DesktopPid', '42', '-RelaunchExe', relaunchExe, ...(noGateway ? ['-NoGateway'] : [])])};
             const options = { detached: true, stdio: 'ignore', env: { ...process.env, HERMES_UPDATER_TEST_PARENT: String(process.pid) } };
             const wrapped = wrapHandoffForDetachedConsole(handoff, extra);
             spawnUpdaterProcess(wrapped.command, wrapped.args, { ...options, detached: wrapped.detached });
@@ -114,7 +120,9 @@ test.skipIf(process.platform !== 'win32').each(['control', 'adversarial'])(
           HERMES_UPDATER_TEST_EXPAND: 'EXPANDED'
         }
       })
-      const deadline = Date.now() + 15_000
+      // Cold Windows PowerShell startup plus Add-Type can exceed 15s while
+      // other CI/build workers are active; keep the native probe bounded.
+      const deadline = Date.now() + 30_000
 
       while ((!existsSync(resultFile) || !existsSync(installerResult)) && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 100))
@@ -128,6 +136,7 @@ test.skipIf(process.platform !== 'win32').each(['control', 'adversarial'])(
           Branch: result.Branch,
           DesktopPid: result.DesktopPid,
           RelaunchExe: result.RelaunchExe,
+          NoGateway: result.NoGateway,
           Visible: result.Visible,
           ParentGone: result.ParentGone
         },
@@ -136,6 +145,7 @@ test.skipIf(process.platform !== 'win32').each(['control', 'adversarial'])(
           Branch: branch,
           DesktopPid: 42,
           RelaunchExe: relaunchExe,
+          NoGateway: noGateway,
           Visible: false,
           ParentGone: true
         }
@@ -145,5 +155,5 @@ test.skipIf(process.platform !== 'win32').each(['control', 'adversarial'])(
       rmSync(temporary, { recursive: true, force: true })
     }
   },
-  40_000
+  60_000
 )

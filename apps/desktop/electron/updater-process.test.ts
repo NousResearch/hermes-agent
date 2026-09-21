@@ -250,6 +250,35 @@ test('wrapHandoffForDetachedConsole uses a hidden wrapper while keeping data out
   assert.match(wrapped.args.at(-1)!, /^[A-Za-z0-9+/]+=*$/)
   assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-Command', 'unexpected']))
   assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-Branch']))
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-NoGateway', 'false']))
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-NoGateway:$false']))
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-NoGateway', '-Command', 'unexpected']))
+})
+
+test.each([
+  { switches: [], noGateway: undefined },
+  { switches: ['-NoGateway'], noGateway: true }
+])('Windows updater encodes NoGateway=$noGateway as a typed switch', ({ switches, noGateway }) => {
+  const handoff = {
+    command: 'powershell',
+    args: [],
+    scriptPath: String.raw`C:\Hermes & friends\windows.ps1`
+  }
+
+  // A switch can precede named values as well as follow them at the call site.
+  for (const extra of [
+    [...switches, '-Branch', '-feature/remote'],
+    ['-Branch', '-feature/remote', ...switches]
+  ]) {
+    const wrapped = wrapHandoffForDetachedConsole(handoff, extra)
+    const dispatcher = Buffer.from(wrapped.args.at(-1)!, 'base64').toString('utf16le')
+    const encodedPayload = dispatcher.match(/FromBase64String\('([A-Za-z0-9+/=]+)'\)/)?.[1]
+    assert.ok(encodedPayload)
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64').toString('utf8'))
+    assert.equal(payload.ScriptPath, handoff.scriptPath)
+    assert.equal(payload.Parameters.Branch, '-feature/remote')
+    assert.equal(payload.Parameters.NoGateway, noGateway)
+  }
 })
 
 test('resolvePosixScriptHandoff returns the bash recipe when the script exists', () => {

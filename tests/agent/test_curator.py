@@ -1202,3 +1202,45 @@ def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
         "run_conversation, or every copied tool-worker context keeps private "
         "marks and the read-before-write guard refuses all patches"
     )
+
+
+# ---------------------------------------------------------------------------
+# Review thread context (multiplexed gateway)
+# ---------------------------------------------------------------------------
+
+
+def test_review_thread_inherits_secret_scope(curator_env, monkeypatch):
+    """The daemon review thread must carry the caller's contextvars.
+
+    Under ``gateway.multiplex_profiles`` the profile secret scope is a
+    ``ContextVar``; a bare ``threading.Thread`` starts with an empty context,
+    so the fork's first ``get_secret("ANTHROPIC_TOKEN")`` was fail-closed
+    ("could not read this profile's ANTHROPIC_TOKEN") even when the caller had
+    installed a scope. Start the thread through ``copy_context().run``.
+    """
+    from agent import secret_scope
+
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    _write_bundled_and_agent(curator_env, u)
+
+    seen = {}
+
+    def _stub(prompt):
+        seen["scope"] = secret_scope.current_secret_scope()
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+
+    token = secret_scope.set_secret_scope({"ANTHROPIC_TOKEN": "scoped-token"})
+    try:
+        c.run_curator_review(synchronous=False, consolidate=True, dry_run=True)
+        for t in threading.enumerate():
+            if t.name == "curator-review":
+                t.join(timeout=10.0)
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+    assert "scope" in seen, "LLM review stub was never called"
+    assert seen["scope"] == {"ANTHROPIC_TOKEN": "scoped-token"}

@@ -9,6 +9,7 @@ all auto-transitions; the fork uses the auxiliary client and never touches the m
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -960,7 +961,11 @@ def run_curator_review(
     if synchronous:
         _llm_pass()
     else:
-        threading.Thread(target=_llm_pass, daemon=True, name="curator-review").start()
+        # A bare Thread starts with an empty contextvars context, dropping the caller's profile
+        # secret scope (fail-closed under multiplex_profiles); run the pass in a copy of it.
+        threading.Thread(
+            target=contextvars.copy_context().run, args=(_llm_pass,), daemon=True, name="curator-review",
+        ).start()
     return {"started_at": start.isoformat(), "auto_transitions": counts, "summary_so_far": auto_summary}
 
 

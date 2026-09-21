@@ -32,7 +32,9 @@ class RoomService:
 
     def send(self, *, room_id, event_id, payload):
         self.calls.append(('send', room_id, event_id, payload))
-        return {'event_id': event_id, 'payload': payload}
+        # Ordinary native replay keeps its historical wire acknowledgement;
+        # delegated messaging alone suppresses duplicate planner claims.
+        return {'event_id': event_id, 'payload': payload, 'idempotent': True}
 
     def stop_room(self, room_id, *, cancel_id, require_acknowledged=False):
         self.calls.append(('stop', room_id, cancel_id, require_acknowledged))

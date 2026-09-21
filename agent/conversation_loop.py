@@ -999,10 +999,17 @@ def _compression_deferred_result(agent, messages: List[Dict], api_call_count: in
             "turn deferred: compression transiently blocked (%s) (session=%s) — not counting as "
             "compression exhaustion", block if isinstance(block, str) else "unknown guard", session,
         )
-        _final = (
-            "Context compression is temporarily paused after a recent failed attempt. Please retry "
-            "in a moment — compression will resume automatically (or run /compress to force a retry now)."
-        )
+        if isinstance(block, str) and block.startswith("frequency:"):
+            _final = (
+                "Context compression is temporarily paused because this session compacted repeatedly. "
+                "Automatic compression will resume when the 10-minute safety window expires "
+                "(or run /compress to force it now)."
+            )
+        else:
+            _final = (
+                "Context compression is temporarily paused after a recent failed attempt. Please retry "
+                "in a moment — compression will resume automatically (or run /compress to force a retry now)."
+            )
     else:
         holder = getattr(agent, "_compression_skipped_due_to_lock", None)
         logger.info(

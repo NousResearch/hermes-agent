@@ -87,6 +87,23 @@ class TestCounterRoundTripsBindSessionState:
             assert second.should_compress(10**9) is False
             assert second._compression_block_reason() == "frequency:300"
 
+    def test_frequency_guard_lapse_reenables_compaction_and_clears_storage(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        compressor = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(compressor._FREQUENT_COMPACTION_LIMIT):
+                compressor.record_completed_compaction()
+
+        with patch("agent.context_compressor.time.time", return_value=1_600.0):
+            assert compressor.should_compress(10**9) is True
+
+        assert compressor._compression_frequency_state() == (0.0, 0)
+        assert db.get_session_model_config_value(
+            "s1", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, "missing"
+        ) is None
+
     def test_stale_compressor_refreshes_frequency_guard_before_entry(self, tmp_path):
         db = _db(tmp_path)
         db.create_session("s1", source="cli")

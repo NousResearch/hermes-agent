@@ -149,7 +149,6 @@ class TestFutilityGuard:
         assert should_compress is False
         assert reason == "frequency:360"
 
-
     def test_effective_compaction_still_resets_the_counter(self):
         """A compaction that gets the prompt under the threshold is not thrashing."""
         cc = _compressor(threshold_tokens=750_000)

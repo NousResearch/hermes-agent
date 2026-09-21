@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.conversation_compression import compression_skipped_due_to_lock
+from agent.conversation_loop import _compression_deferred_result
 from run_agent import AIAgent
 import run_agent
 
@@ -116,6 +117,22 @@ _PREFILL = [
     {"role": "user", "content": "previous question"},
     {"role": "assistant", "content": "previous answer"},
 ]
+
+
+def test_frequency_defer_explains_repeated_compactions_and_escape_hatch():
+    agent = SimpleNamespace(
+        session_id="session-1",
+        _compression_blocked_transient="frequency:360",
+        _flush_status_buffer=lambda: None,
+    )
+
+    result = _compression_deferred_result(agent, [], 1, reason="transient_block")
+
+    assert result["compression_deferred"] is True
+    assert "compacted repeatedly" in result["final_response"]
+    assert "10-minute safety window" in result["final_response"]
+    assert "/compress" in result["final_response"]
+    assert "failed attempt" not in result["final_response"]
 
 
 def _lock_skipping_compress(agent, *, holder=LOCK_HOLDER):

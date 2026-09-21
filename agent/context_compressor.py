@@ -2766,6 +2766,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 if not self.quiet_mode:
                     logger.debug("Compression deferred — %s for %.0fs more", what, remaining)
                 return True
+        # Unlike the summary-failure cooldown, provider-proven overflow does not bypass this guard:
+        # the frequency cap is what stops an otherwise-successful refill/compact loop. A manual
+        # /compress remains the explicit escape hatch when the user chooses to continue the session.
         if remaining := self._frequency_guard_remaining():
             if not self.quiet_mode:
                 logger.warning(

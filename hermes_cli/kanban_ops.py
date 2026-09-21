@@ -16,6 +16,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli import kanban_reclaim as kbr
 from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
 
 
@@ -338,13 +339,65 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             shutil.rmtree(path, ignore_errors=True)
             removed_ws += 1
 
+    reclaimed_wt = _reclaim_worktrees(args)
+
     event_days = getattr(args, "event_retention_days", 30)
     log_days = getattr(args, "log_retention_days", 30)
     with kbc.connect_closing() as conn:
         removed_events = kb.gc_events(conn, older_than_seconds=event_days * 24 * 3600)
     removed_logs = kb.gc_worker_logs(older_than_seconds=log_days * 24 * 3600)
-    print(f"GC complete: {removed_ws} workspace(s), "
+    print(f"GC complete: {removed_ws} workspace(s), {reclaimed_wt} done-card worktree(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
+    return 0
+
+
+def _reclaim_roots(args: argparse.Namespace) -> list[Path]:
+    """``--worktree-root`` when given, else the globbed/board-derived defaults."""
+    explicit = getattr(args, "worktree_roots", None)
+    if explicit:
+        return [Path(p).expanduser() for p in explicit]
+    return kbr.default_roots()
+
+
+def _reclaim_worktrees(args: argparse.Namespace) -> int:
+    """Reap done cards' worktrees, printing the reason for every refusal.
+
+    A reclaim pass that silently removes nothing is the failure mode this
+    replaces, so refusals are printed, not swallowed.
+    """
+    if getattr(args, "no_worktrees", False):
+        return 0
+    roots = _reclaim_roots(args)
+    if not roots:
+        return 0
+    decisions = kbr.reclaim_done_worktrees(
+        roots=roots,
+        min_age_hours=getattr(args, "worktree_min_age_hours", 6),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    print(f"Worktree reclaim over {len(roots)} root(s):")
+    for line in kbr.format_decisions(decisions):
+        print(line)
+    removed = sum(1 for d in decisions if d.removed)
+    print(f"  -> {removed} removed, {len(decisions) - removed} kept")
+    return removed
+
+
+def _cmd_reclaim_worktrees(args: argparse.Namespace) -> int:
+    """``hermes kanban reclaim`` with no task id — the disk-guard entry point."""
+    _reclaim_worktrees(args)
+    root_args = _reclaim_roots(args)
+    if getattr(args, "logs", False):
+        for root in root_args:
+            decisions = kbr.reclaim_stale_sibling_logs(
+                root=Path(root).expanduser(),
+                min_age_days=getattr(args, "log_min_age_days", 7),
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+            if decisions:
+                print(f"Sibling logs under {root}:")
+                for line in kbr.format_decisions(decisions):
+                    print(line)
     return 0
 
 

@@ -5036,7 +5036,14 @@ function resolveRendererIndexWithMissing(): { index: string; missing: string[] }
   // unpackedPathFor is a no-op outside an asar, so both candidates collapse
   // to APP_ROOT/dist and the original order is preserved.
   const candidates = IS_PACKAGED ? [webDistIndex, asarIndex] : [asarIndex, webDistIndex]
-  const present = [...new Set(candidates)].filter(fileExists)
+  const present = [...new Set(candidates)].filter(candidate => {
+    try {
+      fs.readFileSync(candidate, 'utf8')
+      return true
+    } catch {
+      return false
+    }
+  })
 
   // index.html and the hashed chunks it names are one generation. An update
   // that replaces only one of the two shipped copies (app.asar vs

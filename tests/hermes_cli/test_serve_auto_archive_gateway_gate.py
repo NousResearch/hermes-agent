@@ -201,3 +201,106 @@ class TestSatelliteMultiplexerOwnership:
         monkeypatch.setattr(served, "recorded_served_profiles", lambda *a, **k: ["work"])
 
         assert wss._auto_archive_owned_by_gateway("work") is True
+
+
+class TestStrictIdentityProbe:
+    """`get_running_pid()` normalises unreadable identity metadata to None, so an ACTIVE lock with
+    corrupt records reported running=False, probe_error=False and the gate opened a second writer.
+    Review P1 on #110405. These use REAL unreadable metadata, not a mocked helper."""
+
+    @staticmethod
+    def _plant_unreadable_lock(home: Path):
+        import json
+        import os
+
+        (home / "gateway.pid").write_text(json.dumps({"pid": 4321}), encoding="utf-8")
+        lock = home / "gateway.lock"
+        lock.write_text("{}", encoding="utf-8")
+        os.chmod(lock, 0o000)
+        return lock
+
+    @pytest.mark.skipif(hasattr(__import__("os"), "geteuid") and __import__("os").geteuid() == 0,
+                        reason="root bypasses the permission bits this relies on")
+    def test_unreadable_lock_metadata_is_unknown_not_absent(self, serve_home):
+        import os
+
+        from gateway.status import get_running_pid, get_running_pid_identity_strict
+        import hermes_cli.web_server_sessions as wss
+
+        lock = self._plant_unreadable_lock(serve_home)
+        try:
+            # The strict probe refuses to call unreadable metadata "absent"...
+            with pytest.raises(RuntimeError):
+                get_running_pid_identity_strict(serve_home / "gateway.pid")
+
+            # ...and the gate follows it.
+            assert wss._gateway_owns_home(serve_home) is True, \
+                "unreadable identity metadata must count as owned, not absent"
+        finally:
+            if lock.exists():
+                os.chmod(lock, 0o600)
+
+        # The production normalisation the review pointed at, asserted LAST: the non-strict probe
+        # reports plain absence for the same state — and unlinks the lock on the way past, even
+        # with cleanup_stale=False, which is why this cannot run before the assertions above.
+        lock = self._plant_unreadable_lock(serve_home)
+        try:
+            assert get_running_pid(serve_home / "gateway.pid", cleanup_stale=False) is None
+        finally:
+            if lock.exists():
+                os.chmod(lock, 0o600)
+
+    @pytest.mark.skipif(hasattr(__import__("os"), "geteuid") and __import__("os").geteuid() == 0,
+                        reason="root bypasses the permission bits this relies on")
+    def test_the_sweep_stands_down_on_unreadable_metadata(self, serve_home, monkeypatch):
+        import os
+
+        import hermes_cli.web_server_sessions as wss
+
+        lock = self._plant_unreadable_lock(serve_home)
+        try:
+            _forbid_open(monkeypatch, wss)
+            wss._maybe_auto_archive_for_profile(None)
+        finally:
+            if lock.exists():
+                os.chmod(lock, 0o600)
+
+
+class TestCrossContainerHealthRung:
+    """In a split gateway/dashboard deployment GATEWAY_HEALTH_URL can be the ONLY evidence the
+    gateway is live — local PID and runtime files are absent entirely. Review P1 on #110405."""
+
+    def test_remote_health_alone_establishes_ownership(self, serve_home, monkeypatch):
+        import hermes_cli.web_server as ws
+        import hermes_cli.web_server_gateway as wsg
+        import hermes_cli.web_server_sessions as wss
+
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gateway:8642", raising=False)
+        monkeypatch.setattr(wsg, "_probe_gateway_health", lambda: (True, {"ok": True}))
+
+        assert wss._gateway_owns_home(serve_home) is True, \
+            "a live remote gateway owns the shared store even with no local PID files"
+        _forbid_open(monkeypatch, wss)
+        wss._maybe_auto_archive_for_profile(None)
+
+    def test_a_configured_probe_that_cannot_confirm_fails_closed(self, serve_home, monkeypatch):
+        """_probe_gateway_health collapses DNS/timeout/refused/non-200 into (False, None), which is
+        indistinguishable from 'the gateway is down'. Configured-but-unconfirmed must not license
+        a second writer."""
+        import hermes_cli.web_server as ws
+        import hermes_cli.web_server_gateway as wsg
+        import hermes_cli.web_server_sessions as wss
+
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gateway:8642", raising=False)
+        monkeypatch.setattr(wsg, "_probe_gateway_health", lambda: (False, None))
+
+        assert wss._gateway_owns_home(serve_home) is True
+
+    def test_no_health_url_configured_leaves_the_local_answer_alone(self, serve_home, monkeypatch):
+        """Fail-closed must not become fail-always for the ordinary single-host install."""
+        import hermes_cli.web_server as ws
+        import hermes_cli.web_server_sessions as wss
+
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "", raising=False)
+
+        assert wss._gateway_owns_home(serve_home) is False

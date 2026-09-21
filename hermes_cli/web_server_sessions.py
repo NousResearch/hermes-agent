@@ -215,23 +215,58 @@ _AUTO_ARCHIVE_CHECK_INTERVAL_S = 300.0
 _last_auto_archive_check: Dict[str, float] = {}
 
 
+def _strict_gateway_health_probe():
+    """``(alive, body)`` for the configured cross-container gateway, raising on "couldn't tell".
+
+    ``_probe_gateway_health`` collapses every failure — DNS, timeout, refused, non-200 — into
+    ``(False, None)``, which ``resolve_gateway_liveness`` cannot distinguish from a gateway that
+    is genuinely down. For a *status page* that is fine; for this gate it is not, because
+    "unreachable" would license a second writer on a store a live remote gateway owns. So a
+    configured endpoint that does not positively confirm liveness raises, which
+    ``resolve_gateway_liveness`` records as ``probe_error`` and this gate treats as owned.
+
+    The cost is deliberate: with ``GATEWAY_HEALTH_URL`` set and the remote gateway actually down,
+    the dashboard stops sweeping rather than risk the tear. A skipped sweep costs one archive
+    interval (#110405 review).
+    """
+    from hermes_cli.web_server_gateway import _probe_gateway_health
+
+    alive, body = _probe_gateway_health()
+    if alive:
+        return True, body
+    raise RuntimeError("configured gateway health endpoint did not confirm liveness")
+
+
 def _gateway_owns_home(home: Path) -> bool:
     """True when a gateway owns the store at ``home`` *or* ownership can't be determined.
 
     ``_check_gateway_running`` returns only ``GatewayLiveness.running`` and drops
     ``probe_error``, which is the field that exists to tell "down" from "unknown"
-    (``gateway/status.py``). A rung that raises degrades to the next and leaves
-    ``running=False``, so a caller that only reads ``.running`` treats an unreadable
-    PID file or an unflockable lock as "no gateway" and opens a second writer — the
-    exact tear this gate is here to prevent. Resolve the liveness ourselves so the
-    unknown state survives, and count it as owned.
-    """
-    from gateway.status import get_running_pid, resolve_gateway_liveness
+    (``gateway/status.py``). A caller that reads only ``.running`` treats an unreadable PID file
+    or an unflockable lock as "no gateway" and opens a second writer — the exact tear this gate
+    exists to prevent. So resolve the liveness here and count unknown as owned.
 
-    # cleanup_stale=False: a status probe for ANOTHER profile must never unlink its PID file.
+    Two rungs need more than the default wiring, both found in review on #110405:
+
+    * ``get_running_pid()`` normalises malformed/unreadable identity metadata to ``None``, so an
+      ACTIVE runtime lock whose PID or lock record is corrupt reported ``running=False,
+      probe_error=False``. ``get_running_pid_identity_strict()`` raises on ambiguous state
+      instead, and (like the non-strict call with ``cleanup_stale=False``) never unlinks another
+      profile's PID file.
+    * The cross-container health rung is only consulted when a probe is passed. In a split
+      gateway/dashboard deployment ``GATEWAY_HEALTH_URL`` can be the ONLY evidence the gateway is
+      live, since local PID and runtime files are absent entirely.
+    """
+    from gateway.status import get_running_pid_identity_strict, resolve_gateway_liveness
+    from hermes_cli.web_server import _GATEWAY_HEALTH_URL
+
+    def _pid_probe(path):
+        identity = get_running_pid_identity_strict(Path(path))
+        return identity[0] if identity else None
+
     liveness = resolve_gateway_liveness(
-        profile_dir=home, use_cache=False,
-        pid_probe=lambda path: get_running_pid(path, cleanup_stale=False))
+        profile_dir=home, use_cache=False, pid_probe=_pid_probe,
+        health_probe=_strict_gateway_health_probe if _GATEWAY_HEALTH_URL else None)
     return bool(liveness.running or liveness.probe_error)
 
 

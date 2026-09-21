@@ -354,6 +354,28 @@ class StartupModelRoute(NamedTuple):
     api_key: str = ""
 
 
+def _provider_entry_claims_startup_route(entry: Any) -> bool:
+    """Whether a ``providers.<name>`` entry intentionally declares a route.
+
+    Provider blocks also hold transport tuning. Those fields apply after a
+    route has been selected and must not make a vendor prefix in a model id
+    select that provider at startup.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if any(_clean(entry.get(key)) for key in ("base_url", "baseUrl", "url", "api")):
+        return True
+    if any(
+        _clean(entry.get(key))
+        for key in ("api_key", "apiKey", "key_env", "keyEnv", "api_key_env", "apiKeyEnv", "key_cmd")
+    ):
+        return True
+    return any(
+        _declared_model_ids(entry.get(key))
+        for key in ("model", "default_model", "defaultModel", "models")
+    )
+
+
 def resolve_startup_model_route(
     raw_model: str, *, explicit_provider: str = "", current_provider: str = "",
     user_providers: Optional[dict] = None,
@@ -394,8 +416,11 @@ def resolve_startup_model_route(
     # configured ids come from the caller's config, the same source the ``/`` branch below uses.
     from hermes_cli.models import parse_model_input
     from hermes_cli.providers import custom_provider_slug
-    custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
-                  for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
+    custom_ids = {
+        custom_provider_slug(str(entry.get("name") or key), str(key))
+        for key, entry in (user_providers or {}).items()
+        if _provider_entry_claims_startup_route(entry)
+    }
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
                       for entry in (custom_providers or []) if isinstance(entry, dict) and _clean(entry.get("name")))
     qualified_provider, qualified_model = parse_model_input(raw, "", custom_ids=custom_ids)
@@ -417,7 +442,11 @@ def resolve_startup_model_route(
         except Exception:
             pass
 
-    configured = {str(name).strip().lower() for name in (user_providers or {}) if str(name).strip()}
+    configured = {
+        str(name).strip().lower()
+        for name, entry in (user_providers or {}).items()
+        if str(name).strip() and _provider_entry_claims_startup_route(entry)
+    }
     configured.update(
         f"custom:{entry.get('name', '').strip().lower()}"
         for entry in (custom_providers or [])

@@ -62,6 +62,41 @@ def test_startup_route_non_aggregator_current_provider_still_routes(monkeypatch)
     assert route == model_switch.StartupModelRoute("deepseek-v4-pro", "nous", "")
 
 
+def test_startup_route_ignores_tuning_only_vendor_block(monkeypatch):
+    """A vendor-named tuning block must not steal the configured default route (#118153)."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "deepseek/deepseek-v4-flash-0731",
+        current_provider="nous",
+        user_providers={
+            "deepseek": {
+                "stale_timeout_seconds": 45,
+                "request_timeout_seconds": 90,
+                "context_length": 128_000,
+                "rate_limit_delay": 1,
+            }
+        },
+    )
+    assert route is None
+
+
+@pytest.mark.parametrize(
+    "provider_entry",
+    [
+        {"api_key": "configured-key"},
+        {"models": ["deepseek-v4-flash-0731"]},
+    ],
+)
+def test_startup_route_keeps_vendor_blocks_that_declare_a_route(monkeypatch, provider_entry):
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "deepseek/deepseek-v4-flash-0731",
+        current_provider="nous",
+        user_providers={"deepseek": provider_entry},
+    )
+    assert route == model_switch.StartupModelRoute("deepseek-v4-flash-0731", "deepseek", "")
+
+
 def test_startup_route_resolves_dict_alias_and_preserves_endpoint(monkeypatch):
     monkeypatch.setattr(
         model_switch,

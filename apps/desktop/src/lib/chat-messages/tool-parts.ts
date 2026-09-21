@@ -666,6 +666,34 @@ export function restorePendingBlockingToolCall(
 }
 
 /**
+ * True when a settled transcript holds a tool-call row that renders as
+ * "Result unavailable" — sealed with a `completedAt` but carrying no result.
+ *
+ * The predicate deliberately matches the renderer's own test in
+ * `buildToolView` (`result === undefined && completedAt !== undefined`) rather
+ * than the open-part test in {@link sealOpenToolParts}, because a turn settles
+ * through TWO sealing paths: `completeOpenTimelineParts` stamps every timed
+ * part of the settling message first, and `sealOpenToolParts` only catches
+ * rows on messages it skipped. Testing for an unsealed part would therefore
+ * miss the common case.
+ *
+ * Such a row misreports the step: the runtime appends and flushes the tool
+ * result row BEFORE it projects `tool.completed`, so a projection lost to a
+ * degraded socket never means a lost result — it is on disk, and the caller
+ * should re-read stored history instead of trusting the sealed row.
+ */
+export function hasUnresolvedToolResults(messages: ChatMessage[]): boolean {
+  return messages.some(
+    message =>
+      message.role === 'assistant' &&
+      !message.pending &&
+      message.parts.some(
+        part => part.type === 'tool-call' && part.completedAt !== undefined && part.result === undefined
+      )
+  )
+}
+
+/**
  * Turn-settle reconciliation: close every tool-call part that never received
  * its completion event. A `tool.complete` lost to a degraded websocket
  * (reconnect, profile swap, hidden window) leaves the part without a `result`,
@@ -673,6 +701,10 @@ export function restorePendingBlockingToolCall(
  * completed. A settled session cannot have tools still running, so an open
  * part at settle time is a lost event, not live work. Pending messages are
  * left alone, and no-op calls return the input array unchanged.
+ *
+ * Sealing alone leaves the row reading "Result unavailable"; callers should
+ * pair it with {@link hasUnresolvedToolResults} to re-read stored history,
+ * where the real result was persisted before the lost projection.
  */
 export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
   let changed = false

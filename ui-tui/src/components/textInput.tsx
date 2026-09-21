@@ -359,6 +359,126 @@ function wordRight(s: string, p: number) {
   return i
 }
 
+export type VimInputMode = 'insert' | 'normal'
+
+export interface VimCommandState {
+  cursor: number
+  mode: VimInputMode
+  pending: '' | 'd'
+  value: string
+}
+
+export interface VimCommandResult extends VimCommandState {
+  action?: 'redo' | 'undo'
+  handled: boolean
+}
+
+const lineStart = (value: string, cursor: number) => value.lastIndexOf('\n', Math.max(0, cursor - 1)) + 1
+
+const lineEnd = (value: string, cursor: number) => {
+  const end = value.indexOf('\n', cursor)
+
+  return end < 0 ? value.length : end
+}
+
+const wordEnd = (value: string, cursor: number) => {
+  let i = snapPos(value, cursor)
+
+  if (i < value.length && !/\s/.test(value[i]!)) {i++}
+
+  while (i < value.length && /\s/.test(value[i]!)) {i++}
+
+  while (i + 1 < value.length && !/\s/.test(value[i + 1]!)) {i++}
+
+  return i
+}
+
+const normalCursor = (value: string, cursor: number) =>
+  value.length > 0 && cursor >= value.length ? prevPos(value, value.length) : cursor
+
+/** Pure Vim command reducer used by TextInput and behavior tests. */
+export function applyVimCommand(
+  state: VimCommandState,
+  input: string,
+  key: Pick<Key, 'ctrl' | 'escape'>
+): VimCommandResult {
+  const { value } = state
+  let cursor = snapPos(value, state.cursor)
+
+  if (state.mode === 'insert') {
+    return key.escape
+      ? { cursor: normalCursor(value, cursor), handled: true, mode: 'normal', pending: '', value }
+      : { ...state, handled: false }
+  }
+
+  if (key.ctrl && input.toLowerCase() === 'r') {
+    return { ...state, action: 'redo', handled: true, pending: '' }
+  }
+
+  // Leave non-Vim control chords and named special keys to the composer's
+  // existing handlers (copy, interrupt, arrows, Tab, PageUp, etc.).
+  if (key.ctrl || (!input && !key.escape)) {
+    return { ...state, handled: false }
+  }
+
+  if (state.pending === 'd') {
+    if (input === 'd') {
+      const start = lineStart(value, cursor)
+      const end = lineEnd(value, cursor)
+      const deleteFrom = end === value.length && start > 0 ? start - 1 : start
+      const deleteTo = end < value.length ? end + 1 : end
+      const next = value.slice(0, deleteFrom) + value.slice(deleteTo)
+
+      return { cursor: normalCursor(next, deleteFrom), handled: true, mode: 'normal', pending: '', value: next }
+    }
+
+    return { ...state, handled: true, pending: '' }
+  }
+
+  if (key.escape) {return { ...state, handled: true, pending: '' }}
+
+  if (input === 'i') {return { ...state, handled: true, mode: 'insert', pending: '' }}
+
+  if (input === 'a') {return { ...state, cursor: nextPos(value, cursor), handled: true, mode: 'insert', pending: '' }}
+
+  if (input === 'I') {return { ...state, cursor: lineStart(value, cursor), handled: true, mode: 'insert', pending: '' }}
+
+  if (input === 'A') {return { ...state, cursor: lineEnd(value, cursor), handled: true, mode: 'insert', pending: '' }}
+
+  if (input === 'h') {cursor = prevPos(value, cursor)}
+  else if (input === 'l') {cursor = nextPos(value, cursor)}
+  else if (input === 'j') {cursor = lineNav(value, cursor, 1) ?? cursor}
+  else if (input === 'k') {cursor = lineNav(value, cursor, -1) ?? cursor}
+  else if (input === 'w') {cursor = wordRight(value, cursor)}
+  else if (input === 'b') {cursor = wordLeft(value, cursor)}
+  else if (input === 'e') {cursor = wordEnd(value, cursor)}
+  else if (input === '0') {
+    cursor = lineStart(value, cursor)
+  } else if (input === '$') {
+    const end = lineEnd(value, cursor)
+
+    cursor = end > lineStart(value, cursor) ? prevPos(value, end) : end
+  } else if (input === 'x' && cursor < value.length) {
+    const next = value.slice(0, cursor) + value.slice(nextPos(value, cursor))
+
+    return { cursor: normalCursor(next, cursor), handled: true, mode: 'normal', pending: '', value: next }
+  } else if (input === 'D' || input === 'C') {
+    const next = value.slice(0, cursor) + value.slice(lineEnd(value, cursor))
+
+    return {
+      cursor: input === 'C' ? cursor : normalCursor(next, cursor),
+      handled: true,
+      mode: input === 'C' ? 'insert' : 'normal',
+      pending: '',
+      value: next
+    }
+  } else if (input === 'd') {return { ...state, handled: true, pending: 'd' }}
+  else if (input === 'u') {return { ...state, action: 'undo', handled: true, pending: '' }}
+  else {return { ...state, handled: true, pending: '' }}
+
+  return { ...state, cursor: normalCursor(value, cursor), handled: true, pending: '' }
+}
+
 /**
  * Delete the word to the RIGHT of the cursor (readline meta+d / kill-word).
  * The cursor stays put; the text from the cursor to the next word boundary is
@@ -788,13 +908,22 @@ export function TextInput({
   placeholderColor,
   accentColor,
   color,
-  focus = true
+  focus = true,
+  vim = false,
+  onVimModeChange
 }: TextInputProps) {
   const [cur, setCur] = useState(() =>
     cursorSnapshotRef?.current?.value === value ? cursorSnapshotRef.current.cursor : value.length
   )
 
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
+
+  const [vimInputMode, setVimInputMode] = useState<VimInputMode>(() =>
+    vim && cursorSnapshotRef?.current?.value === value ? (cursorSnapshotRef.current.vimMode ?? 'insert') : 'insert'
+  )
+
+  const vimModeRef = useRef<VimInputMode>(vimInputMode)
+  const vimPendingRef = useRef<'' | 'd'>('')
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -834,6 +963,24 @@ export function TextInput({
   cbChange.current = onChange
   cbSubmit.current = onSubmit
   cbPaste.current = onPaste
+
+  useEffect(() => {
+    if (vim) {
+      onVimModeChange?.(vimModeRef.current)
+    } else if (vimInputMode !== 'insert') {
+      setVimInputMode('insert')
+      vimModeRef.current = 'insert'
+      vimPendingRef.current = ''
+      onVimModeChange?.('insert')
+    }
+  }, [onVimModeChange, vim, vimInputMode])
+
+  const setMode = (mode: VimInputMode) => {
+    vimModeRef.current = mode
+    vimPendingRef.current = ''
+    setVimInputMode(mode)
+    onVimModeChange?.(mode)
+  }
 
   const raw = self.current ? vRef.current : value
   const display = mask ? raw.replace(/[^\n]/g, mask[0] ?? '*') : raw
@@ -964,10 +1111,12 @@ export function TextInput({
   useEffect(
     () => () => {
       if (cursorSnapshotRef) {
-        cursorSnapshotRef.current = { cursor: curRef.current, value: vRef.current }
+        cursorSnapshotRef.current = vim
+          ? { cursor: curRef.current, value: vRef.current, vimMode: vimModeRef.current }
+          : { cursor: curRef.current, value: vRef.current }
       }
     },
-    [cursorSnapshotRef]
+    [cursorSnapshotRef, vim]
   )
 
   useEffect(() => {
@@ -1381,6 +1530,52 @@ export function TextInput({
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
 
+      const pasteShortcut =
+        eventRaw === '\x1bv' ||
+        eventRaw === '\x1bV' ||
+        eventRaw === '\x16' ||
+        (isMac && isActionMod(k) && inp.toLowerCase() === 'v')
+
+      const vimChord =
+        k.escape || (!k.ctrl && !k.meta && !k.super) || (k.ctrl && inp.toLowerCase() === 'r')
+
+      const vimOwnsInput =
+        vim &&
+        vimChord &&
+        !event.keypress.isPasted &&
+        !pasteShortcut &&
+        !isVoiceToggleKey(k, inp, voiceRecordKey)
+
+      if (vimOwnsInput) {
+        const result = applyVimCommand(
+          { cursor: curRef.current, mode: vimModeRef.current, pending: vimPendingRef.current, value: vRef.current },
+          inp,
+          k
+        )
+
+        if (result.handled) {
+          flushKeyBurst()
+          ;(event as InputEvent & { stopImmediatePropagation?: () => void }).stopImmediatePropagation?.()
+          vimPendingRef.current = result.pending
+
+          if (result.action === 'undo') {
+            swap(undo, redo)
+          } else if (result.action === 'redo') {
+            swap(redo, undo)
+          } else if (result.value !== vRef.current) {
+            commit(result.value, result.cursor)
+          } else {
+            moveCursor(result.cursor)
+          }
+
+          if (result.mode !== vimModeRef.current) {
+            setMode(result.mode)
+          }
+
+          return
+        }
+      }
+
       // Configured voice shortcut wins over composer-level defaults like
       // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
       // actually get voice toggled instead of a paste (Copilot round-7
@@ -1392,12 +1587,7 @@ export function TextInput({
         return
       }
 
-      if (
-        eventRaw === '\x1bv' ||
-        eventRaw === '\x1bV' ||
-        eventRaw === '\x16' ||
-        (isMac && isActionMod(k) && inp.toLowerCase() === 'v')
-      ) {
+      if (pasteShortcut) {
         flushKeyBurst()
 
         if (cbPaste.current) {
@@ -1818,6 +2008,7 @@ export interface PasteEvent {
 export interface InputCursorSnapshot {
   cursor: number
   value: string
+  vimMode?: VimInputMode
 }
 
 interface TextInputProps {
@@ -1838,6 +2029,10 @@ interface TextInputProps {
   placeholder?: string
   /** Hex color for placeholder text (theme muted); SGR dim when omitted. */
   placeholderColor?: string
+  /** Enable modal Vim editing for the composer. */
+  vim?: boolean
+  /** Reports insert/normal transitions for the surrounding mode badge. */
+  onVimModeChange?: (mode: VimInputMode) => void
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
 }

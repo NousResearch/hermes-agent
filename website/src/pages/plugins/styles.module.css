@@ -915,7 +915,9 @@
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    min-width: 0;
+    /* Hold the select's 7.5rem floor: without it the column shrinks below the
+       select and the control overruns its neighbour. */
+    min-width: 7.5rem;
     color: var(--ifm-color-emphasis-600);
     font-size: 0.68rem;
     text-transform: uppercase;

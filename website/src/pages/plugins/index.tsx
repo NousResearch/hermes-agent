@@ -29,6 +29,8 @@ import CopyButton from "../../components/PluginCatalog/CopyButton";
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
 const PLUGINS_URL = "/docs/api/plugins.json";
 const META_URL = "/docs/api/plugins-meta.json";
+/** Mirrors the `max-width: 600px` blocks in styles.module.css. */
+const MOBILE_PANEL_QUERY = "(max-width: 600px)";
 
 const TIER_ORDER = ["all", "official", "community"];
 
@@ -444,6 +446,17 @@ export default function PluginCatalogPage() {
     });
     return () => cancelAnimationFrame(frame);
   }, [filtersOpen]);
+
+  // The panel only exists in the mobile band, so leaving it should drop the
+  // state too — otherwise `aria-expanded` stays "true" on a hidden toggle.
+  useEffect(() => {
+    const media = window.matchMedia(MOBILE_PANEL_QUERY);
+    const sync = () => {
+      if (!media.matches) setFiltersOpen(false);
+    };
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
 
   const allPlugins: CatalogPlugin[] = data?.plugins ?? [];
   const meta: CatalogMeta = data?.meta ?? {};

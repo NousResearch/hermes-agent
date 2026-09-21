@@ -262,6 +262,9 @@
       },
       "models": [
         {
+          "id": "x-ai/grok-4.7"
+        },
+        {
           "id": "anthropic/claude-fable-5.1"
         },
         {

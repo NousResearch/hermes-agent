@@ -249,8 +249,8 @@ _ENV_LOOKUP_VALUE_RE = re.compile(r"^(?:os\.(?:getenv|environ)|process\.env|\$EN
 # run start so re.sub is not quadratic; the match set is unchanged.
 _CFG_DOTTED_RE = re.compile(
     rf"(?<![A-Za-z0-9_.\-])"
-    rf"([A-Za-z0-9_\-]++\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*+"
-    rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]++)"
+    rf"([A-Za-z0-9_\-]+\.[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*"
+    rf"|[A-Za-z0-9_.\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_.\-]*\.[A-Za-z0-9_.\-]+)"
     rf"={_CFG_VALUE}",
     re.IGNORECASE,
 )
@@ -273,7 +273,7 @@ _CFG_ANCHORED_RE = re.compile(
 # stays backtrackable (see _CFG_DOTTED_RE).
 _YAML_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential)"
 _YAML_ASSIGN_RE = re.compile(
-    rf"(^[ \t]*+{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)(?!['\"])([^\s&]++)",
+    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*)(:[ \t]*)(?!['\"])([^\s&]+)",
     re.IGNORECASE | re.MULTILINE,
 )
 

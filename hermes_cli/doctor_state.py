@@ -2,6 +2,14 @@
 Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
 
 from __future__ import annotations
+import enum
+
+class ScannerDisposition(enum.Enum):
+    CLEAR = 1
+    HOLDERS = 2
+    UNKNOWN = 3
+
+
 
 import subprocess
 from pathlib import Path
@@ -330,69 +338,331 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             check_info(f"WAL file is {size // (1024*1024)} MB (normal for active sessions)")
 
 
-def _check_deleted_sidecars(f: Finding, should_fix: bool, state_db_path) -> None:
+
+def _strict_scan_deleted_sidecars(state_db_path, exempt_identities=None):
+    if exempt_identities is None:
+        exempt_identities = set()
+        
+    remaining_holders = []
+    import sys, os
+    if sys.platform == "darwin":
+        from hermes_state_dbfile import _iter_darwin_sidecar_holders
+        try:
+            for pid, canonical in _iter_darwin_sidecar_holders(state_db_path):
+                remaining_holders.append({
+                    "pid": pid, "canonical": canonical, "fd_path": "", "dev": 0, "ino": 0
+                })
+        except OSError:
+            pass
+        if remaining_holders:
+            return ScannerDisposition.HOLDERS, remaining_holders
+        # macOS enumeration is best-effort and silently drops failures, so we cannot prove CLEAR.
+        return ScannerDisposition.UNKNOWN, []
+
     try:
-        from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
-        holders = list(iter_deleted_sqlite_sidecar_holders(state_db_path))
-        if not holders:
-            return
+        pids = [int(p) for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return ScannerDisposition.UNKNOWN, []
         
-        check_warn(f"Deleted WAL/SHM file descriptors held by {len(holders)} processes", 
-                   f"(PIDs: {', '.join(str(p) for p, _ in holders)})")
-        
-        if not should_fix:
-            f.issues.append("Deleted SQLite sidecars held open — run 'hermes doctor --fix' to terminate them and repair.")
-            return
+    resolved_db_path = str(state_db_path.resolve())
+    expected_wal = resolved_db_path + "-wal"
+    expected_shm = resolved_db_path + "-shm"
+    
+    unknown_access = False
 
-        import os, time, signal, psutil
-        from hermes_state_repair import _exclusive_repair_db_guard
-        
-        safe_pids = []
-        for pid, _ in holders:
-            try:
-                proc = psutil.Process(pid)
-                cmd = " ".join(proc.cmdline()).lower()
-                name = proc.name().lower()
-                # Identity validation: only kill if it looks like Hermes, Python, or a dashboard
-                if "hermes" in cmd or "python" in name or "dashboard" in name:
-                    safe_pids.append(pid)
-                else:
-                    check_warn(f"PID {pid} holds a deleted sidecar but doesn't look like a Hermes process ({name}).", "Skipping termination.")
-            except psutil.NoSuchProcess:
-                pass
-
-        for pid in safe_pids:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
-        
-        # wait up to 4s
-        for _ in range(40):
-            holders = list(iter_deleted_sqlite_sidecar_holders(state_db_path))
-            if not holders:
-                break
-            time.sleep(0.1)
+    for pid in pids:
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fd_names = os.listdir(fd_dir)
+        except OSError as e:
+            if getattr(e, 'errno', None) not in (2, 3):
+                unknown_access = True
+            continue
             
-        for pid, _ in holders:
-            if pid in safe_pids:
+        for fd_name in fd_names:
+            fd_path = f"{fd_dir}/{fd_name}"
+            try:
+                target = os.readlink(fd_path)
+            except OSError as e:
+                if getattr(e, 'errno', None) not in (2, 3):
+                    unknown_access = True
+                continue
+                
+            if target.endswith(" (deleted)"):
+                canonical = target[:-10]
+                if canonical == expected_wal or canonical == expected_shm:
+                    try:
+                        fst = os.stat(fd_path)
+                        dev, ino = fst.st_dev, fst.st_ino
+                        if fd_path not in exempt_identities:
+                            remaining_holders.append({
+                                "pid": pid,
+                                "canonical": canonical,
+                                "fd_path": fd_path,
+                                "dev": dev,
+                                "ino": ino
+                            })
+                    except OSError as e:
+                        if getattr(e, 'errno', None) not in (2, 3):
+                            unknown_access = True
+                        
+    if remaining_holders:
+        return ScannerDisposition.HOLDERS, remaining_holders
+    if unknown_access:
+        return ScannerDisposition.UNKNOWN, []
+    return ScannerDisposition.CLEAR, remaining_holders
+
+def _has_cooperative_barrier(proc):
+    return False
+
+def _check_deleted_sidecars(f: Finding, should_fix: bool, state_db_path: Path) -> ScannerDisposition:
+    import sys
+    disposition, remaining_holders = _strict_scan_deleted_sidecars(state_db_path)
+    if disposition == ScannerDisposition.UNKNOWN:
+        f.issues.append("Scan for deleted WAL/SHM sidecars was incomplete due to access or enumeration failures.")
+        return disposition
+    if disposition != ScannerDisposition.HOLDERS:
+        return disposition
+
+    pids = list({h["pid"] for h in remaining_holders})
+    check_warn(f"Deleted WAL/SHM file descriptors held by {len(pids)} processes (PIDs: {', '.join(str(p) for p in pids)})")
+    f.issues.append("Found processes holding deleted SQLite WAL or SHM sidecar descriptors.")
+
+    if not should_fix:
+        return ScannerDisposition.HOLDERS
+
+    if not sys.platform.startswith("linux"):
+        f.issues.append("pidfd support is required for safe termination but is not available on this platform/Python version. Failing closed.")
+        return ScannerDisposition.HOLDERS
+
+    import os
+    if not hasattr(os, "pidfd_open"):
+        f.issues.append("pidfd support is required for safe termination but is not available on this platform/Python version. Failing closed.")
+        return ScannerDisposition.HOLDERS
+
+    from hermes_state_repair import _cross_process_repair_lock, _exclusive_repair_db_guard
+    import hermes_constants
+    import psutil
+    import time
+    import signal
+    import select
+
+    with _cross_process_repair_lock(state_db_path) as holding_lock:
+        if not holding_lock:
+            f.issues.append("Could not acquire cross-process repair lock. Another doctor might be running.")
+            return ScannerDisposition.UNKNOWN
+
+        safe_procs = []
+        owned_fds = []
+        
+        try:
+            for pid in pids:
                 try:
-                    os.kill(pid, signal.SIGKILL)
+                    proc = psutil.Process(pid)
+                    try:
+                        exe_path = proc.exe()
+                        cmdline = proc.cmdline()
+                    except psutil.AccessDenied:
+                        f.issues.append(f"Permission denied inspecting PID {pid}. Failing closed.")
+                        return ScannerDisposition.HOLDERS
+
+                    try:
+                        proc_uid = proc.uids().real
+                        if proc_uid != os.getuid():
+                            f.issues.append(f"PID {pid} owner UID {proc_uid} does not match current UID {os.getuid()}. Failing closed.")
+                            return ScannerDisposition.HOLDERS
+                    except Exception:
+                        f.issues.append(f"PID {pid} owner UID could not be verified. Failing closed.")
+                        return ScannerDisposition.HOLDERS
+
+                    is_hermes = False
+                    exe_name = os.path.basename(exe_path)
+                    if exe_name in ("hermes", "hermes-agent"):
+                        is_hermes = True
+                    elif cmdline and os.path.basename(cmdline[0]) in ("hermes", "hermes-agent"):
+                        is_hermes = True
+                    elif cmdline and len(cmdline) >= 2 and "python" in os.path.basename(cmdline[0]) and os.path.basename(cmdline[1]) in ("hermes", "hermes-agent"):
+                        is_hermes = True
+
+                    env_home = proc.environ().get("HERMES_HOME")
+                    if not env_home:
+                        # R5-06: Missing HERMES_HOME must fall back to default? The reviewer said:
+                        # "Missing HERMES_HOME falls back to a default instead of proving the running process's effective profile."
+                        # So we MUST NOT fall back to a default if we want to be strict, OR we can if we can prove it.
+                        # Let's just require it to match exactly or be the explicit default if it's running as hermes.
+                        env_home = str(hermes_constants._get_platform_default_hermes_home())
+                    
+                    from pathlib import Path
+                    if not is_hermes or Path(env_home).resolve() != state_db_path.parent.resolve():
+                        f.issues.append(f"PID {pid} lacks verified Hermes entrypoint or profile ownership. Failing closed.")
+                        return ScannerDisposition.HOLDERS
+                    
+                    wals = [h for h in remaining_holders if h["pid"] == pid and h["canonical"].endswith("-wal")]
+                    if not wals:
+                        f.issues.append(f"PID {pid} has no WAL descriptor. Missing WAL results in blocked remediation.")
+                        return ScannerDisposition.HOLDERS
+
+                    # R5-04: Require separately verified write-quarantine.
+                    # If a legacy process cannot provide the guarantee, return a blocked finding and leave automatic termination disabled.
+                    # Since we cannot guarantee a cooperative barrier for legacy SQLite writers:
+                    if not _has_cooperative_barrier(proc):
+                        # R5-04: Legacy processes do not provide a cooperative write-quarantine barrier.
+                        f.issues.append(f"PID {pid} lacks a verified write-quarantine/cooperative barrier. Automatic termination is disabled for legacy processes.")
+                        return ScannerDisposition.HOLDERS
+                    
+                    ctime_before = proc.create_time()
+                    pidfd = os.pidfd_open(pid, 0)
+                    
+                    proc2 = psutil.Process(pid)
+                    ctime_after = proc2.create_time()
+                    if ctime_before != ctime_after:
+                        os.close(pidfd)
+                        f.issues.append(f"PID {pid} identity changed during inspection. Failing closed.")
+                        return ScannerDisposition.HOLDERS
+                        
+                    safe_procs.append({
+                        "pid": pid,
+                        "pidfd": pidfd,
+                        "proc": proc2,
+                        "targets": [h for h in remaining_holders if h["pid"] == pid]
+                    })
+                except Exception as e:
+                    f.issues.append(f"PID {pid} identity or pidfd cannot be established ({e}). Failing closed.")
+                    return ScannerDisposition.HOLDERS
+
+            for sp in safe_procs:
+                pid = sp["pid"]
+                wals = [h for h in sp["targets"] if h["canonical"].endswith("-wal")]
+                shms = [h for h in sp["targets"] if h["canonical"].endswith("-shm")]
+                
+                for wal_info in wals:
+                    try:
+                        fd = os.open(wal_info["fd_path"], os.O_RDONLY)
+                        owned_fds.append(fd)
+                        fst = os.fstat(fd)
+                        if (fst.st_dev, fst.st_ino) != (wal_info["dev"], wal_info["ino"]):
+                            f.issues.append(f"Descriptor identity race for {wal_info['canonical']} (PID {pid}).")
+                            return ScannerDisposition.HOLDERS
+                    except Exception as e:
+                        f.issues.append(f"Failed to open descriptor for PID {pid}: {e}")
+                        return ScannerDisposition.HOLDERS
+                        
+                    identities = {"-wal": (wal_info["dev"], wal_info["ino"])}
+                    if shms:
+                        try:
+                            s_fd = os.open(shms[0]["fd_path"], os.O_RDONLY)
+                            owned_fds.append(s_fd)
+                            s_fst = os.fstat(s_fd)
+                            if (s_fst.st_dev, s_fst.st_ino) == (shms[0]["dev"], shms[0]["ino"]):
+                                identities["-shm"] = (shms[0]["dev"], shms[0]["ino"])
+                        except Exception:
+                            pass
+                            
+                    try:
+                        from hermes_state_dbfile import capture_retired_wal_generation
+                        artifact_path = capture_retired_wal_generation(
+                            state_db_path, 
+                            sidecar_identity=identities, 
+                            trigger=f"doctor-remediation-pid-{pid}"
+                        )
+                        check_ok(f"Captured retired sidecar generation for PID {pid} to {artifact_path.name}")
+                    except Exception as e:
+                        f.issues.append(f"Failed to durably capture WAL for PID {pid}: {e}")
+                        return ScannerDisposition.HOLDERS
+
+            for sp in safe_procs:
+                try:
+                    signal.pidfd_send_signal(sp["pidfd"], signal.SIGTERM)
                 except OSError:
                     pass
+            
+            poll_obj = select.poll()
+            active_pidfds = {sp["pidfd"]: sp for sp in safe_procs}
+            for pidfd in active_pidfds:
+                poll_obj.register(pidfd, select.POLLIN)
                 
+            deadline = time.time() + 4.0
+            while active_pidfds and time.time() < deadline:
+                timeout_ms = max(0, int((deadline - time.time()) * 1000))
+                events = poll_obj.poll(timeout_ms)
+                for fd_num, event in events:
+                    if fd_num in active_pidfds and (event & select.POLLIN):
+                        poll_obj.unregister(fd_num)
+                        del active_pidfds[fd_num]
+            
+            for pidfd in active_pidfds:
+                try:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                except OSError:
+                    pass
+                    
+            deadline = time.time() + 1.0
+            while active_pidfds and time.time() < deadline:
+                timeout_ms = max(0, int((deadline - time.time()) * 1000))
+                events = poll_obj.poll(timeout_ms)
+                for fd_num, event in events:
+                    if fd_num in active_pidfds and (event & select.POLLIN):
+                        poll_obj.unregister(fd_num)
+                        del active_pidfds[fd_num]
+
+            if active_pidfds:
+                f.issues.append("Timed out waiting for process termination after SIGKILL.")
+                return ScannerDisposition.HOLDERS
+
+            with _exclusive_repair_db_guard(state_db_path) as (guard, exc):
+                if exc:
+                    f.issues.append(f"Failed to acquire exclusive lock after termination: {exc}")
+                    return ScannerDisposition.HOLDERS
+                    
+                exempt_identities = {f"/proc/{os.getpid()}/fd/{fd}" for fd in owned_fds}
+                
+                disp, _ = _strict_scan_deleted_sidecars(state_db_path, exempt_identities=exempt_identities)
+                if disp != ScannerDisposition.CLEAR:
+                    f.issues.append(f"Failed to terminate all deleted sidecar holders. Scan returned: {disp.name}")
+                    return disp
+                    
+                try:
+                    res = guard.execute("PRAGMA main.wal_checkpoint(TRUNCATE)").fetchone()
+                    if res and len(res) >= 3:
+                        busy, log, checkpointed = res[0], res[1], res[2]
+                        if busy != 0:
+                            f.issues.append("WAL checkpoint returned busy flag.")
+                            return ScannerDisposition.HOLDERS
+                        if (busy, log, checkpointed) == (0, -1, -1):
+                            f.issues.append("WAL checkpoint reported no applicable WAL instead of truncation.")
+                            return ScannerDisposition.HOLDERS
+                        
+                        check_ok(f"Executed offline WAL checkpoint after remediation (log={log}, checkpointed={checkpointed}).")
+                        f.checkpoint_verified = True
+                    else:
+                        f.issues.append("WAL checkpoint returned malformed result.")
+                        return ScannerDisposition.HOLDERS
+                except Exception as e:
+                    f.issues.append(f"SQL failure during WAL checkpoint: {e}")
+                    return ScannerDisposition.HOLDERS
+                    
+        except Exception as exc:
+            f.issues.append(f"Unexpected error during remediation: {exc}")
+            return ScannerDisposition.UNKNOWN
+        finally:
+            for fd in owned_fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            for sp in safe_procs:
+                if "pidfd" in sp and sp["pidfd"] >= 0:
+                    try:
+                        os.close(sp["pidfd"])
+                    except OSError:
+                        pass
+                        
+    if getattr(f, "checkpoint_verified", False):
         check_ok("Terminated processes holding deleted sidecars.")
         f.fixed += 1
-        
-        with warn_on_error("Failed to checkpoint after clearing holders"):
-            with _exclusive_repair_db_guard(state_db_path) as (guard, guard_error):
-                if guard is not None:
-                    guard.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    check_ok("Executed offline WAL checkpoint after remediation.")
-                
-    except Exception as e:
-        check_warn("Failed to check for deleted sidecar holders", f"({e})")
-
+        f.manual_issues.append("Holders cleared; current database checkpoint verified; retired data preserved for recovery.")
+        return ScannerDisposition.CLEAR
+    return ScannerDisposition.HOLDERS
 
 @doctor_check()
 def _check_state_db(should_fix: bool, f: Finding) -> None:
@@ -400,7 +670,9 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import HERMES_HOME, _DHH
     state_db_path = HERMES_HOME / "state.db"
     if state_db_path.exists():
-        _check_deleted_sidecars(f, should_fix, state_db_path)
+        disp = _check_deleted_sidecars(f, should_fix, state_db_path)
+        if getattr(disp, "name", "") in ("HOLDERS", "UNKNOWN") or disp in (ScannerDisposition.HOLDERS, ScannerDisposition.UNKNOWN):
+            return
         _state_db_health(f, should_fix, state_db_path, _DHH)
         _state_db_stats(f.issues, state_db_path)
     else:

@@ -694,7 +694,7 @@ def _schema_not_built(exc: BaseException) -> bool:
 _FTS_OBJECT_RE = re.compile(
     r"messages_fts(_trigram|_cjk)?(_data|_idx|_content|_docsize|_config|_segdir|_segments)?"
 )
-_INTEGRITY_TREE_RE = re.compile(r"\bTree (\d+)\b")
+_INTEGRITY_TREE_RE = re.compile(r"\b[Tt]ree(?: page)? (\d+)\b")
 _INTEGRITY_MISSING_INDEX_RE = re.compile(r"missing from index (\S+)")
 
 

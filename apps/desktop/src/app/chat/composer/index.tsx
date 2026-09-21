@@ -46,7 +46,8 @@ import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import { markActiveComposer, onComposerAttachFilesRequest, onComposerAttachImagesRequest } from './focus'
+import { extractDroppedFiles } from '../hooks/use-composer-actions'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -323,6 +324,21 @@ export function ChatBar({
     })
   }, [onAttachImageBlob, scope.target])
 
+  // Native file-manager copies take the same path as OS drops. The File and
+  // its original Electron path were captured synchronously by the paste
+  // listener; this deferred bus handler only performs the asynchronous attach.
+  useEffect(() => {
+    if (!onAttachDroppedItems) {
+      return undefined
+    }
+
+    return onComposerAttachFilesRequest(({ candidates, target }) => {
+      if (target === scope.target) {
+        void onAttachDroppedItems(candidates)
+      }
+    })
+  }, [onAttachDroppedItems, scope.target])
+
   // Prior history belongs to the draft that just left — undoing into another
   // conversation's text is worse than having none.
   useEffect(() => {
@@ -553,7 +569,13 @@ export function ChatBar({
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
-    const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
+    const pastedFiles = extractDroppedFiles(event.clipboardData).filter(candidate => Boolean(candidate.path))
+    const imageBlobs = pastedFiles.length ? [] : extractClipboardImageBlobs(event.clipboardData)
+
+    if (pastedFiles.length > 0 && onAttachDroppedItems) {
+      triggerHaptic('selection')
+      void onAttachDroppedItems(pastedFiles)
+    }
 
     if (imageBlobs.length > 0 && onAttachImageBlob) {
       triggerHaptic('selection')
@@ -572,7 +594,7 @@ export function ChatBar({
     if (!pastedText) {
       event.preventDefault()
 
-      if (imageBlobs.length > 0) {
+      if (pastedFiles.length > 0 || imageBlobs.length > 0) {
         return
       }
 

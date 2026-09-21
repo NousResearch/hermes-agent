@@ -60,9 +60,11 @@ def emitted_event_names() -> set[str]:
         names.update(_SIDE_AGENT.findall(text))
     from tui_gateway.agent_callbacks import _CHILD_DELTA_EVENTS
     from tui_gateway.change_watcher import _CHANGE_WATCHES
+    from tui_gateway.methods_voice_grok import GROK_LIVE_EVENTS
 
     names.update(_CHANGE_WATCHES)
     names.update(_CHILD_DELTA_EVENTS.values())
+    names.update(GROK_LIVE_EVENTS)
     for src in (REPO / "tools").glob("delegate_tool*.py"):
         names.update(_SUBAGENT_RELAY.findall(_read(src)))
     names.discard("subagent.text")  # mirrored into the watch window as message.delta, never emitted

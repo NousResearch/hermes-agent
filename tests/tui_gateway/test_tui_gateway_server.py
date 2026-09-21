@@ -13738,6 +13738,26 @@ def test_interrupt_only_clears_own_session_pending():
         server_requests.reset_for_tests()
 
 
+def test_interrupt_resumes_voice_owned_wake_detector(monkeypatch):
+    """An accepted interrupt must release the wake pause held by the voice turn."""
+    resumed = []
+    session = _session()
+    session["agent"] = types.SimpleNamespace(interrupt=lambda: None)
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server, "_resume_voice_wake", lambda: resumed.append(True))
+
+        response = server.handle_request(
+            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        )
+
+        assert response.get("result"), f"got error: {response.get('error')}"
+        assert resumed == [True]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
     """_run_prompt_submit must expose the actual turn thread to session.interrupt.
 

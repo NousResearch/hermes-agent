@@ -2031,11 +2031,13 @@ def _(rid, params: dict) -> dict:
             _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
         except Exception as exc:
             return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
+        _resume_voice_wake()
         return _ok(rid, {"status": "interrupted", "turn_isolation": True})
     session, err = _sess(params, rid)
     if err:
         return err
     _interrupt_session_turn(sid, session)
+    _resume_voice_wake()
     # Retire the crash-recovery marker NOW: until the run thread's finally, a backend exit looks like a crash
     # and session.resume auto-continues the turn the user just stopped (the extra key covers compression
     # rotating session_key mid-turn).

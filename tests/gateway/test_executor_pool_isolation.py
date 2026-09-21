@@ -17,12 +17,14 @@ read, so they cannot pass by mirroring the implementation.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import concurrent.futures
 import logging
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -336,6 +338,35 @@ def test_contextvars_survive_both_pools():
         assert asyncio.run(exercise()) == ("scoped", "scoped")
     finally:
         _stop(runner)
+
+
+def test_no_abandonment_site_uses_the_turn_pool():
+    """Class gate: wait_for must never abandon work on the turn pool."""
+    gateway_dir = Path(__file__).resolve().parents[2] / "gateway"
+    offenders = []
+
+    for path in sorted(gateway_dir.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            if not (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "wait_for"
+            ):
+                continue
+            submitted = node.args[0]
+            if (
+                isinstance(submitted, ast.Call)
+                and isinstance(submitted.func, ast.Attribute)
+                and submitted.func.attr == "_run_in_executor_with_context"
+            ):
+                offenders.append(f"{path.relative_to(gateway_dir.parent)}:{node.lineno}")
+
+    assert offenders == [], (
+        "wait_for abandons started executor workers; route these best-effort "
+        f"calls through _run_housekeeping_in_executor instead: {offenders}"
+    )
 
 
 def test_args_results_and_errors_round_trip():

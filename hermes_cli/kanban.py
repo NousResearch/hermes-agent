@@ -228,6 +228,9 @@ def _add_worktree_reclaim_args(p: argparse.ArgumentParser) -> None:
                    help="Skip the done-card worktree reclaim")
     p.add_argument("--dry-run", action="store_true",
                    help="Report what would be reclaimed, remove nothing")
+    p.add_argument("--no-comment", action="store_true",
+                   help="Do not record the before/after free space on the "
+                        "reclaimed cards")
 
 
 def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -1980,16 +1983,28 @@ def _reclaim_worktrees(args: argparse.Namespace) -> int:
     roots = _reclaim_roots(args)
     if not roots:
         return 0
+    dry_run = bool(getattr(args, "dry_run", False))
+    # Deliverable 1: before/after free space is measured HERE, in the scheduled
+    # path, and recorded on the card. Evidence that only exists when a human
+    # runs a script by hand is not evidence the next tick will produce.
+    before_mb = kbr.free_space_mb(roots[0])
     decisions = kbr.reclaim_done_worktrees(
         roots=roots,
         min_age_hours=getattr(args, "worktree_min_age_hours", 6),
-        dry_run=bool(getattr(args, "dry_run", False)),
+        dry_run=dry_run,
     )
+    after_mb = kbr.free_space_mb(roots[0])
     print(f"Worktree reclaim over {len(roots)} root(s):")
     for line in kbr.format_decisions(decisions):
         print(line)
     removed = sum(1 for d in decisions if d.removed)
     print(f"  -> {removed} removed, {len(decisions) - removed} kept")
+    print(f"  -> free before {before_mb}MB, after {after_mb}MB")
+    if removed and not dry_run and not getattr(args, "no_comment", False):
+        written = kbr.record_reclaim_comments(
+            decisions, before_mb=before_mb, after_mb=after_mb,
+        )
+        print(f"  -> recorded the before/after df on {written} card(s)")
     return removed
 
 

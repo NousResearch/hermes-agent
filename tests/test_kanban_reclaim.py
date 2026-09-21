@@ -354,3 +354,133 @@ def test_os_getpid_is_never_reported_as_a_holder(tmp_path: Path):
         assert kbr.path_holder_pid(d) in (None,) or kbr.path_holder_pid(d) != os.getpid()
     finally:
         os.chdir(prev)
+
+
+# --- deliverable 1: before/after free space recorded ON THE CARD --------------
+
+def test_free_space_mb_matches_df_and_survives_a_missing_path(tmp_path: Path):
+    """The number we record must be the same quantity ``df`` prints."""
+    mine = kbr.free_space_mb(tmp_path)
+    assert mine is not None and mine > 0
+    import shutil as _sh
+    assert abs(mine - _sh.disk_usage(tmp_path).free // (1024 * 1024)) <= 1
+    # A path that does not exist must still yield the enclosing volume, not None.
+    assert kbr.free_space_mb(tmp_path / "no" / "such" / "dir") is not None
+
+
+def test_reclaim_records_before_after_free_space_on_the_card(
+    tmp_path: Path, db: Path, monkeypatch, capsys,
+):
+    """Deliverable 1: the df evidence lands on the board FROM THE TICK.
+
+    The prior round's evidence only existed because a human ran a script by
+    hand; that is exactly the thing the next scheduled tick will not do.
+    """
+    root = tmp_path / "wts"
+    root.mkdir()
+    wt, _repo = _done_worktree(tmp_path, db, root, "t_dfdfdf01")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+
+    args = argparse.Namespace(
+        worktree_min_age_hours=6, worktree_roots=[str(root)],
+        no_worktrees=False, dry_run=False, no_comment=False,
+    )
+    assert kanban_ops._reclaim_worktrees(args) == 1
+    out = capsys.readouterr().out
+    assert not wt.exists(), out
+    assert "free before" in out and "recorded the before/after df on 1 card(s)" in out
+
+    with kbc.connect_closing(db_path=db) as conn:
+        bodies = [r["body"] for r in conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = 't_dfdfdf01'"
+        ).fetchall()]
+    assert len(bodies) == 1, bodies
+    body = bodies[0]
+    assert "free before:" in body and "free after:" in body and "delta:" in body
+    assert str(wt) in body
+
+
+def test_dry_run_records_nothing_on_the_board(tmp_path: Path, db: Path, monkeypatch):
+    root = tmp_path / "wts"
+    root.mkdir()
+    wt, _repo = _done_worktree(tmp_path, db, root, "t_dfdfdf02")
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    args = argparse.Namespace(
+        worktree_min_age_hours=6, worktree_roots=[str(root)],
+        no_worktrees=False, dry_run=True, no_comment=False,
+    )
+    assert kanban_ops._reclaim_worktrees(args) == 0
+    assert wt.is_dir()
+    with kbc.connect_closing(db_path=db) as conn:
+        n = conn.execute(
+            "SELECT count(*) AS c FROM task_comments WHERE task_id = 't_dfdfdf02'"
+        ).fetchone()["c"]
+    assert n == 0
+
+
+# --- deliverable 4a: the SCHEDULED TICK really invokes the reclaim ------------
+
+GUARD = Path(__file__).resolve().parents[1] / "scripts" / "disk-guard.sh"
+
+
+def _run_guard(tmp_path: Path, stub_body: str, *, name: str) -> tuple[int, str]:
+    """Run the real disk-guard with a stubbed hermes binary, isolated $HOME."""
+    home = tmp_path / name
+    (home / "workspace").mkdir(parents=True)
+    (home / ".hermes" / "kanban").mkdir(parents=True)
+    bindir = tmp_path / (name + "-bin")
+    bindir.mkdir()
+    stub = bindir / "hermes"
+    stub.write_text(stub_body, encoding="utf-8")
+    stub.chmod(0o755)
+    marker = tmp_path / (name + ".calls")
+    env = dict(os.environ)
+    env.update(
+        HOME=str(home),
+        DISK_GUARD_HERMES_BIN=str(stub),
+        DISK_GUARD_FLOOR_GI="0",
+        RECLAIM_MARKER=str(marker),
+        HERMES_KANBAN_DB=str(home / ".hermes" / "kanban.db"),
+    )
+    res = subprocess.run(
+        ["bash", str(GUARD), "--reclaim"],
+        capture_output=True, text=True, env=env, timeout=300,
+    )
+    calls = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    return res.returncode, res.stdout + res.stderr + "\n--CALLS--\n" + calls
+
+
+def test_guard_tick_invokes_hermes_kanban_reclaim(tmp_path: Path):
+    """INVARIANT: the scheduled tick must actually call the reclaim.
+
+    Nothing asserted this before, which is how the live host ran 179 ticks
+    taking the dead shell fallback while the log read as routine.
+    """
+    stub = (
+        '#!/usr/bin/env bash\n'
+        'printf "%s\\n" "$*" >> "$RECLAIM_MARKER"\n'
+        'exit 0\n'
+    )
+    rc, out = _run_guard(tmp_path, stub, name="ok")
+    assert "kanban reclaim --dry-run" in out, out   # capability probe
+    assert "kanban reclaim --logs" in out, out      # the real invocation
+    assert "FAIL" not in out, out
+    assert rc == 0, out
+
+
+def test_guard_logs_a_probe_failure_as_a_failure(tmp_path: Path):
+    """An old hermes that rejects the probe must NOT read as a routine tick.
+
+    The shell fallback it falls back to is the proven no-op, so this branch
+    means the host is still leaking and has to be greppable as FAIL.
+    """
+    stub = (
+        '#!/usr/bin/env bash\n'
+        'printf "%s\\n" "$*" >> "$RECLAIM_MARKER"\n'
+        'echo "usage: hermes kanban reclaim [-h] task_id" >&2\n'
+        'exit 2\n'
+    )
+    _rc, out = _run_guard(tmp_path, stub, name="old")
+    assert "kanban reclaim --dry-run" in out, out
+    assert "kanban reclaim --logs" not in out, out
+    assert "worktrees: FAIL hermes reclaim unavailable" in out, out

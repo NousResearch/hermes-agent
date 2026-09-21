@@ -209,7 +209,7 @@ if [ "$RECLAIM" = 1 ]; then
   reclaim_safe_caches
   # Done-card worktrees: one implementation, in hermes, shared with `kanban gc`.
   # The shell copy below is a fallback only (see reclaim_merged_worktrees).
-  HERMES_BIN="$HOME/.hermes/hermes-agent/venv/bin/hermes"
+  HERMES_BIN="${DISK_GUARD_HERMES_BIN:-$HOME/.hermes/hermes-agent/venv/bin/hermes}"
   if [ -x "$HERMES_BIN" ] && "$HERMES_BIN" kanban reclaim --dry-run >/dev/null 2>&1; then
     # --dry-run above is a CAPABILITY PROBE: the installed hermes only grows the
     # worktree-reclaim flags once this change ships. Older builds reject it and
@@ -218,14 +218,18 @@ if [ "$RECLAIM" = 1 ]; then
     if [ "$wt_rc" = 0 ]; then
       log "worktrees: $(printf '%s' "$wt_out" | grep -E '^ *-> ' | tr '\n' ' ')"
     else
-      log "worktrees: hermes reclaim FAILED rc=$wt_rc, falling back to the shell copy"
+      log "worktrees: FAIL hermes reclaim rc=$wt_rc, falling back to the shell copy"
       printf '%s\n' "$wt_out" | tail -3 | while read -r l; do log "  $l"; done
       for repo in $(ls -d "$HOME"/workspace/*/.git 2>/dev/null | xargs -n1 dirname); do
         git -C "$repo" worktree list 2>/dev/null | grep -q . && reclaim_merged_worktrees "$repo"
       done
     fi
   else
-    log "worktrees: hermes reclaim unavailable at $HERMES_BIN, using shell fallback"
+    # NOT routine. The shell fallback (reclaim_merged_worktrees) is the function
+    # whose squash-merge gate made it a permanent no-op: it has removed 0 dirs
+    # over its entire log. Taking this branch means the host is STILL LEAKING
+    # and the installed hermes needs upgrading — say FAIL so it is greppable.
+    log "worktrees: FAIL hermes reclaim unavailable at $HERMES_BIN (upgrade the installed hermes); the shell fallback below is a known no-op"
     for repo in $(ls -d "$HOME"/workspace/*/.git 2>/dev/null | xargs -n1 dirname); do
       git -C "$repo" worktree list 2>/dev/null | grep -q . && reclaim_merged_worktrees "$repo"
     done

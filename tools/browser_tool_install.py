@@ -202,8 +202,19 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
         return False
 
 
+def _agent_browser_browsers_root() -> str:
+    """agent-browser's own browser cache: ``$AGENT_BROWSER_HOME/browsers``, default ``~/.agent-browser/browsers``.
+
+    ``agent-browser install`` downloads Chrome there (``chrome-<version>/``), not into Playwright's
+    cache, so the probe below reports "no Chromium" on a box where the CLI it just told the user to
+    run works perfectly — the install hint and the gate disagree.
+    """
+    home = os.environ.get("AGENT_BROWSER_HOME", "").strip() or os.path.join(os.path.expanduser("~"), ".agent-browser")
+    return os.path.join(home, "browsers")
+
+
 def _chromium_search_roots() -> List[str]:
-    """Chromium / headless-shell scan roots in agent-browser/Playwright probe order: ``PLAYWRIGHT_BROWSERS_PATH``, then the per-OS default cache."""
+    """Chromium / headless-shell scan roots in agent-browser/Playwright probe order: ``PLAYWRIGHT_BROWSERS_PATH``, then the per-OS default cache, then agent-browser's own managed cache."""
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
     home = os.path.expanduser("~")
     roots: List[str] = [env_path] if env_path and env_path != "0" else []
@@ -213,13 +224,14 @@ def _chromium_search_roots() -> List[str]:
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
         roots.append(os.path.join(local, "ms-playwright"))
+    roots.append(_agent_browser_browsers_root())
     return roots
 
 
 def _has_chromium_build(root: str) -> bool:
-    """True when ``root`` holds a Playwright ``chromium-*`` / ``chromium_headless_shell-*`` dir (agent-browser accepts either)."""
+    """True when ``root`` holds a Chromium build: Playwright's ``chromium-*`` / ``chromium_headless_shell-*``, or agent-browser's own ``chrome-*``."""
     try:
-        return any(e.startswith(("chromium-", "chromium_headless_shell-")) for e in os.listdir(root))
+        return any(e.startswith(("chromium-", "chromium_headless_shell-", "chrome-")) for e in os.listdir(root))
     except OSError:
         return False
 

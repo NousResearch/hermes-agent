@@ -52,7 +52,7 @@ import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { requestGatewayForProfile } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
-import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
+import { $fileBrowserOpen, $panesFlipped, $pinnedSessionIds, $sidebarOpen, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { $previewTarget } from '@/store/preview'
@@ -91,6 +91,7 @@ import {
   setMessages
 } from '@/store/session'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
+import { $titlebarExternalButtons } from '@/store/titlebar-external-buttons'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
@@ -144,8 +145,10 @@ import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
   TITLEBAR_CHROME_CHANGED_EVENT,
+  titlebarContentInsetCss,
   titlebarControlsPosition,
   titlebarControlsYNudge,
+  titlebarExternalButtonsWidth,
   titlebarToolsRightCss,
   titlebarToolsWidthCss
 } from '../shell/titlebar'
@@ -1280,7 +1283,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     windowButtonPosition: connection?.windowButtonPosition
   }
 
-  const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
+  const externalButtons = useStore($titlebarExternalButtons)
+  const externalButtonsWidth = titlebarExternalButtonsWidth(nativeOverlayWidth, externalButtons)
+  const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome, externalButtonsWidth)
   // WSLg: Electron's native overlay drifts its hit-region under RAIL, so the
   // renderer paints its own min/max/close (main decides via customWindowControls).
   const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
@@ -1294,6 +1299,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
 
   const leftToolsWidth = titlebarToolsWidthCss(clusters.left)
+  // The tool clusters are `fixed` to the WINDOW while a header is laid out
+  // inside its pane. When a pane sits at the window's left edge the cluster
+  // floats over that pane and costs the header nothing; when nothing does (the
+  // left side collapsed) the first pane's header has to clear the cluster or the
+  // session title renders underneath it.
+  const panesFlipped = useStore($panesFlipped)
+  const sidebarOpen = useStore($sidebarOpen)
+  const fileBrowserOpen = useStore($fileBrowserOpen)
+  const leftPaneOccupiesEdge = panesFlipped ? fileBrowserOpen : sidebarOpen
+
+  const titlebarContentInset = leftPaneOccupiesEdge
+    ? '0rem'
+    : titlebarContentInsetCss(controlsPos.left, clusters.left)
 
   // Native caption reservations can translate chrome without resizing it.
   useEffect(() => {
@@ -1306,6 +1324,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         className="contents"
         style={
           {
+            '--titlebar-content-inset': titlebarContentInset,
             '--titlebar-controls-left': `${controlsPos.left}px`,
             '--titlebar-controls-top': `${controlsPos.top}px`,
             '--titlebar-controls-width': leftToolsWidth,

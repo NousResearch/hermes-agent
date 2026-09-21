@@ -78,3 +78,17 @@ async def test_upload_file_returns_file_id():
         assert second_call.args[0] == "https://upload.rubika.ir/xyz"
     finally:
         os.unlink(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_upload_file_raises_on_missing_file():
+    """Verify that missing files raise RubikaAPIError (not FileNotFoundError)
+    and no HTTP calls are made (file check happens first)."""
+    client = RubikaClient(token="TESTTOKEN")
+    with patch.object(httpx.AsyncClient, "post", AsyncMock()) as mock_post:
+        with pytest.raises(RubikaAPIError) as exc_info:
+            await client.upload_file("/nonexistent/path/file.png", file_type="Image")
+    assert exc_info.value.status == "FILE_READ_ERROR"
+    assert "Could not read file" in str(exc_info.value)
+    # Verify no HTTP calls were made (file check happens before API call)
+    mock_post.assert_not_awaited()

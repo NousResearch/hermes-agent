@@ -54,12 +54,16 @@ class RubikaClient:
         """Two-step upload: requestSendFile -> POST bytes to upload_url -> file_id.
         file_type is one of Rubika's requestSendFile type strings (e.g. "Image",
         "Video", "Voice", "Music", "File", "Gif")."""
+        # Read file first, before making any API calls, to validate it exists and is readable.
+        try:
+            with open(file_path, "rb") as fh:
+                file_bytes = fh.read()
+        except OSError as exc:
+            raise RubikaAPIError(f"Could not read file {file_path}: {exc}", status="FILE_READ_ERROR") from exc
         request_data = await self.call("requestSendFile", type=file_type)
         upload_url = request_data.get("upload_url")
         if not upload_url:
             raise RubikaAPIError("requestSendFile returned no upload_url", status="NO_UPLOAD_URL")
-        with open(file_path, "rb") as fh:
-            file_bytes = fh.read()
         async with httpx.AsyncClient(timeout=self._timeout) as http_client:
             response = await http_client.post(
                 upload_url, files={"file": (file_path.rsplit("/", 1)[-1], file_bytes)})

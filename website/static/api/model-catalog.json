@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-21T20:20:54Z",
+  "updated_at": "2026-09-21T20:41:22Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -393,16 +393,13 @@
           "default": true
         },
         {
-          "id": "xiaomi/mimo-v2.6-pro",
-          "description": ""
+          "id": "xiaomi/mimo-v2.6-pro"
         },
         {
-          "id": "xiaomi/mimo-v2.6-flash",
-          "description": ""
+          "id": "xiaomi/mimo-v2.6-flash"
         },
         {
-          "id": "xiaomi/mimo-v2.6-pro-ultraspeed",
-          "description": ""
+          "id": "xiaomi/mimo-v2.6-pro-ultraspeed"
         },
         {
           "id": "xiaomi/mimo-v2.5-pro"

@@ -376,6 +376,80 @@ class TestGatewayRuntimeStatus:
             ), cmdline
 
 
+    def test_runtime_status_running_pid_accepts_in_process_dashboard_host(self, monkeypatch, tmp_path):
+        """A dashboard/serve process may own the messaging gateway in-process.
+
+        Its runtime record must prove the same process, home, and fresh heartbeat
+        before the command-line identity is accepted as a gateway host.
+        """
+        home = tmp_path / "gateway-home"
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "hermes_home": str(home),
+            "start_time": 1000,
+            "updated_at": status._utc_now_iso(),
+        }
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+
+        for cmdline in (
+            "hermes dashboard --host 127.0.0.1 --no-open",
+            "python -m hermes_cli.main serve --host 127.0.0.1 --port 9119",
+        ):
+            monkeypatch.setattr(status, "_read_process_cmdline", lambda pid, c=cmdline: c)
+            assert status.get_runtime_status_running_pid(payload, expected_home=home) == 139, cmdline
+
+    def test_dashboard_host_requires_fresh_complete_identity(self, monkeypatch, tmp_path):
+        home = tmp_path / "gateway-home"
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "hermes_home": str(home),
+            "start_time": 1000,
+            "updated_at": status._utc_now_iso(),
+        }
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes dashboard --no-open"
+        )
+
+        for field, value in (("start_time", None), ("start_time", 999), ("hermes_home", str(tmp_path / "other"))):
+            candidate = {**payload, field: value}
+            assert status.get_runtime_status_running_pid(candidate, expected_home=home) is None
+
+        monkeypatch.setattr(status, "runtime_status_is_stale", lambda record: True)
+        assert status.get_runtime_status_running_pid(payload, expected_home=home) is None
+
+    def test_dashboard_host_rejects_non_server_commands(self, monkeypatch, tmp_path):
+        home = tmp_path / "gateway-home"
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "hermes_home": str(home),
+            "start_time": 1000,
+            "updated_at": status._utc_now_iso(),
+        }
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        for cmdline in (
+            "hermes gateway status",
+            "hermes chat --model serve",
+            "python unrelated_dashboard.py",
+        ):
+            monkeypatch.setattr(status, "_read_process_cmdline", lambda pid, c=cmdline: c)
+            assert status.get_runtime_status_running_pid(payload, expected_home=home) is None, cmdline
+
+        monkeypatch.setattr(status, "_get_process_hermes_home", lambda: home)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda pid: "hermes --profile other dashboard"
+        )
+        assert status.get_runtime_status_running_pid(payload) is None
+
     def test_command_line_belongs_to_profile_normalizes_separators(self):
         """A Windows argv renders HERMES_HOME with backslashes while the
         profile's Path may carry forward slashes (and, on Windows, vice

@@ -557,6 +557,60 @@ def looks_like_gateway_runtime_command_line(command: str | None) -> bool:
     return _gateway_command_subcommand(command) in {"run", "restart"}
 
 
+def _dashboard_command_subcommand(command: str | None) -> str | None:
+    """Return the top-level ``dashboard``/``serve`` command from a Hermes argv, or None.
+
+    The liveness path must recognize a dashboard only as a possible runtime host; it must not
+    mistake a flag value or an arbitrary process description containing those words for a Hermes
+    server.  Top-level value flags come from the real parser so this matcher cannot drift when the
+    CLI adds a global option.
+    """
+    if not command:
+        return None
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    tokens = [token.strip("\"'").replace("\\", "/").lower() for token in raw_tokens]
+    if not tokens:
+        return None
+
+    entrypoint = None
+    for index, token in enumerate(tokens):
+        basename = token.rsplit("/", 1)[-1]
+        if basename in {"hermes", "hermes.exe"} or token in {"hermes_cli.main", "hermes_cli/main.py"}:
+            entrypoint = index
+            break
+    if entrypoint is None:
+        return None
+
+    try:
+        from hermes_cli._parser import top_level_value_flag_sets
+        required_flags, optional_flags = top_level_value_flag_sets()
+    except Exception:
+        required_flags, optional_flags = frozenset({"-p", "--profile"}), frozenset()
+
+    required_flags = {flag.lower() for flag in required_flags}
+    optional_flags = {flag.lower() for flag in optional_flags}
+    argv = tokens[entrypoint + 1:]
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in required_flags:
+            index += 2
+            continue
+        if token in optional_flags:
+            index += 1
+            if index < len(argv) and not argv[index].startswith("-"):
+                index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return token if token in {"dashboard", "serve"} else None
+    return None
+
+
 def _looks_like_gateway_process(pid: int) -> bool:
     """True when the live PID still looks like the Hermes gateway."""
     cmdline = _read_process_cmdline(pid)
@@ -639,15 +693,39 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
 def _record_matches_live_gateway_pid(
     record: dict[str, Any], pid: int, *, expected_home: Optional[Path] = None
 ) -> bool:
-    """True when a live PID still identifies as this gateway record. The live command line wins (a
-    stale record's argv must not make a recycled PID count as a gateway; with ``expected_home`` it
-    must also belong to that profile); unreadable cmdline (Windows/EACCES) -> persisted record."""
+    """True when a live PID still identifies as this gateway record.
+
+    Standalone gateway command lines retain the historical identity rules. A dashboard/serve process
+    is accepted only when its runtime record proves that this exact process is the live gateway host;
+    unlike a normal gateway record, the dashboard path requires a fresh heartbeat and a known start
+    time so an ordinary dashboard cannot inherit a stale gateway_state.json claim.
+    """
     live_cmdline = _read_process_cmdline(pid)
     if not live_cmdline:
         return _record_looks_like_gateway(record)
-    if not looks_like_gateway_runtime_command_line(live_cmdline):
+    if looks_like_gateway_runtime_command_line(live_cmdline):
+        return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
+    if _dashboard_command_subcommand(live_cmdline) is None:
         return False
-    return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
+    if record.get("kind") != _GATEWAY_KIND or record.get("gateway_state") not in {
+        "starting", "running", "degraded", "draining",
+    }:
+        return False
+    if runtime_status_is_stale(record):
+        return False
+    recorded_home = record.get("hermes_home")
+    if not isinstance(recorded_home, str) or not recorded_home.strip():
+        return False
+    home = expected_home if expected_home is not None else _get_process_hermes_home()
+    if not _same_hermes_home(recorded_home, home):
+        return False
+    if not _command_line_belongs_to_profile(live_cmdline, home):
+        return False
+    recorded_start = record.get("start_time")
+    current_start = _get_process_start_time(pid)
+    if recorded_start is None or current_start is None or _start_times_conflict(recorded_start, current_start):
+        return False
+    return True
 
 
 def _build_pid_record() -> dict:

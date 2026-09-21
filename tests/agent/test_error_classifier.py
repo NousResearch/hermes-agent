@@ -220,6 +220,36 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
+    def test_403_relay_server_error_code_keeps_credential_healthy(self):
+        """A relay 403 stamped ``code=server_error`` is the gateway's own upstream
+        failing, not a credential problem: the key stays healthy and the call is
+        retried instead of benching the credential.
+
+        OpenCode Go/Console wrap an internal upstream failure (an upstream body that
+        is not valid JSON) in HTTP 403 with ``error.code=server_error``. Classifying
+        it as auth benches a healthy sole credential and cascades the fallback chain
+        for the rest of the cooldown window.
+        """
+        body = {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
+                          "type": "server_error", "code": "server_error"}}
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body),
+            provider="opencode-go", model="deepseek-v4.1-flash",
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
+    def test_403_without_relay_code_still_auth(self):
+        """Control: a 403 whose body carries no relay-internal code stays an auth
+        verdict, so the credential auth-recovery path still runs for real
+        permission errors."""
+        body = {"error": {"message": "Invalid API key provided", "code": "invalid_api_key"}}
+        result = classify_api_error(MockAPIError("Forbidden", status_code=403, body=body), provider="opencode-go")
+        assert result.reason == FailoverReason.auth
+        assert result.is_auth is True
+        assert result.should_fallback is True
+
 
 
 

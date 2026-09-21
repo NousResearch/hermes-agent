@@ -997,7 +997,11 @@ def _off_route_host(c: _Ctx) -> str:
 # Structured codes some gateways put on a 403 that mean "the upstream is down,
 # retry later" — not a credential refusal (#75388). Checked before the auth
 # default so the configured retry budget applies and no credential is benched.
-_403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
+# ``server_error`` is the same shape from a relay whose own upstream answered with
+# something it could not parse (OpenCode Go/Console: "Upstream request failed:
+# Upstream response was not valid JSON"); benching the key there drops a healthy
+# sole credential and cascades the fallback chain for the whole cooldown.
+_403_TRANSIENT_CODES = frozenset({"upstream_unavailable", "server_error"})
 
 
 def _status_403(c: _Ctx) -> Verdict:

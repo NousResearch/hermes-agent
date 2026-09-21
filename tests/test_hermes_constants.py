@@ -67,22 +67,28 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == custom_root
 
-    def test_unresolvable_env_home_falls_back_to_custom_root(self, tmp_path, monkeypatch):
-        """Path.resolve() can raise OSError (e.g. a symlink loop); the root must
-        fall back to the custom-root derivation instead of letting it escape."""
+    @pytest.mark.parametrize("failing_side", ["env-path", "native-home"])
+    def test_unresolvable_home_falls_back_to_custom_root(
+        self, tmp_path, monkeypatch, failing_side
+    ):
+        """Path.resolve() can raise OSError (e.g. a symlink loop) from either side of
+        env_path.resolve().relative_to(native_home.resolve()); the root must fall
+        back to the custom-root derivation instead of letting it escape."""
         custom_root = tmp_path / "deployment"
         profile = custom_root / "profiles" / "build"
         profile.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        native_home = hermes_constants._get_platform_default_hermes_home()
         monkeypatch.setenv("HERMES_HOME", str(profile))
         monkeypatch.setattr(
             hermes_constants, "_default_hermes_root_memo", None, raising=False
         )
 
         orig_resolve = Path.resolve
+        failing = profile if failing_side == "env-path" else native_home
 
         def loop_resolve(self, *a, **k):
-            if self == profile:
+            if self == failing:
                 raise OSError("symlink loop")
             return orig_resolve(self, *a, **k)
 

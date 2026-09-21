@@ -1,0 +1,597 @@
+/* Per-plugin pages (/plugins/<name>) and author pages (/plugins/by/<slug>). Shares the visual
+   language of the catalog grid (src/pages/plugins/styles.module.css): DM Sans, gold accents,
+   mono pills. Light mode is a first-class check — every colour below has a light override or
+   uses an ifm variable. */
+
+.page {
+  font-family: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem 2rem 3rem;
+}
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  margin-bottom: 1.25rem;
+}
+
+.crumbs a {
+  color: inherit;
+}
+
+.crumbs a:hover {
+  color: var(--ifm-color-primary);
+  text-decoration: none;
+}
+
+.crumbCurrent {
+  color: var(--ifm-font-color-base);
+  font-weight: 600;
+}
+
+/* ── Hero ─────────────────────────────────────────────────────────────── */
+
+.hero {
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(255, 215, 0, 0.05), transparent 60%);
+}
+
+[data-theme="light"] .hero {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: linear-gradient(180deg, rgba(255, 215, 0, 0.08), #fff 60%);
+}
+
+.authorHero {
+  text-align: center;
+}
+
+.heroImage {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: cover;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.heroBody {
+  padding: 1.75rem 2rem 1.5rem;
+}
+
+.eyebrow {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #a8860a;
+  margin: 0 0 0.5rem;
+}
+
+[data-theme="dark"] .eyebrow {
+  color: rgba(255, 215, 0, 0.6);
+}
+
+.titleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.35rem;
+}
+
+.heroIcon {
+  font-size: 1.6rem;
+  line-height: 1;
+  opacity: 0.85;
+}
+
+.title {
+  font-size: 2.2rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin: 0;
+  word-break: break-word;
+}
+
+.byline {
+  font-size: 0.92rem;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  margin: 0 0 1rem;
+}
+
+.authorLink {
+  font-weight: 600;
+}
+
+.lede {
+  font-size: 1.05rem;
+  line-height: 1.6;
+  max-width: 72ch;
+  margin: 0 0 1rem;
+}
+
+.disclosure {
+  max-width: 72ch;
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.9rem;
+  border-left: 3px solid #f59e0b;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.08);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+/* Pills — same look as the grid cards. */
+.tierPill,
+.versionPill,
+.starPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 0.18rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.versionPill {
+  font-weight: 600;
+  border-color: rgba(96, 165, 250, 0.45);
+  background: rgba(96, 165, 250, 0.12);
+  color: rgba(96, 165, 250, 0.95);
+}
+
+.starPill {
+  border-color: rgba(255, 215, 0, 0.3);
+  background: rgba(255, 215, 0, 0.08);
+  color: #d4af37;
+}
+
+.starPill:hover {
+  background: rgba(255, 215, 0, 0.16);
+  text-decoration: none;
+  color: #d4af37;
+}
+
+/* ── Actions ───────────────────────────────────────────────────────────── */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.75rem;
+  margin: 0.25rem 0 0.9rem;
+}
+
+.installBtn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.55rem 1.1rem;
+  border: 1px solid var(--ifm-color-primary);
+  border-radius: 8px;
+  background: var(--ifm-color-primary);
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: filter 0.15s ease;
+}
+
+.installBtn:hover {
+  filter: brightness(1.1);
+  color: #fff;
+  text-decoration: none;
+}
+
+.installCmd {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem 0.3rem 0.8rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="light"] .installCmd {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.installCmd code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.82rem;
+  background: none;
+  border: none;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  font-size: 0.86rem;
+}
+
+.link {
+  color: var(--ifm-font-color-secondary, #9a968e);
+  text-decoration: none;
+}
+
+.link:hover {
+  color: var(--ifm-color-primary);
+  text-decoration: none;
+}
+
+/* ── Body ─────────────────────────────────────────────────────────────── */
+
+.main {
+  margin-top: 1.5rem;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 2rem;
+  align-items: start;
+}
+
+.primary {
+  min-width: 0;
+}
+
+.section {
+  margin: 0 0 2rem;
+}
+
+.sectionTitle {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.75rem;
+}
+
+.count {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ifm-font-color-secondary, #9a968e);
+  vertical-align: middle;
+  margin-left: 0.3rem;
+}
+
+[data-theme="light"] .count {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.capRow {
+  margin-bottom: 0.9rem;
+}
+
+.capLabel {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  margin: 0 0 0.4rem;
+}
+
+.chipWrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.chip {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.74rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+[data-theme="light"] .chip {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* Screenshots */
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.75rem;
+}
+
+.shot {
+  display: block;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+  transition: border-color 0.2s, transform 0.2s;
+}
+
+[data-theme="light"] .shot {
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+.shot:hover {
+  border-color: rgba(255, 215, 0, 0.35);
+  transform: translateY(-1px);
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+}
+
+/* README */
+.readmeHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.readmeHead .sectionTitle {
+  margin: 0;
+}
+
+.readmeNote {
+  font-size: 0.8rem;
+  color: var(--ifm-font-color-secondary, #9a968e);
+}
+
+.readme {
+  padding: 1.25rem 1.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  font-size: 0.95rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+[data-theme="light"] .readme {
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Author READMEs open with their own H1; keep it in scale with our page. */
+.readme h1 {
+  font-size: 1.6rem;
+}
+
+.readme h2 {
+  font-size: 1.3rem;
+}
+
+.readme h3 {
+  font-size: 1.1rem;
+}
+
+.readme img {
+  max-width: 100%;
+  height: auto;
+}
+
+.readme pre {
+  font-size: 0.85rem;
+}
+
+.readme table {
+  display: block;
+  overflow-x: auto;
+}
+
+/* Facts sidebar */
+.side {
+  position: sticky;
+  top: calc(var(--ifm-navbar-height, 60px) + 1rem);
+}
+
+.facts {
+  margin: 0;
+  padding: 1rem 1.15rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  display: grid;
+  gap: 0.7rem;
+}
+
+[data-theme="light"] .facts {
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+.fact {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.factLabel {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ifm-font-color-secondary, #9a968e);
+}
+
+.factValue {
+  margin: 0;
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+
+.factValue code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem;
+}
+
+.sideNote {
+  margin: 0.9rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--ifm-font-color-secondary, #9a968e);
+}
+
+/* Shelves (More by this author · author page grid) */
+.shelfHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.shelfAll {
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.shelf {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+}
+
+.miniCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.9rem 1rem 0.85rem 1.1rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+}
+
+[data-theme="dark"] .miniCard {
+  background: #0c0c16;
+}
+
+[data-theme="light"] .miniCard {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: #fff;
+}
+
+.miniCard:hover {
+  color: inherit;
+  text-decoration: none;
+  border-color: rgba(255, 215, 0, 0.25);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+  transform: translateY(-1px);
+}
+
+.miniAccent {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 100%;
+  opacity: 0.6;
+}
+
+.miniTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.miniIcon {
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0.75;
+}
+
+.miniName {
+  font-weight: 600;
+  font-size: 0.92rem;
+  word-break: break-word;
+}
+
+.miniName:hover {
+  color: var(--ifm-color-primary);
+}
+
+.miniStars {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  color: #d4af37;
+  margin-left: auto;
+}
+
+/* Gold on white washes out; darken the star text in light mode. */
+[data-theme="light"] .miniStars,
+[data-theme="light"] .starPill,
+[data-theme="light"] .starPill:hover {
+  color: #8a6d00;
+}
+
+.miniDesc {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--ifm-font-color-secondary, #9a968e);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.miniCategory {
+  font-size: 0.72rem;
+  color: var(--ifm-font-color-secondary, #9a968e);
+}
+
+.footerMeta {
+  margin: 1.5rem 0 0;
+  font-size: 0.82rem;
+  color: var(--ifm-font-color-secondary, #9a968e);
+}
+
+@media (max-width: 900px) {
+  .page {
+    padding: 1rem 1rem 2.5rem;
+  }
+
+  .columns {
+    grid-template-columns: 1fr;
+  }
+
+  .side {
+    position: static;
+  }
+
+  .title {
+    font-size: 1.7rem;
+  }
+
+  .heroBody {
+    padding: 1.25rem 1.15rem 1.15rem;
+  }
+}

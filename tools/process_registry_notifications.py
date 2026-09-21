@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from contextlib import suppress
 
 _DONE = ("completed", "success")
+_REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,9 +17,12 @@ class ProcessNotificationBatch:
 
     notifications: tuple[tuple[dict, str], ...]
 
+    def _live(self, registry) -> list:
+        return [(event, text) for event, text in self.notifications
+                if not registry.is_completion_consumed(event.get("session_id", ""))]
+
     def render(self, registry) -> str | None:
-        messages = [text for event, text in self.notifications
-                    if not registry.is_completion_consumed(event.get("session_id", ""))]
+        messages = [text for _event, text in self._live(registry)]
         if not messages:
             return None
         if len(messages) == 1:
@@ -27,6 +31,9 @@ class ProcessNotificationBatch:
                   "Treat these results as one batch and give one consolidated response; "
                   "preserve failures and actionable results.]")
         return "\n\n".join((header, *messages))
+
+    def display_text(self, registry) -> str:
+        return process_completion_display_text([event for event, _text in self._live(registry)])
 
 
 def group_process_notifications(notifications):
@@ -168,6 +175,23 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def _recovery_lines(evt: dict) -> "list[str]":
+    """Owner-died recovery diagnostics (``recover_abandoned_delegations``): last persisted
+    status, per-task transcript paths, their verbatim tails and the owner's git state."""
+    if not evt.get("last_known_status"):
+        return []
+    lines = [f"Last persisted unit status: {evt['last_known_status']} (before owner exit; not current liveness). "
+             "Unrecorded outcomes remain unknown; inspect evidence before retrying side effects."]
+    tails = evt.get("transcript_tails") or {}
+    for index, path in (evt.get("task_transcripts") or {}).items():
+        lines.append(f"Task index {index} transcript (may be incomplete): {path}")
+        if tails.get(index):
+            lines += [f"--- last lines of task {index} transcript ---", tails[index], "--- end ---"]
+    if evt.get("git_state_hint"):
+        lines.append(f"Owner working tree at recovery: {evt['git_state_hint']}")
+    return lines
+
+
 def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> str:
     """Consolidated block for a delegate_task fan-out that finished as one unit."""
     results, goals = evt.get("results") or [], evt.get("goals") or []
@@ -184,6 +208,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         "on siblings, end your turn after acting on this one.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
+    lines += _recovery_lines(evt)
     if evt.get("error") and not results:
         lines += ["--- ERROR ---", f"The batch did not complete successfully: {evt['error']}"]
         return "\n".join(lines)
@@ -265,9 +290,10 @@ def _format_async_delegation(evt: dict) -> str:
     else:
         if status == "interrupted":
             lines.append("The subagent was interrupted before completing" + (f": {error}" if error else "."))
-        else:  # error / timeout / failed
+        else:  # error / timeout / failed / unknown (owner died)
             lines.append(
                 f"The subagent did not complete successfully (status={status})." + (f"\n{error}" if error else ""))
+            lines += _recovery_lines(evt)
         if summary:
             lines += ["Partial output:", summary]
     return "\n".join(lines)
@@ -298,15 +324,51 @@ def async_delegation_display_text(evt: dict) -> str:
     return f"Subagent Tasks {outcome}: {title} ({len(results)} tasks)"
 
 
-class SubagentNotification(str):
-    """Keep queued model text string-compatible, with a separate human preview."""
+PROCESS_COMPLETE_DISPLAY_KIND = "process_complete"
+
+
+def _short_command(command) -> str:
+    cmd = " ".join(str(command or "").split())
+    return cmd[:77] + "..." if len(cmd) > 80 else cmd
+
+
+def process_completion_display_text(events: list) -> str:
+    """Compact UI title for one or more process completions; the model text keeps the full output."""
+    if len(events) != 1:
+        return f"{len(events)} Background Processes Finished"
+    evt = events[0]
+    reason, exit_code = evt.get("completion_reason") or "exited", evt.get("exit_code", "?")
+    if reason == "killed":
+        outcome = "Terminated"
+    elif reason in _REASON_STATUS:
+        outcome = "Lost" if reason == "lost" else "Failed to Start"
+    else:
+        outcome = "Finished" if exit_code == 0 else "Failed"
+    cmd = _short_command(evt.get("command"))
+    detail = f" (exit {exit_code})" if reason not in ("killed", *_REASON_STATUS) and exit_code != 0 else ""
+    return f"Background Process {outcome}{detail}: {cmd}" if cmd else f"Background Process {outcome}{detail}"
+
+
+class TimelineNotification(str):
+    """Queued model text that stays string-compatible, plus the display kind and compact human
+    title the surface paints instead of the raw notification wall."""
 
     display_text: str
+    display_kind: str
+    notification_category: str
 
-    def __new__(cls, text: str, event: dict):
+    def __new__(cls, text: str, display_text: str, display_kind: str, notification_category: str = "result"):
         instance = super().__new__(cls, text)
-        instance.display_text = async_delegation_display_text(event)
+        instance.display_text = display_text
+        instance.display_kind = display_kind
+        instance.notification_category = notification_category
         return instance
+
+    @classmethod
+    def for_delegation(cls, text: str, event: dict) -> "TimelineNotification":
+        from agent.notification_presentation import diagnostic_process_event
+        return cls(text, async_delegation_display_text(event), "async_delegation_complete",
+                   "diagnostic" if diagnostic_process_event(event) else "result")
 
 
 def _delegation_attribution_line(evt: dict) -> "str | None":
@@ -327,9 +389,6 @@ def _delegation_attribution_line(evt: dict) -> "str | None":
     goal = goal[:117] + "..." if len(goal) > 120 else goal
     return (f"Started by subagent {task_id}" + (f" of delegation {deleg}" if deleg else "") + "."
             + (f' Task: "{goal}"' if goal else ""))
-
-
-_REASON_STATUS = {"lost": "marked lost because the process backend disappeared", "failed_start": "failed to start"}
 
 
 def _completion_status(evt: dict) -> str:
@@ -370,6 +429,10 @@ def format_process_notification(evt: dict) -> "str | None":
             "...(output trimmed — subagent-owned process; see the "
             "delegation's live transcript for full output)\n"
             + _out[-600:])
+    elif evt.get("output_cut"):
+        # Say so where the output is the payload (a teammate's reply): a silent tail reads as whole.
+        _out = (f"...(first {evt['output_cut']} characters cut — process(action=\"log\", "
+                f"session_id=\"{_sid}\") has the full output)\n{_out}")
     return (
         f"[IMPORTANT: Background process {_sid} {_completion_status(evt)} (exit code {_exit}{_signal}).\n"
         f"{attribution}Command: {_cmd}\nOutput:\n{_out}]")

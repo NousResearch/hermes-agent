@@ -80,6 +80,21 @@ def _raise_unless_peer_gone(exc: Exception, what: str) -> None:
     logger.debug("StdioTransport %s peer gone: %s", what, exc)
 
 
+def serialize_frame(obj: dict, peer: str, log: logging.Logger) -> str:
+    """``json.dumps`` the frame; an unserializable payload becomes a JSON-RPC error frame carrying
+    the original id. Shared by every transport: without it the TypeError escaped from a pool
+    worker (the executor swallows it), so the client waited forever with no log line (#92506)."""
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        rid = obj.get("id") if isinstance(obj, dict) else None
+        log.error("frame serialization failed peer=%s id=%s error_type=%s error=%s",
+                  peer, rid, type(exc).__name__, exc)
+        fallback = {"jsonrpc": "2.0", "id": rid,
+                    "error": {"code": -32603, "message": f"response serialization error: {exc}"}}
+        return json.dumps(fallback, ensure_ascii=False)
+
+
 class StdioTransport:
     """Writes JSON frames to a stream (usually ``sys.stdout``) resolved via a callable, so runtime
     monkey-patches of the stream keep working."""
@@ -92,9 +107,8 @@ class StdioTransport:
 
     def write(self, obj: dict) -> bool:
         """Return ``True`` on success, ``False`` ONLY when the peer is gone (see :func:`_raise_unless_peer_gone`)."""
-        # Serialization is OUTSIDE the lock so a large payload can't block other threads' frames. A
-        # non-JSON-safe payload is a programming error: re-raise.
-        line = json.dumps(obj, ensure_ascii=False) + "\n"
+        # Serialization is OUTSIDE the lock so a large payload can't block other threads' frames.
+        line = serialize_frame(obj, "stdio", logger) + "\n"
         with self._lock:
             stream = self._stream_getter()
             try:
@@ -223,8 +237,9 @@ class FanoutTransport:
                 return
 
     def write(self, obj: dict) -> bool:
-        # Freeze the queued frame so a caller cannot mutate it after admission.
-        encoded = json.dumps(obj, ensure_ascii=False)
+        # Freeze the queued frame so a caller cannot mutate it after admission. Same serialization
+        # guard as the single-peer transports: an unserializable frame reaches every peer as -32603.
+        encoded = serialize_frame(obj, "fanout", logger)
         size = len(encoded.encode("utf-8", errors="surrogatepass"))
         frame = json.loads(encoded)
         with self._lock:

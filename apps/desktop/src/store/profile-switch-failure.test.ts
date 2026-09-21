@@ -1,3 +1,4 @@
+import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Profile-door activation failure surfacing (#81094): when a secondary's
@@ -36,6 +37,7 @@ vi.mock('@/hermes', () => ({
   }
 }))
 vi.mock('@/store/session', () => ({
+  $connection: atom(null),
   setConnection: vi.fn(),
   setGatewayState: vi.fn()
 }))

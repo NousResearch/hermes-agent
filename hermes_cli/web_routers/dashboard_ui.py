@@ -30,6 +30,10 @@ _get_dashboard_plugins = late("_get_dashboard_plugins")
 _require_token = late("_require_token")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
+# Home + secret scope for one request. NOT ``_profile_scope``: the bodies below clone/pull over the
+# network and hold the scope for their whole duration, and ``_profile_scope`` also holds the
+# process-global skills lock.
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 
@@ -153,7 +157,7 @@ async def get_plugins_hub(request: Request):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
     try:
-        return _merged_plugins_hub()
+        return await asyncio.to_thread(_merged_plugins_hub)
     except Exception as exc:
         _log.warning("plugins/hub failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
@@ -170,13 +174,61 @@ def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
     return result
 
 
+@router.get("/api/dashboard/plugins/catalog")
+async def get_plugins_catalog(request: Request):
+    """Curated plugin catalog merged with installed state (session protected)."""
+    _require_token(request)
+
+    def _run():
+        from hermes_cli.plugins_cmd import _discover_all_plugins, _get_disabled_set, _get_enabled_set
+        from hermes_cli.plugins_cmd_catalog import installed_catalog_state
+        from hermes_cli.web_server_dashboard import _plugin_runtime_status
+        enabled, disabled = _get_enabled_set(), _get_disabled_set()
+        installed = {}
+        for name, _v, _d, _s, dir_str, key in _discover_all_plugins():
+            aliases = {name, key} - {""}
+            info = {"dir": dir_str, "runtime_status": _plugin_runtime_status(aliases, enabled, disabled)}
+            installed.update({alias: info for alias in aliases})
+        return installed_catalog_state(installed)
+
+    try:
+        return await asyncio.to_thread(_run)
+    except Exception as exc:
+        _log.warning("plugins/catalog failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to build plugins catalog.") from exc
+
+
+async def _plugin_mutation(fn: Callable[[], dict]) -> dict:
+    """Run a dashboard plugin mutation inside the dashboard profile's home + secret scope, off the
+    event loop.
+
+    Scope: the git-credential path reaches ``get_secret("GITHUB_TOKEN")``, which fails closed once
+    the process serves more than its launch profile — an unhandled ``UnscopedSecretError`` was the
+    bare 500 on install/update (#115256). Off-loop: the bodies clone/pull and rescan the plugins
+    directory. ``_config_profile_scope`` not ``_profile_scope``: the latter holds the process-wide
+    skills lock for the whole (network-bound) body.
+    """
+    def _run():
+        with _config_profile_scope(None):
+            return fn()
+
+    return await asyncio.to_thread(_run)
+
+
 @router.post("/api/dashboard/agent-plugins/install")
 async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
     _require_token(request)
     from hermes_cli.plugins_cmd import dashboard_install_plugin
 
-    result = dashboard_install_plugin(body.identifier.strip(), force=body.force, enable=body.enable)
-    result = _plugin_action(result, "Install failed.", rescan=True)
+    catalog_name = (body.catalog_name or "").strip()
+    identifier = body.identifier.strip()
+    if not identifier and not catalog_name:
+        raise HTTPException(status_code=400, detail="Provide an identifier or a catalog_name.")
+    result = await _plugin_mutation(lambda: _plugin_action(
+        dashboard_install_plugin(
+            identifier, force=body.force, enable=body.enable, catalog_name=catalog_name or None,
+            ref=body.ref),
+        "Install failed.", rescan=True))
     # Strip internal paths from the response
     result.pop("after_install_path", None)
     return result
@@ -190,35 +242,36 @@ def _validate_plugin_name(name: str) -> str:
     return name
 
 
-def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *, rescan: bool) -> dict:
+async def _named_plugin_action(request: Request, name: str, action: Callable[[str], dict], fallback_error: str, *, rescan: bool) -> dict:
     _require_token(request)
-    return _plugin_action(action(_validate_plugin_name(name)), fallback_error, rescan=rescan)
+    return await _plugin_mutation(lambda: _plugin_action(
+        action(_validate_plugin_name(name)), fallback_error, rescan=rescan))
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
-    return _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
-                                "Enable failed.", rescan=False)
+    return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
+                                      "Enable failed.", rescan=False)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/disable")
 async def post_agent_plugin_disable(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
-    return _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=False),
-                                "Disable failed.", rescan=False)
+    return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=False),
+                                      "Disable failed.", rescan=False)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
-    return _named_plugin_action(request, name, dashboard_update_user_plugin, "Update failed.", rescan=True)
+    return await _named_plugin_action(request, name, dashboard_update_user_plugin, "Update failed.", rescan=True)
 
 
 @router.delete("/api/dashboard/agent-plugins/{name:path}")
 async def delete_agent_plugin(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
-    return _named_plugin_action(request, name, dashboard_remove_user_plugin, "Remove failed.", rescan=True)
+    return await _named_plugin_action(request, name, dashboard_remove_user_plugin, "Remove failed.", rescan=True)
 
 
 @router.put("/api/dashboard/plugin-providers")

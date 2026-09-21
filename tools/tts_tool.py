@@ -15,32 +15,22 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Callable, Dict, Any, List, Optional
+
+import copy
 
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
 
-def get_env_value(name, default=None):
-    """Read env values through the live config module (resolved per call so test patches apply)."""
-    try:
-        from hermes_cli.config import get_env_value as _get_env_value
-    except ImportError:
-        return os.getenv(name, default)
-    value = _get_env_value(name)
-    return default if value is None else value
-
-
 def _resolve_provider_key(env_var: str, provider_id: str) -> str:
     """Resolve a TTS provider API key via the shared voice-key resolver (config > env/.env > pool)."""
-    try:
-        from tools.tool_backend_helpers import resolve_provider_secret
-    except ImportError:  # pragma: no cover — helpers are in-repo
-        return str(get_env_value(env_var) or "").strip()
-    return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
+    from tools.tool_backend_helpers import resolve_provider_secret
+    return resolve_provider_secret(env_var, provider_id)
 
 
 from tools.tts_command_provider import (
@@ -157,6 +147,15 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
 
 # Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
 OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
+
+# MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
+# directive forges a second attachment whenever the path is echoed into the tool result
+# (media_tag / file_path fields, error text): the collector scans producer output with a
+# bare MEDIA: matcher and cannot tell a filename from a directive. Mirrors the collector's
+# grammar (gateway.platforms.base.MEDIA_TAG_CLEANUP_RE): an anchored path OR a quoted payload,
+# which the collector accepts with no anchor and no extension.
+_MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[`'\"]|[a-z]:[/\\]|~?/)", re.IGNORECASE)
+
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
 _FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
@@ -288,7 +287,16 @@ def _resolve_output_base(
     on protected credential/system locations. Default ``<audio cache>/tts_<timestamp>.<ext>``: the
     command format, ``.ogg`` for native-Opus providers on Opus platforms, else ``.mp3``."""
     if output_path:
-        from tools.path_security import has_traversal_component
+        from tools.path_security import has_traversal_component, has_unsafe_path_chars
+        if has_unsafe_path_chars(output_path):
+            return None, _error_json(
+                "output_path contains control characters or line separators; "
+                "use a plain filesystem path")
+        # Must precede the traversal/protected checks: their error text echoes the path,
+        # and a MEDIA: substring in it would forge a delivery tag downstream.
+        if _MEDIA_DIRECTIVE_RE.search(output_path):
+            return None, _error_json(
+                "output_path must not contain a media directive (MEDIA:<path>)")
         if has_traversal_component(output_path):
             return None, _error_json(
                 f"output_path contains '..' traversal component: {output_path}. "
@@ -488,7 +496,10 @@ def _minimax_requirements() -> bool:
 def _xai_requirements() -> bool:
     try:
         from tools.xai_http import resolve_xai_http_credentials
-        return bool(resolve_xai_http_credentials().get("api_key"))
+        # Same ordering as _generate_xai_tts / XAIStreamer: an explicit key wins over the
+        # subscription OAuth bearer (which 403s on metered /v1/tts) — never touch the OAuth
+        # pool for an availability probe when a key is configured. See #87045, #113727.
+        return bool(resolve_xai_http_credentials(prefer_api_key=True).get("api_key"))
     except Exception:
         return False
 
@@ -522,6 +533,19 @@ def check_tts_requirements() -> bool:
 # --- Registry ---
 from tools.registry import registry, tool_error
 
+def _output_path_description(home: str) -> str:
+    return f"Optional custom file path to save the audio. Defaults to {home}/audio_cache/<timestamp>.mp3"
+
+
+def _tts_schema_overrides() -> dict:
+    """Rebuild the ``output_path`` default hint from the ACTIVE profile at every get_definitions():
+    the multiplexed gateway serves every profile from one process, so a path baked in at import
+    would name the launch profile's home for everyone else (#95685)."""
+    params = copy.deepcopy(TTS_SCHEMA["parameters"])
+    params["properties"]["output_path"]["description"] = _output_path_description(display_hermes_home())
+    return {"parameters": params}
+
+
 TTS_SCHEMA = {
     "name": "text_to_speech",
     "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
@@ -534,7 +558,7 @@ TTS_SCHEMA = {
             },
             "output_path": {
                 "type": "string",
-                "description": f"Optional custom file path to save the audio. Defaults to {display_hermes_home()}/audio_cache/<timestamp>.mp3"
+                "description": _output_path_description("the profile HERMES_HOME")
             },
             "speed": {
                 "type": "number",
@@ -572,7 +596,8 @@ registry.register(
         text=args.get("text", ""),
         **{k: args.get(k) for k in ("output_path", "speed", "instructions", "provider")}),
     check_fn=check_tts_requirements,
-    emoji="🔊")
+    emoji="🔊",
+    dynamic_schema_overrides=_tts_schema_overrides)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

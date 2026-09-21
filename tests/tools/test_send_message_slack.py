@@ -137,3 +137,27 @@ def test_standalone_send_stops_on_non_token_error(monkeypatch, _standalone_send)
 
     assert result == {"error": "Slack API error: msg_too_long"}
     assert len(fake_session.calls) == 1
+
+
+def test_resolve_slack_user_target_scrubs_credentialed_proxy_in_error(monkeypatch):
+    """_resolve_slack_user_target surfaces aiohttp/connector errors to the
+    caller; an exception text embedding the credentialed proxy URL must be
+    scrubbed before it reaches the model/user."""
+    from tools.send_message_senders import _resolve_slack_user_target
+
+    cred_url = "http://secretuser:secretpass@proxy.host:3128"
+    monkeypatch.setenv("HTTPS_PROXY", cred_url)
+    for var in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy",
+                "https_proxy", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(var, raising=False)
+
+    def _boom(*args, **kwargs):
+        raise Exception(f"InvalidURL {cred_url}")
+
+    monkeypatch.setattr("aiohttp.ClientSession", _boom)
+
+    _dm_id, err = asyncio.run(_resolve_slack_user_target("tok", "user_name:alice"))
+    assert err is not None
+    assert "secretuser" not in err["error"]
+    assert "secretpass" not in err["error"]
+    assert "proxy.host" in err["error"]

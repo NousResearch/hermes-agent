@@ -108,6 +108,7 @@ def _telegram_bot(token):
     """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
     blocked); falls back to a direct connection."""
     from telegram import Bot
+    proxy = None
     try:
         from gateway.platforms.base import resolve_proxy_url
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
@@ -117,7 +118,12 @@ def _telegram_bot(token):
         logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
         return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
     except Exception as proxy_err:
-        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
+        # HTTPXRequest/resolve errors can embed the proxy URL verbatim.
+        _err_txt = str(proxy_err)
+        if proxy:
+            from gateway.platforms.base import safe_url_for_log
+            _err_txt = _err_txt.replace(proxy, safe_url_for_log(proxy))
+        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _err_txt)
     return Bot(token=token)
 
 
@@ -366,9 +372,11 @@ async def _resolve_slack_user_target(token, chat_id):
         import aiohttp
     except ImportError:
         return None, {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    _proxy = None
     try:
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
-        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url())
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp, safe_url_for_log
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             async def post_api(method, payload):
@@ -402,7 +410,11 @@ async def _resolve_slack_user_target(token, chat_id):
             dm_id = (opened.get("channel") or {}).get("id")
             return (dm_id, None) if dm_id else (None, _error("Slack conversations.open did not return a DM channel ID"))
     except Exception as e:
-        return None, _error(f"Slack DM resolution failed: {e}")
+        # aiohttp/connector errors can embed the credentialed proxy URL verbatim.
+        _err_txt = str(e)
+        if _proxy:
+            _err_txt = _err_txt.replace(_proxy, safe_url_for_log(_proxy))
+        return None, _error(f"Slack DM resolution failed: {_err_txt}")
 
 
 async def _signal_send_batch(post, scheduler, rl, idx, n_batches, att_batch, batch_message):

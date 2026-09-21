@@ -428,6 +428,7 @@ import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
+  linuxDesktopUpdateCanReplaceClient,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
@@ -4595,6 +4596,34 @@ async function applyUpdatesPosixHandoff(opts: any) {
     emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
 
     return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
+  }
+
+  if (
+    !linuxDesktopUpdateCanReplaceClient(updateRoot, process.execPath, {
+      realpath: candidate => {
+        try {
+          return fs.realpathSync.native(candidate)
+        } catch {
+          return path.resolve(candidate)
+        }
+      }
+    })
+  ) {
+    const message =
+      'Hermes Desktop is installed as a Linux system package. Update or reinstall the desktop package with your package manager first; the backend was left unchanged.'
+
+    rememberLog(`[updates] refusing backend-only update for packaged Linux Desktop: ${process.execPath}`)
+    emitUpdateProgress({ stage: 'guiSkew', message, percent: null })
+
+    return {
+      ok: false,
+      error: 'packaged-desktop-update-required',
+      backendUpdated: false,
+      guiUpdated: false,
+      guiSkew: true,
+      message,
+      hermesRoot: updateRoot
+    }
   }
 
   const handoffConflict = updateHandoffConflict(HERMES_HOME)

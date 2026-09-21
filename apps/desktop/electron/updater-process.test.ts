@@ -7,6 +7,7 @@ import { test } from 'vitest'
 import {
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
+  linuxDesktopUpdateCanReplaceClient,
   MARKER_SELF_ADOPT_EPOCH_MS,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
@@ -282,6 +283,53 @@ test('resolvePosixScriptHandoff is null on Windows', () => {
   })
 
   assert.equal(handoff, null)
+})
+
+test('Linux update gate permits only the checkout-managed Desktop build', () => {
+  const root = '/home/hermes/.hermes/hermes-agent'
+  const identityRealpath = (candidate: string) => candidate
+
+  assert.equal(
+    linuxDesktopUpdateCanReplaceClient(root, `${root}/apps/desktop/release/linux-unpacked/hermes`, {
+      isLinux: true,
+      realpath: identityRealpath
+    }),
+    true
+  )
+  assert.equal(
+    linuxDesktopUpdateCanReplaceClient(root, '/usr/lib/hermes-desktop/hermes', {
+      isLinux: true,
+      realpath: identityRealpath
+    }),
+    false
+  )
+  assert.equal(
+    linuxDesktopUpdateCanReplaceClient(root, '/tmp/.mount_Hermes123/hermes', {
+      isLinux: true,
+      realpath: identityRealpath
+    }),
+    false
+  )
+})
+
+test('Linux update gate compares canonical paths and does not gate other platforms', () => {
+  const root = '/home/hermes/.hermes/hermes-agent'
+  const executable = '/var/home/hermes/.hermes/hermes-agent/apps/desktop/release/linux-unpacked/hermes'
+  const canonical = (candidate: string) => candidate.replace('/home/hermes/', '/var/home/hermes/')
+
+  assert.equal(
+    linuxDesktopUpdateCanReplaceClient(root, executable, { isLinux: true, realpath: canonical }),
+    true
+  )
+  assert.equal(
+    linuxDesktopUpdateCanReplaceClient(root, '/Applications/Hermes.app/Contents/MacOS/Hermes', {
+      isLinux: false,
+      realpath: () => {
+        throw new Error('must not resolve paths off Linux')
+      }
+    }),
+    true
+  )
 })
 
 test('collectRelaunchArgs drops Electron internals, keeps user/launcher args', () => {

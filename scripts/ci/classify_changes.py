@@ -158,6 +158,10 @@ def _is_nix(p: str) -> bool:
 
 
 def _py_irrelevant(p: str) -> bool:
+    # Frontend packages can include Python build or asset-generation scripts.
+    # Their path still needs the Python lint and test lanes.
+    if p.endswith(".py"):
+        return False
     if p.startswith(_PY_RELEVANT_SITE) or p in _PY_RELEVANT_CONTRACT_FILES:
         return False
     return (

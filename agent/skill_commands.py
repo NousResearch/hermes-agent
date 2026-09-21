@@ -351,17 +351,20 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
 
 
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
+def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]],
+                   *, claim_filtered: bool = False) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
     from tools.skills_tool import _parse_frontmatter, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
     frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8'))
-    # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
-    if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
-        return
     name = frontmatter.get('name', skill_md.parent.name)
     if name in seen_names or name in disabled:
+        return
+    if claim_filtered:
+        seen_names.add(name)
+    # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
+    if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
         return
     description = frontmatter.get('description', '') or next(
         (line.strip()[:80] for line in body.strip().split('\n') if line.strip() and not line.strip().startswith('#')),
@@ -407,21 +410,25 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         from tools.skills_tool import _skills_dir, _get_disabled_skill_names
         from agent.skill_utils import (
             get_external_skills_dirs, get_project_skills_dirs, iter_project_skill_files, iter_skill_index_files,
+            get_preferred_skills_dirs,
         )
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
-        # Precedence: project (through the quarantine chokepoint) > local > external.
+        # Precedence: trusted project > preferred roots > remaining local/external roots.
         # Resolve the local dir at call time: import-time SKILLS_DIR is frozen to
         # the launch home, but a multiplexed profile scope may have changed it.
         # See #67277.
         skills_dir = _skills_dir()
-        iters = [iter_project_skill_files(d) for d in get_project_skills_dirs()]
+        iters = [(iter_project_skill_files(d), False) for d in get_project_skills_dirs()]
         local = [skills_dir] if skills_dir.exists() else []
-        iters += [iter_skill_index_files(d, "SKILL.md") for d in local + get_external_skills_dirs()]
-        for _iter in iters:
+        roots = local + get_external_skills_dirs()
+        preferred = get_preferred_skills_dirs(roots)
+        roots = preferred + [d for d in roots if d not in preferred]
+        iters += [(iter_skill_index_files(d, "SKILL.md"), d in preferred) for d in roots]
+        for _iter, claim_filtered in iters:
             for skill_md in _iter:
                 try:
-                    _scan_skill_md(skill_md, disabled, seen_names, commands)
+                    _scan_skill_md(skill_md, disabled, seen_names, commands, claim_filtered=claim_filtered)
                 except Exception:
                     continue
     except Exception:

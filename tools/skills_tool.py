@@ -172,22 +172,25 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 def _skill_search_dirs() -> Tuple[list, list, Path]:
     """(project_dirs, all_dirs, active_skills_dir); trusted project-local dirs come FIRST so
     first-wins dedup / the collision resolver prefer them."""
-    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs
+    from agent.skill_utils import get_external_skills_dirs, get_project_skills_dirs, get_preferred_skills_dirs
     project_dirs = list(get_project_skills_dirs())
     active_skills_dir = _skills_dir()
     all_dirs = project_dirs + ([active_skills_dir] if active_skills_dir.exists() else [])
     all_dirs += get_external_skills_dirs()
+    preferred = get_preferred_skills_dirs([d for d in all_dirs if d not in project_dirs])
+    all_dirs = project_dirs + preferred + [d for d in all_dirs if d not in project_dirs and d not in preferred]
     return project_dirs, all_dirs, active_skills_dir
 
 
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
     by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
-    from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
+    from agent.skill_utils import iter_project_skill_files, iter_skill_index_files, get_preferred_skills_dirs
     cache_key = "with_disabled" if skip_disabled else "filtered"
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     project_dirs, dirs_to_scan, _ = _skill_search_dirs()
-    signature = _skills_scan_signature(dirs_to_scan, disabled)
+    preferred = get_preferred_skills_dirs([d for d in dirs_to_scan if d not in project_dirs])
+    signature = (_skills_scan_signature(dirs_to_scan, disabled), tuple(preferred))
     now = time.monotonic()
     cached = _SKILLS_CACHE.get(cache_key)
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
@@ -203,10 +206,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 continue
             try:
                 frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
-                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
-                    continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
                 if name in seen_names or name in disabled:
+                    continue
+                if scan_dir in preferred:
+                    seen_names.add(name)  # An unavailable preferred bundle must not expose a fallback.
+                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
                     continue
                 description = frontmatter.get("description", "")
                 if not description:  # first non-heading body line (a null value stays null)
@@ -511,6 +516,11 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
         # A project skill intentionally overrides a same-named local/external skill;
         # ambiguity WITHIN the project tier (two different skills) still refuses.
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
+    if (len(candidates) > 1 and "/" not in name and "\\" not in name and not local_category_name
+            and not any(_under_any(c[1], project_dirs) for c in candidates)):
+        from agent.skill_utils import get_preferred_skills_dirs
+        preferred = get_preferred_skills_dirs([d for d in all_dirs if d not in project_dirs])
+        candidates = [c for c in candidates if _owning_search_dir(c[1], all_dirs) in preferred] or candidates
     if len(candidates) > 1:
         # The refusal below guards against one skill silently shadowing another. Copies of ONE
         # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)

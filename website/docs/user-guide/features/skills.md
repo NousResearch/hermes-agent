@@ -390,9 +390,36 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 - **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch` (targeted or full rewrite), `write_file`, `remove_file`, or `delete`.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
-- **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
+- **Default collisions**: Listings show the local version first. Loading a bare name that matches different local and external bundles refuses as ambiguous. Use a unique categorized path or configure a preferred root below.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
+
+### Prefer a shared skill root
+
+Set `skills.preferred_dirs` to select a preferred read tier from directories Hermes
+already discovers:
+
+```yaml
+skills:
+  external_dirs:
+    - ~/.agents/skills
+  preferred_dirs:
+    - ~/.agents/skills
+```
+
+Paths use the same expansion as `external_dirs`; relative paths resolve against the
+active profile's home. This setting does not add discovery roots or change where
+`skill_manage` creates or updates skills. Existing bundles remain in place.
+
+For bare-name reads, trusted project skills still win. Otherwise, a matching
+preferred bundle wins over copies in ordinary roots. Multiple different matches
+within the preferred tier still refuse as ambiguous; the list order does not
+break that tie. Explicit categorized paths retain their existing lookup behavior.
+
+The prompt index, skill listing and slash commands use preferred metadata. If a
+preferred bundle is unavailable on the current platform or environment, its
+lower-priority copies are not offered as substitutes. Start a new conversation
+after changing this setting so the cached prompt index reflects it.
 
 ### Example
 
@@ -462,7 +489,7 @@ Trusted roots are stored in `skills.trusted_project_dirs` in `~/.hermes/config.y
 
 ### Precedence
 
-Project skills are the **highest-precedence tier**: `project → local (~/.hermes/skills/) → external_dirs`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible.
+Project skills are the **highest-precedence tier**: `project → preferred_dirs (if configured) → remaining local/external roots`. A project skill named `deploy` overrides a same-named profile or bundled skill for sessions inside that repo — that's the point: vendored repo skills win on their home turf, without touching your global profile. Project skills are tagged `[project]` in the agent's skill index so provenance stays visible.
 
 Like external dirs, project skill directories are treated as repo-owned: autonomous skill maintenance (the curator) never modifies them, and new agent-created skills always go to `~/.hermes/skills/`.
 

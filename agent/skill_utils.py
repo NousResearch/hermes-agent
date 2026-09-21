@@ -363,6 +363,19 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
+def get_preferred_skills_dirs(discovered_dirs: List[Path]) -> List[Path]:
+    """Select the opt-in read tier from roots already discovered by this consumer.
+
+    Preference neither registers a new root nor changes native write lookup order.
+    Keep discovery order within the tier; multiple matching bundles still collide.
+    """
+    configured = {
+        _home_relative(_expand_path(entry)).resolve()
+        for entry in _config_str_list(_skills_cfg_get("preferred_dirs"))
+    }
+    return [root for root in discovered_dirs if root.resolve() in configured]
+
+
 def get_skill_create_dir() -> Optional[Path]:
     """Configured ``skills.create_dir`` (need not exist yet), or None when unset;
     relative to HERMES_HOME; a value equal to the local skills dir counts as unset."""

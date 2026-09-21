@@ -1255,7 +1255,7 @@ def build_skills_system_prompt(
 ) -> str:
     """Compact skill index for the system prompt.
 
-    External dirs (``skills.external_dirs``) are read-only and lose name collisions to local skills.
+    External dirs (``skills.external_dirs``) follow local skills unless selected by preferred_dirs.
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
@@ -1300,15 +1300,19 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
 
 def _collect_extra_skills(
     root: Path, skill_files, hides, claimed: set[str], skills_by_category: dict[str, list[tuple[str, str]]],
-    *, desc_prefix: str, log_fmt: str,
+    *, desc_prefix: str, log_fmt: str, claim_filtered: bool = False,
 ) -> None:
     """Add visible skills from a project/external dir; names already in *claimed* are skipped."""
     for skill_file in skill_files:
         try:
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            entry = _build_snapshot_entry(skill_file, root, frontmatter, desc) if is_compatible else None
-            fm_name = entry["frontmatter_name"] if entry else ""
-            if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
+            entry = _build_snapshot_entry(skill_file, root, frontmatter, desc)
+            fm_name = entry["frontmatter_name"]
+            if fm_name in claimed:
+                continue
+            if claim_filtered:
+                claimed.add(fm_name)
+            if not is_compatible or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
                 continue
             claimed.add(fm_name)
             skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{entry['description']}".strip()))
@@ -1407,7 +1411,11 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
+    from agent.skill_utils import get_preferred_skills_dirs
+    preferred = get_preferred_skills_dirs([d for d in [skills_dir, *external_dirs] if d not in project_dirs])
+    preferred_external = [d for d in preferred if d != skills_dir] if skills_dir not in preferred else []
     cache_key = (
+        tuple(str(d) for d in preferred),
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
@@ -1450,8 +1458,17 @@ def _build_skills_system_prompt_inner(
         for proj_dir in (d for d in project_dirs if d.exists()):
             _collect_extra_skills(proj_dir, iter_project_skill_files(proj_dir), hides, project_names, skills_by_category,
                                   desc_prefix="[project] ", log_fmt="Error reading project skill %s: %s")
+    # Preferred roots claim names before visibility filtering, so an unavailable preferred
+    # bundle cannot advertise a lower-tier copy that explicit loading would never select.
+    claimed = set(project_names)
+    for root in preferred_external:
+        _collect_extra_skills(root, iter_skill_index_files(root, "SKILL.md"), hides, claimed,
+                              skills_by_category, desc_prefix="", log_fmt="Error reading preferred skill %s: %s",
+                              claim_filtered=True)
     # Drop shadowed entries BEFORE org labeling so collision flags don't fire on intentional overrides.
-    _label_visible_entries([e for e in visible_entries if _entry_name(e) not in project_names], skills_by_category)
+    _label_visible_entries([e for e in visible_entries if _entry_name(e) not in claimed], skills_by_category)
+    if skills_dir in preferred:
+        claimed.update(_entry_name(entry) for entry, _ in candidates)
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:
@@ -1463,10 +1480,13 @@ def _build_skills_system_prompt_inner(
             logger.debug("Could not write skills prompt snapshot: %s", e)
 
     # External skill directories: scanned directly (read-only, small); names already indexed are skipped.
-    seen_skill_names: set[str] = {name for cat in skills_by_category.values() for name, _ in cat}
-    for ext_dir in (d for d in external_dirs if d.exists()):
-        _collect_extra_skills(ext_dir, iter_skill_index_files(ext_dir, "SKILL.md"), hides, seen_skill_names,
-                              skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s")
+    seen_skill_names: set[str] = claimed | {name for cat in skills_by_category.values() for name, _ in cat}
+    ordered_external = [d for d in preferred if d != skills_dir] + [d for d in external_dirs if d not in preferred]
+    for ext_dir in (d for d in ordered_external if d.exists()):
+        if ext_dir not in preferred_external:
+            _collect_extra_skills(ext_dir, iter_skill_index_files(ext_dir, "SKILL.md"), hides, seen_skill_names,
+                                  skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s",
+                                  claim_filtered=ext_dir in preferred)
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 

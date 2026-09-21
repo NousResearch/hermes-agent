@@ -28,7 +28,9 @@ def test_openrouter_limit_403_is_billing_for_main_loop_and_aux_ladder(body):
     assert classify_api_error(exc).reason is FailoverReason.billing
     assert ac._is_payment_error(exc)
     # Every main-classifier billing phrase is an aux payment phrase (one table, no drift).
-    assert all(p in ac._PAYMENT_KEYWORDS for p in classify_api_error.__globals__["_BILLING_PATTERNS"])
+    from agent.auxiliary_error_kinds import _PAYMENT_KEYWORDS
+
+    assert all(p in _PAYMENT_KEYWORDS for p in classify_api_error.__globals__["_BILLING_PATTERNS"])
 
 
 def test_absent_credentials_quarantine_is_debug_and_names_the_real_reason(caplog):

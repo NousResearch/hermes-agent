@@ -209,10 +209,10 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
         if proc.returncode != 0:
-            from tools.bot_failure_reasons import classify_agent_error
+            from tools.bot_failure_reasons import classify_delivery_detail
             detail = _detail(proc)
             return _err(rid, 5092, f"delivery turn failed: {detail[-500:] or proc.returncode}",
-                        data={"reason": classify_agent_error(detail)})
+                        data={"reason": classify_delivery_detail(detail)})
         # Use the same canonical whole-response predicate as live Bot Chat
         # completion.  A marker remains a successful turn, but is never sent
         # back to the relay caller as visible prose.

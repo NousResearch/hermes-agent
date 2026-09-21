@@ -436,14 +436,20 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     refused_not_owned = (reason == "SESSION_NOT_OWNED" if reason is not None
                          else "already has a live owner" in stderr_text)
     if proc.returncode != 0 and refused_not_owned:
-        # The target's Bot Chat is held live by another surface (Desktop); the turn
-        # never ran — tell the sender plainly instead of leaking a raw lease error.
-        # See #100523.
+        # The target's Bot Chat is held live by another surface (Desktop); the turn never ran —
+        # tell the sender plainly instead of leaking a raw lease error. See #100523.
+        #
+        # This is the OTHER refusal from the TURN LOCK's, and used to ship the same code as it:
+        # nothing is queued behind a turn here, the message was refused at the session LEASE, so
+        # the target session is mid-turn (or has outlived its requester). Different condition,
+        # different operator action — hence its own typed code.
+        from tools.bot_failure_reasons import TARGET_SESSION_LIVE
+
         who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
         print(json.dumps({
             "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
                      "surface right now, so your message was NOT delivered. Try again later.",
-            "reason": "target_busy",
+            "reason": TARGET_SESSION_LIVE,
         }))
         return 1
     # Re-emit the transport's streams: stdout is the reply text the

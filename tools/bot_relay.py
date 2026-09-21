@@ -588,10 +588,17 @@ def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = Non
 
     env = served_profile_child_env(base=os.environ, target_home=profile_home, inherit_credentials=True)
     env.pop(TURN_AUTHOR_ENV, None)
+    # A disposable delivery child must not outlive the process that will read its answer: arm
+    # its requester watch (hermes_cli.quiet_single_query.REQUESTER_PID_ENV). Popped first so a
+    # NESTED delivery — a recipient that message_agents onward — never inherits the grandparent's
+    # pid and mistakes its own requester for it.
+    from hermes_cli.quiet_single_query import REQUESTER_PID_ENV, requester_pid_env
+    env.pop(REQUESTER_PID_ENV, None)
     for name in _delivery_child_session_env_names():
         env.pop(name, None)
     if author:
         env.update(turn_author_env(author))
+    env.update(requester_pid_env())
     return env
 
 

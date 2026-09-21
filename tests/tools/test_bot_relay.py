@@ -13,6 +13,7 @@ relay adds to message_agent:
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -748,3 +749,8 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     assert "HERMES_SESSION_ID" not in env
     assert "HERMES_SESSION_PROFILE" not in env
     assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"
+    # The disposable child is armed with THIS spawner's pid (requester-death policy), and any
+    # inherited grandparent pid is dropped first — see tests/hermes_cli/test_quiet_requester_death.py.
+    from hermes_cli.quiet_single_query import REQUESTER_PID_ENV
+
+    assert env[REQUESTER_PID_ENV] == str(os.getpid())

@@ -1,0 +1,441 @@
+{
+  "assetCount": 23,
+  "productionUse": "reference_only",
+  "productionEligibility": "rejected_for_production",
+  "rejectionReason": "Raw scene-crop image-to-3D output produced floating blobby relief meshes that do not resemble the approved buildings, anthropomorphic leaders, robot workers, or environment. Production must start from full-resolution high-poly master assets and retopologize down.",
+  "assets": [
+    {
+      "bounds": [
+        4.1157,
+        6.7015,
+        7.701
+      ],
+      "faces": 44916,
+      "id": "building-library",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-library.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-library.png",
+      "status": "imported",
+      "vertices": 22542,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        4.3084,
+        5.7275,
+        7.7897
+      ],
+      "faces": 42384,
+      "id": "building-research-lab",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-research-lab.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-research-lab.png",
+      "status": "imported",
+      "vertices": 21301,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        4.546,
+        6.8293,
+        8.0774
+      ],
+      "faces": 36700,
+      "id": "building-arts-studio",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-arts-studio.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-arts-studio.png",
+      "status": "imported",
+      "vertices": 18422,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        3.7679,
+        6.6273,
+        7.7214
+      ],
+      "faces": 40784,
+      "id": "building-engineering",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-engineering.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-engineering.png",
+      "status": "imported",
+      "vertices": 20465,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        4.842,
+        6.493,
+        7.7459
+      ],
+      "faces": 46828,
+      "id": "building-operations-depot",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-operations-depot.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-operations-depot.png",
+      "status": "imported",
+      "vertices": 23506,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        5.4724,
+        7.7272,
+        8.3668
+      ],
+      "faces": 38596,
+      "id": "building-release-gatehouse",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-release-gatehouse.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-release-gatehouse.png",
+      "status": "imported",
+      "vertices": 19363,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        4.9755,
+        7.7158,
+        7.9669
+      ],
+      "faces": 41192,
+      "id": "building-triage-clinic",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-triage-clinic.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-triage-clinic.png",
+      "status": "imported",
+      "vertices": 20665,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        4.6552,
+        6.1701,
+        7.6248
+      ],
+      "faces": 44220,
+      "id": "building-council-hall",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-council-hall.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-council-hall.png",
+      "status": "imported",
+      "vertices": 22181,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        3.8202,
+        6.2239,
+        7.5929
+      ],
+      "faces": 40108,
+      "id": "building-review-office",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-review-office.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-review-office.png",
+      "status": "imported",
+      "vertices": 20138,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        4.1157,
+        6.7512,
+        7.8521
+      ],
+      "faces": 40248,
+      "id": "building-archive",
+      "kind": "building",
+      "mesh": "lunar-city/generated-3d/meshes/building-archive.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/building-archive.png",
+      "status": "imported",
+      "vertices": 20203,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        1.6178,
+        2.4922,
+        2.276
+      ],
+      "faces": 38292,
+      "id": "leader-owl-archivist",
+      "kind": "leader",
+      "mesh": "lunar-city/generated-3d/meshes/leader-owl-archivist.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/leader-owl-archivist.png",
+      "status": "imported",
+      "vertices": 19217,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        1.7529,
+        2.6267,
+        2.6227
+      ],
+      "faces": 36112,
+      "id": "leader-fox-scientist",
+      "kind": "leader",
+      "mesh": "lunar-city/generated-3d/meshes/leader-fox-scientist.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/leader-fox-scientist.png",
+      "status": "imported",
+      "vertices": 18118,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        1.1096,
+        2.4482,
+        2.3953
+      ],
+      "faces": 35524,
+      "id": "leader-raccoon-artist",
+      "kind": "leader",
+      "mesh": "lunar-city/generated-3d/meshes/leader-raccoon-artist.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/leader-raccoon-artist.png",
+      "status": "imported",
+      "vertices": 17844,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        1.6731,
+        2.2908,
+        2.4513
+      ],
+      "faces": 41024,
+      "id": "leader-eagle-councillor",
+      "kind": "leader",
+      "mesh": "lunar-city/generated-3d/meshes/leader-eagle-councillor.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/leader-eagle-councillor.png",
+      "status": "imported",
+      "vertices": 20578,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        1.1877,
+        2.3279,
+        1.9695
+      ],
+      "faces": 36664,
+      "id": "leader-badger-engineer",
+      "kind": "leader",
+      "mesh": "lunar-city/generated-3d/meshes/leader-badger-engineer.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/leader-badger-engineer.png",
+      "status": "imported",
+      "vertices": 18395,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        1.7782,
+        2.2933,
+        2.4446
+      ],
+      "faces": 42948,
+      "id": "leader-hawk-reviewer",
+      "kind": "leader",
+      "mesh": "lunar-city/generated-3d/meshes/leader-hawk-reviewer.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/leader-hawk-reviewer.png",
+      "status": "imported",
+      "vertices": 21557,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        1.8165,
+        2.4892,
+        2.4613
+      ],
+      "faces": 42588,
+      "id": "leader-owl-historian",
+      "kind": "leader",
+      "mesh": "lunar-city/generated-3d/meshes/leader-owl-historian.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/leader-owl-historian.png",
+      "status": "imported",
+      "vertices": 21353,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        0.8754,
+        1.2022,
+        1.2046
+      ],
+      "faces": 50040,
+      "id": "worker-bot-round",
+      "kind": "worker",
+      "mesh": "lunar-city/generated-3d/meshes/worker-bot-round.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/worker-bot-round.png",
+      "status": "imported",
+      "vertices": 25117,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        0.6714,
+        1.2457,
+        1.1171
+      ],
+      "faces": 36384,
+      "id": "worker-bot-carrying",
+      "kind": "worker",
+      "mesh": "lunar-city/generated-3d/meshes/worker-bot-carrying.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/worker-bot-carrying.png",
+      "status": "imported",
+      "vertices": 18261,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        0.8371,
+        1.1972,
+        1.228
+      ],
+      "faces": 45548,
+      "id": "worker-bot-review",
+      "kind": "worker",
+      "mesh": "lunar-city/generated-3d/meshes/worker-bot-review.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/worker-bot-review.png",
+      "status": "imported",
+      "vertices": 22866,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        0.7301,
+        0.8471,
+        0.8743
+      ],
+      "faces": 45432,
+      "id": "child-bot-garden",
+      "kind": "child",
+      "mesh": "lunar-city/generated-3d/meshes/child-bot-garden.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/child-bot-garden.png",
+      "status": "imported",
+      "vertices": 22801,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        1.4392,
+        2.6664,
+        3.1249
+      ],
+      "faces": 31540,
+      "id": "vehicle-bus",
+      "kind": "vehicle",
+      "mesh": "lunar-city/generated-3d/meshes/vehicle-bus.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/vehicle-bus.png",
+      "status": "imported",
+      "vertices": 15825,
+      "wireOverlayCount": 1
+    },
+    {
+      "bounds": [
+        0.8764,
+        1.506,
+        1.7399
+      ],
+      "faces": 38352,
+      "id": "prop-break-garden",
+      "kind": "prop",
+      "mesh": "lunar-city/generated-3d/meshes/prop-break-garden.glb",
+      "meshObjectCount": 1,
+      "objectCount": 2,
+      "pbrStatus": "source_materials",
+      "sourceReferenceCrop": "lunar-city/generated-3d/reference-crops/prop-break-garden.png",
+      "status": "imported",
+      "vertices": 19268,
+      "wireOverlayCount": 1
+    }
+  ],
+  "blend": "lunar-city/generated-3d/lunar-city-generated-assets-board.blend",
+  "generator": "build_lunar_city_generated_asset_board.py",
+  "glb": "lunar-city/generated-3d/lunar-city-generated-assets-board.glb",
+  "importedCount": 23,
+  "missingCount": 0,
+  "notes": [
+    "GLBs are generated from approved visual references with local TripoSR.",
+    "Wireframe overlays are inspection-only, non-destructive, and hidden from renders.",
+    "Reference crop cards are included in a separate Blender collection but hidden from renders.",
+    "The exported review GLB excludes reference cards and inspection overlays to keep PR size bounded.",
+    "PBR fields are marked needs_rebake until texture baking is complete."
+  ],
+  "preview": "lunar-city/generated-3d/lunar-city-generated-assets-board.png",
+  "privacy": {
+    "containsPrivateProfileIdentifiers": false,
+    "usesRawSoulContent": false
+  },
+  "schemaVersion": 1,
+  "sourceManifest": "lunar-city/generated-3d/reference-crops/reference-crops-manifest.json"
+}

@@ -1,0 +1,1576 @@
+{
+  "assetCount": 26,
+  "assetQuality": [
+    {
+      "animationRigWireCount": 0,
+      "collection": "Hero Asset - archive",
+      "heroComponentCount": 64,
+      "id": "archive",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 64,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 4
+    },
+    {
+      "animationRigWireCount": 0,
+      "collection": "Hero Asset - arts-studio",
+      "heroComponentCount": 57,
+      "id": "arts-studio",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 57,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 4
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - child-bold",
+      "heroComponentCount": 16,
+      "id": "child-bold",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - child-cautious",
+      "heroComponentCount": 16,
+      "id": "child-cautious",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - child-curious",
+      "heroComponentCount": 16,
+      "id": "child-curious",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - child-social",
+      "heroComponentCount": 16,
+      "id": "child-social",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 0,
+      "collection": "Hero Asset - council-hall",
+      "heroComponentCount": 50,
+      "id": "council-hall",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 50,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 4
+    },
+    {
+      "animationRigWireCount": 0,
+      "collection": "Hero Asset - engineering-workshop",
+      "heroComponentCount": 55,
+      "id": "engineering-workshop",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 55,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 4
+    },
+    {
+      "animationRigWireCount": 3,
+      "collection": "Hero Asset - leader-archive",
+      "heroComponentCount": 50,
+      "id": "leader-archive",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 50,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 3,
+      "collection": "Hero Asset - leader-creative",
+      "heroComponentCount": 34,
+      "id": "leader-creative",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 34,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 3,
+      "collection": "Hero Asset - leader-engineering",
+      "heroComponentCount": 34,
+      "id": "leader-engineering",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 34,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 3,
+      "collection": "Hero Asset - leader-governance",
+      "heroComponentCount": 34,
+      "id": "leader-governance",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 34,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 3,
+      "collection": "Hero Asset - leader-knowledge",
+      "heroComponentCount": 50,
+      "id": "leader-knowledge",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 50,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 3,
+      "collection": "Hero Asset - leader-medical",
+      "heroComponentCount": 32,
+      "id": "leader-medical",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 32,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 3,
+      "collection": "Hero Asset - leader-research",
+      "heroComponentCount": 34,
+      "id": "leader-research",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 34,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 3,
+      "collection": "Hero Asset - leader-review",
+      "heroComponentCount": 32,
+      "id": "leader-review",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 32,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 0,
+      "collection": "Hero Asset - library",
+      "heroComponentCount": 64,
+      "id": "library",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 64,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 4
+    },
+    {
+      "animationRigWireCount": 0,
+      "collection": "Hero Asset - research-lab",
+      "heroComponentCount": 56,
+      "id": "research-lab",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 56,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 4
+    },
+    {
+      "animationRigWireCount": 0,
+      "collection": "Hero Asset - review-office",
+      "heroComponentCount": 53,
+      "id": "review-office",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 53,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 4
+    },
+    {
+      "animationRigWireCount": 0,
+      "collection": "Hero Asset - triage-clinic",
+      "heroComponentCount": 49,
+      "id": "triage-clinic",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 49,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 4
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - worker-audit",
+      "heroComponentCount": 16,
+      "id": "worker-audit",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - worker-operations",
+      "heroComponentCount": 16,
+      "id": "worker-operations",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - worker-release",
+      "heroComponentCount": 16,
+      "id": "worker-release",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - worker-research",
+      "heroComponentCount": 16,
+      "id": "worker-research",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - worker-review",
+      "heroComponentCount": 16,
+      "id": "worker-review",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    },
+    {
+      "animationRigWireCount": 4,
+      "collection": "Hero Asset - worker-support",
+      "heroComponentCount": 16,
+      "id": "worker-support",
+      "lodPolicy": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "proceduralPbrMaterialCount": 16,
+      "retopologyTarget": "quad_dominant_smart_low_poly",
+      "sculptedSurfaceCount": 7
+    }
+  ],
+  "blend": "lunar-city/hero-assets/lunar-city-hero-assets.blend",
+  "buildingDetailComponentCount": 217,
+  "buildingPreview": "lunar-city/hero-assets/lunar-city-hero-buildings.png",
+  "buildings": [
+    {
+      "collection": "Hero Asset - library",
+      "id": "library",
+      "lod": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "role": "knowledge",
+      "title": "LIBRARY"
+    },
+    {
+      "collection": "Hero Asset - research-lab",
+      "id": "research-lab",
+      "lod": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "role": "research",
+      "title": "RESEARCH LAB"
+    },
+    {
+      "collection": "Hero Asset - arts-studio",
+      "id": "arts-studio",
+      "lod": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "role": "creative",
+      "title": "ARTS STUDIO"
+    },
+    {
+      "collection": "Hero Asset - council-hall",
+      "id": "council-hall",
+      "lod": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "role": "governance",
+      "title": "COUNCIL HALL"
+    },
+    {
+      "collection": "Hero Asset - engineering-workshop",
+      "id": "engineering-workshop",
+      "lod": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "role": "engineering",
+      "title": "ENGINEERING"
+    },
+    {
+      "collection": "Hero Asset - triage-clinic",
+      "id": "triage-clinic",
+      "lod": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "role": "medical",
+      "title": "TRIAGE"
+    },
+    {
+      "collection": "Hero Asset - review-office",
+      "id": "review-office",
+      "lod": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "role": "review",
+      "title": "REVIEW OFFICE"
+    },
+    {
+      "collection": "Hero Asset - archive",
+      "id": "archive",
+      "lod": [
+        "hero",
+        "high",
+        "medium",
+        "low"
+      ],
+      "role": "archive",
+      "title": "ARCHIVE"
+    }
+  ],
+  "characterPreview": "lunar-city/hero-assets/lunar-city-hero-characters.png",
+  "children": [
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "talk",
+        "panic",
+        "celebrate",
+        "rest"
+      ],
+      "collection": "Hero Asset - child-curious",
+      "id": "child-curious",
+      "personality": "curious",
+      "role": "child"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "talk",
+        "panic",
+        "celebrate",
+        "rest"
+      ],
+      "collection": "Hero Asset - child-social",
+      "id": "child-social",
+      "personality": "social",
+      "role": "child"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "talk",
+        "panic",
+        "celebrate",
+        "rest"
+      ],
+      "collection": "Hero Asset - child-bold",
+      "id": "child-bold",
+      "personality": "bold",
+      "role": "child"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "talk",
+        "panic",
+        "celebrate",
+        "rest"
+      ],
+      "collection": "Hero Asset - child-cautious",
+      "id": "child-cautious",
+      "personality": "cautious",
+      "role": "child"
+    }
+  ],
+  "glb": "lunar-city/hero-assets/lunar-city-hero-assets.glb",
+  "heroMeshComponentCount": 908,
+  "leaderPreview": "lunar-city/hero-assets/lunar-city-hero-leaders.png",
+  "leaders": [
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "talk",
+        "panic",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - leader-knowledge",
+      "id": "leader-knowledge",
+      "identity": "owl archivist",
+      "role": "knowledge",
+      "signature": "owl archivist"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "talk",
+        "panic",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - leader-research",
+      "id": "leader-research",
+      "identity": "fox scientist",
+      "role": "research",
+      "signature": "fox scientist"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "talk",
+        "panic",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - leader-creative",
+      "id": "leader-creative",
+      "identity": "raccoon artist",
+      "role": "creative",
+      "signature": "raccoon artist"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "talk",
+        "panic",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - leader-governance",
+      "id": "leader-governance",
+      "identity": "eagle councillor",
+      "role": "governance",
+      "signature": "eagle councillor"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "talk",
+        "panic",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - leader-engineering",
+      "id": "leader-engineering",
+      "identity": "badger engineer",
+      "role": "engineering",
+      "signature": "badger engineer"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "talk",
+        "panic",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - leader-medical",
+      "id": "leader-medical",
+      "identity": "gold medic",
+      "role": "medical",
+      "signature": "gold medic"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "talk",
+        "panic",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - leader-review",
+      "id": "leader-review",
+      "identity": "hawk reviewer",
+      "role": "review",
+      "signature": "hawk reviewer"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "talk",
+        "panic",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - leader-archive",
+      "id": "leader-archive",
+      "identity": "owl historian",
+      "role": "archive",
+      "signature": "owl historian"
+    }
+  ],
+  "lods": [
+    {
+      "id": "library",
+      "kind": "building",
+      "levels": {
+        "hero": {
+          "screenCoverage": "close",
+          "textureResolution": "4k",
+          "triangleBudget": 18000
+        },
+        "high": {
+          "screenCoverage": "district",
+          "textureResolution": "2k",
+          "triangleBudget": 9000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 900
+        },
+        "medium": {
+          "screenCoverage": "city",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 3500
+        }
+      },
+      "policy": "preserve_silhouette_and_signage_first",
+      "role": "knowledge",
+      "sourceCollection": "Hero Asset - library"
+    },
+    {
+      "id": "research-lab",
+      "kind": "building",
+      "levels": {
+        "hero": {
+          "screenCoverage": "close",
+          "textureResolution": "4k",
+          "triangleBudget": 18000
+        },
+        "high": {
+          "screenCoverage": "district",
+          "textureResolution": "2k",
+          "triangleBudget": 9000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 900
+        },
+        "medium": {
+          "screenCoverage": "city",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 3500
+        }
+      },
+      "policy": "preserve_silhouette_and_signage_first",
+      "role": "research",
+      "sourceCollection": "Hero Asset - research-lab"
+    },
+    {
+      "id": "arts-studio",
+      "kind": "building",
+      "levels": {
+        "hero": {
+          "screenCoverage": "close",
+          "textureResolution": "4k",
+          "triangleBudget": 18000
+        },
+        "high": {
+          "screenCoverage": "district",
+          "textureResolution": "2k",
+          "triangleBudget": 9000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 900
+        },
+        "medium": {
+          "screenCoverage": "city",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 3500
+        }
+      },
+      "policy": "preserve_silhouette_and_signage_first",
+      "role": "creative",
+      "sourceCollection": "Hero Asset - arts-studio"
+    },
+    {
+      "id": "council-hall",
+      "kind": "building",
+      "levels": {
+        "hero": {
+          "screenCoverage": "close",
+          "textureResolution": "4k",
+          "triangleBudget": 18000
+        },
+        "high": {
+          "screenCoverage": "district",
+          "textureResolution": "2k",
+          "triangleBudget": 9000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 900
+        },
+        "medium": {
+          "screenCoverage": "city",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 3500
+        }
+      },
+      "policy": "preserve_silhouette_and_signage_first",
+      "role": "governance",
+      "sourceCollection": "Hero Asset - council-hall"
+    },
+    {
+      "id": "engineering-workshop",
+      "kind": "building",
+      "levels": {
+        "hero": {
+          "screenCoverage": "close",
+          "textureResolution": "4k",
+          "triangleBudget": 18000
+        },
+        "high": {
+          "screenCoverage": "district",
+          "textureResolution": "2k",
+          "triangleBudget": 9000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 900
+        },
+        "medium": {
+          "screenCoverage": "city",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 3500
+        }
+      },
+      "policy": "preserve_silhouette_and_signage_first",
+      "role": "engineering",
+      "sourceCollection": "Hero Asset - engineering-workshop"
+    },
+    {
+      "id": "triage-clinic",
+      "kind": "building",
+      "levels": {
+        "hero": {
+          "screenCoverage": "close",
+          "textureResolution": "4k",
+          "triangleBudget": 18000
+        },
+        "high": {
+          "screenCoverage": "district",
+          "textureResolution": "2k",
+          "triangleBudget": 9000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 900
+        },
+        "medium": {
+          "screenCoverage": "city",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 3500
+        }
+      },
+      "policy": "preserve_silhouette_and_signage_first",
+      "role": "medical",
+      "sourceCollection": "Hero Asset - triage-clinic"
+    },
+    {
+      "id": "review-office",
+      "kind": "building",
+      "levels": {
+        "hero": {
+          "screenCoverage": "close",
+          "textureResolution": "4k",
+          "triangleBudget": 18000
+        },
+        "high": {
+          "screenCoverage": "district",
+          "textureResolution": "2k",
+          "triangleBudget": 9000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 900
+        },
+        "medium": {
+          "screenCoverage": "city",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 3500
+        }
+      },
+      "policy": "preserve_silhouette_and_signage_first",
+      "role": "review",
+      "sourceCollection": "Hero Asset - review-office"
+    },
+    {
+      "id": "archive",
+      "kind": "building",
+      "levels": {
+        "hero": {
+          "screenCoverage": "close",
+          "textureResolution": "4k",
+          "triangleBudget": 18000
+        },
+        "high": {
+          "screenCoverage": "district",
+          "textureResolution": "2k",
+          "triangleBudget": 9000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 900
+        },
+        "medium": {
+          "screenCoverage": "city",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 3500
+        }
+      },
+      "policy": "preserve_silhouette_and_signage_first",
+      "role": "archive",
+      "sourceCollection": "Hero Asset - archive"
+    },
+    {
+      "id": "leader-knowledge",
+      "kind": "leader",
+      "levels": {
+        "hero": {
+          "screenCoverage": "dialogue",
+          "textureResolution": "4k",
+          "triangleBudget": 14000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 7000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 650
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 2400
+        }
+      },
+      "policy": "preserve_face_props_and_body_language_first",
+      "role": "knowledge",
+      "sourceCollection": "Hero Asset - leader-knowledge"
+    },
+    {
+      "id": "leader-research",
+      "kind": "leader",
+      "levels": {
+        "hero": {
+          "screenCoverage": "dialogue",
+          "textureResolution": "4k",
+          "triangleBudget": 14000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 7000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 650
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 2400
+        }
+      },
+      "policy": "preserve_face_props_and_body_language_first",
+      "role": "research",
+      "sourceCollection": "Hero Asset - leader-research"
+    },
+    {
+      "id": "leader-creative",
+      "kind": "leader",
+      "levels": {
+        "hero": {
+          "screenCoverage": "dialogue",
+          "textureResolution": "4k",
+          "triangleBudget": 14000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 7000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 650
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 2400
+        }
+      },
+      "policy": "preserve_face_props_and_body_language_first",
+      "role": "creative",
+      "sourceCollection": "Hero Asset - leader-creative"
+    },
+    {
+      "id": "leader-governance",
+      "kind": "leader",
+      "levels": {
+        "hero": {
+          "screenCoverage": "dialogue",
+          "textureResolution": "4k",
+          "triangleBudget": 14000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 7000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 650
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 2400
+        }
+      },
+      "policy": "preserve_face_props_and_body_language_first",
+      "role": "governance",
+      "sourceCollection": "Hero Asset - leader-governance"
+    },
+    {
+      "id": "leader-engineering",
+      "kind": "leader",
+      "levels": {
+        "hero": {
+          "screenCoverage": "dialogue",
+          "textureResolution": "4k",
+          "triangleBudget": 14000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 7000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 650
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 2400
+        }
+      },
+      "policy": "preserve_face_props_and_body_language_first",
+      "role": "engineering",
+      "sourceCollection": "Hero Asset - leader-engineering"
+    },
+    {
+      "id": "leader-medical",
+      "kind": "leader",
+      "levels": {
+        "hero": {
+          "screenCoverage": "dialogue",
+          "textureResolution": "4k",
+          "triangleBudget": 14000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 7000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 650
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 2400
+        }
+      },
+      "policy": "preserve_face_props_and_body_language_first",
+      "role": "medical",
+      "sourceCollection": "Hero Asset - leader-medical"
+    },
+    {
+      "id": "leader-review",
+      "kind": "leader",
+      "levels": {
+        "hero": {
+          "screenCoverage": "dialogue",
+          "textureResolution": "4k",
+          "triangleBudget": 14000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 7000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 650
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 2400
+        }
+      },
+      "policy": "preserve_face_props_and_body_language_first",
+      "role": "review",
+      "sourceCollection": "Hero Asset - leader-review"
+    },
+    {
+      "id": "leader-archive",
+      "kind": "leader",
+      "levels": {
+        "hero": {
+          "screenCoverage": "dialogue",
+          "textureResolution": "4k",
+          "triangleBudget": 14000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 7000
+        },
+        "low": {
+          "screenCoverage": "background",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 650
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "2k_atlas",
+          "triangleBudget": 2400
+        }
+      },
+      "policy": "preserve_face_props_and_body_language_first",
+      "role": "archive",
+      "sourceCollection": "Hero Asset - leader-archive"
+    },
+    {
+      "id": "worker-audit",
+      "kind": "worker",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "audit",
+      "sourceCollection": "Hero Asset - worker-audit"
+    },
+    {
+      "id": "worker-operations",
+      "kind": "worker",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "operations",
+      "sourceCollection": "Hero Asset - worker-operations"
+    },
+    {
+      "id": "worker-release",
+      "kind": "worker",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "release",
+      "sourceCollection": "Hero Asset - worker-release"
+    },
+    {
+      "id": "worker-research",
+      "kind": "worker",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "research",
+      "sourceCollection": "Hero Asset - worker-research"
+    },
+    {
+      "id": "worker-review",
+      "kind": "worker",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "review",
+      "sourceCollection": "Hero Asset - worker-review"
+    },
+    {
+      "id": "worker-support",
+      "kind": "worker",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "support",
+      "sourceCollection": "Hero Asset - worker-support"
+    },
+    {
+      "id": "child-curious",
+      "kind": "child",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "child",
+      "sourceCollection": "Hero Asset - child-curious"
+    },
+    {
+      "id": "child-social",
+      "kind": "child",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "child",
+      "sourceCollection": "Hero Asset - child-social"
+    },
+    {
+      "id": "child-bold",
+      "kind": "child",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "child",
+      "sourceCollection": "Hero Asset - child-bold"
+    },
+    {
+      "id": "child-cautious",
+      "kind": "child",
+      "levels": {
+        "hero": {
+          "screenCoverage": "selected",
+          "textureResolution": "2k",
+          "triangleBudget": 8000
+        },
+        "high": {
+          "screenCoverage": "room",
+          "textureResolution": "2k",
+          "triangleBudget": 4200
+        },
+        "low": {
+          "screenCoverage": "crowd",
+          "textureResolution": "512_atlas",
+          "triangleBudget": 420
+        },
+        "medium": {
+          "screenCoverage": "street",
+          "textureResolution": "1k_atlas",
+          "triangleBudget": 1600
+        }
+      },
+      "policy": "preserve_visor_accent_and_animation_silhouette_first",
+      "role": "child",
+      "sourceCollection": "Hero Asset - child-cautious"
+    }
+  ],
+  "preview": "lunar-city/hero-assets/lunar-city-hero-assets.png",
+  "proceduralPbrMaterialCount": 29,
+  "proceduralPbrMaterials": [
+    "Hero amber identity emission",
+    "Hero archive owl violet feather PBR",
+    "Hero badger slate fur PBR",
+    "Hero beak gold keratin",
+    "Hero cyan glass emission",
+    "Hero cyan identity emission",
+    "Hero dark interior alloy",
+    "Hero eagle bronze feather PBR",
+    "Hero floor graphite PBR",
+    "Hero fox amber fur PBR",
+    "Hero gold trim",
+    "Hero golden medic fur PBR",
+    "Hero green identity emission",
+    "Hero hawk russet feather PBR",
+    "Hero ink black detail",
+    "Hero inset panel alloy",
+    "Hero leader fur",
+    "Hero leader light muzzle",
+    "Hero owl moon feather PBR",
+    "Hero raccoon silver fur PBR",
+    "Hero red alert enamel",
+    "Hero review floor",
+    "Hero sign text emission",
+    "Hero violet identity emission",
+    "Hero warm desk wood",
+    "Hero warm eye highlight",
+    "Hero white hull PBR",
+    "Hero worker helmet ceramic",
+    "Hero worker suit fabric alloy"
+  ],
+  "referenceTarget": "approved_lunar_city_reference_images",
+  "schemaVersion": 1,
+  "sculptedCharacterCoreComponentCount": 108,
+  "sculptedCharacterLimbComponentCount": 72,
+  "sculptedSurfaceComponentCount": 158,
+  "source": "local_blender_hero_asset_generation",
+  "uniqueLeaderSignatureCount": 54,
+  "validation": {
+    "allAssetsVisibleInReviewScene": true,
+    "freeLocalGenerationOnly": true,
+    "noRawSoulContent": true,
+    "tracksLodBudgets": true,
+    "tracksPerAssetQuality": true,
+    "usesContinuousCharacterCoreMeshes": true,
+    "usesContinuousCharacterLimbMeshes": true,
+    "usesContinuousSculptedSurfaces": true,
+    "usesDetailedBuildingFacades": true,
+    "usesProceduralPbrMaterials": true,
+    "usesSeparateHeroAssetScene": true,
+    "usesUniqueLeaderSignatures": true
+  },
+  "workers": [
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "carry",
+        "repair",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - worker-audit",
+      "id": "worker-audit",
+      "personality": "methodical",
+      "role": "audit"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "carry",
+        "repair",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - worker-operations",
+      "id": "worker-operations",
+      "personality": "protective",
+      "role": "operations"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "carry",
+        "repair",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - worker-release",
+      "id": "worker-release",
+      "personality": "bold",
+      "role": "release"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "carry",
+        "repair",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - worker-research",
+      "id": "worker-research",
+      "personality": "curious",
+      "role": "research"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "carry",
+        "repair",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - worker-review",
+      "id": "worker-review",
+      "personality": "methodical",
+      "role": "review"
+    },
+    {
+      "animationClips": [
+        "idle",
+        "walk",
+        "work",
+        "carry",
+        "repair",
+        "celebrate"
+      ],
+      "collection": "Hero Asset - worker-support",
+      "id": "worker-support",
+      "personality": "social",
+      "role": "support"
+    }
+  ]
+}

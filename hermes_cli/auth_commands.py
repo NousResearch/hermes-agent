@@ -118,7 +118,7 @@ def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
         pass
 
 
-def _provider_base_url(provider: str) -> str:
+def _provider_base_url(provider: str, api_key: str = "") -> str:
     if provider == "openrouter":
         return OPENROUTER_BASE_URL
     if provider.startswith(CUSTOM_POOL_PREFIX):
@@ -128,7 +128,15 @@ def _provider_base_url(provider: str) -> str:
     if configured is not None:
         return str(configured.get("base_url") or "").strip()
     pconfig = PROVIDER_REGISTRY.get(provider)
-    return pconfig.inference_base_url if pconfig else ""
+    if not pconfig:
+        return ""
+    if provider in {"kimi-coding", "kimi-coding-cn"}:
+        return auth_mod._resolve_kimi_base_url(
+            api_key,
+            pconfig.inference_base_url,
+            auth_mod._provider_env_base_url(pconfig),
+        )
+    return pconfig.inference_base_url
 
 
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
@@ -368,7 +376,7 @@ def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
     label = label or default_label
     entry = PooledCredential(
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=AUTH_TYPE_API_KEY,
-        priority=0, source=SOURCE_MANUAL, access_token=token, base_url=_provider_base_url(provider))
+        priority=0, source=SOURCE_MANUAL, access_token=token, base_url=_provider_base_url(provider, token))
     entry = pool.add_entry(entry)
     print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
     return entry

@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple, cast
 from urllib.parse import urlparse
 
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
@@ -774,6 +774,56 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
+def _normalize_loaded_kimi_entry(provider_id: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Repair a Kimi Code credential persisted with a missing or stale base URL.
+
+    Only Kimi Code ``sk-kimi-`` keys require the canonical ``/coding`` endpoint.
+    Stored custom endpoints remain authoritative unless the explicit
+    ``KIMI_BASE_URL`` override is present.
+    """
+    if provider_id not in {"kimi-coding", "kimi-coding-cn"}:
+        return entry
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig:
+        return entry
+
+    env_url = _provider_env_base_url(pconfig)
+    stored = str(entry.get("base_url") or "").strip().rstrip("/")
+    api_key = str(
+        entry.get("access_token")
+        or entry.get("runtime_api_key")
+        or entry.get("api_key")
+        or ""
+    ).strip()
+    if not api_key:
+        return entry
+    if stored and not env_url:
+        stale = {(pconfig.inference_base_url or "").rstrip("/")}
+        if api_key.startswith("sk-kimi-"):
+            stale.add((KIMI_CODE_BASE_URL + "/v1").rstrip("/"))
+        if stored not in stale:
+            return entry
+
+    resolved = _resolve_kimi_base_url(
+        api_key, pconfig.inference_base_url, env_url
+    ).rstrip("/")
+    if resolved == stored:
+        return entry
+    normalized = dict(entry)
+    normalized["base_url"] = resolved
+    return normalized
+
+
+def _normalize_pool_entries(provider_id: str, entries: Any) -> Any:
+    """Apply provider-specific repair without mutating auth-store data on read."""
+    if not isinstance(entries, list):
+        return entries
+    return [
+        _normalize_loaded_kimi_entry(provider_id, entry) if isinstance(entry, dict) else entry
+        for entry in entries
+    ]
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool of the ACTIVE store, or one provider slice.
 
@@ -782,9 +832,15 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     pool = _load_auth_store().get("credential_pool")
     pool = pool if isinstance(pool, dict) else {}
     if provider_id is None:
-        return dict(pool)
+        return {
+            provider: _normalize_pool_entries(provider, entries)
+            for provider, entries in pool.items()
+        }
     entries = pool.get(provider_id)
-    return list(entries) if isinstance(entries, list) else []
+    return cast(
+        Dict[str, Any],
+        _normalize_pool_entries(provider_id, entries) if isinstance(entries, list) else [],
+    )
 
 
 _POOL_STATUS_FIELDS = (

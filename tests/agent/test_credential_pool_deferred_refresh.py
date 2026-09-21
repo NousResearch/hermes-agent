@@ -35,7 +35,7 @@ def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
     )
 
 
-def _plugin_entry(*, expires_at_ms: int | None) -> PooledCredential:
+def _plugin_entry(*, expires_at_ms) -> PooledCredential:
     return PooledCredential(
         provider="example-oauth",
         id="plugin-1",
@@ -67,6 +67,16 @@ def test_plugin_without_expiry_metadata_keeps_existing_behavior(monkeypatch):
     )
 
     assert pool._entry_needs_refresh(pool._entries[0]) is False
+
+
+def test_plugin_malformed_expiry_fails_closed_into_refresh(monkeypatch):
+    pool = CredentialPool("example-oauth", [_plugin_entry(expires_at_ms="not-a-timestamp")])
+    monkeypatch.setattr(
+        "agent.credential_pool.plugin_refresh_hook",
+        lambda provider: (lambda entry: {}) if provider == "example-oauth" else None,
+    )
+
+    assert pool._entry_needs_refresh(pool._entries[0]) is True
 
 
 def test_plugin_refresh_is_deferred_outside_pool_lock(monkeypatch):

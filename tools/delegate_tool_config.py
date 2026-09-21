@@ -234,6 +234,7 @@ def _pool_serves_endpoint(pool: Any, provider: Optional[str], base_url: Optional
 
 def _resolve_child_credential_pool(
     effective_provider: Optional[str], parent_agent, effective_base_url: Optional[str] = None,
+    effective_requested_provider: Optional[str] = None,
 ):
     """Credential pool for the child: parent's pool (same provider), that provider's own pool, or None (child keeps
     its fixed credential). Custom endpoints all collapse to ``provider="custom"``, so they are matched by endpoint
@@ -246,6 +247,10 @@ def _resolve_child_credential_pool(
     interchangeable and let the child inherit the parent's pool. We therefore resolve custom runtimes by
     endpoint identity (the ``custom:<name>`` pool key derived from the base_url) and only share the parent's
     pool when both resolve to the *same* custom endpoint. See #7833.
+
+    Named custom providers may share one gateway URL with different credentials, so the inherited
+    ``requested_provider`` identity takes precedence over URL-only matching (#45763): the child must not
+    lease the first pool registered for the shared endpoint.
     """
     parent_pool = getattr(parent_agent, "_credential_pool", None)
     if not effective_provider:
@@ -254,10 +259,12 @@ def _resolve_child_credential_pool(
     try:
         if effective_provider == "custom":
             from agent.credential_pool import get_custom_provider_pool_key
-            child_key = get_custom_provider_pool_key(effective_base_url)
+            child_key = get_custom_provider_pool_key(effective_base_url, provider_name=effective_requested_provider)
             if child_key is None:
                 return None
-            parent_key = get_custom_provider_pool_key(getattr(parent_agent, "base_url", None))
+            parent_key = get_custom_provider_pool_key(
+                getattr(parent_agent, "base_url", None), provider_name=getattr(parent_agent, "requested_provider", None),
+            )
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
             return _loaded_pool(child_key)

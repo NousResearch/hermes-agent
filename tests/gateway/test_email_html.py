@@ -45,11 +45,14 @@ class TestMarkdownToHtmlEmail:
 
     def test_braces_not_escaped(self):
         """Body with { } braces must not break template substitution."""
+        import re
         from plugins.platforms.email.adapter import _markdown_to_html_email
         html = _markdown_to_html_email("Use `{code}` here")
-        # Verify the code span is rendered with inline code styling
-        assert '<code style=' in html
-        assert "code" in html
+        # Exact rendered code span: the content must survive conversion inside a
+        # styled <code> element. A substring check ("code" in html) is
+        # tautological — "{code}" and the surrounding prose both contain it, so
+        # it could never fail. This assertion can.
+        assert re.search(r"<code style=[^>]*>\{code\}</code>", html), html
         # Verify no raw {body} placeholder remains
         assert "{body}" not in html
 
@@ -105,9 +108,11 @@ class TestAttachParts:
         assert len(parts) == 1
         assert parts[0].get_content_type() == "text/plain"
 
-    def test_importerror_falls_back_gracefully(self):
+    def test_importerror_falls_back_gracefully(self, caplog):
         """When markdown is not installed, should fall back to plain text."""
         import builtins
+        import logging
+        import plugins.platforms.email.adapter as adapter_mod
         real_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
@@ -119,10 +124,33 @@ class TestAttachParts:
         msg = MIMEMultipart("alternative")
         with pytest.MonkeyPatch.context() as m:
             m.setattr(builtins, "__import__", mock_import)
-            # Should not raise — falls back to plain text only
-            adapter._attach_parts(msg, "**bold**")
+            with caplog.at_level(logging.WARNING, logger=adapter_mod.logger.name):
+                # Should not raise — falls back to plain text only
+                adapter._attach_parts(msg, "**bold**")
         parts = msg.get_payload()
         assert len(parts) == 1  # only plain text
+        # A missing optional dependency is expected, not a failure: no warning.
+        assert "HTML conversion failed" not in caplog.text
+
+    def test_conversion_error_falls_back_to_plain_only(self, caplog):
+        """A real conversion failure (markdown present, rendering broken) warns."""
+        import logging
+        import plugins.platforms.email.adapter as adapter_mod
+
+        def boom(_body):
+            raise RuntimeError("kaboom")
+
+        adapter = self._make_adapter(html_format=True)
+        msg = MIMEMultipart("alternative")
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(adapter_mod, "_markdown_to_html_email", boom)
+            with caplog.at_level(logging.WARNING, logger=adapter_mod.logger.name):
+                adapter._attach_parts(msg, "**bold**")
+        parts = msg.get_payload()
+        assert len(parts) == 1
+        assert parts[0].get_content_type() == "text/plain"
+        assert "HTML conversion failed" in caplog.text
+        assert "kaboom" in caplog.text
 
 
 class TestCreateBodyPart:
@@ -148,6 +176,32 @@ class TestCreateBodyPart:
         part = adapter._create_body_part("**bold**")
         assert isinstance(part, MIMEText)
         assert part.get_content_type() == "text/plain"
+
+    def test_attachment_nesting_mixed_alternative(self):
+        """Attachment mail: multipart/mixed whose body nests as alternative.
+
+        The pre-feature shape is preserved for the body slot — one child of
+        ``mixed`` — so adding HTML must not flatten the structure.
+        """
+        adapter = self._make_adapter(html_format=True)
+        outer = MIMEMultipart("mixed")
+        outer.attach(adapter._create_body_part("**bold**"))
+        children = outer.get_payload()
+        assert len(children) == 1
+        inner = children[0]
+        assert isinstance(inner, MIMEMultipart)
+        assert inner.get_content_subtype() == "alternative"
+        assert [p.get_content_type() for p in inner.get_payload()] == ["text/plain", "text/html"]
+
+    def test_attachment_nesting_plain_when_disabled(self):
+        """With html_format off an attachment mail keeps its old shape: mixed → text/plain."""
+        adapter = self._make_adapter(html_format=False)
+        outer = MIMEMultipart("mixed")
+        outer.attach(adapter._create_body_part("**bold**"))
+        children = outer.get_payload()
+        assert len(children) == 1
+        assert isinstance(children[0], MIMEText)
+        assert children[0].get_content_type() == "text/plain"
 
 
 class TestHtmlSanitization:

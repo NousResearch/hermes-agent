@@ -318,7 +318,7 @@ class TestRejectionNeverReachesPersistedHistory:
 
         return SimpleNamespace(
             provider=provider, model=model, _vision_supported=True, _force_ascii_payload=False,
-            _image_rejecting_model=None, _db_flush_scan_prefix=7, log_prefix="",
+            _image_rejecting_models=set(), _db_flush_scan_prefix=7, log_prefix="",
             _vprint=lambda *a, **k: None,
         )
 
@@ -379,3 +379,41 @@ class TestRejectionNeverReachesPersistedHistory:
         api_messages = self._history()
         assert strip_images_for_rejecting_model(agent, api_messages) is False
         assert str(api_messages).count("data:image/png") == 2
+
+    def test_every_model_in_a_fallback_chain_is_tracked(self):
+        """Two models reject images in the same turn (fallback A -> B). A turn-global guard
+        skipped B's recovery once A had tripped it, failing the turn; recording only one model
+        also forgot A on later turns. Each model is now judged and remembered on its own."""
+        from agent.message_sanitization import strip_images_for_rejecting_model
+
+        agent = self._agent(provider="p", model="model-a")
+        retry_a, _ = self._recover(agent, self._history(), [])
+
+        # The fallback restart rebuilds api_messages from history, images included, for B.
+        agent.model = "model-b"
+        rebuilt = self._history()
+        assert strip_images_for_rejecting_model(agent, rebuilt) is False
+        assert "image_url" in str(rebuilt)
+
+        # B rejects too, in the same turn: its recovery must still run.
+        retry_b, _ = self._recover(agent, self._history(), [])
+
+        assert retry_a is True and retry_b is True
+        assert agent._image_rejecting_models == {("p", "model-a"), ("p", "model-b")}
+        for model in ("model-a", "model-b"):
+            agent.model = model
+            api_messages = self._history()
+            assert strip_images_for_rejecting_model(agent, api_messages) is True, model
+            assert "image_url" not in str(api_messages)
+
+        agent.model = "model-c"
+        api_messages = self._history()
+        assert strip_images_for_rejecting_model(agent, api_messages) is False
+        assert str(api_messages).count("data:image/png") == 2
+
+    def test_a_repeat_rejection_from_the_same_model_does_not_loop(self):
+        """The per-model guard still stops re-entry: a second rejection from a model already
+        known to reject images falls through to normal error handling instead of retrying forever."""
+        agent = self._agent()
+        assert self._recover(agent, self._history(), [])[0] is True
+        assert self._recover(agent, self._history(), [])[0] is False

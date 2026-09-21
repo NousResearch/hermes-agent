@@ -158,6 +158,27 @@ def _response_finish_reason(response: Any) -> str:
 # into every subsequent iterative-update prompt. (Ported from earendil-works/pi#7048 / commit 97fa14e39.)
 _TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
 
+# A provider can return a natural-language refusal with finish_reason="stop". It is
+# non-empty, so the usual response validation accepts it, but it contains none of
+# the checkpoint needed to safely replace the compacted turns. Keep this narrow:
+# a real summary may mention a refusal in a recorded turn, while a refusal as the
+# whole response begins with one of these phrases and refers to the requested
+# summary/checkpoint.
+_SUMMARY_REFUSAL_PREFIX_RE = re.compile(
+    r"^\s*(?:sorry[,:]?\s+)?i\s+(?:can't|cannot|won't|will not|must decline|am unable to|am not able to)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_summary_refusal(content: str) -> bool:
+    """Return whether a complete response is a refusal instead of a summary."""
+    normalized = " ".join(content.split())
+    if not _SUMMARY_REFUSAL_PREFIX_RE.match(normalized):
+        return False
+    # Limit the search to the opener so a structured checkpoint that records a
+    # historical refusal elsewhere is not rejected.
+    return any(term in normalized[:400].casefold() for term in ("summary", "summarize", "checkpoint"))
+
 
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
@@ -655,7 +676,9 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.
         empty_content=isinstance(e, RuntimeError) and any(
-            m in err for m in ("empty content", "llm returned none response", "llm returned invalid response")
+            m in err for m in (
+                "empty content", "refusal content", "llm returned none response", "llm returned invalid response",
+            )
         ),
         # Truncated summary: one main-model retry, then ABORT preserving the session.
         truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
@@ -3583,6 +3606,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # error, rather than replacing real context with an empty summary.
         if not content.strip():
             raise RuntimeError(f"Context compression LLM returned empty content {where}")
+        if _is_summary_refusal(content):
+            # Treat a refusal as unusable content. This deliberately reuses the
+            # established fallback/cooldown/abort path for an empty body, so it
+            # can never be committed as `_previous_summary`.
+            raise RuntimeError(f"Context compression LLM returned refusal content {where}")
         # A finish_reason of "length" means the summarizer hit its output token cap mid-generation: the text
         # present is PARTIAL. Persisting a partial summary as the compaction checkpoint silently truncates
         # the conversation's memory — the cut-off text replaces the real middle turns AND is fed back into

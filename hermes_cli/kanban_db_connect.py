@@ -805,7 +805,17 @@ def init_db(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> P
     """Create the schema if it doesn't exist; return the path used. Unlike
     :func:`connect`'s cached first-time auto-init, this always re-runs the
     migration pass — callers that know the on-disk schema may have drifted
-    (tests writing legacy event kinds, external upgrades) use it to force it."""
+    (tests writing legacy event kinds, external upgrades) use it to force it.
+
+    Snapshot discipline (Phase2 P4): full-file ``Connection.backup()``
+    snapshots belong to repairs, migrations, and manual unblocks — NEVER to
+    the dispatch tick. A per-tick snapshot serialises every dispatcher on
+    WAL frames (the live board is ~10 MB) and turns the single-writer lock
+    into a full-board stall. This module snapshots only on the
+    repair/migration paths (:func:`_backup_corrupt_db`); the tick path in
+    ``kanban_db_dispatch`` must stay snapshot-free (the warn-only ledger
+    sweep there is SELECT-only for the same reason).
+    """
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     _refuse_dead_board_resurrection(path, board)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -113,7 +113,10 @@ def _scan_file(path: Path) -> list[Finding]:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         chunk = text[m.start():min(end, m.start() + _CHUNK_CAP)]
         line = text.count("\n", 0, m.start()) + 1
-        rel = str(path.relative_to(ROOT))
+        try:
+            rel = str(path.relative_to(ROOT))
+        except ValueError:
+            rel = str(path)  # synthetic / out-of-tree file under test
         if not _WHERE_ID_RE.search(chunk):
             findings.append(Finding(
                 rel, line, "missing-WHERE-id",

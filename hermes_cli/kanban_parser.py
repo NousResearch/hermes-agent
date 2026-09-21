@@ -331,7 +331,7 @@ _SPECS = [
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,
-        _arg("--force",
+        _arg("--force", action="store_true",
              help="Confirm unblocking a task with unblock-loop history (prior same-kind re-blocks). "
                   "Without it, loop-risk tasks are refused so a cron can't silently re-arm a loop; "
                   "tasks with no loop history unblock without this flag."),

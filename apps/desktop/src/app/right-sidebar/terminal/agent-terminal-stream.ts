@@ -14,6 +14,59 @@ const seededCommands = new Set<string>()
 
 const MAX_BACKLOG = 256_000
 
+// Every `terminal(background=true)` mints a NEW process id, and nothing here ever
+// forgot one: a finished process kept its backlog and last snapshot for the life of
+// the renderer. Retention grew linearly with the number of commands ever run —
+// replaying every process through `registerAgentTerminalWriter` measured 256K chars
+// held per process (~512 KB, JS strings being UTF-16), so 100 -> 25.6M chars, 200 ->
+// 51.2M, 400 -> 102.4M (~195 MB). One shape of the unbounded renderer growth in #77311.
+//
+// Bounded like the other renderer caches (`lib/lru-cache`, `chat/shiki-highlight-cache`):
+// an entry ceiling AND a total-character ceiling, since one busy process can hold as
+// much as twenty quiet ones. A process whose terminal is MOUNTED is never evicted —
+// that is on screen, not a cache. Everything dropped is regenerable: the next
+// `syncAgentTerminalSnapshot` re-seeds the tab from the registry's rolling tail.
+const MAX_TRACKED_PROCS = 24
+const MAX_TOTAL_CHARS = 2_000_000
+
+/** Forget one process entirely. The four maps are evicted TOGETHER: `lastSnapshots`
+ *  is the delta fence for `backlog`, so dropping one without the other would make the
+ *  next snapshot diff against a tail that is no longer there. */
+function forgetProc(procId: string): void {
+  backlog.delete(procId)
+  commandHeaders.delete(procId)
+  lastSnapshots.delete(procId)
+  seededCommands.delete(procId)
+}
+
+/** Drop the least-recently-written unmounted processes until both ceilings hold.
+ *  `backlog` insertion order is the LRU clock (writers re-insert on every chunk). */
+function evictColdProcs(): void {
+  const total = () => {
+    let chars = 0
+
+    for (const [proc, text] of backlog) {
+      chars += text.length + (lastSnapshots.get(proc)?.length ?? 0)
+    }
+
+    return chars
+  }
+
+  if (backlog.size <= MAX_TRACKED_PROCS && total() <= MAX_TOTAL_CHARS) {
+    return
+  }
+
+  for (const proc of [...backlog.keys()]) {
+    if (backlog.size <= MAX_TRACKED_PROCS && total() <= MAX_TOTAL_CHARS) {
+      return
+    }
+
+    if (!writers.has(proc)) {
+      forgetProc(proc)
+    }
+  }
+}
+
 /** A live agent terminal registers its xterm write and replays the backlog.
  *  Returns an idempotent unregister. */
 export function registerAgentTerminalWriter(procId: string, write: Writer): () => void {
@@ -40,8 +93,12 @@ export function writeAgentTerminalChunk(procId: string, chunk: string): void {
   }
 
   const next = (backlog.get(procId) ?? '') + chunk
+  // delete-then-set moves this process to the tail: a plain re-set would keep its
+  // original slot and make the oldest-first eviction below pick a live process.
+  backlog.delete(procId)
   backlog.set(procId, next.length > MAX_BACKLOG ? next.slice(-MAX_BACKLOG) : next)
   writers.get(procId)?.(chunk)
+  evictColdProcs()
 }
 
 /** Seed the tab with the command immediately, so an agent terminal never opens
@@ -75,6 +132,7 @@ export function syncAgentTerminalSnapshot(procId: string, output: string): void 
 
   if (output === previous || output === body || body.endsWith(output)) {
     lastSnapshots.set(procId, output)
+    evictColdProcs()
 
     return
   }

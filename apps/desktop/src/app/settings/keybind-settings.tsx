@@ -30,6 +30,7 @@ import {
   resetBinding
 } from '@/store/keybinds'
 
+import { HudModifierSettings } from './hud-modifier-settings'
 import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
 import { ScreenshotSettings } from './screenshot-settings'
 
@@ -136,6 +137,11 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
         (!isSearching || t.settings.screenshot.enabledTitle.toLowerCase().includes(query.toLowerCase())) && (
           <ScreenshotSettings />
         )}
+
+      {(!isSearching ||
+        `${t.settings.hudModifier.title} ${t.settings.hudModifier.description}`
+          .toLowerCase()
+          .includes(query.toLowerCase())) && <HudModifierSettings />}
 
       <div className="pb-3">
         <SearchField

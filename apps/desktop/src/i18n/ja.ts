@@ -978,6 +978,18 @@ export const ja = defineLocale({
       keepAwakeTitle: 'コンピューターをスリープさせない',
       keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
     },
+    hudModifier: {
+      title: 'キーをタップして HUD を呼び出す',
+      description:
+        'Mac では ⌘ + Option、Windows/Linux では Ctrl + Alt を押して離すと、どのアプリからでも HUD を前面に表示できます。初期設定はオフで、このデバイスにのみ適用されます。',
+      statusTitle: 'HUD ジェスチャーの状態',
+      ready:
+        '使用できます。他のキーやマウスを操作せず、0.5 秒以内に両方のキーを離してください。他のショートカットは変わりません。',
+      permission:
+        'システム設定 → プライバシーとセキュリティ → 入力監視で Hermes を許可し、再試行してください。このジェスチャーはキー入力の記録や画面の撮影を行いません。',
+      unavailable:
+        'ここではこのジェスチャーを使用できません。Linux では X11 セッションが必要です。Wayland はグローバルな修飾キーのタップを公開しません。Hermes 内の既存の HUD ショートカットは引き続き使用できます。'
+    },
     screenshot: {
       enabledTitle: 'スクリーンショットのショートカット',
       enabledDesc:

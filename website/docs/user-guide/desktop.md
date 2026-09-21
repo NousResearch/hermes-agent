@@ -166,6 +166,7 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 - **Moving the bar** — on macOS and Windows, **press and hold** anywhere on the composer for a beat, then drag. On Linux/X11, hold **Ctrl** and drag with the primary mouse button for an immediate grab (including over selected text); press-and-hold remains available too. Keep the grab held while invoking your desktop switch shortcut to carry the HUD onto another virtual desktop. On native Wayland the composer bar is a compositor drag handle (the only way to move it, because an app cannot place its own window).
 - **Resizing** — drag any edge or corner of the bar; the opposite edge stays anchored. Native Wayland exposes the right and bottom edges because the compositor does not allow apps to position top-level windows themselves.
 - **Reset layout** — the discard control on the bar restores the default size and (on X11 / macOS / Windows) position. Use this if a persisted size leaves the HUD unusable.
+- **Tap to summon** — enable **Settings → Keyboard Shortcuts → Tap to summon HUD**, then tap and release **⌘+Option** on macOS or **Ctrl+Alt** on Windows/Linux X11. Release both keys within half a second without another key or mouse action. On Windows, use left Alt; right Alt is reserved for AltGr layouts. This opens or focuses the HUD from another app; it does not toggle it closed, record audio, or send a message. Off by default and saved only on this device. macOS requires Input Monitoring permission; the settings row offers permission recovery and reports when the listener is ready. Linux Wayland does not expose this gesture, so keep using the in-app HUD shortcut there.
 - **Snap to pointer** — **⌘/Ctrl+Shift+G** (a global hotkey, works from any app) jumps the HUD to wherever your cursor is. On native Wayland this is a no-op — the compositor owns placement.
 - **Exiting** — click the exit button on the bar, press **⌘/Ctrl+Shift+H** again, or press **⌘/Ctrl+W** while the HUD has focus. The app window comes back in front with your session and the caret in its composer.
 
@@ -695,6 +696,8 @@ npm run pack         # unpacked app under release/ (no installer)
 ```
 
 macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+
+The optional HUD modifier-tap helper is built with the Electron bundle and packaged outside ASAR. macOS uses the existing Xcode command-line tools prerequisite. Linux builds need a C compiler and X11/XInput development headers (`libx11-dev` and `libxi-dev` on Debian/Ubuntu); Windows builds need Clang and the Windows SDK. Build on the target OS and architecture. If those optional Windows/Linux prerequisites are absent, packaging continues without modifier-tap support and Settings reports it unavailable. Installed users do not need a compiler.
 
 ### macOS permissions and local rebuilds (TCC)
 

@@ -277,7 +277,22 @@ export function useSettingsSearchCatalog(enabled: boolean) {
   )
 
   return {
-    subpageEntries,
+    subpageEntries: [
+      ...subpageEntries,
+      ...(window.hermesDesktop?.hudModifier
+        ? [
+            {
+              context: t.keybinds.title,
+              icon: Settings2,
+              id: 'setting:hud-modifier',
+              keywords: ['HUD', 'summon', 'modifier', 'tap', 'Ctrl', 'Alt', 'Command', 'Option'],
+              label: t.settings.hudModifier.title,
+              description: t.settings.hudModifier.description,
+              target: { view: 'keybinds' as const, subpage: 'shortcuts', setting: 'hud-modifier' }
+            }
+          ]
+        : [])
+    ],
     appearanceEntries,
     configEntries,
     credentialEntries,

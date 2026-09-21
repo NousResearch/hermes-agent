@@ -841,6 +841,14 @@ export interface Translations {
       attachmentSizeLabel: string
       showOptions: string
     }
+    hudModifier: {
+      title: string
+      description: string
+      statusTitle: string
+      ready: string
+      permission: string
+      unavailable: string
+    }
     screenshot: {
       enabledTitle: string
       enabledDesc: string

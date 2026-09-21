@@ -1236,6 +1236,16 @@ export const zh = defineLocale({
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
       showOptions: '显示选项'
     },
+    hudModifier: {
+      title: '轻按唤出 HUD',
+      description:
+        '在 Mac 上按下并松开 ⌘ + Option，在 Windows/Linux 上按下并松开 Ctrl + Alt，即可从任意应用将 HUD 置于前台。默认关闭，仅适用于此设备。',
+      statusTitle: 'HUD 手势状态',
+      ready: '已就绪。请在半秒内松开两个键，期间不要按其他键或操作鼠标。其他快捷键不受影响。',
+      permission: '请在系统设置 → 隐私与安全性 → 输入监控中允许 Hermes，然后重试。此手势不会记录按键或截取屏幕。',
+      unavailable:
+        '此处无法使用该手势。Linux 需要 X11 会话；Wayland 不提供全局修饰键轻按事件。Hermes 内原有的 HUD 快捷键仍可使用。'
+    },
     screenshot: {
       enabledTitle: '截图快捷键',
       enabledDesc:

@@ -603,7 +603,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # full-message key ensures either event order still creates one turn.
         is_full_group_message = event_type == "GROUP_MESSAGE_CREATE"
         dedup_key = f"full-group:{msg_id}" if is_full_group_message else msg_id
-        if self._dedup.is_duplicate(msg_id):
+        if self._dedup.is_duplicate(dedup_key):
             logger.debug(
                 "[%s] Duplicate or missing message id: %s", self._log_tag, msg_id
             )
@@ -868,9 +868,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return
 
         # GROUP_AT_MESSAGE_CREATE might already have started the active turn.
-        if msg_id in self._seen_messages:
+        if self._dedup.is_duplicate(msg_id):
             return
-        self._seen_messages[msg_id] = time.time()
         await self._handle_group_message(
             d, msg_id, content, author, timestamp,
             shared_group_session=True,

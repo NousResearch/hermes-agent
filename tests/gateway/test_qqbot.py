@@ -400,7 +400,7 @@ class TestQQGroupMessageModes:
 
         assert [event.text for event in received] == ["[Alice|member-1]\nhello", "/status"]
         assert received[0].source.user_id == "member-1"
-        assert received[0].metadata["shared_group_session"] is True
+        assert received[0].metadata["shared_group_session"] is False
         assert received[1].metadata["shared_group_session"] is False
 
     @pytest.mark.asyncio
@@ -467,6 +467,8 @@ class TestQQGroupMessageModes:
         )
 
         assert adapter.handle_message.await_count == 1
+        event = adapter.handle_message.await_args.args[0]
+        assert event.metadata["shared_group_session"] is True
         adapter._observe_full_group_message.assert_not_called()
 
     @pytest.mark.asyncio

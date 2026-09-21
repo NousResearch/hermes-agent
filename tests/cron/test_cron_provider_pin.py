@@ -35,11 +35,11 @@ def _base_job(**overrides):
 
 
 def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cron_model=None,
-         cron_model_provider=None):
+         cron_model_provider=None, fail_requested=None):
     """Drive run_job against a temp config.yaml whose ``model.default`` / ``model.provider`` are
     the CURRENT global defaults. Returns ``(success, error, agent_kwargs, resolve_kwargs)`` where
     the last two are the kwargs AIAgent / resolve_runtime_provider were called with (None when
-    never called)."""
+    never called). ``fail_requested`` raises AuthError for that requested name (a stale pin)."""
     config_yaml = ""
     if current_model or current_provider:
         config_yaml += "model:\n"
@@ -60,6 +60,11 @@ def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cr
 
     def _resolve(**kwargs):
         resolve_kwargs.update(kwargs)
+        if fail_requested is not None and kwargs.get("requested") == fail_requested:
+            from hermes_cli.auth import AuthError
+            raise AuthError(
+                f"provider '{fail_requested}' resolved without credentials "
+                "(no endpoint or API key configured)")
         return {
             "api_key": "test-key",
             "base_url": "https://example.invalid/v1",
@@ -186,3 +191,39 @@ class TestRuntimeResolutionTargetModel:
         assert success is True, error
         assert resolve_kwargs["target_model"] == "my-pinned-model"
         assert resolve_kwargs["requested"] == "openrouter"
+
+
+class TestStaleSameClassPinDegradesToGlobal:
+    """A pin orphaned by a provider rename (e.g. ``custom`` requalified to ``custom:<host>``)
+    must degrade to the still-resolving persisted global config instead of blocking the job;
+    a deliberately different-class pin still fails loud (#118621)."""
+
+    def test_stale_same_class_pin_runs_on_global_provider(self, tmp_path):
+        job = _base_job(provider="custom", model="pinned-model")
+        success, error, agent_kwargs, resolve_kwargs = _run(
+            job, tmp_path, current_provider="custom:myhost", current_model="global-model",
+            fail_requested="custom")
+
+        assert success is True, error
+        assert resolve_kwargs["requested"] is None  # degradation rung re-resolved globally
+        assert agent_kwargs["model"] == "pinned-model"
+
+    def test_different_class_pin_still_blocks(self, tmp_path):
+        job = _base_job(provider="custom", model="pinned-model")
+        success, error, agent_kwargs, resolve_kwargs = _run(
+            job, tmp_path, current_provider="openrouter", current_model="global-model",
+            fail_requested="custom")
+
+        assert success is False
+        assert agent_kwargs is None
+        assert resolve_kwargs["requested"] == "custom"  # never re-resolved globally
+        assert "resolved without credentials" in error
+
+    def test_stale_fleet_default_provider_also_degrades(self, tmp_path):
+        job = _base_job(model="pinned-model")  # no per-job pin: cron.model_provider is the pin
+        success, error, _agent_kwargs, resolve_kwargs = _run(
+            job, tmp_path, current_provider="custom:myhost", current_model="global-model",
+            cron_model_provider="custom", fail_requested="custom")
+
+        assert success is True, error
+        assert resolve_kwargs["requested"] is None

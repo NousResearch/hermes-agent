@@ -110,6 +110,10 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
             # Quota/rate-limit is not a missing credential: let the real path report it and hold
             # the job through the provider's window (cron/quota_hold.py, #89376).
             return None
+        if _sched._degrade_stale_pin_to_global(requested, cfg, model) is not None:
+            # Stale same-class pin (e.g. `custom` requalified to `custom:<host>`): the run path
+            # self-heals onto the still-resolving global provider — mirror it, don't block (#118621).
+            return None
         return (
             f"provider credential missing: {exc} {_credential_store_scope_label()}. "
             "Set the provider API key in .env (or `hermes setup`) for that home, or pin a "

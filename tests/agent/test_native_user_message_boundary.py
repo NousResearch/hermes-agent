@@ -112,6 +112,24 @@ def test_unavailable_storage_returns_no_descriptor(native, monkeypatch):
     assert export(native, "parent", [row], 0) is None
 
 
+@pytest.mark.parametrize("identity_retained", [True, False])
+def test_reanchored_descriptor_never_selects_identical_later_steering(native, identity_retained):
+    from agent.turn_context_compaction import _reanchor
+
+    original_id = native.append_message("parent", "user", "same input")
+    original = {"role": "user", "content": "same input", "_row_id": original_id}
+    current_id = original_id if identity_retained else native.append_message("parent", "user", "same input")
+    steering_id = native.append_message("parent", "user", "same input")
+    rebuilt = [{**original, "_row_id": current_id},
+               {**original, "_row_id": steering_id, "display_kind": "steer"}]
+    agent = SimpleNamespace(_session_db=native, session_id="parent")
+    index = (_reanchor(agent, rebuilt, "same input", previous_message=original) if identity_retained
+             else _reanchor(agent, rebuilt, "same input"))
+    descriptor = _native_user_message(agent, rebuilt, index, "same input", "same input")
+    assert index == (0 if identity_retained else -1)
+    assert descriptor == (rebuilt[0] if identity_retained else None)
+
+
 def test_resumed_durable_users_keep_current_anchor_and_merge_only_on_wire(native):
     from copy import deepcopy
     from agent.agent_runtime_helpers import (

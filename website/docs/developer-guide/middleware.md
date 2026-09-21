@@ -112,8 +112,10 @@ outside the provider request:
   or `None` when Hermes cannot verify that row.
 
 Use the descriptor with `session_id` in the current profile's session database.
-The turn loop supplies the exact current-user index; identical earlier text or a
-later steering message never selects the row. Hermes checks the row's session,
+The turn loop supplies the current-user index. Post-tool compaction preserves a
+surviving native row identity; if identity is lost and multiple rows match the
+input text, it leaves the descriptor unavailable instead of selecting the last
+match. The descriptor checks the row's session,
 role, identity and retained content. After compaction the descriptor follows the
 current persisted copy, which can contain the runtime wrapper rather than the
 original input. Image content follows the native transcript's durable text

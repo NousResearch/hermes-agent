@@ -187,6 +187,9 @@ def run_tool_round(
     if {tc.function.name for tc in assistant_message.tool_calls} == {"execute_code"}:
         agent.iteration_budget.refund()
 
+    previous_user = (messages[current_turn_user_idx]
+                     if type(current_turn_user_idx) is int and 0 <= current_turn_user_idx < len(messages)
+                     else None)
     _ptc = compress_after_tool_results(
         agent, messages=messages, system_message=system_message, user_message=user_message,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,
@@ -197,7 +200,7 @@ def run_tool_round(
     if _ptc.messages is not messages:
         # Post-tool compaction replaces the tail just like preflight compaction.
         from agent.turn_context_compaction import _reanchor
-        current_turn_user_idx = _reanchor(agent, _ptc.messages, user_message)
+        current_turn_user_idx = _reanchor(agent, _ptc.messages, user_message, previous_message=previous_user)
     messages = _ptc.messages
     active_system_prompt = _ptc.active_system_prompt
     conversation_history = _ptc.conversation_history

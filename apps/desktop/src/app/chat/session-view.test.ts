@@ -10,7 +10,8 @@ import {
   $messages,
   $selectedStoredSessionId,
   setCurrentModel,
-  setCurrentProvider
+  setCurrentProvider,
+  setCurrentReasoningEffort
 } from '@/store/session'
 import { $sessionStates, dropSessionState, publishSessionState } from '@/store/session-states'
 
@@ -98,11 +99,13 @@ describe('primary session view reads its own session slice', () => {
   it('does not paint another chat sticky model onto a cold-resumed session', () => {
     setCurrentModel('antigravity/gemini-3.8-flash-tiered')
     setCurrentProvider('omniroute')
+    setCurrentReasoningEffort('high')
     $activeSessionId.set(null)
     $selectedStoredSessionId.set('stored-grok-chat')
 
     expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('')
     expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('')
+    expect(PRIMARY_SESSION_VIEW.$reasoningEffort.get()).toBe('')
   })
 
   it('still follows the last pick on a true new-chat draft', () => {

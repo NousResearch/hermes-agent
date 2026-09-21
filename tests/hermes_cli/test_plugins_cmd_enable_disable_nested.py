@@ -147,12 +147,11 @@ class TestEnableToolOverrideConsent:
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd._set_plugin_entry_flag")
-    @patch("hermes_cli.plugins_cmd._save_disabled_set")
-    @patch("hermes_cli.plugins_cmd._save_enabled_set")
+    @patch("hermes_cli.plugins_cmd._save_plugin_sets")
     @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())
     @patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set())
     def test_no_capabilities_skips_prompt_and_grant_write(
-        self, mock_en, mock_dis, mock_save_en, mock_save_dis, mock_set_flag,
+        self, mock_en, mock_dis, mock_save_sets, mock_set_flag,
         mock_user, mock_bundled, nested_plugin_env,
     ):
         """No explicit grant choice means no prompt, even with EOF-only stdin."""
@@ -165,7 +164,9 @@ class TestEnableToolOverrideConsent:
 
         prompt.assert_not_called()
         mock_set_flag.assert_not_called()
-        assert "disk-cleanup" in mock_save_en.call_args[0][0]
+        saved_enabled, saved_disabled = mock_save_sets.call_args[0]
+        assert "disk-cleanup" in saved_enabled
+        assert "disk-cleanup" not in saved_disabled
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

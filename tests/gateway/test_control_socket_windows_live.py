@@ -27,9 +27,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows named-pipe E2E"
-)
+pytestmark = pytest.mark.windows_only
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

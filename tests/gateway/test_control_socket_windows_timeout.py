@@ -22,20 +22,13 @@ pytestmark = pytest.mark.windows_only
 def _native_peer(home, mode):
     import _winapi
 
-    if mode == "eof-json":
-        import ctypes
-        from ctypes import wintypes
-
-        flush = ctypes.WinDLL("kernel32", use_last_error=True).FlushFileBuffers
-        flush.argtypes = [wintypes.HANDLE]
-        flush.restype = wintypes.BOOL
-
     pipe = windows_pipe_name(home)
     handle = _winapi.CreateNamedPipe(
         pipe, _winapi.PIPE_ACCESS_DUPLEX | _winapi.FILE_FLAG_OVERLAPPED,
         0, 1, 1024, 1024, 1000, _winapi.NULL)  # byte mode, blocking server semantics
     stopped = threading.Event()
     listening = threading.Event()
+    reply_consumed = threading.Event()
     errors = []
     received = []
     holder = None
@@ -81,7 +74,7 @@ def _native_peer(home, mode):
             response = json.dumps({"ok": True, "result": result}).encode() + b"\n"
             if mode == "malformed":
                 response = b"not-json\n"
-            elif mode in {"partial-stall", "eof-json"}:
+            elif mode in {"partial-stall", "eof-json", "eof-json-errno"}:
                 response = response[:-1]
             elif mode == "oversized":
                 response = json.dumps({"ok": True, "result": {"text": "x" * _MAX_RESPONSE_BYTES}}).encode() + b"\n"
@@ -92,11 +85,12 @@ def _native_peer(home, mode):
                     complete(operation)
                     if mode == "fragmented":
                         stopped.wait(0.03)
-            if mode == "eof-json":
-                # Closing a pipe may discard unread bytes. Flush synchronizes
-                # with the real client consuming this reply, without a sleep.
-                if not flush(handle):
-                    raise ctypes.WinError(ctypes.get_last_error())
+            if mode in {"eof-json", "eof-json-errno"}:
+                # The client has consumed the reply and posted its next native
+                # read before we close. Every peer wait retains the safety cap.
+                while not reply_consumed.wait(0.02):
+                    if stopped.is_set() or time.monotonic() >= deadline:
+                        raise TimeoutError("synthetic peer EOF safety stop")
                 return
             # Keep the connection open until the client closes it. In stalled
             # cases no reply/newline will arrive, regardless of this peer's life.
@@ -106,7 +100,7 @@ def _native_peer(home, mode):
             pass
         except OSError as error:
             # The client closes early for malformed/oversized/timed-out replies.
-            if getattr(error, "winerror", error.errno) not in (109, 232, 233, 995):
+            if (getattr(error, "winerror", None) or error.errno) not in (109, 232, 233, 995):
                 errors.append((type(error).__name__, str(error)))
         finally:
             listening.set()
@@ -122,7 +116,7 @@ def _native_peer(home, mode):
                 pipe, _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
                 0, _winapi.NULL, _winapi.OPEN_EXISTING,
                 _winapi.FILE_FLAG_OVERLAPPED, _winapi.NULL)
-        yield received
+        yield received, reply_consumed
     finally:
         if holder is not None:
             _winapi.CloseHandle(holder)
@@ -133,20 +127,62 @@ def _native_peer(home, mode):
 
 
 @pytest.mark.parametrize("mode", [
-    "responsive", "fragmented", "malformed", "eof", "eof-json", "partial-stall",
+    "responsive", "fragmented", "malformed", "eof", "eof-json", "eof-json-errno", "partial-stall",
     "read-stall", "write-stall", "busy", "oversized",
 ])
-def test_native_control_pipe_exchange_is_bounded(tmp_path, mode):
+def test_native_control_pipe_exchange_is_bounded(tmp_path, mode, monkeypatch):
     home = tmp_path / mode
     home.mkdir()
     params = {"value": "synthetic Unicode كويتي"}
     if mode == "write-stall":
         params = {"value": "x" * 32768}  # exceeds the unread peer's pipe buffer
-    with _native_peer(home, mode) as received:
+    with _native_peer(home, mode) as (received, reply_consumed):
+        if mode in {"eof-json", "eof-json-errno"}:
+            import _winapi
+
+            native_read = _winapi.ReadFile
+            client_thread = threading.get_ident()
+            client_reads = 0
+
+            class ErrnoOnlyCompletion:
+                """Keep native I/O; exercise errno-only completion exceptions."""
+
+                def __init__(self, operation):
+                    self.operation = operation
+
+                def __getattr__(self, name):
+                    return getattr(self.operation, name)
+
+                def GetOverlappedResult(self, wait):
+                    try:
+                        return self.operation.GetOverlappedResult(wait)
+                    except OSError as error:
+                        if (getattr(error, "winerror", None) or error.errno) == 109:
+                            raise OSError(109, "synthetic errno-only EOF") from None
+                        raise
+
+            def observe_read(handle, size, *, overlapped=False):
+                nonlocal client_reads
+                result = native_read(handle, size, overlapped=overlapped)
+                if threading.get_ident() == client_thread:
+                    client_reads += 1
+                    if client_reads == 2:
+                        # Observe real pending I/O without changing its result:
+                        # close must arrive through GetOverlappedResult, not an
+                        # immediate ReadFile error before the request is posted.
+                        assert result[1] == _winapi.ERROR_IO_PENDING
+                        reply_consumed.set()
+                        if mode == "eof-json-errno":
+                            result = ErrnoOnlyCompletion(result[0]), result[1]
+                return result
+
+            monkeypatch.setattr(_winapi, "ReadFile", observe_read)
         started = time.monotonic()
         result = query_gateway_control(home, "status", params=params, timeout=0.2)
         elapsed = time.monotonic() - started
-        if mode in {"responsive", "fragmented", "eof-json"}:
+        if mode in {"eof-json", "eof-json-errno"}:
+            assert reply_consumed.is_set(), "EOF did not follow a real pending read"
+        if mode in {"responsive", "fragmented", "eof-json", "eof-json-errno"}:
             assert result == {"verb": "status", "params": params}
             assert received == [{"verb": "status", "id": 1, "protocol": 1, "params": params}]
         else:

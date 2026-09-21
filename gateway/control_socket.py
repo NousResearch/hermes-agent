@@ -386,7 +386,7 @@ def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[
                 complete(operation, error)
                 return operation.getbuffer()
             except OSError as error:
-                if getattr(error, "winerror", error.errno) == _winapi.ERROR_BROKEN_PIPE:
+                if (getattr(error, "winerror", None) or error.errno) == _winapi.ERROR_BROKEN_PIPE:
                     return b""  # Preserve EOF framing from the former file reader.
                 raise
 

@@ -188,7 +188,7 @@ def get_default_hermes_root() -> Path:
     if env_path is not None:
         try:
             env_path.resolve().relative_to(native_home.resolve())  # under ~/.hermes (normal or profile mode)
-        except ValueError:  # Docker/custom root: <root>/profiles/<name> -> <root>, else HERMES_HOME itself
+        except (ValueError, OSError):  # Docker/custom root or unresolvable path (e.g. symlink loop): <root>/profiles/<name> -> <root>, else HERMES_HOME itself
             result = env_path.parent.parent if env_path.parent.name == "profiles" else env_path
     _default_hermes_root_memo = (*memo_key, result)
     return result

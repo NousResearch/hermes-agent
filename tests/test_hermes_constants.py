@@ -67,6 +67,29 @@ class TestGetDefaultHermesRoot:
 
         assert get_default_hermes_root() == custom_root
 
+    def test_unresolvable_env_home_falls_back_to_custom_root(self, tmp_path, monkeypatch):
+        """Path.resolve() can raise OSError (e.g. a symlink loop); the root must
+        fall back to the custom-root derivation instead of letting it escape."""
+        custom_root = tmp_path / "deployment"
+        profile = custom_root / "profiles" / "build"
+        profile.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        monkeypatch.setattr(
+            hermes_constants, "_default_hermes_root_memo", None, raising=False
+        )
+
+        orig_resolve = Path.resolve
+
+        def loop_resolve(self, *a, **k):
+            if self == profile:
+                raise OSError("symlink loop")
+            return orig_resolve(self, *a, **k)
+
+        monkeypatch.setattr(Path, "resolve", loop_resolve)
+
+        assert get_default_hermes_root() == custom_root
+
     @pytest.mark.windows_only
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""

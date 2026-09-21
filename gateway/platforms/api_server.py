@@ -1838,6 +1838,32 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None
         return stored
 
+    def _stored_session_route(
+        self, session: Any, stored_model: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Recover a provider route for a raw model persisted by an earlier turn.
+
+        API sessions store the resolved model id, while the session usage row stores the
+        billing bucket (usually ``custom``).  A named custom identity may also survive in
+        model_config.  Keep the raw model pinned, but let the normal provider resolver
+        supply credentials instead of sending it through the no-provider path.
+        """
+        if not isinstance(session, dict) or not stored_model:
+            return None
+        model_config = self._parse_session_model_config(session.get("model_config"))
+        provider = self._clean_runtime_id(
+            model_config.get("provider") or session.get("provider"), max_len=80)
+        billing_provider = self._clean_runtime_id(session.get("billing_provider"), max_len=80)
+        if provider.lower().startswith("custom:"):
+            return {"model": stored_model, "provider": provider}
+        if billing_provider.lower().startswith("custom:"):
+            return {"model": stored_model, "provider": billing_provider}
+        if billing_provider.lower() == "custom":
+            # The bare billing bucket identifies the custom family, not a provider entry.
+            # Leave provider selection to the profile's configured runtime provider.
+            return {"model": stored_model}
+        return None
+
     @staticmethod
     def _clean_runtime_id(value: Any, *, max_len: int = 200) -> str:
         text = "" if value is None else str(value).strip()
@@ -3189,8 +3215,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         else:
             stored_model = self._stored_session_model(session)
             stored_route = self._resolve_route(stored_model)
-            route = stored_route or self._resolve_route(body.get("model"))
-            session_model = stored_model if (stored_model and stored_route is None) else None
+            recovered_route = self._stored_session_route(session, stored_model) if stored_route is None else None
+            route = stored_route or recovered_route or self._resolve_route(body.get("model"))
+            session_model = (
+                stored_model if (stored_model and stored_route is None and recovered_route is None) else None)
             agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
             selection_error = self._request_route_conflict_error(
                 session_id=session_id, gateway_session_key=gateway_session_key,

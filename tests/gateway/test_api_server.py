@@ -2624,6 +2624,21 @@ class TestStoredSessionModelFilter:
         adapter = _make_routing_adapter({})
         assert adapter._stored_session_model({"model": "google/gemini-3.7-flash"}) == "google/gemini-3.7-flash"
 
+    def test_named_custom_provider_rehydrates_route_for_stored_model(self):
+        adapter = _make_routing_adapter({})
+        session = {
+            "model": "mimo-v2.5-pro",
+            "model_config": json.dumps({"provider": "custom:mimo-v2.5-pro"}),
+        }
+        assert adapter._stored_session_route(session, "mimo-v2.5-pro") == {
+            "model": "mimo-v2.5-pro", "provider": "custom:mimo-v2.5-pro"}
+
+    def test_bare_custom_billing_bucket_rehydrates_stored_model(self):
+        adapter = _make_routing_adapter({})
+        session = {"model": "mimo-v2.5-pro", "billing_provider": "custom"}
+        assert adapter._stored_session_route(session, "mimo-v2.5-pro") == {
+            "model": "mimo-v2.5-pro"}
+
     def test_missing_or_bad_shapes(self):
         adapter = _make_routing_adapter({})
         assert adapter._stored_session_model({}) is None

@@ -1545,13 +1545,22 @@ class TurnRunner:
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            if fut is None:
+                raise RuntimeError("Approval text-send: loop unavailable")
+            fut.result(timeout=15)
+            # No card to edit on the text path: the prompt has no buttons to drop and carries
+            # the /approve instructions, so the timeout notice is posted as a new message.
+            register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
+            # Nobody can answer a prompt that was never delivered. Without raising here,
+            # this function (the notify_cb for `_await_gateway_decision`, see its own
+            # undeliverable-path handling a few lines up for the button case) returns
+            # quietly and the caller blocks for the full gateway_timeout (~300s) on an
+            # approval that structurally cannot arrive -- e.g. the bot is not a member
+            # of the target room, or the room was archived. Raising lets
+            # `_await_gateway_decision` fast-deny via notify_failed instead.
+            raise RuntimeError(f"approval prompt undeliverable to {ctx._status_chat_id}") from e
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

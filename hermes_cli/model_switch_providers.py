@@ -500,11 +500,25 @@ def _free_tier_nous_row(row: dict) -> dict | None:
     return out
 
 
-def _cap_models(model_ids: list, max_models: int | None, slug: str = "") -> list:
-    """Apply ``max_models``; aggregators in ``_UNCAPPED_PICKER_PROVIDERS`` show everything."""
+def _cap_models(
+    model_ids: list,
+    max_models: int | None,
+    slug: str = "",
+    priority_ids: list | None = None,
+) -> list:
+    """Apply ``max_models`` while keeping curated models at the front."""
     if slug in _UNCAPPED_PICKER_PROVIDERS or max_models is None:
         return model_ids
-    return model_ids[:max_models]
+    if not priority_ids:
+        return model_ids[:max_models]
+
+    available = set(model_ids)
+    prioritized = [model_id for model_id in priority_ids if model_id in available]
+    prioritized_set = set(prioritized)
+    ordered = prioritized + [
+        model_id for model_id in model_ids if model_id not in prioritized_set
+    ]
+    return ordered[:max_models]
 
 
 def _absorb_entry_models(grp: dict, entry: dict, active_model: Any) -> None:
@@ -720,7 +734,12 @@ class _PickerBuild:
     ) -> None:
         row = {
             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": False,
-            "models": _cap_models(model_ids, self.max_models, slug if uncapped_ok else ""),
+            "models": _cap_models(
+                model_ids,
+                self.max_models,
+                slug if uncapped_ok else "",
+                self.curated.get(slug, []),
+            ),
             "total_models": len(model_ids), "source": source}
         if slug == "nous":
             # Free-tier identity: one row "Nous · free tier" / nous/welcome, or no row when

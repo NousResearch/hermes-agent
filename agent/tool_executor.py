@@ -1475,6 +1475,10 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             effect_disposition = "none" if blocked else None
             if pc.parse_error is not None:
                 ref.emit_invalid_arguments(agent, r.result)
+        if ref.name == "tool_describe" and not blocked:
+            from agent.turn_request_assembly import record_described_deferred_tool_schemas
+
+            record_described_deferred_tool_schemas(agent, function_result)
         committed = _commit_tool_result(
             agent, messages, ref, function_result,
             budget=budget, tool_duration=tool_duration, is_error=is_error, blocked=blocked,
@@ -1726,6 +1730,10 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     """Terminal hook → observe → commit → completion callbacks/print for one sequential
     result; False when the incremental flush failed (the caller must stop the batch)."""
     ref.args, ref.trace, function_result = managed.args, managed.middleware_trace, managed.result
+    if ref.name == "tool_describe" and not managed.blocked:
+        from agent.turn_request_assembly import record_described_deferred_tool_schemas
+
+        record_described_deferred_tool_schemas(agent, function_result)
     _execution_timed_out = isinstance(function_result, (_ToolTimeoutResult, _ToolCancelledResult))
     # Multimodal dict results (_multimodal=True) are not sliceable as strings.
     _result_len = len(function_result) if isinstance(function_result, str) else len(str(function_result))

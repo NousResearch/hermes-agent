@@ -10,6 +10,7 @@ so ``patch("agent.conversation_loop.X")`` sites keep intercepting.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
 from typing import Any
 
@@ -19,6 +20,61 @@ from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
 
 logger = logging.getLogger("agent.conversation_loop")
+
+
+def record_described_deferred_tool_schemas(agent: Any, result: Any) -> None:
+    """Keep schemas returned by ``tool_describe`` for the Chat Completions wire.
+
+    The bridge has already scoped and validated these names. Saving the canonical
+    schema result here lets strict OpenAI-compatible servers accept a direct call on
+    the following iteration without changing the agent's static tool registry.
+    """
+    if getattr(agent, "api_mode", None) != "chat_completions":
+        return
+    try:
+        parsed = json.loads(result) if isinstance(result, str) else result
+        described = parsed.get("tools") if isinstance(parsed, dict) else None
+    except (TypeError, ValueError):
+        return
+    if not isinstance(described, dict):
+        return
+
+    projected = dict(getattr(agent, "_described_deferred_tool_schemas", {}) or {})
+    for name, schema in described.items():
+        if not isinstance(name, str) or not name or not isinstance(schema, dict):
+            continue
+        parameters = schema.get("parameters")
+        if not isinstance(parameters, dict):
+            continue
+        projected[name] = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": str(schema.get("description") or ""),
+                "parameters": parameters,
+            },
+        }
+    if not projected:
+        return
+    agent._described_deferred_tool_schemas = projected
+    valid_names = getattr(agent, "valid_tool_names", None)
+    if isinstance(valid_names, set):
+        valid_names.update(projected)
+
+
+def project_described_tool_schemas(agent: Any, tool_defs: Any) -> Any:
+    """Append request-local described schemas to Chat Completions ``tools[]`` only."""
+    if getattr(agent, "api_mode", None) != "chat_completions":
+        return tool_defs
+    described = getattr(agent, "_described_deferred_tool_schemas", None)
+    if not isinstance(described, dict) or not described:
+        return tool_defs
+    existing = {
+        (tool.get("function") or {}).get("name")
+        for tool in tool_defs or [] if isinstance(tool, dict)
+    }
+    additions = [schema for name, schema in described.items() if name not in existing]
+    return [*(tool_defs or []), *additions] if additions else tool_defs
 
 
 @dataclass
@@ -193,7 +249,7 @@ def assemble_api_request(
     # Build the request-local cache sections LAST, after every transcript mutation;
     # the canonical tool registry stays undecorated. Marked ``content`` becomes text
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
-    tools_for_api = agent.tools
+    tools_for_api = project_described_tool_schemas(agent, agent.tools)
     if agent._use_prompt_caching and agent.provider != "moa":
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
 

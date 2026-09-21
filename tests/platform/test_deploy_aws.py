@@ -373,3 +373,65 @@ def test_the_container_runs_with_host_networking():
     assert "--publish" not in script, (
         "--publish is meaningless with --network host; remove one of them deliberately"
     )
+
+
+# ---------------------------------------------------------------------------
+# The local validator must work for a non-root operator
+#
+# validate-local.sh was root-only from the commit that introduced both the
+# non-root image and the host-side audit read. It reported "49 passed" for a
+# root operator and "46 passed, 3 failed" for everyone else, which is the
+# worst possible split: the people it was written to reassure were the ones
+# it lied to.
+# ---------------------------------------------------------------------------
+
+
+VALIDATOR = ROOT / "deploy" / "docker" / "validate-local.sh"
+
+
+def test_the_validator_never_reads_container_state_from_the_host():
+    """State the container writes is read back through the container, not off the host.
+
+    The audit log is 0600 and owned by uid 10001 — deliberately, and pinned by
+    ``tests/platform/test_audit.py::test_log_is_created_with_restrictive_permissions``.
+    A host-side `tail` of it therefore succeeds only for root. The fix is to read it
+    inside a container, which is what the image checks in the same script already do.
+
+    Asserted as a path contract rather than a regex on one command: any new host-side
+    read of `$ROOT/tenant-*/home/...` is the same defect wearing different clothes.
+    """
+    script = VALIDATOR.read_text(encoding="utf-8")
+    offenders = []
+    for lineno, line in enumerate(script.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("#") or "$ROOT/tenant-" not in stripped:
+            continue
+        # A host-side reference is fine when it is the -v argument handing the path to a
+        # container, or part of the host-built scaffolding before any container runs.
+        if "docker run" in stripped or stripped.startswith(("mkdir", "cp ", "sed ", "chmod", "rm ", "python3 -")):
+            continue
+        if "/home/" in stripped:
+            offenders.append(f"  line {lineno}: {stripped[:100]}")
+    assert not offenders, (
+        "validate-local.sh reads container-written state directly from the host; this "
+        "works only for a root operator. Read it through the container instead:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_the_validator_hands_the_temp_tree_back_before_removing_it():
+    """Otherwise `rm -rf` leaves the tree behind for every non-root operator.
+
+    The container writes as uid 10001 into directories it creates 0755, so a non-root
+    host user has no write permission inside them and cannot unlink their contents.
+    Only root can chown a file to another user, so a throwaway `--user 0:0` container is
+    the only way to hand the tree back.
+    """
+    script = VALIDATOR.read_text(encoding="utf-8")
+    assert "--user 0:0" in script and "chown -R" in script, (
+        "the cleanup no longer hands the temp tree back to the host user; a non-root "
+        "operator will be left with an unremovable directory in /tmp after every run"
+    )
+    assert script.index("chown -R") < script.rindex('rm -rf "$ROOT"'), (
+        "the chown must precede the rm, or the rm still fails"
+    )

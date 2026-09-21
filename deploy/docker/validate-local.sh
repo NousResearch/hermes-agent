@@ -19,7 +19,22 @@ set -uo pipefail
 IMG="${1:?usage: validate-local.sh <image:tag>}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROOT="$(mktemp -d -t nova-validate-XXXXXX)"
-trap 'docker rm -f nova-a nova-b >/dev/null 2>&1; rm -rf "$ROOT"' EXIT
+cleanup() {
+    docker rm -f nova-a nova-b >/dev/null 2>&1
+    # State the container wrote is owned by uid 10001, and the directories it created
+    # (home/nova/, profiles/...) are 0755 — so a non-root host user has no write
+    # permission inside them and `rm -rf` cannot remove their contents. Hand the tree
+    # back before removing it.
+    #
+    # `--user 0:0` runs root INSIDE a throwaway container that does nothing but chown a
+    # temp directory, and is discarded immediately. It does not run NOVA, it does not
+    # change what the image does by default, and nothing on the host gains privilege.
+    # Only root can chown a file to another user, so there is no non-root alternative.
+    docker run --rm --user 0:0 --entrypoint sh -v "$ROOT:/r" "$IMG" \
+        -c "chown -R $(id -u):$(id -g) /r" >/dev/null 2>&1 || true
+    rm -rf "$ROOT"
+}
+trap cleanup EXIT
 AT=tok-a-admin-0123456789abcdef; AV=tok-a-viewer-0123456789abcdef; BT=tok-b-admin-0123456789abcdef
 pass=0; fail=0
 ck() { # ck <label> <expected> <actual>
@@ -120,12 +135,26 @@ echo "### 8. tenant isolation of the created automation"
 ck "tenant-A sees 1 automation" "1" "$(curl -s -H "Authorization: Bearer $AT" $A/automations | python3 -c 'import json,sys;print(json.load(sys.stdin)["counts"]["total"])')"
 ck "tenant-B sees 0 automations" "0" "$(curl -s -H "Authorization: Bearer $BT" $B/automations | python3 -c 'import json,sys;print(json.load(sys.stdin)["counts"]["total"])')"
 ck "objective text withheld from viewer" "0" "$(curl -s -H "Authorization: Bearer $AV" $A/automations | grep -c 'inventory exceptions')"
-ck "tenant-B has no NOVA automation registry" "absent" "$([ -e "$ROOT/tenant-b/home/nova/automations.json" ] && echo present || echo absent)"
+# Also read through the container, for the same reason as §9 below. This one happens to
+# work from the host today because NOVA creates home/nova/ as 0755 — but that is an
+# accident, not a contract: were the directory ever 0700, a non-root host user would get
+# "absent" for a file that EXISTS, and the check would pass while testing nothing.
+ck "tenant-B has no NOVA automation registry" "absent" "$(docker run --rm --entrypoint sh -v "$ROOT/tenant-b:/var/lib/nova" "$IMG" -c '[ -e /var/lib/nova/home/nova/automations.json ] && echo present || echo absent')"
 
 echo "### 9. audit: intent -> committed, with the human actor"
-ck "last two audit phases" "intent committed" "$(tail -2 "$ROOT/tenant-a/home/nova/audit.jsonl" | python3 -c 'import sys,json;print(" ".join(json.loads(l)["phase"] for l in sys.stdin))')"
-ck "audit actor is the authenticated principal" "admin-a" "$(tail -1 "$ROOT/tenant-a/home/nova/audit.jsonl" | python3 -c 'import sys,json;print(json.load(sys.stdin)["actor"])')"
-ck "audit tenant" "tenant-a" "$(tail -1 "$ROOT/tenant-a/home/nova/audit.jsonl" | python3 -c 'import sys,json;print(json.load(sys.stdin)["tenant_id"])')"
+# The audit log is 0600 and owned by the container user, which is correct and is pinned by
+# tests/platform/test_audit.py::test_log_is_created_with_restrictive_permissions. So it is
+# read from INSIDE a container — the same idiom §12 below already uses for the image
+# checks — rather than from the host, where only a root operator could open it. Reading it
+# here as the host user is what made this script silently root-only.
+#
+# One read, three checks: the container is started once and the JSONL is parsed on the
+# host, where it is just text.
+audit2=$(docker run --rm --entrypoint sh -v "$ROOT/tenant-a:/var/lib/nova" "$IMG" \
+    -c 'tail -2 /var/lib/nova/home/nova/audit.jsonl' 2>&1)
+ck "last two audit phases" "intent committed" "$(printf '%s\n' "$audit2" | python3 -c 'import sys,json;print(" ".join(json.loads(l)["phase"] for l in sys.stdin if l.strip()))')"
+ck "audit actor is the authenticated principal" "admin-a" "$(printf '%s\n' "$audit2" | tail -1 | python3 -c 'import sys,json;print(json.load(sys.stdin)["actor"])')"
+ck "audit tenant" "tenant-a" "$(printf '%s\n' "$audit2" | tail -1 | python3 -c 'import sys,json;print(json.load(sys.stdin)["tenant_id"])')"
 
 echo "### 10. Control Center"
 hdr=$(curl -s -D- -o /tmp/idx -H "Authorization: Bearer $AT" http://127.0.0.1:18787/)

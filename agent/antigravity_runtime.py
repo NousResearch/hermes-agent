@@ -54,6 +54,7 @@ def _ensure_antigravity_session(agent) -> None:
                 request_timeout=float(config["request_timeout_seconds"]),
                 shutdown_timeout=float(config["shutdown_timeout_seconds"]),
                 sandbox=bool(config["sandbox"]),
+                dangerously_skip_permissions=bool(config["dangerously_skip_permissions"]),
                 debug_log=debug_log,
             )
         configured_client_factory = default_client_factory

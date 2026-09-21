@@ -165,6 +165,7 @@ class AntigravityClient:
         env: Mapping[str, str] | None = None,
         cwd: str | os.PathLike[str] | None = None,
         sandbox: bool = True,
+        dangerously_skip_permissions: bool = False,
         debug_log: str | os.PathLike[str] | None = None,
     ) -> None:
         self._config_path = os.fspath(config_path) if config_path else None
@@ -176,6 +177,7 @@ class AntigravityClient:
         self._env = dict(env or {})
         self._cwd = os.fspath(cwd) if cwd is not None else None
         self._sandbox = bool(sandbox)
+        self._dangerously_skip_permissions = bool(dangerously_skip_permissions)
         self._debug_log = Path(debug_log) if debug_log is not None else None
         self._executable: str | None = None
         self._active_process: subprocess.Popen[Any] | None = None
@@ -308,7 +310,9 @@ class AntigravityClient:
             self.executable, "--input-format", "stream-json", "--output-format", "stream-json",
             "--print-timeout", f"{max(1, int(effective_request_timeout + 5))}s",
         ]
-        if self._sandbox:
+        if self._dangerously_skip_permissions:
+            argv.append("--dangerously-skip-permissions")
+        elif self._sandbox:
             argv.append("--sandbox")
         selected_model = str(model or "").strip()
         if selected_model and selected_model.lower() != "auto":

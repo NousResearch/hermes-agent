@@ -5340,7 +5340,45 @@ def _claim_host_gateway_role(force: bool = False) -> None:
         logger.warning("--force: starting a second gateway although %s owns this host.",
                        hr.describe(owner) if owner else "another process")
         return
+    if _owner_is_standalone():
+        # COMPOSITION with #118236: `host_attach.decide` sent us here with START precisely because
+        # the owner is another profile's STANDALONE gateway and will never serve us. Refusing now
+        # exits 75, the supervisor retries in 5s, and the next claim loses the same race — the host
+        # lock is per OS user and every gateway takes it, so a second profile can NEVER win. An
+        # unmigrated fleet would spin forever instead of running. Start beside it and point at the
+        # one command that converges; multiplex-only is enforced against a MULTIPLEXER owner.
+        logger.warning(
+            "Another profile's standalone gateway owns this host (%s); starting beside it rather "
+            "than retrying a race no second profile can win. Fold every profile onto one gateway "
+            "with: %s", hr.describe(owner) if owner else "owner unknown", _migrate_command())
+        return
     _refuse_second_host_gateway(owner)
+
+
+def _migrate_command() -> str:
+    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+
+    return MIGRATE_COMMAND
+
+
+def _owner_is_standalone() -> bool:
+    """True when the host owner answers that it does NOT multiplex (an unmigrated fleet).
+
+    Asked only on the lock-losing path, and any failure answers False: an owner we cannot reach
+    is treated as a multiplexer, which keeps the second-gateway refusal as the default.
+    """
+    try:
+        from gateway.host_attach import host_gateway, profile_name_for_home, request_serve_profile
+
+        owner = host_gateway()
+        if owner is None or owner.pid == os.getpid():
+            return False
+        answered = request_serve_profile(profile_name_for_home(get_hermes_home()), owner=owner)
+        return bool(answered is not None and answered.standalone)
+    except Exception:
+        logger.debug("standalone-owner probe failed; keeping the second-gateway refusal",
+                     exc_info=True)
+        return False
 
 
 def _refuse_second_host_gateway(owner) -> None:

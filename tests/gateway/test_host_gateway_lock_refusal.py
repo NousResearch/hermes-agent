@@ -83,3 +83,69 @@ def test_force_still_starts_a_second_gateway_and_an_unusable_lock_dir_is_not_a_r
         hr, "claim_host_lock",
         lambda role: (hr.HostLockOutcome.COULD_NOT_OPEN, OSError("read-only file system")))
     _claim_host_gateway_role()  # no SystemExit
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+def test_an_unmigrated_standalone_fleet_starts_beside_the_owner_instead_of_spinning(
+    host_lock_dir, monkeypatch, caplog,
+):
+    """COMPOSITION with #118236 ('a standalone host owner means START, not a parked unit').
+
+    That change routes a profile whose host owner is another profile's STANDALONE gateway to
+    START, because no multiplexer serves it. The host-lock refusal then exits 75, the supervisor
+    retries in 5s, and the next claim loses the same race: the lock is per OS USER and every
+    gateway takes it, so a second profile can NEVER win it. Composed, the two correct decisions
+    are an infinite 5s retry loop for every unmigrated fleet with >=2 profiles — including one
+    installed with --force. The refusal must not fire for a START that exists precisely because
+    nothing serves this profile.
+    """
+    import logging
+
+    from gateway import host_rendezvous as hr
+    from gateway.run import _claim_host_gateway_role
+
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_lock_dir))
+    owner = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
+    assert owner is not None
+    # The owner answers the rescan the way a STANDALONE gateway does: "I do not multiplex."
+    # Stubbed at the wire answer every tree has, so a tree without the carve-out fails on the
+    # OUTCOME (SystemExit 75) rather than on a missing symbol.
+    from gateway.host_attach import HostGateway
+    standalone_owner = HostGateway(pid=owner.pid + 1, home=host_lock_dir, profiles=("default",),
+                                   served_known=True, standalone=True)  # another process
+    monkeypatch.setattr("gateway.host_attach.host_gateway",
+                        lambda **kw: standalone_owner)
+    monkeypatch.setattr("gateway.host_attach.request_serve_profile",
+                        lambda profile, owner=None: standalone_owner)
+
+    handle = _hold_host_lock_from_another_description(hr)
+    try:
+        with caplog.at_level(logging.WARNING):
+            _claim_host_gateway_role()  # must NOT SystemExit: 75 here is an unwinnable retry
+    finally:
+        handle.close()
+
+    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "standalone gateway owns this host" in logged
+    assert MIGRATE_COMMAND in logged, "the bounded outcome must name the command that converges"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock-based contention setup")
+def test_a_multiplexing_owner_is_still_refused(host_lock_dir, monkeypatch):
+    """The carve-out is scoped to an unmigrated fleet: losing the race to a MULTIPLEXER is still
+    the second-gateway shape, and an owner we cannot interrogate is treated as one."""
+    from gateway import host_rendezvous as hr
+    from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+    from gateway.run import _claim_host_gateway_role
+
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"), home=str(host_lock_dir))
+    monkeypatch.setattr("gateway.host_attach.request_serve_profile",
+                        lambda profile, owner=None: None)  # owner never answers
+    handle = _hold_host_lock_from_another_description(hr)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            _claim_host_gateway_role()
+    finally:
+        handle.close()
+    assert exc.value.code == GATEWAY_SERVICE_RESTART_EXIT_CODE

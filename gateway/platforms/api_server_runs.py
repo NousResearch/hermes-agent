@@ -233,6 +233,10 @@ _ROOM_CONTROL_PERMISSIONS = {
 
 
 def _room_permission_for(request: "web.Request") -> str:
+    if request.path.endswith("/artifacts/ack"):
+        return "artifact.ack"
+    if "/artifacts/" in request.path:
+        return "artifact.read"
     for suffix, permission in _ROOM_CONTROL_PERMISSIONS.items():
         if request.path.endswith(suffix):
             return permission
@@ -585,6 +589,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 launch.admission = admit_api_turn(self, user_message=launch.user_message,
                     conversation_history=launch.conversation_history, active_run_id=run_id,
                     run_owner_scope=self._run_owners[run_id],
+                    _room_output_consent=getattr(request, "_hermes_peer_output", None),
+                    _room_output_authorizer=getattr(getattr(request, "_hermes_peer_output", None), "authorizer", None),
                     turn_author=launch.turn_author,
                     history_from_session=session_history_delivery,
                     session_history_delivery='1' if session_history_delivery else '',

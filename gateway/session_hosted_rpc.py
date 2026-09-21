@@ -122,6 +122,9 @@ class HostedRoomAuthorityRPC:
         receipt = {'status': status, 'text': value.get('final_response', ''),
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
                    'task_id': task.task_id, 'execution_generation': generation}
+        if status == 'settled':
+            from gateway.session_hosted_output import output_receipt_fields
+            receipt.update(output_receipt_fields(value))
         callback = self.callbacks.pop(row['admission_id'], None)
         if callback is not None:
             callback(receipt)

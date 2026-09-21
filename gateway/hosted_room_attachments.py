@@ -27,7 +27,7 @@ from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, ContextManager, Iterator, Mapping, Protocol, Sequence
 
 
 MAX_ATTACHMENTS_PER_MESSAGE = 8
@@ -87,6 +87,23 @@ class AttachmentData:
 
     attachment: dict[str, Any]
     data: bytes
+
+
+class AttachmentViewerStore(Protocol):
+    """Minimal byte-verifying viewer store, including retained cleanup views."""
+
+    clock: Callable[[], float]
+
+    def _viewer_snapshot(self) -> ContextManager[sqlite3.Connection]: ...
+
+    def _require_viewer_room(
+        self, conn: sqlite3.Connection, *, room_id: str,
+        authority_gateway_id: str, authority_epoch: int,
+    ) -> object: ...
+
+    _read_committed_row: Callable[..., sqlite3.Row]
+    _read_blob: Callable[..., bytes]
+    _metadata: Callable[..., dict[str, Any]]
 
 
 def default_attachment_root(db_path: Path | str) -> Path:
@@ -287,6 +304,50 @@ def validate_task_manifest(value: Any) -> list[dict[str, Any]]:
     if sum(entry["size"] for entry in normalized) > MAX_TASK_ATTACHMENT_BYTES:
         raise AttachmentError("task attachments exceed the aggregate byte limit")
     return normalized
+
+
+def read_viewer_from_store(
+    store: AttachmentViewerStore, *, room_id: Any, attachment_id: Any,
+    event_id: Any | None = None, recipient_member_id: Any = None,
+    authority_gateway_id: Any, authority_epoch: Any,
+) -> AttachmentData:
+    """Read verified viewer bytes through a live or retained publication view."""
+
+    room_id = _identifier(room_id, label="room_id")
+    attachment_id = _attachment_id(attachment_id)
+    normalized_event = _identifier(event_id, label="event_id") if event_id is not None else None
+    recipient_member_id = (
+        _identifier(recipient_member_id, label="recipient_member_id")
+        if recipient_member_id is not None else ""
+    )
+    authority_gateway_id = _identifier(authority_gateway_id, label="authority_gateway_id")
+    if isinstance(authority_epoch, bool) or not isinstance(authority_epoch, int) or authority_epoch < 1:
+        raise AttachmentError("authority_epoch must be a positive integer")
+    scope = {
+        "room_id": room_id,
+        "authority_gateway_id": authority_gateway_id,
+        "authority_epoch": authority_epoch,
+    }
+    selection = {
+        "room_id": room_id,
+        "attachment_id": attachment_id,
+        "recipient_member_id": recipient_member_id,
+        "normalized_event": normalized_event,
+        "viewer": True,
+    }
+    with store._viewer_snapshot() as conn:
+        store._require_viewer_room(conn, **scope)
+        row = store._read_committed_row(conn, **selection, now=float(store.clock()))
+
+    data = store._read_blob(
+        blob_id=str(row["blob_id"]), size=int(row["size"]), sha256=str(row["sha256"]),
+    )
+    with store._viewer_snapshot() as conn:
+        store._require_viewer_room(conn, **scope)
+        current = store._read_committed_row(conn, **selection, now=float(store.clock()))
+        if current["blob_id"] != row["blob_id"] or store._metadata(current) != store._metadata(row):
+            raise AttachmentNotFoundError("attachment changed during viewer read")
+    return AttachmentData(store._metadata(current), data)
 
 
 class HostedRoomAttachmentStore:
@@ -1115,6 +1176,12 @@ class HostedRoomAttachmentStore:
         }
 
 
+    @contextmanager
+    def _viewer_snapshot(self) -> Iterator[sqlite3.Connection]:
+        with self._transaction() as conn:
+            conn.execute("BEGIN")
+            yield conn
+
     def read_viewer(
         self,
         *,
@@ -1126,45 +1193,11 @@ class HostedRoomAttachmentStore:
         authority_epoch: Any,
     ) -> AttachmentData:
         """Read for a live hosted viewer, fencing revocation across byte I/O."""
-
-        room_id = _identifier(room_id, label="room_id")
-        attachment_id = _attachment_id(attachment_id)
-        normalized_event = _identifier(event_id, label="event_id") if event_id is not None else None
-        recipient_member_id = (
-            _identifier(recipient_member_id, label="recipient_member_id")
-            if recipient_member_id is not None else ""
+        return read_viewer_from_store(
+            self, room_id=room_id, attachment_id=attachment_id, event_id=event_id,
+            recipient_member_id=recipient_member_id,
+            authority_gateway_id=authority_gateway_id, authority_epoch=authority_epoch,
         )
-        authority_gateway_id = _identifier(authority_gateway_id, label="authority_gateway_id")
-        if isinstance(authority_epoch, bool) or not isinstance(authority_epoch, int) or authority_epoch < 1:
-            raise AttachmentError("authority_epoch must be a positive integer")
-        scope = {
-            "room_id": room_id,
-            "authority_gateway_id": authority_gateway_id,
-            "authority_epoch": authority_epoch,
-        }
-        selection = {
-            "room_id": room_id,
-            "attachment_id": attachment_id,
-            "recipient_member_id": recipient_member_id,
-            "normalized_event": normalized_event,
-            "viewer": True,
-        }
-        with self._transaction() as conn:
-            conn.execute("BEGIN")
-            self._require_viewer_room(conn, **scope)
-            row = self._read_committed_row(conn, **selection, now=float(self.clock()))
-
-        # No execution lock or SQLite snapshot spans filesystem/hash work.
-        data = self._read_blob(
-            blob_id=str(row["blob_id"]), size=int(row["size"]), sha256=str(row["sha256"]),
-        )
-        with self._transaction() as conn:
-            conn.execute("BEGIN")
-            self._require_viewer_room(conn, **scope)
-            current = self._read_committed_row(conn, **selection, now=float(self.clock()))
-            if current["blob_id"] != row["blob_id"] or self._metadata(current) != self._metadata(row):
-                raise AttachmentNotFoundError("attachment changed during viewer read")
-        return AttachmentData(self._metadata(current), data)
 
 
     @staticmethod
@@ -1262,6 +1295,25 @@ class HostedRoomAttachmentStore:
         return row
 
 
+
+
+    def abort_unpublished_event(self, *, room_id: Any, event_id: Any) -> bool:
+        """Revoke unpublished commitments; never roll back a durable owner event."""
+
+        room_id = _identifier(room_id, label="room_id")
+        event_id = _identifier(event_id, label="event_id")
+        now = float(self.clock())
+        with self._transaction(immediate=True) as conn:
+            if _owner_event(conn, room_id, event_id) is not None:
+                return False
+            conn.execute(
+                """UPDATE hosted_room_attachments
+                   SET event_id=NULL, recipient_member_ids_json='[]', viewer_access=0,
+                       state='uploaded', updated_at=?, expires_at=?
+                   WHERE room_id=? AND event_id=? AND state='committed'""",
+                (now, now + UNCOMMITTED_TTL_SECONDS, room_id, event_id),
+            )
+        return True
 
 
 __all__ = [

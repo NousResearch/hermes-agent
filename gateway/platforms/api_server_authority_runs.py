@@ -1,8 +1,9 @@
 """API run controls resolve durable claims, never adapter agent/task ownership."""
 from dataclasses import asdict
+from contextlib import nullcontext
+import json
 
 from gateway.session_contract import Principal, SessionRef
-from gateway.session_results import admission_result
 from hermes_state_runtime import RuntimeStoreError, _row
 
 
@@ -12,24 +13,33 @@ def _authority(adapter):
     return active_authority(adapter.gateway_runner)
 
 
-def run_admission(adapter, run_id):
+def run_admission(adapter, run_id, *, connection=None):
     authority = _authority(adapter)
     if authority is None:
         return None
-    with authority.db._read_ctx() as conn:
+    with (nullcontext(connection) if connection is not None else authority.db._read_ctx()) as conn:
         rows = conn.execute("SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?", (run_id,)).fetchall()
     if len(rows) > 1:
         raise RuntimeStoreError('admission_conflict')
     return (authority, _row(rows[0])) if rows else None
 
 
-def run_projection(adapter, run_id):
-    owned = run_admission(adapter, run_id)
+def run_projection(adapter, run_id, *, connection=None):
+    authority = _authority(adapter)
+    if authority is None:
+        return None
+    if connection is None:
+        with authority.db._read_ctx() as conn:
+            return run_projection(adapter, run_id, connection=conn)
+    owned = run_admission(adapter, run_id, connection=connection)
     if owned is None:
         return None
     authority, row = owned
     status = {'queued': 'queued', 'started': 'running', 'unknown': 'interrupted', 'terminal': row['outcome']}.get(row['status'])
-    saved = admission_result(authority.db, row['admission_id'])
+    from gateway.session_results import _RESULT_PREFIX
+    retained = connection.execute('SELECT value FROM state_meta WHERE key=?',
+                                  (_RESULT_PREFIX + row['admission_id'],)).fetchone()
+    saved = json.loads(retained[0]) if retained and row['status'] == 'terminal' else None
     result = saved.get('result', {}) if saved else {}
     if row['status'] == 'terminal':
         if result.get('interrupted') or row['outcome'] == 'interrupted':
@@ -40,7 +50,9 @@ def run_projection(adapter, run_id):
     live = authority.sessions.get(row['target_session_id'])
     if live is not None and row['status'] == 'started':
         pending = list(live.controls.snapshot(row['target_session_id'], row['generation']))
-    return {'pending_controls': pending, 'run_id': run_id, 'status': status, 'session_id': row['target_session_id'],
+    from gateway.session_peer_output import canonical_peer_artifact_fields
+    artifacts = canonical_peer_artifact_fields(adapter, authority, row, result, connection)
+    return {**artifacts, 'pending_controls': pending, 'run_id': run_id, 'status': status, 'session_id': row['target_session_id'],
             'admission_id': row['admission_id'], 'execution_generation': row['generation'],
             'output': result.get('final_response', ''), 'usage': saved.get('usage', {}) if saved else {}}
 

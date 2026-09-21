@@ -2911,8 +2911,10 @@ class TelegramAdapter(BasePlatformAdapter):
             "read_timeout": env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
             "write_timeout": env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             # PTB routes file requests to media_write_timeout; httpx budgets it per socket write (stall
-            # tolerance, not bandwidth), so 60s rides out congested-link buffer stalls.
-            "media_write_timeout": 60.0,
+            # tolerance, not bandwidth), so 60s rides out congested-link buffer stalls. Multi-MB media on
+            # slow links needs more headroom than a one-size constant (#117795), so it is env-overridable
+            # like the five siblings above.
+            "media_write_timeout": env_float("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 60.0),
         }
         # CLOSE_WAIT fd leak: PTB's httpx.AsyncClient has no keepalive tuning; inject platform_httpx_limits()
         # while preserving PTB's max_connections (httpx_kwargs is spread last, so `limits` here wins).

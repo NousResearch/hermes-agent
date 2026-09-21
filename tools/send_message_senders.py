@@ -106,18 +106,36 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
 
 def _telegram_bot(token):
     """Bot honouring TELEGRAM_PROXY (standalone sends time out where api.telegram.org is
-    blocked); falls back to a direct connection."""
+    blocked) with the gateway path's env-overridable HTTP timeouts: PTB's stock 5s/20s
+    defaults fail multi-MB media uploads (#117795). Falls back to a direct plain Bot."""
     from telegram import Bot
     try:
-        from gateway.platforms.base import resolve_proxy_url
-        proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
-        if not proxy:
-            return Bot(token=token)
+        from utils import env_float
+        # Same knobs and defaults as the gateway adapter's _build_ptb_requests so `hermes send`
+        # and cron deliveries behave like the gateway on large media instead of PTB's defaults.
+        timeouts = {
+            "pool_timeout": env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+            "connect_timeout": env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+            "read_timeout": env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+            "write_timeout": env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+            # PTB routes file requests to media_write_timeout; its 20s default was exceeded by
+            # files as small as 744KB on slow links (#117795).
+            "media_write_timeout": env_float("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 60.0),
+        }
+        proxy = None
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+            proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+        except Exception as proxy_err:
+            logger.warning("send_message: failed to resolve Telegram proxy (%s), falling back to direct connection", proxy_err)
         from telegram.request import HTTPXRequest
-        logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
-        return Bot(token=token, request=HTTPXRequest(proxy=proxy), get_updates_request=HTTPXRequest(proxy=proxy))
-    except Exception as proxy_err:
-        logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", proxy_err)
+        if proxy:
+            logger.info("send_message: standalone Telegram send routed through proxy %s", proxy)
+            return Bot(token=token, request=HTTPXRequest(proxy=proxy, **timeouts), get_updates_request=HTTPXRequest(proxy=proxy, **timeouts))
+        # The standalone path never polls for updates, so no get_updates_request is passed.
+        return Bot(token=token, request=HTTPXRequest(**timeouts))
+    except Exception as setup_err:
+        logger.warning("send_message: failed to configure Telegram request timeouts (%s), falling back to plain Bot", setup_err)
     return Bot(token=token)
 
 

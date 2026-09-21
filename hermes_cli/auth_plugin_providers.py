@@ -35,6 +35,13 @@ PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
 PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
 
 
+def _api_key_env_fields(pp: Any) -> tuple[tuple, str]:
+    """Split a profile's ``env_vars`` into (api-key vars, base-URL var); the URL var may be ""."""
+    is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
+    return (tuple(v for v in pp.env_vars if not is_url(v)) or pp.env_vars,
+            next((v for v in pp.env_vars if is_url(v)), None) or "")
+
+
 def register_plugin_provider(pp: Any) -> None:
     """Mirror one profile into ``PROVIDER_REGISTRY`` under the ``auth_type`` it declares.
 
@@ -48,11 +55,7 @@ def register_plugin_provider(pp: Any) -> None:
     if pp.auth_type == "api_key":
         if not pp.env_vars:
             return
-        is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")  # noqa: E731
-        pconfig = _api_key_provider(
-            pp.name, pp.display_name or pp.name, pp.base_url,
-            tuple(v for v in pp.env_vars if not is_url(v)) or pp.env_vars,
-            next((v for v in pp.env_vars if is_url(v)), None) or "")
+        pconfig = _api_key_provider(pp.name, pp.display_name or pp.name, pp.base_url, *_api_key_env_fields(pp))
     else:
         pconfig = ProviderConfig(pp.name, pp.display_name or pp.name, pp.auth_type, inference_base_url=pp.base_url)
     PROVIDER_REGISTRY[pp.name] = pconfig
@@ -61,25 +64,46 @@ def register_plugin_provider(pp: Any) -> None:
         PROVIDER_REGISTRY.setdefault(alias, pconfig)
 
 
+def override_registry_row(pconfig: Any, pp: Any) -> None:
+    """A ``$HERMES_HOME`` plugin re-registering a name that already has a row wins for the fields
+    it declares — ``base_url`` and, on api-key rows, ``env_vars`` (#48450). ``register_provider()``
+    is last-writer-wins for the profile; without this the runtime kept reading the built-in
+    endpoint. In place, so alias rows sharing the object follow; idempotent, so re-sync is free.
+    """
+    if pp.base_url:
+        pconfig.inference_base_url = pp.base_url
+    if pp.auth_type == "api_key" == pconfig.auth_type and pp.env_vars:
+        pconfig.api_key_env_vars, url_var = _api_key_env_fields(pp)
+        if url_var:
+            pconfig.base_url_env_var = url_var
+
+
 def sync_plugin_provider_registry() -> int:
     """Mirror provider-plugin profiles into ``PROVIDER_REGISTRY``; return how many were added.
 
-    Idempotent (existing entries are never replaced), so it is safe from resolution paths. It runs at
+    Idempotent (existing entries are never replaced — a user plugin re-registering a bundled name
+    only rewrites the fields it declares, see :func:`override_registry_row`), so it is safe from
+    resolution paths. It runs at
     auth import and again whenever a name is missing (:func:`registry_lookup`) or when ``providers``
     finishes discovery, because the import-time pass can observe a *partial* profile list: a plugin
     whose own imports pull ``hermes_cli.auth`` in mid-``_discover_providers()`` sees only what was
     registered so far, and every later plugin would otherwise fail with "Unknown provider" (#102123).
     """
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth import BUILTIN_PROVIDER_IDS, PROVIDER_REGISTRY
 
     try:
-        from providers import list_providers
+        from providers import list_providers, provider_source
         profiles = list_providers()
     except Exception:
         return 0
     added = 0
     for pp in profiles:
         if pp.name in PROVIDER_REGISTRY:
+            # Only rows core wrote (built-in or mirrored) — a row the plugin injected itself is its
+            # own, more specific declaration and stays as written.
+            core_row = pp.name in BUILTIN_PROVIDER_IDS or pp.name in PLUGIN_MIRRORED_PROVIDERS
+            if core_row and pp.name not in _REGISTRY_PLUGIN_SKIP and provider_source(pp.name) == "user":
+                override_registry_row(PROVIDER_REGISTRY[pp.name], pp)
             continue
         register_plugin_provider(pp)
         added += pp.name in PROVIDER_REGISTRY

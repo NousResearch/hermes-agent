@@ -10,7 +10,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -1370,3 +1372,62 @@ def test_triage_signal_absent_for_single_block_and_closed_cards(client, kanban_h
         conn.close()
 
     assert _card(client, tid, "done")["triage_signal"] is False
+
+
+# ---------------------------------------------------------------------------
+# Touch drag-vs-tap threshold (#115568)
+# ---------------------------------------------------------------------------
+
+def test_touch_card_tap_opens_instead_of_dragging():
+    """attachTouchDrag() must not claim a stationary tap: without a movement threshold,
+    every touch pointerdown called preventDefault() immediately, which suppresses the
+    synthesized click TaskCard.handleClick relies on to call props.onOpen() (#115568).
+    The bundle has no build step, so this runs the real function (extracted verbatim, not
+    regex-matched) through a real pointerdown/move/up sequence with a minimal DOM stub —
+    behavioral, not a source-text pin.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = Path(__file__).parent / "fixtures" / "kanban_touch_drag_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(bundle)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "PASS" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic severity colours follow the dashboard theme
+# ---------------------------------------------------------------------------
+
+
+def test_diag_severity_tokens_route_through_host_theme_tokens():
+    """The three ``--hermes-diag-*`` rungs must resolve through the host's
+    ``--color-warning`` / ``--color-destructive`` tokens (#115118). They were
+    literals declared on the consuming elements, which no theme override can
+    reach (the theme engine writes custom properties on ``<html>`` and an
+    element-level declaration always wins), so light themes rendered the
+    amber badge at 1.8:1 contrast with no way to fix it. Headless-Chrome
+    receipt: with the tokens set on ``<html>`` the computed colours follow;
+    with none set the shipped literals render unchanged.
+    """
+    css = (Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
+    block = css[css.index("--hermes-diag-warning"):]
+    block = block[: block.index("}")]
+    # Parse the declarations rather than matching whitespace-exact substrings, so a
+    # reformat that keeps the computed value passes and a wrong token/fallback fails.
+    declared = {
+        name: (token, fallback)
+        for name, token, fallback in re.findall(
+            r"--hermes-diag-(warning|error|critical)\s*:\s*var\(\s*(--color-[\w-]+)\s*,\s*(#[0-9a-fA-F]{6})\s*\)\s*;",
+            block,
+        )
+    }
+    assert declared == {
+        "warning": ("--color-warning", "#ff9e3b"),
+        "error": ("--color-destructive", "#ff6b3d"),
+        "critical": ("--color-destructive", "#ff4d4d"),
+    }

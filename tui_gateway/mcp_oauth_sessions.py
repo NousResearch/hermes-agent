@@ -85,7 +85,7 @@ def _probe_with_rollback(
     server_name: str, cfg: dict, hermes_home: str, flow, reconnect_live: bool) -> None:
     """Run the OAuth probe; on ANY failure restore the prior token file + manager entry."""
     from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server, _save_mcp_server
-    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth import HermesTokenStorage, login_connect_timeout
     from tools.mcp_oauth_manager import get_manager
     manager = get_manager()
     storage = HermesTokenStorage(server_name)
@@ -93,8 +93,7 @@ def _probe_with_rollback(
     previous_entry = None
     try:
         previous_entry = manager.remove(server_name, hermes_home=hermes_home)
-        timeout = max(float(cfg.get("connect_timeout", 0) or 0), 315)
-        tools = _probe_single_server(server_name, cfg, connect_timeout=timeout)
+        tools = _probe_single_server(server_name, cfg, connect_timeout=login_connect_timeout(cfg))
         if not _oauth_tokens_present(server_name):
             raise RuntimeError(
                 "The server responded, but no OAuth token was obtained — "
@@ -250,7 +249,7 @@ def cancel_flow(session_id: str, server_name: str, hermes_home: str) -> Dict[str
     if rec is None:
         return {"ok": False, "error_message": err}
     flow = rec["flow"]
-    flow.mark_error("OAuth cancelled by user")
+    flow.mark_error("OAuth cancelled by user", cancelled=True)
     _shutdown_listener(rec)
     return {"ok": True, "status": flow.snapshot()["status"]}
 

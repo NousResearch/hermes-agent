@@ -246,6 +246,8 @@ _REGISTRY_ROWS: Tuple[Any, ...] = (
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     p.id: p for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS)
 }
+# The rows above, before any plugin touches the dict (a user plugin may override these; #48450).
+BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
 
 # ``hermes_cli.config`` discovers model-provider plugins while importing, and a plugin may read this
 # module's registry during that discovery. Keep the import below ProviderConfig / PROVIDER_REGISTRY so
@@ -282,12 +284,34 @@ _PLACEHOLDER_SECRET_VALUES = {
     "placeholder", "example", "dummy", "null", "none"}
 
 
+# The two placeholder shapes this repo ships itself, in ``.env.example`` (four providers) and in
+# the quickstart / MCP / skill references (``ghp_xxx``, ``hf_xxx``, ``sk-xxxxxxxx``). Both are
+# copied verbatim by users, so both must read as "not configured" rather than as a credential.
+_PLACEHOLDER_KEY_PREFIXES = ("sk-", "ghp_", "hf_")
+
+
+def _is_placeholder_shape(value: str) -> bool:
+    """True for the placeholder shapes shipped in .env.example and the docs."""
+    lowered = value.lower()
+    if lowered.startswith("your_") and lowered.endswith("_here"):
+        return True
+    for prefix in _PLACEHOLDER_KEY_PREFIXES:
+        if lowered.startswith(prefix):
+            tail = lowered[len(prefix):]
+            if tail and all(c == "x" for c in tail):
+                return True
+    stripped = lowered.replace(" ", "").replace("-", "").replace("_", "")
+    return bool(stripped) and all(c == "x" for c in stripped)
+
+
 def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     """Return True when a configured secret looks usable, not empty/placeholder."""
     if not isinstance(value, str):
         return False
     cleaned = value.strip()
-    return len(cleaned) >= min_length and cleaned.lower() not in _PLACEHOLDER_SECRET_VALUES
+    return (len(cleaned) >= min_length
+            and cleaned.lower() not in _PLACEHOLDER_SECRET_VALUES
+            and not _is_placeholder_shape(cleaned))
 
 
 # Known API-key prefixes per provider. Only listed providers get prefix validation; everyone else
@@ -405,6 +429,15 @@ def is_rate_limited_auth_error(error: Exception) -> bool:
     re-authenticating cannot fix it, so callers should say "retry later", not ``hermes auth``."""
     return (isinstance(error, AuthError) and not error.relogin_required
             and error.code == CODEX_RATE_LIMITED_CODE)
+
+
+def primary_failure_wording(error: Exception) -> tuple[str, str]:
+    """``(log_phrase, user_phrase)`` for a primary-provider failure that triggers the fallback
+    chain. A 429/quota AuthError leaves the credentials valid; labelling it "auth failed" sends
+    operators hunting for an expired token (#117482), so it reads as quota at every surface."""
+    if is_rate_limited_auth_error(error):
+        return "rate-limited (429)", "Primary provider quota exhausted"
+    return "auth failed", "Primary auth failed"
 
 
 # Entitlement failures: Nous gets a Portal-aware message; other providers a fixed generic one (or
@@ -951,6 +984,11 @@ def _config_selects_provider(normalized: str) -> bool:
     from hermes_cli.config import load_config
     cfg = load_config()
     if _slot_selects(cfg.get("model"), normalized):
+        return True
+    # ``auxiliary.<task>.provider: copilot`` selects the provider for that task the same way a MoA
+    # slot does — without this the seeder treats the credential as merely discovered (#114740).
+    aux_cfg = cfg.get("auxiliary")
+    if isinstance(aux_cfg, dict) and any(_slot_selects(s, normalized) for s in aux_cfg.values()):
         return True
 
     def _moa_block_matches(block: Any) -> bool:

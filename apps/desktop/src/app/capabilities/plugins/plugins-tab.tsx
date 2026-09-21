@@ -20,6 +20,7 @@ import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { FolderOpen, Loader2, Monitor, Package, RefreshCw } from '@/lib/icons'
+import { CATALOG_ORIGIN, CATALOG_PICKER_URL } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
 import {
   $agentPluginBusy,
@@ -35,6 +36,7 @@ import {
 } from '@/store/agent-plugins'
 import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
+import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
 
@@ -51,9 +53,8 @@ import { mergePluginPackages, type PackageKind, type PluginPackage } from './plu
 // to the parent window. We validate the origin and open the shared
 // dual-target install modal (agent half → catalog-pinned install into the
 // scoped profile; desktop half → this app), so unified packages install both
-// halves in one flow.
-const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
-const CATALOG_PICKER_URL = `${CATALOG_ORIGIN}/docs/plugins?embed=picker`
+// halves in one flow. URLs live in `@/lib/plugin-catalog` so the
+// `hermes://plugin/install?catalog=` deep link resolves against the same feed.
 
 // Catalog viewport: persisted through the shared pane store, dragged from the
 // section's TOP edge ("pull the catalog up"), clamped so neither the catalog
@@ -458,20 +459,17 @@ export const PluginsTab = memo(function PluginsTab({
         return
       }
 
-      const existing = $agentPlugins.get().find(row => row.catalog_name === data.name || row.name === data.name)
-
-      if (existing && !existing.update_available) {
-        notify({ kind: 'success', message: p.alreadyInstalled(String(data.name)) })
-
-        return
-      }
-
-      openPluginInstallRequest({
-        catalogName: String(data.name),
-        profile: scope,
-        repo: data.subdir ? `${String(data.repo)}#${String(data.subdir)}` : String(data.repo),
-        sha: data.sha ? String(data.sha) : undefined
-      })
+      // Already-installed short-circuit + the dialog itself live in the shared
+      // helper so a catalog deep link behaves identically to this pick.
+      openCatalogPluginInstall(
+        {
+          name: String(data.name),
+          repo: String(data.repo),
+          sha: data.sha ? String(data.sha) : undefined,
+          subdir: data.subdir ? String(data.subdir) : undefined
+        },
+        scope
+      )
     }
 
     window.addEventListener('message', onMessage)

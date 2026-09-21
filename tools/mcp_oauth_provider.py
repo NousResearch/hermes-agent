@@ -103,6 +103,7 @@ class HermesProviderMixin:
                 "MCP device authorization requires `hermes mcp login <server> --flow device`; "
                 "background reconnects cannot start a device login")
         self._tolerate_missing_iss_for_known_server()
+        self._request_google_offline_access()
         return await super()._perform_authorization()
 
     def _tolerate_missing_iss_for_known_server(self) -> None:
@@ -124,6 +125,33 @@ class HermesProviderMixin:
             return result
 
         self.context.callback_handler = _fill_iss
+
+    def _request_google_offline_access(self) -> None:
+        """Wrap the redirect handler so Google's authorization URL asks for a refresh token (#117510).
+
+        ``access_type=offline`` is what makes Google issue one at all, and ``prompt=consent`` is what
+        makes it re-issue one on repeat logins (the first consent already spent the grant); MCP
+        discovery advertises neither. The SDK builds the URL itself, so the two parameters are
+        appended here — never overwriting values already present in the query. Wraps once: every
+        authorization runs through here, and the wrapper reads the issuer at call time."""
+        inner = self.context.redirect_handler
+        if inner is None or getattr(inner, "_hermes_offline_access", False):
+            return
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+        async def _with_offline_access(authorization_url: str) -> None:
+            params = google_offline_access_params(self.context)
+            if not params:
+                await inner(authorization_url)
+                return
+            parts = urlsplit(authorization_url)
+            query = dict(parse_qsl(parts.query, keep_blank_values=True))
+            query.update(params)
+            query.setdefault("prompt", "consent")
+            await inner(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)))
+
+        _with_offline_access._hermes_offline_access = True  # type: ignore[attr-defined]
+        self.context.redirect_handler = _with_offline_access
 
     async def _hermes_accept_origin_issued_metadata(self, response):
         """Accept a path-scoped authorization server's metadata document whose ``issuer`` is the origin
@@ -509,6 +537,20 @@ def metadata_issued_by_origin(metadata: Any, auth_server_url: str | None, respon
     origin = f"{parts.scheme}://{parts.netloc}"
     derived = f"{origin}/.well-known/oauth-authorization-server{path}"
     return str(response.url) == derived and str(metadata.issuer).rstrip("/") == origin
+
+
+def google_offline_access_params(context: Any) -> dict[str, str]:
+    """Parameters that ask the authorization server for a refresh token Google-style: Google issues
+    one only when the authorization request carries ``access_type=offline`` — its idiom where OIDC
+    servers use the ``offline_access`` scope that MCP discovery would advertise — so without the
+    parameter the grant ends with the short-lived access token and every later reconnect (a gateway
+    process, cron) fails back to an interactive login it cannot perform (#117510). Empty for every
+    other issuer, whose requests keep the SDK-built parameters untouched."""
+    from urllib.parse import urlsplit
+    issuer = _metadata_issuer(context)
+    if issuer is None or urlsplit(issuer).netloc != "accounts.google.com":
+        return {}
+    return {"access_type": "offline"}
 
 
 def bind_issuer_from_context(context: Any) -> None:

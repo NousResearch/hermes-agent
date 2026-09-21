@@ -23,7 +23,6 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     ConditionalContainer,
     FormattedTextControl,
-    HSplit,
     Layout,
     Window,
     WindowAlign)
@@ -37,6 +36,8 @@ from prompt_toolkit.layout.processors import (
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
+
+from hermes_cli.cli_footer_split import FooterSplit
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
@@ -2156,7 +2157,7 @@ class CLITuiMixin:
             filter=Condition(lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))),
         )
         self._register_extra_tui_keybindings(kb, input_area=input_area)
-        layout = Layout(HSplit(self._build_tui_layout_children(
+        layout = Layout(FooterSplit(self._build_tui_layout_children(
             sudo_widget=sudo_widget,
             secret_widget=secret_widget,
             approval_widget=approval_widget,

@@ -394,11 +394,7 @@ class GatewayModelCommandsMixin:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
         is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
         from hermes_cli.model_switch_providers import list_picker_providers
-        try:  # off-loop: listing can hit a synchronous HTTP fetch on a stale cache
-            # Offload blocking provider-listing (can fall through to a synchronous urllib HTTP fetch on a
-            # stale cache) off the event loop so the gateway doesn't freeze. See #41289.
-            # Offload blocking provider-listing off the event loop so the gateway doesn't freeze on a
-            # stale-cache HTTP fetch. See #41289.
+        try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(
                 list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
             )
@@ -426,6 +422,10 @@ class GatewayModelCommandsMixin:
             current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
+            # Chat `/model` is a read path: catalogs come from the disk cache and stale ones warm
+            # in the background, and only the selected custom endpoint is probed live, so one
+            # degraded provider can't stall the reply (#74003). Mirrors the GUI read path.
+            non_blocking_catalogs=True, probe_custom_providers=False, probe_current_custom_provider=True,
         )
         adapter = self._delivery_adapter_for(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
@@ -447,7 +447,7 @@ class GatewayModelCommandsMixin:
                 return None  # Picker sent — adapter handles the response
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or "unknown", provider=get_label(ctx.current_provider)), ""]
-        try:  # off-loop: listing can hit a stale-cache HTTP fetch
+        try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(list_authenticated_providers, max_models=5, **listing_kwargs)
             lines.extend(_model_provider_listing_lines(providers))
         except Exception:

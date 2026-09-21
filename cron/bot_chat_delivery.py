@@ -57,7 +57,9 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
 
 
 def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
-          for_failure: bool = False, suppressed: bool = False) -> dict:
+          for_failure: bool = False, suppressed: bool = False, degraded: bool = False) -> dict:
+    """``degraded`` marks the short notice queued after a CLI-lane turn timed out; the record
+    carries it so the consumer recognizes the marker by the record, never by its text."""
     root = _root()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _FileLock(root / ".lock"):
@@ -75,6 +77,8 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
                       profile=profile, home=str(home), sequence=sequence)
         if for_failure:
             record["for_failure"] = True
+        if degraded:
+            record["degraded"] = True
         atomic_json_write(root / f"{key}.json", record, fsync_dir=True, mode=0o600)
         return record
 

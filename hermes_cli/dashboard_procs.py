@@ -123,6 +123,29 @@ def _pid_environ(pid: int) -> dict[str, str] | None:
     return env
 
 
+def _pid_passwd_home(pid: int) -> str | None:
+    """Login home of the user *pid* runs as, from the password database (psutil, then /proc).
+
+    A service unit with a scrubbed environment exports no ``HOME``; the target resolves its own
+    default home through ``Path.home()``, which falls back to this entry. The inspecting process's
+    home belongs to a different user and must never stand in for it. ``None`` when the owner or the
+    entry is unreadable, leaving the caller its existing fallback.
+    """
+    uid: int | None = None
+    with contextlib.suppress(Exception):
+        import psutil
+        uid = psutil.Process(pid).uids().real
+    if uid is None:
+        with contextlib.suppress(OSError):
+            uid = os.stat(f"/proc/{pid}").st_uid
+    if uid is None:
+        return None
+    with contextlib.suppress(Exception):
+        import pwd
+        return pwd.getpwuid(uid).pw_dir or None
+    return None
+
+
 def _hermes_home_for_pid(pid: int) -> str | None:
     """The Hermes home *pid* runs on, tri-state: ``None`` ONLY when its environment is unreadable
     (another user, hardened ``/proc``) — callers spare those, never guess.
@@ -131,7 +154,8 @@ def _hermes_home_for_pid(pid: int) -> str | None:
     exec-time env + argv (``hermes -p X serve`` rewrites ``HERMES_HOME`` in ``os.environ`` AFTER
     startup, which ``/proc/<pid>/environ`` never reflects): a profile-shaped ``HERMES_HOME``
     without a flag is the home; otherwise the root is ``HERMES_HOME`` (its grandparent when
-    profile-shaped) or the platform default of the process's own ``HOME`` / ``LOCALAPPDATA``, and
+    profile-shaped) or the platform default of the process's own ``HOME`` / ``LOCALAPPDATA``
+    (its owner's password-database home when a scrubbed unit environment exports neither), and
     the profile is the ``--profile``/``-p`` flag, else the root's sticky ``active_profile`` unless
     the process has a fixed identity (supervised child, post-swap updater, Desktop SSH backend).
     """
@@ -152,7 +176,7 @@ def _hermes_home_for_pid(pid: int) -> str | None:
         base = Path(local_appdata) if local_appdata else Path(env.get("USERPROFILE") or Path.home()) / "AppData" / "Local"
         default_home = base / "hermes"
     else:
-        default_home = Path(env.get("HOME") or Path.home()) / ".hermes"
+        default_home = Path(env.get("HOME") or _pid_passwd_home(pid) or Path.home()) / ".hermes"
     root = profile_root_for_env_home(env_home, default_home)
     fixed_identity = any(env.get(k) for k in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
                                                "HERMES_GATEWAY_EXTERNAL_SUPERVISOR")) or "--ssh-session-token-file" in argv

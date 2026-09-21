@@ -345,7 +345,10 @@ class TestSendMessageTool:
                 )
             )
 
-        assert result["success"] is True
+        # The text still goes out without the attachment, but the caller is told (#115908).
+        assert result["success"] is False
+        assert result["partial_success"] is True
+        assert result["media_dropped"] == [{"path": str(secret), "reason": "denied by the delivery policy"}]
         send_mock.assert_awaited_once_with(
             Platform.TELEGRAM,
             telegram_cfg,
@@ -355,6 +358,40 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
+
+    def test_missing_media_is_reported_to_the_caller_and_hermes_send_exits_nonzero(self, tmp_path, monkeypatch):
+        """#115908: a MEDIA path that does not exist on the host was dropped with only a host-side
+        warning while ``hermes send`` printed success:true and exited 0. The surviving attachment is
+        still sent; the payload names the drop and the CLI exit code follows it."""
+        from hermes_cli.send_cmd import _emit_result
+
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        config, telegram_cfg = _make_config()
+        report = tmp_path / "report.pdf"
+        report.write_bytes(b"%PDF report")
+        missing = tmp_path / "missing.pdf"
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            raw = send_message_tool({
+                "action": "send",
+                "target": "telegram:12345",
+                "message": f"report\nMEDIA:{report}\nMEDIA:{missing}",
+            })
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert result["partial_success"] is True
+        assert result["media_dropped"] == [{"path": str(missing), "reason": "not found on this host"}]
+        assert "Delivery incomplete" in result["error"]
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM, telegram_cfg, "12345", "report", thread_id=None,
+            media_files=[(str(report.resolve()), False)], force_document=False,
+        )
+        assert _emit_result(raw, json_mode=True, quiet=True) != 0
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()

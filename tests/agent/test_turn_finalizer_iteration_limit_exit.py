@@ -407,3 +407,16 @@ def test_budget_exhausted_child_does_not_record_parent_kanban_timeout(monkeypatc
         )
 
     record.assert_not_called()
+
+
+def test_finalize_turn_starts_the_title_upgrade_the_prologue_held_back():
+    """#117296: the turn prologue leaves a same-endpoint title upgrade unstarted on the agent; the finalizer
+    is the only place that may start it, and only once the model request is done."""
+    import threading
+
+    ran = threading.Event()
+    agent = _LimitAgent()
+    agent._deferred_title_upgrade = threading.Thread(target=ran.set, daemon=True)
+    _finalize(agent, final_response="done", exit_reason="text_response(1)", api_call_count=1)
+    assert ran.wait(timeout=5), "deferred title upgrade never started"
+    assert agent._deferred_title_upgrade is None

@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli.providers import (
-    ProviderDef, custom_provider_aliases, determine_api_mode, get_label, host_mandated_api_mode,
-    is_aggregator, resolve_provider_full)
+    LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
+    host_mandated_api_mode, is_aggregator, resolve_provider_full)
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
@@ -756,11 +756,23 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
         if da.model.lower() == key:
             return (da.provider, da.model, alias_name)
 
+    process_catalog, process_aliases = _external_process_catalog(current_provider)
+    if process_catalog:
+        # Process providers own their model IDs and aliases (models.dev knows nothing about
+        # them); a typed id or family alias that they declare must not leave the provider.
+        declared = _external_process_match(process_catalog, process_aliases, key, provider=current_provider)
+        if declared is not None:
+            return (current_provider, declared, key)
+
     identity = MODEL_ALIASES.get(key)
     if identity is None:
         return None
 
     vendor, family = identity
+
+    if process_catalog:
+        declared = _external_process_match(process_catalog, process_aliases, family, provider=current_provider)
+        return (current_provider, declared, key) if declared else None
 
     # models.dev catalog merged with static _PROVIDER_MODELS entries it may be missing.
     catalog = list_provider_models(current_provider)
@@ -785,14 +797,39 @@ def resolve_alias(raw_input: str, current_provider: str) -> Optional[tuple[str, 
     return (current_provider, matches[0], key)
 
 
+def _external_process_catalog(provider: str) -> tuple[list[str], dict[str, str]]:
+    """``(declared model ids, own aliases)`` of an ``external_process`` profile, else empty."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider)
+    if profile is None or profile.auth_type != "external_process":
+        return [], {}
+    return list(profile.fallback_models), {k.lower(): v for k, v in profile.model_aliases.items()}
+
+
+def _external_process_match(catalog: list[str], aliases: dict[str, str], typed: str, *, provider: str) -> str | None:
+    """Provider alias, exact id, else the single declared id that extends it (``claude-opus-5``
+    -> ``claude-opus-5[1m]``); several candidates raise so nothing is picked silently."""
+    wanted = typed.strip().lower()
+    if wanted in aliases:
+        return aliases[wanted]
+    exact = next((m for m in catalog if m.lower() == wanted), None)
+    if exact is not None:
+        return exact
+    matches = [m for m in catalog if m.lower().startswith(wanted)]
+    if len(matches) > 1:
+        raise AmbiguousAliasError(wanted, provider, matches)
+    return matches[0] if matches else None
+
+
 def get_authenticated_provider_slugs(
     current_provider: str = "", user_providers: dict = None, custom_providers: list | None = None
 ) -> list[str]:
-    """Slugs of providers that have credentials (models.dev in-memory cache; no extra network cost)."""
+    """Slugs of providers that have credentials (models.dev in-memory cache + disk catalog cache;
+    stale catalogs warm in the background, never in this call)."""
     try:
         return [p["slug"] for p in list_authenticated_providers(
             current_provider=current_provider, user_providers=user_providers,
-            custom_providers=custom_providers, max_models=0)]
+            custom_providers=custom_providers, max_models=0, non_blocking_catalogs=True)]
     except Exception:
         return []
 
@@ -1406,6 +1443,10 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         try:
             st.resolve_runtime(requested=st.target_provider, explicit_base_url=alias_url or None)
         except Exception as e:
+            if st.target_provider.strip().lower() in LLAMACPP_ALIASES:
+                # A local-runtime alias has no credential to add: the seam's own message ("server
+                # isn't running" / "turned off") is the actionable one, the auth hint below is noise.
+                return st.fail_on_target(str(e))
             return st.fail_on_target(
                 f"{st.provider_label} is not connected: no API key or login was found for it. Add one with "
                 f"`hermes auth add {st.target_provider}`, or pick a connected provider in /model.\n"
@@ -1754,13 +1795,11 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
     cold-start disk I/O — async callers run this on a worker thread."""
     from pathlib import Path
-    from hermes_cli.config import get_config_path, read_user_config_raw, warn_unpinned_cron_jobs_after_model_config_change
+    from hermes_cli.config import get_config_path, read_user_config_raw
     from utils import atomic_roundtrip_yaml_update
     path = Path(config_path) if config_path else get_config_path()
     for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
         atomic_roundtrip_yaml_update(path, f"model.{key}", value)
-        # Same unpinned-cron notice as `hermes config set` for every model switch.
-        warn_unpinned_cron_jobs_after_model_config_change(f"model.{key}", value)
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):

@@ -517,3 +517,148 @@ def test_telemetry_failure_does_not_break_exception_isolation(monkeypatch):
 
     assert manager.invoke_hook("post_tool_call", session_id="session") == []
     assert reached == [True]
+
+
+@pytest.mark.parametrize(
+    ("hook_name", "expected"),
+    [
+        (
+            "pre_tool_call",
+            [
+                {
+                    "action": "block",
+                    "message": "pre_tool_call plugin callback timed out or is still running",
+                }
+            ],
+        ),
+        ("post_tool_call", []),
+    ],
+    ids=["fail-closed", "fail-open"],
+)
+@pytest.mark.parametrize(
+    "exception_type",
+    [SystemExit, KeyboardInterrupt],
+    ids=["system-exit", "keyboard-interrupt"],
+)
+@pytest.mark.parametrize(
+    "telemetry_boundary",
+    ["event-construction", "storage", "diagnostic-logger"],
+)
+def test_telemetry_baseexception_preserves_timeout_cleanup_suppression_and_later_callbacks(
+    monkeypatch, hook_name, expected, exception_type, telemetry_boundary
+):
+    """Side-channel BaseException must not change timeout-path control flow."""
+    monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.01)
+    hold = threading.Event()
+    later_calls: list[str] = []
+
+    def blocker(**_kwargs):
+        hold.wait(timeout=1.0)
+
+    manager = PluginManager()
+    manager._hooks[hook_name] = [
+        blocker,
+        lambda **_kwargs: later_calls.append("later"),
+    ]
+
+    def raise_baseexception(message):
+        raise exception_type(message)
+
+    if telemetry_boundary == "event-construction":
+        monkeypatch.setattr(
+            manager,
+            "_record_hook_callback_telemetry",
+            lambda **_kwargs: raise_baseexception("telemetry-event-failure"),
+        )
+    elif telemetry_boundary == "storage":
+        class BrokenStore:
+            def append(self, _event):
+                raise_baseexception("telemetry-storage-failure")
+
+            def __iter__(self):
+                return iter(())
+
+        manager._hook_callback_telemetry_events = BrokenStore()
+    else:
+        monkeypatch.setattr(
+            manager,
+            "_record_hook_callback_telemetry",
+            lambda **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("telemetry-event-failure")
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins_dispatch.logger.debug",
+            lambda *_args, **_kwargs: raise_baseexception(
+                "telemetry-diagnostic-failure"
+            ),
+        )
+
+    try:
+        assert manager.invoke_hook(hook_name, session_id="session") == expected
+        assert later_calls == ["later"]
+    finally:
+        hold.set()
+
+    _wait_for(
+        lambda: not manager._hook_abandoned
+        and not manager._hook_running_callbacks
+    )
+
+    assert manager.invoke_hook(hook_name, session_id="session") == expected
+    assert later_calls == ["later", "later"]
+
+
+def test_callback_systemexit_remains_isolated_when_telemetry_raises_keyboardinterrupt(
+    monkeypatch,
+):
+    """Callback SystemExit and telemetry KeyboardInterrupt use distinct boundaries."""
+    monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0)
+    later_calls: list[bool] = []
+
+    def callback_exits(**_kwargs):
+        raise SystemExit("callback-system-exit")
+
+    manager = PluginManager()
+    manager._hooks["post_tool_call"] = [
+        callback_exits,
+        lambda **_kwargs: later_calls.append(True),
+    ]
+    monkeypatch.setattr(
+        manager,
+        "_record_hook_callback_telemetry",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            KeyboardInterrupt("telemetry-keyboard-interrupt")
+        ),
+    )
+
+    assert manager.invoke_hook("post_tool_call", session_id="session") == []
+    assert later_calls == [True]
+
+
+def test_callback_keyboardinterrupt_still_propagates_without_entering_telemetry(
+    monkeypatch,
+):
+    """A real callback KeyboardInterrupt is not a telemetry side-channel failure."""
+    monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0)
+    telemetry_calls: list[bool] = []
+    later_calls: list[bool] = []
+
+    def callback_interrupts(**_kwargs):
+        raise KeyboardInterrupt("callback-keyboard-interrupt")
+
+    def telemetry_failure(**_kwargs):
+        telemetry_calls.append(True)
+        raise SystemExit("telemetry-system-exit")
+
+    manager = PluginManager()
+    manager._hooks["post_tool_call"] = [
+        callback_interrupts,
+        lambda **_kwargs: later_calls.append(True),
+    ]
+    monkeypatch.setattr(manager, "_record_hook_callback_telemetry", telemetry_failure)
+
+    with pytest.raises(KeyboardInterrupt, match="callback-keyboard-interrupt"):
+        manager.invoke_hook("post_tool_call", session_id="session")
+    assert telemetry_calls == []
+    assert later_calls == []

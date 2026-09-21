@@ -320,10 +320,10 @@ class PluginDispatchMixin:
         """Best-effort wrapper: telemetry can never change callback behavior."""
         try:
             return self._record_hook_callback_telemetry(**event)
-        except Exception:
+        except BaseException:
             try:
                 logger.debug("Plugin callback telemetry recording failed", exc_info=True)
-            except Exception:
+            except BaseException:
                 pass
             return None
 

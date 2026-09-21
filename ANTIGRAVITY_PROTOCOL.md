@@ -140,7 +140,9 @@ cancellation semantics.
 ## Observable configuration/authentication state
 
 - `agy models` completed and listed 14 models, demonstrating that this local
-  invocation could reach its model catalog and execute prompts.
+  invocation could reach its model catalog and execute prompts. Hermes exposes
+  those IDs dynamically in the model picker and passes an explicit selection as
+  `--model <id>`; selecting `auto` omits the flag and leaves routing to `agy`.
 - `agy agents` exited 0 with no output.
 - `agy mcp list` returned `No MCP servers configured.`
 - `agy plugin list` returned `No imported plugins.`

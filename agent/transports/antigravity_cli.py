@@ -84,6 +84,7 @@ class AntigravityCapabilities:
     resume: bool
     message: str = ""
     authenticated: bool | None = None
+    models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,21 @@ def parse_agy_version(output: str) -> tuple[int, int, int] | None:
     if not match:
         return None
     return tuple(int(part) for part in match.groups())  # type: ignore[return-value]
+
+
+def parse_agy_models(output: str) -> tuple[str, ...]:
+    """Parse stable model ids from ``agy models`` tabular output."""
+    models: list[str] = []
+    for raw_line in (output or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        model_id = line.split("\t", 1)[0].strip()
+        if " " in model_id or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*", model_id):
+            continue
+        if model_id not in models:
+            models.append(model_id)
+    return tuple(models)
 
 
 def discover_agy(
@@ -196,6 +212,7 @@ class AntigravityClient:
         supported = version >= AGY_MIN_VERSION
         message = "" if supported else f"agy {'.'.join(map(str, version))} is older than required {'.'.join(map(str, AGY_MIN_VERSION))}"
         authenticated: bool | None = None
+        models: tuple[str, ...] = ()
         if supported:
             try:
                 auth_probe = subprocess.run(
@@ -203,14 +220,15 @@ class AntigravityClient:
                     text=True, encoding="utf-8", errors="replace", timeout=timeout, env=env,
                     creationflags=windows_hide_flags(), check=False,
                 )
-                authenticated = auth_probe.returncode == 0 and bool(auth_probe.stdout.strip())
+                models = parse_agy_models(auth_probe.stdout)
+                authenticated = auth_probe.returncode == 0 and bool(models)
                 if not authenticated and not message:
                     message = (auth_probe.stderr or "Antigravity authentication is required").strip()
             except (subprocess.TimeoutExpired, OSError) as exc:
                 message = f"unable to verify Antigravity authentication: {exc}"
         return AntigravityCapabilities(
             supported, executable, version, supported, supported, supported, message,
-            authenticated=authenticated,
+            authenticated=authenticated, models=models,
         )
 
     def cancel(self) -> bool:
@@ -277,6 +295,7 @@ class AntigravityClient:
         user_text: str,
         *,
         conversation_id: str | None = None,
+        model: str | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
         cancel_event: threading.Event | None = None,
@@ -291,6 +310,9 @@ class AntigravityClient:
         ]
         if self._sandbox:
             argv.append("--sandbox")
+        selected_model = str(model or "").strip()
+        if selected_model and selected_model.lower() != "auto":
+            argv.extend(("--model", selected_model))
         argv.append("--print=")
         if conversation_id:
             argv.extend(("--conversation", conversation_id))

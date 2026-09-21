@@ -25,7 +25,8 @@ if args == ["--version"]:
     print("1.2.7")
     raise SystemExit(0)
 if args == ["models"]:
-    print("gemini-test")
+    print("gemini-test\tGemini Test")
+    print("claude-test-thinking\tClaude Test (Thinking)")
     raise SystemExit(0)
 if "--probe-fail" in args:
     print("bad probe", file=sys.stderr)
@@ -74,12 +75,13 @@ def test_client_discovers_probes_and_streams_real_agy_subprocess(tmp_path, monke
     client = AntigravityClient(config_path=None, known_locations=())
 
     capability = client.probe()
-    result = client.run_turn("hello", on_event=received.append)
+    result = client.run_turn("hello", model="claude-test-thinking", on_event=received.append)
 
     assert capability.available is True
     assert capability.version == (1, 2, 7)
     assert capability.stream_json is True
     assert capability.authenticated is True
+    assert capability.models == ("gemini-test", "claude-test-thinking")
     assert result.text == "done"
     assert result.conversation_id == "conv-new"
     assert result.events[0]["event"] == "init"
@@ -89,6 +91,7 @@ def test_client_discovers_probes_and_streams_real_agy_subprocess(tmp_path, monke
     assert received == result.events
     assert "--input-format" in result.argv
     assert "stream-json" in result.argv
+    assert result.argv[result.argv.index("--model") + 1] == "claude-test-thinking"
 
 
 def test_client_uses_config_path_and_resumes_with_conversation(tmp_path):

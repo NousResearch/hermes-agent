@@ -196,3 +196,46 @@ class TestPlainFallbackUnchanged:
         agent = _make_agent(fallback_model=fbs)
         _activate(agent, "https://api.anthropic.com/v1", "claude-opus-4-6")
         assert agent.api_mode == "anthropic_messages"
+
+
+class TestLegacyTransportLiteralApiMode:
+    """Legacy/provider-config style entries carry transport literals ("openai", "openai_chat")
+    in ``api_mode`` — a provider-config artifact, not a wire mode. Honoring them verbatim set
+    agent.api_mode to "openai", which no transport is registered for, so the next build_kwargs
+    call crashed with 'NoneType' object has no attribute 'build_kwargs' (get_transport("openai")
+    returns None). Only surfaces when a real provider failure triggers the fallback path.
+    These aliases must map to their canonical api_mode."""
+
+    def test_openai_literal_maps_to_chat_completions(self):
+        fbs = [{
+            "provider": "custom", "model": "qwen3.8-max",
+            "base_url": "https://llm.example.com/v1", "api_key": "k",
+            "api_mode": "openai",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        mock_rpc = _activate(agent, "https://llm.example.com/v1", "qwen3.8-max")
+        assert agent.api_mode == "chat_completions"
+        assert mock_rpc.call_args.kwargs["api_mode"] == "chat_completions"
+
+    def test_openai_chat_literal_maps_to_chat_completions(self):
+        fbs = [{
+            "provider": "custom", "model": "qwen3.8-max",
+            "base_url": "https://llm.example.com/v1", "api_key": "k",
+            "api_mode": "openai_chat",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        mock_rpc = _activate(agent, "https://llm.example.com/v1", "qwen3.8-max")
+        assert agent.api_mode == "chat_completions"
+        assert mock_rpc.call_args.kwargs["api_mode"] == "chat_completions"
+
+    def test_canonical_literal_unchanged(self):
+        """A real registered mode must still pass through verbatim."""
+        fbs = [{
+            "provider": "custom", "model": "gpt-5.2",
+            "base_url": "https://api.openai.com/v1", "api_key": "k",
+            "api_mode": "codex_responses",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+        mock_rpc = _activate(agent, "https://api.openai.com/v1", "gpt-5.2")
+        assert agent.api_mode == "codex_responses"
+        assert mock_rpc.call_args.kwargs["api_mode"] == "codex_responses"

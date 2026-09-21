@@ -1654,14 +1654,37 @@ def _is_anthropic_wire_url(url: str) -> bool:
     return host_mandated_api_mode(url) == "anthropic_messages"
 
 
+# Transport-literal aliases that legacy/provider-config style entries carry for api_mode
+# (e.g. "openai", "openai_chat" = OpenAI-compatible chat), plus the canonical api_modes.
+_API_MODE_ALIASES: dict[str, str] = {
+    "openai": "chat_completions",
+    "openai_chat": "chat_completions",
+    "openai_compatible": "chat_completions",
+    "chat": "chat_completions",
+    "anthropic": "anthropic_messages",
+    "responses": "codex_responses",
+    "codex": "codex_responses",
+    "bedrock": "bedrock_converse",
+}
+
+
 def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Optional[str]) -> tuple[bool, str]:
     """(explicit, api_mode) for a fallback entry from its ORIGINAL base_url: resolve_provider_client()
     rewrites a dual-surface /anthropic base to /v1, losing the Anthropic wire signal. An explicit
     ``api_mode`` always wins (even "chat_completions") and suppresses later re-detection;
-    ``provider: anthropic`` without a base_url still resolves to anthropic_messages."""
+    ``provider: anthropic`` without a base_url still resolves to anthropic_messages.
+
+    Legacy configs put transport-style literals in ``api_mode`` ("openai", "openai_chat") that are NOT
+    registered transport modes — honoring them verbatim would set agent.api_mode to a value with no
+    transport and crash every later call (get_transport returns None -> build_kwargs AttributeError).
+    Map known aliases to their canonical api_mode, and treat any unrecognized literal as NON-explicit so
+    _fallback_api_mode_resolved re-derives the correct wire mode from the real provider/base_url."""
     explicit = str(fb.get("api_mode") or "").strip()
-    if explicit:
-        return True, explicit
+    mapped = _API_MODE_ALIASES.get(explicit, explicit)
+    if mapped in ("chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"):
+        return True, mapped
+    # Unknown/legacy literal (or empty) -> let resolution decide.
+    explicit = ""
     if fb_provider == "anthropic" or (fb_base_url_hint and _is_anthropic_wire_url(fb_base_url_hint)):
         return False, "anthropic_messages"
     return False, "chat_completions"

@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import { useLocation, useNavigate } from 'react-router'
+import { Navigate, useLocation, useNavigate } from 'react-router'
 
 import { codiconIcon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
@@ -18,10 +18,10 @@ import {
   Info,
   Keyboard,
   KeyRound,
-  Package,
   RefreshCw,
   Search,
   Settings2,
+  ShieldLock,
   Upload,
   Wrench,
   Zap
@@ -31,6 +31,7 @@ import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-palette'
 import { confirm } from '@/store/confirm'
+import { $activeConnectionId } from '@/store/connections'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
@@ -40,21 +41,25 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
 import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
-import { SKILLS_ROUTE } from '../routes'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
-import { BillingSettings } from './billing'
+import { BILLING_VIEWS, BillingSettings, type BillingSubView } from './billing'
+import { deriveBillingView, useBillingState, useSubscriptionState } from './billing/use-billing-state'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
+import { movedSettingsTabRedirect } from './moved-tabs'
 import { NotificationsSettings } from './notifications-settings'
-import { PluginsSettings } from './plugins-settings'
+import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
+import { SettingsSubpageHeader } from './subpage-navigation'
+import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
+import { vaultOwnerKey, VaultSettings } from './vault-settings'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
@@ -65,34 +70,60 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'connections',
   'keybinds',
   'keys',
+  'vault',
   'notifications',
   'billing',
-  'plugins',
   'sessions',
   'about'
 ]
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
+  const activeConnectionId = useStore($activeConnectionId)
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
 
-  // MCP moved out of Settings into Capabilities (/skills?tab=mcp). Keep old
-  // `/settings?tab=mcp` deep links working — `useRouteEnumParam` would silently
-  // coerce the unknown tab to the default view otherwise. Preserve `server=` so
-  // an old bookmark still lands on (and highlights) the selected server.
+  // MCP and Plugins moved out of Settings into Capabilities. Keep old
+  // `/settings?tab=mcp|plugins` deep links working — `useRouteEnumParam` would
+  // silently coerce the unknown tab to the default view otherwise.
   useEffect(() => {
-    const params = new URLSearchParams(search)
+    const redirect = movedSettingsTabRedirect(search)
 
-    if (params.get('tab') === 'mcp') {
-      const server = params.get('server')
-      const suffix = server ? `&server=${encodeURIComponent(server)}` : ''
-      navigate(`${SKILLS_ROUTE}?tab=mcp${suffix}`, { replace: true })
+    if (redirect) {
+      navigate(redirect, { replace: true })
     }
   }, [navigate, search])
 
-  const [activeView, setActiveView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  const [activeView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  const params = new URLSearchParams(search)
+  const requestedSubpage = params.get('page')
+  const subpage = resolveSettingsSubpage(activeView, params)
+  const needsSubpageRedirect = Boolean(subpage && subpage !== requestedSubpage)
+  const subpageSearch = new URLSearchParams(search)
+
+  if (subpage) {
+    subpageSearch.set('page', subpage)
+  }
+
+  const openSettingsPage = useCallback((view: SettingsViewId, page?: string) => {
+    const next = new URLSearchParams(search)
+
+    for (const key of ['page', 'field', 'setting', 'key', 'aux', 'session', 'kind', 'label', 'origin', 'pview', 'kview', 'bview']) {
+      next.delete(key)
+    }
+
+    next.set('tab', view)
+    const destination = page ?? settingsSubpages(view)[0]?.id
+
+    if (destination) {
+      next.set('page', destination)
+    }
+
+    navigate({ hash, pathname, search: `?${next}` }, { replace: true })
+  }, [hash, navigate, pathname, search])
+
+  const setActiveView = useCallback((view: SettingsViewId) => openSettingsPage(view), [openSettingsPage])
 
   // Connections merged into the unified Gateways page: land old
   // `?tab=connections` routes/bookmarks there instead of a dead entry.
@@ -105,6 +136,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   // sub-view is deep-linkable and survives a refresh.
   const [providerView, setProviderView] = useRouteEnumParam<ProviderView>('pview', PROVIDER_VIEWS, 'accounts')
   const [keysView] = useRouteEnumParam<KeysView>('kview', KEYS_VIEWS, 'tools')
+  const [billingView] = useRouteEnumParam<BillingSubView>('bview', BILLING_VIEWS, 'overview')
+  const billingState = useBillingState()
+  const subscriptionState = useSubscriptionState()
+  const billingPresentation = deriveBillingView(billingState.data, subscriptionState.data)
+  const canViewPlans = billingPresentation.status === 'normal' && Boolean(billingPresentation.plan?.action)
 
   // Jump to a section + its sub-view in one navigate. Two sequential setters
   // would each read the same stale `search` and the second would clobber the
@@ -112,6 +148,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const openSubView = useCallback(
     (tab: SettingsViewId, param: string, value: string, fallback: string) => {
       const params = new URLSearchParams(search)
+
+      for (const key of ['page', 'field', 'setting', 'key', 'aux', 'session', 'kind', 'label', 'origin']) {
+        params.delete(key)
+      }
+
       params.set('tab', tab)
 
       if (value === fallback) {
@@ -172,17 +213,34 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }
 
   const navGroups: OverlayNavGroup[] = useMemo(
-    () => [
-      ...SECTIONS.map(s => {
+    () => ([
+      ...SECTIONS.flatMap(s => {
         const view = `config:${s.id}` as SettingsViewId
 
-        return {
+        const entry = {
           active: activeView === view,
           icon: s.icon,
           id: view,
           label: t.settings.sections[s.id] ?? s.label,
           onSelect: () => setActiveView(view)
         }
+
+        // Credential Vault lives beside the Browser section: it feeds the
+        // browser's model-blind vault fill, so the two are one mental unit.
+        if (s.id === 'browser') {
+          return [
+            entry,
+            {
+              active: activeView === 'vault',
+              icon: ShieldLock,
+              id: 'vault',
+              label: t.settings.nav.vault,
+              onSelect: () => setActiveView('vault')
+            }
+          ]
+        }
+
+        return [entry]
       }),
       {
         active: activeView === 'notifications',
@@ -193,6 +251,22 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       },
       {
         active: activeView === 'billing',
+        children: [
+          {
+            active: activeView === 'billing' && (billingView === 'overview' || !canViewPlans),
+            icon: BarChart3,
+            id: 'bview:overview',
+            label: t.settings.subpages.billingOverview,
+            onSelect: () => openSubView('billing', 'bview', 'overview', 'overview')
+          },
+          ...(canViewPlans ? [{
+            active: activeView === 'billing' && billingView === 'plans',
+            icon: BarChart3,
+            id: 'bview:plans',
+            label: t.settings.subpages.billingPlans,
+            onSelect: () => openSubView('billing', 'bview', 'plans', 'overview')
+          }] : [])
+        ],
         icon: BarChart3,
         id: 'billing',
         label: t.settings.nav.billing,
@@ -282,13 +356,6 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('keys')
       },
       {
-        active: activeView === 'plugins',
-        icon: Package,
-        id: 'plugins',
-        label: t.settings.nav.plugins,
-        onSelect: () => setActiveView('plugins')
-      },
-      {
         active: activeView === 'sessions',
         icon: Archive,
         id: 'sessions',
@@ -303,9 +370,26 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         label: t.settings.nav.about,
         onSelect: () => setActiveView('about')
       }
-    ],
-    [activeView, keysView, providerView, t, setActiveView, openProviderView, openKeysView]
+    ] as OverlayNavGroup[]).map(group => {
+      const view = group.id as SettingsViewId
+      const children = settingsSubpages(view)
+
+      return children.length ? {
+        ...group,
+        children: children.map(page => ({
+          active: group.active && subpage === page.id,
+          icon: settingsSubpageIcon(page, group.icon),
+          id: `${view}:${page.id}`,
+          label: t.settings.subpages[page.labelKey],
+          onSelect: () => openSettingsPage(view, page.id)
+        }))
+      } : group
+    }),
+    [activeView, billingView, canViewPlans, keysView, providerView, subpage, t, setActiveView, openProviderView, openKeysView, openSettingsPage, openSubView]
   )
+
+  const activeGroup = navGroups.find(group => group.active)
+  const activeChild = activeGroup?.children?.find(child => child.active)
 
   // Type-to-search: printable keystrokes on the Settings surface (outside any
   // field) open the settings-scoped palette, seeded with the character — same
@@ -334,8 +418,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   // Fake search pill riding the card's top edge, dead-center and half off it.
   // Clicking (or just typing) opens the ⌘K palette scoped to settings; while
   // the palette is up the pill hands over to it — grows slightly and fades,
-  // then fades back when the palette closes. It renders as chrome, not an
-  // input — no border, recessed fill, live ⌘K hint.
+  // then fades back when the palette closes. It sits outside the raised card,
+  // so it needs its own opaque glass surface to mask the content underneath.
   const searchCombo = bindingsFor('nav.commandPalette')[0]
   const paletteOpen = useStore($commandPaletteOpen)
 
@@ -345,6 +429,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         'flex h-(--titlebar-control-height) items-center gap-1.5 rounded-full border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) px-2.5 text-(--ui-text-tertiary) shadow-sm transition-all duration-200 ease-out hover:text-foreground motion-reduce:transition-none',
         paletteOpen && 'pointer-events-none scale-110 opacity-0'
       )}
+      data-glass-opaque=""
       onClick={() => {
         triggerHaptic('open')
         openCommandPalettePage('settings')
@@ -391,21 +476,22 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
   const activeSettingsContent =
     activeView === 'config:appearance' ? (
-      <AppearanceSettings />
+      <AppearanceSettings subpage={subpage} />
     ) : activeView === 'about' ? (
-      <AboutSettings />
+      <AboutSettings subpage={subpage} />
     ) : activeView === 'gateway' || activeView === 'connections' ? (
       // 'connections' renders the unified page too so the frame before
       // the alias redirect lands doesn't flash the fallback view.
-      <GatewaySettings />
+      <GatewaySettings subpage={subpage} />
     ) : activeView === 'keybinds' ? (
-      <KeybindSettings />
+      <KeybindSettings subpage={subpage} />
     ) : activeView.startsWith('config:') ? (
       <ConfigSettings
         activeSectionId={activeView.slice('config:'.length)}
         importInputRef={importInputRef}
         onConfigSaved={onConfigSaved}
         onMainModelChanged={onMainModelChanged}
+        subpage={subpage}
       />
     ) : activeView === 'providers' ? (
       <ProvidersSettings
@@ -419,13 +505,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     ) : activeView === 'keys' ? (
       <KeysSettings view={keysView} />
     ) : activeView === 'notifications' ? (
-      <NotificationsSettings />
+      <NotificationsSettings subpage={subpage} />
     ) : activeView === 'billing' ? (
       <BillingSettings />
-    ) : activeView === 'plugins' ? (
-      <PluginsSettings />
+    ) : activeView === 'vault' ? (
+      <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
     ) : (
-      <SessionsSettings />
+      <SessionsSettings subpage={subpage} />
     )
 
   return (
@@ -433,7 +519,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       <OverlaySplitLayout>
         <OverlayNav footer={navFooter} groups={navGroups} />
 
-        <OverlayMain className="px-0 pb-0">{activeSettingsContent}</OverlayMain>
+        <OverlayMain className="px-0 pb-0">
+          <SettingsBreadcrumbContext.Provider value>
+            {activeGroup && <SettingsSubpageHeader child={activeChild} group={activeGroup} />}
+            {needsSubpageRedirect ? (
+              <Navigate replace to={{ hash, pathname, search: `?${subpageSearch}` }} />
+            ) : activeSettingsContent}
+          </SettingsBreadcrumbContext.Provider>
+        </OverlayMain>
       </OverlaySplitLayout>
     </OverlayView>
   )

@@ -4,10 +4,10 @@
  * the roster UI both read.
  */
 
-import { $botMeta, botFriendlyNames, botMetaKey, botRosterKey } from './data'
+import { $botMeta, botFriendlyNames, botHandle, botMetaKey, botRosterKey } from './data'
 import { $groupChats, groupChatRoomKey } from './group-chat'
 import { botConnectionRoute, botRosterMeta, resolveBotConnectionRoute } from './routing'
-import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
+import type { BotMeta, GroupChat, GroupMember, GroupMessageAuthor, RosterRow } from './types'
 
 /** Follow the authoritative room record for one async operation. Rename moves
  * the record wholesale (including legacy rooms without a roomId); disband
@@ -28,8 +28,8 @@ export function followGroupChat(group: string, onRename: (name: string) => void)
       return
     }
 
-    const moved = Object.entries(rooms).find(([, room]) =>
-      !room.tombstone && (prior.roomId ? room.roomId === prior.roomId : room === prior)
+    const moved = Object.entries(rooms).find(
+      ([, room]) => !room.tombstone && (prior.roomId ? room.roomId === prior.roomId : room === prior)
     )
 
     if (!moved) {
@@ -55,6 +55,74 @@ export function groupWorkspaceOwnerKey(group: string) {
  *  local `dixie` never share watermarks or sessions. */
 export function groupMemberKey(member: GroupMember): string {
   return member?.sourceScoped || member?.remoteSource ? botRosterKey(member) : member?.name
+}
+
+/** The `from` stamp for a member's appended reply. Every member that knows
+ *  its connection carries `source` — local ones included — so a reply
+ *  mirrored to another Desktop still names the machine it came from (#94863
+ *  D3: an unsourced `default` reply was indistinguishable from the reader's
+ *  own `default`). Only members without a connection stay bare. */
+export function groupMemberAuthor(member: GroupMember): GroupMessageAuthor {
+  const source = member.connectionLabel || member.connectionId
+
+  // `source` is this Desktop's label for the connection; `gateway` is the
+  // backend's own install_id, identical on every Desktop that reaches it —
+  // the token the self test matches on when both sides carry it.
+  return {
+    kind: 'member',
+    name: member.name,
+    ...(source ? { source } : {}),
+    ...(member.installId ? { gateway: member.installId } : {})
+  }
+}
+
+/** Marks a session key as thread-scoped. Pre-thread rooms stored ONE session
+ *  per member under the bare `groupMemberKey`, and a source-qualified member
+ *  key is itself `<connectionId>::<name>` — so the thread segment needs its
+ *  own literal prefix to stay distinguishable from both. */
+const GROUP_SESSION_THREAD_PREFIX = 'thread:'
+
+/** Identity of a member's hidden plumbing session INSIDE one thread. Threads
+ *  are separate conversations (own log slice, own watermarks — see
+ *  `${thread}::${memberKey}` in group-round-members), so they must not share
+ *  one backend transcript: thread B resuming thread A's session is how a
+ *  member answered B carrying A's context (#90420, #106460). */
+export function groupSessionKey(thread: string, member: GroupMember): string {
+  return `${GROUP_SESSION_THREAD_PREFIX}${thread || 'legacy'}::${groupMemberKey(member)}`
+}
+
+/** The member half of a session key. Bare keys are pre-thread rooms and are
+ *  their own member key; the sweep reads owners by member, not by thread. */
+export function groupSessionMemberKey(key: string): string {
+  if (!key.startsWith(GROUP_SESSION_THREAD_PREFIX)) {
+    return key
+  }
+
+  const rest = key.slice(GROUP_SESSION_THREAD_PREFIX.length)
+  const boundary = rest.indexOf('::')
+
+  return boundary === -1 ? rest : rest.slice(boundary + 2)
+}
+
+/** The thread half of a session key; bare (pre-thread) keys belong to the
+ *  `legacy` thread, the same name their turns run under. */
+export function groupSessionThread(key: string): string {
+  if (!key.startsWith(GROUP_SESSION_THREAD_PREFIX)) {
+    return 'legacy'
+  }
+
+  const rest = key.slice(GROUP_SESSION_THREAD_PREFIX.length)
+  const boundary = rest.indexOf('::')
+
+  return (boundary === -1 ? rest : rest.slice(0, boundary)) || 'legacy'
+}
+
+/** Whether this member already owns a thread-scoped session anywhere in the
+ *  room — i.e. the room has been through the pre-thread migration. */
+export function hasThreadScopedGroupSession(sessions: Record<string, unknown>, memberKey: string): boolean {
+  return Object.keys(sessions || {}).some(
+    key => key.startsWith(GROUP_SESSION_THREAD_PREFIX) && groupSessionMemberKey(key) === memberKey
+  )
 }
 
 /** Serializable immutable owner captured beside every group plumbing session. */
@@ -278,12 +346,7 @@ export function groupChatMemberBots(
   return [...local, ...remote]
 }
 
-/** A stored member descriptor, resolved against the live roster when its
- *  `name` is not a real slug (#92794). Exact key matches pass through
- *  untouched; only a descriptor whose key matches NO roster row is re-tried
- *  by friendly name against rows on the same connection. Unresolvable
- *  descriptors return as-is — they stay visible-but-degraded ghosts and must
- *  never be used as a `profile:` target. */
+/** Stored descriptor resolved against the live roster when its `name` is not a real slug (#92794). Exact matches pass through; unmatched keys re-try by friendly name, then previous profile names (#110200) — unresolvable ones return as-is, visible-but-degraded ghosts never used as a `profile:` target. */
 function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[]): RosterRow {
   const rows = roster || []
 
@@ -326,7 +389,15 @@ function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[
           String(name || '')
             .trim()
             .toLowerCase() === wanted
-      )
+      ) ||
+      // … or a profile renamed after the descriptor was persisted: previous_names in profile.yaml re-seats the member under its new identity, self-healing on next persist.
+      (Array.isArray(bot?.previous_names) &&
+        bot.previous_names.some(
+          previous =>
+            String(previous || '')
+              .trim()
+              .toLowerCase() === wanted
+        ))
   )
 
   return match || descriptor
@@ -352,7 +423,7 @@ export function durableGroupChatMembers(bots: RosterRow[]): GroupMember[] {
 
     return {
       name: bot.name,
-      handle: bot.handle || bot.name,
+      handle: botHandle(bot.name, bot) || bot.handle || bot.name,
       ...(title
         ? {
             title
@@ -361,6 +432,14 @@ export function durableGroupChatMembers(bots: RosterRow[]): GroupMember[] {
       ...(bot.display_name
         ? {
             display_name: bot.display_name
+          }
+        : {}),
+      // Previous profile names ride along so @-mentions using a pre-rename
+      // handle still resolve after the descriptor heals to the new slug,
+      // even when the live roster row is unreachable (#110200).
+      ...(Array.isArray(bot.previous_names) && bot.previous_names.length > 0
+        ? {
+            previous_names: [...bot.previous_names]
           }
         : {}),
       connectionId: bot.connectionId,

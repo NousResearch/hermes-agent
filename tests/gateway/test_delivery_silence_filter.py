@@ -77,7 +77,6 @@ class RecordingAdapter:
 @pytest.mark.asyncio
 async def test_silence_narration_dropped_pre_send(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    monkeypatch.delenv("HERMES_FILTER_SILENCE_NARRATION", raising=False)
     adapter = RecordingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
     target = DeliveryTarget.parse("discord:99887766")
@@ -95,7 +94,6 @@ async def test_silence_narration_dropped_pre_send(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_config_opt_out_lets_silence_through(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    monkeypatch.delenv("HERMES_FILTER_SILENCE_NARRATION", raising=False)
     adapter = RecordingAdapter()
     config = GatewayConfig(filter_silence_narration=False)
     router = DeliveryRouter(config, adapters={Platform.DISCORD: adapter})
@@ -109,19 +107,61 @@ async def test_config_opt_out_lets_silence_through(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_env_override_enables_filter_over_config(tmp_path, monkeypatch):
+async def test_env_does_not_override_config_opt_out(tmp_path, monkeypatch):
+    # env shouldn't override config when filter is turned off
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_FILTER_SILENCE_NARRATION", "1")
     adapter = RecordingAdapter()
-    # Config says off, env override forces on.
     config = GatewayConfig(filter_silence_narration=False)
     router = DeliveryRouter(config, adapters={Platform.DISCORD: adapter})
     target = DeliveryTarget.parse("discord:99887766")
 
     result = await router._deliver_to_platform(target, "*(silent)*", metadata=None)
 
+    assert len(adapter.calls) == 1
+    assert adapter.calls[0]["content"] == "*(silent)*"
+    assert result == {"success": True}
+
+
+@pytest.mark.asyncio
+async def test_env_does_not_disable_filter_when_config_enabled(tmp_path, monkeypatch):
+    # env shouldn't disable filter when config has it on
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_FILTER_SILENCE_NARRATION", "0")
+    adapter = RecordingAdapter()
+    config = GatewayConfig(filter_silence_narration=True)
+    router = DeliveryRouter(config, adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:99887766")
+
+    result = await router._deliver_to_platform(target, "*(silent)*", metadata=None)
+
     assert adapter.calls == []
-    assert result["filtered"] == "silence_narration"
+    assert result == {
+        "success": True,
+        "filtered": "silence_narration",
+        "delivered": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_multiplex_profiles_independent_silence_narration_filtering(tmp_path, monkeypatch):
+    # secondary profile keeps its own setting under multiplex regardless of process env
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_FILTER_SILENCE_NARRATION", "1")
+    adapter_a = RecordingAdapter()
+    adapter_b = RecordingAdapter()
+    router_a = DeliveryRouter(GatewayConfig(filter_silence_narration=True), adapters={Platform.DISCORD: adapter_a})
+    router_b = DeliveryRouter(GatewayConfig(filter_silence_narration=False), adapters={Platform.DISCORD: adapter_b})
+    target = DeliveryTarget.parse("discord:99887766")
+
+    res_a = await router_a._deliver_to_platform(target, "*(silent)*", metadata=None)
+    res_b = await router_b._deliver_to_platform(target, "*(silent)*", metadata=None)
+
+    assert adapter_a.calls == []
+    assert res_a["filtered"] == "silence_narration"
+    assert len(adapter_b.calls) == 1
+    assert adapter_b.calls[0]["content"] == "*(silent)*"
+    assert res_b == {"success": True}
 
 
 # --- Cron artifacts are exempt ----------------------------------------------
@@ -136,7 +176,6 @@ async def test_env_override_enables_filter_over_config(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_cron_job_id_metadata_bypasses_the_filter(tmp_path, monkeypatch):
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    monkeypatch.delenv("HERMES_FILTER_SILENCE_NARRATION", raising=False)
     adapter = RecordingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
     target = DeliveryTarget.parse("discord:99887766")
@@ -155,7 +194,6 @@ async def test_cron_job_id_metadata_bypasses_the_filter(tmp_path, monkeypatch):
 async def test_non_cron_metadata_still_filters(tmp_path, monkeypatch):
     """The exemption keys on job_id alone — everything else is unchanged."""
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
-    monkeypatch.delenv("HERMES_FILTER_SILENCE_NARRATION", raising=False)
     adapter = RecordingAdapter()
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.DISCORD: adapter})
     target = DeliveryTarget.parse("discord:99887766")

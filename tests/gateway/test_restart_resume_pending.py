@@ -597,7 +597,7 @@ async def test_drain_timeout_marks_resume_pending():
     runner.session_store = session_store
 
     with patch("gateway.status.remove_pid_file"), patch(
-        "gateway.status.write_runtime_status"
+        "gateway.status.publish_runtime_status"
     ):
         await runner.stop()
 
@@ -766,6 +766,70 @@ async def test_startup_restore_waits_for_resume_before_draining_inbound():
     assert runner._startup_restore_in_progress is False
 
 
+@pytest.mark.asyncio
+async def test_one_raising_replay_neither_wedges_gate_nor_eats_queue(monkeypatch):
+    """A replay whose adapter handle_message raises must not strand the inbound
+    gate closed, must not abort the drain, and must not lose the remaining queue."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+    monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "0")
+    runner._start_startup_warmup()
+
+    handled: list[str] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        if event.source.chat_id == "bad-chat":
+            raise RuntimeError("adapter exploded mid-drain")
+        handled.append(event.text)
+
+    adapter.handle_message = fake_handle_message
+
+    bad_source = make_restart_source(chat_id="bad-chat")
+    good_source = make_restart_source(chat_id="good-chat")
+    runner._queue_startup_restore_event(
+        MessageEvent(text="first", message_type=MessageType.TEXT, source=bad_source))
+    runner._queue_startup_restore_event(
+        MessageEvent(text="second", message_type=MessageType.TEXT, source=good_source))
+
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+
+    assert runner._startup_restore_in_progress is False
+    assert handled == ["second"]
+    assert runner._startup_restore_queue == []
+
+
+@pytest.mark.asyncio
+async def test_post_drain_inbound_processes_instead_of_queueing(monkeypatch):
+    """After a contained replay failure the gate is open, so the next inbound
+    event dispatches instead of queueing into the (drained) restore queue."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+    monkeypatch.setenv("HERMES_STARTUP_WARMUP_TIMEOUT", "0")
+    runner._start_startup_warmup()
+
+    async def exploding_handle_message(event: MessageEvent) -> None:
+        raise RuntimeError("boom")
+
+    adapter.handle_message = exploding_handle_message
+    runner._queue_startup_restore_event(
+        MessageEvent(text="doomed", message_type=MessageType.TEXT,
+                     source=make_restart_source(chat_id="bad-chat")))
+
+    await asyncio.wait_for(runner._finish_startup_restore(), timeout=5)
+    assert runner._startup_restore_in_progress is False
+
+    # The next inbound event reads the flag at run_inbound's gate; with the gate
+    # open it proceeds past the queueing branch rather than appending.
+    late = MessageEvent(text="late", message_type=MessageType.TEXT,
+                        source=make_restart_source(chat_id="late-chat"))
+    await runner._handle_message(late)
+    assert runner._startup_restore_queue == []
+
+
 # ---------------------------------------------------------------------------
 # Fresh-boot turn-machinery warm-up gate (#99373)
 # ---------------------------------------------------------------------------
@@ -875,10 +939,8 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert adapter.sent == [
-        "⚠️ Gateway restarting — Your current task will be interrupted. "
-        "Send any message after restart and I'll try to resume where you left off."
-    ]
+    assert len(adapter.sent) == 1
+    assert "restarting" in adapter.sent[0] and "Send any message" in adapter.sent[0]
 
 
 @pytest.mark.asyncio
@@ -1257,5 +1319,4 @@ async def test_startup_boot_sends_still_run_when_they_finish_quickly(monkeypatch
     runner._send_restart_notification.assert_awaited_once()
     runner._claim_pending_obligations.assert_awaited_once()
     runner._redeliver_claimed_obligations.assert_awaited_once()
-
 

@@ -14,6 +14,16 @@ Two behaviors that only show up with more than one profile on disk:
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _uncached_sidebar_endpoints(monkeypatch):
+    """Both sidebar endpoints sit behind ``_sidebar_singleflight_cache`` (5s TTL). Every
+    test here builds a fresh tmp profile set under the same default query params, so a warm
+    entry would answer with another test's payload. TTL 0 makes each request cold."""
+    from hermes_cli.web_routers import profiles as profiles_routes
+
+    monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
+
+
 @pytest.fixture
 def profiles_on_disk(tmp_path, monkeypatch, _isolate_hermes_home):
     """An isolated default home plus one named profile, each with a state.db."""
@@ -52,7 +62,7 @@ def client(monkeypatch, profiles_on_disk):
     return c
 
 
-def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None):
+def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None, pinned=False):
     """One session with a message, so it clears the sidebar's min_messages=1.
 
     ``cwd`` is what attaches it to a project — without one it lands in Home.
@@ -67,6 +77,8 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None)
     try:
         db.create_session(session_id, source=source, cwd=str(cwd) if cwd else None)
         db.append_message(session_id=session_id, role="user", content="hi")
+        if pinned:
+            assert db.set_session_pinned(session_id, True)
     finally:
         db.close()
 
@@ -246,3 +258,27 @@ class TestCrossProfileProjectTree:
         # The healthy profile's tree still lands; only the broken one drops out.
         assert "Healthy" in [project["label"] for project in payload["projects"]]
         assert [project["sessionCount"] for project in payload["projects"] if project["isNoProject"]] == [1]
+
+
+class TestSidebarTruncation:
+
+    def test_pinned_rows_inside_the_window_still_report_more_on_disk(self, client, profiles_on_disk):
+        # Regression for #81484: the window is a LIMIT page by recency, so a
+        # pin among the newest rows takes a slot. Discounting pins reported 18
+        # < 20 and the sidebar never offered "Load more" for the older rows.
+        home = profiles_on_disk["default"]
+        params = {"recents_profile": "default", "recents_limit": 4}
+
+        def window():
+            payload = client.get("/api/profiles/sessions/sidebar", params=params).json()
+            return len(payload["recents"]["sessions"]), payload["recents"]["profiles_truncated"]
+
+        for index in range(3):
+            _seed_session(home, f"s-{index}", source="desktop", pinned=index == 2)
+        # Short list: the pin is already on the page, nothing to back-fill, no "more".
+        assert window() == (3, {"default": False})
+
+        for index in range(3, 6):
+            _seed_session(home, f"s-{index}", source="desktop", pinned=index == 5)
+        # Six on disk, two pins among the newest four: a full window, more below it.
+        assert window() == (4, {"default": True})

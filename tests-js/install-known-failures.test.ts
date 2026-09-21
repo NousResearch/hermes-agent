@@ -8,11 +8,13 @@ import { describe, expect, it } from 'vitest'
 
 const { matchKnownFailure, rules } = createRequire(import.meta.url)('../tests/install/e2e-assets/known-failures.cjs')
 const classifier = path.resolve(import.meta.dirname, '../tests/install/e2e-assets/known-failures.cjs')
+
 const lockedLog = [
   'error: failed to remove file `C:/install/venv/Lib/site-packages/../../Scripts/hermes.exe`: Access is denied. (os error 5)',
   'File "C:/install/venv/Scripts/hermes.exe/__main__.py", line 10, in <module>',
   "subprocess.CalledProcessError: Command '['uv', 'pip', 'install', '-e', '.', '--quiet']' returned non-zero exit status 2.",
 ].join('\n')
+
 const base = {
   platform: 'windows', phase: 'update', commit: 'a370ab8391ca5f8de7ebbc449f05cb0df36ade7c',
   installMethod: 'installer-script', updateMethod: 'hermes-update',
@@ -42,6 +44,7 @@ describe('known install failures', () => {
       error: 'E2E ASSERTION FAILED: app driven via captured hermes desktop spec; update completed',
       logs: { desktop: '[hermes] [updates] no staged updater; surfacing manual `hermes update` for CLI install at C:/install\n[hermes] [updates] manual: hermes update\n' },
     }
+
     expect(matchKnownFailure(sample)?.id).toBe('windows-july-manual-app-update')
     expect(matchKnownFailure({ ...sample, installMethod: 'desktop-installer@latest' })).toBeNull()
     expect(matchKnownFailure({ ...sample, error: 'onboarding timed out' })).toBeNull()
@@ -50,6 +53,7 @@ describe('known install failures', () => {
 
   it('CLI writes a receipt and exits zero only on a confirmed match', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'known-install-'))
+
     try {
       mkdirSync(path.join(root, 'logs'))
       writeFileSync(path.join(root, 'shas.json'), '\uFEFF' + JSON.stringify({ old: base.commit, current: 'f'.repeat(40), old_ref: 'v2026.3.12' }))

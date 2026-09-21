@@ -1,8 +1,6 @@
 /**
- * Titlebar board switcher — the board page projects this into `titleBar.center`
- * (where chat shows the session-title dropdown) via `<Contribute>`, so it
- * exists exactly while the page is mounted — no route sniffing. Same chrome as
- * the session title: quiet label + chevron, menu on click.
+ * Board switcher projected through `WORKSPACE_PAGE_HEADER_AREA` into the
+ * workspace panel's tab-header space while the board page is mounted.
  */
 
 import {
@@ -21,11 +19,13 @@ import {
   DropdownMenuTrigger,
   host,
   Input,
+  isSubmitEnter,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Tip,
   useI18n,
   useMutation,
   useQuery,
@@ -160,7 +160,7 @@ function BoardNameField({
       <Input
         autoFocus
         onChange={event => onChange(event.target.value)}
-        onKeyDown={event => event.key === 'Enter' && onEnter()}
+        onKeyDown={event => isSubmitEnter(event) && onEnter()}
         placeholder={k.boardNamePlaceholder}
         value={value}
       />
@@ -336,15 +336,24 @@ export function BoardSwitcher() {
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button className="h-7 max-w-56 gap-1.5 px-2" size="sm" variant="ghost">
-            <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
-            {typeof current?.total === 'number' && (
-              <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
-            )}
-            <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
-          </Button>
-        </DropdownMenuTrigger>
+        <Tip label={k.switchBoard}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              aria-label={`${k.board}: ${label}`}
+              className="h-full min-w-0 max-w-full gap-1.5 px-2"
+              size="sm"
+              variant="ghost"
+            >
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="project" size="0.8125rem" />
+              <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{k.board}</span>
+              <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{label}</span>
+              {typeof current?.total === 'number' && (
+                <span className="text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)">{current.total}</span>
+              )}
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Tip>
         <DropdownMenuContent align="center">
           {boards.boards.map(meta => (
             <DropdownMenuItem

@@ -1226,6 +1226,24 @@ def _pool_activation_epoch(entry) -> float:
     return float(parsed or 0.0)
 
 
+def _auth_store_fingerprint() -> "tuple[int, int] | None":
+    """(mtime_ns, size) of the credential store, or None when it cannot be stat'd.
+
+    An activation is a write to ``auth.json``; nothing else this hook cares about can change
+    without touching that file. ``load_pool`` is far from free -- on macOS it shells out to
+    ``security`` to read the Claude Code keychain entry, ~25ms of subprocess per call -- so
+    paying it every turn of every live session to usually learn "nothing changed" is the kind
+    of cost that only shows up once a fleet is running.
+    """
+    try:
+        from hermes_cli.auth import _auth_file_path
+
+        stat = _auth_file_path().stat()
+    except Exception:  # noqa: BLE001 - a missing or unreadable store just means "no short-circuit"
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 def adopt_activated_credential(agent) -> bool:
     """Move a live session onto a credential the USER just activated, at the turn boundary.
 
@@ -1246,6 +1264,11 @@ def adopt_activated_credential(agent) -> bool:
     base_url = getattr(agent, "base_url", None)
     if not credential_pool_matches_provider(pool, provider, base_url=base_url):
         return False  # a fallback/foreign pool is attached: its activations are not ours to adopt
+    # Short-circuit on an untouched store: an activation always writes auth.json, so an unchanged
+    # (mtime, size) means there is nothing new to adopt and the expensive reload can be skipped.
+    fingerprint = _auth_store_fingerprint()
+    if fingerprint is not None and fingerprint == getattr(agent, "_pool_store_fingerprint", None):
+        return False
     from agent.credential_pool import load_pool
 
     try:
@@ -1262,24 +1285,31 @@ def adopt_activated_credential(agent) -> bool:
         logger.debug("Activation check could not read the pool entries: %s", exc)
         return False
     if not candidates:
+        agent._pool_store_fingerprint = fingerprint
         return False
     # The activation stamp is the signal, not the pool head: ``peek()`` reports the entry a pool
     # object already bound (``_current_id``), which on a reloaded pool is not yet the promoted one.
-    head = max(candidates, key=_pool_activation_epoch)
+    # Ties break by priority, then id: two entries stamped inside the same clock tick are rare, but
+    # "whichever one ``max`` happened to see first" is not a rule anyone can reason about later.
+    head = max(candidates, key=lambda e: (_pool_activation_epoch(e), -e.priority, e.id))
     activated_at = _pool_activation_epoch(head)
     baseline = getattr(agent, "_pool_activation_seen", None)
     if baseline is None:
         # First look: stamps that predate this session's binding are history, not a user choice
         # made during the conversation (same first-look discipline as env credential adoption).
         agent._pool_activation_seen = activated_at
+        agent._pool_store_fingerprint = fingerprint
         return False
     if activated_at <= baseline:
+        agent._pool_store_fingerprint = fingerprint
         return False
     if head.id == getattr(agent, "_credential_pool_entry_id", None):
         agent._pool_activation_seen = activated_at
+        agent._pool_store_fingerprint = fingerprint
         return False  # already on the activated account: re-swapping would only cost the cache
     if not credential_pool_entry_serves_endpoint(head, base_url):
         agent._pool_activation_seen = activated_at  # settled: this activation is not for us
+        agent._pool_store_fingerprint = fingerprint
         logger.info(
             "Credential %s was activated but serves another endpoint than this session (%s) — not adopting",
             getattr(head, "id", "?"), base_url,
@@ -1294,6 +1324,8 @@ def adopt_activated_credential(agent) -> bool:
         logger.debug("Activation check could not confirm credential availability: %s", exc)
         return False
     if usable is None:
+        # Deliberately no fingerprint here: a cooldown expires with the clock, not with a write to
+        # auth.json, so short-circuiting on the unchanged store would strand the pending activation.
         logger.info(
             "Credential %s (%s) was activated but is still cooling down — staying put for now",
             getattr(head, "id", "?"), getattr(head, "label", "?"),
@@ -1301,6 +1333,7 @@ def adopt_activated_credential(agent) -> bool:
         return False
     head = usable
     agent._pool_activation_seen = activated_at
+    agent._pool_store_fingerprint = fingerprint
     previous_pool = pool
     previous_entry_id = getattr(agent, "_credential_pool_entry_id", None)
     agent._credential_pool = fresh

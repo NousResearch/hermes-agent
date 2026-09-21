@@ -235,3 +235,136 @@ def test_activation_stamp_survives_a_pool_round_trip():
     assert isinstance(promoted.activated_at, float) and promoted.activated_at >= before
     revived = PooledCredential.from_dict("anthropic", promoted.to_dict())
     assert revived.activated_at == promoted.activated_at
+
+
+def _count_pool_reads(monkeypatch, pool):
+    """Route ``load_pool`` at *pool* and count how often the turn boundary pays for it."""
+    import agent.agent_runtime_helpers as arh
+    import agent.credential_pool as cp
+
+    reads = []
+    monkeypatch.setattr(cp, "load_pool", lambda _key: (reads.append(1), pool)[1])
+    monkeypatch.setattr(arh, "resolve_runtime_pool_key", lambda _p, base_url=None: "anthropic")
+    return reads
+
+
+def _stub_store(monkeypatch, fingerprint):
+    """Pin the credential store's (mtime, size) so the test drives the short-circuit."""
+    import agent.agent_runtime_helpers as arh
+
+    box = {"value": fingerprint}
+    monkeypatch.setattr(arh, "_auth_store_fingerprint", lambda: box["value"])
+    return box
+
+
+def test_an_untouched_store_is_not_reloaded_every_turn(monkeypatch):
+    """An activation always writes auth.json, so an unchanged store means nothing to adopt.
+
+    ``load_pool`` is expensive (on macOS it shells out to ``security`` for the Claude Code
+    keychain entry), and this hook runs at every turn of every live session.
+    """
+    pool = _pool(
+        _entry("acct0001", "conta-1", priority=0, token="«redacted:sk-…»-one"),
+        _entry("acct0002", "conta-2", priority=1, token="«redacted:sk-…»-two"),
+    )
+    reads = _count_pool_reads(monkeypatch, pool)
+    _stub_store(monkeypatch, (111, 222))
+    agent = _LiveAgent(pool)
+
+    assert adopt_activated_credential(agent) is False  # baseline: reads once, arms the fingerprint
+    assert len(reads) == 1
+
+    for _ in range(5):
+        assert adopt_activated_credential(agent) is False
+    assert len(reads) == 1, "an unchanged store must not be re-read"
+
+
+def test_a_written_store_is_read_again_and_adopted(monkeypatch):
+    """The short-circuit must not swallow a real activation: a new (mtime, size) reopens the path."""
+    pool = _pool(
+        _entry("acct0001", "conta-1", priority=0, token="«redacted:sk-…»-one"),
+        _entry("acct0002", "conta-2", priority=1, token="«redacted:sk-…»-two"),
+    )
+    reads = _count_pool_reads(monkeypatch, pool)
+    store = _stub_store(monkeypatch, (111, 222))
+    agent = _LiveAgent(pool)
+    assert adopt_activated_credential(agent) is False  # baseline
+
+    pool.move_entry("acct0002", 0)
+    store["value"] = (333, 444)  # the promote wrote auth.json
+
+    assert adopt_activated_credential(agent) is True
+    assert agent._credential_pool_entry_id == "acct0002"
+    assert len(reads) == 2
+
+
+def test_a_cooling_down_activation_keeps_being_retried(monkeypatch):
+    """A cooldown expires with the clock, not with a write, so the fingerprint must NOT be armed.
+
+    Arming it there would strand the activation until something else touched auth.json — the
+    user would have to promote a second time to get the account they already chose.
+    """
+    import agent.credential_pool as cp
+
+    pool = _pool(
+        _entry("acct0001", "conta-1", priority=0, token="«redacted:sk-…»-one"),
+        _entry("acct0002", "conta-2", priority=1, token="«redacted:sk-…»-two"),
+    )
+    reads = _count_pool_reads(monkeypatch, pool)
+    store = _stub_store(monkeypatch, (111, 222))
+    agent = _LiveAgent(pool)
+    assert adopt_activated_credential(agent) is False  # baseline
+
+    pool.mark_exhausted_and_rotate(
+        status_code=429, credential_id="acct0002", failure_reason="rate_limit",
+        error_context={"message": "Error"},
+    )
+    pool.move_entry("acct0002", 0)
+    store["value"] = (333, 444)  # the promote wrote auth.json
+
+    assert adopt_activated_credential(agent) is False  # benched: stays put
+    assert adopt_activated_credential(agent) is False  # and keeps looking, store unchanged
+    assert len(reads) == 3, "a pending activation must survive until its window reopens"
+
+    real_time = time.time
+    monkeypatch.setattr(
+        cp.time, "time", lambda: real_time() + cp.EXHAUSTED_TTL_429_SECONDS + 120,
+    )
+    assert adopt_activated_credential(agent) is True
+    assert agent._credential_pool_entry_id == "acct0002"
+
+
+def test_a_store_that_cannot_be_stated_falls_back_to_reading(monkeypatch):
+    """No fingerprint (missing or unreadable store) must degrade to the old always-read path."""
+    pool = _pool(
+        _entry("acct0001", "conta-1", priority=0, token="«redacted:sk-…»-one"),
+        _entry("acct0002", "conta-2", priority=1, token="«redacted:sk-…»-two"),
+    )
+    reads = _count_pool_reads(monkeypatch, pool)
+    _stub_store(monkeypatch, None)
+    agent = _LiveAgent(pool)
+
+    assert adopt_activated_credential(agent) is False  # baseline
+    pool.move_entry("acct0002", 0)
+    assert adopt_activated_credential(agent) is True
+    assert len(reads) == 2
+
+
+def test_equal_stamps_break_the_tie_by_priority(monkeypatch):
+    """Two entries stamped in the same tick must resolve deterministically, not by dict order."""
+    pool = _pool(
+        _entry("acct0001", "conta-1", priority=0, token="«redacted:sk-…»-one"),
+        _entry("acct0002", "conta-2", priority=1, token="«redacted:sk-…»-two"),
+        _entry("acct0003", "conta-3", priority=2, token="«redacted:sk-…»-three"),
+    )
+    _seed_pool(monkeypatch, pool)
+    agent = _LiveAgent(pool)
+    assert adopt_activated_credential(agent) is False  # baseline
+
+    stamp = time.time() + 1
+    for entry_id in ("acct0003", "acct0002"):
+        entry = next(e for e in pool.entries() if e.id == entry_id)
+        pool._adopt(entry, persist=False, extra={**(entry.extra or {}), "activated_at": stamp})
+
+    assert adopt_activated_credential(agent) is True
+    assert agent._credential_pool_entry_id == "acct0002", "lowest priority wins an exact tie"

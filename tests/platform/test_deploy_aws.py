@@ -435,3 +435,111 @@ def test_the_validator_hands_the_temp_tree_back_before_removing_it():
     assert script.index("chown -R") < script.rindex('rm -rf "$ROOT"'), (
         "the chown must precede the rm, or the rm still fails"
     )
+
+
+# ---------------------------------------------------------------------------
+# The KMS key policy
+#
+# The first real deployment failed creating the log group:
+#
+#   AccessDeniedException: The specified KMS key does not exist or is not
+#   allowed to be used with Arn '...:log-group:/nova/test'
+#
+# CloudWatch Logs calls KMS as a service principal, not as an IAM identity, so
+# no IAM policy can reach it — the key policy is the only place it can be
+# allowed, and the key had none, so it got the KMS default (root only).
+# ---------------------------------------------------------------------------
+
+
+def _main_tf() -> str:
+    return (MODULE / "main.tf").read_text(encoding="utf-8")
+
+
+def test_the_key_policy_allows_cloudwatch_logs():
+    """Without this the log group cannot be created at all — proven in a real account."""
+    main = _main_tf()
+    assert 'data "aws_iam_policy_document" "state_key"' in main, (
+        "the KMS key has no key policy document; CloudWatch Logs cannot use the key and "
+        "aws_cloudwatch_log_group.runtime will fail with AccessDeniedException"
+    )
+    assert "logs.${data.aws_region.current.name}.amazonaws.com" in main, (
+        "the CloudWatch Logs service principal is missing, or the region is hardcoded. "
+        "The principal is regional and must follow the provider's region"
+    )
+    assert "policy                  = data.aws_iam_policy_document.state_key[0].json" in main, (
+        "the key policy document exists but is not attached to aws_kms_key.state"
+    )
+
+
+def test_the_key_policy_keeps_root_administrative_control():
+    """Dropping this statement bricks the key.
+
+    KMS only honours IAM policies against a key when the key policy says so. Remove the
+    root statement and no principal — including the account's administrators — can use or
+    even re-open the key policy, and a key policy can only be changed by a principal the
+    key policy already allows. There is no self-service recovery.
+    """
+    main = _main_tf()
+    assert 'sid       = "EnableIAMUserPermissions"' in main
+    assert 'identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]' in main, (
+        "the root statement is missing or no longer names this account's root; the key "
+        "would become unmanageable"
+    )
+
+
+def test_cloudwatch_logs_is_scoped_by_encryption_context():
+    """The grant is to a service principal, so the condition is what bounds it.
+
+    Without the encryption-context condition, CloudWatch Logs could use this tenant's key
+    for any log group in the account.
+    """
+    main = _main_tf()
+    assert 'variable = "kms:EncryptionContext:aws:logs:arn"' in main, (
+        "the CloudWatch Logs grant is unconditional; any log group in the account could "
+        "be encrypted with this tenant's key"
+    )
+    assert "log-group:${local.log_group_name}" in main, (
+        "the condition no longer scopes to this deployment's own log group"
+    )
+
+
+def test_the_key_policy_grants_no_management_actions_to_the_service():
+    """`kms:*` for the service principal would let CloudWatch Logs rewrite the policy."""
+    main = _main_tf()
+    start = main.index('sid    = "AllowCloudWatchLogs"')
+    block = main[start:main.index("}", main.index("principals", start))]
+    for forbidden in ("kms:*", "kms:PutKeyPolicy", "kms:ScheduleKeyDeletion",
+                      "kms:CreateGrant", "kms:DisableKey"):
+        assert forbidden not in block, (
+            f"the CloudWatch Logs statement grants {forbidden}; it needs only the "
+            "encrypt/decrypt/describe set"
+        )
+
+
+def test_an_externally_supplied_key_has_no_policy_managed_here():
+    """A customer-supplied key is theirs. Rewriting its policy could lock out its owner.
+
+    Both the document and the key are gated on the same condition, and there is no
+    `aws_kms_key_policy` resource — which is the only way this module could reach out and
+    modify a key it did not create.
+    """
+    main = _main_tf()
+    document = main[main.index('data "aws_iam_policy_document" "state_key"'):]
+    assert 'count = var.kms_key_arn == "" ? 1 : 0' in document[:document.index("statement")], (
+        "the key policy document is not gated on this module owning the key"
+    )
+    # The resource declaration, not the bare name — main.tf mentions it in a comment
+    # explaining why it is deliberately absent, and a substring check matched that.
+    assert 'resource "aws_kms_key_policy"' not in main, (
+        "an aws_kms_key_policy resource can target a key this module does not own; the "
+        "policy belongs inline on the key we create"
+    )
+
+
+def test_the_log_group_name_is_defined_once():
+    """The key policy scopes to the log group by name, so the two cannot drift apart."""
+    main = _main_tf()
+    assert 'log_group_name = "/nova/${var.tenant_id}"' in main
+    assert "name              = local.log_group_name" in main, (
+        "the log group no longer derives its name from the local the key policy scopes to"
+    )

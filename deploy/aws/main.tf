@@ -30,6 +30,10 @@ locals {
 
   kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : aws_kms_key.state[0].arn
 
+  # Named once: the key policy scopes CloudWatch Logs to exactly this log group, so the
+  # two must not be able to drift apart.
+  log_group_name = "/nova/${var.tenant_id}"
+
   integration_statements = flatten([for i in var.integrations : i.statements])
 
   all_integration_actions = distinct(flatten([
@@ -45,12 +49,91 @@ locals {
 # Key, log group, volume
 # ---------------------------------------------------------------------------
 
+# The key policy.
+#
+# Without one, KMS applies its default: a single statement granting the account root
+# `kms:*`, which delegates access control to IAM. That is enough for EBS and for the
+# runtime role, whose grant is an IAM policy (iam.tf) — but NOT for CloudWatch Logs.
+# CWL calls KMS as a *service principal*, not as an IAM identity, so no IAM policy can
+# reach it; the key policy is the only place it can be allowed. Creating the log group
+# fails with "The specified KMS key does not exist or is not allowed to be used with
+# Arn '...log-group:/nova/<tenant>'" until this exists.
+#
+# Only for the key this module creates. An externally supplied `kms_key_arn` is a
+# customer-managed key whose policy is theirs — the `count` below already scopes this,
+# and there is deliberately no `aws_kms_key_policy` resource that would reach out and
+# rewrite a key we do not own.
+data "aws_iam_policy_document" "state_key" {
+  count = var.kms_key_arn == "" ? 1 : 0
+
+  # Keep the default statement. Removing it orphans the key: KMS would no longer honour
+  # any IAM policy against it, including this account's administrators, and a key policy
+  # can only be changed by a principal the key policy already allows. There is no
+  # recovery from that short of AWS support, which is why AWS documents it as the one
+  # statement you do not drop.
+  statement {
+    sid       = "EnableIAMUserPermissions"
+    effect    = "Allow"
+    actions   = ["kms:*"]
+    resources = ["*"]
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${local.partition}:iam::${local.account_id}:root"]
+    }
+  }
+
+  # CloudWatch Logs, in this deployment's region only. The service principal is
+  # regional — `logs.eu-west-2.amazonaws.com` cannot be used by CWL in another region —
+  # and it is read from the provider rather than written down, so a deployment into a
+  # different region is correct without editing this file.
+  statement {
+    sid    = "AllowCloudWatchLogs"
+    effect = "Allow"
+
+    # The set AWS documents for log-group encryption. Narrower than it looks: KMS has no
+    # single "use this key" action, so encrypt, decrypt, re-encrypt and data-key
+    # generation are each named. `Describe*` is metadata only. Notably absent are the
+    # management actions — no PutKeyPolicy, no ScheduleKeyDeletion, no CreateGrant.
+    actions = [
+      "kms:Encrypt*",
+      "kms:Decrypt*",
+      "kms:ReEncrypt*",
+      "kms:GenerateDataKey*",
+      "kms:Describe*",
+    ]
+    resources = ["*"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["logs.${data.aws_region.current.name}.amazonaws.com"]
+    }
+
+    # The real constraint. CWL sets the log group's ARN as the encryption context on
+    # every call, so this limits the grant to log groups this deployment owns — not
+    # every log group in the account. Without it, any log group in the region could be
+    # encrypted with this tenant's key.
+    #
+    # `ArnLike` with a trailing wildcard rather than `ArnEquals`: the context is
+    # documented as the bare log-group ARN, but a `:*` suffix appears in some responses
+    # and an exact match that guessed wrong would fail the apply a second time. The
+    # wildcard sits after the full tenant-scoped name, so the widening is bounded by the
+    # prefix this module itself creates.
+    condition {
+      test     = "ArnLike"
+      variable = "kms:EncryptionContext:aws:logs:arn"
+      values   = ["arn:${local.partition}:logs:${data.aws_region.current.name}:${local.account_id}:log-group:${local.log_group_name}*"]
+    }
+  }
+}
+
 resource "aws_kms_key" "state" {
   count = var.kms_key_arn == "" ? 1 : 0
 
   description             = "NOVA state, logs and secrets for tenant ${var.tenant_id}"
   enable_key_rotation     = true
   deletion_window_in_days = 30
+  policy                  = data.aws_iam_policy_document.state_key[0].json
 }
 
 resource "aws_kms_alias" "state" {
@@ -61,7 +144,7 @@ resource "aws_kms_alias" "state" {
 }
 
 resource "aws_cloudwatch_log_group" "runtime" {
-  name              = "/nova/${var.tenant_id}"
+  name              = local.log_group_name
   retention_in_days = var.log_retention_days
   kms_key_id        = local.kms_key_arn
 }

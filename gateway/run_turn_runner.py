@@ -838,7 +838,7 @@ class TurnRunner:
         ctx = self._ctx
         if ctx.native_cot_mode == "off":
             return
-        adapter = self._runner._adapter_for_source(ctx.source)
+        adapter = self._runner._delivery_adapter_for(ctx.source)
         try:
             start_native_cot = getattr(adapter, "start_native_cot")
             ctx.native_cot = await start_native_cot(

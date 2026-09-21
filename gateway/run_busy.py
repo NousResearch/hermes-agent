@@ -429,6 +429,9 @@ class GatewayBusySessionMixin:
         import json
 
         source = event.source
+        # Busy injections bypass inbound preparation. Keep the same quoted-message
+        # context so a short correction still identifies the task it refers to.
+        text = self._prepend_inbound_reply_context(event, source, text)
         origin = {
             "platform": source.platform.value,
             **{key: getattr(source, key) for key in (
@@ -1043,6 +1046,10 @@ class GatewayBusySessionMixin:
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
                     message_id=event.message_id, channel_prompt=event.channel_prompt,
                     channel_context=event.channel_context,
+                    reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
+                    reply_to_author_id=event.reply_to_author_id,
+                    reply_to_author_name=event.reply_to_author_name,
+                    reply_to_is_own_message=event.reply_to_is_own_message,
                 ), adapter)
             return reply
 

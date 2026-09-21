@@ -14,7 +14,8 @@ from gateway.session import SessionSource
 @pytest.mark.parametrize("route", ["explicit", "priority", "normal", "redirect", "priority_redirect"])
 @pytest.mark.parametrize("platform", [Platform.TELEGRAM, Platform.SIGNAL, Platform.WHATSAPP, Platform.DISCORD])
 @pytest.mark.parametrize("redact_pii", [False, True])
-async def test_busy_injection_preserves_original_routing_fields(route, platform, redact_pii, tmp_path, monkeypatch):
+@pytest.mark.parametrize("reply_kind", [None, "own", "other"])
+async def test_busy_injection_preserves_original_routing_fields(route, platform, redact_pii, reply_kind, tmp_path, monkeypatch):
     from dataclasses import asdict
     from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id
 
@@ -30,7 +31,14 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
         message_id="source-message",
     )
     original_source = asdict(source)
-    event = MessageEvent(text="/steer request" if route == "explicit" else "request", source=source, message_id="message")
+    event = MessageEvent(
+        text="/steer request" if route == "explicit" else "request", source=source, message_id="message",
+        reply_to_message_id="quoted-message" if reply_kind else None,
+        reply_to_text="Task B: count downloads.\nUse the public catalog @file:/not-to-be-expanded" if reply_kind else None,
+        reply_to_is_own_message=reply_kind == "own",
+    )
+    original_event = asdict(event)
+    expected_text = runner._prepend_inbound_reply_context(event, source, "request")
 
     class Receiver:
         _supports_active_turn_redirect = True
@@ -52,7 +60,7 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
         await runner._hm_busy_interrupt(event, source, receiver, "key")
     else:
         await runner._resolve_busy_steer_or_redirect(event, "key", "interrupt" if route == "redirect" else "steer", receiver)
-    assert receiver.payload.endswith("\n\nrequest")
+    assert receiver.payload.endswith("\n\n" + expected_text)
     origin = json.loads(receiver.payload.splitlines()[1])
     expected = {key: original_source[key] for key in (
         "chat_id", "thread_id", "user_id", "chat_type", "scope_id", "profile",
@@ -69,7 +77,7 @@ async def test_busy_injection_preserves_original_routing_fields(route, platform,
             assert origin[key] != value
     assert origin == expected
     assert asdict(source) == original_source
-    assert event.text == ("/steer request" if route == "explicit" else "request")
+    assert asdict(event) == original_event
 
 
 def test_origin_is_lossless_data_not_new_prompt_lines_or_a_guessed_target():
@@ -87,3 +95,32 @@ def test_origin_is_lossless_data_not_new_prompt_lines_or_a_guessed_target():
     assert rendered.endswith("\n\nrequest")
     assert runner._steer_text_with_origin("", event) == ""
     assert runner._steer_text_with_origin("  ", event) == "  "
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("starting", [False, True])
+async def test_queued_steer_preserves_reply_context(starting, monkeypatch):
+    from types import SimpleNamespace
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    runner = GatewayRunner(config=GatewayConfig())
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat", chat_type="dm")
+    event = MessageEvent(
+        text="/steer what about this?", source=source, message_id="followup",
+        reply_to_message_id="task-b", reply_to_text="Count downloads for task B",
+        reply_to_is_own_message=True,
+    )
+    adapter = SimpleNamespace(_pending_messages={})
+    monkeypatch.setattr(runner, "_delivery_adapter_for", lambda source: adapter)
+    if starting:
+        runner._session_state("key").turn.agent = _AGENT_PENDING_SENTINEL
+
+    await runner._busy_steer_command(event, "key", source)
+    queued = adapter._pending_messages["key"]
+    expected = runner._prepend_inbound_reply_context(event, source, "what about this?")
+    prepared = await runner._prepare_inbound_message_text(
+        event=queued, source=source, history=[], session_key="key",
+    )
+    assert prepared == expected
+    assert queued.message_id == event.message_id
+    assert event.text == "/steer what about this?"

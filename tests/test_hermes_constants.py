@@ -1,9 +1,11 @@
 """Tests for hermes_constants module."""
 
 import os
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -1279,3 +1281,57 @@ class TestProjectVenvDirOutOfTree:
         assert hermes_constants.project_venv_dir(other) is None
         (checkout / ".venv").mkdir()
         assert hermes_constants.project_venv_dir(checkout) == checkout / ".venv"
+
+
+class TestSocketSafeTmpdir:
+    """Tests for socket_safe_tmpdir() — AF_UNIX bindability, not just path length."""
+
+    def _linux(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+
+    def test_short_bindable_candidate_returned_unchanged(self, monkeypatch):
+        # Must stay under the 104/108-byte AF_UNIX cap so the probe sees a bindable
+        # path on every host OS (pytest tmp_path alone is often already too long).
+        short = Path("/tmp") / f"hc-{os.getpid()}-{uuid4().hex[:6]}"
+        short.mkdir()
+        try:
+            self._linux(monkeypatch)
+            monkeypatch.setattr("tempfile.gettempdir", lambda: str(short))
+            assert hermes_constants.socket_safe_tmpdir() == str(short)
+        finally:
+            shutil.rmtree(short, ignore_errors=True)
+
+    def test_short_unbindable_candidate_falls_back_to_tmp(self, tmp_path, monkeypatch):
+        """A FUSE-style TMPDIR fails UDS bind() at any length — the fallback must fire."""
+        fuse = tmp_path / "fuse-mount"
+        fuse.mkdir()
+        self._linux(monkeypatch)
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(fuse))
+        monkeypatch.setattr(hermes_constants, "_can_host_unix_socket", lambda d: False)
+        assert hermes_constants.socket_safe_tmpdir() == "/tmp"
+
+    def test_long_candidate_falls_back_to_tmp(self, tmp_path, monkeypatch):
+        long_dir = tmp_path / ("x" * 60)
+        long_dir.mkdir()
+        self._linux(monkeypatch)
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(long_dir))
+        assert hermes_constants.socket_safe_tmpdir() == "/tmp"
+
+    def test_missing_tmp_keeps_candidate(self, tmp_path, monkeypatch):
+        """No /tmp at all (Termux-style) — return the candidate rather than a dead path."""
+        odd = tmp_path / "odd-root"
+        odd.mkdir()
+        self._linux(monkeypatch)
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(odd))
+        monkeypatch.setattr(hermes_constants, "_can_host_unix_socket", lambda d: False)
+        monkeypatch.setattr(os.path, "isdir", lambda p: False)
+        assert hermes_constants.socket_safe_tmpdir() == str(odd)
+
+    def test_probe_binds_and_cleans_up_a_socket_in_a_real_dir(self):
+        target = Path("/tmp") / f"hc-{os.getpid()}-{uuid4().hex[:6]}"
+        target.mkdir()
+        try:
+            assert hermes_constants._can_host_unix_socket(str(target)) is True
+            assert list(target.iterdir()) == []
+        finally:
+            shutil.rmtree(target, ignore_errors=True)

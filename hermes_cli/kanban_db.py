@@ -577,18 +577,25 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     return meta
 
 
+UNSET_DEFAULT_SKILLS: Any = object()
+"""Sentinel for ``write_board_metadata(default_skills=...)``: remove the key so
+the global ``kanban.default_skills`` applies again. Distinct from ``None``,
+which means "leave unchanged"."""
+
+
 def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
-    default_skills: Optional[list[str]] = None,
+    default_skills: Any = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
     "" = clear (``project_id`` is not validated here). ``default_skills``:
     ``None`` = unchanged, a list = set (empty list opts the board out of the
     global defaults; entries are stripped and empties dropped, not validated
-    here — resolution happens at dispatch time, fail-open)."""
+    here — resolution happens at dispatch time, fail-open),
+    ``UNSET_DEFAULT_SKILLS`` = remove the override."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -606,7 +613,9 @@ def write_board_metadata(
             meta[key] = str(value) if value else None
     # The skills sentinel has three states, so it is passed the same way (None =
     # unchanged); unlike the path keys, an explicit [] persists as an opt-out.
-    if default_skills is not None:
+    if default_skills is UNSET_DEFAULT_SKILLS:
+        meta.pop("default_skills", None)
+    elif default_skills is not None:
         meta["default_skills"] = [
             str(s).strip() for s in (default_skills or []) if str(s).strip()
         ]
@@ -4408,8 +4417,6 @@ _PLUGIN_COMPAT_LAZY = {
     'resolve_max_in_progress': ('hermes_cli.kanban_db_dispatch', 'resolve_max_in_progress'),
     'resolve_workspace': ('hermes_cli.kanban_db_workspace', 'resolve_workspace'),
     'review_dispatch_enabled': ('hermes_cli.kanban_db_dispatch', 'review_dispatch_enabled'),
-    'board_default_worker_skills': ('hermes_cli.kanban_db_dispatch', 'board_default_worker_skills'),
-    'effective_default_worker_skills': ('hermes_cli.kanban_db_dispatch', 'effective_default_worker_skills'),
     'rewind_notify_cursor': ('hermes_cli.kanban_db_notify', 'rewind_notify_cursor'),
     'run_daemon': ('hermes_cli.kanban_db_dispatch', 'run_daemon'),
     'set_branch_name': ('hermes_cli.kanban_db_workspace', 'set_branch_name'),

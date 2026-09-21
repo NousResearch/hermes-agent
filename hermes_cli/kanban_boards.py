@@ -6,7 +6,6 @@ Filesystem-only, so every action works before ``kanban init`` and must ignore th
 from __future__ import annotations
 
 import argparse
-import json
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
@@ -58,9 +57,9 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
         b["total"] = sum(b["counts"].values())
         try:
             board_meta = kb.read_board_metadata(b["slug"])
-            b["default_skills"] = board_meta.get("default_skills") or []
+            b["default_skills_override"] = board_meta.get("default_skills")
         except Exception:
-            b["default_skills"] = []
+            b["default_skills_override"] = None
     if _json_out(args, boards):
         return 0
     if not boards:
@@ -71,7 +70,7 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
         marker = "●" if b["is_current"] else " "
         name = (b.get("name") or "") + (" [archived]" if b.get("archived") else "")
         print(f"{marker:2s}  {b['slug']:24s}  {name:28s}  {_fmt_counts(b['counts'] or {}, '(empty)')}")
-        skills = b.get("default_skills") or []
+        skills = b.get("default_skills_override") or []
         if skills:
             print(f"{'':2s}  {'':24s}  default skills: {', '.join(skills)}")
     print(f"\nCurrent board: {current}")
@@ -187,15 +186,14 @@ def _cmd_boards_set_default_skills(args: argparse.Namespace) -> int:
     if rc:
         return rc
     if getattr(args, "clear", False):
-        path = kb.board_metadata_path(normed)
         try:
-            raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-            if isinstance(raw, dict):
-                raw.pop("default_skills", None)
-                dumped = json.dumps(raw, indent=2, ensure_ascii=False) + "\n"
-                path.write_text(dumped, encoding="utf-8")
-        except (OSError, json.JSONDecodeError):
-            pass
+            kb.write_board_metadata(normed, default_skills=kb.UNSET_DEFAULT_SKILLS)
+        except OSError as exc:
+            return _err(
+                f"kanban boards set-default-skills: could not remove the default-skills "
+                f"override for board {normed!r}: {exc}",
+                1,
+            )
         removal_note = f"Board {normed!r} default-skills override removed (kanban.default_skills applies)."
         print(removal_note)
         return 0

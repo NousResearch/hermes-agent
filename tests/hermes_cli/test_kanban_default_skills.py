@@ -7,6 +7,7 @@ and the boards CLI surface that persists the override.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -181,20 +182,24 @@ def _boards_args(skills=None, clear=False):
 def test_boards_set_default_skills_roundtrip(kanban_home, capsys):
     from hermes_cli.kanban_boards import _cmd_boards_set_default_skills, _cmd_boards_show
     kb.create_board(slug="beta")
+    kb.set_current_board("beta")
     assert _cmd_boards_set_default_skills(_boards_args(skills=["team-workflow"])) == 0
     meta = kb.read_board_metadata("beta")
     assert meta["default_skills"] == ["team-workflow"]
-    assert _cmd_boards_show(argparse.Namespace()) == 0 if False else True
+    assert _cmd_boards_show(argparse.Namespace()) == 0
+    shown = capsys.readouterr().out
+    assert "team-workflow" in shown
+    assert "board override" in shown
 
 
-def test_boards_set_default_skills_empty_opts_out(kanban_home, capsys):
+def test_boards_set_default_skills_empty_opts_out(kanban_home):
     from hermes_cli.kanban_boards import _cmd_boards_set_default_skills
     kb.create_board(slug="beta")
     assert _cmd_boards_set_default_skills(_boards_args(skills=[])) == 0
     assert kb.read_board_metadata("beta")["default_skills"] == []
 
 
-def test_boards_set_default_skills_clear_removes_override(kanban_home, capsys):
+def test_boards_set_default_skills_clear_removes_override(kanban_home):
     from hermes_cli.kanban_boards import _cmd_boards_set_default_skills
     kb.create_board(slug="beta")
     kb.write_board_metadata("beta", default_skills=["old"])
@@ -202,8 +207,33 @@ def test_boards_set_default_skills_clear_removes_override(kanban_home, capsys):
     assert kb.read_board_metadata("beta")["default_skills"] is None
 
 
-def test_boards_set_default_skills_refuses_comma_name(kanban_home, capsys):
+def test_boards_set_default_skills_refuses_comma_name(kanban_home):
     from hermes_cli.kanban_boards import _cmd_boards_set_default_skills
     kb.create_board(slug="beta")
     rc = _cmd_boards_set_default_skills(_boards_args(skills=["one,two"]))
     assert rc == 2
+
+
+def test_boards_set_default_skills_clear_failure_is_reported(kanban_home, capsys, monkeypatch):
+    from hermes_cli.kanban_boards import _cmd_boards_set_default_skills
+    kb.create_board(slug="beta")
+    kb.write_board_metadata("beta", default_skills=["old"])
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(kb, "write_board_metadata", _boom)
+    rc = _cmd_boards_set_default_skills(_boards_args(clear=True))
+    assert rc == 1
+    assert "could not remove" in capsys.readouterr().err
+
+
+def test_boards_list_json_distinguishes_unset_from_opt_out(kanban_home, capsys):
+    from hermes_cli.kanban_boards import _cmd_boards_list
+    kb.create_board(slug="beta")
+    kb.write_board_metadata("beta", default_skills=[])
+    assert _cmd_boards_list(argparse.Namespace(all=False, json=True)) == 0
+    payload = json.loads(capsys.readouterr().out)
+    by_slug = {b["slug"]: b for b in payload}
+    assert by_slug["default"]["default_skills_override"] is None
+    assert by_slug["beta"]["default_skills_override"] == []

@@ -1691,6 +1691,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if self._liveness_task and not self._liveness_task.done():
             return
         self._liveness_task = asyncio.create_task(self._liveness_loop())
+        # The probe is the only detector of a deaf-but-alive socket. If the
+        # loop ever exits while the adapter is still supposed to be running,
+        # that exit is surfaced and the probe re-armed — a silent return here
+        # leaves a zombie adapter that only a manual restart can recover.
+        self._liveness_task.add_done_callback(self._handle_liveness_task_exit)
 
     def _read_websocket_health(self, client: Any) -> tuple[bool, str]:
         """Return current Discord Gateway health without making a REST request."""
@@ -1741,6 +1746,26 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     return False, "event_silence"
         return True, "healthy"
 
+    def _handle_liveness_task_exit(self, task: asyncio.Task) -> None:
+        """Re-arm the health probe unless the adapter is shutting down.
+
+        ``_liveness_loop`` returns silently from several guard branches; any of
+        them firing while the adapter is still meant to be running means the
+        watchdog died with the socket possibly dead. Drain the task result,
+        log, and start a fresh probe. During teardown (``_running`` false or
+        ``_disconnecting`` true) the exit is intentional and stays silent.
+        """
+        with suppress(asyncio.CancelledError, Exception):
+            task.exception()
+        if not self._running or self._disconnecting:
+            return
+        logger.warning(
+            "[%s] Discord Gateway liveness probe exited while the adapter is running; restarting it",
+            self.name,
+        )
+        self._liveness_task = None
+        self._start_liveness_probe()
+
     async def _liveness_loop(self) -> None:
         """Force a reconnect after repeated unhealthy Discord Gateway samples."""
         interval = self._liveness_interval_seconds
@@ -1753,6 +1778,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return
             client = self._client
             if not self._running or client is None or self._disconnecting:
+                logger.warning(
+                    "[%s] Discord Gateway liveness probe stopping for teardown (running=%s, "
+                    "client=%s, disconnecting=%s)",
+                    self.name,
+                    self._running,
+                    client is not None,
+                    self._disconnecting,
+                )
                 return
             try:
                 healthy, reason = self._read_websocket_health(client)
@@ -1768,6 +1801,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "[%s] Discord Gateway WebSocket unhealthy (%s, %d/%d)", self.name, reason, failures,
                 threshold,
             )
+            if reason == "socket_closed":
+                # The transport is provably gone; waiting a full interval for a
+                # second confirmation only extends the deaf window.
+                logger.error(
+                    "[%s] Discord Gateway WebSocket transport closed (%s); forcing reconnect on first strike",
+                    self.name,
+                    reason,
+                )
+                self._disconnecting = True
+                self._set_fatal_error(
+                    "discord_websocket_health_stale",
+                    f"Discord Gateway WebSocket health check failed: {reason}", retryable=True,
+                )
+                self._liveness_notification_task = asyncio.create_task(
+                    self._notify_liveness_fatal_error(client)
+                )
+                return
             if failures < threshold:
                 continue
             # Mark recovery before closing: Bot.start()'s done callback must not overwrite this reason.

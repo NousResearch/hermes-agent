@@ -1416,6 +1416,12 @@ DEFAULT_CONFIG = {
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
         # HERMES_HOME, scanned alongside the local dir.
         "create_dir": "",
+        # Max seconds the in-process skills-index cache may reuse a file-state fingerprint before
+        # revalidating against disk. Add/remove/rename of skill dirs is detected instantly via a
+        # root-mtime gate regardless; this bounds only the detection of IN-PLACE SKILL.md edits
+        # made by other processes (shared team dir swapped via git pull, fleet file sync). The
+        # unchanged-hit path stays cheap (root stats only). 0 = revalidate on every build.
+        "index_state_ttl_seconds": 5,
         # In a git checkout, <root>/.hermes/skills/ and <root>/.agents/skills/ load as the
         # highest-precedence tier — ONLY if the root is in trusted_project_dirs. false = no scan, no
         # untrusted-skills notice.

@@ -5,12 +5,14 @@ with memory and ephemeral prompts.
 """
 
 import contextvars
+import hashlib
 import json
 import logging
 import os
 import queue
 import sys
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -1118,6 +1120,22 @@ _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
 _SKILLS_SNAPSHOT_VERSION = 2
 
+# File-state fingerprint for the Layer-1 cache key (issues #43282 / #60258; PRs #18443 / #60279
+# closed unmerged). The key used to carry only config tuples, so skill add/remove/replace/edit by
+# ANY other process — a shared team dir swapped via git pull, a fleet manager hot-replacing files —
+# kept serving a stale <available_skills> index to NEW sessions until this process restarted. The
+# fingerprint is computed behind a two-tier gate so the unchanged-hit path stays cheap (the review
+# ask that sank #18443):
+#   1. root-dir mtime gate — stats only the skill roots (no tree walk); trips instantly on
+#      add/remove/rename, because a directory's mtime changes when its direct children change;
+#   2. full (path, signature) digest — recomputed when the gate trips or at most once per TTL
+#      (``skills.index_state_ttl_seconds``), catching in-place SKILL.md edits.
+# The digest is a pure function of file state (no clock component), so an unchanged tree keeps
+# producing the identical cache key — prompt-prefix caching is undisturbed.
+_SKILLS_INDEX_STATE_TTL_DEFAULT = 5.0
+_SKILLS_DIR_STATE: dict[tuple, tuple[tuple, str, float]] = {}
+_SKILLS_DIR_STATE_LOCK = threading.Lock()
+
 
 def _skills_prompt_snapshot_path() -> Path:
     return get_hermes_home() / ".skills_prompt_snapshot.json"
@@ -1127,6 +1145,11 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
     """Drop the in-process skills prompt cache (and optionally the disk snapshot)."""
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE.clear()
+    # Engine-side skill edits (skill_manage, /skills install --now) must stay immediately
+    # visible: a cached dir-state digest would keep the cache key unchanged and re-serve the
+    # stale Layer-1 entry the caller just asked us to drop.
+    with _SKILLS_DIR_STATE_LOCK:
+        _SKILLS_DIR_STATE.clear()
     try:
         if clear_snapshot:
             _skills_prompt_snapshot_path().unlink(missing_ok=True)
@@ -1163,6 +1186,88 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             except OSError:
                 pass
     return manifest
+
+
+def _skills_index_state_ttl() -> float:
+    """``skills.index_state_ttl_seconds`` from config.yaml, else the 5s default; 0 = revalidate
+    file state on every build."""
+    val = (_config_readonly("skills.index_state_ttl_seconds").get("skills", {}) or {}).get(
+        "index_state_ttl_seconds")
+    if isinstance(val, (int, float)) and val >= 0:
+        return float(val)
+    return _SKILLS_INDEX_STATE_TTL_DEFAULT
+
+
+def _skills_dirs_gate(roots: tuple[Path, ...]) -> tuple[int, ...]:
+    """Cheap first-pass: mtimes of the skill roots only (no tree walk).
+
+    A directory's mtime changes when its direct children are added, removed or renamed, so skill
+    install/uninstall/replace always trips the gate. In-place file edits do not — those are caught
+    by the TTL-bounded full digest below. Missing dirs map to a stable -1 sentinel.
+    """
+    gate: list[int] = []
+    for d in roots:
+        try:
+            gate.append(os.stat(d).st_mtime_ns)
+        except OSError:
+            gate.append(-1)
+    return tuple(gate)
+
+
+def _skills_state_digest_full(skills_dir: Path, external_dirs: list[Path], project_dirs: list[Path]) -> str:
+    """Full manifest digest over every SKILL.md/DESCRIPTION.md in all skill sources (local +
+    external + project). Any add/remove/rename/in-place edit changes it.
+
+    The local root reuses _build_skills_manifest so the fingerprint sees exactly the file set the
+    index renders (same org-mirror handling and pruning); external/project roots walk with the
+    same pruning rules. Entries are prefixed by origin so identically-named files in different
+    roots cannot collide.
+    """
+    items: list[str] = []
+    for rel, sig in _build_skills_manifest(skills_dir).items():
+        items.append(f"0:{rel}{list(sig)}")
+    for i, root_dir in enumerate((*external_dirs, *project_dirs), start=1):
+        d_str = str(root_dir)
+        base = os.path.join(d_str, "")
+        for root, dirs, files in os.walk(d_str, followlinks=True):
+            has_skill_md = "SKILL.md" in files
+            dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+            for filename in ("SKILL.md", "DESCRIPTION.md"):
+                if filename not in files:
+                    continue
+                path = os.path.join(root, filename)
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                items.append(f"{i}:{path[len(base):]}{list(file_signature(st))}")
+    items.sort()
+    return hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()
+
+
+def _skills_state_digest(skills_dir: Path, external_dirs: list[Path], project_dirs: list[Path]) -> str:
+    """Layer-1 key component: file-state fingerprint with a cheap unchanged-hit path.
+
+    Returns the previous digest when the roots' mtimes are unchanged and the last full digest is
+    fresher than the TTL; recomputes otherwise. ``skills.index_state_ttl_seconds: 0`` disables
+    reuse (recompute on every call). Locking mirrors the LRU above — the lock guards only the
+    state dict; a concurrent miss may rewalk once, harmlessly.
+    """
+    roots = (skills_dir, *external_dirs, *project_dirs)
+    dirs_key = tuple(str(d) for d in roots)
+    gate = _skills_dirs_gate(roots)
+    now = time.monotonic()
+    ttl = _skills_index_state_ttl()
+    with _SKILLS_DIR_STATE_LOCK:
+        entry = _SKILLS_DIR_STATE.get(dirs_key)
+        if entry is not None:
+            prev_gate, prev_digest, prev_at = entry
+            if prev_gate == gate and (now - prev_at) < ttl:
+                return prev_digest
+    digest = _skills_state_digest_full(skills_dir, external_dirs, project_dirs)
+    with _SKILLS_DIR_STATE_LOCK:
+        _SKILLS_DIR_STATE[dirs_key] = (gate, digest, now)
+    return digest
 
 
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
@@ -1413,6 +1518,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
         _oneshot_prompt_variant(),
+        _skills_state_digest(skills_dir, external_dirs, project_dirs),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)

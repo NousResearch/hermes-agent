@@ -393,6 +393,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
+- **External changes are picked up automatically**: The system-prompt skill index is fingerprinted against the files on disk, so skills added, replaced, or removed by another process (e.g. `git pull` on a shared team directory) show up in new sessions without restarting Hermes. Add/remove/rename is detected immediately; in-place edits to a `SKILL.md` are detected within `skills.index_state_ttl_seconds` (default 5 seconds; `0` revalidates on every build).
 
 ### Example
 

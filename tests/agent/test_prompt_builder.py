@@ -4,12 +4,14 @@ import builtins
 import importlib
 import logging
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
 
 import pytest
 
+import agent.prompt_builder as prompt_builder_module
 from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
@@ -418,6 +420,70 @@ class TestBuildSkillsSystemPrompt:
 
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
+
+    def test_external_dir_skill_changes_reach_new_builds_without_cache_clear(
+        self, monkeypatch, tmp_path
+    ):
+        """Regression for #60258 / #43282: skill files changed by ANOTHER process (shared team
+        dir swapped via git pull, fleet file sync) must show up for NEW sessions in this process
+        — no restart, no explicit cache clear. The Layer-1 key carries a file-state fingerprint
+        covering local + external dirs, so add / in-place edit / removal each produce a fresh key.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local = tmp_path / "skills"
+        local.mkdir()
+        ext = tmp_path / "team-skills"
+        ext.mkdir()
+        # Object-form setattr: TestPromptBuilderImports re-imports agent.prompt_builder and leaves
+        # the parent package's attribute pointing at the orphan, so a STRING target would resolve
+        # there and silently patch the wrong module object. The alias below was bound at collection
+        # time and always names the module the functions under test live in.
+        monkeypatch.setattr(prompt_builder_module, "get_all_skills_dirs", lambda: [local, ext])
+        monkeypatch.setattr("agent.skill_utils.get_project_skills_dirs", lambda: [])
+        # ttl 0 = revalidate file state on every build, so the in-place edit below is detected
+        # deterministically instead of waiting out the default TTL.
+        (tmp_path / "config.yaml").write_text("skills:\n  index_state_ttl_seconds: 0\n")
+
+        def add_skill(root, name, desc):
+            d = root / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {desc}\n---\n")
+
+        add_skill(ext, "alpha", "desc-old")
+        assert "desc-old" in build_skills_system_prompt()
+        add_skill(ext, "beta", "desc-beta")  # dir-level add trips the root-mtime gate
+        assert "desc-beta" in build_skills_system_prompt()
+        add_skill(ext, "alpha", "desc-edited")  # in-place edit caught by the full digest
+        assert "desc-edited" in build_skills_system_prompt()
+        shutil.rmtree(ext / "alpha")
+        assert "alpha" not in build_skills_system_prompt()
+
+    def test_unchanged_tree_reuses_fingerprint_within_ttl(self, monkeypatch, tmp_path):
+        """The unchanged-hit path must stay cheap (the review ask on #18443): with untouched root
+        mtimes and a fresh TTL entry there is no full tree rewalk, and the rendered index is
+        byte-identical so prompt-prefix caching is undisturbed.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local = tmp_path / "skills"
+        skill = local / "alpha"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: alpha\ndescription: desc\n---\n")
+        (tmp_path / "config.yaml").write_text("skills:\n  index_state_ttl_seconds: 3600\n")
+        monkeypatch.setattr("agent.skill_utils.get_project_skills_dirs", lambda: [])
+
+        full_calls = []
+        real_full = prompt_builder_module._skills_state_digest_full
+
+        def counting_full(*args):
+            full_calls.append(1)
+            return real_full(*args)
+
+        monkeypatch.setattr(prompt_builder_module, "_skills_state_digest_full", counting_full)
+
+        first = build_skills_system_prompt()
+        second = build_skills_system_prompt()
+        assert first == second
+        assert len(full_calls) == 1
 
 
 # =========================================================================

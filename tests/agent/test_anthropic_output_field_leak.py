@@ -72,5 +72,58 @@ class TestAssistantReplay:
         assert blocks[2]["name"] == "read_file"
 
 
+class TestMalformedToolUseInputRepair:
+    @pytest.mark.parametrize("malformed_input", [[{"path": "a.py"}], "not-an-object", None, 7])
+    def test_normal_history_repairs_non_dict_tool_use_input(self, malformed_input):
+        message = {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I will inspect the file."},
+                {"type": "tool_use", "id": "toolu_bad", "name": "read_file", "input": malformed_input},
+            ],
+        }
+
+        blocks = _convert_assistant_message(message)["content"]
+
+        assert blocks[1]["input"] == {}
+
+    def test_normal_history_preserves_dict_tool_use_input(self):
+        message = {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_good", "name": "read_file", "input": {"path": "a.py"}}],
+        }
+
+        blocks = _convert_assistant_message(message)["content"]
+
+        assert blocks[0]["input"] == {"path": "a.py"}
+
+    @pytest.mark.parametrize("malformed_input", [[{"path": "a.py"}], "not-an-object", None, 7])
+    def test_ordered_replay_repairs_non_dict_tool_use_input(self, malformed_input):
+        message = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "tool_use", "id": "toolu_replay", "name": "read_file", "input": malformed_input},
+            ],
+        }
+
+        blocks = _convert_assistant_message(message)["content"]
+
+        assert blocks[0]["input"] == {}
+
+    def test_ordered_replay_preserves_dict_tool_use_input(self):
+        message = {
+            "role": "assistant",
+            "content": "",
+            "anthropic_content_blocks": [
+                {"type": "tool_use", "id": "toolu_replay_good", "name": "read_file", "input": {"path": "a.py"}},
+            ],
+        }
+
+        blocks = _convert_assistant_message(message)["content"]
+
+        assert blocks[0]["input"] == {"path": "a.py"}
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

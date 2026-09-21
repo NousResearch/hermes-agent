@@ -121,7 +121,11 @@ def _sanitize_tool_id(tool_id: str) -> str:
 
 
 def _tool_use_block(tool_id: Any, name: Any, tool_input: Any) -> Dict[str, Any]:
-    return {"type": "tool_use", "id": _sanitize_tool_id(tool_id), "name": name, "input": tool_input}
+    # Anthropic requires tool_use.input to be a JSON object. Conversation history
+    # can retain malformed provider output after local tool validation has already
+    # rejected it, so repair it at the request boundary before replaying history.
+    safe_input = tool_input if isinstance(tool_input, dict) else {}
+    return {"type": "tool_use", "id": _sanitize_tool_id(tool_id), "name": name, "input": safe_input}
 
 
 def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
@@ -198,6 +202,8 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
         # Rebuild from whitelisted fields only: stored SDK text blocks carry output-only siblings
         # (parsed_output, citations=None) that the INPUT schema rejects with 400.
         block = _text_block_with_citations(part.get("text", ""), part.get("citations") if ptype == "text" else None)
+    elif ptype == "tool_use":
+        block = _tool_use_block(part.get("id", ""), part.get("name", ""), part.get("input", {}))
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")

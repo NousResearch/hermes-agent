@@ -222,6 +222,22 @@ def test_profile_dotenv_key_counts_as_explicit_when_process_env_lacks_it(tmp_pat
         assert is_provider_explicitly_configured("deepseek") is False
 
 
+def test_dotenv_key_counts_when_shell_exports_the_var_empty(tmp_path, monkeypatch):
+    """The gate resolves through the same reader as the credential resolver
+    (get_env_value_prefer_dotenv), so it agrees with the key that authenticates:
+    an empty ``DEEPSEEK_API_KEY=`` inherited from the parent shell must not hide
+    a real key in .env (#77007) — the resolver would use that key, so the picker
+    must list the provider."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    _write_config(tmp_path, {"model": {}})
+    (tmp_path / "hermes" / ".env").write_text("DEEPSEEK_API_KEY=sk-dotenv-only-secret\n")
+
+    from hermes_cli.auth import is_provider_explicitly_configured, resolve_api_key_provider_credentials
+    assert resolve_api_key_provider_credentials("deepseek").get("api_key") == "sk-dotenv-only-secret"
+    assert is_provider_explicitly_configured("deepseek") is True
+
+
 # ─── aws_sdk providers (Bedrock) ─────────────────────────────────────────
 #
 # Bedrock is registered with auth_type="aws_sdk" and an empty

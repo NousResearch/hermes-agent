@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { replaceEqualDeep, useQuery } from '@tanstack/react-query'
 
 import { type ProfileScope, profileScopeKey } from '@/api/client'
 import { getHermesConfigRecord, peekConfigReadOrigin, retainConfigReadOrigin } from '@/hermes'
@@ -36,10 +36,18 @@ export const useHermesConfigRecord = (profile?: ProfileScope) => {
     // would wrongly target the primary backend).
     queryFn: () => getHermesConfigRecord(profile ?? undefined),
     staleTime: 0,
-    // The read origin is held in a WeakMap keyed by the record itself. Keep
-    // the fetched object intact so the cached record and its origin cannot
-    // diverge during React Query's structural-sharing pass.
-    structuralSharing: false
+    // Keep structural sharing so an unchanged refetch (every consumer mount at
+    // staleTime 0, every invalidate) yields the SAME object and consumers'
+    // memos/autosave effects don't re-arm. The read origin lives in a WeakMap
+    // keyed by the record, so re-stamp whatever object survives the merge with
+    // the origin of the NEW fetch (`next`, bound by getHermesConfigRecord) —
+    // otherwise a retained object would keep routing writes to the gateway
+    // that served the previous GET.
+    structuralSharing: (previous: unknown, next: unknown) =>
+      retainConfigReadOrigin(
+        replaceEqualDeep(previous as HermesConfigRecord | undefined, next as HermesConfigRecord),
+        next as object
+      )
   })
 
   // Attach `writeScope` as a lazy getter instead of spreading `query`: useQuery
@@ -65,11 +73,20 @@ export const useHermesConfigRecord = (profile?: ProfileScope) => {
 // setHermesConfigCache writes the app-wide (base-key) record. Pass a profile to
 // write the suffixed per-profile cache instead — keeps the selector's optimistic
 // write-through landing on the same key its query reads.
-const writeHermesConfigCache = (key: ReturnType<typeof hermesConfigKey>) =>
-  (next: HermesConfigRecord | undefined | ((previous: HermesConfigRecord | undefined) => HermesConfigRecord | undefined)) =>
+const writeHermesConfigCache =
+  (key: ReturnType<typeof hermesConfigKey>) =>
+  (
+    next:
+      HermesConfigRecord | undefined | ((previous: HermesConfigRecord | undefined) => HermesConfigRecord | undefined)
+  ) =>
     void queryClient.setQueryData<HermesConfigRecord>(key, previous => {
       const record = typeof next === 'function' ? next(previous) : next
 
+      // setQueryData also runs the hook's structuralSharing (query.setData →
+      // replaceData), but that pass stamps the origin of `record` (the NEW
+      // value), which optimistic patches do not carry — and it only applies once
+      // the observer has built the query. So the previous record's origin is
+      // carried over explicitly here.
       return record ? retainConfigReadOrigin(record, previous) : record
     })
 

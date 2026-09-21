@@ -383,6 +383,20 @@ class TestOSSBackend:
         return backend, memory
 
 
+    def test_cloudflare_credentials_reject_inline_token(self, monkeypatch):
+        from plugins.memory.mem0 import _backend
+
+        monkeypatch.setattr("agent.secret_scope.get_secret", lambda name: "scoped-value")
+        with pytest.raises(ValueError, match="profile secret scope"):
+            _backend._cloudflare_credentials({"account_id": "account", "api_key": "inline-secret"})
+
+    def test_cloudflare_credentials_use_profile_scope(self, monkeypatch):
+        from plugins.memory.mem0 import _backend
+
+        values = {"CLOUDFLARE_ACCOUNT_ID": "scoped-account", "CLOUDFLARE_WORKERS_AI_TOKEN": "scoped-token"}
+        monkeypatch.setattr("agent.secret_scope.get_secret", values.get)
+        assert _backend._cloudflare_credentials({}) == ("scoped-account", "scoped-token")
+
     def test_cloudflare_rerank_overfetches_and_preserves_memory_dicts(self):
         backend, memory = self._make()
         memory.search = lambda query, **kwargs: {

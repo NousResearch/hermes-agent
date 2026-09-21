@@ -135,11 +135,13 @@ _CLOUDFLARE_RERANK_MODEL = "@cf/baai/bge-reranker-base"
 
 
 def _cloudflare_credentials(config: dict) -> tuple[str, str]:
-    """Resolve Workers AI credentials from instance config or the active profile secret scope."""
+    """Resolve Workers AI credentials only from the active profile secret scope."""
     from agent.secret_scope import get_secret
 
+    if config.get("api_key"):
+        raise ValueError("Cloudflare Workers AI token must come from the profile secret scope, not mem0.json")
     account_id = str(config.get("account_id") or get_secret("CLOUDFLARE_ACCOUNT_ID") or "")
-    api_key = str(config.get("api_key") or get_secret("CLOUDFLARE_WORKERS_AI_TOKEN") or "")
+    api_key = str(get_secret("CLOUDFLARE_WORKERS_AI_TOKEN") or "")
     if not account_id or not api_key:
         raise ValueError("Cloudflare Workers AI account ID and token are required")
     return account_id, api_key

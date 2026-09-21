@@ -2040,7 +2040,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             _apply_runtime_agent_overrides(runtime_kwargs, provider_runtime)
         return bool(provider_runtime)
 
-    def _recover_or_record_model(self, model: str, runtime_kwargs: Dict[str, Any], gateway_session_key) -> str:
+    def _recover_or_record_model(self, model: str, runtime_kwargs: Dict[str, Any], gateway_session_key, *, pending_models=None) -> str:
         """Fill an empty resolved model: provider's default catalog model, then the last-known-good
         model for this key / process-wide. Non-empty non-virtual models are recorded instead."""
         # No model.default but a provider resolved (e.g. `hermes auth add` without `hermes model`).
@@ -2054,9 +2054,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         model, runtime_kwargs["provider"])
         # Keyed by gateway_session_key only (session_id is per-request -> unbounded growth).
         _resolved_key = gateway_session_key or ""
+        models = self._last_resolved_model if pending_models is None else pending_models
         if not model:
-            _recovered = (self._last_resolved_model.get(_resolved_key)
-                          or self._last_resolved_model.get("*"))
+            _recovered = (models.get(_resolved_key) or models.get("*"))
             if _recovered and _recovered != self._model_name:
                 logger.warning(
                     "Empty model resolved for session=%s — recovering "
@@ -2065,15 +2065,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     _resolved_key, _recovered)
                 model = _recovered
         elif model != self._model_name:
-            if _resolved_key:
-                self._last_resolved_model[_resolved_key] = model
-            self._last_resolved_model["*"] = model
+            from gateway.session_selected_route import publication_lock
+            with publication_lock(self):
+                if _resolved_key:
+                    models[_resolved_key] = model
+                models["*"] = model
         return model
 
     def _select_agent_runtime(
         self, runtime_kwargs: Dict[str, Any], model: str, *, requested_model: Optional[str],
         requested_provider: Optional[str], route: Optional[Dict[str, Any]], session_model: Optional[str],
-        confirmed_runtime_lock: bool, gateway_session_key: Optional[str], session_id: Optional[str]) -> tuple:
+        confirmed_runtime_lock: bool, gateway_session_key: Optional[str], session_id: Optional[str],
+        pending_models=None) -> tuple:
         """Apply the model/provider precedence chain for one agent (mutates ``runtime_kwargs``):
         confirmed Browser lock > session ``/model`` override > session-persisted model >
         model_routes alias > per-request provider/model > global defaults. A confirmed lock
@@ -2136,7 +2139,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 logger.debug(
                     "api_server request selection applied: model=%s provider=%s route_provider=%s request_provider=%s",
                     model, runtime_kwargs.get("provider"), route_provider or "", request_provider or "")
-        model = self._recover_or_record_model(model, runtime_kwargs, gateway_session_key)
+        model = self._recover_or_record_model(model, runtime_kwargs, gateway_session_key, pending_models=pending_models)
         return model, session_override, request_model, request_provider
 
     def _create_agent(

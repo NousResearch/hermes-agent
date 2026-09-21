@@ -953,13 +953,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             max_iterations = room.max_iterations
             ctx.enabled_toolsets = list(room.enabled_toolsets)
         try:
-            model, runtime_kwargs = runner._resolve_session_agent_runtime(
-                source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
-            )
-            from gateway.session_api_turn import prepare_api_runtime
-            model, runtime_kwargs = prepare_api_runtime(model, runtime_kwargs)
-            if policy and policy.model:
-                model = policy.model
+            from gateway.session_selected_route import select_execution_route
+            selected = select_execution_route(self, policy)
+            model, runtime_kwargs = selected.model, selected.runtime
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -969,6 +965,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # codes) belongs in the log, and the chat gets the commands that fix it.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
             from hermes_state_runtime import RuntimeStoreError
+            if isinstance(exc, RuntimeStoreError) and exc.reason == 'prepared_files_unsupported':
+                from gateway.session_selected_route import unsupported_files_result
+                return unsupported_files_result()
             if isinstance(exc, RuntimeStoreError):
                 # Session-policy refusals carry a stable reason code (e.g. a CLI launch key
                 # revoked by daemon restart): keep it in the reply so clients can act on it, and
@@ -982,25 +981,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                         "failing, run `hermes doctor` on the host.")
             return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
         pr = runner._provider_routing
-        reasoning_config = (policy.reasoning_config if policy else
-            runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
-        runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
-        from gateway.session_api_turn import api_execution
-        api = api_execution.get()
-        if api is not None:
-            from gateway.platforms.api_server import _request_reasoning_config, _request_service_tier, _REQUEST_OPTION_MISSING
-            requested_reasoning = _request_reasoning_config(api['settings'].get('model_options'))
-            if requested_reasoning is not None:
-                reasoning_config = requested_reasoning
-            tier = _request_service_tier(api['settings'].get('model_options'))
-            if tier is not _REQUEST_OPTION_MISSING:
-                runner._service_tier = tier
+        reasoning_config = selected.reasoning_config
+        runner._service_tier = selected.service_tier
         runner._reasoning_config = reasoning_config
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
-        turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        turn_route = selected.turn_route
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
+        from gateway.session_api_turn import api_execution
+        from gateway.session_selected_route import execution_has_files, supports_files_agent, unsupported_files_result
+        api = api_execution.get()
+        if (api is not None and execution_has_files(api['settings'])
+                and not supports_files_agent(agent)):
+            return unsupported_files_result()
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)

@@ -15,6 +15,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import socket
 import sys
@@ -292,14 +293,19 @@ def query_gateway_control(home: Path, verb: str, *, params: Optional[dict[str, A
 def _read_response_line(read: Callable[[], bytes], deadline: float) -> Optional[bytes]:
     """Read chunks until a newline, EOF, deadline, or the size cap (-> None)."""
     chunks: list[bytes] = []
+    size = 0
     while time.monotonic() < deadline:
         chunk = read()
-        chunks.append(chunk)
-        if not chunk or b"\n" in chunk:
-            break
-        if sum(len(c) for c in chunks) > _MAX_RESPONSE_BYTES:
+        line, newline, _ = chunk.partition(b"\n")
+        chunks.append(line)
+        size += len(line)
+        if size > _MAX_RESPONSE_BYTES:
             return None
-    return b"".join(chunks).partition(b"\n")[0] or None
+        if not chunk or newline:
+            return b"".join(chunks) or None
+    # A complete-looking JSON prefix is not a response when the peer stalls
+    # before its framing newline/EOF and exhausts the deadline.
+    return None
 
 
 def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[bytes]:
@@ -315,26 +321,82 @@ def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[b
     return None
 
 
-def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
+def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:
+    import _winapi  # Windows stdlib; owns the OVERLAPPED buffers and event handles.
+
     pipe_name = windows_pipe_name(home)
     deadline = time.monotonic() + timeout
-    handle = None
-    while handle is None:
+
+    def remaining_ms() -> int:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Gateway control pipe deadline expired")
+        # Zero asks WaitNamedPipe for the server's default timeout, not a poll.
+        return max(1, math.ceil(remaining * 1000))
+
+    def complete(operation, error: int) -> int:
         try:
-            handle = open(pipe_name, "r+b", buffering=0)
-        except FileNotFoundError:
-            return None
-        except OSError:
-            # Pipe busy (another client mid-handshake) — brief retry window.
-            if time.monotonic() >= deadline:
-                return None
-            time.sleep(0.05)
+            if error == _winapi.ERROR_IO_PENDING:
+                if _winapi.WaitForSingleObject(operation.event, remaining_ms()) != _winapi.WAIT_OBJECT_0:
+                    raise TimeoutError("Gateway control pipe I/O timed out")
+            transferred, error = operation.GetOverlappedResult(False)
+            if error not in (0, _winapi.ERROR_MORE_DATA):
+                raise OSError(error, "Gateway control pipe I/O failed")
+            return transferred
+        except BaseException:
+            # Cancel the local kernel request, then reap its completion before
+            # releasing the OVERLAPPED buffer/event or closing the pipe. This
+            # is CPython's multiprocessing pipe cleanup pattern; it does not
+            # wait for the peer to send data, and creates no helper thread.
+            with contextlib.suppress(OSError):
+                operation.cancel()
+            with contextlib.suppress(OSError):
+                operation.GetOverlappedResult(True)
+            raise
+
+    handle = None
     try:
-        handle.write(request)
-        return _read_response_line(lambda: handle.read(65536), deadline)
+        while handle is None:
+            remaining_ms()
+            try:
+                handle = _winapi.CreateFile(
+                    pipe_name, _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
+                    0, _winapi.NULL, _winapi.OPEN_EXISTING,
+                    _winapi.FILE_FLAG_OVERLAPPED, _winapi.NULL)
+            except OSError as error:
+                if error.winerror != _winapi.ERROR_PIPE_BUSY:
+                    return None
+                # Another client owns the available instance. The subsequent
+                # CreateFile can lose a race, so every retry shares one deadline.
+                _winapi.WaitNamedPipe(pipe_name, remaining_ms())
+
+        sent = 0
+        while sent < len(request):
+            remaining_ms()
+            operation, error = _winapi.WriteFile(handle, request[sent:], overlapped=True)
+            count = complete(operation, error)
+            if count == 0:
+                return None
+            sent += count
+
+        def read() -> bytes:
+            remaining_ms()
+            try:
+                operation, error = _winapi.ReadFile(handle, 65536, overlapped=True)
+                complete(operation, error)
+                return operation.getbuffer()
+            except OSError as error:
+                if getattr(error, "winerror", error.errno) == _winapi.ERROR_BROKEN_PIPE:
+                    return b""  # Preserve EOF framing from the former file reader.
+                raise
+
+        return _read_response_line(read, deadline)
+    except OSError:
+        return None
     finally:
-        with contextlib.suppress(Exception):
-            handle.close()
+        if handle is not None:
+            with contextlib.suppress(OSError):
+                _winapi.CloseHandle(handle)
 
 
 def identify_gateway(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:

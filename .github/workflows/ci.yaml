@@ -38,7 +38,9 @@ jobs:
     name: Detect affected areas
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    # Large upstream syncs can spend nearly a minute checking out the merge.
+    # Leave bounded time for the pinned-SHA comparison and its API retries.
+    timeout-minutes: 5
     outputs:
       python: ${{ steps.classify.outputs.python }}
       python_prod: ${{ steps.classify.outputs.python_prod }}

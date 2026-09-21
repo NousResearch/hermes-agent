@@ -16,19 +16,16 @@ import type {
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
-const configReadOrigins = new WeakMap<object, { connectionId?: string; profile?: string }>()
+type ConfigReadOrigin = { connectionId?: string; priority?: 'foreground'; profile?: string }
+
+const configReadOrigins = new WeakMap<object, ConfigReadOrigin>()
 
 /** Snapshot the `(connectionId, profile)` that served a config GET. */
-export function bindConfigReadOrigin(
-  record: object,
-  origin: { connectionId?: string; profile?: string }
-): void {
+export function bindConfigReadOrigin(record: object, origin: ConfigReadOrigin): void {
   configReadOrigins.set(record, origin)
 }
 
-export function peekConfigReadOrigin(
-  record: object | undefined | null
-): { connectionId?: string; profile?: string } | undefined {
+export function peekConfigReadOrigin(record: object | undefined | null): ConfigReadOrigin | undefined {
   return record ? configReadOrigins.get(record) : undefined
 }
 
@@ -42,7 +39,7 @@ export function peekConfigReadOrigin(
 export function resolveConfigWriteScope(
   record: object | undefined,
   requestScope?: ProfileScope
-): { connectionId?: string; profile?: string } {
+): { connectionId?: string; priority?: 'foreground'; profile?: string } {
   if (requestScope && typeof requestScope === 'object') {
     return capabilityScoped(requestScope)
   }
@@ -50,12 +47,14 @@ export function resolveConfigWriteScope(
   const captured = peekConfigReadOrigin(record)
 
   if (captured) {
-    const profile =
-      typeof requestScope === 'string' && requestScope.trim() ? requestScope.trim() : captured.profile
+    const profile = typeof requestScope === 'string' ? requestScope.trim() : ''
 
+    // Spread, don't rebuild: the captured origin is a capabilityScoped()
+    // result and may carry `priority: 'foreground'`; an explicit profile
+    // string gets the same foreground priority profileScoped(string) grants.
     return {
-      ...(profile ? { profile } : {}),
-      ...(captured.connectionId ? { connectionId: captured.connectionId } : {})
+      ...captured,
+      ...(profile ? { profile, priority: 'foreground' as const } : {})
     }
   }
 

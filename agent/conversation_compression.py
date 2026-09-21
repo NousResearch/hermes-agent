@@ -2235,7 +2235,15 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"auxiliary.compression.context_length to override the "
                 f"detected value if it is wrong."
             )
-        if aux_context < agent.context_compressor.threshold_tokens:
+        compressor = agent.context_compressor
+        # Third-party engines retain their own feasibility policy unless they
+        # explicitly accepted the host-owned budget during initialization.
+        # Built-in compressors always use Hermes' feasibility clamp.
+        from agent.context_compressor import ContextCompressor
+        host_owns_threshold = isinstance(compressor, ContextCompressor) or bool(
+            getattr(agent, "_context_engine_compression_budget_accepted", False)
+        )
+        if aux_context < compressor.threshold_tokens and host_owns_threshold:
             _lower_threshold_to_aux_context(
                 agent, aux_model=aux_model, aux_context=aux_context, aux_provider=_aux_cfg_provider,
                 aux_base_url=aux_base_url,

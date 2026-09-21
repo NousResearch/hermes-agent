@@ -1945,9 +1945,11 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         )
         from agent.conversation_compression import apply_context_engine_compression_budget
 
-        if not apply_context_engine_compression_budget(
+        _budget_accepted = apply_context_engine_compression_budget(
             agent, _plugin_ctx_len, threshold_percent=cs.threshold, reason="model_init"
-        ):
+        )
+        agent._context_engine_compression_budget_accepted = _budget_accepted
+        if not _budget_accepted:
             # Legacy engines retain their private policy, so a host threshold
             # notice would be misleading.
             agent._compression_threshold_autoraised = None

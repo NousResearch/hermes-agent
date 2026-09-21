@@ -1,8 +1,10 @@
 """Regression coverage for host-owned context-engine compression budgets."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from agent.conversation_compression import apply_context_engine_compression_budget
+from agent.context_engine import ContextEngine
+from agent.conversation_compression import apply_context_engine_compression_budget, check_compression_model_feasibility
 
 
 class BudgetAwareEngine:
@@ -19,6 +21,23 @@ class BudgetAwareEngine:
         self.budgets.append((context_capacity, trigger_tokens, reason))
         self.threshold_tokens = trigger_tokens
         return True
+
+
+class LegacyContextEngine(ContextEngine):
+    """Plain extension point implementation that never accepts a host budget."""
+
+    @property
+    def name(self) -> str:
+        return "legacy"
+
+    def update_from_response(self, usage):
+        pass
+
+    def should_compress(self, prompt_tokens=None):
+        return False
+
+    def compress(self, messages, current_tokens=None):
+        return messages
 
 
 class LegacyEngine:
@@ -137,6 +156,40 @@ def test_legacy_engine_without_hook_keeps_its_policy():
     assert engine.threshold_percent == 0.75
 
 
+def test_feasibility_does_not_mutate_plain_legacy_context_engine():
+    """Auxiliary feasibility clamps only engines that opted into host budgets."""
+    engine = LegacyContextEngine()
+    engine.context_length = 1_000_000
+    engine.threshold_tokens = 500_000
+    agent = SimpleNamespace(
+        compression_enabled=True,
+        context_compressor=engine,
+        _current_main_runtime=lambda: {},
+        provider="openai",
+        _aux_compression_context_length_config=None,
+        base_url="https://api.openai.com/v1",
+        _custom_providers={},
+        model="main-model",
+        _context_engine_compression_budget_accepted=False,
+    )
+    client = SimpleNamespace(base_url="https://aux.example/v1", api_key="")
+
+    with (
+        patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(client, "aux-model"),
+        ),
+        patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("openai", None, None, None, None),
+        ),
+        patch("agent.model_metadata.get_model_context_length", return_value=200_000),
+    ):
+        check_compression_model_feasibility(agent)
+
+    assert engine.threshold_tokens == 500_000
+
+
 def test_budget_hook_must_explicitly_accept_the_handoff():
     """An engine that returns False is not treated as budget-aware."""
 
@@ -154,7 +207,7 @@ def test_budget_hook_must_explicitly_accept_the_handoff():
 
 def test_ollama_post_init_clamp_resyncs_opted_in_engine():
     """Ollama's served num_ctx replaces the initial model-window budget."""
-    from agent.agent_init import _configure_ollama_num_ctx
+    from agent.agent_init import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
 
     engine = BudgetAwareEngine()
     engine.context_length = 131_072
@@ -167,6 +220,7 @@ def test_ollama_post_init_clamp_resyncs_opted_in_engine():
     agent.quiet_mode = True
 
     _configure_ollama_num_ctx(agent, {"ollama_num_ctx": 65_536}, None)
+    _clamp_compressor_to_ollama_num_ctx(agent)
 
     assert engine.budgets == [(65_536, 55_705, "ollama_num_ctx")]
 

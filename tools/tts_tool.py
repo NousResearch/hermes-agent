@@ -208,6 +208,8 @@ def _run_edge_tts(text: str, file_str: str, tts_config: Dict[str, Any]) -> None:
 def _select_builtin_engine(provider: str) -> tuple:
     """SDK check -> ``(engine, None)`` or ``(provider, error_json)``. Unknown names take the Edge
     default; without edge-tts NeuTTS is the fallback (engine != provider)."""
+    if provider in ("none", "off", "disabled", "false"):
+        return provider, _error_json(f"TTS is disabled (provider={provider})")
     entry = _BUILTIN_DISPATCH.get(provider)
     if entry is not None:
         available, _label, _generator, missing_error = entry
@@ -434,6 +436,9 @@ def text_to_speech_tool(
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
     tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    if provider in ("none", "off", "disabled", "false"):
+        return tool_error(f"TTS is disabled (provider={provider})", success=False)
+
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)

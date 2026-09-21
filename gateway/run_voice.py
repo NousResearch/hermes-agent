@@ -296,6 +296,15 @@ class GatewayVoiceMixin:
         — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
         if not response or response.startswith("Error:"):
             return False
+        # Short-circuit when TTS provider is explicitly disabled.
+        try:
+            from hermes_cli.config import load_config_readonly as _load_config
+            tts_cfg = _load_config().get("tts") or {}
+            provider = str(tts_cfg.get("provider") or "").lower().strip()
+            if provider in ("none", "off", "disabled", "false"):
+                return False
+        except Exception:
+            pass
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE

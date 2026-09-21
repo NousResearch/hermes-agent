@@ -259,6 +259,13 @@ _file_ops_lock = threading.Lock()
 _file_ops_cache: dict = {}
 
 
+def _backend_file_path(path: str, task_id: str) -> str:
+    """Translate only the selected Docker bind; remote backends need raw paths."""
+    from tools.terminal_tool import _map_host_workspace_path
+
+    return _map_host_workspace_path(path, task_id) or path
+
+
 def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     """Build the terminal environment for *task_id* via the shared ``_create_configured_env``,
     so a file tool that runs before any terminal command still gets the configured backend."""
@@ -275,6 +282,9 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     except Exception:
         recorded_cwd = None
     cwd = overrides.get("cwd") or recorded_cwd or config["cwd"]
+    host_cwd = _resolve_task_host_cwd(config, raw_task_id)
+    if env_type == "docker" and host_cwd:
+        cwd = "/workspace"
     # Re-apply the container cwd guard: a gateway/TUI/ACP override is a raw HOST
     # path and ``docker run -w <host-path>`` makes search_files & co silently
     # return nothing. Valid in-container overrides (/workspace, /root) pass.
@@ -295,7 +305,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     terminal_env = _create_configured_env(
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
-        host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+        host_cwd=host_cwd,
         local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
     )
     return env_type, terminal_env
@@ -655,7 +665,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             except OSError:
                 pass  # stat failed — fall through to full read
 
-        result = _get_file_ops(task_id).read_file(path, offset, limit)
+        result = _get_file_ops(task_id).read_file(_backend_file_path(path, task_id), offset, limit)
         result_dict = result.to_dict()
 
         # Cache a not-found result for retries. Deliberately NO early return:
@@ -1055,7 +1065,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             return cached_search_nf
 
         result = _get_file_ops(task_id).search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=pattern, path=_backend_file_path(path, task_id), target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context, order=order)
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():

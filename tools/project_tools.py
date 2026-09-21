@@ -33,10 +33,7 @@ def _primary_path(proj) -> Optional[str]:
 def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> None:
     cb = _workspace_callback
     if cb and task_id and path:
-        try:
-            cb(task_id, path, name)
-        except Exception:
-            pass
+        cb(task_id, path, name)
 
 
 def _resolve(conn, token: str):
@@ -57,8 +54,21 @@ def _resolve(conn, token: str):
 
 
 def _activated(proj, task_id: Optional[str]) -> str:
+    from hermes_cli import projects_db as pdb
     primary = _primary_path(proj)
-    _apply_workspace(task_id, primary, proj.name)
+    with pdb.connect_closing() as conn:
+        prior_id = pdb.get_active_id(conn)
+        pdb.set_active(conn, proj.id)
+    try:
+        _apply_workspace(task_id, primary, proj.name)
+    except (RuntimeError, ValueError, OSError) as exc:
+        try:
+            with pdb.connect_closing() as conn:
+                pdb.set_active(conn, prior_id)
+        except Exception as rollback_error:
+            return json.dumps({"success": False, "error":
+                               f"workspace switch failed: {exc}; project rollback failed: {rollback_error}"})
+        return json.dumps({"success": False, "error": f"workspace switch failed: {exc}"})
     return json.dumps({
         "success": True, "id": proj.id, "slug": proj.slug, "name": proj.name,
         "primary_path": primary})
@@ -93,11 +103,9 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
                 # Idempotent create: duplicates would render N identical sidebar subtrees.
                 # Idempotent create: the folder already belongs to a project. Re-activating it beats minting
                 # a duplicate — duplicated projects render N identical sidebar subtrees (#75820).
-                pdb.set_active(conn, existing.id)
                 proj = existing
             else:
                 pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
-                pdb.set_active(conn, pid)
                 proj = pdb.get_project(conn, pid)
     except ValueError as exc:
         return json.dumps({"success": False, "error": str(exc)})
@@ -112,7 +120,6 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
         proj = _resolve(conn, project)
         if proj is None:
             return json.dumps({"success": False, "error": f"no project matching '{project}'"})
-        pdb.set_active(conn, proj.id)
     return _activated(proj, task_id)
 
 

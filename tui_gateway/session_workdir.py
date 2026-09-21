@@ -197,12 +197,11 @@ def _register_session_cwd(session: dict | None) -> None:
         return
     # Workspace moves must reach lazy/restarted runtimes, not just terminal tools.
     # Do not reinitialize memory providers or invalidate the cached system prompt.
+    from tools.terminal_tool import register_task_env_overrides
+    cwd, cwd_source = _terminal_task_cwd_with_source(session)
+    register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
     if hasattr(agent := session.get("agent"), "session_cwd"):
         agent.session_cwd = session.get("cwd") or None
-    with contextlib.suppress(Exception):
-        from tools.terminal_tool import register_task_env_overrides
-        cwd, cwd_source = _terminal_task_cwd_with_source(session)
-        register_task_env_overrides(session["session_key"], {"cwd": cwd, "cwd_source": cwd_source})
 
 
 def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
@@ -525,20 +524,19 @@ def _persist_session_cwd_and_schedule_git_meta(session: dict, cwd: str, *, db=No
     return generation
 
 
-def _set_session_cwd(session: dict, cwd: str) -> str:
+def _set_session_cwd(session: dict, cwd: str, *, persist: bool = True) -> str:
     from hermes_constants import translate_cwd_for_wsl_backend
     cwd = translate_cwd_for_wsl_backend(str(cwd))
     resolved = os.path.abspath(os.path.expanduser(cwd))
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
-    # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted cwd.
+    # Do the fallible sandbox transition before changing the live/DB workspace.
+    candidate = {**session, "cwd": resolved, "explicit_cwd": True, "cwd_from_settle": False}
+    _register_session_cwd(candidate)
     session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
-    _register_session_cwd(session)
-    # The synchronous DB write claims ordering authority; git probes may publish only for that exact generation.
-    _persist_session_cwd_and_schedule_git_meta(session, resolved)
-    with contextlib.suppress(Exception):
-        from tools.terminal_tool_lifecycle import cleanup_vm
-        cleanup_vm(session["session_key"])
+    if persist:
+        # The synchronous DB write claims ordering authority; git probes may publish only for that exact generation.
+        _persist_session_cwd_and_schedule_git_meta(session, resolved)
     return resolved
 
 

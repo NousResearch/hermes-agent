@@ -21,6 +21,7 @@ import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
 import json
 import logging
 import os
+import posixpath
 import sys
 import time
 import threading
@@ -314,9 +315,40 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     (host workspaces are tracked there on purpose); only the live-env write is
     sanitized, since a host cwd can never be a container workdir.
     """
+    new_cwd = overrides.get("cwd")
+    isolated_docker = isinstance(new_cwd, str) and new_cwd.strip() and _docker_session_isolation_enabled()
+    mount_workspace = isolated_docker and _get_env_config().get("docker_mount_cwd_to_workspace")
+    if mount_workspace:
+        # A container's /workspace bind mount is immutable.  A Desktop project
+        # switch must remove the old per-session sandbox before changing the
+        # override from which its replacement will be constructed.
+        effective_id = _resolve_container_task_id(task_id)
+        with _creation_locks_lock:
+            task_lock = _creation_locks.setdefault(effective_id, threading.Lock())
+        with task_lock:
+            with _env_lock:
+                env = _active_environments.get(effective_id)
+            prior = _task_env_overrides.get(task_id, {})
+            changed = _mountable_session_cwd(prior) != _mountable_session_cwd(overrides)
+            if env is not None and changed:
+                from tools.process_registry import process_registry
+                if process_registry.has_active_processes(effective_id):
+                    raise RuntimeError("workspace cannot change while a sandbox process is running")
+                env.remove_for_workspace_change()  # synchronous and checked; may raise
+                with _env_lock:
+                    if _active_environments.get(effective_id) is env:
+                        _active_environments.pop(effective_id, None)
+                        _last_activity.pop(effective_id, None)
+                from tools.file_tools import clear_file_ops_cache
+                clear_file_ops_cache(effective_id)
+            _task_env_overrides[task_id] = overrides
+            # The override names a HOST directory for the immutable Docker
+            # bind, but command/file cwd records must name its container path.
+            record_session_cwd(task_id, "/workspace" if _mountable_session_cwd(overrides) else new_cwd)
+        return
+
     _task_env_overrides[task_id] = overrides
 
-    new_cwd = overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
         record_session_cwd(task_id, new_cwd)
         # Live env may be cached under the raw task_id (per-session surfaces)
@@ -527,6 +559,17 @@ def _lookup_active_env(effective_task_id: str, task_id: Optional[str]):
     return None
 
 
+def _mountable_session_cwd(overrides: Dict[str, Any]) -> Optional[str]:
+    """The session-owned host path eligible for a Docker /workspace bind."""
+    candidate = overrides.get("cwd")
+    if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
+        return None
+    candidate = os.path.abspath(os.path.expanduser(candidate))
+    if not os.path.isdir(candidate) or candidate.startswith(("/workspace", "/root")):
+        return None
+    return candidate
+
+
 def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
     """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
 
@@ -544,15 +587,25 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
     # Top-level CLI parent ("default") is a single-session process — legacy behavior.
     if not _docker_session_isolation_enabled() or _resolve_container_task_id(task_id) == "default":
         return config.get("host_cwd")
-    overrides = resolve_task_overrides(task_id)
-    candidate = overrides.get("cwd")
-    if overrides.get("cwd_source") == "process" or not isinstance(candidate, str) or not candidate.strip():
+    return _mountable_session_cwd(resolve_task_overrides(task_id))
+
+
+def _map_host_workspace_path(path: str, task_id: Optional[str]) -> Optional[str]:
+    """Map only a selected Docker bind's host root/descendants into /workspace.
+
+    Paths outside the selected mount are never made reachable by translation.
+    """
+    config = _get_env_config()
+    if config.get("env_type") != "docker":
         return None
-    candidate = os.path.abspath(os.path.expanduser(candidate))
-    # Must exist on the host and not already be an in-container path.
-    if not os.path.isdir(candidate) or candidate.startswith(("/workspace", "/root")):
+    host_root = _resolve_task_host_cwd(config, task_id)
+    expanded = os.path.expanduser(path)
+    if not host_root or not os.path.isabs(expanded):
         return None
-    return candidate
+    relative = os.path.relpath(os.path.abspath(expanded), host_root)
+    if relative == ".." or relative.startswith(".." + os.sep):
+        return None
+    return posixpath.normpath(posixpath.join("/workspace", relative))
 
 
 # One-shot guard for the config-fallback bridge: after the first attempt
@@ -819,7 +872,7 @@ def _resolve_command_cwd(
     Same guard class as the env-creation sanitizers (#50636, #54447); this is the per-command sibling site.
     """
     if workdir:
-        return workdir
+        return (_map_host_workspace_path(workdir, session_key) if env_type == "docker" else None) or workdir
     recorded = get_session_cwd(session_key)
     if recorded and _is_container_backend(env_type) and _is_unusable_container_cwd(recorded):
         logger.info(

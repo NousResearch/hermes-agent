@@ -1043,6 +1043,23 @@ class DockerEnvironment(BaseEnvironment):
             if d:
                 shutil.rmtree(d, ignore_errors=True)
 
+    def remove_for_workspace_change(self) -> None:
+        """Synchronously retire this session's container before remounting /workspace.
+
+        Unlike normal cleanup, a workspace switch must not leave an asynchronous
+        removal racing the next container creation or silently reattach the old
+        mount when persist-across-processes is enabled.
+        """
+        container_id = self._container_id
+        if container_id:
+            try:
+                run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30, check=True)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+                raise RuntimeError("sandbox removal failed; workspace unchanged") from exc
+            self._container_id = None
+        if not self._persistent:
+            self._remove_bind_dirs()
+
     def cleanup(self, *, force_remove: bool = False):
         """Tear down per persist mode. Persist mode (default) leaves the container RUNNING —
         stopping it on every exit would kill background processes and add a ``docker start``

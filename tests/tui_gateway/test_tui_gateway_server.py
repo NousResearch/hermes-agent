@@ -22838,10 +22838,8 @@ def test_persist_live_session_system_prompt_binds_session_cwd(monkeypatch, tmp_p
     assert persisted["prompt"] == expected, persisted["prompt"]
 
 
-def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
-    """An explicit Move-to-project must win for a RUNNING session: the stored
-    row and the live runtime session re-anchor together, never a UI-vs-db
-    disagreement (#86626)."""
+def test_workspace_move_refuses_running_session(monkeypatch, tmp_path):
+    """Do not remove a live turn's sandbox while a foreground tool may be using it."""
     target = "stored-running-session"
     new_cwd = tmp_path / "dest-project"
     new_cwd.mkdir()
@@ -22884,10 +22882,9 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
         {"session_key": target, "cwd": str(new_cwd)},
     )
 
-    assert "error" not in res, res
-    assert captured["row_update"] == (target, str(new_cwd))
-    assert live["cwd"] == str(new_cwd)
-    assert live.get("explicit_cwd") is True
+    assert res["error"]["code"] == 4009
+    assert "row_update" not in captured
+    assert live["cwd"] == str(tmp_path / "old-project")
 
 
 def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, tmp_path):

@@ -1329,6 +1329,30 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     )
 
 
+def test_workspace_change_removal_is_checked_before_clearing_container(monkeypatch):
+    env = docker_env.DockerEnvironment.__new__(docker_env.DockerEnvironment)
+    env._container_id = "switch-container"
+    env._docker_exe = "/usr/bin/docker"
+    env._persistent = True
+    container_id = env._container_id
+    calls = []
+
+    def refuse(argv, **kwargs):
+        calls.append((argv, kwargs))
+        raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(docker_env, "run_capture", refuse)
+    with pytest.raises(RuntimeError, match="sandbox removal failed"):
+        env.remove_for_workspace_change()
+    assert env._container_id == container_id
+    assert calls == [([env._docker_exe, "rm", "-f", container_id],
+                      {"timeout": 30, "check": True})]
+
+    monkeypatch.setattr(docker_env, "run_capture", lambda *a, **k: None)
+    env.remove_for_workspace_change()
+    assert env._container_id is None
+
+
 def test_cleanup_with_persist_disabled_stops_and_rms(monkeypatch):
     """``persist_across_processes=False`` cleanup must docker stop AND docker
     rm so containers don't leak. Crucially, this runs regardless of the

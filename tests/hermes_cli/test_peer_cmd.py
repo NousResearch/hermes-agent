@@ -98,6 +98,8 @@ class _FakePeer(BaseHTTPRequestHandler):
     run_idempotency_keys: list = []
     auth_seen: list = []
     chat_reply_content: str = "reply from the other machine"
+    run_status: str = "completed"
+    run_output: str = "async reply from the other machine"
 
     def _json(self, payload, status=200):
         body = json.dumps(payload).encode()
@@ -125,9 +127,9 @@ class _FakePeer(BaseHTTPRequestHandler):
             return self._json({
                 "object": "hermes.run",
                 "run_id": "run_1",
-                "status": "completed",
+                "status": type(self).run_status,
                 "session_id": "bc_existing",
-                "output": "async reply from the other machine",
+                "output": type(self).run_output,
             })
         if self.path.startswith("/api/sessions"):
             data = [{"id": s, "title": "Bot Chat"} for s in type(self).sessions]
@@ -185,6 +187,8 @@ def fake_peer_server():
     _FakePeer.run_idempotency_keys = []
     _FakePeer.auth_seen = []
     _FakePeer.chat_reply_content = "reply from the other machine"
+    _FakePeer.run_status = "completed"
+    _FakePeer.run_output = "async reply from the other machine"
     server = HTTPServer(("127.0.0.1", 0), _FakePeer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -599,3 +603,124 @@ def test_request_strips_bearer_key_across_redirect_origin():
     assert all(header is None for header in _AttackerOrigin.auth_seen), (
         f"peer's Bearer key leaked to the redirect target: {_AttackerOrigin.auth_seen}"
     )
+
+
+# ── terminal sanitization of peer-controlled text ────────────────────────────
+
+EVIL_REPLY = "ok\x1b]8;;http://evil\x07click\x1b]8;;\x07\x1b[2J\x1b[H"  # OSC link + screen clear
+
+
+def test_dm_reply_is_sanitized_for_terminal(monkeypatch, capsys, fake_peer_server):
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    _FakePeer.chat_reply_content = EVIL_REPLY
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="hi", json=False))
+
+    assert rc == 0
+    out = capsys.readouterr()
+    assert "\x1b" not in out.out
+    assert "\x07" not in out.out
+    assert "ok" in out.out and "click" in out.out
+
+
+def test_run_ctl_output_and_error_sanitized(monkeypatch, capsys):
+    monkeypatch.setattr(
+        peer_cmd, "_request",
+        lambda *a, **k: {"status": "failed\x1b[31m", "output": "", "error": "boom\x1b[2J"})
+
+    rc = peer_cmd._peer_run_ctl(
+        SimpleNamespace(json=False, run_id="run_1"), "status", "spark", None, "http://x", "k")
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "\x1b" not in captured.out + captured.err
+    assert "failed" in captured.out
+    assert "boom" in captured.err
+
+
+def test_peer_failure_sanitizes_http_detail(capsys):
+    import io
+    import urllib.error
+
+    body = json.dumps({"error": {"message": "nope\x1b[2J\x07"}}).encode()
+    exc = urllib.error.HTTPError("http://x", 500, "err", {}, io.BytesIO(body))
+    rc = peer_cmd._peer_failure("spark", exc)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "\x1b" not in err and "\x07" not in err
+    assert "nope" in err
+
+
+def test_request_non_json_error_sanitized(monkeypatch):
+    import contextlib
+
+    class _Resp:
+        def read(self):
+            return b"\x1b[2Jnot-json\x07"
+
+    @contextlib.contextmanager
+    def _fake_open(req, timeout=None):
+        yield _Resp()
+
+    import hermes_cli.urllib_security as us
+    monkeypatch.setattr(us, "open_credentialed_url", _fake_open)
+    with pytest.raises(RuntimeError) as ei:
+        peer_cmd._request("http://x/v1/x", "k")
+    assert "\x1b" not in str(ei.value) and "\x07" not in str(ei.value)
+    assert "not-json" in str(ei.value)
+
+
+def test_status_output_sanitized_e2e(monkeypatch, capsys, fake_peer_server):
+    """status prints the peer's stored run output — real HTTP path, escape-laden."""
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    _FakePeer.run_status = "failed\x1b[31m"
+    _FakePeer.run_output = "partial out\x1b[2J\x1b[H"
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(
+        peer_action="status", target="spark", run_id="run_1", json=False))
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "\x1b" not in captured.out + captured.err
+    assert "partial out" in captured.out
+    assert "failed" in captured.out
+
+
+def test_status_json_output_stays_structured(monkeypatch, capsys, fake_peer_server):
+    """--json keeps raw fields (json.dumps escapes controls); only text output is sanitized."""
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    _FakePeer.run_output = "out\x1b[2J"
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(
+        peer_action="status", target="spark", run_id="run_1", json=True))
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    payload = json.loads(out)  # still valid JSON — controls escaped, not printed raw
+    assert payload["output"] == "out\x1b[2J"
+
+
+def test_peer_dm_timeout_message_sanitizes_session_id(monkeypatch, capsys):
+    """The TimeoutError-with-session path prints the peer-supplied session id."""
+    import socket
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": "http://x"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "k")
+
+    def _fake_request(url, key, **kw):
+        if "/chat" in url:
+            raise TimeoutError("timed out")
+        return {}
+
+    monkeypatch.setattr(peer_cmd, "_request", _fake_request)
+    monkeypatch.setattr(peer_cmd, "_ensure_bot_chat", lambda b, k: "bc_\x1b[2Jevil")
+
+    rc = peer_cmd._peer_dm(
+        SimpleNamespace(json=False), "hi", "spark", None, "http://x", "k")
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "\x1b" not in err
+    assert "bc_evil" in err

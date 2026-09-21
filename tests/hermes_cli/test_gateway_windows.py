@@ -55,6 +55,10 @@ def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
         ["schtasks", "/Create", "/F", "/TN", task, "/SC", "ONLOGON", "/TR", f'wscript.exe //B "C:\\{marker}\\x.vbs"'],
         capture_output=True, timeout=30,
     )
+    if created.returncode and gateway_windows._is_access_denied(
+        gateway_windows._decode_schtasks_output(created.stderr)
+    ):
+        pytest.skip("current Windows identity cannot create Scheduled Tasks")
     assert created.returncode == 0, created.stderr
     try:
         code, out, _err = gateway_windows._exec_schtasks(["/Query", "/TN", task, "/XML"])
@@ -662,7 +666,7 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     registration is deleted and re-created from the current template (so ``RestartOnFailure`` and the
     logon ``Delay`` reach existing installs), while an aligned one is left alone."""
     script_path = tmp_path / "gateway.cmd"
-    launcher = script_path.with_suffix(".vbs")
+    launcher = script_path.with_suffix(".task.vbs")
     template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
     calls: list[list[str]] = []
     registered = {"xml": _PRE_HARDENING_TASK_XML}

@@ -435,7 +435,9 @@ def pid_is_hermes(pid: int, *, expected_start_time: int | None = None) -> bool:
         return False
 
 
-def kill_process_tree(proc: "subprocess.Popen") -> None:
+def kill_process_tree(
+    proc: "subprocess.Popen", *, taskkill_timeout: float = 15
+) -> None:
     """Best-effort terminate *proc* and its descendants on both platforms; never raises.
 
     ``proc.kill()`` alone only terminates the direct child. This is cleanup on an already-failing
@@ -456,7 +458,7 @@ def kill_process_tree(proc: "subprocess.Popen") -> None:
     try:
         from agent.deadline import kill_process_tree as _deadline_kill_tree
 
-        _deadline_kill_tree(proc.pid)
+        _deadline_kill_tree(proc.pid, taskkill_timeout=taskkill_timeout)
     except Exception:
         _legacy_kill_process_tree(proc)
         return
@@ -536,8 +538,13 @@ def bounded_probe_run(
     except Exception:
         # Timeout OR any other communicate() failure (torn-down pipe, decode error): tree-kill and
         # drain bounded — leaving it running would leak the suspended-descendant class this guards.
-        _close_job(job)
-        kill_process_tree(proc)
+        # Closing a Windows KILL_ON_JOB_CLOSE handle already terminates the
+        # entire contained tree, including MSYS grandchildren whose launcher
+        # has exited.  Avoid following a successful close with taskkill: the
+        # target is already being torn down and taskkill can consume its full
+        # fallback timeout while resolving the now-dead tree.
+        if not _close_job(job):
+            kill_process_tree(proc, taskkill_timeout=2)
         try:
             proc.communicate(timeout=1)
         except Exception:
@@ -548,13 +555,15 @@ def bounded_probe_run(
     return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
 
 
-def _close_job(job) -> None:
+def _close_job(job) -> bool:
+    """Close a containment job and report whether its tree-kill was issued."""
     if job is None:
-        return
+        return False
     try:
         job.close()
+        return True
     except Exception:
-        pass
+        return False
 
 
 def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:

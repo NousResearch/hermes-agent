@@ -715,6 +715,55 @@ async def test_attachment_send_result_failure_returns_failed_delivery_verdict(mo
 
 
 @pytest.mark.asyncio
+async def test_one_successful_attachment_does_not_hide_a_failed_sibling(monkeypatch):
+    adapter = DeliveryRecordingAdapter(send_success=True)
+    runner = _make_runner(adapter)
+    media = [("C:/approved/one.pdf", False), ("C:/approved/two.pdf", False)]
+    adapter.extract_media = lambda _response: (media, "")
+    monkeypatch.setattr(
+        BasePlatformAdapter, "filter_media_delivery_paths", staticmethod(lambda paths: paths))
+    outcomes = iter((True, False))
+
+    async def _send_document(**_kwargs):
+        return SendResult(success=next(outcomes))
+
+    adapter.send_document = _send_document
+    verdict = await runner._deliver_queued_first_response(
+        "MEDIA:C:/approved/one.pdf\nMEDIA:C:/approved/two.pdf",
+        source=_source(), adapter=adapter, deliver_media=True,
+    )
+
+    assert verdict == {"expected": True, "attempted": True, "succeeded": False}
+    assert verdict.media_expected is True
+    assert verdict.media_succeeded is False
+
+
+@pytest.mark.asyncio
+async def test_delivered_text_keeps_media_retry_enabled_after_partial_failure():
+    from gateway.run_notifications import _DeliveryVerdict
+
+    adapter = DeliveryRecordingAdapter(send_success=True)
+    runner = _make_runner(adapter)
+    verdict = _DeliveryVerdict({"expected": True, "attempted": True, "succeeded": False})
+    verdict.text_expected = verdict.text_succeeded = True
+    verdict.media_expected = True
+    verdict.media_succeeded = False
+    runner._deliver_queued_first_response = AsyncMock(return_value=verdict)
+    turn_ctx = SimpleNamespace(
+        session_key=SESSION_KEY, stream_consumer_holder=[None], mute_notification_reply=False,
+        persist_user_display_kind=None, source=_source(), _status_thread_metadata=None,
+        event_message_id=None, inbound_message_id="queued-media", run_generation=1,
+        _queued_processing_ticket=None,
+    )
+    result = {"final_response": "answer with MEDIA", "failed": False}
+
+    await runner._run_agent_deliver_first_response(turn_ctx, adapter, "answer", result, None)
+
+    assert result["already_sent"] is True
+    assert result["media_already_delivered"] is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "filename",
     [
@@ -809,7 +858,7 @@ async def test_cancel_during_start_uses_background_task_owner(
     owner = HookRecordingAdapter()
     hook_adapter = BlockingStartAdapter()
     runner = _make_runner(owner)
-    runner._adapter_for_source = (
+    runner._intake_adapter_for = (
         lambda source: hook_adapter if source.profile == "secondary" else owner)
     queued_source = _source()
     queued_source.profile = "secondary"

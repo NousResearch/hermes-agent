@@ -3764,15 +3764,22 @@ class GatewayTurnMixin:
                 # (follow-up text refused, stale goal continuation) otherwise re-sends the text the
                 # fallback just delivered — the #81052 duplicate. A REFUSED send reports False, and
                 # the completion send stays the fallback so the user is not left with nothing.
-                if (
-                    (_delivery_verdict.get("succeeded")
-                     or getattr(_delivery_verdict, "terminal_handled", False))
-                    and isinstance(result, dict)
+                _terminal_handled = getattr(_delivery_verdict, "terminal_handled", False)
+                _text_expected = getattr(_delivery_verdict, "text_expected", False)
+                _text_succeeded = getattr(
+                    _delivery_verdict, "text_succeeded", _delivery_verdict.get("succeeded", False))
+                _media_expected = getattr(_delivery_verdict, "media_expected", False)
+                _media_succeeded = getattr(_delivery_verdict, "media_succeeded", False)
+                if isinstance(result, dict) and (
+                    _terminal_handled
+                    or _text_succeeded
+                    or (not _text_expected and _media_succeeded)
                 ):
                     result["already_sent"] = True
-                    # The queued lane already uploaded this response's MEDIA: attachments; without
-                    # this the completion path's already_sent rescan uploads every file twice.
-                    result["media_already_delivered"] = _deliver_media
+                    # Retry media only when it was expected but not completely delivered. A terminal
+                    # connector DECLINE suppresses every component for that refused destination.
+                    result["media_already_delivered"] = bool(
+                        _terminal_handled or not _media_expected or _media_succeeded)
         await self._complete_queued_processing_ticket(processing_ticket, processing_outcome)
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)

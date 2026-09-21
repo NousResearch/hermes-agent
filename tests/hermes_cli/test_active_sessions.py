@@ -502,6 +502,10 @@ def test_unknown_sibling_liveness_only_fences_its_own_session(tmp_path, monkeypa
         active_sessions, "_process_start_time",
         lambda pid: None if int(pid) == 1 else original_start(pid),
     )
+    # PID 1 is reliably live on POSIX but not on Windows.  This test exercises
+    # an existing owner whose start time is unreadable, so pin the existence
+    # half of that platform-independent premise explicitly.
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: int(pid) == 1)
     assert active_sessions._pid_liveness(1, 1234.5) is None
 
     with pytest.raises(active_sessions.ActiveSessionRegistryError, match="liveness is unknown"):
@@ -536,6 +540,7 @@ def test_unknown_sibling_does_not_block_guarded_release_or_orphan_sweep(tmp_path
         active_sessions, "_process_start_time",
         lambda pid: None if int(pid) == 1 else original_start(pid),
     )
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: int(pid) == 1)
     lease, message = active_sessions.try_acquire_active_session(
         session_id="new-chat", surface="desktop", config={}, track_liveness=True,
     )

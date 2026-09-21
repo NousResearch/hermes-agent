@@ -48,11 +48,26 @@ class TestSubprocessCompatDelegation:
 
         calls = []
         monkeypatch.setattr(
-            deadline_mod, "kill_process_tree", lambda pid, **kw: calls.append(pid) or True
+            deadline_mod,
+            "kill_process_tree",
+            lambda pid, **kw: calls.append((pid, kw)) or True,
         )
         proc = _FakeProc(pid=1111)
         assert _subprocess_compat.kill_process_tree(proc) is None
-        assert calls == [1111]
+        assert calls == [(1111, {"taskkill_timeout": 15})]
+
+    def test_delegates_narrow_taskkill_timeout(self, monkeypatch):
+        from hermes_cli import _subprocess_compat
+
+        calls = []
+        monkeypatch.setattr(
+            deadline_mod,
+            "kill_process_tree",
+            lambda pid, **kw: calls.append((pid, kw)) or True,
+        )
+        proc = _FakeProc(pid=1112)
+        _subprocess_compat.kill_process_tree(proc, taskkill_timeout=2)
+        assert calls == [(1112, {"taskkill_timeout": 2})]
 
     def test_swallows_delegation_raise_and_falls_back_to_legacy(self, monkeypatch):
         from hermes_cli import _subprocess_compat
@@ -143,7 +158,8 @@ class TestCodeExecutionDelegation:
         proc.pid = 6666
         proc.wait.side_effect = subprocess.TimeoutExpired(cmd="x", timeout=5)
         code_execution_tool._kill_process_group(proc, escalate=True)
-        assert calls == [(6666, _signal.SIGTERM), (6666, _signal.SIGKILL)]
+        hard_kill = getattr(_signal, "SIGKILL", None)
+        assert calls == [(6666, _signal.SIGTERM), (6666, hard_kill)]
         proc.wait.assert_called_once_with(timeout=5)
 
     def test_swallows_delegation_raise_falls_back_to_plain_kill(self, monkeypatch):

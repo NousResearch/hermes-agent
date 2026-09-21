@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import collections
+import errno
 import math
 import os
 import time
@@ -194,7 +195,24 @@ def _flock(fh, *, lock: bool) -> None:
     if os.name == "nt":
         import msvcrt
         fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
+        if not lock:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            return
+        # ``LK_LOCK`` normally retries internally, but under real multi-process
+        # contention Windows can surface EDEADLK immediately instead.  Poll the
+        # non-blocking primitive so a brief owner never turns into a spurious
+        # registry outage; retain the same bounded ten-second wait.
+        deadline = time.monotonic() + 10.0
+        while True:
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
     else:
         import fcntl
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX if lock else fcntl.LOCK_UN)

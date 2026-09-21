@@ -1456,7 +1456,8 @@ def scheduled_task_drift(task_name: str) -> list[str]:
     registered = _query_scheduled_task_xml(task_name)
     if registered is None:
         return []
-    template = _build_scheduled_task_xml(task_name, get_task_script_path().with_suffix(".vbs"), _resolve_task_user())
+    template = _build_scheduled_task_xml(
+        task_name, get_task_script_path().with_suffix(".task.vbs"), _resolve_task_user())
     return compare_scheduled_task_drift(registered, template)
 
 

@@ -641,7 +641,6 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(home))
     owner = dict(profile_home=str(target), session_id="bot", lease_id="lease", live_session_id="live")
     monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: owner)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
@@ -665,13 +664,11 @@ def test_live_waiter_keeps_reply_notification_after_fast_wait_window(tmp_path, m
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="bot",
                  lease_id="lease", live_session_id="live")
     queued = live.deliver_to_live_owner(tmp_path, owner, "long task")
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
-
     def settle_after_wait(_seconds):
         claimed = live.claim_pending_delivery(tmp_path, owner)
         live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="late answer")
 
-    monkeypatch.setattr(bot_mode_dm.time, "sleep", settle_after_wait)
+    monkeypatch.setattr(live.time, "sleep", settle_after_wait)
     assert bot_mode_dm._wait_live_dm(str(tmp_path), queued["delivery_id"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "settled"
@@ -1142,8 +1139,6 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     dm_file.write_text("secret plaintext", encoding="utf-8")
     intent = tmp_path / "dm-x.txt.live.json"
     intent.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
-
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="bot",
                  lease_id="lease", live_session_id="live")
     queued = live.deliver_to_live_owner(tmp_path, owner, "secret plaintext")
@@ -1157,9 +1152,9 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
         claimed = live.claim_pending_delivery(tmp_path, owner)
         live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="ok")
 
-    monkeypatch.setattr(bot_mode_dm.time, "sleep", settle_after_pending_wait)
+    monkeypatch.setattr(live.time, "sleep", settle_after_pending_wait)
     assert bot_mode_dm._wait_live_dm(str(tmp_path), queued["delivery_id"], dm_file=dm_file) == 0
-    assert waits == [5.0], "the expired fast window must retain notification ownership"
+    assert waits == [live._POLL_SECONDS], "the durable waiter must retain notification ownership"
     assert not intent.exists()
     assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
     assert json.loads(capsys.readouterr().out)["reply"] == "ok"

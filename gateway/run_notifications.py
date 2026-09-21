@@ -84,14 +84,19 @@ _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", 
 
 
 class _DeliveryVerdict(dict):
-    """Delivery counters plus an out-of-band terminal-suppression bit.
+    """Aggregate delivery counters plus out-of-band component state.
 
-    The counters remain a plain-dict contract for processing-hook callers.  A connector
-    DECLINE is still an unsuccessful delivery, but it is terminal: the normal completion
-    path must not try the same refused destination again.
+    The counters remain a plain-dict contract for processing-hook callers. Component
+    attributes let the completion path retry failed media without replaying text that
+    already landed. A connector DECLINE is unsuccessful but terminal: the normal
+    completion path must not try the same refused destination again.
     """
 
     terminal_handled = False
+    text_expected = False
+    text_succeeded = False
+    media_expected = False
+    media_succeeded = False
 
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
@@ -351,15 +356,18 @@ class GatewayNotificationsMixin:
         """
         from urllib.parse import quote as _quote
         verdict = {"expected": False, "attempted": False, "succeeded": False}
+        component_results: list[bool] = []
         with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
             # Capture [[as_document]] before extract_media strips it: images then go via send_document.
             force_document_attachments = "[[as_document]]" in response
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
             media_files, cleaned = adapter.extract_media(response)
+            requested_media_count = len(media_files)
             # Preserve the request signal before safe-path filtering.  An attachment-only
             # response whose requested path is rejected must not be reported as delivered.
             verdict["expected"] = bool(media_files)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            all_requested_media_are_safe = len(media_files) == requested_media_count
             # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
             # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
             # already EXPLICIT-ONLY (see docstring): a MEDIA: directive in the final streamed reply is the
@@ -395,8 +403,9 @@ class GatewayNotificationsMixin:
                     images = [(_file_url(p), "") for p in image_paths]
                     result = await adapter.send_multiple_images(
                         chat_id=chat_id, images=images, metadata=_thread_meta)
-                    verdict["succeeded"] |= bool(getattr(result, "success", False))
+                    component_results.append(bool(getattr(result, "success", False)))
                 except Exception as e:
+                    component_results.append(False)
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:
                 verdict["attempted"] = True
@@ -412,9 +421,19 @@ class GatewayNotificationsMixin:
                     else:
                         result = await adapter.send_document(
                             chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
-                    verdict["succeeded"] |= bool(getattr(result, "success", False))
+                    component_results.append(bool(getattr(result, "success", False)))
                 except Exception as e:
+                    component_results.append(False)
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+            # A delivery succeeds only when every requested attachment survived the
+            # safe-path filter and every attempted media component landed. OR-ing the
+            # results suppressed retries whenever just one file succeeded.
+            verdict["succeeded"] = bool(
+                verdict["expected"]
+                and all_requested_media_are_safe
+                and component_results
+                and all(component_results)
+            )
         return verdict
 
 
@@ -431,11 +450,10 @@ class GatewayNotificationsMixin:
         ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
         stays unledgered.
 
-        Returns whether the caller may treat this turn's final as delivered. True: the stream had
-        already delivered it, the reconcile edit landed, the send succeeded, or there was nothing
-        textual to send. False: the send was REFUSED (flood control, dead transport) — the caller
-        must leave the normal completion send as the fallback, or the user gets nothing. A connector
-        DECLINE returns True: that destination is not approved and must not be re-sent."""
+        Returns ``{expected, attempted, succeeded}``, where ``succeeded`` means every expected
+        text/media component landed. Component attributes retain text and media outcomes so the
+        normal completion path can retry failed media without replaying delivered text. A connector
+        DECLINE sets ``terminal_handled``: that destination is not approved and must not be retried."""
         from gateway.run import _strip_response_attachments_for_direct_send
         # ``expected`` is deliberately based on the original response.  If its only
         # deliverable is a rejected/filtered attachment, no send occurs and the caller
@@ -445,8 +463,10 @@ class GatewayNotificationsMixin:
             "attempted": bool(text_already_delivered),
             "succeeded": bool(text_already_delivered),
         })
+        text_content = _strip_response_attachments_for_direct_send(response, adapter)
+        verdict.text_expected = bool(text_content)
+        verdict.text_succeeded = bool(text_already_delivered and verdict.text_expected)
         if not text_already_delivered:
-            text_content = _strip_response_attachments_for_direct_send(response, adapter)
             if text_content:
                 # Reconcile-by-edit first: a stream-sealed message already carries most of the answer;
                 # a plain send here would duplicate it.
@@ -465,6 +485,7 @@ class GatewayNotificationsMixin:
                         if getattr(_edit_res, "success", False):
                             _reconciled = True
                             verdict["succeeded"] = True
+                            verdict.text_succeeded = True
                             logger.info(
                                 "Queued-lane final reconciled by editing message %s in place (no duplicate send).",
                                 _sc_msg_id,
@@ -490,7 +511,8 @@ class GatewayNotificationsMixin:
                         adapter, source, text_content, metadata, event_message_id, session_key,
                         inbound_message_id)
                     verdict["attempted"] = True
-                    verdict["succeeded"] |= bool(getattr(result, "success", False))
+                    verdict.text_succeeded = bool(getattr(result, "success", False))
+                    verdict["succeeded"] = verdict.text_succeeded
                     if not getattr(result, "success", False):
                         # The text never landed. Report it undelivered and skip the attachments too:
                         # the caller's normal completion send replays the whole response (text and
@@ -499,14 +521,23 @@ class GatewayNotificationsMixin:
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
+            verdict["succeeded"] = bool(
+                verdict.text_expected and verdict.text_succeeded)
             return verdict
         media_verdict = await self._deliver_media_from_response(
             response, MessageEvent(text="", source=source, message_id=event_message_id), adapter,
             thread_metadata=metadata,
         )
-        verdict["expected"] |= media_verdict["expected"]
-        verdict["attempted"] |= media_verdict["attempted"]
-        verdict["succeeded"] |= media_verdict["succeeded"]
+        verdict.media_expected = bool(media_verdict["expected"])
+        verdict.media_succeeded = bool(media_verdict["succeeded"])
+        verdict["expected"] |= verdict.media_expected
+        verdict["attempted"] |= bool(media_verdict["attempted"])
+        expected_components = []
+        if verdict.text_expected:
+            expected_components.append(verdict.text_succeeded)
+        if verdict.media_expected:
+            expected_components.append(verdict.media_succeeded)
+        verdict["succeeded"] = bool(expected_components and all(expected_components))
         return verdict
 
     async def _send_queued_final_text(

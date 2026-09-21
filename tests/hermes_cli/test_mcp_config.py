@@ -279,7 +279,7 @@ class TestMcpAdd:
 
 class TestMcpTest:
 
-    @pytest.mark.parametrize("outcome, expected", [("missing", 1), ("failure", 1), ("success", 0)])
+    @pytest.mark.parametrize("outcome, expected", [("missing", 3), ("failure", 1), ("success", 0)])
     def test_cli_main_propagates_probe_result(self, outcome, expected, tmp_path, monkeypatch, capsys):
         from hermes_cli import main as main_module, mcp_config
 

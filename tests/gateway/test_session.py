@@ -1797,3 +1797,54 @@ class TestGatewayRoutingTable:
         restarted._db.close()
 
 
+
+
+class TestCapabilityProbeConfigLoader:
+    """``_discord_tools_loaded`` / ``_slack_tools_loaded`` run per turn through
+    ``_ephemeral_change_key``, so they must use the non-copying config loader —
+    and must therefore never write to the dict it hands back."""
+
+    def _tokens(self, monkeypatch):
+        import gateway.session as _gs
+        monkeypatch.setattr(_gs, "get_registered_mcp_server_names", lambda: [], raising=False)
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "d" * 59)
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-" + "s" * 40)
+
+    def test_probes_do_not_use_the_deepcopying_loader(self, monkeypatch):
+        """load_config() deepcopies on every call (~half this probe's cost). If a future
+        edit reaches for it here, this fails instead of quietly costing a turn."""
+        import hermes_cli.config as cfg
+        from gateway.session import _discord_tools_loaded, _slack_tools_loaded
+        self._tokens(monkeypatch)
+
+        import hermes_cli.tools_config as tc
+
+        def _forbidden():
+            raise AssertionError("per-turn capability probe must use load_config_readonly()")
+        monkeypatch.setattr(cfg, "load_config", _forbidden)
+        # Both probes must reach a TRUE verdict. The probes swallow exceptions and return False,
+        # so asserting True is what makes reaching for load_config() visible here.
+        monkeypatch.setattr(tc, "_get_platform_tools", lambda *a, **kw: {"discord", "slack"})
+
+        assert _discord_tools_loaded() is True
+        assert _slack_tools_loaded() is True
+
+    def test_probes_never_mutate_the_config_they_are_given(self, monkeypatch):
+        """load_config_readonly() hands back the CACHED dict, so a probe that writes to it
+        corrupts the config for every later caller in the process. Hand the probes one known
+        dict and assert they leave it untouched."""
+        import copy as _copy
+        import hermes_cli.config as cfg
+        from gateway.session import _discord_tools_loaded, _slack_tools_loaded
+        self._tokens(monkeypatch)
+
+        shared = cfg.load_config_readonly()
+        snapshot = _copy.deepcopy(shared)
+        # Every probe call gets this exact object — no re-read can mask a write.
+        monkeypatch.setattr(cfg, "load_config_readonly", lambda: shared)
+
+        for _ in range(5):
+            _discord_tools_loaded()
+            _slack_tools_loaded()
+
+        assert shared == snapshot, "a capability probe mutated the config dict it was given"

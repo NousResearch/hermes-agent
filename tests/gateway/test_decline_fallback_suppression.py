@@ -319,6 +319,78 @@ def test_queued_reconcile_decline_does_not_fall_back_to_a_send():
     assert adapter.ops == ["edit"]
 
 
+def test_queued_reconcile_decline_is_not_recorded_as_delivered():
+    """A terminal egress refusal suppresses fallback without claiming delivery.
+
+    Exercise a stale queued follow-up because that path returns the opener result
+    to normal completion. A DECLINE does not confirm the complete final, even
+    though retrying the same destination would violate the connector's decision.
+    """
+    from gateway.run import GatewayRunner
+
+    adapter = _EditAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner._run_agent_stream_confirmed_final_delivery = lambda *_a, **_k: False
+    runner._pop_post_delivery_callback = lambda *_a, **_k: None
+    runner._is_goal_continuation_event = lambda *_a, **_k: True
+    runner._goal_still_active_for_session = lambda *_a, **_k: False
+    runner._delivery_adapter_for = lambda *_a, **_k: pytest.fail(
+        "completion touched a delivery sink after a terminal decline"
+    )
+    runner._should_send_voice_reply = lambda *_a, **_k: pytest.fail(
+        "completion evaluated voice delivery after a terminal decline"
+    )
+    source = SimpleNamespace(chat_id="C1", platform="discord")
+    consumer = SimpleNamespace(message_id="m0", _turn_split_delivery=False)
+    result = {"final_response": "SECRET"}
+    turn_ctx = SimpleNamespace(
+        mute_notification_reply=False,
+        session_key="sk1",
+        stream_consumer_holder=[consumer],
+        persist_user_display_kind="user",
+        source=source,
+        _status_thread_metadata=None,
+        event_message_id=None,
+        inbound_message_id="in1",
+        run_generation=1,
+        session_id="session-1",
+        _interrupt_depth=0,
+        history=[],
+        result_holder=[None],
+    )
+
+    terminal_result = asyncio.run(
+        runner._run_agent_queued_followup(
+            turn_ctx,
+            adapter,
+            pending="stale goal continuation",
+            pending_event=SimpleNamespace(source=source, internal=True),
+            response=result,
+            result=result,
+            stream_task=None,
+        )
+    )
+
+    assert terminal_result is result
+    assert "already_sent" not in result
+    completion_text = asyncio.run(
+        runner._hmwa_deliver_turn_response(
+            SimpleNamespace(internal=False, source=source),
+            source,
+            SimpleNamespace(session_id="session-1"),
+            "sk1",
+            1,
+            terminal_result,
+            [],
+            "SECRET\n\nMEDIA: /tmp/report.pdf",
+            "runtime footer",
+            False,
+        )
+    )
+    assert completion_text is None
+    assert adapter.ops == ["edit"]
+
+
 def test_queued_reconcile_ORDINARY_edit_failure_still_sends():
     """Control: a genuinely un-editable message must still be delivered."""
     from gateway.run_notifications import GatewayNotificationsMixin

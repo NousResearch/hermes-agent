@@ -50,10 +50,11 @@ import type { Attachment, GroupMember, GroupMessage } from './types'
 /** Deterministic @mention parse. Handles @name, @"two words" via display
  *  titles, and @everyone/@all. Names match case-insensitively against member
  *  profile names, display titles, and collapsed no-space forms. */
-export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
-  const source = String(text || '')
-  const mentioned = new Set<string>()
-  let everyone = false
+/** Every spelling of a member's name a room mention can use, mapped to that
+ *  member's key. The @-parse and the validated-mentions path MUST agree on this
+ *  table: a mention that means one member in text and another in an argument is
+ *  the bug this table exists to prevent. */
+export function groupMentionHandles(members: GroupMember[]) {
   const handles = new Map<string, string>()
 
   for (const member of members) {
@@ -118,6 +119,40 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     }
   }
 
+  return handles
+}
+
+/** The members a VALIDATED mention list names — the authority for a driven
+ *  round. A post carries its targets as data, and the round must not re-derive
+ *  them from text: a post whose text names nobody resolves to the WHOLE room,
+ *  which is how a one-member mention fans out to every member. */
+export function resolveGroupMentionTargets(mentions: unknown, members: GroupMember[]): GroupMember[] {
+  const wanted = new Set<string>()
+  const handles = groupMentionHandles(members)
+
+  for (const mention of Array.isArray(mentions) ? mentions : []) {
+    const handle = String(mention || '').trim().toLowerCase()
+
+    if (!handle) {
+      continue
+    }
+
+    const resolved = handles.get(handle) || handles.get(handle.replace(/[._-]+/g, ''))
+
+    if (resolved) {
+      wanted.add(resolved)
+    }
+  }
+
+  return members.filter(member => wanted.has(groupMemberKey(member)))
+}
+
+export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
+  const source = String(text || '')
+  const mentioned = new Set<string>()
+  let everyone = false
+  const handles = groupMentionHandles(members)
+
   for (const match of source.matchAll(/@([a-z0-9][a-z0-9._-]*)/gi)) {
     const handle = match[1].toLowerCase()
 
@@ -171,7 +206,17 @@ export function groupReplyMentionTag(member: GroupMember, members: GroupMember[]
  *  @-mentioned in messages since the last user entry (or @everyone appears),
  *  otherwise only the mentioned members. Recomputed every round so a member
  *  pulled in mid-conversation joins the next round. */
-export function resolveGroupResponders(log: GroupMessage[], members: GroupMember[]) {
+export function resolveGroupResponders(log: GroupMessage[], members: GroupMember[], targets?: GroupMember[]) {
+  // A caller that already resolved its targets — a member's validated mention
+  // list — is authoritative. Re-deriving from the log would fan a one-member
+  // post out to everyone, because the text names nobody and the fallback below
+  // is "everyone".
+  if (targets && targets.length) {
+    const wanted = new Set(targets.map(member => groupMemberKey(member)))
+
+    return members.filter(member => wanted.has(groupMemberKey(member)))
+  }
+
   let sinceLastUser: GroupMessage[] = []
 
   for (let i = log.length - 1; i >= 0; i--) {
@@ -567,7 +612,13 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string, failedMembers = new Set<string>()) {
+export async function runGroupChatRounds(
+  group: string,
+  members: GroupMember[],
+  thread: string,
+  failedMembers = new Set<string>(),
+  targets?: GroupMember[]
+) {
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -635,7 +686,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       // {before, thread} post-thread.
       const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
 
-      const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round).filter(
+      const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members, targets), round).filter(
         (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
       )
 
@@ -895,9 +946,76 @@ export function sendToGroupChat(
   return target
 }
 
+/** A member posts into the room on its own — the `room_post` harvest's write
+ *  path, and the only way a bot speaks without being driven first.
+ *
+ *  It mirrors sendToGroupChat's append + single-flight kick with one difference
+ *  that matters: a post that mentions nobody does NOT start a round. A room where
+ *  every "shipped it" announcement summons all five members is not a room, it is
+ *  a mailing list. Mention someone and the round runs exactly as if you had.
+ */
+export function postToGroupChat(
+  group: string,
+  members: GroupMember[],
+  member: GroupMember,
+  text: string,
+  thread?: null | string,
+  { kick = true, mentions = [] }: { kick?: boolean; mentions?: unknown } = {}
+): null | string {
+  const trimmed = String(text || '').trim()
+
+  if (!trimmed || rejectGroupSlashCommand(trimmed) || !members.length) {
+    return null
+  }
+
+  const target = thread || mintGroupThreadId()
+
+  const sent = appendGroupChatEntry(
+    group,
+    {
+      kind: 'member',
+      name: member.name,
+      ...(member.remoteSource
+        ? {
+            source: member.connectionLabel || member.connectionId
+          }
+        : {})
+    },
+    trimmed,
+    target
+  )
+
+  if (!sent) {
+    return null
+  }
+
+  recordGroupActivity(group, {
+    kind: 'queued',
+    member: member.name,
+    thread: target
+  })
+
+  // The validated mention LIST decides, never the text: the text is for humans,
+  // the list is the contract. Deciding on the text would run a round whose
+  // resolver then sees no mention and fans out to every member.
+  const targets = resolveGroupMentionTargets(mentions, members)
+
+  // `kick: false` is for a caller running INSIDE a live turn: kicking bumps the
+  // room's epoch, which is how a round is superseded — from a turn's own mirror
+  // step that cancels the very turn reading the transcript. The words land
+  // either way; a caller that defers the kick starts it once the room is idle.
+  if (kick && targets.length) {
+    queueGroupChatDrive(group, members, target, targets)
+  }
+
+  return target
+}
+
 interface GroupChatDrive {
   failedMembers: Set<string>
-  pending: Map<string, GroupMember[]>
+  /** Per thread: the members to drive, and — when the caller resolved them —
+   *  exactly who the round may address (a validated mention list). */
+  pending: Map<string, { members: GroupMember[]; targets?: GroupMember[] }>
   binding: ReturnType<typeof followGroupChat>
 }
 
@@ -905,14 +1023,21 @@ interface GroupChatDrive {
 // rename follows the room identity; disband retires the binding permanently.
 const groupChatDrives = new Map<string, GroupChatDrive>()
 
-function queueGroupChatDrive(group: string, members: GroupMember[], thread: string) {
+/** Start the room's rounds now, single-flight with any drive already running.
+ *  Callers that appended a member entry themselves use this; a caller inside a
+ *  live turn must NOT (see postToGroupChat's `kick`). */
+export function kickGroupChatDrive(group: string, members: GroupMember[], thread: string, targets?: GroupMember[]) {
+  queueGroupChatDrive(group, members, thread, targets)
+}
+
+function queueGroupChatDrive(group: string, members: GroupMember[], thread: string, targets?: GroupMember[]) {
   let key = groupChatRoomKey(group, $groupChats.get()[group])
   const active = groupChatDrives.get(key)
 
   if (active?.binding.isLive()) {
     // Only a new user action AFTER failure authorizes another attempt.
     active.failedMembers.clear()
-    active.pending.set(thread, members)
+    active.pending.set(thread, { members, targets })
 
     return
   }
@@ -924,7 +1049,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
     groupChatDrives.set(key, drive)
   })
 
-  const drive: GroupChatDrive = { pending: new Map([[thread, members]]), failedMembers: new Set(), binding }
+  const drive: GroupChatDrive = { pending: new Map([[thread, { members, targets }]]), failedMembers: new Set(), binding }
   groupChatDrives.set(key, drive)
   // Queued threads share the activity epoch, so draining one cannot hide
   // unresolved failures from the preceding thread. Stop still invalidates it.
@@ -935,11 +1060,11 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
 
     try {
       while (binding.isLive() && drive.pending.size) {
-        const [nextThread, nextMembers] = drive.pending.entries().next().value!
+        const [nextThread, next] = drive.pending.entries().next().value!
         currentThread = nextThread
         drive.pending.delete(nextThread)
         updateGroupChat(group, room => ({ ...room, running: true }))
-        await runGroupChatRounds(group, nextMembers, nextThread, drive.failedMembers)
+        await runGroupChatRounds(group, next.members, nextThread, drive.failedMembers, next.targets)
       }
     } catch (error) {
       if (binding.isLive()) {

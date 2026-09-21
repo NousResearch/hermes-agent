@@ -281,6 +281,11 @@ export interface Translations {
     workspaceDefault: string;
     workspaceRescan: string;
     workspaceCustom: string;
+    statTotal: string;
+    statActiveInStore: string;
+    statArchived: string;
+    statMessages: string;
+    statSources: string;
     previousPage: string;
     nextPage: string;
     roles: {

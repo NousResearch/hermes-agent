@@ -237,6 +237,11 @@ export const en: Translations = {
     workspaceDefault: "Default",
     workspaceRescan: "Rescan repositories",
     workspaceCustom: "Other path…",
+    statTotal: "Total",
+    statActiveInStore: "Active in store",
+    statArchived: "Archived",
+    statMessages: "Messages",
+    statSources: "Sources",
     sources: {
       api_server: "API server",
       acp: "ACP",

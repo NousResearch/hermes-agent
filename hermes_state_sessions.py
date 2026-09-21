@@ -1457,6 +1457,23 @@ class SessionSessionsMixin:
         )
         return self._read_one(f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", params)[0]
 
+    def count_active_sessions(self, idle_seconds: float = 300.0, *, now: float = None) -> int:
+        """Unfinished sessions whose ``last_active`` is within *idle_seconds*.
+
+        Counting in SQL rather than paging rows: the caller (``/api/status``) wants one integer, and
+        a page cannot answer it — ``list_sessions_rich`` orders by ``started_at``, so a long-running
+        session that is still active but not among the newest N is missed entirely, not merely
+        truncated. Filters mirror the default listing (children excluded, archived and hidden
+        excluded — Bot Mode marks its sessions hidden) so the number matches what the list shows.
+        """
+        where_clauses, params = _session_filter_where(exclude_children=True)
+        where_clauses.append("s.hidden = 0")
+        where_clauses.append("s.ended_at IS NULL")
+        where_clauses.append(f"{_sql_session_last_active('s')} > ?")
+        cutoff = (time.time() if now is None else now) - idle_seconds
+        return self._read_one(
+            f"SELECT COUNT(*) FROM sessions s{_where_sql(where_clauses, ' ')}", (*params, cutoff))[0]
+
     def session_count_ge(self, n: int = 1) -> bool:
         """At least N sessions exist (archived included); LIMIT short-circuits session_count()'s scan."""
         return len(self._read_all("SELECT 1 FROM sessions LIMIT ?", (n,))) >= n

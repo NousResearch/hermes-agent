@@ -70,6 +70,10 @@ def _safe_call(mod, fn_name: str, default):
         return default
 
 
+# A session counts as active when it has not ended and was active within this window.
+_ACTIVE_SESSION_IDLE_SECONDS = 300
+
+
 def _count_status_active_sessions() -> int:
     """Best-effort status garnish. Opens read-only (via the shared stale-schema heal) so
     /api/status never routinely writes to state.db while another Hermes process uses it."""
@@ -80,10 +84,11 @@ def _count_status_active_sessions() -> int:
         return 0
     db = _open_session_db_for_profile(None, read_only=True)
     try:
-        sessions = db.list_sessions_rich(limit=50, compact_rows=True)
-        now = time.time()
-        return sum(1 for s in sessions if s.get("ended_at") is None
-                   and (now - s.get("last_active", s.get("started_at", 0))) < 300)
+        # COUNT in SQL, not a page of rows: this wants one integer, and a page cannot answer it —
+        # list_sessions_rich orders by started_at, so a long-running session still active but not
+        # among the newest 50 was missed outright, not merely truncated. It also built every row's
+        # preview subquery only to discard it (11.5 ms vs 0.04 ms on an operator store).
+        return db.count_active_sessions(_ACTIVE_SESSION_IDLE_SECONDS)
     finally:
         db.close()
 

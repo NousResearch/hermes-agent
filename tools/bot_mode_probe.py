@@ -129,6 +129,40 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
     return _swallow(lambda: _any_managed(_hermes_root(_resolve_home(home))), False)
 
 
+_DESKTOP_SOURCES = frozenset({"desktop"})
+
+
+def messaging_session_allowed(
+    *,
+    title: str,
+    home: str | os.PathLike | None,
+    platform: str | None = None,
+    profile: str | None = None,
+) -> bool:
+    """True when this session may receive ``message_agent`` and the teammate protocol.
+
+    Canonical Bot Chat on a managed install (historical gate), plus a *desktop*
+    session whose current profile carries ``ui_meta.hermes-bots``. CLI, kanban
+    workers, cron, and unmanaged installs stay out.
+    """
+
+    def _ok() -> bool:
+        root = _hermes_root(_resolve_home(home))
+        if not _any_managed(root):
+            return False
+        if (title or "").strip() == BOT_CHAT_TITLE:
+            return True
+        if str(platform or "").strip().lower() not in _DESKTOP_SOURCES:
+            return False
+        name = (profile or "").strip() or "default"
+        for roster_name, roster_dir in _roster(root):
+            if roster_name.lower() == name.lower():
+                return _is_bot_managed(roster_dir)
+        return False
+
+    return _swallow(_ok, False)
+
+
 def _role_line(*parts: str) -> str:
     """'title — description' from the non-empty parts (either may be absent)."""
     return " — ".join(p for p in parts if p)

@@ -11,6 +11,7 @@ keeps resolving.
 
 import json
 import logging
+import os
 import re
 import shlex
 import stat
@@ -139,6 +140,119 @@ def _foreground_background_guidance(command: str) -> str | None:
         return None
     unquoted = _strip_quotes(command)
     return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
+
+
+_RECURSIVE_BINS = frozenset({"rg", "ripgrep", "find"})
+_GREP_BINS = frozenset({"grep", "egrep", "fgrep"})
+_DENIED_SEARCH_ERROR = (
+    "Blocked: recursive search of {root}. Use a seeded repo path."
+)
+
+
+def _denied_search_root_paths(home: Path | None = None) -> tuple[Path, ...]:
+    """Filesystem roots a recursive grep/rg/find must not use as the search root."""
+    home_path = (home or Path.home()).expanduser()
+    try:
+        home_path = home_path.resolve()
+    except OSError:
+        pass
+    roots = [Path("/"), Path("/tmp"), Path("/private/tmp"), home_path]
+    parent = home_path.parent
+    if parent in (Path("/Users"), Path("/home")):
+        roots.append(parent)
+    return tuple(roots)
+
+
+def _tokenize_command(command: str) -> list[str]:
+    """Split the original command so quoted roots like \"$HOME\" survive."""
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return command.split()
+
+
+def _is_grep_recursive_flag(token: str) -> bool:
+    """True for --recursive or a short cluster that contains r/R (-r, -rln, -nR)."""
+    if token == "--recursive":
+        return True
+    if token.startswith("--") or not token.startswith("-") or len(token) < 2:
+        return False
+    letters = token[1:]
+    return "r" in letters or "R" in letters
+
+
+def _looks_like_recursive_search(command: str, tokens: list[str]) -> bool:
+    """True for grep with -r/-R/--recursive anywhere in argv, rg, or find."""
+    if _looks_like_help_or_version_command(command):
+        return False
+    for i, token in enumerate(tokens):
+        base = Path(token).name
+        if base in _GREP_BINS and any(_is_grep_recursive_flag(t) for t in tokens[i + 1:]):
+            return True
+        if base in _RECURSIVE_BINS:
+            return True
+    return False
+
+
+def _expand_search_token(token: str) -> str:
+    return os.path.expandvars(os.path.expanduser(token))
+
+
+def _path_is_denied_search_root(raw: str, *, cwd: str | None, denied: tuple[Path, ...]) -> Path | None:
+    """Return the denied root *raw* names, else None. Subdirs of home are allowed."""
+    expanded = _expand_search_token(raw)
+    if not expanded or expanded.startswith("-"):
+        return None
+    path = Path(expanded)
+    if not path.is_absolute():
+        if cwd:
+            path = Path(cwd) / path
+        else:
+            return None
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    for root in denied:
+        try:
+            root_res = root.resolve()
+        except OSError:
+            root_res = root
+        if resolved == root_res:
+            return root_res
+    return None
+
+
+def recursive_search_root_block(
+    command: str,
+    *,
+    cwd: str | None = None,
+    home: Path | None = None,
+) -> str | None:
+    """Refuse recursive grep/rg/find whose search root is $HOME, /, /tmp, or /private/tmp.
+
+    Project subdirectories under home remain allowed. Returns the JSON error
+    envelope when blocked, else None.
+    """
+    tokens = _tokenize_command(command)
+    if not _looks_like_recursive_search(command, tokens):
+        return None
+    denied = _denied_search_root_paths(home)
+    # Relative "." / empty path list uses cwd as the search root.
+    if cwd:
+        hit = _path_is_denied_search_root(".", cwd=cwd, denied=denied)
+        has_explicit_path = any(
+            (t.startswith("/") or t.startswith("~") or t.startswith("$") or t.startswith("."))
+            and not t.startswith("-")
+            for t in tokens[1:]
+        )
+        if hit is not None and not has_explicit_path:
+            return _blocked_json(_DENIED_SEARCH_ERROR.format(root=str(hit)), "blocked")
+    for token in tokens:
+        hit = _path_is_denied_search_root(token, cwd=cwd, denied=denied)
+        if hit is not None:
+            return _blocked_json(_DENIED_SEARCH_ERROR.format(root=str(hit)), "blocked")
+    return None
 
 
 def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes: int) -> Optional[str]:

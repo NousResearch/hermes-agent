@@ -4,10 +4,11 @@ Lets a Bot Mode agent message a teammate (a profile on this install, an agent on
 a registered peer gateway, or one on another Desktop-connected machine): the
 target is validated against the live roster, the attribution prefix is applied
 server-side, and the reply arrives later via the background-process completion
-notification (fire-and-forget). Containment: the schema is injected ONLY into a
-bot's canonical "Bot Chat" session on a Bot-Mode-managed install (same gate as
-``tools/bot_mode_probe.py``; never in the registry or any toolset), and dispatch
-re-checks that gate so a forged call returns a structured error. Transports:
+notification (fire-and-forget). Containment: the schema is injected into a bot's canonical "Bot Chat"
+session on a Bot-Mode-managed install, and into desktop sessions of
+bot-managed profiles (same gate as ``tools/bot_mode_probe.py``; never in the
+registry or any toolset). Dispatch re-checks that gate so a forged call
+returns a structured error. CLI, kanban workers, and cron stay out. Transports:
 local → ``hermes -p <name> chat --in ~ -c "Bot Chat" --create-if-missing -Q
 --query-file <tmp>``; peer → ``hermes peer dm <peer>[/<name>] < <tmp>``; both via
 ``terminal_tool(background=True, notify_on_complete=True)``.
@@ -118,17 +119,22 @@ def message_agent_tool_schema() -> dict:
 
 
 def message_agent_authorized(agent: Any) -> bool:
-    """The ``message_agent`` gate: a protocol-enabled agent whose session is a managed
-    Bot-Mode canonical Bot Chat. Session-stable, so it is prompt-cache safe to re-evaluate
-    on every tool-snapshot rebuild. Never raises."""
+    """The ``message_agent`` gate: Bot Chat on a managed install, or a desktop
+    session of a bot-managed profile. Session-stable, so it is prompt-cache safe
+    to re-evaluate on every tool-snapshot rebuild. Never raises."""
     try:
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
+        from tools.bot_mode_probe import messaging_session_allowed
 
         # Managed-install check, NOT section non-emptiness: a SOUL.md carrying the
         # legacy protocol text gets an empty section but must still get the tool.
-        return _session_title(agent) == BOT_CHAT_TITLE and is_bot_mode_managed(_agent_home(agent))
+        return messaging_session_allowed(
+            title=_session_title(agent),
+            home=_agent_home(agent),
+            platform=getattr(agent, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE"),
+            profile=getattr(agent, "profile", None) or os.environ.get("HERMES_PROFILE"),
+        )
     except Exception:  # pragma: no cover — must never break a turn
         logger.debug("message_agent_authorized failed", exc_info=True)
         return False
@@ -201,17 +207,23 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE, _display_name, _handle, _hermes_root, _peers, _profile_name as _self_profile_name,
-            _roster, is_bot_mode_managed,
+            _display_name, _handle, _hermes_root, _peers, _profile_name as _self_profile_name,
+            _roster, is_bot_mode_managed, messaging_session_allowed,
         )
         from tools.bot_relay import BOT_CHAT_TURN_ARGS, _hermes_cli
 
-        if _session_title(agent) != BOT_CHAT_TITLE:
-            return _err("message_agent is only available in a Bot Mode 'Bot Chat' session. "
+        if not messaging_session_allowed(
+            title=_session_title(agent),
+            home=home,
+            platform=getattr(agent, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE"),
+            profile=getattr(agent, "profile", None) or os.environ.get("HERMES_PROFILE"),
+        ):
+            if not is_bot_mode_managed(home):
+                return _err("This install is not Bot-Mode-managed (no bot roster); "
+                            "message_agent is unavailable. Do not retry.")
+            return _err("message_agent is only available in a Bot Mode 'Bot Chat' "
+                        "or a desktop session of a Bot-managed profile. "
                         "This session is not one; do not retry.")
-        if not is_bot_mode_managed(home):
-            return _err("This install is not Bot-Mode-managed (no bot roster); "
-                        "message_agent is unavailable. Do not retry.")
     except Exception as exc:  # pragma: no cover — defensive
         return _err(f"Bot Mode gate check failed: {exc}")
 

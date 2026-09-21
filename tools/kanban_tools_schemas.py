@@ -443,6 +443,12 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "dispatcher SIGTERMs the worker and re-queues the "
                 "task with outcome='timed_out'."
         )),
+        "max_turns": _prop("integer", (
+                "Per-task agent turn cap passed to the worker as "
+                "--max-turns. Omit to keep the assignee profile's "
+                "default (unlimited when the profile has no "
+                "agent.max_turns). PLAN QA cards typically set 40."
+        )),
         "initial_status": {
             "type": "string",
             "enum": ["running", "blocked"],

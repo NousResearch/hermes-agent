@@ -20,7 +20,9 @@ from tools import bot_mode_dm, bot_mode_probe, bot_relay
 
 
 @pytest.fixture(autouse=True)
-def _fresh_probe_cache():
+def _fresh_probe_cache(monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
     bot_mode_probe._reset_cache_for_tests()
     yield
     bot_mode_probe._reset_cache_for_tests()
@@ -123,6 +125,35 @@ def test_never_injects_outside_bot_chat(tmp_path, title):
     assert agent.valid_tool_names == set()
 
 
+def _stamp_default_bot(home: Path) -> None:
+    (home / "profile.yaml").write_text(
+        "ui_meta:\n  hermes-bots:\n    title: Cabezon\n",
+        encoding="utf-8",
+    )
+
+
+def test_injects_into_desktop_session_of_bot_profile(tmp_path):
+    home = _managed_home(tmp_path)
+    _stamp_default_bot(home)
+    agent = _FakeAgent(home, title="MIOS plan review")
+    agent.platform = "desktop"
+    agent.profile = "default"
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    names = [t["function"]["name"] for t in agent.tools]
+    assert names == [bot_mode_dm.MESSAGE_AGENT_TOOL_NAME]
+
+
+def test_never_injects_kanban_worker_even_on_bot_profile(tmp_path, monkeypatch):
+    home = _managed_home(tmp_path)
+    _stamp_default_bot(home)
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
+    agent = _FakeAgent(home, title="work kanban task t_x")
+    agent.platform = "cli"
+    agent.profile = "qa-verifier"
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is False
+    assert agent.tools == []
+
+
 def test_never_injects_on_unmanaged_install(tmp_path):
     """A 'Bot Chat'-titled session on a plain install stays tool-free."""
     home = tmp_path / ".hermes"
@@ -161,7 +192,20 @@ def test_tool_refuses_outside_bot_chat(tmp_path):
         bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
     )
     assert "error" in result
-    assert "Bot Chat" in result["error"]
+    assert "Bot Chat" in result["error"] or "desktop session" in result["error"]
+
+
+def test_tool_allows_desktop_bot_profile_past_session_gate(tmp_path):
+    home = _managed_home(tmp_path, teammates=("researcher", "coder"))
+    _stamp_default_bot(home)
+    agent = _FakeAgent(home, title="ordinary desktop chat")
+    agent.platform = "desktop"
+    agent.profile = "default"
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="nosuchbot", message="hi", agent=agent)
+    )
+    assert "error" in result
+    assert set(result["teammates"]) == {"researcher", "coder"}
 
 
 def test_tool_refuses_on_unmanaged_install(tmp_path):

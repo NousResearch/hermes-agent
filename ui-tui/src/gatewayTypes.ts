@@ -83,6 +83,7 @@ export interface ConfigDisplayConfig {
   inline_diffs?: boolean
   /** UI language id (`en`, `pl`, `pt-br`); the TUI fetches its pack via `i18n.catalog`. */
   language?: string
+  vim_mode?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
   show_cost?: boolean

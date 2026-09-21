@@ -432,6 +432,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // not an interrupt.
       if (isVoiceToggleKey(key, ch, voice.recordKey)) {
         lastEscRef.current = 0
+      } else if (live.vimEnabled) {
+        // Vim owns Escape for insert → normal mode; do not also treat it as
+        // the global double-Escape clear/interrupt shortcut.
+        lastEscRef.current = 0
       } else {
         const now = Date.now()
         const isDouble = now - lastEscRef.current <= DOUBLE_ESC_MS
@@ -648,11 +652,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // Queue-edit cancel beats selection-clear for plain Esc: the queue header
     // explicitly promises "Esc cancel", so honoring it takes priority over the
     // implicit selection-dismissal convention. Without an active edit, fall through.
-    if (key.escape && cState.queueEditIdx !== null) {
+    if (key.escape && !live.vimEnabled && cState.queueEditIdx !== null) {
       return cActions.clearIn()
     }
 
-    if (key.escape && terminal.hasSelection) {
+    if (key.escape && !live.vimEnabled && terminal.hasSelection) {
       return clearSelection()
     }
 

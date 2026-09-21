@@ -245,6 +245,10 @@ _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
 # path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
 _RAW_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
+# Includes declares par l'utilisateur : signature propre, orthogonale a la signature
+# user+managed de l'amont (celle-ci ne couvre pas les fichiers inclus).
+_CONFIG_INCLUDE_KEYS = ("include", "includes")
+_CONFIG_INCLUDE_SIGNATURES: Dict[str, Tuple[Tuple[Any, ...], ...]] = {}
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS (managed by setup/provider
 # flows directly). Also the set reload_env() may remove from os.environ.
@@ -1051,6 +1055,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "unauthorized_dm_behavior", "signal", "allow_all_users",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
 }
+_EXTRA_KNOWN_ROOT_KEYS.update(_CONFIG_INCLUDE_KEYS)
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 
 # Valid fields inside a custom_providers list entry (key_env is read at runtime by
@@ -1549,6 +1554,147 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _without_config_include_keys(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy without root-level include declarations."""
+    return {k: copy.deepcopy(v) for k, v in config.items() if k not in _CONFIG_INCLUDE_KEYS}
+
+
+def _iter_config_include_values(config: Dict[str, Any]) -> List[Any]:
+    """Return root-level include values in declaration order."""
+    values: List[Any] = []
+    for key in _CONFIG_INCLUDE_KEYS:
+        raw = config.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, list):
+            values.extend(raw)
+        else:
+            values.append(raw)
+    return values
+
+
+def _resolve_config_include_path(config_path: Path, raw: Any) -> Optional[Path]:
+    if not isinstance(raw, str) or not raw.strip():
+        logger.warning("Ignoring non-string config include entry in %s: %r", config_path, raw)
+        return None
+    rendered = os.path.expandvars(os.path.expanduser(raw.strip()))
+    path = Path(rendered)
+    if not path.is_absolute():
+        path = config_path.parent / path
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _read_config_yaml(path: Path) -> Dict[str, Any]:
+    with open(path, encoding="utf-8") as f:
+        data = fast_safe_load(f) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _merge_config_includes(
+    config_path: Path,
+    config: Dict[str, Any],
+    *,
+    seen: Optional[Set[Path]] = None,
+) -> Tuple[Dict[str, Any], Tuple[Tuple[Any, ...], ...]]:
+    """Merge user-declared include files, then overlay ``config``.
+
+    Includes are relative to the file that declares them. Earlier includes are
+    lower priority than later includes, and the declaring file always wins. The
+    returned signature is used by ``load_config()`` cache invalidation.
+    """
+    seen = set(seen or ()) | {config_path.resolve()}
+    merged: Dict[str, Any] = {}
+    signatures: List[Tuple[Any, ...]] = []
+    for raw_include in _iter_config_include_values(config):
+        include_path = _resolve_config_include_path(config_path, raw_include)
+        if include_path is None:
+            continue
+        if include_path in seen:
+            logger.warning("Skipping recursive config include %s from %s", include_path, config_path)
+            continue
+        try:
+            st = include_path.stat()
+        except FileNotFoundError:
+            logger.warning("Config include %s referenced by %s does not exist", include_path, config_path)
+            signatures.append((str(config_path), raw_include, str(include_path), -1, -1))
+            continue
+        except OSError as e:
+            logger.warning("Config include %s referenced by %s is unreadable: %s", include_path, config_path, e)
+            raise
+        signatures.append((str(config_path), raw_include, str(include_path), st.st_mtime_ns, st.st_size))
+        try:
+            include_config = _read_config_yaml(include_path)
+        except Exception as e:
+            raise ValueError(f"Invalid config include {include_path}: {e}") from e
+        include_merged, include_sig = _merge_config_includes(
+            include_path,
+            include_config,
+            seen=seen | {include_path},
+        )
+        signatures.extend(include_sig)
+        merged = _deep_merge(merged, include_merged)
+    merged = _deep_merge(merged, _without_config_include_keys(config))
+    return merged, tuple(signatures)
+
+
+def _strip_included_config_values(
+    config: Dict[str, Any],
+    included: Dict[str, Any],
+    *,
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
+) -> Dict[str, Any]:
+    """Remove values that came only from include files before saving main config.
+
+    If a caller actually changed an included value, the value no longer equals
+    the include baseline and is kept as a normal main-file override.
+    """
+    preserve_keys = set(preserve_keys or ())
+    _omitted = object()
+
+    def _strip(value: Any, baseline: Any, path: Tuple[str, ...]) -> Any:
+        if path in preserve_keys:
+            return copy.deepcopy(value)
+        if isinstance(value, dict):
+            baseline_dict = baseline if isinstance(baseline, dict) else {}
+            out: Dict[str, Any] = {}
+            for key, child in value.items():
+                stripped = _strip(child, baseline_dict.get(key, _omitted), path + (key,))
+                if stripped is not _omitted:
+                    out[key] = stripped
+            return out if out else _omitted
+        if baseline is not _omitted and value == baseline:
+            return _omitted
+        return copy.deepcopy(value)
+
+    result: Dict[str, Any] = {}
+    for key, value in config.items():
+        stripped = _strip(value, included.get(key, _omitted), (key,))
+        if stripped is not _omitted:
+            result[key] = stripped
+    return result
+
+
+def _config_includes_unchanged(path_key: str) -> bool:
+    """Stat dependencies without reparsing YAML on a cache hit."""
+    for parent, raw, previous_path, mtime, size in _CONFIG_INCLUDE_SIGNATURES.get(path_key, ()):
+        path = _resolve_config_include_path(Path(parent), raw)
+        if path is None or str(path) != previous_path:
+            return False
+        try:
+            st = path.stat()
+            signature = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            signature = (-1, -1)
+        except OSError:
+            return False
+        if signature != (mtime, size):
+            return False
+    return True
+
+
 def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     """Remove dotted leaf keys from *cfg* in place -> ``(cfg, keys_actually_present)``.
     ``save_config`` drops managed-scope leaves this way so a bulk write never persists a user
@@ -1740,17 +1886,19 @@ def _strip_default_values(
     when equal to the default. Dicts whose every child is stripped are removed entirely so
     default-only subtrees never bloat ``config.yaml``."""
     preserve_keys = {("_config_version",)} | set(preserve_keys or ())
+    omitted = object()
 
     def _strip(value: Any, default: Any, path: Tuple[str, ...]) -> Any:
         if path in preserve_keys:
             return copy.deepcopy(value)
         if isinstance(value, dict) and value:
             default_dict = default if isinstance(default, dict) else {}
-            stripped = {k: _strip(v, default_dict.get(k), path + (k,)) for k, v in value.items()}
-            return {k: v for k, v in stripped.items() if v is not None} or None
-        return None if value == default else copy.deepcopy(value)
+            stripped = {k: _strip(v, default_dict.get(k, omitted), path + (k,)) for k, v in value.items()}
+            return {k: v for k, v in stripped.items() if v is not omitted} or omitted
+        return omitted if value == default else copy.deepcopy(value)
 
-    return _strip(config, defaults, ()) or {}
+    result = _strip(config, defaults, ())
+    return {} if result is omitted else result
 
 
 def split_model_config_default(raw_default: Any) -> tuple[str, str]:
@@ -2199,6 +2347,10 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
         from hermes_cli.config_backups import load_newest_good_backup
         raw_good = load_newest_good_backup(config_path)
         if raw_good is not None:
+            try:
+                raw_good, _ = _merge_config_includes(config_path, raw_good)
+            except Exception:
+                raw_good = _without_config_include_keys(raw_good)
             normalized = _canonicalize_config(_deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good))
             expanded_good: Dict[str, Any] = _expand_env_vars(normalized)  # type: ignore[assignment]
             lkg, _ = _merge_managed_overlay(expanded_good)
@@ -2244,7 +2396,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
+        if (cached is not None and cache_sig is not None and cached[:8] == cache_sig
+                and _config_includes_unchanged(path_key)):
             # Signatures match, but the cached expansion is only valid if every ${VAR} it was
             # expanded against still has the same value — otherwise a load before
             # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
@@ -2260,6 +2413,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = fast_safe_load(f) or {}
+                user_config, include_sig = _merge_config_includes(config_path, user_config)
+                _CONFIG_INCLUDE_SIGNATURES[path_key] = include_sig
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -2395,6 +2550,10 @@ def save_config(
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 
+        include_declarations = {key: _raw_for_paths[key] for key in _CONFIG_INCLUDE_KEYS
+                                if key in _raw_for_paths}
+        included_config, _ = _merge_config_includes(config_path, include_declarations)
+
         current_normalized = _canonicalize_config(config)
         normalized = current_normalized
         if _raw_for_paths:
@@ -2402,9 +2561,17 @@ def save_config(
                 normalized, _canonicalize_config(_raw_for_paths),
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
 
+        effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
+        effective_preserve_keys.add(("_config_version",))
+        if included_config:
+            normalized = _strip_included_config_values(
+                normalized, _canonicalize_config(included_config),
+                preserve_keys=effective_preserve_keys,
+            )
+        normalized.update(copy.deepcopy(include_declarations))
+
         if strip_defaults:
             # ``_strip_default_values`` always preserves ``_config_version`` itself.
-            effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
         atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))

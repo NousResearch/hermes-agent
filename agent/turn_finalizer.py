@@ -41,8 +41,66 @@ def _assistant_row_missing_visible_text(msg: dict) -> bool:
     return not flatten_message_text(msg.get("content")).strip()
 
 
+def _research_runtime_context(
+    agent, *, failure_class: str | None = None, timed_out: bool = False,
+) -> dict[str, Any] | None:
+    """Return a JSON-safe failure envelope and persist the evidence checkpoint."""
+    guardrails = getattr(agent, "_tool_guardrails", None)
+    metadata = getattr(guardrails, "research_budget_metadata", None) if guardrails is not None else None
+    if not isinstance(metadata, dict):
+        return None
+    from hermes_cli.kanban_failure import (
+        checkpoint_evidence,
+        classify_failure,
+        evidence_present,
+        failure_code,
+        write_research_checkpoint,
+    )
+
+    checkpoint = os.environ.get("HERMES_KANBAN_CHECKPOINT")
+    checkpoint_data = {}
+    if checkpoint:
+        from hermes_cli.kanban_failure import read_checkpoint
+
+        checkpoint_data = read_checkpoint(checkpoint)
+    if failure_class is None and (timed_out or metadata.get("exhausted")):
+        failure_class = classify_failure(
+            outcome="timed_out",
+            research_budget=metadata,
+            timed_out=timed_out,
+        )
+    has_evidence = evidence_present(metadata, checkpoint=checkpoint_data) or checkpoint_evidence(checkpoint)
+    stored_checkpoint = write_research_checkpoint(
+        research_budget=metadata,
+        failure_class=failure_class,
+        evidence=has_evidence,
+        path=checkpoint,
+    )
+    envelope: dict[str, Any] = dict(metadata)
+    envelope["research_recovery"] = True
+    if failure_class:
+        envelope.update({
+            "failure_class": failure_class,
+            "failure_code": failure_code(failure_class),
+            "evidence_present": has_evidence,
+        })
+    if stored_checkpoint:
+        envelope["checkpoint_path"] = stored_checkpoint
+    return envelope
+
+
+def _persist_research_checkpoint(agent) -> None:
+    """Checkpoint counters even when the worker later misses its terminal action."""
+    try:
+        _research_runtime_context(agent)
+    except Exception:
+        # Checkpointing is recovery evidence, never a reason to lose a response.
+        return
+
+
 def _record_kanban_budget_exhausted(
-    kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger
+    kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger,
+    *, failure_metadata: dict[str, Any] | None = None,
 ) -> None:
     """Record a terminal ``timed_out`` outcome for a kanban worker out of budget.
 
@@ -60,6 +118,16 @@ def _record_kanban_budget_exhausted(
         from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
         try:
+            event_payload_extra = {"budget_used": api_call_count, "budget_max": max_iterations}
+            if failure_metadata:
+                event_payload_extra.update({
+                    key: failure_metadata[key]
+                    for key in (
+                        "failure_class", "failure_code", "evidence_present", "checkpoint_path",
+                        "research_recovery",
+                    )
+                    if key in failure_metadata
+                })
             _kbd._record_task_failure(
                 _conn,
                 kanban_task,
@@ -70,8 +138,30 @@ def _record_kanban_budget_exhausted(
                 outcome="timed_out",
                 release_claim=True,
                 end_run=True,
-                event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
+                event_payload_extra=event_payload_extra,
             )
+            if (
+                failure_metadata
+                and failure_metadata.get("failure_class")
+                and not failure_metadata.get("evidence_present")
+            ):
+                _kb.block_task(
+                    _conn,
+                    kanban_task,
+                    reason=(
+                        f"{failure_metadata['failure_class']}: no preserved research evidence "
+                        "or checkpoint is available for a safe synthesis-only retry"
+                    ),
+                    kind="needs_input",
+                    metadata={
+                        key: failure_metadata[key]
+                        for key in (
+                            "failure_class", "failure_code", "evidence_present", "checkpoint_path",
+                        "research_recovery",
+                        )
+                        if key in failure_metadata
+                    },
+                )
         finally:
             with suppress(Exception):
                 _conn.close()
@@ -176,7 +266,14 @@ def _resolve_budget_fallback(
     # closed via ``_record_task_failure`` (compare-and-swap receipt path) which is a no-op if another path
     # closed it — the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
     if _kanban_task:
-        _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
+        _failure_metadata = _research_runtime_context(agent, timed_out=True)
+        _record_kanban_budget_exhausted(
+            _kanban_task,
+            api_call_count,
+            agent.max_iterations,
+            logger,
+            failure_metadata=_failure_metadata,
+        )
     return final_response, _turn_exit_reason, preserved_verification_fallback
 
 
@@ -563,6 +660,7 @@ def finalize_turn(
         mark_terminal = getattr(_research_guardrails, "mark_terminal", None)
         if callable(mark_terminal):
             mark_terminal()
+        _persist_research_checkpoint(agent)
 
     result = {
         "final_response": final_response,
@@ -598,7 +696,11 @@ def finalize_turn(
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     if _research_guardrails is not None:
         research_budget = getattr(_research_guardrails, "research_budget_metadata", None)
-        if isinstance(research_budget, dict) and research_budget.get("exhausted"):
+        if isinstance(research_budget, dict) and (
+            research_budget.get("exhausted")
+            or research_budget.get("recovery_mode")
+            or research_budget.get("collection_disabled")
+        ):
             result["research_budget"] = research_budget
     # Persistence failures already set failed=True; also stamp `error` so the gateway
     # surfaces status="error" (desktop can toast) instead of a quiet complete frame, plus

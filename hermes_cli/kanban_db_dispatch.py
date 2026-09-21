@@ -27,6 +27,22 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_cli.kanban_failure import (
+    FAILURE_CLASS_TERMINAL_PROTOCOL_VIOLATION,
+    FAILURE_CLASS_TIMEOUT_BEFORE_SYNTHESIS,
+    FINALIZATION_PROTOCOL_FAILURE,
+    RECOVERY_FAILURE_CLASSES,
+    SYNTHESIS_ONLY_MODE,
+    ResearchFailure,
+    checkpoint_evidence,
+    checkpoint_for_task,
+    classify_failure,
+    evidence_present,
+    failure_code,
+    read_checkpoint,
+    recovery_from_metadata,
+    research_policy_enabled,
+)
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -761,7 +777,9 @@ def heartbeat_worker(
     return True
 
 
-def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
+def enforce_max_runtime(
+    conn: sqlite3.Connection, *, signal_fn=None, board: Optional[str] = None,
+) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
     SIGTERM, short grace, then SIGKILL. Emits ``timed_out`` and restores the
@@ -776,7 +794,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.worker_started_at, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.research_budget "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -817,6 +835,24 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
+        task_policy = _kb._json_dict(_kb._row_get(row, "research_budget"))
+        checkpoint = checkpoint_for_task(tid, board=board)
+        checkpoint_value = str(checkpoint)
+        checkpoint_data = read_checkpoint(checkpoint_value)
+        # A timeout is a research failure only when the task's persisted policy
+        # proves that this run was bounded research. A stale checkpoint alone
+        # must not reclassify an ordinary task timeout.
+        research_recovery = research_policy_enabled(task_policy)
+        failure_class = (
+            classify_failure(
+                outcome="timed_out",
+                research_budget={"enabled": True},
+                timed_out=True,
+            )
+            if research_recovery
+            else None
+        )
+        has_evidence = evidence_present(checkpoint=checkpoint_data)
         with _kb.write_txn(conn):
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
@@ -835,6 +871,14 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "sigkill": killed,
                     "retry_status": retry_status,
                 }
+                if failure_class:
+                    payload.update({
+                        "failure_class": failure_class,
+                        "failure_code": failure_code(failure_class),
+                        "evidence_present": has_evidence,
+                        "checkpoint_path": checkpoint_value,
+                        "research_recovery": True,
+                    })
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",
                     error=error, metadata=payload,
@@ -845,14 +889,40 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # own. If the breaker trips this flips the task to ``blocked`` and emits
         # ``gave_up`` on top of the ``timed_out`` already emitted.
         if cur.rowcount == 1:
+            failure_payload = {"pid": pid, "sigkill": killed, "retry_status": retry_status}
+            if failure_class:
+                failure_payload.update({
+                    "failure_class": failure_class,
+                    "failure_code": failure_code(failure_class),
+                    "evidence_present": has_evidence,
+                    "checkpoint_path": checkpoint_value,
+                    "research_recovery": True,
+                })
             _record_task_failure(
                 conn, tid,
                 error=error,
                 outcome="timed_out",
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
+                event_payload_extra=failure_payload,
             )
+            if failure_class and research_recovery and not has_evidence:
+                _kb.block_task(
+                    conn,
+                    tid,
+                    reason=(
+                        f"{failure_class}: no preserved research evidence or checkpoint "
+                        "is available for a safe synthesis-only retry"
+                    ),
+                    kind="needs_input",
+                    metadata={
+                        "failure_class": failure_class,
+                        "failure_code": failure_code(failure_class),
+                        "evidence_present": False,
+                        "checkpoint_path": checkpoint_value,
+                        "research_recovery": True,
+                    },
+                )
     return timed_out
 
 
@@ -1081,7 +1151,7 @@ _PROTOCOL_VIOLATION_ERROR = (
     # Keep this short: ``_record_task_failure`` caps the stored error at 500 chars and the worker's own
     # last output (``_worker_final_output``, up to 400 chars) is appended after it — a longer preamble
     # truncates away the worker's explanation, which is the part the board and the retry worker need.
-    "worker exited cleanly (rc=0) without kanban_complete, kanban_block "
+    f"{FINALIZATION_PROTOCOL_FAILURE}: worker exited cleanly (rc=0) without kanban_complete, kanban_block "
     "or kanban_request_review — protocol violation. "
     "If the prior run already did the work, verify it and "
     "report it via kanban_complete (or kanban_request_review); "
@@ -1140,6 +1210,10 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    failure_class: Optional[str] = None
+    evidence_present: bool = False
+    checkpoint_path: Optional[str] = None
+    research_recovery: bool = False
 
     @property
     def run_outcome(self) -> str:
@@ -1190,13 +1264,30 @@ def _classify_dead_worker_exit(
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
         # worker via ``build_worker_context``.
+        checkpoint = checkpoint_for_task(task_id, board=board) if task_id else None
+        checkpoint_value = str(checkpoint) if checkpoint else None
+        has_evidence = checkpoint_evidence(checkpoint_value)
+        payload = {
+            "pid": pid,
+            "claimer": claimer,
+            "exit_code": code,
+            "protocol_violation": True,
+            "failure_class": FAILURE_CLASS_TERMINAL_PROTOCOL_VIOLATION,
+            "failure_code": FINALIZATION_PROTOCOL_FAILURE,
+            "evidence_present": has_evidence,
+        }
+        if checkpoint_value:
+            payload["checkpoint_path"] = checkpoint_value
         return _DeadWorker(
             kind, code, _PROTOCOL_VIOLATION_ERROR, "protocol_violation",
             # ``protocol_violation`` is the durable marker for
             # _protocol_violation_streak: _end_run copies this payload into the
             # run metadata.
-            {"pid": pid, "claimer": claimer, "exit_code": code, "protocol_violation": True},
+            payload,
             protocol_violation=True,
+            failure_class=FAILURE_CLASS_TERMINAL_PROTOCOL_VIOLATION,
+            evidence_present=has_evidence,
+            checkpoint_path=checkpoint_value,
         )
     if kind == "rate_limited":
         # Quota wall — NOT a task failure. Release to the source phase and do
@@ -1227,9 +1318,12 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
-    # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
+    # ``(task_id, pid, claimer, protocol_violation, error_text, failure_class,
+    # evidence_present, checkpoint_path, research_recovery)``: accounted
     # after the txn via ``_record_task_failure`` (needs its own write_txn).
-    crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
+    crash_details: list[tuple[str, int, str, bool, str, Optional[str], bool, Optional[str], bool]] = field(
+        default_factory=list
+    )
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
@@ -1246,7 +1340,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     with _kb.write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee, "
-            "       model_override, provider_override "
+            "       model_override, provider_override, research_budget "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -1265,6 +1359,16 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
 
             pid = int(row["worker_pid"])
             dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            task_policy = _kb._json_dict(_kb._row_get(row, "research_budget"))
+            checkpoint_data = read_checkpoint(dead.checkpoint_path)
+            dead.research_recovery = bool(
+                research_policy_enabled(task_policy)
+                or checkpoint_data.get("research_budget")
+                or checkpoint_data.get("research_recovery")
+            )
+            dead.evidence_present = evidence_present(checkpoint=checkpoint_data)
+            if dead.research_recovery:
+                dead.event_payload["research_recovery"] = True
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1316,7 +1420,11 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append(
-                    (row["id"], pid, row["claim_lock"], dead.protocol_violation, dead.error_text)
+                    (
+                        row["id"], pid, row["claim_lock"], dead.protocol_violation, dead.error_text,
+                        dead.failure_class, dead.evidence_present, dead.checkpoint_path,
+                        dead.research_recovery,
+                    )
                 )
     return sweep
 
@@ -1331,11 +1439,53 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     """
     auto_blocked: list[str] = []
     fp_counts: dict[str, int] = {}
-    for _, _, _, _, err_text in crash_details:
+    for _, _, _, _, err_text, *_ in crash_details:
         fp = _error_fingerprint(err_text)
         fp_counts[fp] = fp_counts.get(fp, 0) + 1
-    for tid, pid, claimer, protocol_violation, error_text in crash_details:
+    for (
+        tid, pid, claimer, protocol_violation, error_text, failure_class,
+        evidence_present_value, checkpoint_path_value, research_recovery,
+    ) in crash_details:
         if protocol_violation:
+            if (
+                research_recovery
+                and failure_class == FAILURE_CLASS_TERMINAL_PROTOCOL_VIOLATION
+                and not evidence_present_value
+            ):
+                tripped = _record_task_failure(
+                    conn, tid,
+                    error=error_text,
+                    outcome="crashed",
+                    failure_limit=1,
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={
+                        "pid": pid,
+                        "claimer": claimer,
+                        "failure_class": failure_class,
+                        "failure_code": FINALIZATION_PROTOCOL_FAILURE,
+                        "evidence_present": False,
+                        "checkpoint_path": checkpoint_path_value,
+                    },
+                )
+                _kb.block_task(
+                    conn,
+                    tid,
+                    reason=(
+                        f"{failure_class}: no preserved research evidence or checkpoint "
+                        "is available for a safe synthesis-only retry"
+                    ),
+                    kind="needs_input",
+                    metadata={
+                        "failure_class": failure_class,
+                        "failure_code": FINALIZATION_PROTOCOL_FAILURE,
+                        "evidence_present": False,
+                        "checkpoint_path": checkpoint_path_value,
+                        "research_recovery": True,
+                    },
+                )
+                auto_blocked.append(tid)
+                continue
             streak = _protocol_violation_streak(conn, tid)
             trow = conn.execute("SELECT max_retries FROM tasks WHERE id = ?", (tid,)).fetchone()
             if trow is None:
@@ -1523,6 +1673,8 @@ def _record_task_failure(
                 detail = {"failures": failures, "retry_status": retry_status}
                 if infrastructure:
                     detail["infrastructure"] = True
+                if event_payload_extra:
+                    detail.update(event_payload_extra)
                 run_id = _kb._end_run(
                     conn, task_id, outcome=outcome, status=outcome, error=error, metadata=detail,
                 )
@@ -1550,15 +1702,18 @@ def _record_task_failure(
         run_id = None
         if end_run:
             # Only the spawn path has an open run to close.
+            run_metadata = {
+                "failures": failures,
+                "trigger_outcome": outcome,
+                "effective_limit": effective_limit,
+                "limit_source": limit_source,
+                "retry_status": retry_status,
+            }
+            if event_payload_extra:
+                run_metadata.update(event_payload_extra)
             run_id = _kb._end_run(
                 conn, task_id, outcome="gave_up", status="gave_up", error=error,
-                metadata={
-                    "failures": failures,
-                    "trigger_outcome": outcome,
-                    "effective_limit": effective_limit,
-                    "limit_source": limit_source,
-                    "retry_status": retry_status,
-                },
+                metadata=run_metadata,
             )
         if force_trip:
             # The caller applied its own bounded policy, so the counter cannot
@@ -1602,8 +1757,52 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _research_recovery_for_task(
+    conn: sqlite3.Connection, task_id: str, *, board: Optional[str] = None,
+) -> ResearchFailure | None:
+    """Read the latest typed failure and its checkpoint for retry routing."""
+    latest = conn.execute(
+        "SELECT outcome, metadata FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if latest is None:
+        return None
+    checkpoint = checkpoint_for_task(task_id, board=board)
+    checkpoint_value = str(checkpoint)
+    checkpoint_data = read_checkpoint(checkpoint_value)
+    metadata = _kb._json_dict(latest["metadata"])
+    # Recovery routing must be based on the current failed run's durable marker;
+    # an old task-scoped checkpoint alone must never turn an ordinary later retry
+    # into synthesis-only mode.
+    if not metadata.get("research_recovery"):
+        return None
+    return recovery_from_metadata(
+        metadata,
+        checkpoint=checkpoint_data,
+        checkpoint_path_value=checkpoint_value if checkpoint.exists() else None,
+    )
+
+
+def _block_research_recovery(
+    conn: sqlite3.Connection, task_id: str, recovery: ResearchFailure,
+) -> bool:
+    """Fail closed instead of replaying collection without preserved evidence."""
+    return _kb.block_task(
+        conn,
+        task_id,
+        reason=(
+            f"{recovery.failure_class}: no preserved research evidence or checkpoint "
+            "is available for a safe synthesis-only retry"
+        ),
+        kind="needs_input",
+        metadata=recovery.to_metadata(),
+    )
+
+
 def check_respawn_guard(
-    conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
+    conn: sqlite3.Connection, task_id: str, *, lane: str = "ready", board: Optional[str] = None,
 ) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -1646,6 +1845,9 @@ def check_respawn_guard(
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
+    recovery = _research_recovery_for_task(conn, task_id, board=board)
+    if recovery is not None and not recovery.evidence_present:
+        return "research_evidence_missing"
     if latest_run is not None and latest_run["outcome"] == "spawn_failed":
         if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
             ended_at = latest_run["ended_at"]
@@ -2096,15 +2298,24 @@ def dispatch_once(
     return result
 
 
-def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -> Optional[int]:
+def _call_spawn_fn(
+    spawn_fn, task: Task, workspace: str, board: Optional[str],
+    recovery_mode: Optional[str] = None,
+) -> Optional[int]:
     """Back-compat: older spawn_fn signatures (and test stubs) accept only
     ``(task, workspace)``; pass ``board`` only when the callable supports it."""
     import inspect
     try:
         sig = inspect.signature(spawn_fn)
+        kwargs = {}
         if "board" in sig.parameters:
-            return spawn_fn(task, workspace, board=board)
-        return spawn_fn(task, workspace)
+            kwargs["board"] = board
+        if "recovery_mode" in sig.parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in sig.parameters.values()
+        ):
+            kwargs["recovery_mode"] = recovery_mode
+        return spawn_fn(task, workspace, **kwargs)
     except (TypeError, ValueError):
         return spawn_fn(task, workspace)
 
@@ -2144,7 +2355,7 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
-    guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+    guard_reason = check_respawn_guard(conn, task_id, lane=lane, board=board)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
@@ -2154,10 +2365,18 @@ def _dispatch_lane_task(
         # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
         # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
         # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
+        if not dry_run and guard_reason == "research_evidence_missing":
+            recovery = _research_recovery_for_task(conn, task_id, board=board)
+            if recovery is not None:
+                _block_research_recovery(conn, task_id, recovery)
+                result.auto_blocked.append(task_id)
+                return False
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
+
+    recovery = _research_recovery_for_task(conn, task_id, board=board)
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent
@@ -2195,7 +2414,13 @@ def _dispatch_lane_task(
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
-        pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
+        pid = _call_spawn_fn(
+            spawn_fn if spawn_fn is not None else _default_spawn,
+            claimed,
+            str(workspace),
+            board,
+            recovery_mode=(recovery.recovery_mode if recovery is not None else None),
+        )
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid))
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
@@ -2391,7 +2616,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
-    result.timed_out = enforce_max_runtime(conn)
+    result.timed_out = enforce_max_runtime(conn, board=board)
     # Goal-mode quota failures can terminate as blocked rather than EX_TEMPFAIL.
     # Recover those automatically once the profile-scoped quota probe clears.
     result.quota_unblocked = _recover_quota_blocked_tasks(conn)
@@ -2968,7 +3193,13 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     ).argv
 
 
-def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
+def _default_spawn(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+    recovery_mode: Optional[str] = None,
+) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
     Returns the child's PID so the dispatcher can detect crashes before the
@@ -3033,8 +3264,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # stale value from the dispatcher's own environment when the field is
     # absent. Task rows are validated on load, but keep this boundary fail
     # closed for tests or callers that construct a Task object directly.
-    from agent.tool_guardrails import RESEARCH_BUDGET_ENV, normalize_research_budget
+    from agent.tool_guardrails import RESEARCH_BUDGET_ENV, RESEARCH_MODE_ENV, normalize_research_budget
     env.pop(RESEARCH_BUDGET_ENV, None)
+    env.pop(RESEARCH_MODE_ENV, None)
     task_policy = getattr(task, "research_budget", None)
     if task_policy is not None:
         try:
@@ -3043,6 +3275,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             _kb._log.warning("Skipping invalid research_budget for task %s: %s", task.id, exc)
         else:
             env[RESEARCH_BUDGET_ENV] = json.dumps(policy, separators=(",", ":"))
+    if recovery_mode == SYNTHESIS_ONLY_MODE:
+        env[RESEARCH_MODE_ENV] = SYNTHESIS_ONLY_MODE
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.

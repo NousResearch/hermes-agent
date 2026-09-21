@@ -35,7 +35,8 @@ from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
-    RESEARCH_BUDGET_ENV, ToolCallGuardrailConfig, ToolCallGuardrailController,
+    RESEARCH_BUDGET_ENV, RESEARCH_MODE_ENV, RESEARCH_SYNTHESIS_ONLY_MODE,
+    ToolCallGuardrailConfig, ToolCallGuardrailController,
     normalize_research_budget,
 )
 from hermes_cli.config import cfg_get
@@ -1161,20 +1162,23 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
 def _apply_task_research_budget_override(_agent_cfg):
     """Return guardrail config with the dispatcher policy, without mutating profile config."""
     raw = os.environ.get(RESEARCH_BUDGET_ENV)
-    if raw is None:
-        return _agent_cfg
-    try:
-        override = normalize_research_budget(json.loads(raw))
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        # A malformed task envelope must not widen collection by accident.
-        # Keep the profile's own validated policy and let the dispatcher/DB
-        # remain the source of truth for the task field.
-        _ra().logger.warning("Ignoring invalid Kanban research budget override: %s", exc)
-        return _agent_cfg
-    if not override or not any(value is not None for value in override.values()):
+    recovery_mode = os.environ.get(RESEARCH_MODE_ENV, "").strip().lower()
+    if raw is None and recovery_mode != RESEARCH_SYNTHESIS_ONLY_MODE:
         return _agent_cfg
     guardrails = dict(_agent_cfg.get("tool_loop_guardrails") or {})
-    guardrails["research_budget"] = override
+    if raw is not None:
+        try:
+            override = normalize_research_budget(json.loads(raw))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            # A malformed task envelope must not widen collection by accident.
+            # Keep the profile's own validated policy and let the dispatcher/DB
+            # remain the source of truth for the task field.
+            _ra().logger.warning("Ignoring invalid Kanban research budget override: %s", exc)
+        else:
+            if override and any(value is not None for value in override.values()):
+                guardrails["research_budget"] = override
+    if recovery_mode == RESEARCH_SYNTHESIS_ONLY_MODE:
+        guardrails["research_mode"] = RESEARCH_SYNTHESIS_ONLY_MODE
     effective_cfg = dict(_agent_cfg)
     effective_cfg["tool_loop_guardrails"] = guardrails
     return effective_cfg

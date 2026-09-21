@@ -90,6 +90,9 @@ RESEARCH_COLLECTION_STATE = "COLLECT"
 RESEARCH_SYNTHESIS_STATE = "SYNTHESIZE_REQUIRED"
 RESEARCH_TERMINAL_STATE = "TERMINAL"
 RESEARCH_BUDGET_ENV = "HERMES_KANBAN_RESEARCH_BUDGET"
+RESEARCH_MODE_ENV = "HERMES_KANBAN_RESEARCH_MODE"
+RESEARCH_SYNTHESIS_ONLY_MODE = "synthesis_only"
+RESEARCH_SYNTHESIS_ONLY = "RESEARCH_SYNTHESIS_ONLY"
 RESEARCH_COLLECTION_TOOL_NAMES = frozenset({
     "web_search", "web_extract",
     "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
@@ -275,6 +278,10 @@ class ToolCallGuardrailConfig:
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
     research_budget: ResearchBudgetConfig = field(default_factory=ResearchBudgetConfig)
+    # Dispatcher-owned recovery mode. This is deliberately separate from the
+    # profile/task budget: a synthesis retry must disable collection even when
+    # the profile has no research policy of its own.
+    research_synthesis_only: bool = False
 
     @classmethod
     def from_mapping(
@@ -305,9 +312,14 @@ class ToolCallGuardrailConfig:
             )
         ):
             research_data = data
+        research_mode = str(data.get("research_mode") or "").strip().lower()
+        synthesis_only = bool(_as_bool(data.get("research_synthesis_only"), False)) or (
+            research_mode == RESEARCH_SYNTHESIS_ONLY_MODE
+        )
         return cls(
             loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")),
             research_budget=ResearchBudgetConfig.from_mapping(research_data),
+            research_synthesis_only=synthesis_only,
             **flags,
             **thresholds,
         )
@@ -522,11 +534,15 @@ class ToolCallGuardrailController:
         self._turn_subagent_count = 0
         policy = self.config.research_budget
         self._research_state = RESEARCH_COLLECTION_STATE if policy.enabled else ""
+        if self.config.research_synthesis_only:
+            self._research_state = RESEARCH_SYNTHESIS_STATE
         self._research_started_at = self._clock() if policy.enabled else None
         self._research_transitioned_at: float | None = None
         self._research_exhaustion_decision: ToolGuardrailDecision | None = None
+        self._research_recovery_decision: ToolGuardrailDecision | None = None
         self._research_web_search_count = 0
         self._research_browser_extract_count = 0
+        self._research_evidence_count = 0
         self._research_lock = threading.Lock()
 
     @property
@@ -537,19 +553,24 @@ class ToolCallGuardrailController:
     def research_budget_metadata(self) -> dict[str, Any] | None:
         """Structured state for a configured research budget."""
         policy = self.config.research_budget
-        if not policy.enabled:
+        if not policy.enabled and not self.config.research_synthesis_only:
             return None
         exhausted = self._research_exhaustion_decision is not None
+        recovery = self.config.research_synthesis_only
         data: dict[str, Any] = {
-            "enabled": True,
+            "enabled": bool(policy.enabled),
             "code": RESEARCH_BUDGET_EXHAUSTED if exhausted else None,
             "state": self._research_state or RESEARCH_COLLECTION_STATE,
-            "action": "synthesize" if exhausted else "collect",
+            "action": "synthesize" if exhausted or recovery else "collect",
             "exhausted": exhausted,
+            "recovery_mode": RESEARCH_SYNTHESIS_ONLY_MODE if recovery else None,
+            "collection_disabled": recovery,
             "web_search_count": self._research_web_search_count,
             "web_search_max": policy.web_search_max,
             "browser_extract_count": self._research_browser_extract_count,
             "browser_extract_max": policy.browser_extract_max,
+            "evidence_count": self._research_evidence_count,
+            "evidence_present": self._research_evidence_count > 0,
             "collection_deadline_seconds": self._research_effective_deadline_seconds(),
             "synthesis_reserve_seconds": policy.synthesis_reserve_seconds,
         }
@@ -561,11 +582,13 @@ class ToolCallGuardrailController:
             )
         if self._research_exhaustion_decision is not None:
             data["guardrail"] = self._research_exhaustion_decision.to_metadata()
+        if self._research_recovery_decision is not None:
+            data["guardrail"] = self._research_recovery_decision.to_metadata()
         return data
 
     def mark_terminal(self) -> None:
         """Close the configured ``COLLECT -> SYNTHESIZE_REQUIRED`` lifecycle."""
-        if self._research_exhaustion_decision is not None:
+        if self._research_exhaustion_decision is not None or self.config.research_synthesis_only:
             self._research_state = RESEARCH_TERMINAL_STATE
 
     def _research_effective_deadline_seconds(self) -> float | None:
@@ -623,6 +646,21 @@ class ToolCallGuardrailController:
         self, tool_name: str, signature: ToolCallSignature,
     ) -> ToolGuardrailDecision | None:
         policy = self.config.research_budget
+        if self.config.research_synthesis_only and tool_name in RESEARCH_COLLECTION_TOOL_NAMES:
+            decision = ToolGuardrailDecision(
+                action="block",
+                code=RESEARCH_SYNTHESIS_ONLY,
+                message=(
+                    "This recovery turn is synthesis-only: collection tools are disabled. "
+                    "Use the preserved evidence/checkpoint and finalize the task."
+                ),
+                tool_name=tool_name,
+                signature=signature,
+                state=self._research_state or RESEARCH_SYNTHESIS_STATE,
+                terminal=False,
+            )
+            self._research_recovery_decision = decision
+            return decision
         if not policy.enabled or tool_name not in policy.collection_tools:
             return None
         with self._research_lock:
@@ -716,6 +754,14 @@ class ToolCallGuardrailController:
         research_transition = self._research_after_call(tool_name, signature)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
+        if (
+            not failed
+            and isinstance(result, str)
+            and result.strip()
+            and tool_name in self.config.research_budget.collection_tools
+        ):
+            with self._research_lock:
+                self._research_evidence_count += 1
         warnings = self.config.warnings_enabled
 
         if failed:

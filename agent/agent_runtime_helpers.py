@@ -825,7 +825,7 @@ def _recover_rate_limit(
         )
         return (True, False) if rotate_and_swap(429, "rate limit, pre-exhausted") else (False, True)
     usage_limit_reached = False
-    quota_end_with_alternative = False
+    has_long_reset_horizon = False
     if error_context:
         context_reason = str(error_context.get("reason") or "").lower()
         context_message = str(error_context.get("message") or "").lower()
@@ -837,16 +837,16 @@ def _recover_rate_limit(
             reset_at is not None
             and reset_at - time.time() >= _QUOTA_END_RESET_HORIZON_SECONDS
         )
-        quota_end_with_alternative = has_long_reset_horizon and pool.has_usable_alternative(
-            credential_id=credential_id,
-            api_key_hint=api_key_hint,
-            model=model,
-            base_url=base_url,
-        )
-    if not has_retried_429 and not usage_limit_reached and not quota_end_with_alternative:
+    if not has_retried_429 and not usage_limit_reached and not has_long_reset_horizon:
         return False, True
-    label = "rate limit, quota end" if quota_end_with_alternative else "rate limit"
-    return (True, False) if rotate_and_swap(429, label) else (False, True)
+    if has_long_reset_horizon and not usage_limit_reached and not has_retried_429:
+        rotated = rotate_and_swap(
+            429,
+            "rate limit, quota end",
+            require_usable_alternative=True,
+        )
+        return (True, False) if rotated else (False, True)
+    return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
 
 
 def recover_with_credential_pool(
@@ -886,7 +886,12 @@ def recover_with_credential_pool(
     if effective_reason is None:
         effective_reason = _STATUS_TO_FAILOVER_REASON.get(status_code)
 
-    def _rotate_and_swap(default_status: int, label: str) -> bool:
+    def _rotate_and_swap(
+        default_status: int,
+        label: str,
+        *,
+        require_usable_alternative: bool = False,
+    ) -> bool:
         """Rotate away from the failed credential; True when a new entry was swapped in."""
         rotate_status = status_code if status_code is not None else default_status
         kwargs = {
@@ -908,6 +913,9 @@ def recover_with_credential_pool(
         model = getattr(agent, "model", None)
         if isinstance(model, str) and model.strip():
             kwargs["model"] = model
+        if require_usable_alternative:
+            kwargs["require_usable_alternative"] = True
+            kwargs["base_url"] = getattr(agent, "base_url", None)
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False

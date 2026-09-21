@@ -843,30 +843,6 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             available, _pending = self._available_entries(model=model)
             return bool(available)
 
-    def has_usable_alternative(
-        self,
-        *,
-        credential_id: Optional[str] = None,
-        api_key_hint: Optional[str] = None,
-        model: Optional[str] = None,
-        base_url: Optional[str] = None,
-    ) -> bool:
-        """Whether rotation can select a different credential for this route."""
-        with self._lock:
-            current = self._identify_failed_entry(credential_id, api_key_hint)
-            if current is None:
-                current = self._current_unlocked()
-            if current is None:
-                return False
-            available, _pending = self._available_entries(model=model)
-            current_key = current.runtime_api_key
-            return any(
-                candidate.id != current.id
-                and (not current_key or candidate.runtime_api_key != current_key)
-                and credential_pool_entry_serves_endpoint(candidate, base_url)
-                for candidate in available
-            )
-
     def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.
 
@@ -1918,6 +1894,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _select_unlocked(
         self, *, refresh: bool = True, count: bool = True, model: Optional[str] = None,
+        base_url: Optional[str] = None,
     ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
         """Select the best available entry; returns ``(entry, pending_refresh)``.
 
@@ -1925,6 +1902,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         not going to serve a request (a forced-refresh target lookup).
         """
         available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh, model=model)
+        if base_url is not None:
+            available = [
+                entry for entry in available
+                if credential_pool_entry_serves_endpoint(entry, base_url)
+            ]
         if not available:
             self._current_id = None
             self._log_no_available_entries()
@@ -2055,6 +2037,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
         model: Optional[str] = None,
+        require_usable_alternative: bool = False,
+        base_url: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
@@ -2067,6 +2051,19 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 entry = self._current_unlocked() or self._select_unlocked(refresh=False)[0]
             if entry is None:
                 return None
+            if require_usable_alternative:
+                available, _pending = self._available_entries(
+                    clear_expired=True, refresh=False, model=model,
+                )
+                failed_runtime_key = entry.runtime_api_key
+                has_alternative = any(
+                    candidate.id != entry.id
+                    and (not failed_runtime_key or candidate.runtime_api_key != failed_runtime_key)
+                    and credential_pool_entry_serves_endpoint(candidate, base_url)
+                    for candidate in available
+                )
+                if not has_alternative:
+                    return None
             _label = entry.label or entry.id[:8]
             if self._is_model_scoped_failure(status_code, model, failure_reason):
                 # A generic Anthropic 429 (per-model rate limit) or a Codex account model
@@ -2075,7 +2072,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 self._cool_down_model(entry, model, error_context, failure_reason=failure_reason)
                 logger.info("credential pool: %s unavailable for model %s; other models stay available", _label, model)
                 self._current_id = None
-                next_entry, _pending = self._select_unlocked(refresh=False, model=model)
+                next_entry, _pending = self._select_unlocked(
+                    refresh=False, model=model, base_url=base_url,
+                )
                 return next_entry
             self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason)
             # A 402/429/401 is a key-level failure, and the same key can back
@@ -2106,7 +2105,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             else:
                 logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False)
+            next_entry, _pending = self._select_unlocked(refresh=False, base_url=base_url)
             if next_entry is not None and next_entry.id == entry.id:
                 # No-recovery guard (#97315): selection handed back the very entry that was
                 # just marked (the auth-store sync adopted fresher tokens, or a quota probe

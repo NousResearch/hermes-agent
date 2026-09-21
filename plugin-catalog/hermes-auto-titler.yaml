@@ -1,7 +1,7 @@
 name: hermes-auto-titler
 repo: https://github.com/Vocllum/hermes-auto-titler
 sha: 307ba67936029ed27d606a40e184bc0b98dcfbc8
-description: Topic-aware session title tracking for Hermes Agent across evolving conversations.
+description: "Topic-aware session title tracking for Hermes Agent across evolving conversations. Disclosure — with the default first_title_mode: plugin the plugin sets auxiliary.title_generation.enabled: false in your ~/.hermes/config.yaml on load (not reverted on uninstall); retitles sessions in the background via your configured auxiliary/title provider."
 maintainer: Vocllum
 tier: community
 category: automation

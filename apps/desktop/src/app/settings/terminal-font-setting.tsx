@@ -118,7 +118,7 @@ export function TerminalFontSetting() {
     }, AUTOSAVE_DELAY_MS)
 
     return () => window.clearTimeout(timeout)
-  }, [draft, loadedConfig, saveVersion, t.settings.config.autosaveFailed])
+  }, [draft, loadedConfig, saveVersion, t.settings.config.autosaveFailed, writeScope])
 
   const update = (value: string) => {
     saveVersionRef.current += 1

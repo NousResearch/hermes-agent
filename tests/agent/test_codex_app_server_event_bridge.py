@@ -399,3 +399,55 @@ class TestBridgeWiredInRuntime:
         agent.tool_progress_callback.assert_called_once()
         assert agent.tool_progress_callback.call_args.args[0] == "tool.started"
         assert agent.tool_progress_callback.call_args.args[1] == "exec_command"
+
+
+@pytest.mark.parametrize("note", [
+    {"method": method, "params": {"delta": "progress"}}
+    for method in (
+        "item/agentMessage/delta", "item/reasoning/delta", "item/reasoning/summaryDelta",
+        "item/reasoning/textDelta", "item/reasoning/summaryTextDelta",
+        "item/commandExecution/outputDelta", "item/fileChange/outputDelta",
+    )
+] + [
+    {"method": method, "params": {"item": {"id": "i1", "type": kind, "text": "progress"}}}
+    for method in ("item/started", "item/completed")
+    for kind in ("agentMessage", "reasoning", "commandExecution", "mcpToolCall", "dynamicToolCall")
+])
+def test_real_progress_keeps_watchdog_alive_but_silence_still_aborts(monkeypatch, note):
+    """Display hooks are optional; real progress must reach the watchdog regardless."""
+    import threading
+    from agent import activity_tracking, turn_liveness
+
+    clock = SimpleNamespace(now=1000.0)
+    timer = SimpleNamespace(time=lambda: clock.now, monotonic=lambda: clock.now)
+    monkeypatch.setattr(activity_tracking, "time", timer)
+    monkeypatch.setattr(turn_liveness, "time", timer)
+    agent = activity_tracking.ActivityTrackingMixin()
+    agent.show_commentary = False
+    agent._touch_activity("starting new turn")
+    abort = MagicMock(return_value=True)
+    watchdog = turn_liveness.TurnLivenessWatchdog(
+        agent, session_id="test", timeout_s=600, poll_s=1,
+        stop_event=threading.Event(), activity_lock=agent._liveness_activity_lock(),
+        is_turn_active=lambda: True, commit_abort=abort, deactivate_turn=MagicMock(),
+    )
+    bridge = make_codex_app_server_event_bridge(agent)
+    # More than 600 seconds of total runtime, with progress every 300 seconds.
+    for _ in range(4):
+        clock.now += 300
+        bridge(note)
+        watchdog._tick()
+        abort.assert_not_called()
+    last_activity = agent._last_activity_ts
+    # Empty deltas / unrelated transport frames must not manufacture progress.
+    clock.now += 601
+    for idle_note in (
+        {"method": "item/agentMessage/delta", "params": {"delta": ""}},
+        {"method": "thread/tokenUsage/updated", "params": {}},
+        {"method": "unknown/keepalive", "params": {}},
+        {"method": "item/started", "params": {}},
+    ):
+        bridge(idle_note)
+    assert agent._last_activity_ts == last_activity
+    assert watchdog._tick() is False
+    abort.assert_called_once()

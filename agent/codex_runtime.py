@@ -353,8 +353,8 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     Tool items fire ``tool_progress_callback`` plus the stable-ID ``tool_start_callback`` /
     ``tool_complete_callback`` card hooks; deltas go to ``_fire_stream_delta`` / ``_fire_reasoning_delta``;
     a completed agentMessage goes to ``_emit_interim_assistant_message`` (the gateway's ``already_streamed``
-    check dedupes against streamed deltas). Every callback is guarded so a buggy display hook cannot
-    tear down the turn loop."""
+    check dedupes against streamed deltas). Current-turn progress refreshes the activity clock even
+    without display hooks. Every callback is guarded so a buggy display hook cannot tear down the turn loop."""
     # item_id -> (tool_name, args, started_monotonic); duration even when codex omits durationMs.
     started: dict[str, tuple[str, dict, float]] = {}
 
@@ -421,14 +421,37 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         "item/agentMessage/delta": lambda p: _fire_delta(p, "_fire_stream_delta"),
         "item/reasoning/delta": lambda p: _fire_delta(p, "_fire_reasoning_delta"),
         "item/reasoning/summaryDelta": lambda p: _fire_delta(p, "_fire_reasoning_delta"),
+        "item/reasoning/textDelta": lambda p: _fire_delta(p, "_fire_reasoning_delta"),
+        "item/reasoning/summaryTextDelta": lambda p: _fire_delta(p, "_fire_reasoning_delta"),
         "item/started": lambda p: _on_item(p, completed=False), "item/completed": lambda p: _on_item(p, completed=True),
+    }
+    progress_deltas = {
+        "item/agentMessage/delta", "item/reasoning/delta", "item/reasoning/summaryDelta",
+        "item/reasoning/textDelta", "item/reasoning/summaryTextDelta",
+        "item/commandExecution/outputDelta", "item/fileChange/outputDelta",
     }
 
     def on_event(note: dict) -> None:
-        handler = handlers.get(note.get("method") or "") if isinstance(note, dict) else None
+        if not isinstance(note, dict):
+            return
+        method = note.get("method") or ""
+        params = note.get("params")
+        params = params if isinstance(params, dict) else {}
+        # The session has already filtered foreign thread/turn notifications. Count
+        # progress even without UI callbacks (or when commentary is hidden), but
+        # never let empty deltas or transport keepalives mask a stalled turn.
+        delta = params.get("delta") or params.get("text")
+        item = params.get("item")
+        is_delta = method in progress_deltas and isinstance(delta, str) and bool(delta)
+        is_item = (
+            method in {"item/started", "item/completed"} and isinstance(item, dict)
+            and item.get("type") in _CODEX_TOOL_ITEM_TYPES | {"agentMessage", "reasoning"}
+        )
+        if is_delta or is_item:
+            agent_cb("_touch_activity", "_touch_activity raised", args=(f"codex app-server: {method}",))
+        handler = handlers.get(method)
         if handler is not None:
-            params = note.get("params")
-            handler(params if isinstance(params, dict) else {})
+            handler(params)
     return on_event
 
 

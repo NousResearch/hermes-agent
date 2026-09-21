@@ -9,7 +9,7 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { hiddenPaneProps } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { I18nProvider } from '@/i18n'
-import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { $clarifyRequest, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
@@ -166,6 +166,27 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     rerender(clarifyTree(<ClarifyTool {...liveClarifyProps()} />))
 
     expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+  })
+
+  it('keeps the request answerable when its live server receipt has expired', async () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    setClarifyRequest({
+      choices: ['staging', 'production'],
+      multiSelect: false,
+      question: 'Which deployment target?',
+      requestId: 'missing-request',
+      sessionId: 'session-1'
+    })
+    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect($clarifyRequest.get()?.requestId).toBe('missing-request')
+      expect(screen.getByRole('button', { name: /Continue/ }).hasAttribute('disabled')).toBe(false)
+    })
   })
 
   it('demotes when the turn is stopped after the card was live but never answered', () => {
@@ -669,7 +690,7 @@ describe('ClarifyTool submit shortcut', () => {
 
   it('submits a complete batch from its text field while preserving incomplete and multiline input', async () => {
     for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
-      const { request } = renderLiveBatch()
+      const { request, respond } = renderLiveBatch()
       const field = screen.getByPlaceholderText('Type your answer…')
       fireEvent.change(field, { target: { value: 'packet' } })
       field.focus()
@@ -680,12 +701,8 @@ describe('ClarifyTool submit shortcut', () => {
       fireEvent.keyDown(field, { key: 'Enter', isComposing: true, ...modifier })
       expect(request).not.toHaveBeenCalled()
       fireEvent.keyDown(field, { key: 'Enter', ...modifier })
-      await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
-      expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', {
-        answer: 'packet',
-        question_id: 'q1',
-        request_id: 'request-batch'
-      })
+      await waitFor(() => expect(respond).toHaveBeenCalledWith({ answers: { q0: 'red', q1: 'packet' } }))
+      expect(request).not.toHaveBeenCalled()
       cleanup()
     }
   })
@@ -720,7 +737,8 @@ describe('ClarifyTool batch card', () => {
   })
 
   it('swaps the preview for the live form and answers with the request qids', async () => {
-    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+    const request = vi.fn()
+    let respond!: ReturnType<typeof vi.fn>
     $activeSessionId.set('session-1')
     $gateway.set({ request } as never)
     const { rerender } = renderClarify(<ClarifyTool {...liveBatchProps()} />)
@@ -728,7 +746,7 @@ describe('ClarifyTool batch card', () => {
     expect(document.querySelector('[data-clarify-batch-preview]')).toBeTruthy()
 
     act(() => {
-      liveServerRequest('request-batch')
+      respond = liveServerRequest('request-batch')
       setClarifyRequest({
         choices: null,
         multiSelect: false,
@@ -750,10 +768,8 @@ describe('ClarifyTool batch card', () => {
     fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
-    await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
-    // Locks ride the live qids, never the preview's synthetic ones.
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
-    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answers: { q0: 'red', q1: 'packet' } }))
+    expect(request).not.toHaveBeenCalled()
   })
 
   it('stages locally and keeps the single confirm disabled until all answered', async () => {
@@ -774,47 +790,28 @@ describe('ClarifyTool batch card', () => {
     expect((confirm as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('confirm sends every per-question clarify.lock in order and completes the batch', async () => {
-    const { request } = renderLiveBatch()
+  it('confirm atomically answers the original server request and completes the batch', async () => {
+    const { request, respond } = renderLiveBatch()
 
     fireEvent.click(screen.getByRole('button', { name: /red/ }))
     fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
-    await waitFor(() => {
-      expect(request).toHaveBeenCalledTimes(2)
-    })
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
-      answer: 'red',
-      question_id: 'q0',
-      request_id: 'request-batch'
-    })
-    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', {
-      answer: 'packet',
-      question_id: 'q1',
-      request_id: 'request-batch'
-    })
-    // The last lock resolves the server request; the card forgets it locally.
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answers: { q0: 'red', q1: 'packet' } }))
+    expect(request).not.toHaveBeenCalled()
     await waitFor(() => expect(hasOpenServerRequest('request-batch')).toBe(false))
   })
 
   it('a staged answer stays editable before confirm', async () => {
-    const { request } = renderLiveBatch()
+    const { request, respond } = renderLiveBatch()
 
     fireEvent.click(screen.getByRole('button', { name: /red/ }))
     fireEvent.click(screen.getByRole('button', { name: /blue/ }))
     fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
-    await waitFor(() => {
-      expect(request).toHaveBeenCalledTimes(2)
-    })
-    // The re-pick won: blue, not red.
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
-      answer: 'blue',
-      question_id: 'q0',
-      request_id: 'request-batch'
-    })
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answers: { q0: 'blue', q1: 'packet' } }))
+    expect(request).not.toHaveBeenCalled()
   })
 
   it('keeps a picked multi-select batch choice when typing a custom answer alongside it', async () => {
@@ -919,8 +916,7 @@ describe('ClarifyTool batch card', () => {
 // backend that never held the request and the owner stays blocked until the
 // tool times out. A clarify answer is now the server request's own response
 // frame — it rides the socket the request arrived on, so no routing decision is
-// left to make. Only `clarify.lock` (a real client→server RPC) still dials a
-// socket, and it must route by request.sessionId.
+// left to make, including for complete batch answers.
 
 const OWNER_CONNECTION_ID = 'conn-profile-a'
 const OWNER_PROFILE = 'profile-a'
@@ -939,16 +935,6 @@ function armCrossProfileOwner() {
   $gateway.set({ request: ambient } as never)
 
   return ambient
-}
-
-function expectOwnerLock(nth: number, params: Record<string, unknown>) {
-  expect(gatewayMocks.requestGatewayForAgent).toHaveBeenNthCalledWith(
-    nth,
-    OWNER_CONNECTION_ID,
-    OWNER_PROFILE,
-    'clarify.lock',
-    params
-  )
 }
 
 describe('ClarifyTool owner routing', () => {
@@ -981,9 +967,9 @@ describe('ClarifyTool owner routing', () => {
     expect(ambient).not.toHaveBeenCalled()
   })
 
-  it('sends both sequential batch locks on the owner socket, in order', async () => {
+  it('answers a complete batch through its server request, never profile B ambient', async () => {
     const ambient = armCrossProfileOwner()
-    liveServerRequest('request-batch')
+    const respond = liveServerRequest('request-batch')
 
     setClarifyRequest({
       choices: null,
@@ -1002,12 +988,8 @@ describe('ClarifyTool owner routing', () => {
     fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
     fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
 
-    await waitFor(() => {
-      expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(2)
-    })
-    // The LAST lock resolves the blocked tool, so order is load-bearing.
-    expectOwnerLock(1, { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
-    expectOwnerLock(2, { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answers: { q0: 'red', q1: 'packet' } }))
+    expect(gatewayMocks.requestGatewayForAgent).not.toHaveBeenCalled()
     expect(ambient).not.toHaveBeenCalled()
   })
 

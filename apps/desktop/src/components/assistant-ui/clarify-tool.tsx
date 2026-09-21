@@ -40,8 +40,7 @@ import {
 import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
-import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
-import { requestForOwnedSession } from '@/store/session-states'
+import { respondToServerRequest } from '@/store/server-requests'
 
 import { handleClarifySubmitShortcut } from './clarify-submit-shortcut'
 import { selectMessageRunning } from './tool/fallback-model'
@@ -482,8 +481,17 @@ function ClarifyToolSinglePending({
 
       try {
         // The response frame goes back over the socket the request arrived on —
-        // the owner backend by construction (#91684's class cannot recur).
-        respondToServerRequest(matchingRequest.requestId, { answer })
+        // the owner backend by construction (#91684's class cannot recur). A
+        // reconnect/cancel race can still retire that local receipt first; do
+        // not clear an answerable card or leave it spinning when nothing left
+        // the renderer.
+        if (!respondToServerRequest(matchingRequest.requestId, { answer })) {
+          notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed, { action: reconnectAction() })
+          setSubmitting(false)
+
+          return
+        }
+
         triggerHaptic('submit')
         onAnswered()
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
@@ -944,12 +952,9 @@ function BatchQuestionBlock({
 const emptyStage = { choices: [] as string[], draft: '' }
 
 /** Live batch card: all questions at once, staged locally, ONE confirm.
- * Picks and drafts stay in component state — nothing reaches the server
- * until every question has a staged answer and the user presses the single
- * "Confirm and continue" button, which sends the per-question locks
- * back-to-back and completes the batch. Staged answers stay editable up to
- * that moment. The per-question wire protocol is unchanged (the TUI/CLI
- * still lock incrementally); this card just batches its locks at the end. */
+ * Picks and drafts stay in component state until every question has an answer.
+ * Confirm resolves the original server request atomically with the complete
+ * qid-keyed map, so the response returns on the socket that owns the request. */
 function ClarifyToolBatchPending({
   fromArgs,
   onAnswered,
@@ -961,7 +966,6 @@ function ClarifyToolBatchPending({
 }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
-  const gateway = useStore($gateway)
 
   // qids only exist on the gateway request — args are a hydration-race
   // fallback for display, never answerable (no ids to respond with).
@@ -1063,8 +1067,8 @@ function ClarifyToolBatchPending({
   const allStaged = answeredCount === questions.length
 
   const confirmAll = useCallback(async () => {
-    if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
+    if (!request) {
+      notifyError(new Error(copy.notReady), copy.sendFailed)
 
       return
     }
@@ -1072,37 +1076,28 @@ function ClarifyToolBatchPending({
     setSubmitting(true)
 
     try {
-      // Sequential, not Promise.all: the LAST lock resolves the blocked
-      // server request, so every earlier lock must already be accepted when
-      // it lands — a reordered burst could complete the batch with a missing
-      // answer. `clarify.lock` is a normal RPC; it rides the session's OWNER
-      // socket (a profile / Bot Chat switch re-points ambient elsewhere).
-      for (const question of questions) {
-        const answer = stagedAnswer(question)
+      const answers: Record<string, string> = {}
 
-        await requestForOwnedSession<{ remaining?: string[]; status?: string }>(
-          request.sessionId,
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'clarify.lock',
-          {
-            answer: answer ?? '',
-            question_id: question.qid,
-            request_id: request.requestId
-          }
-        )
+      for (const question of questions) {
+        answers[question.qid] = stagedAnswer(question) ?? ''
       }
 
-      forgetServerRequest(request.requestId)
+      if (!respondToServerRequest(request.requestId, { answers })) {
+        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed, { action: reconnectAction() })
+        setSubmitting(false)
+
+        return
+      }
 
       triggerHaptic('submit')
       onAnswered()
-      // tool.complete lands next → ClarifyToolBatchSettled.
+      // tool.complete lands next → ClarifyToolSettled.
       clearClarifyRequest(request.requestId, request.sessionId)
     } catch (error) {
       notifyError(error, copy.sendFailed)
       setSubmitting(false)
     }
-  }, [copy, gateway, onAnswered, questions, request, stagedAnswer])
+  }, [copy, onAnswered, questions, request, stagedAnswer])
 
   const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
     setStaged(current => {
@@ -1140,7 +1135,7 @@ function ClarifyToolBatchPending({
 
     // A response with no `answers` is the cancel-all (the plain Esc path).
     respondToServerRequest(request.requestId, {})
-  }, [gateway, onAnswered, request])
+  }, [onAnswered, request])
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {

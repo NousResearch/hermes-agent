@@ -38,6 +38,9 @@ class RubikaAdapter(BasePlatformAdapter):
             for item in _extra_or_secret(extra, "allowed_users", "RUBIKA_ALLOWED_USERS", "").split(",")
             if item.strip()
         }
+        self._require_mention = _extra_or_secret(
+            extra, "require_mention", "RUBIKA_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        self._bot_username = _extra_or_secret(extra, "bot_username", "RUBIKA_BOT_USERNAME", "")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not _token(self.config.extra or {}):
@@ -92,6 +95,15 @@ class RubikaAdapter(BasePlatformAdapter):
             return True
         return sender_id.lower() in self._allowed_users
 
+    def _should_process_message(self, parsed: "ParsedMessage") -> bool:
+        """DMs always pass. Group messages pass when require_mention is off,
+        or when the text opens with an @bot_username mention."""
+        if not parsed.is_group or not self._require_mention:
+            return True
+        if not self._bot_username:
+            return True  # nothing configured to match against — fail open, same as DingTalk's own default
+        return parsed.text.strip().lower().startswith(f"@{self._bot_username.lower()}")
+
     async def _dispatch_update(self, update: Dict[str, Any]) -> None:
         update_type = update.get("type")
         if update_type == "NewMessage":
@@ -103,6 +115,9 @@ class RubikaAdapter(BasePlatformAdapter):
         if not self._is_user_allowed(parsed.sender_id):
             return logger.debug("[%s] Dropping message from non-allowlisted sender %s",
                                 self.name, parsed.sender_id)
+        if not self._should_process_message(parsed):
+            return logger.debug("[%s] Dropping group message that failed mention gate: chat_id=%s",
+                                self.name, parsed.chat_id)
         if not parsed.text:
             return logger.debug("[%s] Empty message, skipping", self.name)
         source = self.build_source(

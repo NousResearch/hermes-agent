@@ -1217,6 +1217,111 @@ def _revert_credential_rotation(agent) -> None:
     agent._credential_pool_revert_id = None
 
 
+def _pool_activation_epoch(entry) -> float:
+    """``activated_at`` of a pooled entry as a float epoch (0.0 when absent or unparseable)."""
+    raw = getattr(entry, "activated_at", None)
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    parsed = _parse_absolute_timestamp(raw) if raw else None
+    return float(parsed or 0.0)
+
+
+def adopt_activated_credential(agent) -> bool:
+    """Move a live session onto a credential the USER just activated, at the turn boundary.
+
+    Reordering the pool (``hermes auth priority``, the account-switch chip) only steers sessions
+    that resolve their credential afterwards; an open chat keeps billing the account it bound at
+    init until a 429/402 rotates it off (#114501 covers the cooldown mirror of this). The deliberate
+    activation stamps ``activated_at``, and this hook adopts it before the turn's first API call:
+    nothing in flight is touched, and the swap is refused when the entry's route cannot serve this
+    conversation's model or endpoint.
+
+    Deliberately NOT a re-``select()`` every turn: rotating accounts mid-conversation invalidates the
+    provider-side prompt cache (scoped per account), so only an explicit activation moves the session.
+    """
+    pool = getattr(agent, "_credential_pool", None)
+    provider = (getattr(agent, "provider", "") or "").strip().lower()
+    if pool is None or not provider:
+        return False
+    base_url = getattr(agent, "base_url", None)
+    if not credential_pool_matches_provider(pool, provider, base_url=base_url):
+        return False  # a fallback/foreign pool is attached: its activations are not ours to adopt
+    from agent.credential_pool import load_pool
+
+    try:
+        key = resolve_runtime_pool_key(provider, base_url)
+        fresh = load_pool(key) if key else None
+    except Exception as exc:  # noqa: BLE001 - never let a pool read break a turn
+        logger.debug("Activation check could not reload the credential pool: %s", exc)
+        return False
+    if fresh is None or not credential_pool_matches_provider(fresh, provider, base_url=base_url):
+        return False
+    try:
+        candidates = fresh.entries()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Activation check could not read the pool entries: %s", exc)
+        return False
+    if not candidates:
+        return False
+    # The activation stamp is the signal, not the pool head: ``peek()`` reports the entry a pool
+    # object already bound (``_current_id``), which on a reloaded pool is not yet the promoted one.
+    head = max(candidates, key=_pool_activation_epoch)
+    activated_at = _pool_activation_epoch(head)
+    baseline = getattr(agent, "_pool_activation_seen", None)
+    if baseline is None:
+        # First look: stamps that predate this session's binding are history, not a user choice
+        # made during the conversation (same first-look discipline as env credential adoption).
+        agent._pool_activation_seen = activated_at
+        return False
+    if activated_at <= baseline:
+        return False
+    if head.id == getattr(agent, "_credential_pool_entry_id", None):
+        agent._pool_activation_seen = activated_at
+        return False  # already on the activated account: re-swapping would only cost the cache
+    if not credential_pool_entry_serves_endpoint(head, base_url):
+        agent._pool_activation_seen = activated_at  # settled: this activation is not for us
+        logger.info(
+            "Credential %s was activated but serves another endpoint than this session (%s) — not adopting",
+            getattr(head, "id", "?"), base_url,
+        )
+        return False
+    # Confirm the chosen credential can actually serve the next request. Promoting a quota-benched
+    # account would hand the turn a guaranteed 429; the baseline stays put so a later turn adopts it
+    # once its window reopens.
+    try:
+        usable = fresh.reclaim(head.id, model=getattr(agent, "model", None))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Activation check could not confirm credential availability: %s", exc)
+        return False
+    if usable is None:
+        logger.info(
+            "Credential %s (%s) was activated but is still cooling down — staying put for now",
+            getattr(head, "id", "?"), getattr(head, "label", "?"),
+        )
+        return False
+    head = usable
+    agent._pool_activation_seen = activated_at
+    previous_pool = pool
+    previous_entry_id = getattr(agent, "_credential_pool_entry_id", None)
+    agent._credential_pool = fresh
+    if agent._swap_credential(head) is False:
+        # Refused (the entry's route cannot serve this conversation's model): leave the session exactly as it was.
+        agent._credential_pool = previous_pool
+        agent._credential_pool_entry_id = previous_entry_id
+        return False
+    # The user's explicit choice outranks a pending automatic revert to the benched credential.
+    agent._credential_pool_revert_id = None
+    logger.info(
+        "Adopted activated credential %s (%s) for the live session",
+        getattr(head, "id", "?"), getattr(head, "label", "?"),
+    )
+    with contextlib.suppress(Exception):
+        agent._emit_diagnostic_status(
+            f"🔑 Account switched to {getattr(head, 'label', '?')}; this chat uses it from this turn on."
+        )
+    return True
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
@@ -1225,6 +1330,7 @@ def restore_primary_runtime(agent) -> bool:
         # _fallback_index past the chain end and silently block future fallbacks.
         agent._fallback_index = 0
         _revert_credential_rotation(agent)
+        adopt_activated_credential(agent)
         return False
     # Reset the chain index even when no fallback was activated this turn. Without this, a turn where
     # _try_activate_fallback() was called but returned False (chain exhausted or provider not configured)
@@ -3534,6 +3640,7 @@ __all__ = [
     "convert_to_trajectory_format", "sanitize_tool_call_arguments", "repair_message_sequence",
     "strip_think_blocks", "recover_with_credential_pool", "try_recover_primary_transport",
     "drop_thinking_only_and_merge_users", "restore_primary_runtime", "extract_reasoning",
+    "adopt_activated_credential",
     "dump_api_request_debug", "prompt_caching_disabled_from_config", "blank_cache_policy_stub",
     "plan_cache_sections_for_destination", "anthropic_prompt_cache_policy", "create_openai_client",
     "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages",

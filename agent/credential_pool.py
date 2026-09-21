@@ -175,6 +175,10 @@ _EXTRA_KEYS = frozenset({
     # raw status cannot size a cooldown; persisted so a restart doesn't downgrade
     # a billing bench to a 60s transient cooldown.
     "failure_reason",
+    # Epoch of the last DELIBERATE activation of this entry (``hermes auth priority``, a
+    # dashboard/plugin promote). Live sessions read it at the turn boundary and adopt the account
+    # the user just chose, instead of waiting for a 429/402 to rotate them onto it.
+    "activated_at",
 })
 
 # Nous singleton metadata mirrored between auth.json state and ``entry.extra``.

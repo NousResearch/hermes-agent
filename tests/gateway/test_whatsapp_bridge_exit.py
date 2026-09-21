@@ -172,8 +172,13 @@ class TestCrashPathUnchanged:
 
 class TestRecordIsClearedBeforeSpawn:
     @pytest.mark.asyncio
-    async def test_connect_clears_a_stale_record_before_starting_the_bridge(self, tmp_path):
-        """The record describes one process, so it must not outlive it into the next bridge's exit."""
+    async def test_a_stale_record_cannot_classify_the_next_process_exit(self, tmp_path):
+        """The record describes one process, so it must not outlive it into the next bridge's exit.
+
+        The two halves are one contract: the real spawn preparation clears the record, and an
+        exit that follows with no record of its own stays a retryable crash instead of
+        inheriting the previous session's terminal reason.
+        """
         bridge_dir = tmp_path / "whatsapp-bridge"
         bridge_dir.mkdir()
         (bridge_dir / "bridge.js").write_text("// bridge\n", encoding="utf-8")
@@ -208,6 +213,19 @@ class TestRecordIsClearedBeforeSpawn:
         assert not (session / "bridge-exit.json").exists(), (
             "a record left by the previous bridge would classify the new process's crash as terminal"
         )
+
+        # The spawned bridge dies without recording anything of its own. The previous
+        # session's record is gone, so this exit is an ordinary crash and must stay retryable.
+        adapter._bridge_process = _ExitedProc(1)
+
+        message = await adapter._check_managed_bridge_exit()
+
+        assert adapter.fatal_error_retryable is True, (
+            "the previous session's terminal record classified an unrelated exit; the bridge "
+            "would be dropped as permanently unusable without a re-pair that never happened"
+        )
+        assert adapter.fatal_error_code == "whatsapp_bridge_exited"
+        assert "exited unexpectedly" in message
 
     def test_clear_is_idempotent(self, tmp_path):
         from plugins.platforms.whatsapp.adapter import _clear_bridge_exit, _read_bridge_exit_reason

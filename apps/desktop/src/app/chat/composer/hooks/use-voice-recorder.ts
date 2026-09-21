@@ -112,5 +112,5 @@ export function useVoiceRecorder({
     status: voiceStatus
   }
 
-  return { dictate, voiceActivityState, voiceStatus }
+  return { dictate, startDictation: start, stopDictation: stop, voiceActivityState, voiceStatus }
 }

@@ -24,6 +24,7 @@ import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
+import { useHoldCommandDictation } from './use-hold-command-dictation'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
@@ -99,12 +100,16 @@ export function useComposerVoice({
     previousSessionIdRef.current = sessionId
   }, [sessionId])
 
-  const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
+  const { dictate, startDictation, stopDictation, voiceActivityState, voiceStatus } = useVoiceRecorder({
     focusInput,
     maxRecordingSeconds,
     onTranscript: insertText,
     onTranscribeAudio
   })
+
+  // A global hold gesture is owned by the main composer, never every visible
+  // tile composer, so only one microphone can be opened for a key press.
+  useHoldCommandDictation({ disabled, enabled: target === 'main', start: startDictation, stop: stopDictation })
 
   const surfaceId = useComposerSurfaceId()
   const capturing = voiceConversationActive || voiceStatus !== 'idle'

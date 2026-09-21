@@ -31,6 +31,7 @@ import {
   systemPreferences
 } from 'electron'
 
+import { enableMacRendererAccessibility } from './accessibility-support'
 import { classifyActiveRuntime } from './active-runtime-state'
 import {
   destroyKeepaliveAgents,
@@ -18535,6 +18536,10 @@ function registerDeepLinkProtocol() {
 // Single-instance lock: deep links on a running app (Win/Linux) arrive as a
 // second-instance argv. Without the lock a second `hermes://` launch spawns a
 // whole new app instead of routing into the running one.
+// Keep the rich composer in Chromium's AX tree so macOS dictation and other
+// assistive tools can target its existing textbox role and accessible label.
+enableMacRendererAccessibility(process.platform, app)
+
 const _gotSingleInstanceLock = app.requestSingleInstanceLock()
 const isPrimaryInstance = _gotSingleInstanceLock
 

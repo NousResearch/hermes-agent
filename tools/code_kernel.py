@@ -197,7 +197,7 @@ def _spill(text, spill_name):
 
 def _reply(payload):
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    _real_stdout.buffer.write(("\n" + _SENTINEL + " " + str(len(body)) + "\n").encode("utf-8"))
+    _real_stdout.buffer.write(("\\n" + _SENTINEL + " " + str(len(body)) + "\\n").encode("utf-8"))
     _real_stdout.buffer.write(body)
     _real_stdout.buffer.flush()
 

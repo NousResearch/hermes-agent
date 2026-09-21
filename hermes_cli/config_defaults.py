@@ -1849,6 +1849,11 @@ DEFAULT_CONFIG = {
         # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
         # sdlc-review skill. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
+        # Profile that runs review tasks, so a card is reviewed by someone other than the profile
+        # that implemented it. "" = the row's own assignee reviews it (the reviewer the worker set,
+        # which is the implementer when nobody was reassigned). Ignored when it does not name an
+        # installed profile. Spawn-only: the card keeps showing its own assignee.
+        "review_profile": "",
         # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,

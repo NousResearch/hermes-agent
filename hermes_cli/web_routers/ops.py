@@ -499,8 +499,12 @@ async def set_memory_provider(body: MemoryProviderSelect, profile: Optional[str]
     provider = _normalize_memory_provider_name(body.provider)
 
     def _run():
-        _require_memory_provider_ready(provider)
+        # Readiness resolves through load_config()/_discover_memory_provider_statuses(), so it
+        # MUST run inside the scope: outside it a provider configured only in the target profile
+        # reads as "not ready" (refused) and one configured only in the launch profile reads as
+        # ready and gets written into the target as a broken setting.
         with config_write_scope(profile):
+            _require_memory_provider_ready(provider)
             cfg = load_config()
             if not isinstance(cfg.get("memory"), dict):
                 cfg["memory"] = {}
@@ -708,6 +712,11 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
     """
     from agent import shell_hooks
 
+    # Creating an auto-approved shell hook is strictly more privileged than removing one:
+    # it writes an arbitrary command into `hooks:` and, with `approve`, into that profile's
+    # consent allowlist. Same rule as DELETE — an unnamed profile is refused while several
+    # are served rather than silently arming the launch profile.
+    profile = destructive_profile(profile, "POST /api/ops/hooks")
     event, command = _hook_body_fields(body)
     valid_hooks = None
     with contextlib.suppress(Exception):

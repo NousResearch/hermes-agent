@@ -276,15 +276,23 @@ async def delete_agent_plugin(request: Request, name: str):
 
 
 @router.put("/api/dashboard/plugin-providers")
-async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
+async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody,
+                               profile: Optional[str] = None):
     """Persist memory provider / context engine selection (writes config.yaml)."""
     _require_token(request)
     from hermes_cli.plugins_cmd import _save_context_engine, _save_memory_provider
 
     def _run():
-        with _CONFIG_MUTATION_LOCK:
+        # ``_save_memory_provider``/``_save_context_engine`` are functools.partial over
+        # ``_write_config_value`` -> save_config: the write is one hop away and lands in
+        # whatever home the scope names. Unlike plugin INSTALLATION (host venv, pinned to the
+        # serving profile), these two keys are per-profile settings — `memory.provider` is the
+        # same key PUT /api/memory/provider scopes — so they follow ``?profile=``.
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             if body.memory_provider is not None:
                 memory_provider = _normalize_memory_provider_name(body.memory_provider)
+                # Readiness resolves through load_config(); inside the scope so the answer is
+                # about the profile being written, not the launch profile.
                 _require_memory_provider_ready(memory_provider)
                 _save_memory_provider(memory_provider)
             if body.context_engine is not None:

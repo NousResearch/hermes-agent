@@ -58,16 +58,19 @@ async def config_scoped_to_thread(profile: Optional[str], fn: Callable[[], Any])
 
 
 def destructive_profile(profile: Optional[str], route: str) -> Optional[str]:
-    """The profile a DESTRUCTIVE route acts on, or 400 when it is ambiguous.
+    """The profile a DESTRUCTIVE or PRIVILEGED route acts on, or 400 when it is ambiguous.
 
-    One backend serves every profile, so an omitted ``profile`` on a route that
-    deletes or overwrites profile-owned data is not a default — it silently meant
+    One backend serves every profile, so an omitted ``profile`` on a route that deletes,
+    overwrites or privileges profile-owned data is not a default — it silently meant
     "whichever home this process launched with". Named profile: honoured. Omitted:
     rejected as soon as the process hosts more than one profile
     (``is_multiplex_active()``, decided once at boot by
     ``activate_multi_profile_hosting_eagerly``). A genuinely single-profile host has
     nothing to confuse, so there an omitted profile keeps meaning the launch profile
     and `curl` against a plain ``hermes serve`` is unchanged.
+
+    "Privileged" is the same class as "destructive": arming an auto-approved shell hook
+    in the wrong profile is at least as bad as removing one from it.
     """
     if (profile or "").strip():
         return profile

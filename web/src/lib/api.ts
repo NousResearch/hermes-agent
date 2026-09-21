@@ -4,6 +4,8 @@ import {
   type ModelOptionsResult,
 } from "@hermes/shared";
 
+import { dashboardServingProfile } from "./profile-bootstrap";
+
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
 // (e.g. https://mission-control.tilos.com/hermes/). The Python backend
@@ -64,8 +66,18 @@ export function setManagementProfile(name: string): void {
   _managementProfile = (name || "").trim();
 }
 
+/**
+ * The profile every management call targets: the switcher's selection, or —
+ * before it has resolved / on a host with no switcher interaction — the profile
+ * this backend itself serves.
+ *
+ * The fallback is not a guess: the backend injects a name only when it provably
+ * resolves back to its own home, so it names exactly the home an unnamed request
+ * already reached. Without it the dashboard sends no `?profile=` at all and every
+ * destructive route 400s as soon as the host has a second profile directory.
+ */
 export function getManagementProfile(): string {
-  return _managementProfile;
+  return _managementProfile || dashboardServingProfile();
 }
 
 // Endpoint families that honor ?profile= on the backend (web_server.py
@@ -108,18 +120,33 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/ops",
   "/api/logs",
   "/api/portal",
+  // Pool entries live in the profile's home, and DELETE /api/credentials/pool/{provider}/{index}
+  // is destructive — without this prefix the dashboard's remove button never named a profile and
+  // a multi-profile host refused it outright.
+  "/api/credentials",
+  // Not covered by "/api/dashboard/plugins": this one writes memory.provider + context.engine
+  // into the named profile's config.yaml (same key as PUT /api/memory/provider).
+  "/api/dashboard/plugin-providers",
+  // Model/runtime activation persists into config.yaml; the read routes ignore an extra param.
+  "/api/model/recommended-default",
+  "/api/local-models",
   "/api/dashboard/theme",
   "/api/dashboard/font",
   "/api/dashboard/plugins",
 ];
 
+// The dashboard's own profile when nothing else named one. The backend injects it only
+// when it provably resolves back to the serving home, so this can never retarget another
+// profile — it just says out loud what an unnamed request already meant. Without it every
+// destructive route 400s on a host that merely HAS a second profile directory.
 function withManagementProfile(url: string): string {
-  if (!_managementProfile) return url;
+  const scope = getManagementProfile();
+  if (!scope) return url;
   if (url.includes("profile=")) return url; // explicit param wins
   const path = url.split("?")[0];
   if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
   const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+  return `${url}${sep}profile=${encodeURIComponent(scope)}`;
 }
 
 export async function fetchJSON<T>(
@@ -281,6 +308,11 @@ export async function authedFetch(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
+  // Same management scope as fetchJSON: a binary endpoint under a profile-scoped
+  // family (``/api/ops/backup/download``) must read the SELECTED profile's archive,
+  // not the launch profile's, and an unprofiled back door beside a family that now
+  // 400s is exactly how the next hole gets in.
+  url = withManagementProfile(url);
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {

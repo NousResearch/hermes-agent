@@ -657,7 +657,7 @@ def _restart_on_new_tag(job: Dict[str, Any], tag: str, previous: list) -> bool:
 
 
 @router.post("/api/local-models/runtime/install")
-async def local_models_runtime_install(body: RuntimeInstallBody):
+async def local_models_runtime_install(body: RuntimeInstallBody, profile: Optional[str] = None):
     tag, backend = _runtime_target(body.backend)
     plan = _resolve_assets_or_400(tag, backend)
     job = _job("runtime-install", f"llama.cpp {tag} ({backend})")
@@ -665,9 +665,13 @@ async def local_models_runtime_install(body: RuntimeInstallBody):
     def _run():
         previous = binaries.installed_tags()
         _step(job, "downloading", f"Fetching {len(plan.assets)} package(s) for {backend}")
-        binaries.ensure_runtime_installed(tag, backend, progress=_runtime_progress_hook(job))
-        # Restart failure is logged only: the new build is installed either way and the next boot serves it.
-        restarted = _quiet(lambda: _restart_on_new_tag(job, tag, previous), False, warn="post-update restart skipped: %s")
+        # The engine binaries are machine-global, but ensure_local_runtime also regenerates the
+        # launch presets under get_hermes_home() — scope so those land in the named profile.
+        with _config_profile_scope(profile):
+            binaries.ensure_runtime_installed(tag, backend, progress=_runtime_progress_hook(job))
+            # Restart failure is logged only: the new build is installed either way and the next boot serves it.
+            restarted = _quiet(lambda: _restart_on_new_tag(job, tag, previous), False,
+                               warn="post-update restart skipped: %s")
         # N-1 retention, only after the new tag verified: keep it + the newest previous build as the rollback pin target.
         _quiet(lambda: binaries.prune_old_tags([tag] + [t for t in previous if t != tag][:1]), None,
                warn="runtime prune skipped: %s")
@@ -748,7 +752,7 @@ def _quickstart_target(body: QuickstartBody, budget):
 
 
 @router.post("/api/local-models/quickstart")
-async def local_models_quickstart(body: QuickstartBody):
+async def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
     missing), make it the default. Each leg uses the same code as the individual setup routes.
     Preflight rejects (no automatic recommendation or no servable choice) fail the POST
@@ -775,11 +779,14 @@ async def local_models_quickstart(body: QuickstartBody):
             job["done_bytes"] = 0
             job["total_bytes"] = download_bytes
             _run_download_plan(job, download_plan, entry.display_name)
-        # Activate: same sequence as /activate's job body.
-        _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
-                       fail_detail="The local server could not start — open Local Models for details",
-                       skip_msg="quickstart rescan check skipped")
-        _assign_default(job, variant.model_id)
+        # Activate: same sequence as /activate's job body, and the same scope. Quickstart IS
+        # `activate` plus a download: _set_runtime_enabled and _assign_default both reach
+        # save_config, so without this the config.yaml write lands in the launch profile.
+        with _config_profile_scope(profile):
+            _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
+                           fail_detail="The local server could not start — open Local Models for details",
+                           skip_msg="quickstart rescan check skipped")
+            _assign_default(job, variant.model_id)
         _finish(job, f"{entry.display_name} is ready — new chats use it")
 
     _spawn_job(job, "lr-quickstart", _run, fail_msg="quickstart failed: %s", on_exit=_QUICKSTART_LOCK.release)

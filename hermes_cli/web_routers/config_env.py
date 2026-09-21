@@ -154,8 +154,8 @@ async def update_config(
 
 @config_router.get("/api/telemetry/shared-metrics")
 async def get_shared_metrics_consent(profile: Optional[str] = None):
-    """Consent state for the Settings page and the one-time desktop prompt (``decided`` false +
-    ``enabled`` false is the only combination that may ask)."""
+    """Consent state for the Settings page and the one-time desktop prompt (which asks only when
+    nothing anywhere has answered: ``decided`` false AND ``source == "default"``)."""
     from hermes_cli.observability.shared_metrics_consent import shared_metrics_state
 
     def _run():

@@ -120,6 +120,19 @@ def test_deployment_env_answers_for_every_profile_below_a_recorded_answer(monkey
     assert shared_metrics_state({}) == (False, False, True, "global")
 
 
+def test_deployment_env_typo_declines_and_is_logged_once(monkeypatch, caplog):
+    """Fail closed on an unrecognised value, but say so: a typo must not look like a decision."""
+    import logging
+
+    monkeypatch.setenv("HERMES_SHARED_METRICS", "sharing")
+    consent._warned_env_values.clear()
+    with caplog.at_level(logging.WARNING, logger=consent.__name__):
+        assert shared_metrics_state({}) == (False, False, True, "env")
+        assert shared_metrics_state({}).source == "env"
+    warnings = [r for r in caplog.records if "not a recognised boolean" in r.getMessage()]
+    assert len(warnings) == 1 and "sharing" in warnings[0].getMessage()
+
+
 def test_deployment_env_can_pre_decline_and_unset_means_undecided(monkeypatch):
     monkeypatch.setenv("HERMES_SHARED_METRICS", "false")
     assert shared_metrics_state({}) == (False, False, True, "env")

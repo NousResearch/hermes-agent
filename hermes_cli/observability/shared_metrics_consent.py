@@ -100,12 +100,32 @@ def write_global_consent(share: bool) -> None:
     )
 
 
+_FALSY_STRINGS = frozenset({"0", "false", "no", "off"})
+_warned_env_values: set[str] = set()
+
+
 def env_consent() -> Optional[bool]:
-    """The deployment's answer from ``HERMES_SHARED_METRICS``, or None when unset/blank."""
-    from utils import is_truthy_value
+    """The deployment's answer from ``HERMES_SHARED_METRICS``, or None when unset/blank.
+
+    An unrecognised value declines (fail closed: it must not share, and an automated instance
+    must not be asked) and is logged once, so an operator typo is visible rather than silently
+    attributed to the deployment in Settings.
+    """
+    from utils import TRUTHY_STRINGS
 
     raw = os.getenv(CONSENT_ENV_VAR, "").strip()
-    return is_truthy_value(raw) if raw else None
+    if not raw:
+        return None
+    value = raw.lower()
+    if value in TRUTHY_STRINGS:
+        return True
+    if value not in _FALSY_STRINGS and raw not in _warned_env_values:
+        _warned_env_values.add(raw)
+        logger.warning(
+            "%s=%r is not a recognised boolean; treating it as 'false' (metrics not shared)",
+            CONSENT_ENV_VAR, raw,
+        )
+    return False
 
 
 # ── effective state ──────────────────────────────────────────────────────────
@@ -131,6 +151,9 @@ def shared_metrics_state(config: dict) -> SharedMetricsState:
     deployment_answer = env_consent()
     if isinstance(explicit, bool):
         enabled = explicit
+        # A profile that wrote its own keys must ALSO say ``send: true`` to transmit (a hand-set
+        # ``enabled: true`` alone is collect-only). Every writer sets both keys, so this only
+        # matters for hand-edited configs, and it errs towards not sending.
         send = enabled and shared.get("send") is True
         source = "profile"
     else:

@@ -345,8 +345,10 @@ telemetry:
   `shared_metrics_state` is the single resolver every reader uses (relay gate,
   sender, wizard, `GET /api/telemetry/shared-metrics`, which also reports
   `decided` and `source: profile|global|env|default`).
-- **The one-time question** is asked while collection is off for the current
-  profile AND no global answer exists: the interactive CLI asks once before the
+- **The one-time question** is asked only when nothing anywhere has answered
+  for the current profile — no explicit profile key (a hand-set `enabled:
+  false` is a decision too), no recorded global answer, no
+  `HERMES_SHARED_METRICS` (`source: default`): the interactive CLI asks once before the
   REPL starts (TTY only, never on managed installs); the Desktop asks once after
   onboarding is out of the way. Either answer, or dismissing the Desktop dialog,
   records a decision, so it is asked at most once per user, not per profile.

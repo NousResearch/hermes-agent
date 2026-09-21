@@ -732,6 +732,12 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Dock/ETA additive columns (KANBAN-DOCK-CONTRACT-2026-09-21 §3).
+    est_hours: Optional[float] = None
+    est_source: Optional[str] = None
+    est_at: Optional[int] = None
+    p_band: Optional[str] = None
+    dock_order: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -762,6 +768,9 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    # Dock/ETA additive columns (KANBAN-DOCK-CONTRACT-2026-09-21 §3); read as
+    # NULL on DBs opened before the columns existed.
+    "est_hours", "est_source", "est_at", "p_band", "dock_order",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -960,13 +969,29 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to ``blocked`` for a human. Preserved across unblock so a re-block for
     -- the SAME kind can be recognised as a loop.
     block_kind           TEXT,
-    -- Unblock-loop counter. Incremented each time a task is re-blocked for the
-    -- same truly-blocked reason after having been unblocked. When it reaches
-    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
-    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
+    -- Unblock-loop counter. Incremented each time a task is re-blocked for
+    -- the same truly-blocked reason after having been unblocked. When it
+    -- reaches BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead
+    -- of ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Initial flash-class time-cost estimate in wall-clock hours
+    -- (KANBAN-DOCK-CONTRACT-2026-09-21 §3). NULL = not yet estimated;
+    -- ETA math falls back to 1.0h (kanban_eta.DEFAULT_HOURS).
+    est_hours            REAL,
+    -- 'stub-table' | 'glm-5.3-flash' | 'manual' | 'migration'; which seam
+    -- produced the current est_hours.
+    est_source           TEXT,
+    -- Epoch seconds of the last estimate write.
+    est_at               INTEGER,
+    -- Deep's priority band 'P0'|'P1'|'P2'|'P3'; NULL displays as P2.
+    -- tasks.priority stays the dispatcher's numeric axis, auto-synced to the
+    -- band centers P0=8 P1=6 P2=4 P3=2 on band change.
+    p_band               TEXT,
+    -- Manual order within band (dense 0..N-1, POST /tasks/reorder rewrites).
+    -- NULL = created_at ASC fallback (kanban_eta NULLS-last).
+    dock_order           INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1246,6 +1271,109 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+# --- Dock/ETA columns (KANBAN-DOCK-CONTRACT-2026-09-21 §2/§3) ----------------
+
+def _validate_p_band(p_band: Optional[str]) -> Optional[str]:
+    """Normalize a priority band to 'P0'|'P1'|'P2'|'P3' or None; else ValueError."""
+    if p_band is None or p_band == "":
+        return None
+    band = str(p_band).strip().upper()
+    if band not in ("P0", "P1", "P2", "P3"):
+        raise ValueError(f"p_band must be one of P0|P1|P2|P3, got {p_band!r}")
+    return band
+
+
+def set_p_band(
+    conn: sqlite3.Connection, task_id: str, p_band: Optional[str], *,
+    sync_priority: bool = True,
+) -> bool:
+    """Set Deep's priority band; when ``sync_priority`` (the default), also
+    snaps ``tasks.priority`` to the band center (P0=8, P1=6, P2=4, P3=2) so
+    the dispatcher axis follows the band (contract D3). One ``band_changed``
+    event + post-commit observer. False when the task is missing."""
+    band = _validate_p_band(p_band)
+    from hermes_cli.kanban_eta import BAND_CENTERS
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT priority FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            return False
+        conn.execute(
+            "UPDATE tasks SET p_band = ?, priority = ? WHERE id = ?",
+            (band, BAND_CENTERS.get(band, 4) if sync_priority else row["priority"], task_id))
+        _append_event(
+            conn, task_id, "band_changed",
+            {"p_band": band, "priority_synced": bool(sync_priority and band)})
+    notify_task_updated(conn, task_id, ("p_band", "priority"))
+    return True
+
+
+def set_manual_estimate(
+    conn: sqlite3.Connection, task_id: str, est_hours: Optional[float],
+) -> bool:
+    """Persist a manual estimate: ``est_source='manual'``, ``est_at=now``
+    (contract §2.2). False when the task is missing."""
+    hours = None if est_hours is None else float(est_hours)
+    if hours is not None and not (0 < hours <= 1000):
+        raise ValueError(f"est_hours must be in (0, 1000], got {est_hours!r}")
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET est_hours = ?, est_source = ?, est_at = ? WHERE id = ?",
+            (hours, "manual" if hours is not None else None,
+             int(time.time()) if hours is not None else None, task_id))
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn, task_id, "estimated",
+            {"est_hours": hours, "est_source": "manual" if hours is not None else None})
+    notify_task_updated(conn, task_id, ("est_hours",))
+    return True
+
+
+def reorder_tasks(
+    conn: sqlite3.Connection, ordered_ids: Iterable[str], *,
+    adopt: Optional[dict] = None,
+) -> int:
+    """Rewrite ``dock_order`` densely 0..N-1 in ``ordered_ids`` order — ONE
+    write transaction (atomic vs concurrent moves; SQLite's single-writer
+    BEGIN IMMEDIATE serializes racers, last commit wins whole) — plus the
+    optional adopt-on-drop band change, all-or-nothing with the renumber
+    (contract §2.3/D4).
+
+    Listed-but-missing ids are skipped, not 409. Unlisted tasks keep their
+    dock_order. Returns the number of tasks renumbered."""
+    ids = [i for i in (str(x) for x in ordered_ids) if i]
+    # Dedupe, first occurrence wins (a duplicate id in one payload is a client
+    # bug, not a reason to hand SQLite a tie).
+    seen: set[str] = set()
+    ids = [i for i in ids if not (i in seen or seen.add(i))]
+    adopt_id = (adopt or {}).get("id")
+    adopt_band = _validate_p_band((adopt or {}).get("p_band")) if adopt else None
+    from hermes_cli.kanban_eta import BAND_CENTERS
+
+    with write_txn(conn):
+        if adopt_id:
+            # Adopt-on-drop first (Deep's rule): the dragged task adopts the
+            # target row's band; its priority snaps to the band center.
+            if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (adopt_id,)).fetchone():
+                conn.execute(
+                    "UPDATE tasks SET p_band = ?, priority = ? WHERE id = ?",
+                    (adopt_band, BAND_CENTERS.get(adopt_band, 4), adopt_id))
+        count = 0
+        for i, tid in enumerate(ids):
+            cur = conn.execute(
+                "UPDATE tasks SET dock_order = ? WHERE id = ?", (i, tid))
+            count += cur.rowcount
+        if ids:
+            # Board-level event (no single owning task): anchored on the first
+            # listed id so the events table's task_id shape holds. Skipped for
+            # empty payloads (nothing happened worth tailing).
+            anchor = ids[0] if ids else (adopt_id or "?")
+            _append_event(conn, anchor, "reordered", {"count": count, "adopt": adopt or None})
+    return count
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1260,6 +1388,11 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    est_hours: Optional[float] = None,
+    est_source: Optional[str] = None,
+    est_at: Optional[int] = None,
+    p_band: Optional[str] = None,
+    dock_order: Optional[int] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1314,6 +1447,13 @@ def create_task(
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
+    # Dock/ETA columns (contract §2.1/§3): validate the band; estimates are
+    # written as given (the REST layer runs the stub seam when est_hours is
+    # absent, and stamps est_at/est_source itself).
+    p_band = _validate_p_band(p_band)
+    est_hours = None if est_hours is None else float(est_hours)
+    est_at = _opt_int(est_at)
+
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
     if idempotency_key:
@@ -1359,8 +1499,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        est_hours, est_source, est_at, p_band, dock_order
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1370,6 +1511,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        est_hours, est_source, est_at, p_band, _opt_int(dock_order),
                     ),
                 )
                 for pid in parents:
@@ -1392,6 +1534,9 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,
+                        "p_band": p_band,
+                        "est_hours": est_hours,
+                        "est_source": est_source,
                     },
                 )
                 if task_status == "blocked":
@@ -1502,6 +1647,10 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "created": "created_at ASC, id ASC",
     "created-desc": "created_at DESC, id DESC",
     "priority": "priority DESC, created_at ASC",
+    # Board default (KANBAN-DOCK-CONTRACT-2026-09-21 §3): priority-first with
+    # the manual dock position as the intra-priority tiebreak (NULLS last via
+    # the IS NULL sort key — SQLite has no native NULLS LAST).
+    "dock": "priority DESC, dock_order IS NULL, dock_order ASC, created_at ASC, id ASC",
     "priority-desc": "priority ASC, created_at ASC",
     "status": "status ASC, created_at ASC",
     "assignee": "assignee ASC, created_at ASC",
@@ -1536,7 +1685,9 @@ def list_tasks(
             raise ValueError(f"order_by must be one of {sorted(VALID_SORT_ORDERS.keys())}")
         query += f" ORDER BY {VALID_SORT_ORDERS[order_by]}"
     else:
-        query += " ORDER BY priority DESC, created_at ASC"
+        # Board default (contract §3): priority DESC, then manual dock position
+        # NULLS-last, then created_at ASC.
+        query += " ORDER BY priority DESC, dock_order IS NULL, dock_order ASC, created_at ASC"
     if limit:
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()

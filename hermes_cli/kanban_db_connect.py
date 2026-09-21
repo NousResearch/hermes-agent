@@ -837,6 +837,15 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Dock/ETA additive columns (KANBAN-DOCK-CONTRACT-2026-09-21 §3):
+    # est_hours REAL, est_source TEXT, est_at INTEGER, p_band TEXT,
+    # dock_order INTEGER — all nullable, no backfill (NULL = fallback
+    # semantics defined by the contract and kanban_eta.py).
+    ("est_hours", "est_hours REAL"),
+    ("est_source", "est_source TEXT"),
+    ("est_at", "est_at INTEGER"),
+    ("p_band", "p_band TEXT"),
+    ("dock_order", "dock_order INTEGER"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

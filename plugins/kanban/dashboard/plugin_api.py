@@ -306,13 +306,36 @@ def get_board(
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
             columns[t.status if t.status in columns else "todo"].append(d)
 
-        # Per-column ordering (priority DESC, created_at ASC) comes from list_tasks.
+        # Per-column ordering (priority DESC, dock_order NULLS-last, created_at ASC) comes from list_tasks.
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
         assignees = [r["assignee"] for r in conn.execute(
             "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND status != 'archived' ORDER BY assignee")]
+
+        # ETA block (contract §2.4): continuous max-blast projection on cheap
+        # flash-class workers; cheap (O(n log n), n≈40) so it runs inline on
+        # every /board call. Rendering (12-hour clock) is the frontend's job.
+        eta: Optional[dict[str, Any]] = None
+        try:
+            from hermes_cli.kanban_eta import project_backlog, P_MAX_DEFAULT
+
+            p_max = P_MAX_DEFAULT
+            try:
+                from hermes_cli.config import load_config
+
+                p_max = int((load_config() or {}).get("kanban", {}).get("eta_max_parallel") or P_MAX_DEFAULT)
+            except Exception:
+                pass
+            now = int(time.time())
+            eta = project_backlog([asdict(t) for t in tasks], now=now, p_max=p_max)
+            eta = {"now": now, **eta}
+        except Exception as exc:  # pragma: no cover - the board must never 500 on ETA math
+            log.warning("kanban /board eta projection failed: %s", exc)
+            eta = None
+
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
-            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
+            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time()),
+            "eta": eta}
 
 
 _read_board = coalesced_read(get_board)
@@ -389,13 +412,46 @@ class CreateTaskBody(BaseModel):
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
+    # Dock/ETA additions (KANBAN-DOCK-CONTRACT-2026-09-21 §2.1): est_hours
+    # absent → the stub estimator seam runs (failure → 1.0h default, never
+    # blocks create); p_band snaps priority to the band center unless
+    # priority is explicitly sent in the same payload.
+    est_hours: Optional[float] = None
+    p_band: Optional[str] = None
+    dock_order: Optional[int] = None  # rare; POST /tasks/reorder is the normal path
 
 
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
+        fields = payload.model_dump()
+        # Estimator seam (contract §2.1/§4): est_hours absent → stub seam.
+        # kanban_eta.estimate_task_hours is the seam t_cf6770dc swaps to the
+        # LLM door; never let a seam failure block the create.
+        now = int(time.time())
+        if fields.get("est_hours") is None:
+            # Estimator seam (contract §2.1/§4): est_hours absent → the seam
+            # (stub table now; the ETA-engine task may hot-swap its internals —
+            # never let a seam failure block the create).
+            try:
+                from hermes_cli.kanban_eta import estimate_task_hours
+                hours, source = estimate_task_hours(payload.title, payload.body)
+                fields["est_hours"], fields["est_source"] = float(hours), source
+            except Exception:
+                fields["est_hours"], fields["est_source"] = 1.0, "stub-table"
+            fields["est_at"] = now
+        else:
+            # Explicit estimate = manual (contract §2.1): est_source='manual',
+            # est_at=now.
+            fields["est_source"], fields["est_at"] = "manual", now
+        # Band → dispatcher-axis sync (contract D3): an explicit priority in
+        # the same payload wins (it is a deliberate dispatcher override).
+        p_band = fields.get("p_band")
+        if p_band and fields.get("priority") in (None, 0):
+            from hermes_cli.kanban_eta import BAND_CENTERS
+            fields["priority"] = BAND_CENTERS.get(str(p_band).strip().upper(), 4)
         # CreateTaskBody field names match create_task's keyword parameters.
-        task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **payload.model_dump())
+        task_id = kanban_db.create_task(conn, created_by="dashboard", board=board, **fields)
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
         # Dispatcher-presence warning so the UI can banner a ready+assigned task that would
@@ -506,6 +562,11 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Dock/ETA additions (contract §2.2): est_hours → est_source='manual',
+    # est_at=now; p_band also snaps priority to the band center UNLESS
+    # priority is explicitly sent in the same patch.
+    est_hours: Optional[float] = None
+    p_band: Optional[str] = None
 
 
 class BulkTaskBody(BaseModel):
@@ -671,6 +732,16 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 _require_ok(ok)
         if payload.priority is not None:
             _set_priority(conn, task_id, payload.priority, board)
+        # Dock/ETA fields (contract §2.2). Order: est first (independent), then
+        # band. Priority explicitly sent in this patch wins over the band's
+        # center snap (set_p_band(sync_priority=False)); band-only patches snap.
+        if payload.est_hours is not None:
+            with _map_errors(400, ValueError, RuntimeError):
+                _require_ok(kanban_db.set_manual_estimate(conn, task_id, payload.est_hours))
+        if payload.p_band is not None:
+            with _map_errors(400, ValueError, RuntimeError):
+                _require_ok(kanban_db.set_p_band(
+                    conn, task_id, payload.p_band, sync_priority=payload.priority is None))
         if payload.title is not None or payload.body is not None:
             _patch_title_body(conn, task_id, payload, board)
         updated = kanban_db.get_task(conn, task_id)
@@ -683,6 +754,25 @@ def delete_task(task_id: str, board: Optional[str] = Query(None)):
         if not kanban_db.delete_task(conn, task_id):
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
         return {"deleted": True, "task_id": task_id}
+
+
+# --- POST /tasks/reorder (KANBAN-DOCK-CONTRACT-2026-09-21 §2.3) ---------------
+
+class ReorderBody(BaseModel):
+    orderedIds: list[str]
+    # Deep's adopt-on-drop rule: the dragged task adopts the target row's band
+    # (applied server-side in the same transaction as the renumber).
+    adopt: Optional[dict] = None  # {id: str, p_band: 'P0'|'P1'|'P2'|'P3'}
+
+
+@router.post("/tasks/reorder")
+def reorder_tasks(payload: ReorderBody, board: Optional[str] = Query(None)):
+    """Rewrite dock_order densely 0..N-1 for the listed ids in ONE transaction;
+    unlisted tasks keep their dock_order; listed-but-missing ids are skipped
+    (not 409). One board-level ``reordered`` event; no per-task notify."""
+    with _board_conn(board) as (board, conn), _value_error_400():
+        count = kanban_db.reorder_tasks(conn, payload.orderedIds, adopt=payload.adopt)
+        return {"ok": True, "count": count}
 
 
 def _parents_blocking_ready(conn: sqlite3.Connection, task_id: str) -> list:

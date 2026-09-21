@@ -1215,22 +1215,48 @@ class GatewayLiveness:
     runtime: Optional[dict[str, Any]] = None
 
 
-def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, dict[str, Any]]]:
-    """``(pid, default gateway_state.json)`` when the live default multiplexer serves the named profile at
-    ``profile_dir``; None for the default home itself, an unserved profile, or no live multiplexer.
+def profile_name_for_home(profile_home: Path) -> Optional[str]:
+    """Profile id of any Hermes home: ``<root>/profiles/<name>`` → ``<name>``, the default root →
+    ``"default"``, anything else → None. Multiplex-only makes ``default`` an ordinary served
+    profile, so reporting surfaces need a name for it too."""
+    home = Path(profile_home)
+    named = _profile_name_for_home(home)
+    if named:
+        return named
+    try:
+        from hermes_constants import get_default_hermes_root
+        if home.resolve() == Path(get_default_hermes_root()).resolve():
+            return "default"
+    except Exception:
+        return None
+    return None
 
-    A served profile owns no ``gateway.pid``/``gateway_state.json`` (#97120), so every PID-file rung of the
-    dashboard ladder reports it stopped while ``hermes -p X status`` says running — the two must agree.
+
+def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, dict[str, Any]]]:
+    """``(pid, host gateway_state.json)`` when the ONE live host gateway serves the profile whose home
+    is ``profile_dir``; None for a home it does not serve or when no gateway owns the host role.
+
+    Multiplex-only: ``default`` is just another served profile, not the owner of a private topology —
+    resolving from the host rendezvous record (``gateway/host_topology.py``) is what lets it be
+    reported as SERVED rather than only as owner. A served profile owns no
+    ``gateway.pid``/``gateway_state.json`` (#97120), so every PID-file rung of the dashboard ladder
+    reports it stopped while ``hermes -p X status`` says running — the two must agree.
     """
-    name = _profile_name_for_home(Path(profile_dir))
+    name = profile_name_for_home(Path(profile_dir))
     if not name:
         return None
+    from gateway.host_topology import host_gateway_topology
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
     from hermes_constants import get_default_hermes_root
-    if not named_profile_served_by_running_multiplexer(name):
+    topology = host_gateway_topology()
+    if topology is not None and topology.serves(name):
+        pid: Optional[int] = topology.pid
+    elif name != "default" and named_profile_served_by_running_multiplexer(name):
+        # Config-derived fallback for a record that predates ``served_profiles``.
+        pid = live_default_gateway_pid()
+    else:
         return None
-    pid = live_default_gateway_pid()
     if pid is None:
         return None
     return pid, read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}

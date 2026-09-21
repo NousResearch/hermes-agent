@@ -184,7 +184,8 @@ def test_satellite_gateway_identity_does_not_imply_cron_health(served_root, monk
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         cr.cron_status()
-    assert "Scheduler host: default-profile multiplexer" in buf.getvalue()
+    # Multiplex-only: the ONE host gateway is named as the ticker, with the profiles it serves.
+    assert "Scheduler host: the host gateway" in buf.getvalue()
     # A live scheduler host alone does not prove this satellite's ticker is healthy.
     assert "has not reported a heartbeat" in buf.getvalue()
     assert "will fire automatically" not in buf.getvalue()

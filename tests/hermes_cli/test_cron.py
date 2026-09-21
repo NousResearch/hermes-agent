@@ -352,7 +352,7 @@ class TestExternalCronProviderStatus:
         assert "managed scheduler" in out
         assert "not firing" not in out.lower()
         assert "STALLED" not in out
-        assert "Gateway is not running" not in out
+        assert "No gateway is running on this host" not in out
         # Still surfaces the active-job summary.
         assert "active job(s)" in out
 
@@ -634,7 +634,7 @@ class TestStatusSurfacesDeadScheduler:
         cron_command(Namespace(cron_command="list", all=False, json=False))
         list_out = capsys.readouterr().out
 
-        assert "Gateway is not running" in status_out
+        assert "No gateway is running on this host" in status_out
         assert "Scheduler last ticked" in status_out
         assert "OVERDUE" in status_out and "7h ago" in status_out
         # The stale timestamp must no longer read as an upcoming run on either surface.

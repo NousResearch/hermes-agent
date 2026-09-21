@@ -1,0 +1,42 @@
+"""Host topology: the DEFAULT profile is a served profile, not a special owner.
+
+``multiplexer_liveness_for_profile`` returned None for the default home by construction, so the
+one profile the host gateway always serves could never be *reported* as served — the ladder had to
+fall back to PID files that a multiplexed default may not own (a launch-service gateway, a
+re-exec'd Desktop backend).
+"""
+
+import pytest
+
+
+@pytest.fixture
+def host_gateway(tmp_path, monkeypatch):
+    from gateway import host_rendezvous as hr
+
+    root = tmp_path / "hermes"
+    (root / "profiles" / "coder").mkdir(parents=True)
+    locks = tmp_path / "locks"
+    locks.mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"))
+    return root
+
+
+def test_default_home_is_reported_as_served_by_the_host_gateway(host_gateway):
+    import os
+
+    from gateway import status
+
+    for home in (host_gateway, host_gateway / "profiles" / "coder"):
+        resolved = status.multiplexer_liveness_for_profile(home)
+        assert resolved is not None, f"{home} is served by the host gateway but reported unserved"
+        assert resolved[0] == os.getpid()
+
+
+def test_unserved_profile_is_not_claimed_by_the_host_gateway(host_gateway, monkeypatch):
+    from gateway import status
+
+    monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda *a: False)
+    (host_gateway / "profiles" / "other").mkdir()
+    assert status.multiplexer_liveness_for_profile(host_gateway / "profiles" / "other") is None

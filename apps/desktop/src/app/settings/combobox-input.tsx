@@ -76,16 +76,12 @@ export function ComboboxInput({
       <PopoverAnchor asChild>
         <div className={cn('relative', className)} ref={anchorRef}>
           <Input
-<<<<<<< HEAD
             aria-autocomplete="list"
             aria-controls={expanded ? listId : undefined}
             aria-expanded={expanded}
             aria-label={ariaLabel}
             className="w-full pe-7"
             disabled={disabled}
-=======
-            className="w-full pe-7"
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
             onChange={e => {
               onChange(e.target.value)
               openList(true)
@@ -147,7 +143,6 @@ export function ComboboxInput({
         onOpenAutoFocus={e => e.preventDefault()}
         variant="menu"
       >
-<<<<<<< HEAD
         <Command onValueChange={setActive} ref={commandRef} shouldFilter={false} value={active} variant="menu">
           <CommandList id={listId}>
             {visible.map(option => (
@@ -163,30 +158,6 @@ export function ComboboxInput({
                 <CommandItemCheck checked={option === value} />
               </CommandItem>
             ))}
-=======
-        <Command shouldFilter={false}>
-          <CommandList>
-            {visible.length > 0 && (
-              <CommandGroup>
-                {visible.map(option => (
-                  <CommandItem
-                    key={option}
-                    onSelect={() => {
-                      onChange(option)
-                      setOpen(false)
-                    }}
-                    value={option}
-                  >
-                    <Codicon
-                      className={cn('me-2 size-4', option === value ? 'opacity-100' : 'opacity-0')}
-                      name="check"
-                    />
-                    <span className="truncate">{optionLabels?.[option] ?? option}</span>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            )}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
           </CommandList>
         </Command>
       </PopoverContent>

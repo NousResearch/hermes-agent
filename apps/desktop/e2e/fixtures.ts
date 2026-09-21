@@ -23,6 +23,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
@@ -362,6 +363,8 @@ export interface MockBackendOptions {
   extraConfig?: string
   /** Override the mock model's context window for compression scenarios. */
   modelContextLength?: number
+  /** Options forwarded verbatim to the mock inference server. */
+  mockServer?: import('../../../tests-js/scripts/mock-server').MockServerOptions
 }
 
 /**

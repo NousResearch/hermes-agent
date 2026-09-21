@@ -464,13 +464,8 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                       <span className="min-w-0">
                         <span>{m.name}</span>
                         {m.fromCatalog && !needsSetup ? (
-<<<<<<< HEAD
                           <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
                             {m.installed ? b.editor.catalogInstalled : b.editor.catalog}
-=======
-                          <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
-                            {m.installed ? 'catalog · installed' : 'catalog'}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
                           </span>
                         ) : null}
                         {needsSetup ? (

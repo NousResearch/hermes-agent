@@ -81,8 +81,12 @@ describe('scanGitRepos', () => {
   })
 })
 
-describe.runIf(process.platform !== 'win32')('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
-  it('finds a normal repo but skips root-level media folders on darwin', async () => {
+// These force the darwin/linux path-API modes over the real filesystem (the
+// module has no fs injection), which only behaves on a POSIX host — on win32
+// path.win32 primitives and NTFS paths make the fixtures unreachable. The
+// win32 containment rule has its own host-native test below.
+describe('macOS TCC-protected media exclusions (issue #57611 salvage)', () => {
+  it.skipIf(process.platform === 'win32')('finds a normal repo but skips root-level media folders on darwin', async () => {
     const root = tempDir()
     const dev = makeRepoAt(root, 'dev', 'proj')
     makeRepoAt(root, 'Pictures', 'wallpapers')
@@ -93,14 +97,14 @@ describe.runIf(process.platform !== 'win32')('macOS TCC-protected media exclusio
     expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([dev])
   })
 
-  it('still scans a media-named directory below the search root on darwin', async () => {
+  it.skipIf(process.platform === 'win32')('still scans a media-named directory below the search root on darwin', async () => {
     const root = tempDir()
     const nested = makeRepoAt(root, 'dev', 'Music', 'app')
 
     expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([nested])
   })
 
-  it('skips Apple media-library packages at any depth on darwin', async () => {
+  it.skipIf(process.platform === 'win32')('skips Apple media-library packages at any depth on darwin', async () => {
     const root = tempDir()
     const keeper = makeRepoAt(root, 'code', 'site')
     makeRepoAt(root, 'code', 'Photos Library.photoslibrary', 'inner')
@@ -111,7 +115,7 @@ describe.runIf(process.platform !== 'win32')('macOS TCC-protected media exclusio
     expect(foundRoots(await scanGitRepos([root], { enabled: true, platform: 'darwin' }))).toEqual([keeper])
   })
 
-  it('walks an explicitly passed media root on darwin', async () => {
+  it.skipIf(process.platform === 'win32')('walks an explicitly passed media root on darwin', async () => {
     const root = tempDir()
     const musicRoot = path.join(root, 'Music')
     const repo = makeRepoAt(musicRoot, 'samples')
@@ -119,7 +123,7 @@ describe.runIf(process.platform !== 'win32')('macOS TCC-protected media exclusio
     expect(foundRoots(await scanGitRepos([musicRoot], { enabled: true, platform: 'darwin' }))).toEqual([repo])
   })
 
-  it('does not exclude media-named folders on linux', async () => {
+  it.skipIf(process.platform === 'win32')('does not exclude media-named folders on linux', async () => {
     const root = tempDir()
     const dev = makeRepoAt(root, 'dev', 'proj')
     const music = makeRepoAt(root, 'Music', 'samples')

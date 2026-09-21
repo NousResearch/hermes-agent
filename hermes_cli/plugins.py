@@ -129,7 +129,9 @@ VALID_HOOKS: Set[str] = {
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
-    # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
+    # "reason"} -> drop; {"action": "respond", "text"} -> deliver text via the gateway's normal
+    # delivery path, stop dispatch (no agent turn); {"action": "rewrite", "text"} -> replace
+    # event.text; "allow"/None -> normal.
     "pre_gateway_dispatch",
     # agent_loop_stopped: an agent turn was interrupted mid-run (/stop, or the running-agent
     # fast-path of /new; see gateway/run.py::_interrupt_and_clear_session). Kwargs: session_key,

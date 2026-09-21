@@ -65,7 +65,13 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                 # time, so it goes through the manager's warn-once reporter (#111922).
                 from hermes_cli.plugins import get_plugin_manager
 
-                get_plugin_manager()._report_hook_failure(dispatcher.hook_name, dispatcher.callback, payload, exc)
+                # Context.run restores the worker's context when the callback raises.
+                # Resolve the reporter inside the event's owning profile as well.
+                manager = item.context.run(get_plugin_manager)
+                item.context.run(
+                    manager._report_hook_failure,
+                    dispatcher.hook_name, dispatcher.callback, payload, exc,
+                )
         finally:
             dispatcher.events.task_done()
 

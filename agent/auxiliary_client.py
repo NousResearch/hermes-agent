@@ -5581,6 +5581,26 @@ def _vision_auto_route(
 # ZAI vision must use the OpenAI-compatible endpoint: the Anthropic wire rejects max_tokens on
 # multimodal calls (error 1210).
 _ZAI_OPENAI_VISION_URLS = ("https://open.bigmodel.cn/api/paas/v4", "https://api.z.ai/api/paas/v4")
+_ZAI_CODING_PLAN_VISION_SUFFIX = "/api/coding/paas/v4"
+
+
+def _active_zai_coding_plan_vision_url(runtime: Dict[str, Any]) -> Optional[str]:
+    """Return the current session's Z.ai Coding Plan endpoint, when applicable.
+
+    The generic Z.ai vision URLs are pay-as-you-go endpoints.  A live main
+    session may instead be authenticated against Coding Plan, whose endpoint
+    must be reused before attempting those fallback URLs.
+    """
+    base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+    if (
+        base_url.endswith(_ZAI_CODING_PLAN_VISION_SUFFIX)
+        and (
+            base_url_host_matches(base_url, "api.z.ai")
+            or base_url_host_matches(base_url, "open.bigmodel.cn")
+        )
+    ):
+        return base_url
+    return None
 
 
 def resolve_vision_provider_client(
@@ -5612,7 +5632,9 @@ def resolve_vision_provider_client(
         sync_client, default_model = _resolve_strict_vision_backend(requested, resolved_model)
         return _finalize_vision_client(requested, sync_client, default_model, resolved_model, async_mode)
     if requested == "zai":
-        for _zai_url in _ZAI_OPENAI_VISION_URLS:
+        active_coding_plan_url = _active_zai_coding_plan_vision_url(runtime)
+        zai_urls = ((active_coding_plan_url,) if active_coding_plan_url else ()) + _ZAI_OPENAI_VISION_URLS
+        for _zai_url in zai_urls:
             client, final_model = _get_cached_client(
                 requested, resolved_model, async_mode, base_url=_zai_url,
                 api_key=resolved_api_key or None, api_mode="chat_completions", main_runtime=runtime,

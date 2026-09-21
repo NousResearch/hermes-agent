@@ -2,6 +2,7 @@
 
 from agent.transports.antigravity_cli import AntigravityCapabilities, AntigravityClient
 from hermes_cli.inventory import build_model_options_payload, load_picker_context
+from hermes_cli.model_switch import switch_model
 
 
 def test_model_options_exposes_detected_antigravity_runtime(monkeypatch):
@@ -31,3 +32,25 @@ def test_model_options_exposes_detected_antigravity_runtime(monkeypatch):
         "version": "1.2.7",
         "authentication": "authenticated",
     }
+
+
+def test_model_switch_accepts_probed_antigravity_provider_and_model(monkeypatch):
+    monkeypatch.setattr(
+        AntigravityClient,
+        "probe",
+        lambda self, timeout=2.0: AntigravityCapabilities(
+            available=True, executable="/opt/agy", version=(1, 2, 7), stream_json=True,
+            sandbox=True, resume=True, authenticated=True, models=("gemini-test",),
+        ),
+    )
+
+    result = switch_model(
+        "gemini-test", current_provider="google-antigravity", current_model="auto",
+        explicit_provider="google-antigravity",
+    )
+
+    assert result.success is True
+    assert result.target_provider == "google-antigravity"
+    assert result.new_model == "gemini-test"
+    assert result.api_mode == "antigravity_runtime"
+    assert result.base_url == ""

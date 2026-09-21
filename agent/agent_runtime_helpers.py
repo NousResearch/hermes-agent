@@ -2010,7 +2010,17 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
 
 
 def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm) -> None:
-    """Build the client for the switched-to destination (MoA facade / native Anthropic / OpenAI wire)."""
+    """Build the client for the switched-to destination (MoA facade / delegated / native HTTP)."""
+    if api_mode == "antigravity_runtime":
+        # A model choice changes the argv used to spawn `agy`; retire any live
+        # session so the next turn is created with the newly selected model.
+        # This runtime deliberately has no OpenAI-compatible client/base URL.
+        from agent.antigravity_runtime import _close_antigravity_session
+        _close_antigravity_session(agent)
+        agent.client = None
+        agent._anthropic_client = None
+        agent._client_kwargs = {}
+        return
     if new_norm == "moa":
         from agent.moa_loop import bind_moa_runtime
         # MoA speaks only chat.completions via the MoAClient facade; the aggregator's real transport
@@ -2094,12 +2104,20 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     # Same-provider re-select (credential refresh) may keep the URL.
     if base_url:
         agent.base_url = base_url
+    elif api_mode == "antigravity_runtime":
+        # Delegated local runtime: an empty HTTP endpoint is intentional. Clear
+        # any previous provider URL instead of retaining it across the switch.
+        agent.base_url = ""
     elif old_norm != new_norm:
         raise ValueError(
             f"switch_model: no base_url resolved for provider "
             f"'{new_provider}' (switching from '{old_provider}'); "
             "refusing to keep the previous provider's endpoint"
         )
+    old_api_mode = getattr(agent, "api_mode", "")
+    if old_api_mode == "antigravity_runtime" and api_mode != "antigravity_runtime":
+        from agent.antigravity_runtime import _close_antigravity_session
+        _close_antigravity_session(agent)
     agent.api_mode = api_mode
     # New api_mode may need a different transport.
     if hasattr(agent, "_transport_cache"):

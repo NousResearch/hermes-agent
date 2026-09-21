@@ -24,6 +24,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A room with more than two joined users, or whose joined membership cannot be determined, follows room rules. Only private bot chats bypass `MATRIX_ALLOWED_ROOMS` and the room mention settings. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for private bot chats. This is distinct from `MATRIX_DM_MENTION_THREADS`, which starts a thread when the bot is `@mentioned` in a private bot chat. These two-person chats follow `MATRIX_DM_AUTO_THREAD`. |
+| **Reply references** | Each response references the message it answers (the quote pill in Element and most clients). Set `reply_to_mode: "off"` under the `matrix:` block (or `MATRIX_REPLY_TO_MODE=off`) to send responses as plain messages instead; `all` anchors every chunk of a split response, `first` (default) anchors only the first. Threaded responses keep their thread relation in every mode. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
 | **Emotes and stickers** | Native `/me` actions include the sender's Matrix ID. Their text is conversational, even when it begins with a command. Stickers include their description and image, subject to the same room, sender and mention rules as other messages. |
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
@@ -122,6 +123,7 @@ matrix:
   session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
+  reply_to_mode: "first"          # Reply-reference on responses: off | first (default) | all
   max_message_length: 15000       # Outbound chunk size in UTF-8 bytes (default and max: 15000)
   room_backfill_limit: 20         # Earlier room events to scan on a mention (0 disables)
   thread_backfill_limit: 20       # Earlier thread events to scan (0 disables)
@@ -161,6 +163,7 @@ MATRIX_PROCESS_NOTICES=false
 MATRIX_SESSION_SCOPE=room       # recommended for stable project-room context
 MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
+MATRIX_REPLY_TO_MODE=first     # off | first (default) | all — "off" sends responses as plain messages without the quote pill
 MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
 MATRIX_ALLOW_ROOM_MENTIONS=false
 ```

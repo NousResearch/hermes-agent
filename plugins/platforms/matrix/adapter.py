@@ -10,7 +10,8 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
-  MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (UTF-8 bytes, default/max 15000),
+  MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_REPLY_TO_MODE off|first|all (default first);
+  MATRIX_MAX_MESSAGE_LENGTH (UTF-8 bytes, default/max 15000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
   true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
 
@@ -816,6 +817,18 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         super().__init__(config, Platform.MATRIX)
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
+        # reply_to_mode ("off"|"first"|"all"), mirroring Discord/Telegram: "off" sends plain
+        # messages without the m.in_reply_to quote anchor; threaded sends keep their m.thread
+        # relation (the in_reply_to fallback inside a thread relation stays, per spec it is what
+        # unthreaded clients render). YAML 1.1 parses a bare `off`/`on` as a bool — normalized.
+        # The `extra:` spelling is resolved at config-load time by the YAML bridge → env (discord
+        # pattern); the adapter reads the typed PlatformConfig key.
+        _rtm = getattr(config, "reply_to_mode", None)
+        if isinstance(_rtm, bool):
+            _rtm = "all" if _rtm else "off"
+        self._reply_to_mode: str = str(_rtm or "first").strip().lower()
+        if self._reply_to_mode not in {"off", "first", "all"}:
+            self._reply_to_mode = "first"
         # A chunk near the outbound limit almost certainly has a continuation.
         self._SPLIT_THRESHOLD = max(100, self.max_message_length - 100)
         # Homeserver/user_id/device_id go through the same scoped reader as the token/password:
@@ -1500,9 +1513,10 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         single_event = metadata is not None and (
             "matrix_formatted_body" in metadata or bool(metadata.get("is_approval_prompt")))
         chunks = [formatted] if single_event else self.truncate_message(formatted, self.max_message_length, len_fn=self.message_len_fn)
-        for chunk in chunks:
+        for index, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
-            self._apply_relation_metadata(chat_id, msg_content, reply_to=reply_to, metadata=metadata)
+            chunk_reply_to = reply_to if self._should_reply_anchor(reply_to, index) else None
+            self._apply_relation_metadata(chat_id, msg_content, reply_to=chunk_reply_to, metadata=metadata)
             if (metadata or {}).get("non_conversational"):
                 msg_content[NON_CONVERSATIONAL_KEY] = True
             if single_event:
@@ -3139,6 +3153,20 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
                 del msg_content["format"], msg_content["formatted_body"]
         return msg_content
 
+    def _should_reply_anchor(self, reply_to: Optional[str], chunk_index: int) -> bool:
+        """Whether this chunk (0 = first) carries the plain m.in_reply_to anchor, per reply_to_mode.
+
+        Mirrors Telegram's _should_thread_reply: "off" never, "all" always, "first" (default)
+        only chunk 0. Thread relations are per-send, not chunk-gated (see _apply_relation_metadata).
+        """
+        if not reply_to:
+            return False
+        if self._reply_to_mode == "off":
+            return False
+        if self._reply_to_mode == "all":
+            return True
+        return chunk_index == 0  # "first" (default)
+
     def _apply_relation_metadata(
         self, room_id: str, msg_content: dict[str, Any], *, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None) -> None:
@@ -3146,7 +3174,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         meta = metadata or {}
         thread_id = str(meta.get("thread_id") or "")
         fallback_to = str(meta.get("matrix_thread_fallback_event_id") or "")
-        if reply_to:
+        if reply_to and self._reply_to_mode != "off":
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
@@ -3482,6 +3510,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
     ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
+    ("reply_to_mode", "MATRIX_REPLY_TO_MODE", "lower"),
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
@@ -3491,6 +3520,16 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
+    _matrix_extra: dict = (
+        matrix_cfg.get("extra") if isinstance(matrix_cfg.get("extra"), dict) else {}
+    )  # type: ignore[assignment]
+    if "reply_to_mode" not in matrix_cfg and "reply_to_mode" in _matrix_extra:
+        matrix_cfg = {**matrix_cfg, "reply_to_mode": _matrix_extra["reply_to_mode"]}
+    if isinstance(matrix_cfg.get("reply_to_mode"), bool):
+        matrix_cfg = {
+            **matrix_cfg,
+            "reply_to_mode": "all" if matrix_cfg["reply_to_mode"] else "off",
+        }
     seeded = _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE) or {}
     if "thread_backfill_limit" in matrix_cfg:
         seeded["thread_backfill_limit"] = matrix_cfg["thread_backfill_limit"]

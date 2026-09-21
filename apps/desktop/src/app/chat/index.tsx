@@ -60,7 +60,12 @@ import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
-import { ComposerScopeProvider, ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
+import {
+  ComposerScopeProvider,
+  ComposerSurfaceProvider,
+  useComposerScope,
+  useComposerSurfaceId
+} from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
@@ -257,9 +262,10 @@ export function ChatRuntimeBoundary({
   const ownerConnection = ownerRoute?.connectionId
   const ownerProfile = ownerRoute?.targetProfile || ownerRoute?.profile
 
-  const tailProfile = useMemo(() => ownerProfile
-    ? { connectionId: ownerConnection, profile: ownerProfile }
-    : undefined, [ownerConnection, ownerProfile])
+  const tailProfile = useMemo(
+    () => (ownerProfile ? { connectionId: ownerConnection, profile: ownerProfile } : undefined),
+    [ownerConnection, ownerProfile]
+  )
 
   // A Bot chat opened IN PLACE in the main pane (openStoredBotChat) keeps the
   // active profile, so the ambient scope carries no owner. Publish the session
@@ -336,7 +342,9 @@ export function ChatRuntimeBoundary({
     async (beforePrepend?: () => void) => {
       // A historical page is not the live tail: its older neighbours come from
       // the prompt range the rail already draws, never from store backfill.
-      if (history.page) {return history.revealOlder(beforePrepend)}
+      if (history.page) {
+        return history.revealOlder(beforePrepend)
+      }
 
       // Network latency is not scroll intent. Capture at arrival, immediately
       // before the store prepend, and only grow a window that has a page to show.
@@ -394,9 +402,18 @@ export function ChatRuntimeBoundary({
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history
 
-  const transcriptWindow = useMemo(() => ({
-    olderAvailable, expandWindow, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable
-  }), [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable])
+  const transcriptWindow = useMemo(
+    () => ({
+      olderAvailable,
+      expandWindow,
+      revealRow,
+      returnToLatest,
+      currentMessages,
+      isHistorical,
+      newerAvailable
+    }),
+    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+  )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,

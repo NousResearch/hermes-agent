@@ -2405,6 +2405,42 @@ class TestTruncateToolCallArgsJson:
         assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
         assert len(shrunk) < len(original)
 
+    def test_snip_marker_is_not_prose_mimicable(self):
+        """The marker must NOT look like text a model could have typed itself:
+        '...[truncated]' read as the model's own prior wording was reproduced in
+        a fresh outbound send (2026-09-14 Google Chat incident)."""
+        shrink = self._helper()
+        import json as _json
+        shrunk = shrink(_json.dumps({"content": "x" * 1000}))
+        assert "...[truncated]" not in shrunk
+        # Upstream #83714 marker (non-prose, counted) supersedes the old ⟪ctx-snipped⟫ marker;
+        # same carried-fix intent: the marker must not look like model-typed prose. (Leaf must
+        # exceed the break-even of head_chars + marker length or the shrink is deliberately a no-op.)
+        assert _COMPRESSION_MARKER_PREFIX in shrunk
+
+    def test_outbound_tool_args_are_exempt_from_snipping(self):
+        """send_message-style argument text IS the message; snipping it in history
+        lets a later send reproduce the cut (2026-09-14 incident)."""
+        import json as _json
+        from agent.context_compressor import _OUTBOUND_ARG_EXEMPT_TOOLS
+        assert "send_message" in _OUTBOUND_ARG_EXEMPT_TOOLS
+        long_text = "Hej! Detta ar ett langt meddelande. " * 30  # > 200 chars leaf, args > 500 total
+        msgs = [{
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "mcp__google_chat__send_message",
+                                          "arguments": _json.dumps({"space": "spaces/X", "text": long_text})}},
+                {"id": "c2", "function": {"name": "browser_exec",
+                                          "arguments": _json.dumps({"code": "y" * 600})}},
+            ],
+        }]
+        from agent.context_compressor import ContextCompressor
+        changed = ContextCompressor._truncate_tool_call_args_at(msgs, 0)
+        assert changed is True  # the browser_exec call still shrinks
+        tcs = msgs[0]["tool_calls"]
+        assert _json.loads(tcs[0]["function"]["arguments"])["text"] == long_text  # outbound untouched
+        assert _COMPRESSION_MARKER_PREFIX in tcs[1]["function"]["arguments"]  # read-heavy tool still shrunk
+
 
 
 

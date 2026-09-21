@@ -1,5 +1,7 @@
 """Unit tests for agent.turn_facade_lease (admission + lease bracket)."""
+import sqlite3
 import threading
+import time
 from types import SimpleNamespace
 
 from agent.turn_facade_lease import (
@@ -125,3 +127,99 @@ def test_interrupt_turn_only_while_active():
     assert calls == ["lost"] and lease.interrupt_message == "lost"
     lease.deactivate_after_liveness_abort()
     assert lease.stop.is_set() and lease.is_turn_active() is False
+
+
+# ── refresh_tick resilience (#turn-lease-fix) ─────────────────────────────
+# A lease-refresh that fails because another process holds the state.db write
+# lock must NOT kill a still-owned turn — the write-side fence (turn lease lost
+# on the next append) is the correctness boundary. Interruption is reserved for
+# verifiable lease loss (holder changed / row gone) or an unreachable store.
+
+class _ContendedDb(_Db):
+    """Fake store whose refresh raises a writable-lock error until armed otherwise."""
+
+    def __init__(self, owner_holder=None, refresh_raises=True, owner_probe_raises=False):
+        super().__init__()
+        self.owner_holder = owner_holder  # None -> probe reports the lease as absent
+        self.refresh_raises = refresh_raises
+        self.owner_probe_raises = owner_probe_raises
+
+    def refresh_session_turn_lease(self, session_id, holder, **kwargs):
+        if self.refresh_raises:
+            raise sqlite3.OperationalError(
+                "database is locked (another Hermes process held the state.db write lock)"
+            )
+        return super().refresh_session_turn_lease(session_id, holder, **kwargs)
+
+    def get_session_turn_lease_owner(self, session_id):
+        if self.owner_probe_raises:
+            raise sqlite3.OperationalError("disk I/O error")
+        if self.owner_holder is None:
+            return None
+        return (self.owner_holder, time.time() + 300.0)
+
+
+def _active_lease(agent, db):
+    agent.interrupt = lambda msg, **kw: agent.statuses.append(("interrupt", msg))
+    lease = DurableTurnLease(agent, db, "s1", "h")
+    lease.turn_active = True
+    return lease
+
+
+def test_refresh_tick_contention_does_not_interrupt_owned_turn():
+    """A 'database is locked' refresh failure with ownership intact continues the turn."""
+    db = _ContendedDb(owner_holder="h")
+    agent = _agent(db)
+    lease = _active_lease(agent, db)
+    assert lease.refresh_tick() is None  # timer stays alive
+    assert lease.interrupt_message is None
+    assert not lease.stop.is_set()
+    assert agent.statuses == []
+    lease.stop_refresher()
+
+
+def test_refresh_tick_interrupts_when_holder_changed():
+    """A refresh failure PLUS read-verify showing a different holder interrupts."""
+    db = _ContendedDb(owner_holder="someone-else")
+    agent = _agent(db)
+    lease = _active_lease(agent, db)
+    assert lease.refresh_tick() is False  # timer stops
+    assert lease.interrupt_message is not None
+    assert ("interrupt", lease.interrupt_message) in agent.statuses
+    lease.stop_refresher()
+
+
+def test_refresh_tick_interrupts_when_lease_row_gone():
+    """A refresh failure PLUS absent lease row interrupts (lease no longer exists)."""
+    db = _ContendedDb(owner_holder=None)
+    agent = _agent(db)
+    lease = _active_lease(agent, db)
+    assert lease.refresh_tick() is False
+    assert lease.interrupt_message is not None
+    lease.stop_refresher()
+
+
+def test_refresh_tick_interrupts_when_ownership_unverifiable():
+    """Fail closed: an unreachable store (owner probe raises) must not run unsynchronized."""
+    db = _ContendedDb(owner_holder="h", owner_probe_raises=True)
+    agent = _agent(db)
+    lease = _active_lease(agent, db)
+    assert lease.refresh_tick() is False
+    assert lease.interrupt_message is not None
+    lease.stop_refresher()
+
+
+def test_refresh_tick_refresh_false_still_interrupts():
+    """A cleanly-returned False (holder-qualified UPDATE matched 0 rows) still interrupts."""
+    db = _ContendedDb(owner_holder="h", refresh_raises=False)
+    db.refresh_result = False
+
+    def refresh_false(*a, **k):
+        return db.refresh_result
+
+    db.refresh_session_turn_lease = refresh_false
+    agent = _agent(db)
+    lease = _active_lease(agent, db)
+    assert lease.refresh_tick() is False
+    assert lease.interrupt_message is not None
+    lease.stop_refresher()

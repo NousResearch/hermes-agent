@@ -197,6 +197,10 @@ HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 
 
 SUMMARY_PREFIX = (
+    # Sep 2026 (truth-class era): untested "blocked/cannot" claims survived compaction
+    # cycles as if verified (incident: "Plane UI needed — MCP can only comment" lived
+    # through 5 cycles while the REST path was already receipt-proven in memory).
+    # New clause: blocked-claims carry a truth class; untagged = hypothesis to re-test.
     # Jul 2026 (#65848 class): identical to the pre-#69619 prefix except it lacked the explicit "tools
     # remain fully active" clause — the strong REFERENCE ONLY framing bled into general tool-use suppression
     # (observed: 7 consecutive narration-only turns immediately after a compression event on a production
@@ -231,6 +235,14 @@ SUMMARY_PREFIX = (
     "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
+    "TRUTH CLASSES: claims in this summary that something is blocked, "
+    "impossible, or unsupported ('cannot be done via X', 'requires Y') are "
+    "HYPOTHESES unless they carry a [KVITTO] tag citing a receipt that was "
+    "actually verified in the compacted turns. Untagged or [OTESTAD]-tagged "
+    "blocked-claims must be re-tested against live state (memory, tools, "
+    "the actual API surface — a missing MCP tool does NOT mean the task is "
+    "impossible; check REST/CLI paths) BEFORE repeating them or reporting "
+    "them as fact. "
     "None of the above restricts HOW you work: your tools remain fully "
     "active — keep calling them normally for the active task (edit files, "
     "run commands, search) instead of merely narrating what you would do. "
@@ -238,6 +250,50 @@ SUMMARY_PREFIX = (
     "described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+
+
+# Truth-class tags (Sep 2026): [KVITTO] = observed with a receipt in the compacted turns,
+# [OTESTAD] = untested inference. The deterministic linter below is the enforceable layer —
+# even a summarizer that ignores the template instruction cannot ship an untagged
+# "## Blocked" bullet into the next context window.
+_TRUTH_CLASS_TAGS = ("[KVITTO]", "[OTESTAD]")
+
+
+def _lint_blocked_tags(text: str) -> str:
+    """Deterministically tag untagged ``## Blocked`` bullets as ``[OTESTAD]``.
+
+    Applied at summary insertion (``_with_summary_prefix``), so every summary the next
+    model turn sees carries a truth class on each blocked-claim bullet — untagged
+    bullets are treated as untested inferences, which the consumer must re-test before
+    repeating. Idempotent: bullets already carrying a truth-class tag are left alone.
+    """
+    import re as _re
+
+    if "## Blocked" not in text:
+        return text
+
+    def _tag_section_body(section_body: str) -> str:
+        lines = section_body.split("\n")
+        out = []
+        for line in lines:
+            stripped = line.lstrip()
+            bullet = stripped.startswith(("-", "*", "•")) or _re.match(r"^\d+[.)]\s", stripped)
+            if bullet and not any(tag in stripped for tag in _TRUTH_CLASS_TAGS):
+                indent = line[: len(line) - len(stripped)]
+                rest = _re.sub(r"^(\d+[.)]|[-*•])\s*", "", stripped)
+                out.append(f"{indent}- [OTESTAD] {rest}")
+            else:
+                out.append(line)
+        return "\n".join(out)
+
+    parts = text.split("## Blocked", 1)
+    if len(parts) != 2:
+        return text
+    head, rest = parts
+    # Section body runs until the next markdown heading or end of text.
+    m = _re.search(r"\n## ", rest)
+    body, tail = (rest[: m.start()], rest[m.start() :]) if m else (rest, "")
+    return head + "## Blocked" + _tag_section_body(body) + tail
 
 # Underscore prefix ON PURPOSE: wire sanitizers strip ``_``-keys; strict gateways
 # reject unknown keys, so a bare key would poison every request in the session.
@@ -524,6 +580,40 @@ def salvage_grown_transcript(
 # Exact wire text of every shipped prefix, newest-first; stale directives must
 # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Truth-class era retiree (Sep 2026): live until the TRUTH CLASSES clause was added.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "If no user message appears AFTER this summary, do nothing: do not "
+    "resume, wrap up, or continue work from "
+    f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
+    "and wait for a new user message. This handoff must never become the "
+    "active turn by itself. (Exception: if tool results or your own "
+    "tool calls appear after this summary, you are mid-way through an "
+    "in-flight exchange — continue that exchange normally.) "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
     # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
@@ -1413,6 +1503,19 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     return pruned
 
 
+# Tool-call argument leaves whose text IS the outbound message. Compressor passes must
+# never snip these in history: the model pattern-matches its (apparently) own prior
+# wording when composing the next send and reproduces the cut (2026-09-14 incident:
+# two Google Chat DMs delivered ~120 chars, receipts green). Matched on the full name
+# and on the short name after the last '__' (covers mcp__gmail_selfhosted__send_message
+# etc.). Add future outbound-effect tools here.
+_OUTBOUND_ARG_EXEMPT_TOOLS = frozenset({
+    "send_message", "send_draft", "create_draft", "update_draft",
+    "plane_comment_add", "sendemail", "reply", "forward",
+    "meet_say",
+})
+
+
 # #83714 — this text lands inside the model's OWN replayed tool call, so it must not read like
 # something the model would write itself: the bare "...[truncated]" it replaced was imitated into
 # new calls and written to disk. Non-prose delimiters, an explicit "not original content"
@@ -1432,6 +1535,10 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
     Only leaves where the replacement is a net reduction are changed (``head_chars`` plus the
     marker, ~420 chars); the input string is returned unchanged when nothing was replaced.
+    The marker is deliberately non-prose (see #83714 and the 2026-09-14 Google Chat incident):
+    a historical argument that reads like text the model itself wrote can be pattern-matched
+    and reproduced into new outbound calls. Argument text that IS an outbound message is exempt
+    from shrinking entirely, upstream of this helper (see ``_OUTBOUND_ARG_EXEMPT_TOOLS``).
     """
     try:
         parsed = json.loads(args)
@@ -2930,15 +3037,27 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     @staticmethod
     def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
-        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
+        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid).
+
+        OUTBOUND tools are exempt: their argument text is the message itself. Once
+        snipped in history, a later turn composing the same kind of send sees the
+        cut text as its own prior wording and reproduces it (2026-09-14 Google Chat
+        incident). The receipts are short, so the token cost of exemption is small
+        compared to a silently corrupted outbound message."""
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
             return False
         new_tcs = []
         for tc in msg["tool_calls"]:
-            args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
+            fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+            args = fn.get("arguments", "")
+            _name = str(fn.get("name") or "")
+            _short_name = _name.rsplit("__", 1)[-1]
+            if _name in _OUTBOUND_ARG_EXEMPT_TOOLS or _short_name in _OUTBOUND_ARG_EXEMPT_TOOLS:
+                new_tcs.append(tc)
+                continue
             new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
-            new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
+            new_tcs.append(tc if new_args == args else {**tc, "function": {**fn, "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
         if modified:
             result[idx] = {**msg, "tool_calls": new_tcs}
@@ -3352,7 +3471,10 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
 ## Blocked
-{_bullets(anchors["blockers"], limit=5)}
+{self._blocked_bullets_tagged(anchors['blockers'][:5])}
+Note: these blockers are tool-reported error text (observed failures — verified by the
+tool that returned them). Any "cannot/impossible/unsupported" claim NOT in this list is
+an untested narrative inference: re-test against live state before repeating it.
 
 ## Key Decisions
 None recoverable from deterministic fallback.
@@ -3752,7 +3874,12 @@ Be specific with file paths, commands, line numbers, and results.]
 - Environment details that matter]
 
 ## Blocked
-[Any blockers, errors, or issues not yet resolved. Include exact error messages.]
+[Any blockers, errors, or issues not yet resolved. Include exact error messages.
+TRUTH CLASSES — tag EVERY item: prefix "[KVITTO]" + a one-line receipt (command output,
+log row, HTTP response) when the blocker was actually observed/verified in the turns above;
+prefix "[OTESTAD]" when it is a conclusion or assumption that was never tested (e.g. "X is
+impossible because tool Y lacks Z" — that is an untested inference, not an observation).
+Never invent a receipt. If unsure, tag [OTESTAD].]
 
 ## Key Decisions
 [Important technical decisions and WHY they were made]
@@ -3887,7 +4014,14 @@ Write only the summary body. Do not include any preamble or prefix."""
     def _with_summary_prefix(cls, summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
         text = cls._strip_summary_prefix(summary)
+        if text:
+            text = _lint_blocked_tags(text)
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
+
+    @staticmethod
+    def _blocked_bullets_tagged(blockers: List[str]) -> str:
+        """Fallback blockers are tool-observed error text — receipts, so tag [KVITTO]."""
+        return "\n".join(f"[KVITTO] tool error: {b}" for b in blockers)
 
     @staticmethod
     def _starts_with_summary_prefix(text: str) -> bool:

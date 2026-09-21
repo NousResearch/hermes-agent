@@ -353,15 +353,38 @@ def _config_from_env() -> _BotConfig:
 
 def _join(page, cfg: _BotConfig, state: _BotState, timeout: float = 30.0) -> None:
     """Fill the guest-name field and click 'Join now' / 'Ask to join' (the latter → lobby_waiting).
+
     Meet renders the pre-join buttons asynchronously after ``domcontentloaded``, so poll for up to
-    *timeout* seconds instead of checking once — a single miss leaves the bot silently in the lobby."""
+    *timeout* seconds instead of checking once — a single miss leaves the bot silently in the lobby.
+    Blocking modals are dismissed first ("Switch the call here" when this account is already in
+    the call from another device; misc one-time notices) — they intercept all clicks — and the
+    fake camera is turned off (visually disruptive to participants). Late-rendered dialogs are
+    caught by later poll iterations.
+    """
     deadline = time.time() + timeout
     while True:
+        for dismiss_sel in ('button:has-text("Got it")', 'div[role="dialog"] button'):
+            dlg = _visible(page.locator(dismiss_sel))
+            if dlg is not None:
+                _quiet(lambda: (dlg.click(timeout=2_000), True))
+                _quiet(page.wait_for_timeout, 1_500)
+        # Camera off: the fake-cam tile is visually disruptive to participants.
+        cam_off = _visible(page.get_by_role("button", name="Turn off camera", exact=False))
+        if cam_off is not None:
+            _quiet(lambda: (cam_off.click(timeout=2_000), True))
         name_box = _visible(page.locator('input[aria-label*="name" i]'))
         if name_box is not None:
             _quiet(name_box.fill, cfg.guest_name, timeout=2_000)
-        for label in ("Join now", "Ask to join"):
+        for label in ("Join now", "Ask to join", "Join here too"):
             btn = _visible(page.get_by_role("button", name=label, exact=False))
+            if btn is None and label == "Join here too":
+                # "Join here too" hides inside the collapsed "Other ways to join" accordion —
+                # expand it, then fall back to a text selector (accessible name carries an icon prefix).
+                accordion = _visible(page.locator('text=Other ways to join'))
+                if accordion is not None:
+                    _quiet(lambda: (accordion.click(timeout=2_000), True))
+                    time.sleep(1.5)
+                    btn = _visible(page.locator(f'button:has-text("{label}")'))
             if btn is not None and _quiet(lambda: (btn.click(timeout=3_000), True)):
                 if label == "Ask to join":
                     state.set(lobby_waiting=True)
@@ -429,7 +452,7 @@ def _drain_loop(page, cfg: _BotConfig, state: _BotState, rt: dict, stop_flag: di
 _CONTEXT_ARGS = {
     "viewport": {"width": 1280, "height": 800},
     "user_agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+                   "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"),
     "permissions": ["microphone", "camera"]}
 
 

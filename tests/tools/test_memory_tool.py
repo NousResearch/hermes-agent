@@ -251,10 +251,13 @@ class TestMemoryConsolidationGracefulDegrade:
     def test_apply_batch_failures_count_toward_budget(self, store):
         """apply_batch is the primary at-capacity consolidation path; its
         failures must also degrade so a looping batch can't exhaust the turn
-        (#42405 whole-bug-class — sibling call path)."""
+        (#42405 whole-bug-class — sibling call path). Unmatched ops are now
+        SKIPS, so batch-failure degradation needs an op that stays fatal —
+        overflow (over the final budget) — to exercise the loop-guard path."""
         store.add("memory", "fact A")
         cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
-        bad_batch = [{"action": "replace", "old_text": "nope", "content": "x"}]
+        # A batch whose FINAL state overflows the budget fails atomically every time.
+        bad_batch = [{"action": "add", "content": "y" * 4000}]
         for _ in range(cap):
             r = store.apply_batch("memory", bad_batch)
             assert r["success"] is False
@@ -272,12 +275,18 @@ class TestMemoryConsolidationGracefulDegrade:
             "memory",
             [{"action": "remove", "old_text": "this substring is not in any entry"}],
         )
-        assert result["success"] is False
+        # Local divergence from upstream #97316 contract (upstream: success=False
+        # on unmatched remove). Our estate design (PR #108649 memory-batch, open):
+        # an unmatched remove is a no-op SKIP reported with retry transparency,
+        # not a batch failure — siblings may have applied it concurrently. The
+        # test's core intent (#97316: no full-store echo) is asserted below and
+        # holds under both contracts. Drop this divergence when #108649 merges.
+        assert result["success"] is True
+        assert result.get("skipped") or "skipped" in result.get("message", "")
         assert "current_entries" not in result
         payload = json.dumps(result)
         assert "fact A that is unique" not in payload
         assert "fact B stays in the store" not in payload
-        assert "No operations were applied" in result["error"]
         assert store.memory_entries == [
             "fact A that is unique and long enough to matter",
             "fact B stays in the store after the abort",
@@ -798,6 +807,122 @@ class TestBomToleranceInMemoryFiles:
 # =========================================================================
 
 
+# =========================================================================
+# Failure-payload size bound + batch action inference (Sep 2026 token-bloat fix)
+#
+# Observed traffic (48h window on state.db): 171 memory-tool failures averaging
+# ~19k chars each — 87% of it the `current_entries` full-store echo repeated on
+# every consolidation retry, ~2.9M chars total. The full text already sits in
+# the model's system prompt (frozen memory block), so failure payloads now carry
+# bounded PREVIEWS (head + total-size). The largest failure class (48×) was batch
+# ops with no `action` field (patch-tool shape confusion) — now inferred from the
+# op shape instead of failing the whole batch.
+# =========================================================================
+
+
+class TestFailurePayloadBounded:
+    """current_entries in ANY failure must be previews, never the full store."""
+
+    def test_overflow_failure_payload_is_bounded(self, store):
+        big = "x" * 490
+        store.add("memory", big)
+        result = store.add("memory", "this will exceed the limit")
+        assert result["success"] is False
+        previews = result["current_entries"]
+        # Preview keeps the head but caps it well under the entry's 490 chars.
+        assert all(len(p) <= 120 + 40 for p in previews)  # cap + ellipsis suffix
+        assert any("490 chars total" in p for p in previews)
+        # Overall payload is small, not a full-store echo.
+        assert len(json.dumps(result)) < 1500
+
+    def test_no_match_failure_uses_previews(self, store):
+        store.add("memory", "e" * 400)
+        result = store.remove("memory", "nonexistent")
+        assert result["success"] is False
+        assert any("400 chars total" in p for p in result["current_entries"])
+
+    def test_batch_failure_payload_is_bounded(self, store):
+        store.add("memory", "z" * 490)
+        # Overflow stays batch-fatal; its failure payload must stay bounded.
+        result = store.apply_batch("memory", [
+            {"action": "add", "content": "y" * 4000}])
+        assert result["success"] is False
+        assert len(json.dumps(result)) < 1500
+
+    def test_batch_skip_payload_is_bounded(self, store):
+        # Unmatched ops are skips that ride the success response — also bounded.
+        store.add("memory", "z" * 490)
+        result = store.apply_batch("memory", [
+            {"action": "replace", "old_text": "nope", "content": "y" * 400}])
+        assert result["success"] is True
+        assert result["skipped"][0]["old_text"]
+        assert len(json.dumps(result)) < 1500
+
+    def test_over_limit_error_reports_chars_over(self, store):
+        store.add("memory", "x" * 490)
+        result = store.apply_batch("memory", [
+            {"action": "add", "content": "y" * 300}])
+        assert result["success"] is False
+        assert "over by" in result["error"]
+
+
+class TestBatchActionInference:
+    """Batch ops missing `action` are inferred from their shape instead of
+    failing the whole batch with 'unknown action' (the top observed failure)."""
+
+    def test_patch_shaped_op_infers_replace(self, store):
+        store.add("memory", "old entry text")
+        result = store.apply_batch("memory", [
+            {"old_text": "old entry", "new_string": "new entry text"}])
+        assert result["success"] is True
+        assert "new entry text" in store.memory_entries
+
+    def test_patch_shaped_op_infers_remove(self, store):
+        store.add("memory", "old entry text")
+        store.add("memory", "another entry")
+        result = store.apply_batch("memory", [{"old_text": "old entry"}])
+        assert result["success"] is True
+        assert "another entry" in store.memory_entries
+        assert "old entry text" not in store.memory_entries
+
+    def test_bare_content_infers_add(self, store):
+        result = store.apply_batch("memory", [{"content": "bare add fact"}])
+        assert result["success"] is True
+        assert "bare add fact" in store.memory_entries
+
+    def test_new_string_alias_in_batch(self, store):
+        store.add("memory", "original entry")
+        result = store.apply_batch("memory", [
+            {"action": "replace", "old_text": "original", "new_string": "via new_string"}])
+        assert result["success"] is True
+        assert "via new_string" in store.memory_entries
+
+    def test_uninferrable_op_still_fails_atomic(self, store):
+        store.add("memory", "kept entry")
+        result = store.apply_batch("memory", [{"old_text": ""}])
+        assert result["success"] is False
+        assert "kept entry" in store.memory_entries  # nothing written
+
+    def test_garbage_action_still_rejected(self, store):
+        result = store.apply_batch("memory", [{"action": "delete", "old_text": "x"}])
+        assert result["success"] is False
+        assert "unknown action 'delete'" in result["error"]
+
+
+class TestNearestEntryHint:
+    def test_no_match_includes_nearest_hint(self, store):
+        store.add("memory", "SE-FI sync job runs nightly via Bull queue")
+        result = store.remove("memory", "SE-FI sync job runs nightly via Bull queues")
+        assert result["success"] is False
+        assert "Nearest existing entry" in result["error"]
+
+    def test_no_hint_when_nothing_similar(self, store):
+        store.add("memory", "completely unrelated fact")
+        result = store.remove("memory", "zzzz totally different qqqq")
+        assert result["success"] is False
+        assert "Nearest existing entry" not in result["error"]
+
+
 class TestBatchRefusesToEmptyNonEmptyStore:
     @pytest.mark.parametrize(
         ("target", "seed"),
@@ -930,3 +1055,137 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestBatchSkipSemantics:
+    """state.db forensics (48h, t_f9c32314): 47 no-entry-matched + 26
+    replace-without-content batch failures — each failed its WHOLE batch
+    atomically, and identical resubmits failed identically (4 confirmed
+    identical-arg retry loops, 15 sessions never resolving in-session).
+    Unmatched ops are now skips; replace-without-content applies as remove."""
+
+    def test_unmatched_remove_is_skip_not_batch_failure(self, store):
+        store.add("memory", "kept fact")
+        result = store.apply_batch("memory", [
+            {"action": "remove", "old_text": "already gone"},       # skip
+            {"action": "add", "content": "new durable fact"},       # applies
+        ])
+        assert result["success"] is True
+        assert result["done"] is True
+        assert "new durable fact" in store.memory_entries
+        assert "kept fact" in store.memory_entries
+        assert result["skipped"][0]["action"] == "remove"
+
+    def test_unmatched_replace_is_skip_with_copyable_retry_old_text(self, store):
+        store.add("memory", "Deploy-research: enumerera ALLT; live-probe = DEPLOYED ej EXISTS")
+        result = store.apply_batch("memory", [
+            {"action": "replace", "old_text": "Deploy-research: enumerera ALLT; LIVE-PROBE",  # drifted
+             "content": "Deploy-research v2: refreshed"},
+        ])
+        assert result["success"] is True
+        skip = result["skipped"][0]
+        assert skip["action"] == "replace"
+        assert skip["retry_old_text"]
+        # The retry text must verbatim-match exactly one entry (the nearest one).
+        retry = skip["retry_old_text"]
+        matches = [e for e in store.memory_entries if retry in e]
+        assert len(matches) == 1
+        assert "enumerera ALLT" in matches[0]
+
+    def test_replace_without_content_applies_as_remove(self, store):
+        store.add("memory", "stale entry to drop")
+        store.add("memory", "kept entry")
+        result = store.apply_batch("memory", [
+            {"action": "replace", "old_text": "stale entry to drop"},  # no content
+        ])
+        assert result["success"] is True
+        assert "stale entry to drop" not in store.memory_entries
+        assert "kept entry" in store.memory_entries
+
+    def test_resubmitted_identical_batch_converges(self, store):
+        """The observed loop: sibling consolidated the entry, caller retries the
+        identical batch. Under skip semantics the retry SUCCEEDS (idempotent)."""
+        store.add("memory", "kept fact")
+        batch = [
+            {"action": "remove", "old_text": "vanished entry"},
+            {"action": "add", "content": "fresh fact"},
+        ]
+        first = store.apply_batch("memory", batch)
+        assert first["success"] is True
+        # Identical resubmit: the add dedupes, the remove skips — still success.
+        again = store.apply_batch("memory", batch)
+        assert again["success"] is True
+        assert store.memory_entries.count("fresh fact") == 1
+
+    def test_ambiguous_match_is_still_batch_fatal(self, store):
+        store.add("memory", "alpha shared tail")
+        store.add("memory", "beta shared tail")
+        result = store.apply_batch("memory", [
+            {"action": "remove", "old_text": "shared tail"},
+        ])
+        assert result["success"] is False
+        assert "multiple distinct entries" in result["error"].lower()
+        assert "alpha shared tail" in store.memory_entries  # nothing applied
+
+    def test_unknown_action_still_batch_fatal(self, store):
+        store.add("memory", "kept fact")
+        result = store.apply_batch("memory", [
+            {"action": "delete", "old_text": "kept"},
+        ])
+        assert result["success"] is False
+        assert "unknown action" in result["error"]
+        assert "kept fact" in store.memory_entries
+
+    def test_skip_report_is_bounded(self, store):
+        for i in range(12):
+            store.add("memory", f"fact {i}")
+        result = store.apply_batch("memory", [
+            {"action": "remove", "old_text": f"nope {i}"} for i in range(12)])
+        assert result["success"] is True
+        assert len(result["skipped"]) == 8
+        assert result["skipped_truncated"] == 4
+
+
+class TestRetryOldTextSingleOp:
+    def test_single_op_no_match_carries_retry_old_text(self, store):
+        store.add("memory", "OVERNIGHT-WATCH-mönster: sentinel = cron monitor-mode")
+        result = store.replace("memory",
+                               "OVERNIGHT-WATCH-mönster 13/9: sentinel = cron monitor-mode",
+                               "updated")
+        assert result["success"] is False
+        assert result["retry_old_text"]
+        matches = [e for e in store.memory_entries if result["retry_old_text"] in e]
+        assert len(matches) == 1
+
+    def test_single_op_no_match_without_similar_entry_has_no_retry(self, store):
+        store.add("memory", "completely unrelated fact")
+        result = store.remove("memory", "zzzz totally different qqqq")
+        assert result["success"] is False
+        assert "retry_old_text" not in result
+
+
+class TestOperationsStringUnwrap:
+    def test_json_string_operations_is_unwrapped(self, store):
+        store.add("memory", "kept fact")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations='[{"action": "add", "content": "via json string"}]',
+            store=store))
+        assert result["success"] is True
+        assert "via json string" in store._entries_for("memory")
+
+    def test_garbage_string_operations_still_rejected(self, store):
+        result = json.loads(memory_tool(
+            target="memory", operations="not json at all", store=store))
+        assert result["success"] is False
+
+    def test_action_key_repair_on_string_operations(self, store):
+        # '[{"replace", "content": ...' — action VALUE present, KEY missing.
+        store.add("memory", "old fact to replace")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations='[{"replace", "old_text": "old fact to replace", "content": "new fact"}]',
+            store=store))
+        assert result["success"] is True
+        assert "new fact" in store._entries_for("memory")
+        assert "old fact to replace" not in store._entries_for("memory")

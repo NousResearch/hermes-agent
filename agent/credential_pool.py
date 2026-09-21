@@ -828,8 +828,18 @@ def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential
         return None
 
 
+def _owns_anthropic_singleton() -> bool:
+    """A local PKCE login owns its pool even before its first row is seeded."""
+    from agent.anthropic_credentials import _get_hermes_oauth_file, _root_hermes_oauth_file
+    local = _get_hermes_oauth_file()
+    if not local.is_file():
+        return False
+    root = _root_hermes_oauth_file()
+    return root is None or not auth_mod._is_same_auth_store(local, root)
+
+
 def _profile_owns_pool_provider(provider: str) -> bool:
-    """True when the ACTIVE auth.json has its own rows for *provider*.
+    """True when the active profile owns rows or an unseeded native login.
 
     Named profiles with no local rows read the provider through the
     ``read_credential_pool`` global-root fallback ("borrowing").
@@ -839,7 +849,9 @@ def _profile_owns_pool_provider(provider: str) -> bool:
     except Exception:
         return True  # unreadable store: assume ownership, keep legacy path
     entries = pool.get(provider) if isinstance(pool, dict) else None
-    return isinstance(entries, list) and bool(entries)
+    return (isinstance(entries, list) and bool(entries)) or (
+        provider == "anthropic" and _owns_anthropic_singleton()
+    )
 
 
 def _borrowed_single_use_pool_root() -> Optional[Path]:
@@ -2988,7 +3000,14 @@ def load_pool(provider: str) -> CredentialPool:
         # One-time heal for installs that forked this grant across profiles
         # before the clone-strip / root write-through existed (#100339).
         auth_mod.heal_forked_single_use_oauth_grants(provider)
-    raw_entries = read_credential_pool(provider)
+    if provider == "anthropic" and _owns_anthropic_singleton():
+        # A fresh profile login has no pool row yet. Do not seed its tokens into
+        # a same-source row borrowed from root or persist that row back to root.
+        local_pool = _load_auth_store().get("credential_pool")
+        local_rows = local_pool.get(provider) if isinstance(local_pool, dict) else None
+        raw_entries = local_rows if isinstance(local_rows, list) else []
+    else:
+        raw_entries = read_credential_pool(provider)
     disk_ids = {e.get("id") for e in raw_entries if isinstance(e, dict) and e.get("id")}
     changed = any(
         isinstance(payload, dict) and sanitize_borrowed_credential_payload(payload, provider) != payload

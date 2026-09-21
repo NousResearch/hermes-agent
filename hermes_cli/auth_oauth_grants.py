@@ -269,6 +269,16 @@ def _oauth_freshness(entry: Dict[str, Any]) -> float:
     return best
 
 
+def _shares_token_material(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    """Singletons have no row ID; only shared nonempty tokens prove lineage."""
+    from hermes_cli.auth import _nonempty_str
+    for key in ("refresh_token", "access_token"):
+        value = left.get(key)
+        if _nonempty_str(value) and right.get(key) == value:
+            return True
+    return False
+
+
 def _find_root_counterpart(
     profile_row: Dict[str, Any], root_rows: List[Dict[str, Any]]) -> Optional[int]:
     """Index of the root OAuth row that shares a grant lineage with *profile_row*.
@@ -425,6 +435,14 @@ class _HealPass:
         self.root_singleton_row = (
             _singleton_as_row(root_singleton)
             if root_singleton is not None and root_singleton.exists() else None)
+        # Bind before adoption replaces token material; expiry/source are not lineage.
+        self.root_rows_before = [dict(r) if isinstance(r, dict) else r for r in self.r_rows]
+        self.root_singleton_pool_idx = next(
+            (i for i, r in enumerate(self.r_rows)
+             if _is_oauth_pool_payload(r) and r.get("source") == "hermes_pkce"
+             and self.root_singleton_row is not None
+             and _shares_token_material(r, self.root_singleton_row)), None)
+        self.profile_singleton_to_unlink: Optional[Path] = None
 
     def _adopt_root_row(self, idx: int, row: Dict[str, Any]) -> None:
         merged = _adopt_if_fresher(self.r_rows[idx], row)
@@ -449,8 +467,9 @@ class _HealPass:
                 self.lineage_proven = True
                 self._adopt_root_row(match_idx, row)
             # No root pool counterpart. Root's grant may live only in its .anthropic_oauth.json
-            # (the ``hermes auth`` PKCE shape); a profile hermes_pkce-family row is its copy.
-            elif _is_pkce_row(row) and self.root_singleton_row is not None and not self.r_oauth:
+            # singleton — when this profile row shares its token material.
+            elif (_is_pkce_row(row) and self.root_singleton_row is not None
+                  and not self.r_oauth and _shares_token_material(row, self.root_singleton_row)):
                 self._adopt_root_singleton(row)
             else:
                 # Root holds no copy of this lineage (independent account, or root never had the
@@ -483,26 +502,40 @@ class _HealPass:
             return  # an aliased singleton pair is one shared grant, not a fork: never self-compare/unlink
         # See #101356.
         p_single = _singleton_as_row(profile_singleton)
-        root_has_grant = bool(self.r_oauth) or self.root_singleton_row is not None
         # Otherwise root has NO grant for this provider (or the file is not a grant): the
         # profile's singleton may be the only surviving copy — never delete it.
-        if p_single is None or not root_has_grant:
+        if p_single is None:
             return
-        if self.root_singleton_row is not None:
+        # "Root has SOME anthropic grant" is not lineage. A singleton has no stable row ID, so the
+        # only proof that this file is a COPY of root's grant is shared token material — with
+        # root's own singleton, or with a specific root pool row. An independent
+        # ``hermes -p <p> auth`` PKCE login produces a profile singleton whose source, provider
+        # and account all look identical to root's while sharing no grant with it; deleting it (or
+        # promoting it over root's unrelated grant by freshness alone) destroys that login.
+        if self.root_singleton_row is not None and _shares_token_material(
+                p_single, self.root_singleton_row):
             self._adopt_root_singleton(p_single)
         else:
-            # Root only has pool rows: fold the singleton's pair into the freshest-matching
-            # root pkce row, if any.
-            idx = next(
-                (i for i, r in enumerate(self.r_rows)
-                 if _is_oauth_pool_payload(r) and _is_pkce_row(r)), None)
-            if idx is not None:
-                self._adopt_root_row(idx, p_single)
-        try:
-            profile_singleton.unlink()
-            self.summary["files"].append(profile_singleton.name)
-        except OSError:
-            logger.debug("could not remove %s", profile_singleton, exc_info=True)
+            # Root's grant may live only in its pool rows: fold the singleton's pair into the
+            # root row that shares its lineage, if any.
+            idx = _find_root_counterpart(p_single, self.r_rows)
+            if idx is None:
+                # Pool adoption may already have rotated away this singleton's
+                # tokens. Its pre-adoption match remains authoritative.
+                idx = _find_root_counterpart(p_single, self.root_rows_before)
+            if idx is None:
+                # A copied row ID can bridge rotated pairs, but only when this
+                # singleton is bound to that specific profile row by tokens.
+                for row in self.p_rows:
+                    if _is_oauth_pool_payload(row) and _shares_token_material(p_single, row):
+                        idx = _find_root_counterpart(row, self.root_rows_before)
+                        if idx is not None:
+                            break
+            if idx is None:
+                return
+            self._adopt_root_row(idx, p_single)
+        # Persist the surviving pair before removing its profile copy.
+        self.profile_singleton_to_unlink = profile_singleton
 
     def sync_root_singleton_with_pkce_row(self) -> None:
         """Keep root's singleton and its ``hermes_pkce``-seeded pool row in step.
@@ -514,9 +547,7 @@ class _HealPass:
             self.summary["adopted"] and self.root_singleton is not None
             and self.root_singleton_row is not None):
             return
-        pkce_idx = next(
-            (i for i, r in enumerate(self.r_rows)
-             if _is_oauth_pool_payload(r) and r.get("source") == "hermes_pkce"), None)
+        pkce_idx = self.root_singleton_pool_idx
         if pkce_idx is None:
             return
         pkce_row = self.r_rows[pkce_idx]
@@ -530,7 +561,8 @@ class _HealPass:
 
     @property
     def dirty(self) -> bool:
-        return bool(self.profile_changed or self.root_changed or self.summary["adopted"])
+        return bool(self.profile_changed or self.root_changed or self.summary["adopted"]
+                    or self.profile_singleton_to_unlink is not None)
 
     def notice(self, profile_name: str) -> str:
         summary = self.summary
@@ -619,20 +651,29 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
                 return None
             run.sync_root_singleton_with_pkce_row()
             summary = run.summary
+            singleton_row = run.root_singleton_row
+            if summary["adopted"] and root_singleton is not None and singleton_row is not None:
+                # Commit the seed source first. If this fails, a retry still has
+                # the original singleton→pool binding; writing the pool first
+                # would erase it and let a stale singleton reseed spent tokens.
+                from agent.anthropic_credentials import _write_hermes_oauth_credentials
+                _write_hermes_oauth_credentials(
+                    singleton_row.get("access_token") or "", singleton_row.get("refresh_token"),
+                    singleton_row.get("expires_at_ms"), target=root_singleton)
             if run.root_changed:
                 if isinstance(run.r_pool, dict):
                     run.r_pool[provider_id] = run.r_rows
                 else:
                     root_store["credential_pool"] = {provider_id: run.r_rows}
                 _save_auth_store(root_store, target_path=root_path)
-            singleton_row = run.root_singleton_row
-            if summary["adopted"] and root_singleton is not None and singleton_row is not None:
-                from agent.anthropic_credentials import _write_hermes_oauth_credentials
-                _write_hermes_oauth_credentials(
-                    singleton_row.get("access_token") or "", singleton_row.get("refresh_token"),
-                    singleton_row.get("expires_at_ms"), target=root_singleton)
             if run.profile_changed and profile_path.exists():
                 _save_auth_store(profile_store, target_path=profile_path)
+            if run.profile_singleton_to_unlink is not None:
+                try:
+                    run.profile_singleton_to_unlink.unlink()
+                    summary["files"].append(run.profile_singleton_to_unlink.name)
+                except OSError:
+                    logger.debug("could not remove %s", run.profile_singleton_to_unlink, exc_info=True)
     message = run.notice(profile_home.name)
     logger.info(message)
     _oauth_heal_notices.append(message)

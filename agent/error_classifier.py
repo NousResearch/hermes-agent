@@ -522,19 +522,46 @@ _REASONING_REQUIRED_MARKERS = (
     "always enabled", "cannot be turned off",
 )
 
+# Same rejection, wording by *value*: an endpoint that publishes a closed level set refuses the
+# thinking-OFF encoding because ``none`` is not in it — "'reasoning_effort' must be one of:
+# 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'" (Alibaba token-plan / DashScope
+# routes, code ``invalid_parameter_error``). The field is understood and has to stay on the wire;
+# only the disabled level is invalid, so the floor step-up (the weakest accepted level) is the
+# right recovery. Neither the strip rung nor its "unsupported" wording matches this message, so
+# without these markers the title lane fails outright instead of retrying at the floor.
+_REASONING_LEVEL_REJECTION_MARKERS = ("must be one of", "invalid value for")
 
-def is_reasoning_required_rejection(error_msg: str) -> bool:
-    """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
-    this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra). The opposite of
-    ``is_reasoning_field_rejection``: the field is understood, the *disable* is refused, so the right
-    reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
-    also works, but tells the caller nothing about the next call)."""
+
+def is_reasoning_level_rejection(error_msg: str) -> bool:
+    """Provider 400 rejecting the *value* of a reasoning wire control against the endpoint's closed
+    level set ("'reasoning_effort' must be one of: 'minimal', 'low', …", Alibaba token-plan /
+    DashScope routes, code ``invalid_parameter_error``). The reasoning-field token must be present
+    next to the wording — a 400 enum complaint about some other field is not this class. The field is
+    understood and has to stay on the wire; only the disabled level ("none") is invalid, so the
+    recovery is the floor step-up in the auxiliary ladder and the disable-drop in the main loop, not
+    the strip rung and not an abort to the fallback chain."""
     msg = (error_msg or "").lower()
     token = _REASONING_FIELD_TOKEN.search(msg)
     if token is None:
         return False
     near = msg[max(0, token.start() - 48):token.end() + 96]
-    return any(m in near for m in _REASONING_REQUIRED_MARKERS)
+    return any(m in near for m in _REASONING_LEVEL_REJECTION_MARKERS)
+
+
+def is_reasoning_required_rejection(error_msg: str) -> bool:
+    """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
+    this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra) — or refusing the OFF
+    *level* because the endpoint's closed set starts at ``minimal``
+    (``is_reasoning_level_rejection``). The opposite of ``is_reasoning_field_rejection``: the field is
+    understood, the *disable* is refused, so the right reaction is to step the effort up to the
+    lowest level rather than drop the field (a dropped field also works, but tells the caller nothing
+    about the next call)."""
+    msg = (error_msg or "").lower()
+    token = _REASONING_FIELD_TOKEN.search(msg)
+    if token is None:
+        return False
+    near = msg[max(0, token.start() - 48):token.end() + 96]
+    return any(m in near for m in _REASONING_REQUIRED_MARKERS) or is_reasoning_level_rejection(msg)
 
 
 def is_reasoning_field_rejection(error_msg: str) -> bool:
@@ -1145,10 +1172,14 @@ def _classify_400(c: _Ctx) -> Verdict:
     ):
         return _V_INVALID_ENCRYPTED
     # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /
-    # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
-    # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
-    # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
+    # OpenRouter), a chat-only relay that does not accept ``reasoning_effort: none`` at all
+    # (#114460), or an endpoint whose closed level set starts above the disable ("must be one of:
+    # 'minimal', …" — Alibaba token-plan). Deterministic for the request shape, but the only bad
+    # value is the disable — the loop drops it (or, when the disable is refused rather than the
+    # field, steps the effort up to the floor) and retries once. Must precede request-validation,
+    # which would abort as format_error.
+    if (_REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg)
+            or is_reasoning_level_rejection(msg)):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

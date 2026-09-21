@@ -960,15 +960,20 @@ class TestClassifyApiError:
     def test_reasoning_field_rejection_is_reasoning_mandatory(self):
         """A 400 rejecting a reasoning wire control by name — reversed ("reasoning_effort 'none'
         unsupported; use ...", #114460), forward ("Unrecognized request argument supplied:
-        reasoning_effort"), or an enum rejection whose only field name sits in the structured
-        'param' tail (commandcode.ai, #115277) — takes the drop-the-disable rung, not the
-        format_error abort; a model-id segment (kimi-k2-thinking) stays route gating."""
+        reasoning_effort"), an enum rejection whose only field name sits in the structured
+        'param' tail (commandcode.ai, #115277), or a closed-set value rejection that names the
+        field but blames its value (Alibaba token-plan: "'reasoning_effort' must be one of:
+        'minimal', ...") — takes the drop-the-disable / step-up rung, not the format_error abort;
+        a model-id segment (kimi-k2-thinking) stays route gating."""
         for msg in (
             "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
             "Unrecognized request argument supplied: reasoning_effort",
             "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
             "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
             "'param': 'reasoning_effort'}}",
+            "Error code: 400 - {'error':{'code':'invalid_parameter_error','param':None,"
+            "'message':\"'reasoning_effort' must be one of: 'minimal', 'low', 'medium', 'high', "
+            "'xhigh', 'max', 'ultra'\",'type':'invalid_request_error'}}",
         ):
             result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
             assert result.reason == FailoverReason.reasoning_mandatory, msg

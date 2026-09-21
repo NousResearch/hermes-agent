@@ -74,3 +74,43 @@ def test_field_rejection_still_strips_instead_of_stepping_up():
     retry = client.chat.completions.create.call_args_list[1].kwargs
     assert "reasoning_effort" not in retry
     assert not auxiliary_reasoning_floor._FLOORED_ROUTES
+
+
+# Live body from the firstVDS qwencloud route (Alibaba token-plan, deepseek-v4.1-flash, 2026-09-21):
+# a closed level set that starts at ``minimal``, so the thinking-off encoding ``none`` is refused by
+# value rather than by field name.
+_TOKENPLAN_400 = (
+    'Error code: 400 - {\'error\':{\'code\':\'invalid_parameter_error\',\'param\':None,'
+    '\'message\':"\'reasoning_effort\' must be one of: \'minimal\', \'low\', \'medium\', \'high\', '
+    '\'xhigh\', \'max\', \'ultra\'",\'type\':\'invalid_request_error\'}}'
+)
+
+
+def test_tokenplan_level_rejection_is_a_reasoning_rejection_not_a_field_rejection():
+    """The closed-set wording names the field but blames its value: it must classify as a *required*
+    rejection (floor step-up), not as a field rejection (strip) — the endpoint needs the field on the
+    wire with an accepted level."""
+    from agent.error_classifier import is_reasoning_field_rejection, is_reasoning_required_rejection
+
+    assert is_reasoning_required_rejection(_TOKENPLAN_400)
+    assert not is_reasoning_field_rejection(_TOKENPLAN_400)
+
+
+def test_tokenplan_level_rejection_steps_up_to_the_floor_and_remembers_the_route():
+    """Alibaba token-plan (qwencloud) on deepseek-v4.1-flash: ``none`` → 400 → retry at ``low`` → ok,
+    and the next thinking-off aux call on that route starts at the floor."""
+    client = MagicMock()
+    client.base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    client.chat.completions.create.side_effect = [
+        RuntimeError(_TOKENPLAN_400), {"ok": True}, {"ok": True},
+    ]
+
+    assert _call(client) == {"ok": True}
+    first, retry = (c.kwargs for c in client.chat.completions.create.call_args_list[:2])
+    assert first["reasoning_effort"] == "none"
+    assert retry["reasoning_effort"] == auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT
+    assert retry["extra_body"]["response_format"] == {"type": "json_object"}
+
+    assert _call(client) == {"ok": True}
+    upfront = client.chat.completions.create.call_args_list[2].kwargs
+    assert upfront["reasoning_effort"] == auxiliary_reasoning_floor.REASONING_FLOOR_EFFORT

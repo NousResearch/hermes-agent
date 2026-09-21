@@ -3265,8 +3265,11 @@ class BasePlatformAdapter(ABC):
                     return
                 if chat_id not in self._typing_paused:
                     try:
-                        await asyncio.wait_for(self.send_typing(chat_id, metadata=metadata),
-                                               timeout=_send_typing_timeout)
+                        # asyncio.timeout, not wait_for: on 3.11 wait_for can swallow the
+                        # cancellation when the send finishes in the same tick, which leaves
+                        # the refresh loop alive after the reply landed (stuck "typing").
+                        async with asyncio.timeout(_send_typing_timeout):
+                            await self.send_typing(chat_id, metadata=metadata)
                     except asyncio.TimeoutError:
                         pass  # Slow network — abandon this tick, stay on schedule.
                     except Exception as typing_err:
@@ -3303,6 +3306,16 @@ class BasePlatformAdapter(ABC):
                 # Slow adapter cleanup must not block delivery/shutdown.
                 with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                     await asyncio.wait_for(asyncio.shield(typing_task), timeout=timeout)
+                if not typing_task.done():
+                    # Orphan guard: a refresh loop that outlives its own cancel keeps
+                    # sending "typing" after the reply was delivered. It used to leave
+                    # no trace at all, so log it — this WARNING is the only signal an
+                    # operator (or watchdog) can act on.
+                    logger.warning(
+                        "[%s] typing refresh loop survived cancel (chat=%s, waited %.2fs) — "
+                        "indicator may stay stuck until restart",
+                        self.name, chat_id, timeout,
+                    )
             for attempt in range(max(1, stop_attempts)):
                 if attempt:
                     await asyncio.sleep(0)

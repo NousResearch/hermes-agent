@@ -22,6 +22,7 @@ the bubble stays visible across provider stalls.
 """
 
 import asyncio
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -234,6 +235,68 @@ class TestKeepTypingTimeoutPerTick:
             ("discord-chat", True),
         ]
         assert "discord-chat" not in adapter._typing_paused
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_stop_event", [False, True])
+    async def test_cancel_at_send_completion_stops_refresh(self, monkeypatch, with_stop_event):
+        """A completed send must not swallow the cancellation of the refresh loop.
+
+        On 3.11 ``asyncio.wait_for`` can drop the cancel when its child finishes in the
+        same event-loop tick as the cancel. The refresh loop then survives response
+        delivery and keeps sending "typing" — the visible stuck-indicator symptom.
+        """
+        adapter = _StubAdapter()
+        calls = []
+
+        async def send_typing(chat_id, metadata=None):
+            calls.append(chat_id)
+            if len(calls) == 1:
+                # The HTTP round-trip completes in the same tick in which the
+                # response path cancels the refresh task.
+                asyncio.get_running_loop().call_soon(task.cancel)
+
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        stop_event = asyncio.Event() if with_stop_event else None
+        task = asyncio.create_task(
+            adapter._keep_typing("chat", interval=0.05, stop_event=stop_event)
+        )
+        try:
+            done, _ = await asyncio.wait({task}, timeout=2.0)
+            assert task in done, "cancelled typing loop kept refreshing after send completed"
+            assert calls == ["chat"]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_orphaned_refresh_loop_logs_warning(self, caplog):
+        """A refresh loop that outlives its own cancel must leave a trace.
+
+        The stuck-"typing" symptom was invisible: nothing was logged while the orphan
+        loop kept refreshing, so neither an operator nor a watchdog could see it.
+        """
+        adapter = _StubAdapter()
+
+        async def stubborn_refresh(*args, **kwargs):
+            try:
+                while True:
+                    await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                # A leaked loop that keeps running past its cancel.
+                await asyncio.sleep(0.5)
+
+        task = asyncio.create_task(stubborn_refresh())
+        await asyncio.sleep(0)
+        try:
+            with caplog.at_level(logging.WARNING):
+                await adapter._stop_typing_refresh("chat", task, timeout=0.05)
+            assert any(
+                "typing refresh loop survived cancel" in record.getMessage()
+                for record in caplog.records
+            ), "an orphaned typing refresh loop must log a WARNING"
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 class TestPreDeliveryTypingSuspend:

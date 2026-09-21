@@ -60,6 +60,7 @@ const state = {
 
 const roster = [{ name: 'alpha', connectionId: 'local' }, { name: 'beta', connectionId: 'local' }]
 const unavailable = CANONICAL_GROUP_LOCALES.en.driverUnavailable
+const retainedNotice = 'Reconnect this Group Chat’s original connection to continue. Its history and members are still here.'
 
 // Decision-relevant fields emitted by the actual canonical capabilities producer.
 const canonicalUnavailable = {
@@ -147,12 +148,12 @@ function pendingCreation() {
   return { serverRooms, finish: () => finish() }
 }
 
-it.each(refused)('classifies %j as unavailable on both surfaces: no legacy renderer, no legacy creation', async value => {
+it.each(refused)('classifies %j as unavailable on both surfaces: retained rooms never fall back or mint a duplicate', async value => {
   answer(value)
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  expect(screen.getByText(unavailable)).toBeTruthy()
+  expect(screen.getByText(retainedNotice)).toBeTruthy()
   expect(screen.queryByRole('textbox')).toBeNull()
-  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(true)
+  expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
   cleanup()
 
   const { onCreated, onClose } = await submitDialog()
@@ -204,13 +205,12 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('dialog: a cre
   expect(request.mock.calls[1][0]).toMatchObject({ connectionId: 'local', profile: 'default' })
 })
 
-it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: a capability read before the %s moved neither creates nor opens a room', async kind => {
+it.each(['profile', 'gateway', 'same-route-activation'] as const)('workspace: automatic adoption never creates a fresh room when the %s moves', async kind => {
   const pending = pendingCreation()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
-  const button = screen.getByRole('button', { name: 'Start gateway group' })
-  expect((button as HTMLButtonElement).disabled).toBe(false)
-  // Click after the source moved but before React re-renders: the stale capability must not create.
-  await act(async () => { moveSource(kind); fireEvent.click(button) })
+  expect(screen.getByText('Finishing this Group Chat upgrade. Its history and members will appear here automatically.')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Start gateway group' })).toBeNull()
+  await act(async () => { moveSource(kind) })
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
   expect(pending.serverRooms.size).toBe(0)
   expect(openWorkspace).not.toHaveBeenCalled()

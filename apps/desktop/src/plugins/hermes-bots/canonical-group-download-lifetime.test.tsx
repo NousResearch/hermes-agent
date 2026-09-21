@@ -1,3 +1,4 @@
+import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -5,10 +6,11 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { expectDownloaded, observeDownloads } from './canonical-download-test-utils'
 
 const request = vi.hoisted(() => vi.fn())
-vi.mock('@hermes/plugin-sdk', async () => {
+vi.mock('@hermes/plugin-sdk', async importOriginal => {
+  const sdk = await importOriginal<typeof HermesSdk>()
   const { en } = await import('@/i18n/en')
 
-  return { host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+  return { ...sdk, host: { ...sdk.host, requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })

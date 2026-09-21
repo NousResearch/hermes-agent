@@ -22,6 +22,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as DataModule from './data'
+import type * as GroupChatModule from './group-chat'
 import { desktopCommandResult, settleDesktopCommand } from './group-command-receipts'
 import { classicAuthorityHash } from './group-desktop-authority'
 import type * as RoutingModule from './routing'
@@ -30,6 +31,7 @@ import { canonicalUser, optimisticUser, userRoom } from './user-event-test-fixtu
 
 const mocks = vi.hoisted(() => ({
   activateClassicGroupAuthorities: vi.fn(async () => false),
+  adoptShippedGroupChats: vi.fn(async (): Promise<void> => undefined),
   botChatOwnsWorkspace: vi.fn(() => false),
   mailboxClaim: vi.fn(),
   onEvent: vi.fn((_name: string, _callback: (event?: unknown) => void) => () => undefined),
@@ -82,15 +84,18 @@ vi.mock('./roster-pane', () => ({
   selectedRosterBot: () => null,
   sessionOwnsWorkspace: mocks.sessionOwnsWorkspace
 }))
-vi.mock('./group-chat', async () => {
+vi.mock('./group-chat', async importOriginal => {
   const { atom: nanoAtom } = await import('nanostores')
+  const actual = await importOriginal<typeof GroupChatModule>()
 
   return {
     $groupChats: nanoAtom({}),
     $groupChatWorkspace: nanoAtom(null),
     activateClassicGroupAuthorities: mocks.activateClassicGroupAuthorities,
     assignLegacyThreads: (log: unknown[]) => log,
+    groupChatHostedGateway: (room: GroupChat) => room?.hosted || '',
     handleSessionsGatewayTransition: vi.fn(),
+    hydrateGroupChatRooms: actual.hydrateGroupChatRooms,
     pullGroupChatServerState: vi.fn(async () => false),
     scheduleGroupChatServerSync: mocks.scheduleGroupChatServerSync,
     setGroupChatSyncDisposed: vi.fn(),
@@ -99,6 +104,10 @@ vi.mock('./group-chat', async () => {
     updateGroupChat: vi.fn()
   }
 })
+vi.mock('./shipped-group-adoption', () => ({
+  adoptShippedGroupChats: mocks.adoptShippedGroupChats,
+  stopShippedGroupAdoption: vi.fn()
+}))
 vi.mock('./data', async importOriginal => {
   const original = await importOriginal<typeof DataModule>()
 
@@ -179,6 +188,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.botChatOwnsWorkspace.mockReturnValue(false)
   mocks.activateClassicGroupAuthorities.mockResolvedValue(false)
+  mocks.adoptShippedGroupChats.mockResolvedValue(undefined)
   mocks.onEvent.mockImplementation((_name: string, _callback: (event?: unknown) => void) => () => undefined)
   mocks.sessionOwnsWorkspace.mockReturnValue(false)
   mocks.startDesktopRoomCommandRuntime.mockResolvedValue(undefined)
@@ -250,6 +260,11 @@ describe('hosted Group Chat startup', () => {
     await settle()
     await settle()
     expect(mocks.scheduleGroupChatServerSync).toHaveBeenCalledTimes(1)
+    expect(mocks.adoptShippedGroupChats).toHaveBeenCalledWith(recovered.ctx.storage)
+    expect(mocks.activateClassicGroupAuthorities.mock.invocationCallOrder.at(-1))
+      .toBeLessThan(mocks.adoptShippedGroupChats.mock.invocationCallOrder.at(-1)!)
+    expect(mocks.adoptShippedGroupChats.mock.invocationCallOrder.at(-1))
+      .toBeLessThan(mocks.startHostedRoomRuntime.mock.invocationCallOrder.at(-1)!)
     expect(mocks.startDesktopRoomCommandRuntime).toHaveBeenCalledWith(recovered.ctx.storage)
     expect(mocks.mailboxClaim).not.toHaveBeenCalled()
     recovered.dispose()

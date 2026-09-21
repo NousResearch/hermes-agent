@@ -7,6 +7,25 @@ import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from '
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
 
+export function bindAdoptedCanonicalGroup(
+  group: string,
+  route: CanonicalGroupRoute,
+  room: Pick<CanonicalRoom, 'room_id'>
+): string {
+  const key = String(group || '').trim()
+
+  if (!key || !route.connectionId?.trim() || !route.profile?.trim() || !room.room_id?.trim()) {
+    throw new Error('Adopted canonical group requires its retained group key and exact owner route')
+  }
+
+  $canonicalGroupBindings.set({
+    ...$canonicalGroupBindings.get(),
+    [key]: { ...route, roomId: room.room_id }
+  })
+
+  return key
+}
+
 export function registerCanonicalGroup(route: CanonicalGroupRoute, room: CanonicalRoom): string {
   const key = `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${room.room_id}`
   $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: { ...route, roomId: room.room_id } })

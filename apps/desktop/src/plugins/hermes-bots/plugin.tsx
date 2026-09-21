@@ -48,6 +48,7 @@ import {
   $groupChats,
   $groupChatWorkspace,
   activateClassicGroupAuthorities,
+  groupChatHostedGateway,
   handleSessionsGatewayTransition,
   hydrateGroupChatRooms,
   pullGroupChatServerState,
@@ -75,6 +76,7 @@ import {
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
+import { adoptShippedGroupChats, stopShippedGroupAdoption } from './shipped-group-adoption'
 import type { RosterRow } from './types'
 import { loadBotSections } from './user-sections'
 
@@ -143,11 +145,20 @@ export default {
 
       roomServicesStarted = true
       let bindingGatewayListener = true
-      unbindGatewayListener = host.state.gateway.listen(() => {
+      unbindGatewayListener = host.state.gateway.listen(gateway => {
         // Atom listeners seed synchronously. Treating that seed as a gateway
         // transition bumps every room epoch and can cancel a startup send.
         if (!bindingGatewayListener) {
-          handleSessionsGatewayTransition()
+          const transitioned = handleSessionsGatewayTransition()
+
+          if (gateway === 'open') {
+            void Promise.resolve(transitioned).then(() => {
+              if (!roomServicesDisposed) {
+                return adoptShippedGroupChats(ctx.storage)
+              }
+            })
+          }
+
           startDesktopRoomCommands()
         }
       })
@@ -179,6 +190,7 @@ export default {
       ctx.onDispose(stopBotRelay)
       ctx.onDispose(() => {
         roomServicesDisposed = true
+        stopShippedGroupAdoption()
         stopHostedRoomRuntime()
         stopDesktopRoomCommandRuntime()
 
@@ -388,13 +400,29 @@ export default {
           // must hydrate the gateway projection instead of merely avoiding an
           // empty overwrite and then rendering an empty conversation.
           await pullGroupChatServerState().catch(() => false)
+          // The classic authority hash is the released local-storage record's
+          // durable source identity. Persist it before the automatic importer
+          // can choose or contact an owner route.
           const authorityActivated = await activateClassicGroupAuthorities()
+          await adoptShippedGroupChats(ctx.storage)
 
           if (!authorityActivated) {
             scheduleGroupChatServerSync($groupChats.get())
           }
         })
-        .catch(() => undefined)
+        .catch(() => {
+          const rooms = Object.fromEntries(Object.entries($groupChats.get()).map(([name, room]) => [
+            name,
+            groupChatHostedGateway(room)
+              ? room
+              : {
+                  ...room,
+                  continuityIssue: ctx.i18n.t('canonical.upgradeStorage')
+                }
+          ]))
+
+          $groupChats.set(rooms)
+        })
         .finally(startRoomServices)
     } catch {
       /* no storage — rooms start empty */

@@ -6,15 +6,37 @@ import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-gro
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { prepareCanonicalGroupSend, readCanonicalGroupSend, retireCanonicalGroupSend } from './canonical-group-send'
 import type { PreparedCanonicalGroupSend } from './canonical-group-send'
-import { actCanonicalGroup, canonicalGroupRequest } from './canonical-groups'
-import type { CanonicalGroupBinding, CanonicalPendingAction } from './canonical-groups'
+import { actCanonicalGroup, canonicalGroupRequest, resolveCanonicalGroupMember } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalPendingAction, CanonicalRoom, CanonicalRoomMember } from './canonical-groups'
 import { checkHostedRoomGateway } from './hosted-room-runtime'
 import type { GroupChat } from './types'
 
 type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
-interface RoomState { room: { name: string }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
+interface RoomState { room: CanonicalRoom; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
 interface CanonicalContinuity { group: string; room: GroupChat }
+
+function canonicalMemberStatus(
+  member: CanonicalRoomMember,
+  labels: ReturnType<typeof useCanonicalGroupLabels>
+): string {
+  const membership = member.membership?.state
+  const availability = member.availability?.state
+  const reason = member.availability?.reason
+
+  if (membership === 'former' || availability === 'retired') {return labels.memberFormer}
+
+  if (availability === 'ready') {return labels.memberReady}
+
+  if (reason === 'local_profile_unavailable') {return labels.memberLocalUnavailable}
+
+  if (reason === 'ambiguous_local_profile') {return labels.memberAmbiguous}
+
+  if (availability === 'authorization_required') {return labels.memberAuthorizationRequired}
+
+  return labels.memberUnknown
+}
+
 
 
 export function CanonicalGroupWorkspace({ binding, continuity, visible = true, onBack }: {
@@ -168,6 +190,28 @@ function CanonicalRoomView({ binding: initialBinding, continuity, visible, onBac
       >{labels.checkAgain}</Button>}
     </div>}
     {state && !state.driver_status && <p>{labels.driverUnavailable}</p>}
+    {!!state?.room.members?.some(member => member.membership || member.availability) &&
+      <section aria-label={labels.membersHeading} className="grid gap-1">
+      <h3>{labels.membersHeading}</h3>
+      {state.room.members.filter(member => member.membership || member.availability).map(member => {
+        const former = member.membership?.state === 'former' || member.availability?.state === 'retired'
+        const ready = member.availability?.state === 'ready'
+        const label = member.display_name || member.profile || member.handle || member.member_id
+
+        return <div className="flex flex-wrap items-center gap-2" key={member.member_id}>
+          <strong><bdi>{label}</bdi></strong>
+          <span>{canonicalMemberStatus(member, labels)}</span>
+          {former
+            ? <Button disabled={busy} onClick={() => void mutate(() =>
+                resolveCanonicalGroupMember(binding, member.member_id, 'activate'))}>{labels.memberActivate}</Button>
+            : ready
+              ? <Button disabled={busy} onClick={() => void mutate(() =>
+                  resolveCanonicalGroupMember(binding, member.member_id, 'retire'))}>{labels.memberRetire}</Button>
+              : <Button disabled={busy} onClick={() => void mutate(() =>
+                  resolveCanonicalGroupMember(binding, member.member_id, 'refresh'))}>{labels.checkAgain}</Button>}
+        </div>
+      })}
+    </section>}
     <div className="min-h-0 flex-1 overflow-auto" role="log">
       <CanonicalGroupHistory binding={binding} disabled={!visible} events={events} />
     </div>

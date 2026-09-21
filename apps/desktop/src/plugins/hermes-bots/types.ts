@@ -200,9 +200,47 @@ export interface HostedPeerProbeHint {
   memberId: string
 }
 
+export type ShippedGroupAdoptionIssueKind =
+  | 'auth'
+  | 'conflict'
+  | 'offline'
+  | 'owner-ambiguous'
+  | 'owner-replaced'
+  | 'storage'
+  | 'update-required'
+
+export interface ShippedGroupAdoptionRoute {
+  authorityGatewayId: string
+  connectionId: string
+  profile: string
+}
+
+/** Durable conversion fence for one released `hermes.plugin.hermes-bots.group-chats`
+ * record. The original room remains beside this checkpoint until the exact
+ * backend import is acknowledged; route + authority identity never retarget. */
+export interface ShippedGroupAdoption {
+  acknowledgedAt?: number
+  heldMembers?: number
+  heldWork?: number
+  importedHistory?: number
+  issue?: {
+    kind: ShippedGroupAdoptionIssueKind
+    message: string
+  }
+  requestHash: string
+  retiredMembers?: number
+  roomId: string
+  route?: ShippedGroupAdoptionRoute
+  sourceId: string
+  state: 'adopted' | 'prepared' | 'waiting'
+  version: 1
+}
+
 export interface GroupChat {
   /** User-facing continuity choice. Missing records are classic Desktop rooms. */
   continuityMode?: 'desktop' | 'distributed' | 'gateway'
+  /** Exact, installation-fenced checkpoint for automatic released-room adoption. */
+  shippedAdoption?: ShippedGroupAdoption
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
   holds?: Record<string, GroupHold>

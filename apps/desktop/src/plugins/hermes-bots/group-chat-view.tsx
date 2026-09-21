@@ -39,11 +39,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
-import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
-import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { $canonicalGroupBindings } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
-import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
+import { canonicalGroupRequest } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -616,6 +616,8 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
 
 function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const b = useBots()
+  const rooms = useValue($groupChats)
+  const room = rooms[props.group]
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
@@ -623,12 +625,9 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
   const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
   const mode = capability?.source === source ? capability.mode : 'checking'
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
   useEffect(() => {
     let cancelled = false
     setCapability(null)
-    setError('')
 
     if (gateway !== 'open') {
       setCapability({ source, mode: 'unavailable' })
@@ -642,10 +641,9 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
           setCapability({ source, mode: groupExecutionMode(result) })
         }
       })
-      .catch(e => {
+      .catch(() => {
         if (!cancelled) {
           setCapability({ source, mode: 'unavailable' })
-          setError(String(e))
         }
       })
 
@@ -658,47 +656,25 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     return <LegacyGroupChatWorkspace {...props} />
   }
 
+  const notice = room?.shippedAdoption?.issue?.message || room?.continuityIssue ||
+    (mode === 'canonical'
+      ? b.canonical.upgradePreparing
+      : mode === 'unavailable'
+        ? b.canonical.upgradeReconnect
+        : b.canonical.upgradeChecking)
+
   return (
-    <div className="grid gap-3 p-3">
+    <div className="flex h-full min-h-0 flex-col gap-3 p-3">
       <h2>{props.group}</h2>
-      <p>
-        {mode === 'canonical'
-          ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.'
-          : mode === 'unavailable'
-            ? b.canonical.driverUnavailable
-            : 'Checking group driver…'}
-      </p>
-      {error && <p role="alert">{error}</p>}
-      <Button
-        disabled={mode !== 'canonical' || busy}
-        onClick={() => {
-          const route = { connectionId: connectionId ?? '', profile }
-
-          const sourceCurrent = groupCreationSource(route, activationEpoch)
-
-          if (mode !== 'canonical' || !sourceCurrent()) {
-            setError(b.canonical.driverUnavailable)
-
-            return
-          }
-
-          setBusy(true)
-          void createCanonicalGroup(route, props.group, props.members)
-            .then(({ room }) => {
-              if (sourceCurrent()) {
-                openGroupChat(registerCanonicalGroup(route, room))
-              }
-            })
-            .catch(e => {
-              if (sourceCurrent()) {
-                setError(String(e))
-              }
-            })
-            .finally(() => setBusy(false))
-        }}
-      >
-        Start gateway group
-      </Button>
+      <p role="status">{notice}</p>
+      <div className="min-h-0 flex-1 overflow-auto" role="log">
+        {(room?.log || []).map((entry, index) => <div className="whitespace-pre-wrap py-2" key={entry.id || index}>
+          <strong><bdi>{entry.from?.name || b.canonical.unknownMember}</bdi>: </strong>
+          {entry.text}
+          {!!entry.images?.length && <div>{entry.images.map((attachment, attachmentIndex) =>
+            <span className="mr-2" key={`${attachment.name}:${attachmentIndex}`}>{attachment.name}</span>)}</div>}
+        </div>)}
+      </div>
     </div>
   )
 }

@@ -17,12 +17,71 @@ export interface CanonicalRoomMember {
   handle: string
   display_name?: string
   target?: Record<string, unknown>
+  membership?: { state?: string }
+  availability?: { reason?: string; state?: string }
+  source?: {
+    connection_id?: string
+    connection_label?: string
+    remote_source?: boolean
+    source_member_id?: string
+  }
+}
+
+export interface ShippedGroupImportMember {
+  source_member_id: string
+  name: string
+  profile: string
+  handle: string
+  remote_source: boolean
+  active: boolean
+  connection_id?: string
+  connection_label?: string
+}
+
+export interface ShippedGroupHistoryEntry {
+  source_entry_id: string
+  at_ms: number
+  author_kind: 'member' | 'user'
+  author_name: string
+  member_source_id?: string
+  text: string
+  thread_id: string
+  attachments?: Array<{ data: string; kind: 'file' | 'image' | 'pdf'; name: string }>
+}
+
+export interface ShippedGroupHeldWork {
+  source_work_id: string
+  at_ms: number
+  state: 'uncertain'
+  description: string
+  member_source_id?: string
+}
+
+export interface ShippedGroupImportRequest {
+  room_id: string
+  name: string
+  source_id: string
+  members: ShippedGroupImportMember[]
+  history: ShippedGroupHistoryEntry[]
+  held_work: ShippedGroupHeldWork[]
+}
+
+export interface ShippedGroupImportResult {
+  room: CanonicalRoom
+  source_id: string
+  imported_history: number
+  held_work: number
+  held_members: number
+  retired_members: number
+  idempotent: boolean
 }
 
 export interface CanonicalRoom {
   room_id: string
   name: string
   members: CanonicalRoomMember[]
+  authority_gateway_id?: string
+  authority_epoch?: number
   disbanded_at?: number | null
 }
 
@@ -141,6 +200,36 @@ export async function createCanonicalGroup(
   })
 
   return { binding: { ...route, roomId: room.room_id }, room }
+}
+
+export async function importCanonicalGroupHistory(
+  route: CanonicalGroupRoute,
+  request: ShippedGroupImportRequest
+): Promise<ShippedGroupImportResult> {
+  requireRoute(route)
+
+  if (!request.room_id || !request.name || !request.source_id || !Array.isArray(request.members) ||
+      !Array.isArray(request.history) || !Array.isArray(request.held_work)) {
+    throw new Error('Invalid shipped Group Chat import request')
+  }
+
+  return canonicalGroupRequest<ShippedGroupImportResult>(route, 'groups.import_history', { ...request })
+}
+
+export async function resolveCanonicalGroupMember(
+  binding: CanonicalGroupBinding,
+  memberId: string,
+  action: 'activate' | 'refresh' | 'retire'
+): Promise<{ room: CanonicalRoom; member: CanonicalRoomMember; action: string; changed: boolean }> {
+  if (!binding.roomId || !memberId || !['activate', 'refresh', 'retire'].includes(action)) {
+    throw new Error('Invalid imported Group Chat member resolution')
+  }
+
+  return canonicalGroupRequest(binding, 'groups.member.resolve', {
+    room_id: binding.roomId,
+    member_id: memberId,
+    action
+  })
 }
 
 export async function actCanonicalGroup(

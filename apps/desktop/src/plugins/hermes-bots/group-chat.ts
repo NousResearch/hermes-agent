@@ -46,7 +46,9 @@ import type {
   GroupMessageAuthor,
   GroupPrompt,
   HostedPeerProbeHint,
-  RosterRow
+  RosterRow,
+  ShippedGroupAdoption,
+  ShippedGroupAdoptionIssueKind
 } from './types'
 
 /** Optional secondary navigation inside the Bots pane (group-chat rooms). */
@@ -993,6 +995,67 @@ function storedHostedPeerProbeHint(room: Partial<GroupChat>): HostedPeerProbeHin
   return connectionId && installationId && memberId ? { connectionId, installationId, memberId } : undefined
 }
 
+function storedShippedGroupAdoption(room: Partial<GroupChat>): ShippedGroupAdoption | undefined {
+  const value = room.shippedAdoption
+
+  if (!value || typeof value !== 'object' || value.version !== 1 ||
+      !['waiting', 'prepared', 'adopted'].includes(String(value.state || '')) ||
+      typeof value.sourceId !== 'string' || !value.sourceId.trim() || value.sourceId.length > 512 ||
+      typeof value.roomId !== 'string' || !value.roomId.trim() || value.roomId.length > 128 ||
+      typeof value.requestHash !== 'string' || !/^[0-9a-f]{64}$/.test(value.requestHash)) {
+    return undefined
+  }
+
+  const issueKinds = new Set<ShippedGroupAdoptionIssueKind>([
+    'auth', 'conflict', 'offline', 'owner-ambiguous', 'owner-replaced', 'storage', 'update-required'
+  ])
+
+  const rawIssue = value.issue
+
+  const issue = rawIssue && issueKinds.has(rawIssue.kind) && typeof rawIssue.message === 'string' &&
+      rawIssue.message.trim() && rawIssue.message.length <= 1000
+    ? { kind: rawIssue.kind, message: rawIssue.message.trim() }
+    : undefined
+
+  const rawRoute = value.route
+
+  const route = rawRoute && typeof rawRoute.connectionId === 'string' && rawRoute.connectionId.trim() &&
+      rawRoute.connectionId.length <= 256 && typeof rawRoute.profile === 'string' && rawRoute.profile.trim() &&
+      rawRoute.profile.length <= 128 && typeof rawRoute.authorityGatewayId === 'string' &&
+      rawRoute.authorityGatewayId.trim() && rawRoute.authorityGatewayId.length <= 256
+    ? {
+        authorityGatewayId: rawRoute.authorityGatewayId.trim(),
+        connectionId: rawRoute.connectionId.trim(),
+        profile: rawRoute.profile.trim()
+      }
+    : undefined
+
+  if ((value.state === 'prepared' || value.state === 'adopted') && !route) {
+    return undefined
+  }
+
+  const count = (candidate: unknown) => {
+    const number = Number(candidate)
+
+    return Number.isSafeInteger(number) && number >= 0 ? number : undefined
+  }
+
+  return {
+    version: 1,
+    state: value.state,
+    sourceId: value.sourceId.trim(),
+    roomId: value.roomId.trim(),
+    requestHash: value.requestHash,
+    ...(route ? { route } : {}),
+    ...(issue ? { issue } : {}),
+    ...(count(value.importedHistory) !== undefined ? { importedHistory: count(value.importedHistory) } : {}),
+    ...(count(value.heldWork) !== undefined ? { heldWork: count(value.heldWork) } : {}),
+    ...(count(value.heldMembers) !== undefined ? { heldMembers: count(value.heldMembers) } : {}),
+    ...(count(value.retiredMembers) !== undefined ? { retiredMembers: count(value.retiredMembers) } : {}),
+    ...(count(value.acknowledgedAt) !== undefined ? { acknowledgedAt: count(value.acknowledgedAt) } : {})
+  }
+}
+
 /** Parse the exact local-storage room shape used by plugin registration. */
 export function hydrateGroupChatRooms(value: unknown): Record<string, GroupChat> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -1019,6 +1082,7 @@ export function hydrateGroupChatRooms(value: unknown): Record<string, GroupChat>
       holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
       desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
       members: Array.isArray(room.members) ? room.members : [],
+      shippedAdoption: storedShippedGroupAdoption(room),
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
       hosted: typeof room.hosted === 'string' && room.hosted ? room.hosted : null,
       hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
@@ -1069,6 +1133,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
       stranded: room.stranded || {},
       members: Array.isArray(room.members) ? room.members : [],
+      shippedAdoption: storedShippedGroupAdoption(room),
       // Immutable room identity: without this, a room merged in via the
       // remote-sync path (the only caller of this function) loses its
       // roomId on the next cold hydrate and falls back to legacy
@@ -1559,9 +1624,10 @@ export function handleSessionsGatewayTransition() {
   }
 
   $groupChats.set(rooms)
+
   // Pull before re-publishing so a reconnect or source swap never lets this
   // client's stale cache hide a room written by another Desktop/mobile client.
-  void pullGroupChatServerState()
+  return pullGroupChatServerState()
     .catch(() => false)
     .then(() => scheduleGroupChatServerSync($groupChats.get()))
 }
@@ -1724,6 +1790,7 @@ export function updateGroupChat(
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
+        shippedAdoption: storedShippedGroupAdoption(room),
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         hosted: groupChatHostedGateway(room) || null,

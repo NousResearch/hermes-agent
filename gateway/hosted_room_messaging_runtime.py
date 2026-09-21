@@ -73,9 +73,12 @@ async def render_inventory_page(context, page, prefix):
         if type(batch) is not list or len(batch) > limit:
             raise InventoryFormatError
         for row in batch:
-            if (type(row) is not dict or set(row) != {'name', 'member_count'}
+            if (type(row) is not dict or set(row) not in (
+                    {'name', 'member_count'}, {'name', 'member_count', 'room_ref'})
                     or type(row['name']) is not str or type(row['member_count']) is not int
-                    or row['member_count'] < 0):
+                    or row['member_count'] < 0
+                    or ('room_ref' in row and (type(row['room_ref']) is not int
+                                              or not 1 <= row['room_ref'] <= 2**63 - 2))):
                 raise InventoryFormatError
         rows.extend(batch)
         cursor = result['next_offset']

@@ -91,6 +91,11 @@ async def test_registered_native_room_grant_read_record_revoke_and_regrant(bound
         'room_ref': 1,
     }
     assert grant['binding_id'].startswith('mrr-')
+    # A separate detail grant must not break the existing list consumer.
+    from gateway.hosted_room_messaging_runtime import render_inventory_page
+    from gateway.session_group_messaging_read import _attest_inventory
+    listing = await render_inventory_page(_attest_inventory(bound.runner, bound.event()), 1, '/')
+    assert 'Alice inventory' in listing
     assert (await room_rpc(bound.alice, params=room_grant_params(inventory)))['result'] == grant
 
     rows = room_rows(bound)

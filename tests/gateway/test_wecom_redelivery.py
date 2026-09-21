@@ -21,6 +21,10 @@ websocket byte-writer / ack layer is faked):
    fail-closed shape and never becomes ``send_path_degraded``.
 5. A passive-path timeout still falls back to proactive exactly once (timeouts
    may have delivered — they are never retried as transient).
+6. An ack-path drop AFTER a successful frame write ("connection interrupted" from
+   ``_fail_all``) is ambiguous — the frame may have landed — so it is never
+   transient-retried either: proactive path fails closed once, passive path falls
+   back to proactive once, no duplicate payload ever reaches the wire.
 """
 
 from __future__ import annotations
@@ -183,3 +187,75 @@ class TestNonTransientFailClosed:
 
         assert result.success, result.error
         assert len(proactive_calls) == 1  # single fallback — no duplicate from retries
+
+
+class TestAmbiguousAckDropIsNeverTransient:
+    """The reviewer's duplicate-send case (#114751 review): ``_request`` writes the frame
+    FIRST, then awaits the ack. If the websocket drops after the write, ``_listen_loop``'s
+    ``_fail_all(RuntimeError("WeCom connection interrupted"))`` fails the pending ack future —
+    but the frame may already have been delivered; what was lost is the acknowledgement, not
+    the message. Such a failure is ambiguous, so it must NOT be retried as transient (that
+    duplicates). These drive the REAL ``_request``/``_send_json`` path; only the ws byte-writer
+    is faked, and it fires the drop right after the frame lands on the wire."""
+
+    @staticmethod
+    def _make_dropping_ws(adapter, written: list):
+        class _FakeWS:
+            closed = False
+
+            async def send_json(self, payload):
+                written.append(payload)  # the frame is now on the wire …
+                # … and the connection drops immediately after: _listen_loop fails the ack.
+                adapter._fail_all(RuntimeError("WeCom connection interrupted"))
+
+        return _FakeWS()
+
+    def test_marker_set_excludes_ambiguous_ack_drops(self):
+        """Contract: only server-rejected (846609) and pre-write refusals are provably
+        undelivered; timeouts and post-write ack drops ("connection interrupted" /
+        "websocket closed") are ambiguous and must never be transient."""
+        is_transient = WeComAdapter._is_transient_send_error
+        # provably undelivered → transient (safe to retry)
+        assert is_transient("WeCom errcode 846609: aibot websocket not subscribed")
+        assert is_transient("WeCom websocket is not connected")
+        # ambiguous (may have delivered) → NOT transient
+        assert not is_transient("WeCom connection interrupted")
+        assert not is_transient("WeCom websocket closed")
+
+    @pytest.mark.asyncio
+    async def test_proactive_ack_drop_after_write_fails_closed_once(self, fast_redelivery):
+        """Proactive path: frame written, ack dropped → fails closed with the original error,
+        never ``send_path_degraded`` / retryable, and the frame reaches the wire exactly once."""
+        adapter = _make_adapter()
+        adapter._last_chat_req_ids.clear()  # no cached req_id + DM → proactive path
+        written: list = []
+        adapter._ws = self._make_dropping_ws(adapter, written)
+
+        result = await adapter._send_inner(CHAT_ID, "maybe already on the wire")
+
+        assert len(written) == 1  # written once — no duplicate frame
+        assert not result.success
+        assert result.error != "send_path_degraded"  # ambiguous → not the retry-ledger token
+        assert result.retryable is not True
+        assert "connection interrupted" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_passive_ack_drop_after_write_falls_back_once(self, fast_redelivery):
+        """Passive path: frame written, ack dropped → not transient, so it takes the ORIGINAL
+        passive→proactive fallback exactly once instead of transient-retrying the same payload."""
+        adapter = _make_adapter()  # cached REQ_ID → passive path
+        written: list = []
+        adapter._ws = self._make_dropping_ws(adapter, written)
+        proactive_calls: list[str] = []
+
+        async def _proactive(chat_id: str, content: str):
+            proactive_calls.append(content)
+            return {"errcode": 0, "errmsg": "ok", "headers": {"req_id": "sent-3"}}
+
+        adapter._send_proactive_markdown = _proactive
+
+        result = await adapter._send_inner(CHAT_ID, "passive then drop")
+
+        assert result.success, result.error
+        assert len(written) == 1  # the passive frame was written once, never re-sent
+        assert len(proactive_calls) == 1  # single fallback — no duplicate from transient retries

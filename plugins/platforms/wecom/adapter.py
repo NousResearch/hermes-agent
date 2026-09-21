@@ -63,22 +63,23 @@ HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 
 # Subscription-lost / reconnect-gap redelivery. A send rejected with errcode 846609
-# (or failing while the websocket is down) was PROVABLY not delivered — WeCom rejected
-# it before enqueue — so the same payload is safe to retry after the reconnect that
-# ``_listen_loop`` performs with backoff [2, 5, ...]s. When the wait is exhausted the
-# send fails closed as ``send_path_degraded`` — the delivery ledger's runtime-redelivery
-# token (same contract Telegram uses) — so a final response is replayed with a visible
-# marker after the next reconnect instead of being lost. Timeouts are NEVER transient
-# here: the frame may already have been delivered and a blind retry duplicates it.
+# (server-side rejection, before enqueue) or refused by ``_require_ws`` BEFORE the frame
+# was written was PROVABLY not delivered — so the same payload is safe to retry after the
+# reconnect that ``_listen_loop`` performs with backoff [2, 5, ...]s. When the wait is
+# exhausted the send fails closed as ``send_path_degraded`` — the delivery ledger's
+# runtime-redelivery token (same contract Telegram uses) — so a final response is replayed
+# with a visible marker after the next reconnect instead of being lost. Ambiguous failures
+# are NEVER transient: a timeout, or an ack future failed by ``_fail_all`` after the frame
+# was already written ("connection interrupted"), may have been delivered — what was lost
+# is the acknowledgement, not the message — and a blind retry duplicates it. Those keep
+# the original fail-closed shape (or the passive→proactive fallback).
 REDELIVERY_WAIT_SECONDS = 15.0
 REDELIVERY_WAIT_POLL_SECONDS = 0.5
 REDELIVERY_MAX_RETRIES = 2
 REDELIVERY_RETRY_BACKOFF_SECONDS = 2.0  # per attempt; 846609 can precede the ws close by seconds
 TRANSIENT_SEND_ERROR_MARKERS = (
-    str(STREAM_NOT_SUBSCRIBED_ERRCODE),  # 846609 — subscription lost during a reconnect gap
-    "websocket is not connected",        # _require_ws while the socket is down
-    "connection interrupted",            # _fail_all on a websocket drop
-    "websocket closed",                  # _read_events on CLOSE/ERROR frames
+    str(STREAM_NOT_SUBSCRIBED_ERRCODE),  # 846609 — server rejected the frame: provably undelivered
+    "websocket is not connected",        # _require_ws refused BEFORE any frame was written
 )
 
 DEDUP_MAX_SIZE = 1000
@@ -645,8 +646,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
 
     @staticmethod
     def _is_transient_send_error(text: str) -> bool:
-        """True for errors that PROVE the message was not delivered (websocket down / 846609
-        subscription lost) and are therefore safe to retry after the reconnect. Timeouts are
+        """True ONLY for errors that PROVE the message was not delivered: a server-side
+        846609 rejection (the frame was refused before enqueue) or a ``_require_ws`` refusal
+        raised BEFORE any frame was written. Everything ambiguous — timeouts, and ack futures
+        failed by ``_fail_all`` after a successful write ("connection interrupted") — is
         deliberately absent: the frame may already have landed and a blind retry duplicates it."""
         lowered = (text or "").lower()
         return any(marker in lowered for marker in TRANSIENT_SEND_ERROR_MARKERS)
@@ -665,12 +668,14 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
     async def _send_inner(self, chat_id: str, content: str, reply_to: Optional[str] = None, *, force_proactive: bool = False) -> SendResult:
         """Send under the per-chat queue; force_proactive skips passive reply except in groups.
 
-        A send rejected while the subscription is lost (846609) or the websocket is down was
-        provably NOT delivered, so it waits out ``_listen_loop``'s reconnect and retries the
-        same payload (bounded). When the wait is exhausted the send fails closed as
-        ``send_path_degraded`` so the delivery ledger replays it after the next reconnect
-        instead of losing it. Group chats retry on the passive path only — WeCom blocks
-        ``APP_CMD_SEND`` there (errcode 600039)."""
+        A send rejected while the subscription is lost (846609) or refused before the frame
+        was written (websocket down) was provably NOT delivered, so it waits out
+        ``_listen_loop``'s reconnect and retries the same payload (bounded). Ambiguous
+        failures — timeouts and ack-path drops after a successful write — are never retried
+        (they may have delivered); they keep the original fail-closed / fallback shape. When
+        the reconnect wait is exhausted the send fails closed as ``send_path_degraded`` so the
+        delivery ledger replays it after the next reconnect instead of losing it. Group chats
+        retry on the passive path only — WeCom blocks ``APP_CMD_SEND`` there (errcode 600039)."""
         reply_req_id = None if force_proactive and chat_id not in self._group_chat_ids else self._cached_reply_req_id(chat_id, reply_to)
         if not reply_req_id and chat_id in self._group_chat_ids:
             logger.warning("[%s] No cached req_id for group chat %s — cannot send (groups require passive reply via req_id)", self.name, chat_id)

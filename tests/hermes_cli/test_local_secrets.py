@@ -79,6 +79,23 @@ def test_set_reports_managed_scope_refusal_as_failure(tmp_path, monkeypatch, cap
     assert not (tmp_path / ".env").exists()
 
 
+def test_set_rejects_redirected_multiline_value_without_disclosure(
+        tmp_path, monkeypatch, capsys):
+    parser = _parser()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    secret = "alpha\nbeta"
+    monkeypatch.setattr("sys.stdin", io.StringIO(secret + "\n"))
+
+    args = parser.parse_args(
+        ["secrets", "set", "REVIEW_SECRET", "--stdin"])
+    assert args.func(args) == 1
+    output = capsys.readouterr()
+    assert "alpha" not in output.out + output.err
+    assert "beta" not in output.out + output.err
+    assert not (tmp_path / ".env").exists()
+
+
 def test_stdin_list_and_delete_keep_values_out_of_output(tmp_path, monkeypatch, capsys):
     parser = _parser()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

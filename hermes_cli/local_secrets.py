@@ -27,6 +27,9 @@ def _read_secret(*, from_stdin: bool) -> str | None:
             print(file=sys.stderr)
             _error("secret input was cancelled.")
             return None
+    if "\r" in value or "\n" in value:
+        _error("secret value must be a single line.")
+        return None
     if not value:
         _error("secret value cannot be empty.")
         return None

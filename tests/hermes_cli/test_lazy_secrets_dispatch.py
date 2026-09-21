@@ -119,6 +119,16 @@ class TestSecretsDispatchE2E:
         )
         assert "ImportError" not in result.stderr
 
+    @pytest.mark.parametrize(
+        "sentinel",
+        ["ordinary-secret-sentinel", "-short-secret-sentinel", "--long-secret-sentinel"],
+    )
+    def test_local_set_rejects_argv_values_without_echoing_them(self, sentinel: str) -> None:
+        result = _run_hermes(["secrets", "set", "REVIEW_SECRET", sentinel])
+
+        assert result.returncode == 2
+        assert sentinel not in result.stdout + result.stderr
+
 
 class TestUpdatePathE2E:
     """Update path — must not load cryptography.

@@ -39,6 +39,12 @@ def _secret_result(var_name: str, value: str) -> dict:
         cprint(f"\n{_DIM}  ⏭ Secret entry skipped{_RST}")
         return _skipped(var_name, "cancelled", "Secret setup was skipped.")
     stored = save_env_value_secure(var_name, value)
+    if not stored.get("success"):
+        return {
+            **stored,
+            "skipped": False,
+            "message": "Secret could not be stored securely.",
+        }
     cprint(f"\n{_DIM}  ✓ Stored secret in {display_hermes_home()}/.env as {var_name}{_RST}")
     return {
         **stored,

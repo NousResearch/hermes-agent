@@ -230,6 +230,11 @@ export const fa = defineLocale({
     failedToDeleteSelected: "حذف نشست‌های انتخاب‌شده ناموفق بود",
     resumeInChat: "ادامه در گفتگو",
     newChat: "گفتگوی جدید",
+    statTotal: "مجموع",
+    statActiveInStore: "فعال در مخزن",
+    statArchived: "بایگانی‌شده",
+    statMessages: "پیام‌ها",
+    statSources: "منبع‌ها",
     sources: {
       api_server: "سرور API",
       acp: "ACP",

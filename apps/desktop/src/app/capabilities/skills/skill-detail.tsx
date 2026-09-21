@@ -26,8 +26,8 @@ export function SkillDetail({
   skill: SkillInfo
 }) {
   const { t } = useI18n()
-  // Only learned/local skills are the user's to rewrite or archive — bundled
-  // and hub skills are managed by their sources.
+  // Only learned/local skills are the user's to rewrite or archive — bundled,
+  // hub, and plugin skills are managed by their sources.
   const editable = skill.provenance === 'agent'
 
   // The FULL skill — frontmatter metadata + complete SKILL.md body — for any
@@ -53,7 +53,7 @@ export function SkillDetail({
             <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
             {skill.provenance && skill.provenance !== 'bundled' && (
               <PanelPill tone={skill.provenance === 'agent' ? 'good' : 'muted'}>
-                {t.skills.provenance[skill.provenance]}
+                {skill.provenance === 'plugin' ? 'Plugin · read-only' : t.skills.provenance[skill.provenance]}
               </PanelPill>
             )}
           </>

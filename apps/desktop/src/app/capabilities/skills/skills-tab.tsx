@@ -57,6 +57,11 @@ function skillSubtitle(skill: SkillInfo): ReactNode {
           hub
         </Badge>
       )}
+      {provenance === 'plugin' && (
+        <Badge className="shrink-0 normal-case" variant="muted">
+          Plugin · read-only
+        </Badge>
+      )}
     </>
   )
 }

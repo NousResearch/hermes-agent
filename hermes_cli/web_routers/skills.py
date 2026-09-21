@@ -342,7 +342,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 
 @router.get("/api/skills")
 async def get_skills(profile: Optional[str] = None):
-    from tools.skills_tool import _find_all_skills, _sort_skills, skill_matches_platform
+    from tools.skills_tool import _find_all_skills, _find_plugin_skills, _sort_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
         _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
@@ -352,18 +352,9 @@ async def get_skills(profile: Optional[str] = None):
             config = load_config()
             disabled = get_disabled_skills(config)
             skills = _find_all_skills(skip_disabled=True)
-            try:
-                from hermes_cli.plugins import discover_plugins, get_plugin_manager
-
-                discover_plugins()
-                for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
-                    frontmatter = plugin_skill.pop("frontmatter", {})
-                    if not skill_matches_platform(frontmatter) or plugin_skill["name"] in disabled:
-                        continue
-                    plugin_skill["provenance"] = "plugin"
-                    skills.append(plugin_skill)
-            except Exception:
-                _log.debug("Plugin skill listing failed", exc_info=True)
+            for plugin_skill in _find_plugin_skills():
+                plugin_skill["provenance"] = "plugin"
+                skills.append(plugin_skill)
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
             # without a per-skill manifest read): hub > bundled > agent, where

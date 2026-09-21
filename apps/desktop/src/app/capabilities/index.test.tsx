@@ -284,6 +284,41 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
   })
 
+  it('renders plugin skills as read-only and loads qualified detail content', async () => {
+    getSkills.mockResolvedValue([
+      {
+        name: 'meap:using-meap',
+        description: 'Use MEAP',
+        category: 'plugin',
+        enabled: true,
+        usage: 0,
+        provenance: 'plugin'
+      }
+    ])
+    getSkillContent.mockResolvedValue({
+      name: 'meap:using-meap',
+      path: '/plugins/meap/skills/using-meap/SKILL.md',
+      content: '---\nname: using-meap\n---\n\nPlugin detail body.'
+    })
+
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    expect((await screen.findAllByText('meap:using-meap')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('Plugin · read-only')).length).toBe(2)
+    await waitFor(() => expect(getSkillContent).toHaveBeenCalledWith('meap:using-meap', 'default'))
+    expect(await screen.findByText(/Plugin detail body/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
+  })
+
   it('hub picker refuses to reinstall an already-installed skill', async () => {
     const { notify } = await import('@/store/notifications')
     const { EmbeddedHubPicker } = await import('./skills/embedded-hub-picker')

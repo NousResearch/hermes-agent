@@ -24,8 +24,8 @@ class _Client:
         self.cancelled = 0
         self.closed = 0
 
-    def run_turn(self, prompt, conversation_id=None, event_callback=None, cancel_event=None):
-        self.calls.append((prompt, conversation_id, cancel_event))
+    def run_turn(self, prompt, conversation_id=None, model=None, event_callback=None, cancel_event=None):
+        self.calls.append((prompt, conversation_id, model, cancel_event))
         event_callback({"type": "assistant", "text": "runtime answer"})
         return SimpleNamespace(final_text="", conversation_id="ag-conversation", events=[], usage={"total_tokens": 7}, interrupted=False, error=None)
 
@@ -44,7 +44,7 @@ def _agent(**kwargs):
 
 def test_aiagent_runs_antigravity_turn_reuses_conversation_and_closes_once():
     client = _Client()
-    agent = _agent(cwd="/tmp/ag-cwd")
+    agent = _agent(cwd="/tmp/ag-cwd", model="claude-test-thinking")
     agent._antigravity_client_factory = lambda **_kw: client
     agent._antigravity_projector_factory = _Projector
 
@@ -55,7 +55,10 @@ def test_aiagent_runs_antigravity_turn_reuses_conversation_and_closes_once():
     assert first["completed"] is True
     assert first["agent_persisted"] is True
     assert second["antigravity_conversation_id"] == "ag-conversation"
-    assert client.calls == [("first", None, client.calls[0][2]), ("second", "ag-conversation", client.calls[1][2])]
+    assert client.calls == [
+        ("first", None, "claude-test-thinking", client.calls[0][3]),
+        ("second", "ag-conversation", "claude-test-thinking", client.calls[1][3]),
+    ]
     assert agent._antigravity_session.cwd == "/tmp/ag-cwd"
 
     agent.close()
@@ -153,7 +156,7 @@ def test_interrupt_cancels_active_transport_and_exits_busy_state():
             self.started = threading.Event()
             self.cancelled_event = threading.Event()
 
-        def run_turn(self, prompt, conversation_id=None, event_callback=None, cancel_event=None):
+        def run_turn(self, prompt, conversation_id=None, model=None, event_callback=None, cancel_event=None):
             self.started.set()
             self.cancelled_event.wait(timeout=5)
             raise AntigravityCancelled("stopped")

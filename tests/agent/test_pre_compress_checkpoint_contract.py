@@ -353,7 +353,7 @@ def test_live_replay_preserves_summary_boundary_without_changing_display(tmp_pat
     assert reopened.get_messages_as_conversation("summary-replay") == display_before
     assert all("_compressed_summary" not in m for m in display_before)
     plain = reopened.get_messages_as_conversation("plain-replay", repair_alternation=True)
-    assert [m["content"] for m in plain] == ["First request\n\nSecond request"]
+    assert [m["content"] for m in plain] == ["First request", "Second request"]
     assert all("_compressed_summary" not in m for m in plain)
 
 

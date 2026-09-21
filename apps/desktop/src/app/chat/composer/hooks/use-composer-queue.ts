@@ -381,8 +381,10 @@ export function useComposerQueue({
               ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
               fromQueue: true,
               submission_id: entry.id,
+              messageId: entry.id,
               sessionId: drainRuntimeSessionId,
-              storedSessionId: drainQueueSessionKey
+              storedSessionId: drainQueueSessionKey,
+              submittedAt: entry.queuedAt
             })
           )
 

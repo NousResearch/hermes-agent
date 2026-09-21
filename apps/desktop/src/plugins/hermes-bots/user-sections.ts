@@ -391,3 +391,42 @@ export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>
 // is not, by design), so a drop target can still light up correctly.
 
 export const BOT_DRAG_MIME = 'application/x-hermes-bot-key'
+
+/** Section-drag payload: a section id, under its own MIME so a section drag is
+ *  never mistaken for a bot drag (different drop targets, different writes). */
+export const SECTION_DRAG_MIME = 'application/x-hermes-bot-section-id'
+
+/** Section id in flight during a section-heading drag. Shared (not component
+ *  state) for the same reason `$draggingBot` is: the drop TARGET is a
+ *  different component than the drag source, and Escape must clear it
+ *  everywhere at once. Cleared on drop or dragend. */
+export const $draggingSection = atom<string | null>(null)
+
+/**
+ * Reorder sections by moving `dragId` directly before/after `targetId`
+ * (drop-position semantics: `after` when the pointer is in the target's lower
+ * half). Unassigned is not a section record — callers never pass it. Same
+ * splice shape as `moveBotSection`, driven by a drop instead of a menu delta.
+ */
+export function dropBotSection(dragId: string, targetId: string, after: boolean): void {
+  if (dragId === targetId) {
+    return
+  }
+
+  const list = $botSections.get()
+  const from = list.findIndex(s => s.id === dragId)
+  const target = list.findIndex(s => s.id === targetId)
+
+  if (from < 0 || target < 0) {
+    return
+  }
+
+  const next = list.slice()
+  const [moved] = next.splice(from, 1)
+  // Insert relative to where the target sits AFTER the removal — the index the
+  // user is looking at, not the stale pre-splice one.
+  const insertAt = next.findIndex(s => s.id === targetId) + (after ? 1 : 0)
+
+  next.splice(insertAt, 0, moved!)
+  persistBotSections(next)
+}

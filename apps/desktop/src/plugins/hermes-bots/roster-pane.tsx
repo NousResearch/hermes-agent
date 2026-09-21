@@ -29,9 +29,11 @@ import {
   annotateBotSource,
   botRosterKey,
   botSourceStatus,
+  saveBotMeta,
   sourceByConnection,
   useRoster
 } from './data'
+import { insertBotOrderByDrop, sortGroupRosterRows } from './group-order'
 import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
 import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
@@ -48,10 +50,10 @@ import { $lastSources, usePublishRosterSnapshot } from './roster-pane-lifecycle'
 import { rosterSectionRenderers } from './roster-pane-sections'
 import { renderRosterToolbar } from './roster-pane-toolbar'
 import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
-import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { activeBots, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
-import { $botSections, $draggingBot, adoptBotSectionsFromMeta, backfillBotSectionNames, type SectionDialogState } from './user-sections'
+import { $botSections, $draggingBot, adoptBotSectionsFromMeta, backfillBotSectionNames, botSectionId, moveBotsToSection, type SectionDialogState } from './user-sections'
 import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────
@@ -417,11 +419,77 @@ export function BotsPane() {
     return <GroupChatWorkspace group={groupChatName} members={groupChatMembers} />
   }
 
+  // Row-drop reorder: insert the dragged bot before/after the target row and
+  // persist the whole band's orders. Reads live state at the gesture (never
+  // the last render): the roster may have synced mid-drag, and orders must be
+  // written against what the user is looking at. A cross-section drop files
+  // the bot first, then positions it — one gesture, two known writes.
+  const dropReorderBot = (dragKey: string, target: RosterRow, after: boolean) => {
+    const dragBot = roster.find(bot => botRosterKey(bot) === dragKey) ?? null
+
+    if (!dragBot) {
+      return
+    }
+
+    const targetSectionId = botSectionId(target, allMeta)
+
+    // File first when the drop crosses sections, so the band below is the
+    // destination section's.
+    if (botSectionId(dragBot, allMeta) !== targetSectionId) {
+      void moveBotsToSection([dragBot], targetSectionId)
+    }
+
+    // The band the user SEES: this section's bots in display order — pin
+    // band, then manual rosterOrder, then activity — NOT the `roster` array's
+    // pin+activity order. Resolving a drop against the activity order when a
+    // manual order exists inserts relative to the wrong neighbour and
+    // reshuffles the whole band.
+    const sectionBots = sortGroupRosterRows(
+      roster
+        .filter(bot => botSectionId(bot, allMeta) === targetSectionId && !isBotHidden(bot, allMeta))
+        .map(bot => ({
+          bot,
+          kind: 'bot' as const,
+          activity: activityOf(bot),
+          pinned: isPinned(bot),
+          order: botRosterMeta(bot, allMeta)?.rosterOrder
+        })),
+      {}
+    ).map(row => row.bot)
+    const bandRows = sectionBots.map(bot => ({
+      name: botRosterKey(bot),
+      pinned: isPinned(bot)
+    }))
+    const assignments = insertBotOrderByDrop(
+      bandRows,
+      botRosterKey(dragBot),
+      botRosterKey(target),
+      after
+    )
+
+    if (!assignments) {
+      return
+    }
+
+    // Sequential, like every other multi-bot meta write: the shared local
+    // snapshot is never committed by two saves at once.
+    void (async () => {
+      for (const bot of sectionBots) {
+        const order = assignments[botRosterKey(bot)]
+
+        if (order !== undefined && order !== botRosterMeta(bot, allMeta)?.rosterOrder) {
+          await saveBotMeta(bot, { rosterOrder: order })
+        }
+      }
+    })()
+  }
+
   const renderBotRow = (bot: RosterRow, keyPrefix = '') => (
     <BotRow
       bot={bot}
       key={`${keyPrefix}${botRosterKey(bot)}`}
       onDelete={setDeleting}
+      onDropReorder={dropReorderBot}
       onEdit={setEditing}
       onGroup={setGrouping}
       onNewSection={target => setSectionDialog({ bot: target, mode: 'create' })}

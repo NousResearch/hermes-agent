@@ -249,7 +249,14 @@ class TestPoolRotationCycle:
 
             assert recovered is False
             assert has_retried is True
-            pool.mark_exhausted_and_rotate.assert_not_called()
+            if reset_delay >= 600:
+                pool.mark_exhausted_and_rotate.assert_called_once()
+                assert (
+                    pool.mark_exhausted_and_rotate.call_args.kwargs["require_usable_alternative"]
+                    is True
+                )
+            else:
+                pool.mark_exhausted_and_rotate.assert_not_called()
 
     def test_long_reset_ignores_non_selectable_pool_rows(self):
         """Duplicate keys and route-ineligible rows are not rotation alternatives."""

@@ -293,6 +293,34 @@ class TestUnifiedCronjobTool:
         from cron.jobs import get_job
         assert get_job(job_id)["schedule"]["expr"] == "0 9 * * *"
 
+    @pytest.mark.parametrize(
+        ("stored_state", "enabled"),
+        [("scheduled", False), ("paused", False), ("scheduled", True)],
+    )
+    def test_schedule_update_can_preserve_lifecycle(self, stored_state, enabled):
+        created = json.loads(
+            cronjob(action="create", prompt="Check", schedule="every 1h")
+        )
+        job_id = created["job_id"]
+
+        from cron.jobs import get_job, update_job
+
+        update_job(job_id, {"state": stored_state, "enabled": enabled})
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=job_id,
+                schedule="every 2h",
+                preserve_lifecycle=True,
+            )
+        )
+
+        assert updated["success"] is True
+        stored = get_job(job_id)
+        assert stored["schedule_display"] == "every 2h"
+        assert stored["state"] == stored_state
+        assert stored["enabled"] is enabled
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

@@ -832,7 +832,7 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
         parsed_schedule = parse_schedule(a["schedule"])
         updates["schedule"] = parsed_schedule
         updates["schedule_display"] = parsed_schedule.get("display", a["schedule"])
-        if job.get("state") != "paused":
+        if not a["preserve_lifecycle"] and job.get("state") != "paused":
             updates["state"] = "scheduled"
             updates["enabled"] = True
     return None
@@ -959,7 +959,8 @@ def cronjob(
     task_id: str = None,
     session_id: Optional[str] = None,
     paused: bool = False,
-    paused_reason: Optional[str] = None) -> str:
+    paused_reason: Optional[str] = None,
+    preserve_lifecycle: bool = False) -> str:
     """Unified cron job management tool."""
     a = dict(locals())
     del a["task_id"]  # unused but kept for handler signature compatibility
@@ -1030,6 +1031,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "string",
                 "type": "string",
                 "description": "REQUIRED for create. Schedule forms: (1) recurring interval — '30m', 'every 2h', 'every hour' (EVERY 30 minutes / 2 hours / hour, forever by default); (2) explicit one-shot by duration — 'in 30m', 'in 2h' (fires ONCE that far from now; use this for 'remind me in N minutes' — do NOT hand-compute an absolute timestamp); (3) natural day/time — 'every monday 9am', 'weekdays at 9am', 'every day at 9am' (recurring weekly/daily); (4) cron syntax — '0 9 * * *' (daily 9am); (5) absolute one-shot — ISO timestamp '2026-06-01T09:00:00'."
+            },
+            "preserve_lifecycle": {
+                "type": "boolean",
+                "description": "Update only: when changing schedule, retain the job's current enabled/state lifecycle exactly. Use for declarative schedule reconciliation that must not resume a disabled job. Default false preserves existing update behavior."
             },
             "name": {
                 "type": "string",
@@ -1115,7 +1120,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "all")
+    "paused_reason", "preserve_lifecycle", "all")
 
 
 def _cronjob_handler(args, **kw):

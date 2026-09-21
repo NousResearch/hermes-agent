@@ -1314,14 +1314,11 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
         provider = _plugin_aliases().get(provider, provider)
-        base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
         if provider == "custom" or provider.startswith("custom:"):
             return model_cfg, "custom"
         # openrouter is absent from PROVIDER_REGISTRY on purpose, so it needs its own rung (#109397);
         # a non-openrouter base_url under it is a deliberate mirror (#10622), not a contradiction.
-        if provider == "openrouter":
-            return model_cfg, "openrouter"
-        if provider in PROVIDER_REGISTRY:
+        if provider == "openrouter" or provider in PROVIDER_REGISTRY:
             return model_cfg, provider
         # Bare ``providers:`` name (the ``custom:<name>`` intent spelled without the prefix); reuse the
         # runtime's own lookup so disabled / endpoint-less entries stay excluded.
@@ -1331,6 +1328,7 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
                 return model_cfg, "custom"
         # No provider pin but a base_url the bare-custom runtime rung would honour (a loopback
         # llama.cpp/vLLM/ollama server) — same explicit intent, spelled by URL.
+        base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
         if base_url:
             from hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
             if _config_base_url_trustworthy_for_bare_custom(base_url, provider):

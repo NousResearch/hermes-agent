@@ -22,7 +22,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
-from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
@@ -480,87 +479,6 @@ def shared_credential_warning(profile: str, platforms: List[str], source: str = 
         f"only belong to one profile. Give '{profile}' its own bot (hermes -p {profile} setup, or the "
         f"dashboard Messaging page) or remove the token from '{profile}'; a multiplexed gateway parks "
         f"the duplicate and `hermes gateway migrate --multiplex` refuses until it is gone."
-    )
-
-
-@dataclass(frozen=True)
-class ProfileCredentialCollision:
-    """One platform credential claimed by more than one local profile home.
-
-    ``paths`` intentionally names homes, not the credential or its fingerprint: doctor and
-    gateway status must make the operator's next action clear without leaking a secret.
-    """
-
-    platform: str
-    paths: tuple[Path, ...]
-
-
-@dataclass(frozen=True)
-class LocalProfileCredentialCollisionReport:
-    """Best-effort credential scan used by non-mutating diagnostic commands."""
-
-    collisions: tuple[ProfileCredentialCollision, ...] = ()
-    unreadable_paths: tuple[Path, ...] = ()
-
-    def format_for_display(self) -> str:
-        """Render only platform names and paths; never expose credentials or fingerprints."""
-        return "; ".join(
-            f"{collision.platform}: {', '.join(str(path) for path in collision.paths)}"
-            for collision in self.collisions
-        )
-
-
-def _local_profile_homes() -> tuple[tuple[str, Path], ...]:
-    """Distinct default/named homes rooted at the local Hermes installation."""
-    from hermes_cli.profiles import profiles_to_serve
-
-    homes: list[tuple[str, Path]] = []
-    seen: set[Path] = set()
-    for name, home in profiles_to_serve(multiplex=True):
-        try:
-            key = home.resolve(strict=False)
-        except OSError:
-            key = home
-        if key not in seen:
-            seen.add(key)
-            homes.append((name, home))
-    return tuple(homes)
-
-
-def _profile_credential_claims(home: Path) -> set[tuple[str, str]]:
-    """Read claims through the migration preflight's gateway fingerprint implementation."""
-    from hermes_cli import gateway_migrate
-
-    with gateway_migrate._multiplex_read_mode():
-        return set(gateway_migrate._credential_claims(gateway_migrate._profile_gateway_config(home)))
-
-
-def scan_local_profile_credential_collisions() -> LocalProfileCredentialCollisionReport:
-    """Find duplicate enabled platform credentials across local profile homes.
-
-    The gateway migration preflight is the canonical source for both enabled-platform
-    resolution and credential fingerprints. This scan deliberately uses the same path so a
-    diagnostic warning agrees with the gateway's collision behaviour. A malformed or unreadable
-    profile is reported separately while healthy homes continue to be scanned.
-    """
-    owners: dict[tuple[str, str], list[Path]] = {}
-    unreadable: list[Path] = []
-    for _name, home in _local_profile_homes():
-        try:
-            claims = _profile_credential_claims(home)
-        except (OSError, ValueError, RuntimeError):
-            unreadable.append(home)
-            continue
-        for claim in claims:
-            owners.setdefault(claim, []).append(home)
-    collisions = tuple(
-        ProfileCredentialCollision(platform=platform, paths=tuple(paths))
-        for (platform, _fingerprint), paths in sorted(owners.items())
-        if len(paths) > 1
-    )
-    return LocalProfileCredentialCollisionReport(
-        collisions=collisions,
-        unreadable_paths=tuple(unreadable),
     )
 
 

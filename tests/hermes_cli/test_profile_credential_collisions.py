@@ -1,4 +1,7 @@
-"""Regression coverage for cross-profile gateway credential diagnostics (#118388)."""
+"""Regression for #118388: a platform singleton secret (``TELEGRAM_BOT_TOKEN``) duplicated across
+local profile homes was invisible to ``hermes doctor`` / ``hermes gateway status``; the only signal
+was the losing standalone gateway's log. Doctor, status and the migrate preflight now share one
+duplicate-credential helper, so all three name the same profiles + key names (never the value)."""
 
 from __future__ import annotations
 
@@ -6,89 +9,59 @@ import io
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import pytest
+
 import hermes_constants
-from hermes_cli import doctor_state, profile_channels
+from hermes_cli import doctor_state, gateway, gateway_migrate as gm
+
+SECRET = "123456:shared-secret-value"
 
 
-def _profile_home(root: Path, name: str, token: str) -> Path:
-    home = root if name == "default" else root / "profiles" / name
-    home.mkdir(parents=True, exist_ok=True)
-    (home / ".env").write_text(f"TELEGRAM_BOT_TOKEN={token}\n", encoding="utf-8")
-    return home
-
-
-def test_scan_reports_duplicate_platform_credential_with_paths_not_secret(monkeypatch, tmp_path):
+@pytest.fixture
+def homes(tmp_path, monkeypatch):
     root = tmp_path / ".hermes"
-    default = _profile_home(root, "default", "123:shared-secret")
-    worker = _profile_home(root, "worker", "123:shared-secret")
+    (root / "profiles" / "worker").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(root))
+    for name in ("TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-
-    report = profile_channels.scan_local_profile_credential_collisions()
-
-    assert [(collision.platform, collision.paths) for collision in report.collisions] == [
-        ("telegram", (default, worker)),
-    ]
-    assert "shared-secret" not in report.format_for_display()
-    assert str(default) in report.format_for_display()
-    assert str(worker) in report.format_for_display()
+    monkeypatch.setattr(gm, "_live_gateway_pid", lambda home: None)
+    monkeypatch.setattr(gm, "_installed_services", lambda home: [])
+    return root, root / "profiles" / "worker"
 
 
-def test_scan_ignores_distinct_platform_credentials(monkeypatch, tmp_path):
-    root = tmp_path / ".hermes"
-    _profile_home(root, "default", "123:default-secret")
-    _profile_home(root, "worker", "123:worker-secret")
-    monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-
-    report = profile_channels.scan_local_profile_credential_collisions()
-
-    assert report.collisions == ()
-    assert report.unreadable_paths == ()
+def _surfaces() -> str:
+    out = io.StringIO()
+    with redirect_stdout(out):
+        doctor_state._check_profiles(False)
+        gateway._print_duplicate_credential_warnings()
+    return out.getvalue()
 
 
-def test_scan_reports_unreadable_profile_without_hiding_other_collisions(monkeypatch, tmp_path):
-    default = tmp_path / ".hermes"
-    worker = default / "profiles" / "worker"
-    broken = default / "profiles" / "broken"
-    monkeypatch.setattr(
-        profile_channels,
-        "_local_profile_homes",
-        lambda: (("default", default), ("worker", worker), ("broken", broken)),
-    )
-    monkeypatch.setattr(
-        profile_channels,
-        "_profile_credential_claims",
-        lambda home: (
-            {("telegram", "fingerprint")} if home != broken else (_ for _ in ()).throw(OSError("denied"))
-        ),
-    )
+def test_duplicate_singleton_secret_named_identically_by_doctor_status_and_preflight(homes):
+    default, worker = homes
+    (default / ".env").write_text(f"TELEGRAM_BOT_TOKEN={SECRET}\nOPENAI_API_KEY=sk-shared\n", encoding="utf-8")
+    (worker / ".env").write_text(f"TELEGRAM_BOT_TOKEN={SECRET}\nOPENAI_API_KEY=sk-shared\n", encoding="utf-8")
 
-    report = profile_channels.scan_local_profile_credential_collisions()
-
-    assert report.collisions[0].platform == "telegram"
-    assert report.unreadable_paths == (broken,)
+    findings = gm.duplicate_credential_findings()
+    assert len(findings) == 1
+    line = findings[0]
+    assert "'default'" in line and "'worker'" in line and "TELEGRAM_BOT_TOKEN" in line
+    assert "only one gateway" in line and gm.MIGRATE_COMMAND in line
+    # Same helper, same words: the preflight blocker IS the doctor/status finding.
+    assert gm.build_migration_plan().blockers == findings
+    out = _surfaces()
+    assert out.count(line) == 2  # once from doctor, once from gateway status
+    # Absence: the value (or a hash a user could mistake for it) never reaches any surface.
+    assert SECRET not in out and "shared-secret" not in out and "sk-shared" not in out
 
 
-def test_doctor_and_gateway_status_surface_collision_without_secret(monkeypatch, tmp_path):
-    default = tmp_path / ".hermes"
-    worker = default / "profiles" / "worker"
-    report = profile_channels.LocalProfileCredentialCollisionReport(
-        collisions=(profile_channels.ProfileCredentialCollision("telegram", (default, worker)),),
-    )
-    monkeypatch.setattr(profile_channels, "scan_local_profile_credential_collisions", lambda: report)
+def test_distinct_tokens_and_shared_non_singleton_keys_are_not_findings(homes):
+    default, worker = homes
+    (default / ".env").write_text(f"TELEGRAM_BOT_TOKEN={SECRET}\nOPENAI_API_KEY=sk-shared\n", encoding="utf-8")
+    (worker / ".env").write_text("TELEGRAM_BOT_TOKEN=999999:other-token\nOPENAI_API_KEY=sk-shared\n", encoding="utf-8")
 
-    doctor_output = io.StringIO()
-    with redirect_stdout(doctor_output):
-        findings = doctor_state._check_cross_profile_gateway_credentials(False)
-    assert "Duplicate platform credentials" in doctor_output.getvalue()
-    assert str(worker) in doctor_output.getvalue()
-    assert findings.manual_issues
-
-    from hermes_cli import gateway
-
-    status_output = io.StringIO()
-    with redirect_stdout(status_output):
-        gateway._print_cross_profile_credential_warnings()
-    assert "Duplicate platform credentials" in status_output.getvalue()
-    assert "shared-secret" not in status_output.getvalue()
+    assert gm.duplicate_credential_findings() == []
+    assert not gm.build_migration_plan().blocked
+    assert "both hold" not in _surfaces()

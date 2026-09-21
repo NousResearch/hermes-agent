@@ -127,6 +127,37 @@ def test_memory_gate_off_allows_write(hermes_home):
     assert wa.pending_count("memory") == 0
 
 
+def test_memory_gate_lock_timeout_returns_clean_denial(hermes_home, monkeypatch):
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    monkeypatch.setattr(wa, "_prompt_inline_memory_approval", lambda *_: None)
+    monkeypatch.setattr(wa, "stage_write", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()))
+    store = MemoryStore(); store.load_from_disk()
+
+    result = json.loads(memory_tool("add", "memory", "remember me", store=store))
+
+    assert result["success"] is False
+    assert "pending approval store is busy" in result["error"]
+    assert store.memory_entries == []
+
+
+def test_skill_gate_lock_timeout_returns_clean_denial(hermes_home, monkeypatch):
+    from tools import skill_manager_tool as sm
+    from tools import write_approval as wa
+
+    _set_approval("skills", True)
+    monkeypatch.setattr(wa, "stage_write", lambda *args, **kwargs: (_ for _ in ()).throw(TimeoutError()))
+
+    result = json.loads(sm._run_write_gate(
+        lambda _wa: ({"action": "create", "name": "demo"}, "create demo")))
+
+    assert result["success"] is False
+    assert "pending approval store is busy" in result["error"]
+    assert wa.pending_count("skills") == 0
+
+
 def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, capsys):
     """#46783: ``/memory approve`` from a context with no live agent (e.g. the
     Desktop GUI) passed ``memory_store=None`` into the shared handler, which

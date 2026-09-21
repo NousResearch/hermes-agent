@@ -73,7 +73,14 @@ def _gate_or_stage(summary: str, detail: str, payload: Dict[str, Any]) -> Option
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
-    record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+    try:
+        record = wa.stage_write(
+            wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
+    except TimeoutError:
+        logger.warning("Timed out staging memory write; denying", exc_info=True)
+        return tool_error(
+            "Could not stage the memory write because the pending approval store is busy. "
+            "No change was saved.", success=False)
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
 

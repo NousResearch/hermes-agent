@@ -394,7 +394,7 @@ def wake_due_cards(
     dry_run: bool = False,
     limit: int = 200,
 ) -> WakeOutcome:
-    """Wake every ``scheduled`` card whose ``due_at`` has passed.
+    """Wake every due ``scheduled`` or time-fenced ``blocked`` card whose ``due_at`` has passed.
 
     Runs inside the board's single-writer dispatch critical section, ahead of
     the spawn pass, so a card woken here is spawnable on the SAME tick.
@@ -405,7 +405,7 @@ def wake_due_cards(
     """
     now_ts = int(now if now is not None else time.time())
     outcome = WakeOutcome()
-    due = kb.list_due_tasks(conn, now=now_ts, limit=limit)
+    due = kb.list_due_tasks(conn, now=now_ts, limit=limit, statuses=("scheduled", "blocked"))
     if not dry_run:
         # Heartbeat BEFORE the band check and before the early return: if the
         # window map turns out to be broken, "the tick ran and refused to wake"
@@ -446,14 +446,19 @@ def wake_due_cards(
             ))
             if dry_run:
                 continue
-            kb.schedule_task(
-                conn, task.id,
-                reason=(
-                    f"deferred out of the {band.protection} band '{band.key}' "
-                    f"({_band_blame(band)}) by the due-card waker"
-                ),
-                due_at=target,
-            )
+            if task.status == "blocked":
+                # A time-fenced hold must STAY blocked (never leak into
+                # ``scheduled``): push its due time forward in place.
+                kb.defer_due(conn, task.id, due_at=target)
+            else:
+                kb.schedule_task(
+                    conn, task.id,
+                    reason=(
+                        f"deferred out of the {band.protection} band '{band.key}' "
+                        f"({_band_blame(band)}) by the due-card waker"
+                    ),
+                    due_at=target,
+                )
             kb.add_comment(
                 conn, task.id, WAKER_AUTHOR,
                 f"Wake deferred to {_clock(target, tzinfo)}: the due time "

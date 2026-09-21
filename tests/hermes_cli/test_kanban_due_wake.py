@@ -387,8 +387,21 @@ def test_scheduled_card_without_a_due_time_is_not_reported(conn):
     assert _overdue_diags(conn, tid) == []
 
 
-def test_diagnostic_kind_is_published(conn):
-    assert "overdue_scheduled" in kd.DIAGNOSTIC_KINDS
+def test_overdue_kind_is_published_by_the_public_api(conn):
+    """The surfaces match on ``kind``, so the parked-past-due card must NAME it.
+
+    Driven through ``compute_task_diagnostics`` rather than read off a kinds
+    list: the old ``DIAGNOSTIC_KINDS`` name now exists only in a plugin-compat
+    block (revert-scheduled), and nothing in-tree may reach it.
+    """
+    tid = _task(conn)
+    kb.schedule_task(conn, tid, reason="armed", due_at=int(time.time()) - 7200)
+
+    diags = kd.compute_task_diagnostics(
+        _get(conn, tid), kb.list_events(conn, tid), kb.list_runs(conn, tid),
+        config={"due_waker_last_tick": int(time.time())})
+
+    assert "overdue_scheduled" in {d.kind for d in diags}
     assert kd.DEFAULT_CONFIG["due_grace_seconds"] > 0
     assert kd.DEFAULT_CONFIG["due_stale_seconds"] > kd.DEFAULT_CONFIG["due_grace_seconds"]
 
@@ -480,3 +493,119 @@ def test_cli_show_flags_a_parked_card_with_no_wake_time(conn):
     out = kc.run_slash(f"show {tid}")
 
     assert "no due time" in out.lower(), out
+
+
+# ---------------------------------------------------------------------------
+# block --due: a time-fenced hold that auto-releases on the tick
+# ---------------------------------------------------------------------------
+
+
+def test_block_with_due_at_parks_the_card_and_records_the_time(conn):
+    tid = _task(conn)
+    due = int(time.time()) + 600
+
+    assert kb.block_task(conn, tid, reason="hold until the window", kind="transient",
+                         due_at=due) is True
+
+    task = _get(conn, tid)
+    assert task.status == "blocked"
+    assert task.due_at == due
+    assert task.due_window_policy == "defer"
+    event = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"][-1]
+    assert event.payload["due_at"] == due
+    assert event.payload["window_policy"] == "defer"
+
+
+def test_block_due_at_auto_releases_on_the_tick(conn, tmp_path):
+    """The acceptance contract: a time-fenced hold comes back on its own."""
+    tid = _task(conn)
+    kb.block_task(conn, tid, reason="hold", kind="transient", due_at=int(time.time()) - 60)
+
+    out = kdue.wake_due_cards(conn, map_path=_elsewhere_map(tmp_path))
+
+    assert out.woken == [tid] and out.problems == []
+    task = _get(conn, tid)
+    assert task.status == "ready"
+    assert task.due_at is None and task.due_window_policy is None
+    event = [e for e in kb.list_events(conn, tid) if e.kind == "unblocked"][-1]
+    assert event.payload["woken_by"] == "due-card-waker"
+
+
+def test_block_without_due_at_is_never_auto_released(conn, tmp_path):
+    """A plain block has no clock: the waker must leave it alone (no second,
+    implicit unblock path for a human-parked card)."""
+    tid = _task(conn)
+    kb.block_task(conn, tid, reason="waiting on a human", kind="needs_input")
+
+    out = kdue.wake_due_cards(conn, map_path=_elsewhere_map(tmp_path))
+
+    assert out.woken == [] and out.problems == []
+    assert _get(conn, tid).status == "blocked"
+
+
+def test_block_due_in_the_future_is_not_woken_yet(conn, tmp_path):
+    tid = _task(conn)
+    kb.block_task(conn, tid, reason="hold", kind="transient", due_at=int(time.time()) + 3600)
+
+    out = kdue.wake_due_cards(conn, map_path=_elsewhere_map(tmp_path))
+
+    assert out.woken == []
+    assert _get(conn, tid).status == "blocked"
+
+
+def test_block_due_at_defers_out_of_a_band_and_stays_blocked(conn, tmp_path):
+    """A deferred time-fenced hold must stay blocked, not leak into scheduled."""
+    tid = _task(conn)
+    kb.block_task(conn, tid, reason="hold", kind="transient", due_at=int(time.time()) - 60)
+
+    out = kdue.wake_due_cards(conn, map_path=_covering_map(tmp_path))
+
+    assert out.woken == [] and out.problems == []
+    assert [d.task_id for d in out.deferred] == [tid]
+    task = _get(conn, tid)
+    assert task.status == "blocked", "a deferred hold must stay in the blocked bucket"
+    assert task.due_at > int(time.time())
+
+
+def test_block_dependency_with_due_is_refused(conn):
+    with pytest.raises(ValueError, match="dependency"):
+        kb.block_task(conn, _task(conn), reason="wait", kind="dependency",
+                      due_at=int(time.time()) + 600)
+
+
+def test_block_window_policy_needs_a_due_time(conn):
+    with pytest.raises(ValueError, match="window_policy"):
+        kb.block_task(conn, _task(conn), reason="policy only", kind="transient",
+                      window_policy="ambient")
+
+
+def test_dispatcher_tick_wakes_a_due_blocked_card(conn, tmp_path, monkeypatch):
+    tid = _task(conn)
+    kb.block_task(conn, tid, reason="hold", kind="transient", due_at=int(time.time()) - 60)
+    monkeypatch.setenv(kdue.ENV_MAP_PATH, _elsewhere_map(tmp_path))
+
+    result = kbdd.dispatch_once(conn, dry_run=False, board=None, spawn_fn=None)
+
+    assert list(result.due_woken) == [tid]
+    assert _get(conn, tid).status == "ready"
+
+
+def test_cli_block_due_arms_the_card(conn):
+    tid = _task(conn)
+
+    out = kc.run_slash(f"block {tid} hold until the window --due +2h")
+
+    assert "auto-release" in out.lower(), out
+    task = _get(conn, tid)
+    assert task.status == "blocked"
+    assert task.due_window_policy == "defer"
+    assert task.due_at is not None and task.due_at > time.time()
+
+
+def test_cli_block_dependency_rejects_due(conn):
+    tid = _task(conn)
+
+    out = kc.run_slash(f"block {tid} waiting on a parent --kind dependency --due +2h")
+
+    assert "dependency" in out.lower()
+    assert _get(conn, tid).status != "blocked"

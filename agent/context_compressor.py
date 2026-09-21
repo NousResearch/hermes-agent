@@ -3064,8 +3064,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, protected_skills)
             for i in range(max(0, prune_boundary))
         )
-        for i in range(max(0, prune_boundary)):
+        pruned += sum(
             self._truncate_tool_call_args_at(result, i)
+            for i in range(max(0, prune_boundary))
+        )
         # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
         # Newest frames stay live for follow-up QA; older ones become placeholders. See #92699.

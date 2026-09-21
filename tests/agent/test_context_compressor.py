@@ -2465,6 +2465,25 @@ class TestTruncateToolCallArgsJson:
         assert parsed["content"].startswith(huge_content[:200])
         assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
 
+    def test_pass3_arg_truncation_counts_as_pruned(self, compressor):
+        """An arg-only Pass 3 rewrite must not be reported as nothing eligible (#118360)."""
+        arguments = json.dumps({"content": "x" * 2_000})
+        messages = [
+            {"role": "assistant", "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "write_file", "arguments": arguments}},
+            ]},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+
+        result, pruned = compressor._prune_old_tool_results(messages, protect_tail_count=2)
+
+        rewritten = result[0]["tool_calls"][0]["function"]["arguments"]
+        assert rewritten != arguments
+        assert len(rewritten) < len(arguments)
+        assert pruned == 1
+
 
 class TestTruncationMarkerNotImitable:
     """Regression tests for #83714.

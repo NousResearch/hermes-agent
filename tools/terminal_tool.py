@@ -1124,6 +1124,14 @@ def _run_foreground(
             command_cwd = _resolve_command_cwd(
                 workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
             )
+            terminal_workspace_before = None
+            if env_type == "local":
+                try:
+                    from tools.terminal_workspace_mutation import capture_git_workspace
+
+                    terminal_workspace_before = capture_git_workspace(command_cwd)
+                except Exception:
+                    logger.debug("terminal workspace baseline failed", exc_info=True)
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
@@ -1132,6 +1140,15 @@ def _run_foreground(
                 **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
                                 task_id=task_id, session_key=session_key),
             )
+            if env_type == "local" and not result.get("yielded_session_id"):
+                try:
+                    from tools.terminal_workspace_mutation import detect_git_workspace_mutation
+
+                    mutation = detect_git_workspace_mutation(terminal_workspace_before, command_cwd)
+                    if mutation is not None:
+                        result["workspace_mutation"] = mutation
+                except Exception:
+                    logger.debug("terminal workspace mutation detection failed", exc_info=True)
             break
         except Exception as e:
             if "timeout" in str(e).lower():

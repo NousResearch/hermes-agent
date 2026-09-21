@@ -23,6 +23,7 @@ import json
 
 import pytest
 
+from agent.tool_result_classification import extract_workspace_mutation
 from agent.tool_dispatch_helpers import (
     _FILE_MUTATING_TOOLS,
     _extract_error_preview,
@@ -111,7 +112,52 @@ def _bare_agent() -> AIAgent:
     agent = object.__new__(AIAgent)
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
+    agent.session_id = "mutation-test"
     return agent
+
+
+def test_workspace_mutation_report_normalizes_relative_paths(tmp_path):
+    report = extract_workspace_mutation({
+        "workspace_mutation": {
+            "workspace": str(tmp_path),
+            "operation": "patch",
+            "paths": ["src/app.py"],
+        }
+    })
+
+    assert report == {
+        "workspace": str(tmp_path.resolve()),
+        "operation": "patch",
+        "paths": [str((tmp_path / "src/app.py").resolve())],
+    }
+
+
+def test_terminal_workspace_mutation_enters_turn_changed_paths(tmp_path, monkeypatch):
+    agent = _bare_agent()
+    marked = []
+    monkeypatch.setattr(
+        "agent.verification_evidence.mark_workspace_edited",
+        lambda **kwargs: marked.append(kwargs),
+    )
+    result = json.dumps({
+        "output": "",
+        "exit_code": 0,
+        "workspace_mutation": {
+            "workspace": str(tmp_path),
+            "operation": "unknown",
+            "paths": ["src/app.py"],
+        },
+    })
+
+    agent._record_file_mutation_result("terminal", {"command": "./script.sh"}, result, is_error=False)
+
+    path = str((tmp_path / "src/app.py").resolve())
+    assert agent._turn_file_mutation_paths == {path}
+    assert marked == [{
+        "session_id": "mutation-test",
+        "cwd": str(tmp_path.resolve()),
+        "paths": [path],
+    }]
 
 
 class TestRecordFileMutationResult:

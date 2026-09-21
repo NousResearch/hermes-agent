@@ -58,7 +58,7 @@ def cmd_set(args) -> int:
         return _error("secret value must contain ASCII characters only.")
     try:
         result = save_env_value_secure(name, value)
-    except (RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return _error(str(exc))
     if not result.get("success"):
         return 1
@@ -68,9 +68,12 @@ def cmd_set(args) -> int:
 
 def cmd_list(_args) -> int:
     """List local ``.env`` names only; values never cross the output boundary."""
-    from hermes_cli.config import load_env
+    from hermes_cli.config import get_env_path, load_env_strict
 
-    names = sorted(load_env())
+    try:
+        names = sorted(load_env_strict())
+    except OSError as exc:
+        return _error(f"could not read {get_env_path()}: {exc}")
     if not names:
         print("No local secrets are configured for this profile.")
         return 0
@@ -87,7 +90,7 @@ def cmd_delete(args) -> int:
     name = args.name
     try:
         result = remove_provider_env_credential(name)
-    except (RuntimeError, ValueError) as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         return _error(str(exc))
     if not result.get("ok"):
         return 1

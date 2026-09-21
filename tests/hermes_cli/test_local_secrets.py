@@ -206,3 +206,42 @@ def test_delete_allows_cleanup_of_write_denylisted_names(tmp_path, monkeypatch, 
     output = capsys.readouterr()
     assert "dangerous-value" not in output.out + output.err
     assert "LD_PRELOAD" not in env_path.read_text(encoding="utf-8")
+
+
+def test_list_reports_unreadable_env_instead_of_claiming_empty(monkeypatch, capsys):
+    env_path = "profile/.env"
+    monkeypatch.setattr("hermes_cli.config.get_env_path", lambda: env_path)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env_strict",
+        lambda: (_ for _ in ()).throw(PermissionError("access denied")),
+    )
+
+    assert _parser().parse_args(["secrets", "list"]).func(None) == 1
+    output = capsys.readouterr()
+    assert "could not read profile/.env" in output.err
+    assert "No local secrets" not in output.out + output.err
+
+
+@pytest.mark.parametrize("command", ["set", "delete"])
+def test_mutations_report_filesystem_failures_without_disclosing_values(
+        monkeypatch, capsys, command):
+    secret = "never-print-this-value"
+    if command == "set":
+        monkeypatch.setattr("sys.stdin", io.StringIO(secret + "\n"))
+        monkeypatch.setattr(
+            "hermes_cli.config.save_env_value_secure",
+            lambda *_args: (_ for _ in ()).throw(PermissionError("store is read-only")),
+        )
+        args = _parser().parse_args(
+            ["secrets", "set", "REVIEW_SECRET", "--stdin"])
+    else:
+        monkeypatch.setattr(
+            "hermes_cli.credential_lifecycle.remove_provider_env_credential",
+            lambda *_args: (_ for _ in ()).throw(PermissionError("store is read-only")),
+        )
+        args = _parser().parse_args(["secrets", "delete", "REVIEW_SECRET"])
+
+    assert args.func(args) == 1
+    output = capsys.readouterr()
+    assert "store is read-only" in output.err
+    assert secret not in output.out + output.err

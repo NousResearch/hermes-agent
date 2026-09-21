@@ -179,6 +179,13 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     kept 401'ing until the user ran ``hermes auth add <provider> --type api-key`` separately. This makes the
     Desktop save's effect on disk match what ``hermes auth add`` does.
     """
+    from hermes_cli.config import env_store_lock
+
+    with env_store_lock():
+        return _save_provider_env_credential_locked(env_var, value)
+
+
+def _save_provider_env_credential_locked(env_var: str, value: str) -> Dict[str, Any]:
     from hermes_cli.config import load_env, save_env_value
 
     old_value = load_env().get(env_var)
@@ -214,6 +221,13 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
 def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
     """Remove a credential from EVERY store: ``.env`` (and process env), env-seeded
     ``credential_pool`` entries, model-cache rows, config.yaml mirrors of the same value."""
+    from hermes_cli.config import env_store_lock
+
+    with env_store_lock():
+        return _remove_provider_env_credential_locked(env_var)
+
+
+def _remove_provider_env_credential_locked(env_var: str) -> Dict[str, Any]:
     from hermes_cli.config import load_env, remove_env_value
 
     old_value = load_env().get(env_var)

@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -2422,6 +2422,13 @@ def load_env() -> Dict[str, str]:
     return load_env_file(get_env_path())
 
 
+def load_env_strict() -> Dict[str, str]:
+    """Load the active profile's ``.env``, raising when an existing file cannot be read."""
+    from agent.secret_scope import load_env_file
+
+    return load_env_file(get_env_path(), strict=True)
+
+
 def invalidate_env_cache() -> None:
     """Drop the ``.env`` memo so the next ``load_env()`` sees a write even on coarse-mtime filesystems
     (save_env_value / remove_env_value / sanitize_env_file call this)."""
@@ -2581,6 +2588,31 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
             target[key] = value
 
 
+_ENV_STORE_LOCK_HOLDERS: Dict[str, threading.local] = {}
+_ENV_STORE_LOCK_HOLDERS_GUARD = threading.Lock()
+
+
+def _env_store_lock_holder(lock_path: Path) -> threading.local:
+    key = str(lock_path.resolve())
+    with _ENV_STORE_LOCK_HOLDERS_GUARD:
+        return _ENV_STORE_LOCK_HOLDERS.setdefault(key, threading.local())
+
+
+@contextmanager
+def env_store_lock(timeout_seconds: float = 15.0):
+    """Serialize one profile's complete ``.env`` mutation across threads and processes."""
+    from hermes_cli.auth import _file_lock
+
+    lock_path = get_env_path().with_name(".env.lock")
+    with _file_lock(
+        lock_path,
+        _env_store_lock_holder(lock_path),
+        timeout_seconds,
+        "Timed out waiting for credential store lock",
+    ):
+        yield
+
+
 def _env_write_blocked(key: str, action: str) -> bool:
     """Shared write-lock check for ``.env`` writers; prints the refusal and returns True when blocked.
     Two distinct locks: ``is_managed()`` (package-manager install) and the managed *scope*
@@ -2606,6 +2638,11 @@ def _managed_source(filename: str):
 def save_env_value(key: str, value: str) -> bool:
     """Save or update a value in ~/.hermes/.env (also matching ``export KEY=`` lines, so a save
     never appends a second line that a later delete would resurrect)."""
+    with env_store_lock():
+        return _save_env_value_unlocked(key, value)
+
+
+def _save_env_value_unlocked(key: str, value: str) -> bool:
     if _env_write_blocked(key, "set"):
         return False
     validate_env_var_name_for_write(key)
@@ -2648,6 +2685,11 @@ def remove_env_value(key: str) -> Optional[bool]:
     Return ``None`` when policy blocks the write, otherwise whether the key was found. Callers
     coordinating additional destructive cleanup must distinguish refusal from ordinary absence.
     """
+    with env_store_lock():
+        return _remove_env_value_unlocked(key)
+
+
+def _remove_env_value_unlocked(key: str) -> Optional[bool]:
     if _env_write_blocked(key, "remove"):
         return None
     if not _ENV_VAR_NAME_RE.match(key):

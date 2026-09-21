@@ -11,6 +11,8 @@ lands in the repo.
 """
 
 import json
+import threading
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -80,6 +82,64 @@ def _zai_pool_fixture():
             },
         ]
     }
+
+
+def test_lifecycle_serializes_the_complete_env_transaction(hermes_home, monkeypatch):
+    from hermes_cli import config, credential_lifecycle
+
+    first_inside = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    second_loaded = threading.Event()
+    failures = []
+
+    def fake_load_env():
+        if threading.current_thread().name == "second-credential-write":
+            second_loaded.set()
+        return {"OPENAI_API_KEY": "old-value"}
+
+    def fake_save_env_value(_key, value):
+        if value == "first-value":
+            first_inside.set()
+            assert release_first.wait(timeout=5)
+        return True
+
+    monkeypatch.setattr(config, "load_env", fake_load_env)
+    monkeypatch.setattr(config, "save_env_value", fake_save_env_value)
+    monkeypatch.setattr(
+        credential_lifecycle,
+        "_scrub_config_yaml_mirrors",
+        Mock(return_value=[]),
+    )
+    monkeypatch.setattr(credential_lifecycle, "_providers_for_env_var", lambda _key: [])
+
+    def run(value, *, started=None):
+        if started is not None:
+            started.set()
+        try:
+            credential_lifecycle.save_provider_env_credential("OPENAI_API_KEY", value)
+        except BaseException as exc:
+            failures.append(exc)
+
+    first = threading.Thread(target=run, args=("first-value",), name="first-credential-write")
+    second = threading.Thread(
+        target=run,
+        args=("second-value",),
+        kwargs={"started": second_started},
+        name="second-credential-write",
+    )
+    first.start()
+    assert first_inside.wait(timeout=5)
+    second.start()
+    assert second_started.wait(timeout=5)
+    assert not second_loaded.wait(timeout=2), "second transaction entered before the first completed"
+    release_first.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert failures == []
+    assert second_loaded.is_set()
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,9 @@ those rules surfaces before a Mission Control deploy.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 
 import pytest
 
@@ -525,3 +527,173 @@ class TestCookiePathRespectsPrefix:
         assert "Path=/hermes" in at_cookies[0]
         assert "Secure" in at_cookies[0]
         assert "HttpOnly" in at_cookies[0]
+
+
+class TestLoginPageHonoursPrefix:
+    """Every URL the server-rendered login page emits must carry the mount prefix.
+
+    A root-absolute URL here escapes the proxy mount. For the OAuth button and the
+    fonts that is a 404, but for ``/auth/password-login`` the damage is subtler and
+    worse: the PKCE cookie is issued with ``Path=<prefix>`` (see ``_cookie_path``),
+    so a POST to the origin root is not merely routed elsewhere — the browser omits
+    the cookie by the Path match rule. The server then sees no broker handle and
+    answers a native/Desktop sign-in with the browser landing instead of the
+    loopback redirect, so the desktop client never receives its authorization code.
+    """
+
+    def _register_password_provider(self):
+        from tests.hermes_cli.test_dashboard_auth_password_login import PasswordProvider
+        clear_providers()
+        register_provider(PasswordProvider())
+
+    def test_password_login_fetch_target_carries_prefix(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        self._register_password_provider()
+        try:
+            out = render_login_html(prefix="/hermes")
+            assert 'var PREFIX = "/hermes";' in out
+            assert "fetch(PREFIX + '/auth/password-login'" in out
+            assert "fetch('/auth/password-login'" not in out
+        finally:
+            clear_providers()
+
+    def test_oauth_button_and_fonts_carry_prefix(self):
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        clear_providers()
+        register_provider(StubAuthProvider())
+        try:
+            out = render_login_html(prefix="/hermes")
+            assert 'href="/hermes/auth/login?provider=stub"' in out
+            assert "url('/fonts/" not in out
+            assert "url('/hermes/fonts/" in out
+        finally:
+            clear_providers()
+
+    def test_empty_prefix_keeps_root_absolute_urls(self):
+        """No prefix (the non-proxied deployment) must behave exactly as before."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        self._register_password_provider()
+        try:
+            out = render_login_html(prefix="")
+            assert 'var PREFIX = "";' in out
+            assert "url('/fonts/" in out
+            assert "//fonts/" not in out
+            assert "url('//" not in out
+        finally:
+            clear_providers()
+        clear_providers()
+        register_provider(StubAuthProvider())
+        try:
+            out = render_login_html(prefix="")
+            assert 'href="/auth/login?provider=stub"' in out
+        finally:
+            clear_providers()
+
+    def test_rejected_prefix_is_not_spliced_into_the_page(self):
+        """``normalise_prefix`` is the only gate; a rejected value degrades to root."""
+        from hermes_cli.dashboard_auth.login_page import render_login_html
+        clear_providers()
+        register_provider(StubAuthProvider())
+        try:
+            out = render_login_html(prefix="/a/../b")
+            assert 'href="/auth/login?provider=stub"' in out
+            assert ".." not in out.split("<style>")[0]
+        finally:
+            clear_providers()
+
+    def test_native_provider_chooser_carries_prefix(self):
+        """The Desktop/native chooser shares the template and must be prefixed too."""
+        from hermes_cli.dashboard_auth.login_page import render_native_provider_choice_html
+        out = render_native_provider_choice_html(
+            providers=[StubAuthProvider()],
+            authorize_path="/hermes/auth/native/authorize",
+            code_challenge="c", code_challenge_method="S256",
+            redirect_uri="http://127.0.0.1:1/cb", state="s", prefix="/hermes")
+        assert "url('/hermes/fonts/" in out
+        assert "url('/fonts/" not in out
+        assert "/hermes/auth/native/authorize?" in out
+
+
+class TestNativeLoginUnderPrefixKeepsPkceCookie:
+    """End-to-end: the PKCE cookie survives the form POST under a prefix.
+
+    This is the regression that a URL-only assertion cannot catch. The POST target
+    is read out of the page the server just rendered, and the PKCE cookie is
+    attached only when RFC 6265 §5.1.4 says a browser would attach it. With a
+    root-absolute target the cookie is withheld exactly as a browser withholds
+    it, and ``next`` comes back as the browser landing instead of the desktop's
+    loopback redirect — the "Login window closed before authentication
+    completed." failure, reproduced without a browser.
+    """
+
+    @staticmethod
+    def _fetch_target_from_page(page_html: str) -> str:
+        """The URL the page's own script POSTs to, with its PREFIX resolved."""
+        prefix = re.search(r'var PREFIX = (".*?");', page_html)
+        prefix_val = json.loads(prefix.group(1)) if prefix else ""
+        m = re.search(r"fetch\((PREFIX \+ )?'([^']+)'", page_html)
+        assert m, "login page has no password-login fetch call"
+        return (prefix_val if m.group(1) else "") + m.group(2)
+
+    @staticmethod
+    def _path_matches(cookie_path: str, request_path: str) -> bool:
+        """RFC 6265 §5.1.4 path-match — the rule that decides cookie delivery."""
+        if request_path == cookie_path:
+            return True
+        return (request_path.startswith(cookie_path)
+                and (cookie_path.endswith("/") or request_path[len(cookie_path):][:1] == "/"))
+
+    def test_password_login_under_prefix_returns_loopback_redirect(self):
+        from urllib.parse import urlparse
+
+        from tests.hermes_cli.test_dashboard_auth_password_login import PasswordProvider
+        from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
+
+        clear_providers()
+        register_provider(PasswordProvider())
+        _reset_password_rate_limit()
+        prev = (getattr(web_server.app.state, "bound_host", None),
+                getattr(web_server.app.state, "bound_port", None),
+                getattr(web_server.app.state, "auth_required", None))
+        web_server.app.state.bound_host = "proxy.example.com"
+        web_server.app.state.bound_port = 443
+        web_server.app.state.auth_required = True
+        client = TestClient(web_server.app, base_url="https://proxy.example.com")
+        hdr = {"x-forwarded-prefix": "/hermes"}
+        try:
+            r1 = client.get(
+                "/auth/native/authorize?code_challenge=abc&code_challenge_method=S256"
+                "&redirect_uri=http://127.0.0.1:51234/cb&state=xyz&provider=testpw",
+                headers=hdr, follow_redirects=False)
+            assert r1.status_code in (302, 303), r1.text
+            pkce = next(c for c in r1.headers.get_list("set-cookie")
+                        if "hermes_session_pkce" in c)
+            attrs = [a.strip() for a in pkce.split(";")]
+            cookie_path = next(a.split("=", 1)[1] for a in attrs if a.lower().startswith("path="))
+            assert cookie_path == "/hermes"
+            pkce_kv = attrs[0]
+
+            # Take the POST target from the rendered page, as the browser does.
+            page = client.get("/login", headers=hdr)
+            target = self._fetch_target_from_page(page.text)
+
+            # The proxy strips the mount prefix before the app sees the path.
+            backend_path = target[len("/hermes"):] if target.startswith("/hermes") else target
+            send_cookie = self._path_matches(cookie_path, target)
+            r2 = client.post(
+                backend_path,
+                json={"provider": "testpw", "username": "admin",
+                      "password": "hunter2", "next": ""},
+                headers={**hdr, **({"cookie": pkce_kv} if send_cookie else {})})
+            assert r2.status_code == 200, r2.text
+            nxt = r2.json()["next"]
+            assert urlparse(nxt).hostname == "127.0.0.1", (
+                f"native sign-in lost its PKCE cookie and returned {nxt!r} instead of the "
+                f"desktop loopback redirect (page posted to {target!r}, "
+                f"cookie Path={cookie_path!r}, sent={send_cookie})")
+            assert re.search(r"[?&]code=", nxt), nxt
+        finally:
+            clear_providers()
+            _reset_password_rate_limit()
+            (web_server.app.state.bound_host, web_server.app.state.bound_port,
+             web_server.app.state.auth_required) = prev

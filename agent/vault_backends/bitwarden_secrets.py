@@ -39,6 +39,7 @@ class BitwardenSecretsLoginBackend(LoginBackend):
     def __init__(self, cfg: Optional[Dict] = None):
         self.cfg = cfg or {}
         self._organization_id_cache: Optional[UUID] = None
+        self._client_cache = None
 
     def capabilities(self):
         return super().capabilities() | {"create_login", "update_login", "remove"}
@@ -109,9 +110,12 @@ class BitwardenSecretsLoginBackend(LoginBackend):
         return client
 
     def _client(self):
+        if self._client_cache is not None:
+            return self._client_cache
         token = self._access_token()
         try:
-            return self._make_client(token)
+            self._client_cache = self._make_client(token)
+            return self._client_cache
         except Exception as exc:
             message = scrub_secret_from_text(str(exc), {"access_token": token})[:240]
             raise VaultError(f"Bitwarden Secrets Manager authentication failed: {message}") from exc
@@ -170,15 +174,29 @@ class BitwardenSecretsLoginBackend(LoginBackend):
         out["origin"] = normalize_origin(out["origin"])
         return out
 
-    def _secret(self, handle: str):
+    def _secret(self, handle: str, client=None):
         if not self.owns(handle):
             raise VaultError(f"invalid Bitwarden Secrets Manager handle {handle!r}")
-        client = self._client()
+        client = client or self._client()
         data = self._unwrap(client.secrets().get(handle[len(self.prefix):]), "get secret")
         _, project_id = self._ids(client)
         if getattr(data, "project_id", None) != project_id:
             raise VaultError("credential handle is outside the configured Bitwarden project")
         return data
+
+    @staticmethod
+    def _meta_from_payload(handle: str, payload: Dict[str, str], creation_date: str = "") -> VaultItemMeta:
+        origin = payload["origin"]
+        host = urlsplit(origin).hostname or origin
+        label = scrub_secret_from_text(
+            payload.get("label") or host,
+            {"identifier": payload["identifier"], "password": payload["password"]},
+        )
+        return VaultItemMeta(
+            id=handle, kind="login", label=label, origin=origin,
+            created_at=creation_date, identifier_type=None, identifier=None,
+            has_otp=bool(payload.get("otp_secret")),
+        )
 
     def list_items(self) -> List[VaultItemMeta]:
         client = self._client()
@@ -192,22 +210,9 @@ class BitwardenSecretsLoginBackend(LoginBackend):
             if not origin:
                 continue
             host = urlsplit(origin).hostname or origin
-            label = host
-            has_otp = False
-            try:
-                payload = self._decode_payload(
-                    self._unwrap(client.secrets().get(str(item.id)), "get secret").value
-                )
-                label = scrub_secret_from_text(
-                    payload["label"] or host,
-                    {"identifier": payload["identifier"], "password": payload["password"]},
-                )
-                has_otp = bool(payload.get("otp_secret"))
-            except VaultError:
-                pass
             out.append(VaultItemMeta(
-                id=f"{self.prefix}{item.id}", kind="login", label=label, origin=origin,
-                created_at="", identifier_type=None, identifier=None, has_otp=has_otp,
+                id=f"{self.prefix}{item.id}", kind="login", label=host, origin=origin,
+                created_at="", identifier_type=None, identifier=None, has_otp=False,
             ))
         return out
 
@@ -219,13 +224,8 @@ class BitwardenSecretsLoginBackend(LoginBackend):
                 return None
             raise
         payload = self._decode_payload(item.value)
-        label = scrub_secret_from_text(
-            payload["label"], {"identifier": payload["identifier"], "password": payload["password"]}
-        )
-        return VaultItemMeta(
-            id=handle, kind="login", label=label, origin=payload["origin"],
-            created_at=str(getattr(item, "creation_date", "") or ""),
-            identifier_type=None, identifier=None, has_otp=bool(payload.get("otp_secret")),
+        return self._meta_from_payload(
+            handle, payload, str(getattr(item, "creation_date", "") or ""),
         )
 
     def resolve_login(self, handle: str) -> Dict[str, str]:
@@ -241,12 +241,21 @@ class BitwardenSecretsLoginBackend(LoginBackend):
 
     def find_login(self, origin: str, identifier: str) -> Optional[VaultItemMeta]:
         normalized = normalize_origin(origin)
-        for meta in self.list_items():
-            if meta.origin != normalized:
+        client = self._client()
+        org_id, project_id = self._ids(client)
+        data = self._unwrap(client.secrets().list(str(org_id)), "list secrets")
+        for item in getattr(data, "data", []) or []:
+            if project_id not in (getattr(item, "project_ids", []) or []):
                 continue
-            payload = self.resolve_login(meta.id)
+            if self._origin_from_key(str(getattr(item, "key", "") or "")) != normalized:
+                continue
+            handle = f"{self.prefix}{item.id}"
+            secret = self._secret(handle, client)
+            payload = self._decode_payload(secret.value)
             if payload.get("identifier") == identifier:
-                return self.get_meta(meta.id)
+                return self._meta_from_payload(
+                    handle, payload, str(getattr(secret, "creation_date", "") or ""),
+                )
         return None
 
     def create_login(self, *, label: str, origin: str, identifier_type: str,
@@ -264,19 +273,22 @@ class BitwardenSecretsLoginBackend(LoginBackend):
             message = scrub_secret_from_text(str(exc), {"identifier": identifier, "password": password,
                                                         "payload": value})[:240]
             raise VaultError(f"Bitwarden credential save failed: {message}") from exc
-        return self.get_meta(f"{self.prefix}{data.id}")
+        return self._meta_from_payload(
+            f"{self.prefix}{data.id}", self._decode_payload(value),
+            str(getattr(data, "creation_date", "") or ""),
+        )
 
     def update_login(self, handle: str, *, label: str, origin: str, identifier_type: str,
                      identifier: str, password: str, otp_secret: Optional[str] = None) -> VaultItemMeta:
-        item = self._secret(handle)
         client = self._client()
+        item = self._secret(handle, client)
         org_id, project_id = self._ids(client)
         if self._origin_from_key(str(item.key)) != normalize_origin(origin):
             raise VaultError("login updates must keep the original site origin")
         value = self._payload(label=label, origin=origin, identifier_type=identifier_type,
                               identifier=identifier, password=password, otp_secret=otp_secret)
         try:
-            self._unwrap(
+            data = self._unwrap(
                 client.secrets().update(str(org_id), str(item.id), str(item.key), value, _NOTE, [project_id]),
                 "update secret",
             )
@@ -284,12 +296,20 @@ class BitwardenSecretsLoginBackend(LoginBackend):
             message = scrub_secret_from_text(str(exc), {"identifier": identifier, "password": password,
                                                         "payload": value})[:240]
             raise VaultError(f"Bitwarden credential update failed: {message}") from exc
-        return self.get_meta(handle)
+        return self._meta_from_payload(
+            handle, self._decode_payload(value),
+            str(getattr(data, "creation_date", "") or getattr(item, "creation_date", "") or ""),
+        )
 
     def remove_item(self, handle: str) -> bool:
-        if self.get_meta(handle) is None:
-            return False
-        data = self._unwrap(self._client().secrets().delete([handle[len(self.prefix):]]), "delete secret")
+        client = self._client()
+        try:
+            self._secret(handle, client)
+        except VaultError as exc:
+            if "not found" in str(exc).lower():
+                return False
+            raise
+        data = self._unwrap(client.secrets().delete([handle[len(self.prefix):]]), "delete secret")
         failures = [item for item in (getattr(data, "data", []) or []) if getattr(item, "error", None)]
         if failures:
             raise VaultError(str(failures[0].error)[:240])

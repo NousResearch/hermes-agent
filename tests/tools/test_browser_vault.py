@@ -97,6 +97,27 @@ class TestVaultStore:
         assert items[0].id == meta.id
         assert items[0].origin == "https://example.com"
 
+    def test_model_list_does_not_resolve_login_secrets(self, store, monkeypatch):
+        from agent.vault_backends.local import LocalLoginBackend
+        from tools import browser_vault_tool
+
+        _add_login(store)
+        backend = LocalLoginBackend()
+        monkeypatch.setattr(backend, "list_items", store.list_items)
+
+        resolved = []
+
+        def track_resolution(handle):
+            resolved.append(handle)
+            return {"identifier": "user@example.com", "password": "s3cret-pw"}
+
+        monkeypatch.setattr(backend, "resolve_login", track_resolution)
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+        out = json.loads(browser_vault_tool.browser_vault_list())
+        assert out["success"] is True
+        assert out["items"][0]["label"] == "example.com"
+        assert resolved == []
+
     def test_remove_item(self, store):
         meta = _add_login(store)
         assert store.remove_item(meta.id) is True
@@ -363,7 +384,7 @@ class TestBrowserVaultTools:
         with patch("agent.vault_store.get_vault_store", return_value=store):
             raw = browser_vault_tool.browser_vault_list()
         assert password not in raw
-        assert "[REDACTED]" in raw
+        assert json.loads(raw)["items"][0]["label"] == "example.com"
 
     def test_fill_refused_on_origin_mismatch(self, store):
         from tools import browser_vault_tool
@@ -788,7 +809,9 @@ class TestSaveLoginPrompt:
             out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t1"))
         unlock_mod.set_save_login_prompt_callback(None)
 
-        assert out["success"] is True and "identifier" not in out
+        assert out["success"] is True and out["save_completed"] is True
+        assert "identifier" not in out
+        assert "do not call browser_vault_list" in out["next"]
         assert "tek@acme.test" not in json.dumps(out)
         assert "hunter2" not in json.dumps(out)
         assert seen == {"origin": "https://acme.test", "site": "acme.test"}

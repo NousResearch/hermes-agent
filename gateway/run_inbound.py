@@ -1269,6 +1269,8 @@ class GatewayInboundMixin:
             save_authorized_credential_capture,
         )
         prepare_credential_capture(event)
+        if getattr(event, "_hermes_startup_restore_replay", False):
+            event._credential_capture_deferred = False
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             if not getattr(event, "_credential_capture_deferred", False):

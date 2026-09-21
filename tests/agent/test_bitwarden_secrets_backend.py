@@ -121,6 +121,32 @@ def test_create_list_resolve_update_and_remove_are_model_blind(backend):
     assert manager.get_meta(meta.id) is None
 
 
+def test_save_paths_do_not_refetch_successful_writes(backend):
+    manager, api = backend
+    meta = manager.create_login(
+        label="Example", origin="https://example.com", identifier_type="username",
+        identifier="private-user", password="private-password",
+    )
+    assert [call[0] for call in api.calls] == ["create"]
+
+    api.calls.clear()
+    found = manager.find_login("https://example.com", "private-user")
+    assert found and found.id == meta.id
+    assert [call[0] for call in api.calls] == ["list", "get"]
+
+    api.calls.clear()
+    [listed] = manager.list_items()
+    assert listed.id == meta.id and listed.label == "example.com"
+    assert [call[0] for call in api.calls] == ["list"]
+
+    api.calls.clear()
+    manager.update_login(
+        meta.id, label="Example", origin="https://example.com",
+        identifier_type="username", identifier="private-user", password="updated-password",
+    )
+    assert [call[0] for call in api.calls] == ["get", "update"]
+
+
 def test_authentication_error_scrubs_machine_token(monkeypatch):
     token = "machine-token-never-log"
     manager = BitwardenSecretsLoginBackend({"access_token_env": "TEST_BWS_ACCESS_TOKEN"})

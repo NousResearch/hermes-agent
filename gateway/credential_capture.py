@@ -9,19 +9,17 @@ from typing import Optional
 
 from agent.vault_store import scrub_secret_from_text
 
-_INTENTS = (
-    "保存账号密码",
-    "请保存账号密码",
-    "授权保存账号密码",
-    "保存登录凭据",
-    "请保存登录凭据",
-    "保存网站凭据",
-    "请保存网站凭据",
-    "/credential save",
-    "save login credential",
-    "save website credential",
-)
 _FIELD = re.compile(r"^\s*([^:：]{1,24})\s*[:：]\s*(.*?)\s*$")
+_CHINESE_REQUEST = re.compile(
+    r"^(?:(?:请帮我|请你|请|帮我|帮忙|麻烦|授权|我要|我想|我需要|继续|"
+    r"重试(?:一遍|一次)?|重新|再次|再试(?:一遍|一次)?|再|现在|立即|直接)\s*)*"
+    r"(?:保存账号密码|保存登录凭据|保存网站凭据)(?:\s|$|[:：，,。])"
+)
+_ENGLISH_REQUEST = re.compile(
+    r"^(?:(?:please|continue|retry|try again|again|now)\s+)*"
+    r"(?:/credential save|save login credential|save website credential)(?:\s|$|[:;,\.])",
+    re.IGNORECASE,
+)
 _ALIASES = {
     "origin": {"网站", "网址", "站点", "url", "origin", "site", "website"},
     "identifier": {"账号", "帐号", "用户名", "用户", "邮箱", "手机号", "identifier", "username", "email", "phone", "account"},
@@ -40,8 +38,12 @@ class CredentialCapture:
     error: str = ""
 
     def clear(self) -> None:
+        self.origin = ""
         self.identifier = ""
+        self.identifier_type = "username"
         self.password = ""
+        self.instruction = ""
+        self.error = ""
 
 
 @dataclass(frozen=True)
@@ -66,7 +68,7 @@ def _identifier_type(field_name: str, identifier: str) -> str:
 
 def _has_explicit_intent(text: str) -> bool:
     first = next((line.strip().lower() for line in text.splitlines() if line.strip()), "")
-    return any(first == intent or first.startswith(intent + " ") for intent in _INTENTS)
+    return bool(_CHINESE_REQUEST.match(first) or _ENGLISH_REQUEST.match(first))
 
 
 def _scrub_credentials(text: str, capture: CredentialCapture) -> str:
@@ -133,10 +135,15 @@ def prepare_credential_capture(event) -> bool:
 
     capture = CredentialCapture()
     first_field_name = ""
-    for index, line in enumerate(text.splitlines()):
+    intent_line_pending = True
+    for line in text.splitlines():
         stripped = line.strip()
-        if not stripped or (index == 0 and any(stripped.lower().startswith(intent) for intent in _INTENTS)):
+        if not stripped:
             continue
+        if intent_line_pending:
+            intent_line_pending = False
+            if _has_explicit_intent(stripped):
+                continue
         match = _FIELD.match(line)
         if not match:
             continue

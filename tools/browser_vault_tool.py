@@ -29,6 +29,7 @@ import json
 import secrets
 import logging
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -213,8 +214,6 @@ def browser_vault_list() -> str:
     """
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here
-    from agent.vault_store import scrub_secret_from_text
-
     items, locked, errors = [], [], []
     for backend in enabled_backends():
         if backend.needs_unlock and not backend.is_unlocked():
@@ -228,14 +227,7 @@ def browser_vault_list() -> str:
             continue
         for meta in metas:
             if meta.kind == "login":
-                try:
-                    login = backend.resolve_login(meta.id)
-                    label = scrub_secret_from_text(meta.label, {
-                        "identifier": login.get("identifier") or meta.identifier or "",
-                        "password": login.get("password") or "",
-                    })
-                except Exception:
-                    label = meta.origin or "Saved login"
+                label = urlsplit(meta.origin or "").hostname or meta.origin or "Saved login"
             else:
                 label = meta.label
             entry = {"handle": meta.id, "backend": backend.name, "label": label, "kind": meta.kind,
@@ -335,9 +327,11 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
         answer.clear()
         del password
     filled = json.loads(browser_vault_fill(saved.meta.id, task_id=effective_task_id))
-    return json.dumps({"success": True, "handle": saved.meta.id, "origin": origin,
+    return json.dumps({"success": True, "save_completed": True,
+                       "handle": saved.meta.id, "origin": origin,
                        "backend": write_backend.name, "action": saved.action, "fill": filled,
-                       "next": "Submit the form; the identifier and password were filled model-blind."},
+                       "next": ("The save operation completed; do not call browser_vault_list again this turn. "
+                                "Submit the form with the model-blind values already filled.")},
                       ensure_ascii=False)
 
 

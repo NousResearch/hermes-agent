@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.credential_capture import (
+    discard_credential_capture,
     prepare_credential_capture,
     save_authorized_credential_capture,
 )
@@ -80,6 +81,37 @@ def test_plain_chat_is_not_treated_as_authorized_capture():
     assert event.text == "这个账号的密码好像过期了"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "继续重试一遍保存账号密码",
+        "请帮我重新保存登录凭据",
+        "再次保存网站凭据",
+    ],
+)
+def test_natural_retry_save_request_is_intercepted_before_model(text):
+    event = MessageEvent(text)
+    assert prepare_credential_capture(event)
+    broker = _Broker()
+    result = save_authorized_credential_capture(event, broker)
+    assert result.handled and "请使用" in result.reply
+    assert broker.calls == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "为什么保存账号密码这么慢",
+        "不要保存账号密码",
+        "我们讨论一下保存登录凭据的机制",
+    ],
+)
+def test_credential_save_discussion_is_not_intercepted(text):
+    event = MessageEvent(text)
+    assert not prepare_credential_capture(event)
+    assert event.text == text
+
+
 def test_polite_intent_and_instruction_repeat_are_sanitized():
     event = MessageEvent(
         "请保存账号密码\n网站: https://example.com\n账号: private-user\n"
@@ -133,6 +165,41 @@ async def test_gateway_denial_discards_capture_without_writing():
 
 
 @pytest.mark.asyncio
+async def test_startup_restore_replay_denial_clears_capture_immediately():
+    class Runner(GatewayInboundMixin):
+        async def _hm_admit_event(self, event):
+            return None
+
+    event = MessageEvent(
+        "保存账号密码\n网站: https://example.com\n账号: replay-user\n密码: replay-password"
+    )
+    assert prepare_credential_capture(event)
+    capture = event._credential_capture
+    event._credential_capture_deferred = True
+    event._hermes_startup_restore_replay = True
+
+    assert await Runner()._handle_message(event) is None
+    assert event._credential_capture is None
+    assert event._credential_capture_deferred is False
+    assert capture.origin == capture.identifier == capture.password == capture.instruction == ""
+
+
+def test_discard_clears_every_capture_field():
+    event = MessageEvent(
+        "保存账号密码\n网站: https://example.com\n账号: private-user\n"
+        "密码: private-password\n继续: use private-password"
+    )
+    assert prepare_credential_capture(event)
+    capture = event._credential_capture
+    capture.error = "sensitive-error"
+    discard_credential_capture(event)
+    assert event._credential_capture is None
+    assert capture.origin == capture.identifier == capture.password == capture.instruction == ""
+    assert capture.error == ""
+    assert capture.identifier_type == "username"
+
+
+@pytest.mark.asyncio
 async def test_gateway_writes_only_after_admission(monkeypatch):
     broker = _Broker()
 
@@ -150,3 +217,22 @@ async def test_gateway_writes_only_after_admission(monkeypatch):
     assert reply == "✅ 登录凭据已保存到 bws:opaque-id，绑定 https://example.com。"
     assert broker.calls[0]["identifier"] == "admitted-user"
     assert event._credential_capture is None
+
+
+@pytest.mark.asyncio
+async def test_natural_retry_request_returns_format_without_starting_agent(monkeypatch):
+    broker = _Broker()
+
+    class Runner(GatewayInboundMixin):
+        config = SimpleNamespace(multiplex_profiles=False)
+
+        async def _hm_admit_event(self, event):
+            return event, SimpleNamespace(), False
+
+        async def _handle_message_with_agent(self, *args, **kwargs):
+            raise AssertionError("credential retry request must not start the model")
+
+    monkeypatch.setattr("agent.credential_broker.get_credential_broker", lambda: broker)
+    reply = await Runner()._handle_message(MessageEvent("继续重试一遍保存账号密码"))
+    assert "请使用" in reply
+    assert broker.calls == []

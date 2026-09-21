@@ -315,3 +315,56 @@ def test_completion_permission_is_restored_after_exception(monkeypatch):
     with pytest.raises(RuntimeError, match="injected failure"):
         agent.run_conversation("Completion", persist_user_display_metadata={"completion_silence_allowed": True})
     assert agent._completion_silence_allowed is False
+
+
+@pytest.mark.asyncio
+async def test_gateway_completion_recovery_runs_full_turn(monkeypatch, tmp_path):
+    """The real gateway turn carries completion permission through agent recovery."""
+    import gateway.run as gateway_run
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "123")
+    (tmp_path / "config.yaml").write_text(
+        "display: {suppress_warning_notifications: true}\n"
+        "auxiliary: {title_generation: {enabled: false}}\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {
+        "api_key": "test-token", "provider": "openai-codex", "api_mode": "codex_responses",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    })
+    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kwargs: [])
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    runner = GatewayRunner(GatewayConfig())
+    adapter = RecordingTelegram()
+    adapter.config.extra["allow_from"] = ["123"]
+    runner.adapters[Platform.TELEGRAM] = adapter
+    adapter.set_message_handler(runner._handle_message)
+    requests = []
+    agents = []
+
+    def transport(agent, api_kwargs):
+        agents.append(agent)
+        requests.append(copy.deepcopy(api_kwargs))
+        if len(requests) < 3:
+            return codex_response()
+        wire = api_kwargs.get("messages", api_kwargs.get("input", []))
+        users = [item for item in wire if item.get("role") == "user"]
+        nudge = json.dumps(users[-1].get("content", ""))
+        return codex_response("NO_REPLY" if "NO_REPLY" in nudge else "Redundant acknowledgement")
+
+    monkeypatch.setattr(AIAgent, "_interruptible_api_call", transport)
+    assert await runner._inject_watch_notification("Previously reported build succeeded", {
+        "type": "completion", "session_id": "untracked-result", "started_at": 1,
+        "session_key": "agent:main:telegram:dm:123", "platform": "telegram",
+        "chat_id": "123", "chat_type": "dm", "user_id": "123",
+    })
+    async with asyncio.timeout(30):
+        while adapter._session_tasks:
+            await asyncio.sleep(0.01)
+    assert len(requests) == 3
+    assert adapter.sent == []
+    assert all(agent is agents[0] for agent in agents)
+    assert isinstance(agents[0], AIAgent)
+    assert not agents[0]._completion_silence_allowed

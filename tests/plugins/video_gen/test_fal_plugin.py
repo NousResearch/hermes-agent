@@ -10,8 +10,11 @@ from agent import video_gen_registry
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
+def _reset_registry(monkeypatch):
     video_gen_registry._reset_for_tests()
+    # Individual tests install a fal_client fake before exercising requests.
+    # Avoid making the optional SDK a prerequisite for those mocked paths.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
     yield
     video_gen_registry._reset_for_tests()
 
@@ -589,7 +592,7 @@ class TestPayloadBuilder:
             )
 
     def test_happy_horse_minimal_payload(self):
-        """Happy Horse has sparse docs — payload should be minimal."""
+        """Happy Horse 1.1 has a full published schema — verified fields only."""
         from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         meta = FAL_FAMILIES["happy-horse"]
@@ -604,8 +607,116 @@ class TestPayloadBuilder:
             audio=True,
             seed=None,
         )
-        # Only prompt — no payload bloat for fields we can't verify
-        assert p == {"prompt": "a horse galloping"}
+        # v1.1 declares aspect_ratio/resolution/duration (integer). Audio is
+        # native (no generate_audio key) and negative_prompt is unsupported.
+        assert p == {
+            "prompt": "a horse galloping",
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+            "duration": 8,
+        }
+        assert isinstance(p["duration"], int)
+
+    def test_happy_horse_i2v_drops_aspect_ratio(self):
+        """Happy Horse 1.1 i2v derives aspect ratio from the input image."""
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+        meta = FAL_FAMILIES["happy-horse"]
+        p = _build_payload(
+            meta,
+            prompt="animate this",
+            image_url="https://example.com/frame.png",
+            duration=5,
+            aspect_ratio="16:9",
+            resolution="1080p",
+            negative_prompt=None,
+            audio=None,
+            seed=123,
+        )
+        assert "aspect_ratio" not in p
+        assert p["image_url"] == "https://example.com/frame.png"
+        assert p["seed"] == 123
+
+    def test_ltx_25_payload(self):
+        """LTX 2.5: integer duration enum, 4K alias, no seed key."""
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+        meta = FAL_FAMILIES["ltx-2.5"]
+        p = _build_payload(
+            meta,
+            prompt="a drone shot",
+            image_url=None,
+            duration=7,
+            aspect_ratio="16:9",
+            resolution="4k",
+            negative_prompt="blurry",
+            audio=True,
+            seed=42,
+        )
+        # duration snaps to the nearest enum value as a JSON integer; the
+        # tool's "4k" maps to the endpoint's "2160p"; seed/negative dropped.
+        assert p == {
+            "prompt": "a drone shot",
+            "aspect_ratio": "16:9",
+            "resolution": "2160p",
+            "duration": 6,
+            "generate_audio": True,
+        }
+        assert isinstance(p["duration"], int)
+
+        # i2v: the fast i2v endpoint takes the same even enum (19 snaps to 18 — a tie picks the lower entry, like veo 7→6),
+        # no seed key.
+        p = _build_payload(meta, prompt="animate", image_url="https://example.com/f.png", duration=19, aspect_ratio="9:16",
+                           resolution="720p", negative_prompt=None, audio=None, seed=7)
+        assert p == {"prompt": "animate", "image_url": "https://example.com/f.png", "aspect_ratio": "9:16", "resolution": "720p", "duration": 18}
+
+        # fal caps 1440p/2160p at 10s regardless of frame rate: 18 at 720p stays 18, at 4k it is capped to 10; and an
+        # unspecified duration is omitted so the endpoint's own default ("auto") applies instead of the enum minimum.
+        kw = dict(prompt="x", image_url=None, aspect_ratio="16:9", negative_prompt=None, audio=None, seed=None)
+        assert _build_payload(meta, duration=18, resolution="4k", **kw)["duration"] == 10
+        assert _build_payload(meta, duration=18, resolution="2k", **kw)["duration"] == 10
+        assert _build_payload(meta, duration=18, resolution="1080p", **kw)["duration"] == 18
+        assert "duration" not in _build_payload(meta, duration=None, resolution="4k", **kw)
+
+    def test_kling_o3_payload(self):
+        """Kling O3: string duration, i2v drops aspect_ratio, no seed."""
+        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+        meta = FAL_FAMILIES["kling-o3"]
+        p = _build_payload(
+            meta,
+            prompt="a mecha lands",
+            image_url=None,
+            duration=5,
+            aspect_ratio="16:9",
+            resolution="1080p",
+            negative_prompt=None,
+            audio=True,
+            seed=3,
+        )
+        # No resolution/seed keys in the O3 schema; duration is the usual
+        # stringified queue-API form.
+        assert p == {
+            "prompt": "a mecha lands",
+            "aspect_ratio": "16:9",
+            "duration": "5",
+            "generate_audio": True,
+        }
+
+        p = _build_payload(
+            meta,
+            prompt="animate",
+            image_url="https://example.com/f.png",
+            duration=2,
+            aspect_ratio="16:9",
+            resolution="1080p",
+            negative_prompt=None,
+            audio=False,
+            seed=None,
+        )
+        assert "aspect_ratio" not in p
+        assert p["duration"] == "3"  # clamped to the 3-15 range
+        assert p["generate_audio"] is False
 
 
 class TestUpscalePass:

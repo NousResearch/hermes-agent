@@ -99,10 +99,10 @@ class ProviderInfo:
 class ModelCapabilities:
     """Structured capability metadata for a model from models.dev."""
     supports_tools: bool = True
-    supports_vision: bool = False
-    supports_reasoning: bool = False
+    supports_vision: Optional[bool] = None
+    supports_reasoning: Optional[bool] = None
     context_window: int = 200000
-    max_output_tokens: int = 8192
+    max_output_tokens: Optional[int] = None
     model_family: str = ""
 
 
@@ -117,9 +117,6 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
-    # opencode-free is Zen-hosted (hermes_cli/models.py) and models.dev's "opencode" catalog lists
-    # its *-contributor-free SKUs; without this alias every opencode-free lookup missed models.dev.
-    "opencode-free": "opencode",
     "kilocode": "kilo", "fireworks": "fireworks-ai",
     "huggingface": "huggingface", "gemini": "google", "google": "google",
     "xai": "xai",
@@ -148,6 +145,45 @@ def _models_dev_to_hermes_ids(mdev_id: str) -> List[str]:
 
 def _dict_or_empty(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _configured_catalog_provider(provider: str) -> Optional[str]:
+    """``catalog_provider`` declared on a custom provider's ``providers.<name>`` row (or legacy
+    ``custom_providers[]`` entry): the catalogued vendor whose models it resells. None when unset."""
+    name = (provider or "").strip()
+    if name.lower().startswith("custom:"):
+        name = name[len("custom:"):]
+    if not name or name in PROVIDER_TO_MODELS_DEV:
+        return None
+    alias = _dict_or_empty(_cfg_get("providers", name, default=None)).get("catalog_provider")
+    if not alias:
+        legacy = _cfg_get("custom_providers", default=None)
+        alias = next((e.get("catalog_provider") for e in (legacy if isinstance(legacy, list) else [])
+                      if isinstance(e, dict) and str(e.get("name") or "").strip() == name), None)
+    alias = str(alias or "").strip()
+    return alias or None
+
+
+def _models_dev_id(provider: str) -> Optional[str]:
+    """models.dev provider id for a Hermes provider id, or None. A custom provider reaches the
+    catalog only through its configured ``catalog_provider`` alias (#112649)."""
+    key = (provider or "").strip()
+    mdev_id = PROVIDER_TO_MODELS_DEV.get(key)
+    if mdev_id is None:
+        alias = _configured_catalog_provider(key)
+        mdev_id = PROVIDER_TO_MODELS_DEV.get(alias, alias) if alias else None
+        if mdev_id is not None and mdev_id not in PROVIDER_TO_MODELS_DEV.values() \
+                and mdev_id not in fetch_models_dev(allow_network=False):
+            # A mistyped alias must not leak into ModelInfo.provider_id; the row stays on its own slug.
+            if (key, alias) not in _UNKNOWN_CATALOG_PROVIDER_WARNED:
+                _UNKNOWN_CATALOG_PROVIDER_WARNED.add((key, alias))
+                logger.warning("providers.%s: catalog_provider %r is neither a Hermes provider id nor a "
+                               "models.dev id; ignoring", key, alias)
+            mdev_id = None
+    return mdev_id
+
+
+_UNKNOWN_CATALOG_PROVIDER_WARNED: set = set()  # (provider, alias) warned once per process
 
 
 def _cfg_get(*keys: str, default: Any) -> Any:
@@ -189,7 +225,9 @@ def _load_etag() -> str:
 def _save_etag(etag: str) -> None:
     def write() -> None:
         etag_path = _get_etag_path()
-        etag_path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+
+        mkdir_under_hermes_home(etag_path.parent)
         atomic_write_text(etag_path, etag)
     _quietly("save models.dev ETag", write)
 
@@ -460,7 +498,7 @@ def _registry_models(mdev_id: str, *, allow_network: bool) -> Optional[Dict[str,
 def _get_provider_models(provider: str, *, allow_network: bool = False) -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict, or None if unknown.
     ``allow_network`` defaults to False — hot-path callers must never block."""
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider)
+    mdev_id = _models_dev_id(provider)
     return _registry_models(mdev_id, allow_network=allow_network) if mdev_id else None
 
 
@@ -550,6 +588,9 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
     override_ctx = _override_context_window(provider, model)
     if override_ctx is not None:
         return override_ctx
+    declared_ctx = _override_int(_provider_model_capabilities(provider, model), "context_window")
+    if declared_ctx is not None:
+        return declared_ctx
     models = _get_provider_models(provider, allow_network=allow_network)
     catalog_ctx = next((ctx for _mid, entry in _iter_model_entries(models, model, provider=provider) if (ctx := _extract_context(entry))), None) if models is not None else None
     return catalog_ctx if catalog_ctx is not None else _default_override_context(provider)
@@ -563,9 +604,9 @@ def lookup_models_dev_context(provider: str, model: str, *, allow_network: bool 
 # or models.dev id; model ids match exactly, then case-insensitively (mirroring catalog lookup).
 # Resolution semantics: 1. 2. See #84482, #8731.
 _OVERRIDE_WARNED_KEYS: set = set()
-# Safe defaults for models absent from the catalog (tools on, vision/reasoning off, 200K context);
-# shared by get_model_capabilities and get_model_info so the two unknown-model paths agree.
-_UNKNOWN_MODEL_BASE: Dict[str, Any] = {"limit": {"context": 200000, "output": 8192}, "tool_call": True}
+# Safe defaults for models absent from the catalog (tools on, 200K context). Capability fields and the
+# output limit stay absent so consumers see them as unknown instead of a synthesized value.
+_UNKNOWN_MODEL_BASE: Dict[str, Any] = {"limit": {"context": 200000}, "tool_call": True}
 
 # Account-gated models may be usable before models.dev has indexed them.  Keep
 # their capabilities available for an explicitly selected/discovered model
@@ -717,13 +758,47 @@ def _merge_catalog_entry_with_override(raw: Dict[str, Any], override: Dict[str, 
     return merged
 
 
+def _builtin_model_metadata(provider: str, model: str) -> Optional[Dict[str, Any]]:
+    """Built-in metadata for a provider/model pair, if Hermes has a vendor-specific entry."""
+    provider_key = _models_dev_id(provider) or (provider or "").strip()
+    return _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
+
+
+def _relay_vision_marker_metadata(provider: str, model: str) -> Optional[Dict[str, Any]]:
+    """Fill-gap base for an OpenCode Zen/Go ``*-vision*`` model id the catalog does not know. The relays
+    resell vendor previews (``deepseek-v4-flash-vision-exp``) before models.dev indexes them, and the id's
+    ``-vision`` token is the vendor's own capability marker; without it ``image_input_mode: auto`` treats
+    the model as text-only and detours images through the lossy describe path (#96066). Every other field
+    keeps the unknown-model defaults, so only vision is claimed."""
+    from hermes_cli.models import opencode_provider_family
+
+    if "-vision" not in (model or "").strip().lower() or opencode_provider_family(provider) is None:
+        return None
+    return {**_UNKNOWN_MODEL_BASE, "modalities": {"input": ["text", "image"], "output": ["text"]}}
+
+
+def _provider_model_capabilities(provider: str, model: str) -> Dict[str, Any]:
+    """Exact-model declaration from the registered ``ProviderProfile.model_capabilities`` (canonical
+    ``model_overrides`` schema). The ONE plugin seam: every consumer that reads models.dev through this
+    module (picker badges, image routing, ``/api/model/info``, context lookup) sees it (#102115)."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider)
+    return profile.model_capabilities.get(model, {}) if profile is not None else {}
+
+
 def _apply_overrides(provider: str, model: str, entry: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """*entry* patched by its override; ``_UNKNOWN_MODEL_BASE`` patched by a fill-gap override on a
-    catalog miss (selected AFTER lookup: _default only fills misses); None when neither exists."""
-    provider_key = PROVIDER_TO_MODELS_DEV.get((provider or "").strip(), (provider or "").strip())
-    builtin = _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
+    """Catalog/builtin metadata, patched by the plugin's declaration, then by the explicit user override.
+    ``_UNKNOWN_MODEL_BASE`` is the base on a catalog miss; a fill-gap ``_default`` applies only when no
+    source knows the model. None when nothing knows it."""
+    builtin = _builtin_model_metadata(provider, model)
     base = entry if entry is not None else builtin
+    declared = _provider_model_capabilities(provider, model)
+    if declared:
+        base = _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, declared)
     override = _override_for(provider, model, catalog_hit=base is not None)
+    if base is None:
+        base = _relay_vision_marker_metadata(provider, model)
     return base if override is None else _merge_catalog_entry_with_override(base if base is not None else _UNKNOWN_MODEL_BASE, override)
 
 
@@ -746,15 +821,20 @@ def get_model_capabilities(provider: str, model: str, *, allow_network: bool = F
     """
     models = _get_provider_models(provider, allow_network=allow_network)
     entry = _find_model_entry(models, model, provider) if models is not None else None
+    unknown_base = entry is None and _builtin_model_metadata(provider, model) is None
     raw = _apply_overrides(provider, model, entry)
     if raw is None:
         return None
     return ModelCapabilities(
         supports_tools=bool(raw.get("tool_call", False)),
-        supports_vision=_entry_supports_vision(raw),
-        supports_reasoning=bool(raw.get("reasoning", False)),
+        supports_vision=(
+            None
+            if unknown_base and "attachment" not in raw and "modalities" not in raw
+            else _entry_supports_vision(raw)
+        ),
+        supports_reasoning=None if unknown_base and "reasoning" not in raw else bool(raw.get("reasoning", False)),
         context_window=_extract_limit(raw, "context") or 200000,
-        max_output_tokens=_extract_limit(raw, "output") or 8192,
+        max_output_tokens=_extract_limit(raw, "output"),
         model_family=raw.get("family", "") or "",
     )
 
@@ -831,7 +911,7 @@ def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
 
 def get_provider_info(provider_id: str, *, allow_network: bool = True) -> Optional[ProviderInfo]:
     """Provider metadata by Hermes or models.dev ID, or None if not cataloged. ``allow_network`` defaults to True (interactive setup)."""
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    mdev_id = _models_dev_id(provider_id) or provider_id
     raw = _registry_provider(mdev_id, allow_network)
     return _parse_provider_info(mdev_id, raw) if raw is not None else None
 
@@ -846,7 +926,7 @@ def get_model_info(provider_id: str, model_id: str, *, allow_network: bool = Fal
     this boundary, and sub-dicts (``limit``, ``modalities``) are merged rather than clobbered. See #84482,
     #8731.
     """
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
+    mdev_id = _models_dev_id(provider_id) or provider_id
     models = _registry_models(mdev_id, allow_network=allow_network)
     mid, entry = next(_iter_model_entries(models, model_id, suffix_fallback=False, provider=provider_id), (model_id, None)) if models is not None else (model_id, None)
     # Not in catalog — an override (explicit or _default) may still provide it.

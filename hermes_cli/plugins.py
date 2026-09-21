@@ -28,7 +28,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
 from hermes_cli.config import load_config_readonly
@@ -756,6 +756,18 @@ class PluginContext:
         from hermes_cli.dashboard_auth.registry import register_global_provider, unregister_global_provider
         if self._wrong_type(provider, DashboardAuthProvider, "dashboard-auth provider"):
             return
+        launch_scope = hermes_home_key(get_process_hermes_home())
+        if self._manager.scope_key != launch_scope:
+            logger.warning(
+                "Plugin '%s' tried to register dashboard-auth provider %r "
+                "from profile scope %s; ignoring it because dashboard auth "
+                "is owned by launch scope %s.",
+                self.manifest.name,
+                provider.name,
+                self._manager.scope_key,
+                launch_scope,
+            )
+            return
         registry_name = provider.name
         # The auth registry is process-global (lifetime = web server). Disposing it on a routine
         # per-home manager teardown emptied it for the WHOLE process and disabled sign-in until
@@ -1129,10 +1141,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
-        # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
-        # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
-        # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
-        self._plugin_secret_sources_reconciled: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
@@ -1173,6 +1181,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+        # (hook_name, id(cb), repr(exc)) already reported at WARNING; identical repeats go to DEBUG.
+        self._hook_failures_reported: set = set()
         # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-
         # global registries are shared across profiles while several managers coexist, so the ledger
         # is keyed per (hermes_home, plugin_id) and every inverse is identity-conditional — one
@@ -1272,34 +1282,24 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             plugin_sources = list_plugin_sources()
         except Exception:
             return
-        enabled_names: list[str] = []
-        if plugin_sources:
+        if not plugin_sources:
+            return
+        try:
+            from hermes_cli.config import load_config
+            secrets = (load_config() or {}).get("secrets") or {}
+        except Exception:
+            secrets = {}
+
+        def _enabled(source) -> bool:
+            section = secrets.get(getattr(source, "name", ""))
             try:
-                from hermes_cli.config import load_config
-                secrets = (load_config() or {}).get("secrets") or {}
+                return bool(source.is_enabled(section if isinstance(section, dict) else {}))
             except Exception:
-                secrets = {}
+                return False  # mirrors the orchestrator: a raising is_enabled() is skipped
 
-            def _enabled(source) -> bool:
-                section = secrets.get(getattr(source, "name", ""))
-                try:
-                    return bool(source.is_enabled(section if isinstance(section, dict) else {}))
-                except Exception:
-                    return False  # mirrors the orchestrator: a raising is_enabled() is skipped
-
-            enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
+        enabled_names = [getattr(s, "name", "") for s in plugin_sources if _enabled(s)]
         if not enabled_names:
-            # Nothing enabled now. If an earlier discovery re-applied plugin sources for this home, the
-            # snapshot and installed scope still carry that plugin's names (force-reload unloads the
-            # registration first, so this is exactly the "last plugin source removed" path) — reconcile
-            # once so they drop out. A home that never had one stays a no-op: no re-pull, no re-load.
-            if not self._plugin_secret_sources_reconciled:
-                return
-            # The marker is cleared only AFTER the cleanup below succeeds: reset/reload/refresh are
-            # fallible, and clearing first left the stale credential active with no retry on the next
-            # discovery (review on f5f88d5058).
-        else:
-            self._plugin_secret_sources_reconciled = True
+            return
         try:
             # Reset and reload the SAME home the process (or routed turn) resolves to: under multiplex this
             # runs at gateway boot after sibling profiles may already have hydrated, and a global clear
@@ -1308,16 +1308,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             home = get_hermes_home()
             reset_secret_source_cache(home)
             load_hermes_dotenv(hermes_home=home)
-            # A scope installed for this home was frozen BEFORE these sources existed — a routed cron
-            # fire builds its scope in run_one_job and only then, on its first agent build, discovers
-            # plugins; under multiplex semantics the load above is hydrate-only, so fold the values
-            # into the installed scope or THIS fire never sees the plugin credential.
-            from agent.secret_scope import refresh_installed_secret_scope
-            refresh_installed_secret_scope(Path(home))
-            if not enabled_names:
-                self._plugin_secret_sources_reconciled = False  # cleanup succeeded; nothing left to drop
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
-                         ", ".join(sorted(enabled_names)) or "<none — reconciled removed plugin sources>")
+                         ", ".join(sorted(enabled_names)))
         except Exception as exc:
             logger.debug("secret source re-apply after discovery failed: %s", exc)
 
@@ -1326,7 +1318,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         manifests: List[PluginManifest] = self._collect_directory_manifests()
         # Entry points are separate from the directory scan: the startup MCP probe must not import
         # or register them.
-        ep_manifests = self._scan_entry_points()
+        # An installed directory plugin keeps its identity when its own pip dependency also ships an
+        # entry point under the same name (the pyproject wrapper shape): the directory is what the
+        # user installed, carries catalog provenance and is what update/remove act on.
+        directory_keys = {manifest_key(m) for m in manifests}
+        ep_manifests = [m for m in self._scan_entry_points() if manifest_key(m) not in directory_keys]
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
         disabled = _get_disabled_plugins()

@@ -10,6 +10,9 @@
 /** Characters beyond which a plain-text paste becomes a `.txt` attachment. */
 export const LARGE_PASTE_ATTACHMENT_THRESHOLD = 3_000
 
+/** Maximum source text retained exclusively for automatic title generation. */
+export const LARGE_PASTE_TITLE_PREVIEW_CHARS = 1_000
+
 /**
  * True when a plain-text paste should be converted into a text attachment
  * rather than inserted inline. Only sheer size qualifies — rich clipboard

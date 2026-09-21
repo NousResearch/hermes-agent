@@ -30,6 +30,12 @@ def server():
     # e.g. hermes_cli.active_sessions would bind the mocked get_hermes_home
     # (a fixed shared path) forever, leaking active-session registry entries
     # across every later test in the process. Scope the patch to the import.
+    #
+    # Import server_requests (pure stdlib) BEFORE the window: the patch drops every module first imported
+    # inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
+    # from sys.modules and a test's own ``from tui_gateway import server_requests`` would get a fresh,
+    # unbound copy whose default sinks drop frames and treat every client as answerable.
+    import tui_gateway.server_requests  # noqa: F401
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -311,6 +317,143 @@ def test_server_request_round_trip_uses_response_frame(capture):
     assert box["r"] == "hunter2"
     with server_requests._lock:
         assert not server_requests._open
+
+
+@pytest.mark.parametrize("method, qids, settle, expected", [
+    ("sudo", None,
+     lambda sr, req: sr.resolve_response({"id": req.id, "result": {"value": "yes"}}) is True,
+     {"value": "yes"}),
+    # Batch clarify's lock-based resolution follows the same first-settlement rule.
+    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}}),
+])
+def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expected):
+    """A response and cancellation may race; the first settlement owns the result."""
+    from tui_gateway import server_requests
+
+    req = server_requests.ServerRequest("s1", method, {}, qids=qids)
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+
+    assert settle(server_requests, req)
+    assert server_requests.cancel("s1") == 0
+    assert req.answered is True
+    assert req.result == expected
+    assert req.event.is_set()
+
+
+def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, monkeypatch):
+    """An answer accepted by resolve_response is never reported as a timeout (#112548): the
+    response frame can land after event.wait() gave up and before send() withdraws the request,
+    and the renderer must not get a bogus request.cancel for a card the user just answered."""
+    from tui_gateway import server_requests
+
+    cancels: list[dict] = []
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append(payload))
+
+    real_wait = server_requests.threading.Event.wait
+
+    def answered_during_the_gap(event, timeout=None):
+        # Deadline expires, then the response frame lands before send() re-enters the lock.
+        expired = real_wait(event, timeout)
+        rid = next(iter(server_requests._open))
+        assert server_requests.resolve_response({"id": rid, "result": {"value": "yes"}})
+        return expired
+
+    monkeypatch.setattr(server_requests.threading.Event, "wait", answered_during_the_gap)
+
+    assert server_requests.send("sudo", "s1", {}, timeout=0.001) == {"value": "yes"}
+    assert cancels == []
+    assert not server_requests._open
+
+
+def _silent_ws():
+    """A WebSocket client build that predates server→client requests: receives the frame, never answers."""
+    from tui_gateway.ws import WSTransport
+
+    class _SilentWS(WSTransport):
+        def __init__(self):
+            self._ws, self._loop, self._peer, self._auth_identity = object(), None, "test", None
+            self.frames: list[dict] = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            pass
+
+    return _SilentWS()
+
+
+def _ws_session(server, sid, peer):
+    server._sessions[sid] = {"session_key": sid, "transport": peer, "history": [], "history_lock": threading.Lock(),
+                             "agent_ready": None}
+
+
+def test_server_request_fails_fast_for_a_ws_client_that_never_advertised(server):
+    """A WebSocket client that never sent ``client.capabilities`` cannot answer, so send() returns the
+    error-response shape (None) at once instead of stalling the agent for the deadline (#112548).
+    The frame is never written; nothing is left open for a reconnect replay."""
+    from tui_gateway import server_requests
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-old", peer)
+    t0 = time.monotonic()
+    assert server_requests.send("clarify", "ws-old", {"question": "q?", "choices": None, "multi_select": False},
+                                timeout=5) is None
+    assert time.monotonic() - t0 < 1
+    assert peer.frames == []
+    assert server_requests.open_requests("ws-old") == []
+    settled = []
+    server_requests.send_async("approval", "ws-old", {"request_id": "r1", "command": "rm", "description": "",
+                                                      "pattern_key": "", "pattern_keys": []}, settled.append)
+    assert settled == [None]
+
+
+def test_server_request_waits_for_a_ws_client_that_advertised(server):
+    """``client.capabilities {server_requests: true}`` on the connection marks it answerable: the frame is
+    written and the wait is a real one (here: answered by the response frame)."""
+    from tui_gateway import server_requests
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-new", peer)
+    token = bind_transport(peer)
+    try:
+        response = server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    assert "clarify" in response["result"]["server_requests"]
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("r", server_requests.send("sudo", "ws-new", {}, timeout=5)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    assert peer.frames[-1]["id"] == req.id
+    assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "yes"}}) is None
+    thread.join(timeout=5)
+    assert box["r"] == {"value": "yes"}
+    # Disconnect forgets the advertisement; the next connection must advertise again.
+    server.unregister_live_transport(peer)
+    assert server_requests.answers_requests(peer) is False
+
+
+def test_server_request_error_response_fails_fast(server):
+    """A client that advertised but has no handler for the method answers -32601: that error frame settles
+    send() to None at once instead of the agent waiting for the deadline."""
+    from tui_gateway import server_requests
+
+    box = {}
+    thread = threading.Thread(target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
+                              daemon=True)
+    thread.start()
+    req = _wait_open(server_requests)
+    t0 = time.monotonic()
+    assert server_requests.resolve_response({"id": req.id, "error": {"code": -32601}})
+    thread.join(timeout=1)
+    assert not thread.is_alive() and time.monotonic() - t0 < 1
+    assert box["result"] is None
 
 
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
@@ -650,7 +793,8 @@ def test_session_resume_rejects_runaway_transcript_before_history_load(
     )
 
     assert response["error"]["code"] == 4130
-    assert "safe resume limit is 20000" in response["error"]["message"]
+    assert "limit 20000" in response["error"]["message"]
+    assert "hermes sessions export" in response["error"]["message"]
 
 
 def test_session_resume_deferred_and_omitted_paths_guard_the_tip_only(server, monkeypatch):
@@ -1356,7 +1500,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
-    server._cfg_cache = server._cfg_mtime = server._cfg_path = None
+    server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
@@ -1424,3 +1568,30 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
+
+
+def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(server, monkeypatch):
+    """The approval wait is owned by ``tools.approval``'s queue, not by ``server_requests``. When the request
+    cannot be sent (the only client predates server→client requests) the queue entry must be withdrawn too,
+    otherwise ``_await_gateway_decision`` idles for the whole approvals.timeout with no prompt anywhere
+    (#112548). The decision is a withdrawal (``cancelled`` cause), never a user deny."""
+    from tools import approval as approval_mod
+    from tools import approval_gateway_wait as wait_mod
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-old-approval", peer)
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 3)
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    approval_mod.register_gateway_notify("ws-old-approval", lambda data: server._emit_approval_request("ws-old-approval", data))
+    try:
+        t0 = time.monotonic()
+        decision = wait_mod._await_gateway_decision(
+            "ws-old-approval", approval_mod._gateway_notify_cbs["ws-old-approval"],
+            {"command": "rm -rf build", "description": "", "pattern_key": "dangerous", "pattern_keys": ["dangerous"]})
+        waited = time.monotonic() - t0
+    finally:
+        approval_mod.unregister_gateway_notify("ws-old-approval")
+    assert waited < 1, decision
+    assert decision["choice"] is None and decision["cancelled"]
+    assert peer.frames == []
+    assert "ws-old-approval" not in approval_mod._gateway_queues

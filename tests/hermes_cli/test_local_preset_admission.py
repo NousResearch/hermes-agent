@@ -87,3 +87,6 @@ def test_supervisor_with_presets_does_not_scan_unadmitted_files(tmp_path, monkey
         sup._log_handle.close()
     assert "--models-preset" in calls[0]
     assert "--models-dir" not in calls[0]
+    # llama.cpp b10964 dropped the --no-webui spelling; the router must use --no-ui.
+    assert "--no-ui" in calls[0]
+    assert "--no-webui" not in calls[0]

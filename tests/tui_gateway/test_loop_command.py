@@ -171,6 +171,27 @@ def test_tui_tick_defers_when_running(server, session):
     assert LoopManager(session_key).state.ticks_fired == 0
 
 
+def test_tui_tick_leaves_gateway_routed_loop_for_gateway(server, session):
+    """A /loop set from a messaging chat (route pinned by the gateway) must not be consumed by a TUI/Desktop
+    viewer of the same session: the gateway's wakeup scanner owns delivery back to that chat (#111841)."""
+    sid, session_key, s = session
+    from hermes_cli.loops import LoopManager, save_loop
+
+    mgr = LoopManager(session_key)
+    mgr.set("poll", interval_seconds=60, route={"platform": "telegram", "chat_id": "42"})
+    mgr.state.next_due_at = time.time() - 1
+    save_loop(session_key, mgr.state)
+
+    with patch.object(server, "_run_prompt_submit") as submit, \
+         patch.object(server, "_emit"):
+        server._maybe_fire_tui_loop_tick(sid, s)
+
+    submit.assert_not_called()
+    assert s["running"] is False
+    state = LoopManager(session_key).state
+    assert state.ticks_fired == 0 and not state.awaiting_response and state.next_due_at <= time.time()
+
+
 def test_tui_tick_defers_to_active_goal(server, session):
     sid, session_key, s = session
     from hermes_cli.goals import GoalManager

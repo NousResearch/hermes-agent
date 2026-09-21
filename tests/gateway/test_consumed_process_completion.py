@@ -3,7 +3,6 @@
 import asyncio
 import subprocess
 import sys
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,6 +11,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
+from gateway.turn_context import TurnContext
 from tools.process_registry import ProcessRegistry
 
 
@@ -112,12 +112,16 @@ async def test_consumption_controls_queued_execution(rig, tmp_path, stage, actio
     observe(registry, session, action)
     await asyncio.wait_for(task, 10)
     consumed = action in {"wait", "log"}
+    # Upstream sends a transport receipt while the launching turn is busy.
+    # Consumption suppresses the later model turn, not that already-sent receipt.
+    receipts = list(adapter.sent)
+    assert len(receipts) == 1
     try:
         if stage == "recursive":
             result = {"final_response": "foreground done", "messages": []}
             event, text = await runner._run_agent_drain_pending(result, adapter, source, key)
             if event or text:
-                ctx = SimpleNamespace(
+                ctx = TurnContext(
                     source=source, session_id="foreground", session_key=key, run_generation=1,
                     _interrupt_depth=0, history=[], _status_thread_metadata=None,
                     context_prompt="", stream_consumer_holder=[None], event_message_id=None,
@@ -130,7 +134,7 @@ async def test_consumption_controls_queued_execution(rig, tmp_path, stage, actio
             await eventually(lambda: key not in adapter._session_tasks)
         assert runner._run_agent.await_count == (0 if consumed else 1)
         if consumed:
-            assert not adapter.sent
+            assert adapter.sent == receipts
         else:
             assert session.id in runner._run_agent.call_args.kwargs["message"]
     finally:
@@ -140,7 +144,7 @@ async def test_consumption_controls_queued_execution(rig, tmp_path, stage, actio
 
 
 def followup_context(source, key):
-    return SimpleNamespace(
+    return TurnContext(
         source=source, session_id="foreground", session_key=key, run_generation=1,
         _interrupt_depth=0, history=[], _status_thread_metadata=None,
         context_prompt="", stream_consumer_holder=[None], event_message_id=None,

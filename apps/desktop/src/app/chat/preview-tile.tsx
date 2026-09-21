@@ -266,6 +266,11 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   // a kind and leaves the strip's "+" to whatever else the zone holds.
   newTab: tabId => (targetFor(tabId)?.kind === 'url' ? newBrowserTab : undefined),
   tabMenuPrefix: browserTabMenuPrefix,
+  lifecycleKeepAlive: tabId => {
+    const target = targetFor(tabId)
+
+    return target?.kind === 'url' || target?.previewKind === 'html'
+  },
   render: tabId => <PreviewTilePane tabId={tabId} />,
   close: tabId => {
     forgetBrowserPage(tabId)

@@ -22,6 +22,8 @@
  * directly instead of grepping main.ts source text.
  */
 
+import type { WaitableChild } from './backend-child'
+
 export interface PoolStopEntry {
   process?: unknown
 }
@@ -71,14 +73,29 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
     // below retains the process handle until the bounded exit completes.
     deps.pool.delete(key)
 
+    const clear = () => {
+      if (stops.get(key) === stopping) {
+        stops.delete(key)
+      }
+    }
     const stopping = (async () => {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
       if (deps.afterStop) {
         await deps.afterStop(key)
       }
-    })().finally(() => {
-      stops.delete(key)
+    })().then(clear, error => {
+      const child = entry.process as Partial<WaitableChild> | undefined
+
+      if (child?.once && child.exitCode === null && child.signalCode === null) {
+        // Keep rejecting reuse of this profile while the old child is alive.
+        // The real late exit, not the teardown deadline, releases this fence.
+        child.once('exit', clear)
+      } else {
+        clear()
+      }
+
+      throw error
     })
 
     stops.set(key, stopping)

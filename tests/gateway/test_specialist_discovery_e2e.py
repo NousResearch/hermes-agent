@@ -22,8 +22,9 @@ from gateway.candidate_profile_requests import CandidateProfileRequests
 from gateway.configured_board import configured_board_db_path
 from gateway.specialist_handoff import HandoffSource, create_specialist_handoff
 from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
-from gateway.status import specialist_discovery_status
-from hermes_cli import kanban_db as kb
+from gateway.specialist_discovery_status import specialist_discovery_status
+from hermes_cli.kanban_db import get_task
+from hermes_cli.kanban_db_connect import connect, connect_closing, init_db
 
 
 SIGNATURE = CapabilitySignature(
@@ -31,6 +32,12 @@ SIGNATURE = CapabilitySignature(
     actions=("audit", "read"),
     evidence_class="diagnostic-only",
     requested_permissions=("market-data:read",),
+)
+ORCHESTRATOR_SIGNATURE = CapabilitySignature(
+    domain="repository-evidence",
+    actions=("audit", "inspect", "read", "review", "validate"),
+    evidence_class="diagnostic-only",
+    requested_permissions=("repository-evidence:read",),
 )
 BOARD = "exampleproject-burndown"
 
@@ -57,7 +64,21 @@ def _provision_test_profiles(home: Path) -> None:
         "burndown-patch-steward",
         "market-data-authority-auditor",
     ):
-        (home / "profiles" / profile).mkdir(parents=True)
+        profile_home = home / "profiles" / profile
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text("# test profile identity\n", encoding="utf-8")
+
+
+def _registry(db_path: Path) -> CapabilityRegistry:
+    registry = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={
+            "task-orchestrator": ORCHESTRATOR_SIGNATURE,
+            "market-data-authority-auditor": SIGNATURE,
+        },
+    )
+    registry.register_configured_profile("task-orchestrator")
+    return registry
 
 
 def _decision() -> SpecialistRouteDecision:
@@ -77,8 +98,8 @@ def test_no_match_stays_inert_without_authenticated_approval_and_exposes_recover
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     db_path = configured_board_db_path(BOARD)
-    kb.init_db(db_path)
-    registry = CapabilityRegistry(db_path=db_path)
+    init_db(db_path)
+    registry = _registry(db_path)
 
     task = create_specialist_handoff(
         decision=_decision(),
@@ -92,8 +113,8 @@ def test_no_match_stays_inert_without_authenticated_approval_and_exposes_recover
     assert task.ok, task.reason
     assert task.candidate_request_id
     assert task.candidate_status == "candidate"
-    with kb.connect_closing(db_path) as conn:
-        source_task = kb.get_task(conn, task.task_id)
+    with connect_closing(db_path) as conn:
+        source_task = get_task(conn, task.task_id)
     assert source_task is not None
     assert source_task.assignee == "task-orchestrator"
 
@@ -182,17 +203,22 @@ def test_expired_or_revoked_profiles_stop_resolving_and_handoff_uses_safe_fallba
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     db_path = configured_board_db_path(BOARD)
-    kb.init_db(db_path)
-    registry = CapabilityRegistry(db_path=db_path)
+    init_db(db_path)
+    registry = _registry(db_path)
     registry.register_fixed_baseline(
         profile_id="market-data-authority-auditor", signature=SIGNATURE, expires_at=int(time.time()) - 1
     )
     assert registry.resolve(SIGNATURE).status == "no_match"
 
-    registry.register_fixed_baseline(profile_id="market-data-authority-auditor", signature=SIGNATURE)
+    declaration_id = registry.register_fixed_baseline(
+        profile_id="market-data-authority-auditor", signature=SIGNATURE
+    )
     assert registry.resolve(SIGNATURE).profile == "market-data-authority-auditor"
     registry.revoke(
-        profile_id="market-data-authority-auditor", signature=SIGNATURE, reason_code="synthetic_rollback"
+        declaration_id=declaration_id,
+        profile_id="market-data-authority-auditor",
+        signature=SIGNATURE,
+        reason_code="synthetic_rollback",
     )
     assert registry.resolve(SIGNATURE).status == "no_match"
 
@@ -206,8 +232,8 @@ def test_expired_or_revoked_profiles_stop_resolving_and_handoff_uses_safe_fallba
     )
     assert fallback.ok, fallback.reason
     assert fallback.candidate_request_id
-    with kb.connect_closing(db_path) as conn:
-        source_task = kb.get_task(conn, fallback.task_id)
+    with connect_closing(db_path) as conn:
+        source_task = get_task(conn, fallback.task_id)
     assert source_task is not None
     assert source_task.assignee == "task-orchestrator"
 
@@ -222,7 +248,7 @@ def test_status_recovery_opens_sqlite_read_only_and_refuses_missing_or_uninitial
     # Keep a standard WAL writer open so the reader takes the same fresh path
     # used during a concurrent revocation. The writer—not recovery—creates the
     # WAL; recovery must leave its bytes unchanged.
-    writer = kb.connect(db_path)
+    writer = connect(db_path)
     writer.execute("PRAGMA journal_mode=WAL")
     writer.execute("PRAGMA user_version = 1")
     writer.commit()
@@ -263,7 +289,9 @@ def test_status_reader_sees_committed_wal_revocation_without_mutating_db_or_wal(
     benchmark_hash = _hash("wal-benchmark")
     verification_hash = _hash("wal-verification")
     revocation_hash = _hash("wal-revocation")
-    writer = kb.connect(db_path)
+    registry = CapabilityRegistry(db_path=db_path)
+    registry.ensure_schema()
+    writer = connect(db_path)
     try:
         writer.execute("PRAGMA journal_mode=WAL")
         writer.execute(
@@ -289,19 +317,30 @@ def test_status_reader_sees_committed_wal_revocation_without_mutating_db_or_wal(
             """,
             (verification_hash, candidate.request_id, benchmark_hash, "independent-verifier", "sandbox-1", now, now + 3_600, now),
         )
-        writer.execute(
+        profile_cursor = writer.execute(
             """
             INSERT INTO capability_profiles (
-                profile_id, signature_hash, permissions_hash,
-                model_receipt_hash, verification_receipt_hash,
-                domain, actions_json, evidence_class, requested_permissions_json,
-                expires_at, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?)
+                profile_id, signature_hash, permissions_hash, domain, actions_json,
+                evidence_class, requested_permissions_json, expires_at, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'active', ?)
             """,
             (
                 "market-data-authority-auditor", SIGNATURE.signature_hash, SIGNATURE.permissions_hash,
-                benchmark_hash, verification_hash, SIGNATURE.domain, json.dumps(SIGNATURE.actions),
-                SIGNATURE.evidence_class, json.dumps(SIGNATURE.requested_permissions), now,
+                SIGNATURE.domain, json.dumps(SIGNATURE.actions), SIGNATURE.evidence_class,
+                json.dumps(SIGNATURE.requested_permissions), now,
+            ),
+        )
+        writer.execute(
+            """
+            INSERT INTO specialist_promotion_proofs (
+                proof_hash, candidate_id, target_state, profile_id, signature_hash,
+                permissions_hash, benchmark_result_hash, verification_result_hash, approval_hash, created_at
+            ) VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _hash("wal-active-proof"), candidate.request_id, "market-data-authority-auditor",
+                SIGNATURE.signature_hash, SIGNATURE.permissions_hash, benchmark_hash, verification_hash,
+                _hash("wal-active-approval"), now,
             ),
         )
         writer.commit()
@@ -310,10 +349,14 @@ def test_status_reader_sees_committed_wal_revocation_without_mutating_db_or_wal(
         writer.execute(
             """
             INSERT INTO specialist_profile_revocations (
-                revocation_hash, profile_id, signature_hash, reason_code, created_at
-            ) VALUES (?, ?, ?, ?, ?)
+                revocation_hash, capability_profile_id, profile_id, signature_hash,
+                permissions_hash, reason_code, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (revocation_hash, "market-data-authority-auditor", SIGNATURE.signature_hash, "wal_rollback", now),
+            (
+                revocation_hash, profile_cursor.lastrowid, "market-data-authority-auditor",
+                SIGNATURE.signature_hash, SIGNATURE.permissions_hash, "wal_rollback", now,
+            ),
         )
         writer.commit()
         watched = [db_path, db_path.with_name(db_path.name + "-wal")]

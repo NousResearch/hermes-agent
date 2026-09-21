@@ -200,18 +200,32 @@ export function a2aEventsForSide(rows: A2aTranscriptRow[], self: string, peer: s
  * Both sides, one timeline. A `sent` row and the `dm` it became are the same
  * message seen from two transcripts — the received row wins (it is the text
  * the peer actually got), so the sender's duplicate drops out.
+ *
+ * The pairing is one-to-one and DIRECTIONAL: each delivery consumes the LATEST
+ * send before it with the same text, inside the window. Proximity alone both
+ * collapsed two legitimately identical short messages (a repeated "OK") and
+ * could consume the wrong send — with "OK" sent twice and only the second one
+ * delivered, the window's first match was the FIRST send, so a message that was
+ * really sent disappeared from the thread.
  */
 export function mergeA2aThread(...sides: A2aEvent[][]): A2aEvent[] {
   const merged = sides.flat().filter(Boolean)
-  const received = merged.filter(event => event.kind === 'dm')
+  const received = merged.filter(event => event.kind === 'dm').slice().sort((a, b) => a.ts - b.ts)
+  const sent = merged.filter(event => event.kind === 'sent')
+  const consumed = new Set<A2aEvent>()
 
-  const deduped = merged.filter(event => {
-    if (event.kind !== 'sent') {
-      return true
+  for (const dm of received) {
+    const source = sent
+      .filter(candidate => !consumed.has(candidate) && candidate.text.trim() === dm.text.trim())
+      .filter(candidate => dm.ts >= candidate.ts && dm.ts - candidate.ts <= SENT_DM_MERGE_WINDOW_MS)
+      .sort((a, b) => b.ts - a.ts)[0]
+
+    if (source) {
+      consumed.add(source)
     }
+  }
 
-    return !received.some(dm => dm.text.trim() === event.text.trim() && Math.abs(dm.ts - event.ts) <= SENT_DM_MERGE_WINDOW_MS)
-  })
+  const deduped = merged.filter(event => event.kind !== 'sent' || !consumed.has(event))
 
   return deduped
     .slice()

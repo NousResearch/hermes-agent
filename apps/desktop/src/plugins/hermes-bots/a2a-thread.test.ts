@@ -75,6 +75,40 @@ describe('mergeA2aThread', () => {
     expect(thread[0].to).toBe('hotel-dev')
   })
 
+  it('pairs each delivery with the send it followed, not the first match in the window', () => {
+    // "OK" twice, only the second one delivered: the window's first match is the
+    // FIRST send, so proximity alone consumed a message that really was sent.
+    const sent = a2aEventsForSide(
+      [sends('hotel-dev', 'OK', 30), sends('hotel-dev', 'OK', 600)],
+      'platform-engineer',
+      'hotel-dev'
+    )
+    const received = a2aEventsForSide([dm('platform-engineer', 'OK', 610)], 'hotel-dev', 'platform-engineer')
+
+    const thread = mergeA2aThread(sent, received)
+    const remainingSends = thread.filter(event => event.kind === 'sent')
+
+    expect(remainingSends).toHaveLength(1)
+    expect(thread.filter(event => event.kind === 'dm')).toHaveLength(1)
+    // The survivor is the EARLIER send (the later one became the delivery).
+    expect(remainingSends[0].ts).toBeLessThan(thread.find(event => event.kind === 'dm')!.ts)
+  })
+
+  it('keeps both copies of a repeated identical message that was delivered twice', () => {
+    const sent = a2aEventsForSide(
+      [sends('hotel-dev', 'OK', 30), sends('hotel-dev', 'OK', 600)],
+      'platform-engineer',
+      'hotel-dev'
+    )
+    const received = a2aEventsForSide(
+      [dm('platform-engineer', 'OK', 32), dm('platform-engineer', 'OK', 610)],
+      'hotel-dev',
+      'platform-engineer'
+    )
+
+    expect(mergeA2aThread(sent, received).map(event => event.kind)).toEqual(['dm', 'dm'])
+  })
+
   it('orders both sides into one timeline', () => {
     const platform = a2aEventsForSide(
       [dm('hotel dev', 'gap report', 10), says('Confirmed — shipping.', 20), sends('hotel-dev', 'Ready for verification.', 40)],

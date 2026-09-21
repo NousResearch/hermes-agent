@@ -1,0 +1,31 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: simplepost
+description: >-
+  Publish, schedule, and manage posts across connected social accounts.
+source: https://docs.simplepost.social/mcp
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). OAuth discovery advertises Dynamic Client
+# Registration and PKCE; Hermes manages authorization, token exchange, and
+# refresh.
+transport:
+  type: http
+  url: https://app.simplepost.social/mcp
+
+auth:
+  type: oauth
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - simplepost
+    - simple post
+  hosts:
+    - simplepost.social
+    - app.simplepost.social
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  SimplePost (or run `hermes mcp login simplepost`). Approve access,
+  then restart the session so tools load.

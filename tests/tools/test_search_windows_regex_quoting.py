@@ -148,6 +148,7 @@ def test_grep_fallback_preserves_control_characters(
     source = tmp_path / "sample.txt"
     source.write_text(content, encoding="utf-8")
     ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
+    monkeypatch.setattr(ops, "_resolve_command", lambda command: None)
     monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
 
     result = ops.search(pattern, path=str(tmp_path), file_glob="*.txt")
@@ -187,7 +188,7 @@ def test_native_windows_rg_receives_regex_backslashes(tmp_path, content, pattern
     assert result.matches[0].path.endswith("sample.cs")
 
 
-@pytest.mark.parametrize("transport", ["payload", "heredoc", "local"])
+@pytest.mark.parametrize("transport", ["payload", "heredoc", "local", "local-shell"])
 @pytest.mark.parametrize(
     ("pattern", "expected_count", "expected_error"),
     [
@@ -209,7 +210,7 @@ def test_native_windows_rg_receives_regex_backslashes(tmp_path, content, pattern
          "escaped-quote", "literal-backslash", "shell-metacharacters"],
 )
 def test_shell_multiline_pattern_preserves_regex_semantics(
-    tmp_path, transport, pattern, expected_count, expected_error,
+    tmp_path, monkeypatch, transport, pattern, expected_count, expected_error,
 ):
     """Line breaks may be regex whitespace/comments, not only matchable characters."""
     bash = shutil.which("bash")
@@ -233,8 +234,10 @@ def test_shell_multiline_pattern_preserves_regex_semantics(
         return {"output": completed.stdout, "returncode": completed.returncode}
 
     env.execute.side_effect = execute
-    if transport == "local":
+    if transport in {"local", "local-shell"}:
         env = LocalEnvironment(cwd=str(tmp_path))
+    if transport == "local-shell":
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
     result = ShellFileOperations(env).search(pattern, path=str(source))
 
     assert bool(result.error) is expected_error

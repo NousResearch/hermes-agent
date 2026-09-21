@@ -5,6 +5,7 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -13,7 +14,7 @@ import stat
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -282,6 +283,23 @@ class TestConfig:
     def test_cloud_client_lazy_installs_dependency_before_import(self, tmp_path, monkeypatch):
         _assert_cloud_client_lazy_installed_before_import(tmp_path, monkeypatch, "cloud")
 
+    def test_cloud_client_disables_nested_capacity_retry_if_supported(self, tmp_path, monkeypatch):
+        provider = _provider_for_mode(tmp_path, monkeypatch, "cloud")
+
+        class FakeHindsight:
+            def __init__(self, base_url, api_key=None, timeout=300.0, max_attempts=3):
+                self.kwargs = {
+                    "base_url": base_url,
+                    "api_key": api_key,
+                    "timeout": timeout,
+                    "max_attempts": max_attempts,
+                }
+
+        monkeypatch.setitem(sys.modules, "hindsight_client", SimpleNamespace(Hindsight=FakeHindsight))
+
+        client = provider._get_client()
+
+        assert client.kwargs["max_attempts"] == 1
 
     def test_default_values(self, provider):
         assert provider._auto_retain is True
@@ -535,6 +553,148 @@ class TestToolHandlers:
         assert "Memory 1" in result["result"]
         assert "Memory 2" in result["result"]
 
+    @pytest.mark.asyncio
+    async def test_recall_retries_capacity_after_retry_after_minimum(self, provider, monkeypatch):
+        from hindsight_client_api.exceptions import ApiException
+
+        failure = ApiException(status=503, reason="capacity")
+        failure.headers = {"Retry-After": "1"}
+        response = SimpleNamespace(results=[SimpleNamespace(text="Recovered memory")])
+        provider._client.arecall = AsyncMock(side_effect=[failure, response])
+        waits = []
+
+        async def fake_sleep(delay):
+            waits.append(delay)
+
+        monkeypatch.setattr("plugins.memory.hindsight.asyncio.sleep", fake_sleep)
+
+        assert [item.text for item in provider._recall("test")] == ["Recovered memory"]
+        assert provider._client.arecall.await_count == 2
+        assert waits == [1.0]
+
+    def test_reflect_retries_429_with_http_date(self, provider, monkeypatch):
+        from email.utils import format_datetime
+        from hindsight_client_api.exceptions import ApiException
+
+        failure = ApiException(status=429, reason="capacity")
+        failure.headers = {
+            "Retry-After": format_datetime(
+                datetime.now(timezone.utc) + timedelta(seconds=5), usegmt=True
+            )
+        }
+        provider._client.areflect = AsyncMock(
+            side_effect=[failure, SimpleNamespace(text="Recovered reflection")]
+        )
+        waits = []
+
+        async def fake_sleep(delay):
+            waits.append(delay)
+
+        monkeypatch.setattr("plugins.memory.hindsight.asyncio.sleep", fake_sleep)
+
+        assert provider._reflect("test") == "Recovered reflection"
+        assert provider._client.areflect.await_count == 2
+        assert waits[0] >= 3.5
+
+    def test_recall_uses_bounded_jitter_for_malformed_retry_after(self, provider, monkeypatch):
+        import random
+        from hindsight_client_api.exceptions import ApiException
+
+        failure = ApiException(status=503, reason="capacity")
+        failure.headers = {"Retry-After": "not-a-delay"}
+        provider._client.arecall = AsyncMock(
+            side_effect=[failure, SimpleNamespace(results=[SimpleNamespace(text="Recovered memory")])]
+        )
+        waits = []
+        bounds = []
+
+        def fake_uniform(low, high):
+            bounds.append((low, high))
+            return 0.25
+
+        async def fake_sleep(delay):
+            waits.append(delay)
+
+        monkeypatch.setattr(random, "uniform", fake_uniform)
+        monkeypatch.setattr("plugins.memory.hindsight.asyncio.sleep", fake_sleep)
+
+        assert [item.text for item in provider._recall("test")] == ["Recovered memory"]
+        assert waits == [0.25]
+        assert bounds == [(0.0, 0.5)]
+
+    def test_capacity_retry_stops_when_total_budget_cannot_cover_wait(self, provider, monkeypatch):
+        import random
+        from hindsight_client_api.exceptions import ApiException
+        from plugins.memory.hindsight.retry import retry_capacity
+
+        failure = ApiException(status=503, reason="capacity")
+        calls = []
+
+        async def always_full():
+            calls.append(1)
+            raise failure
+
+        monkeypatch.setattr(random, "uniform", lambda _low, _high: 0.5)
+
+        with pytest.raises(ApiException):
+            provider._run_sync(retry_capacity(always_full, total_budget=0.1))
+
+        assert calls == [1]
+
+    def test_capacity_retry_never_exceeds_three_attempts(self, provider, monkeypatch):
+        import random
+        from hindsight_client_api.exceptions import ApiException
+        from plugins.memory.hindsight.retry import retry_capacity
+
+        failure = ApiException(status=503, reason="capacity")
+        calls = []
+
+        async def always_full():
+            calls.append(1)
+            raise failure
+
+        async def fake_sleep(_delay):
+            return None
+
+        monkeypatch.setattr(random, "uniform", lambda _low, _high: 0.0)
+        monkeypatch.setattr("plugins.memory.hindsight.asyncio.sleep", fake_sleep)
+
+        with pytest.raises(ApiException):
+            provider._run_sync(retry_capacity(always_full, total_budget=1.0))
+
+        assert len(calls) == 3
+
+    def test_capacity_retry_does_not_retry_unrelated_api_error(self, provider):
+        from hindsight_client_api.exceptions import ApiException
+
+        failure = ApiException(status=500, reason="server error")
+        provider._client.arecall = AsyncMock(side_effect=failure)
+
+        with pytest.raises(ApiException):
+            provider._recall("test")
+
+        provider._client.arecall.assert_awaited_once()
+
+    def test_retain_capacity_failure_is_not_automatically_retried(self, provider):
+        from hindsight_client_api.exceptions import ApiException
+
+        failure = ApiException(status=503, reason="capacity")
+        provider._client.aretain_batch = AsyncMock(side_effect=failure)
+
+        with pytest.raises(ApiException):
+            provider._tool_retain({"content": "do not duplicate"})
+
+        provider._client.aretain_batch.assert_awaited_once()
+
+    def test_capacity_retry_propagates_cancellation(self, provider):
+        from concurrent.futures import CancelledError as FutureCancelledError
+
+        provider._client.arecall = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises((asyncio.CancelledError, FutureCancelledError)):
+            provider._recall("test")
+
+        provider._client.arecall.assert_awaited_once()
 
     def test_reflect_success(self, provider):
         result = json.loads(provider.handle_tool_call(

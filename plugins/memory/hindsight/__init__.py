@@ -38,6 +38,11 @@ from .embedded import (
     _export_port_health_grace_timeout, _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
     _may_rewrite_profile_env,
 )
+from .retry import (
+    DEFAULT_TOTAL_BUDGET_SECONDS as _CAPACITY_RETRY_TOTAL_BUDGET_SECONDS,
+    retry_capacity as _retry_capacity,
+    supports_keyword as _supports_keyword,
+)
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
     _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
@@ -493,6 +498,8 @@ class HindsightMemoryProvider(MemoryProvider):
         kwargs = {"base_url": self._api_url, "timeout": float(self._timeout or _DEFAULT_TIMEOUT)}
         if self._api_key:
             kwargs["api_key"] = self._api_key
+        if _supports_keyword(Hindsight, "max_attempts"):
+            kwargs["max_attempts"] = 1
         logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
                      self._api_url, bool(self._api_key), kwargs["timeout"])
         return Hindsight(**kwargs)
@@ -507,11 +514,29 @@ class HindsightMemoryProvider(MemoryProvider):
         """Schedule *coro* on the shared loop using the configured timeout."""
         return _run_sync(coro, timeout=self._timeout)
 
-    def _run_hindsight_operation(self, operation):
+    def _run_hindsight_operation(self, operation, *, capacity_retry: bool = False):
         """Run an async client operation; for local_embedded, a stale-daemon
         connection failure recreates the client and retries once."""
+        deadline = time.monotonic() + float(self._timeout)
+
+        async def _read(client):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Hindsight request deadline expired before execution")
+            budget = min(remaining, _CAPACITY_RETRY_TOTAL_BUDGET_SECONDS)
+            return await asyncio.wait_for(
+                _retry_capacity(lambda: operation(client), total_budget=budget),
+                timeout=remaining,
+            )
+
+        def _run(client):
+            # The embedded wrapper does not expose control of its inner SDK retries.
+            if capacity_retry and self._mode != "local_embedded":
+                return self._run_sync(_read(client))
+            return self._run_sync(operation(client))
+
         try:
-            return self._run_sync(operation(self._get_client()))
+            return _run(self._get_client())
         except Exception as exc:
             text = f"{type(exc).__name__}: {exc}".lower()
             if self._mode != "local_embedded" or not any(m in text for m in _RETRIABLE_CONNECTION_MARKERS):
@@ -519,7 +544,7 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.info("Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s", exc)
             self._client = None
             self._client = client = self._get_client()
-            return self._run_sync(operation(client))
+            return _run(client)
 
     # -- retain writer thread + server-side visibility -------------------------
 
@@ -891,12 +916,13 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
         if self._recall_types:
             kwargs["types"] = self._recall_types
-        resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
+        resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs), capacity_retry=True)
         return resp.results or []
 
     def _reflect(self, query: str) -> str | None:
         resp = self._run_hindsight_operation(
-            lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget)
+            lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget),
+            capacity_retry=True,
         )
         return resp.text
 

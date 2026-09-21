@@ -155,3 +155,11 @@ Available in `hybrid` and `tools` memory modes:
 ## Client Version
 
 Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+
+## Capacity retries
+
+For `cloud` and `local_external` connections, the provider retries only idempotent `recall` and `reflect` reads after HTTP 429 or 503. It allows at most three attempts. No retry starts after a 10-second window, or after the configured request timeout if shorter. The configured timeout bounds the entire read, including attempts and delays, and cancels an unfinished request.
+
+A valid `Retry-After` ASCII integer (seconds) or HTTP-date sets the minimum delay. If that delay cannot fit in the retry window, the error is returned without retrying early. Missing or malformed headers use random delays between 0 and 0.5 seconds, then between 0 and 1 second. Retains are not capacity-retried because repeating a write could duplicate it.
+
+The existing `local_embedded` behavior is unchanged, including its one-time reconnection. Hermes does not add capacity retries in that mode because the embedded wrapper does not expose control over its inner SDK retry policy. It therefore does not receive the minimum-delay guarantee above. For cloud and local-external clients with a public `max_attempts` constructor option, Hermes sets it to 1 to prevent nested SDK retries. Older clients need no dependency upgrade.

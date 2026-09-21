@@ -13,7 +13,7 @@ def retain_result(db, *, epoch, row, result):
                                 generation=row['generation'], outcome='completed', result=result)
 
 
-def finish_result(db, *, epoch, row, response, outcome, result=None):
+def finish_result(db, *, epoch, row, response, outcome, result=None, _terminal_write=None):
     """Delivery failure cannot rewrite an already committed execution outcome.
 
     `result` is the exact structured result captured in-process; the managed
@@ -42,7 +42,8 @@ def finish_result(db, *, epoch, row, response, outcome, result=None):
         value['failed' if outcome == 'failed' else 'interrupted'] = True
         value['completed'] = False
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
-        generation=row['generation'], outcome=outcome, result=result)
+        generation=row['generation'], outcome=outcome, result=result,
+        _terminal_write=_terminal_write)
     return settled, response
 
 

@@ -801,6 +801,19 @@ class SessionMessagesMixin:
                 "display_metadata": self._decode_display_metadata(row["display_metadata"])})
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))
+        tool_calls = _parse_tool_calls(row["tool_calls"])
+        if tool_calls or row["tool_call_id"]:
+            # Tool-bearing rows keep their logical identity when a prune-shaped rewrite
+            # shortens the arguments or the result: identity follows the stable call id,
+            # not the mutable payload, so the archived original and the carried copy
+            # collapse to one display generation instead of projecting twice.
+            call_ids = tuple(
+                (call.get("id"), call.get("function", {}).get("name"))
+                for call in (tool_calls or [])
+                if isinstance(call, dict)
+            )
+            return (row["role"], None, row["timestamp"],
+                    row["tool_call_id"], call_ids, row["tool_name"])
         return (row["role"], dedupe_content, row["timestamp"],
                 row["tool_call_id"], row["tool_calls"], row["tool_name"])
 

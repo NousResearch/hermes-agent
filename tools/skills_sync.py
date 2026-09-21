@@ -417,27 +417,184 @@ def sync_skills(quiet: bool = False) -> dict:
         "skipped_opt_out": essential_only}  # lets callers report "opted out", not a normal sync
 
 
+def _trusted_external_skill_roots() -> Set[Path]:
+    """Return external roots whose category links are allowed by provenance."""
+    from agent.skill_utils import get_external_skills_dirs
+
+    roots: Set[Path] = set()
+    with suppress(Exception):
+        for root in get_external_skills_dirs():
+            with suppress(OSError):
+                roots.add(Path(root).resolve())
+    with suppress(Exception):
+        shared_root = Path.home() / ".agents" / "skills"
+        if shared_root.is_dir():
+            roots.add(shared_root.resolve())
+    return roots
+
+
+def _rmtree_contents_fd(directory_fd: int) -> None:
+    """Remove a directory's entries through its stable descriptor."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    with os.scandir(directory_fd) as entries:
+        entries = list(entries)
+    for entry in entries:
+        name = entry.name
+        if not entry.is_dir(follow_symlinks=False):
+            os.unlink(name, dir_fd=directory_fd)
+            continue
+
+        expected = entry.stat(follow_symlinks=False)
+        child_fd = os.open(name, flags, dir_fd=directory_fd)
+        try:
+            if not os.path.samestat(expected, os.fstat(child_fd)):
+                raise OSError(f"directory changed during safe removal: {name!r}")
+            os.fchmod(child_fd, stat.S_IRWXU)
+            _rmtree_contents_fd(child_fd)
+        finally:
+            os.close(child_fd)
+
+        try:
+            current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError:
+            raise
+        if not os.path.samestat(expected, current):
+            raise OSError(f"directory changed during safe removal: {name!r}")
+        os.rmdir(name, dir_fd=directory_fd)
+
+
+def _rmtree_fd(
+    parent_fd: int,
+    name: str,
+    expected_target: Optional[os.stat_result] = None,
+    target_fd: Optional[int] = None,
+) -> None:
+    """Remove exactly the directory inode opened below ``parent_fd``."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    owns_target_fd = target_fd is None
+    os.fchmod(parent_fd, stat.S_IRWXU)
+    if target_fd is None:
+        target_fd = os.open(name, flags, dir_fd=parent_fd)
+    try:
+        opened_target = os.fstat(target_fd)
+        if expected_target is not None and not os.path.samestat(expected_target, opened_target):
+            raise OSError(f"target changed before safe removal: {name!r}")
+        expected = opened_target
+        os.fchmod(target_fd, stat.S_IRWXU)
+        _rmtree_contents_fd(target_fd)
+    finally:
+        if owns_target_fd:
+            os.close(target_fd)
+
+    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not os.path.samestat(expected, current):
+        raise OSError(f"target changed during safe removal: {name!r}")
+    os.rmdir(name, dir_fd=parent_fd)
+
+
 def _rmtree_writable(path: Path) -> None:
     """rmtree that first makes read-only entries writable (Nix/deb/rpm keep r-x dirs; unlinking
     a child needs a writable parent, so chmod both). Scope guard: refuses anything not a STRICT
-    child of the active skills root (bad join / missing HERMES_HOME / malicious manifest entry).
+    lexical child of the active skills root (bad join / missing HERMES_HOME / malicious manifest entry),
+    except for descendants reached through an intentional first-level category symlink.
 
     Handles immutable package sources (Nix store, deb/rpm installs) that preserve read-only permissions on
     copied files *and* directories (``r-xr-xr-x``). Removing a child requires write permission on its parent
     directory, so the retry handler makes the failing path **and its parent** writable before re-attempting.
     See #34860, #34972.
     """
-    target = Path(path).resolve()
-    skills_root = _skills_dir().resolve()
-    if skills_root not in target.parents:
-        raise ValueError(f"refusing to rmtree {target!r}: not strictly under {skills_root!r} (scope guard — see #48200)")
+    lexical_target = Path(path).absolute()
+    lexical_root = _skills_dir().absolute()
+    resolved_root = lexical_root.resolve()
+
+    def _validate_target(target: Path) -> None:
+        # The normal case is a real directory below the resolved skills root.
+        # Some installations intentionally link a first-level category (for
+        # example ``skills/research -> ~/.agents/skills/research``), so the
+        # resolved path may instead be below that category's resolved directory.
+        # Keep the lexical root check first and only admit that one explicit
+        # category scope; nested/outside symlink escapes remain rejected.
+        try:
+            relative = lexical_target.relative_to(lexical_root)
+        except ValueError:
+            relative = None
+        if relative is None or not relative.parts or ".." in relative.parts:
+            allowed = False
+        else:
+            allowed = resolved_root in target.parents
+            if not allowed:
+                category = lexical_root / relative.parts[0]
+                if category.is_symlink():
+                    category_root = category.resolve()
+                    # A category link must resolve below a configured external
+                    # root (or the supported shared ~/.agents/skills root) and
+                    # retain its name. Nested/direct links to arbitrary paths
+                    # remain rejected.
+                    trusted = any(
+                        root in category_root.parents
+                        for root in _trusted_external_skill_roots()
+                    )
+                    if category_root.name == category.name and trusted:
+                        allowed = category_root in target.parents
+        if not allowed:
+            raise ValueError(
+                f"refusing to rmtree {target!r}: not strictly under "
+                f"{resolved_root!r} (scope guard — see #48200)"
+            )
 
     def _on_error(func, fpath, exc_info):
         for p in (os.path.dirname(fpath), fpath):
             with suppress(OSError):
                 os.chmod(p, stat.S_IRWXU)
         func(fpath)
-    shutil.rmtree(path, onerror=_on_error)
+
+    if sys.platform == "win32" and not getattr(
+        shutil.rmtree, "avoids_symlink_attacks", False
+    ):
+        raise OSError("safe directory removal unavailable on this platform")
+
+    target = lexical_target.resolve()
+    _validate_target(target)
+
+    if sys.platform == "win32":
+        shutil.rmtree(target, onerror=_on_error)
+        return
+
+    if not all(
+        hasattr(os, capability) for capability in ("O_DIRECTORY", "O_NOFOLLOW")
+    ):
+        raise OSError("safe directory removal unavailable on this platform")
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    expected_target = os.stat(target, follow_symlinks=False)
+    if lexical_target.is_symlink():
+        # A final-component symlink is never a deletion target. Resolve only
+        # for the scope error; do not follow it into a mutable inode.
+        raise ValueError(f"refusing to rmtree symlink target {lexical_target!r}")
+
+    # Open the lexical target before any later category/parent retarget can
+    # occur, and bind the opened inode to the pre-validation stat.
+    target_fd = os.open(os.fspath(lexical_target), flags)
+    try:
+        if not os.path.samestat(expected_target, os.fstat(target_fd)):
+            raise OSError(f"target changed before safe removal: {target.name!r}")
+        target = lexical_target.resolve()
+        _validate_target(target)
+        parent_fd = os.open("..", flags, dir_fd=target_fd)
+        try:
+            # Remove through the already-open target descriptor. Reopening
+            # target.name would accept a same-name replacement directory and
+            # could delete data that was not part of the validated inode.
+            _rmtree_fd(
+                parent_fd,
+                target.name,
+                expected_target=expected_target,
+                target_fd=target_fd,
+            )
+        finally:
+            os.close(parent_fd)
+    finally:
+        os.close(target_fd)
 
 
 if __name__ == "__main__":

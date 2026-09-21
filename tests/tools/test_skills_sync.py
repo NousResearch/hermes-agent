@@ -187,20 +187,444 @@ class TestRmtreeWritableScopeGuard:
         assert sibling.exists()
 
     def test_allows_subdirectory_of_skills(self, tmp_path):
-        """Any directory strictly under SKILLS_DIR is allowed."""
+        """Real directories directly and indirectly below SKILLS_DIR are allowed."""
         from tools.skills_sync import _rmtree_writable
 
         skills = tmp_path / "skills"
         skills.mkdir()
-        sub = skills / "category" / "old-skill"
-        sub.mkdir(parents=True)
-        (sub / "SKILL.md").write_text("# old")
+        direct = skills / "direct-skill"
+        nested = skills / "category" / "nested-skill"
+        for target in (direct, nested):
+            target.mkdir(parents=True)
+            (target / "SKILL.md").write_text("# old")
 
         with patch("tools.skills_sync.SKILLS_DIR", skills):
-            _rmtree_writable(sub)
+            for target in (direct, nested):
+                _rmtree_writable(target)
 
         assert skills.exists()
-        assert not sub.exists()
+        assert not direct.exists()
+        assert not nested.exists()
+
+
+@pytest.mark.windows_only
+class TestWindowsSafeRemoval:
+    def test_unavailable_safe_removal_fails_closed(self, tmp_path, monkeypatch):
+        """An unavailable safe-removal implementation must not call path rmtree."""
+        from unittest.mock import Mock
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        target = skills / "target"
+        target.mkdir(parents=True)
+        (target / "keep.txt").write_text("target")
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("outside")
+        path_rmtree = Mock()
+        path_rmtree.avoids_symlink_attacks = False
+
+        monkeypatch.setattr("tools.skills_sync.sys.platform", "win32")
+        monkeypatch.setattr("tools.skills_sync.shutil.rmtree", path_rmtree)
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            with pytest.raises(OSError, match="safe directory removal unavailable"):
+                _rmtree_writable(target)
+
+        path_rmtree.assert_not_called()
+        assert (target / "keep.txt").exists()
+        assert (outside / "keep.txt").exists()
+
+
+class TestSymlinkedCategoryScope:
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_sync_updates_skill_under_intentional_symlinked_category(self, tmp_path):
+        """A category symlink is a supported local skills layout, not an escape."""
+        from tools.skills_sync import _dir_hash
+
+        bundled = tmp_path / "bundled"
+        skill_src = bundled / "research" / "grounded-citations"
+        skill_src.mkdir(parents=True)
+        (skill_src / "SKILL.md").write_text("# upstream v2")
+
+        skills = tmp_path / "home" / "skills"
+        external_category = tmp_path / ".agents" / "skills" / "research"
+        external_root = external_category.parent
+        external_category.mkdir(parents=True)
+        category_link = skills / "research"
+        skills.mkdir(parents=True)
+        category_link.symlink_to(external_category, target_is_directory=True)
+
+        dest = category_link / "grounded-citations"
+        dest.mkdir()
+        (dest / "SKILL.md").write_text("# user copy v1")
+        manifest = skills / ".bundled_manifest"
+        manifest.write_text(f"grounded-citations:{_dir_hash(dest)}\n")
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+            stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+            stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills))
+            stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest))
+            stack.enter_context(patch("tools.skills_sync._build_external_skill_index", return_value=set()))
+            stack.enter_context(patch("agent.skill_utils.get_external_skills_dirs", return_value=[external_root]))
+            result = sync_skills(quiet=True)
+
+        assert result["updated"] == ["grounded-citations"]
+        assert (dest / "SKILL.md").read_text() == "# upstream v2"
+        assert category_link.is_symlink()
+        assert category_link.resolve() == external_category.resolve()
+        assert not (external_category / "grounded-citations.bak").exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_symlinked_category_fix_does_not_allow_out_of_scope_path(self, tmp_path):
+        """The resolved-path exception must not weaken the root scope guard."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = outside / "victim"
+        victim.mkdir()
+        (victim / "keep.txt").write_text("keep")
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(victim)
+
+            direct_escape = skills / "escape"
+            direct_escape.symlink_to(outside, target_is_directory=True)
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(direct_escape / "victim")
+
+            nested_category = skills / "real-category"
+            nested_category.mkdir()
+            escape_link = nested_category / "escape"
+            escape_link.symlink_to(outside, target_is_directory=True)
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(escape_link / "victim")
+
+        assert (victim / "keep.txt").exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_rejects_same_basename_external_category_symlink(self, tmp_path):
+        """A same-name first-level link is not trusted merely by its basename."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        outside_category = tmp_path / "outside" / "escape"
+        victim = outside_category / "victim"
+        victim.mkdir(parents=True)
+        (victim / "keep.txt").write_text("keep")
+
+        category_link = skills / "escape"
+        category_link.symlink_to(outside_category, target_is_directory=True)
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(category_link / "victim")
+
+        assert (victim / "keep.txt").exists()
+        assert category_link.is_symlink()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_rejects_link_to_external_root_itself(self, tmp_path):
+        """A category link cannot authorize the whole trusted external root."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        trusted_root = tmp_path / "trusted" / "skills"
+        victim = trusted_root / "victim"
+        victim.mkdir(parents=True)
+        (victim / "keep.txt").write_text("keep")
+        skills.mkdir()
+        category_link = skills / "skills"
+        category_link.symlink_to(trusted_root, target_is_directory=True)
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills), patch(
+            "tools.skills_sync._trusted_external_skill_roots", return_value={trusted_root}
+        ):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(category_link / "victim")
+
+        assert (victim / "keep.txt").exists()
+        assert category_link.is_symlink()
+
+    def test_rejects_sibling_prefix_path(self, tmp_path):
+        """A path sharing the root's text prefix is still out of scope."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        sibling = tmp_path / "skills-sibling"
+        victim = sibling / "victim"
+        victim.mkdir(parents=True)
+        (victim / "keep.txt").write_text("keep")
+        skills.mkdir()
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(victim)
+
+        assert (victim / "keep.txt").exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_rejects_mismatched_basename_under_trusted_root(self, tmp_path):
+        """A trusted root does not authorize a category with a different name."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        trusted_root = tmp_path / "trusted" / "skills"
+        external_category = trusted_root / "research"
+        victim = external_category / "victim"
+        victim.mkdir(parents=True)
+        (victim / "keep.txt").write_text("keep")
+        skills.mkdir()
+        category_link = skills / "escape"
+        category_link.symlink_to(external_category, target_is_directory=True)
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills), patch(
+            "tools.skills_sync._trusted_external_skill_roots", return_value={trusted_root}
+        ):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(category_link / "victim")
+
+        assert (victim / "keep.txt").exists()
+        assert category_link.is_symlink()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_rejects_category_root_itself(self, tmp_path):
+        """Only descendants of a category are removable, never the category."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        trusted_root = tmp_path / "trusted" / "skills"
+        external_category = trusted_root / "research"
+        external_category.mkdir(parents=True)
+        (external_category / "keep.txt").write_text("keep")
+        skills.mkdir()
+        category_link = skills / "research"
+        category_link.symlink_to(external_category, target_is_directory=True)
+
+        with patch("tools.skills_sync.SKILLS_DIR", skills), patch(
+            "tools.skills_sync._trusted_external_skill_roots", return_value={trusted_root}
+        ):
+            with pytest.raises(ValueError, match="refusing to rmtree"):
+                _rmtree_writable(category_link)
+
+        assert (external_category / "keep.txt").exists()
+        assert category_link.is_symlink()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_deletion_uses_validated_target_after_category_retarget(self, tmp_path, monkeypatch):
+        """Retargeting the category after validation cannot redirect deletion."""
+        from tools.skills_sync import _rmtree_fd, _rmtree_writable
+
+        skills = tmp_path / "skills"
+        trusted_root = tmp_path / "trusted" / "skills"
+        trusted_category = trusted_root / "research"
+        trusted_victim = trusted_category / "victim"
+        trusted_victim.mkdir(parents=True)
+        (trusted_victim / "keep.txt").write_text("trusted")
+
+        outside_category = tmp_path / "outside" / "research"
+        outside_victim = outside_category / "victim"
+        outside_victim.mkdir(parents=True)
+        (outside_victim / "keep.txt").write_text("outside")
+
+        skills.mkdir()
+        category_link = skills / "research"
+        category_link.symlink_to(trusted_category, target_is_directory=True)
+        real_rmtree_fd = _rmtree_fd
+
+        def retarget_then_delete(parent_fd, name, expected_target=None, target_fd=None):
+            category_link.unlink()
+            category_link.symlink_to(outside_category, target_is_directory=True)
+            return real_rmtree_fd(
+                parent_fd, name, expected_target=expected_target, target_fd=target_fd
+            )
+
+        monkeypatch.setattr("tools.skills_sync._rmtree_fd", retarget_then_delete)
+        with patch("tools.skills_sync.SKILLS_DIR", skills), patch(
+            "tools.skills_sync._trusted_external_skill_roots", return_value={trusted_root}
+        ):
+            _rmtree_writable(category_link / "victim")
+
+        assert not trusted_victim.exists()
+        assert (outside_victim / "keep.txt").exists()
+        assert category_link.is_symlink()
+        assert category_link.resolve() == outside_category.resolve()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_deletion_anchors_resolved_parent_after_parent_retarget(self, tmp_path, monkeypatch):
+        """Replacing a resolved parent cannot redirect deletion to an outside link."""
+        from tools.skills_sync import _rmtree_fd, _rmtree_writable
+
+        skills = tmp_path / "skills"
+        trusted_root = tmp_path / "trusted" / "skills"
+        trusted_category = trusted_root / "research"
+        trusted_victim = trusted_category / "victim"
+        trusted_victim.mkdir(parents=True)
+        (trusted_victim / "keep.txt").write_text("trusted")
+
+        outside_category = tmp_path / "outside" / "research"
+        outside_victim = outside_category / "victim"
+        outside_victim.mkdir(parents=True)
+        (outside_victim / "keep.txt").write_text("outside")
+
+        skills.mkdir()
+        category_link = skills / "research"
+        category_link.symlink_to(trusted_category, target_is_directory=True)
+        renamed_category = trusted_root / "research.renamed"
+        real_rmtree_fd = _rmtree_fd
+
+        def retarget_parent_then_delete(
+            parent_fd, name, expected_target=None, target_fd=None
+        ):
+            trusted_category.rename(renamed_category)
+            trusted_category.symlink_to(outside_category, target_is_directory=True)
+            return real_rmtree_fd(
+                parent_fd, name, expected_target=expected_target, target_fd=target_fd
+            )
+
+        monkeypatch.setattr("tools.skills_sync._rmtree_fd", retarget_parent_then_delete)
+        with patch("tools.skills_sync.SKILLS_DIR", skills), patch(
+            "tools.skills_sync._trusted_external_skill_roots", return_value={trusted_root}
+        ):
+            _rmtree_writable(category_link / "victim")
+
+        assert not (renamed_category / "victim").exists()
+        assert (outside_victim / "keep.txt").exists()
+        assert category_link.is_symlink()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_target_symlink_replacement_is_not_followed(self, tmp_path, monkeypatch):
+        """A target replaced by a symlink cannot redirect descriptor deletion."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        trusted_root = tmp_path / "trusted" / "skills"
+        trusted_category = trusted_root / "research"
+        trusted_victim = trusted_category / "victim"
+        trusted_victim.mkdir(parents=True)
+        (trusted_victim / "payload.txt").write_text("trusted")
+
+        outside_victim = tmp_path / "outside" / "victim"
+        outside_victim.mkdir(parents=True)
+        outside_payload = outside_victim / "payload.txt"
+        outside_payload.write_text("outside")
+
+        skills.mkdir()
+        category_link = skills / "research"
+        category_link.symlink_to(trusted_category, target_is_directory=True)
+        renamed_victim = trusted_category / "victim.renamed"
+        real_scandir = os.scandir
+        injected = False
+
+        def replace_target_before_scan(path):
+            nonlocal injected
+            if not injected and isinstance(path, int):
+                injected = True
+                trusted_victim.rename(renamed_victim)
+                trusted_victim.symlink_to(outside_victim, target_is_directory=True)
+            return real_scandir(path)
+
+        monkeypatch.setattr("tools.skills_sync.os.scandir", replace_target_before_scan)
+        with patch("tools.skills_sync.SKILLS_DIR", skills), patch(
+            "tools.skills_sync._trusted_external_skill_roots", return_value={trusted_root}
+        ):
+            with pytest.raises(OSError, match="target changed during safe removal"):
+                _rmtree_writable(category_link / "victim")
+
+        assert outside_payload.exists()
+        assert not (renamed_victim / "payload.txt").exists()
+        assert trusted_victim.is_symlink()
+        assert category_link.is_symlink()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_target_fd_remains_pinned_when_path_is_replaced(self, tmp_path, monkeypatch):
+        """A replacement after open cannot redirect descriptor deletion."""
+        from tools.skills_sync import _rmtree_fd, _rmtree_writable
+
+        skills = tmp_path / "skills"
+        trusted_root = tmp_path / "trusted" / "skills"
+        trusted_category = trusted_root / "research"
+        trusted_victim = trusted_category / "victim"
+        trusted_victim.mkdir(parents=True)
+        (trusted_victim / "payload.txt").write_text("trusted")
+
+        outside_victim = tmp_path / "outside" / "victim"
+        outside_victim.mkdir(parents=True)
+        (outside_victim / "payload.txt").write_text("outside")
+
+        skills.mkdir()
+        category_link = skills / "research"
+        category_link.symlink_to(trusted_category, target_is_directory=True)
+        renamed_victim = trusted_category / "victim.renamed"
+        real_rmtree_fd = _rmtree_fd
+
+        def replace_after_open(
+            parent_fd, name, expected_target=None, target_fd=None
+        ):
+            trusted_victim.rename(renamed_victim)
+            outside_victim.rename(trusted_victim)
+            return real_rmtree_fd(
+                parent_fd, name, expected_target=expected_target, target_fd=target_fd
+            )
+
+        monkeypatch.setattr("tools.skills_sync._rmtree_fd", replace_after_open)
+        with patch("tools.skills_sync.SKILLS_DIR", skills), patch(
+            "tools.skills_sync._trusted_external_skill_roots", return_value={trusted_root}
+        ):
+            with pytest.raises(OSError, match="target changed during safe removal"):
+                _rmtree_writable(category_link / "victim")
+
+        assert (trusted_victim / "payload.txt").read_text() == "outside"
+        assert not (renamed_victim / "payload.txt").exists()
+        assert category_link.is_symlink()
+
+    @pytest.mark.skipif(os.name == "nt", reason="directory symlinks are platform-specific")
+    def test_target_inode_replacement_does_not_delete_replacement(self, tmp_path, monkeypatch):
+        """A real-directory replacement is not accepted as the validated target."""
+        from tools.skills_sync import _rmtree_writable
+
+        skills = tmp_path / "skills"
+        trusted_root = tmp_path / "trusted" / "skills"
+        trusted_category = trusted_root / "research"
+        trusted_victim = trusted_category / "victim"
+        trusted_victim.mkdir(parents=True)
+        (trusted_victim / "payload.txt").write_text("trusted")
+
+        outside_victim = tmp_path / "outside" / "victim"
+        outside_victim.mkdir(parents=True)
+        (outside_victim / "payload.txt").write_text("outside")
+
+        skills.mkdir()
+        category_link = skills / "research"
+        category_link.symlink_to(trusted_category, target_is_directory=True)
+        renamed_victim = trusted_category / "victim.renamed"
+        real_scandir = os.scandir
+        injected = False
+
+        def replace_target_before_scan(path):
+            nonlocal injected
+            if not injected and isinstance(path, int):
+                injected = True
+                trusted_victim.rename(renamed_victim)
+                outside_victim.rename(trusted_victim)
+            return real_scandir(path)
+
+        monkeypatch.setattr("tools.skills_sync.os.scandir", replace_target_before_scan)
+        with patch("tools.skills_sync.SKILLS_DIR", skills), patch(
+            "tools.skills_sync._trusted_external_skill_roots", return_value={trusted_root}
+        ):
+            with pytest.raises(OSError, match="target changed during safe removal"):
+                _rmtree_writable(category_link / "victim")
+
+        assert (trusted_victim / "payload.txt").read_text() == "outside"
+        assert not (renamed_victim / "payload.txt").exists()
+        assert category_link.is_symlink()
 
 
 class TestExternalDirsIndexing:

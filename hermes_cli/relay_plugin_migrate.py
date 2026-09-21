@@ -1,12 +1,10 @@
 """Migrate legacy ``HERMES_NEMO_RELAY_ATIF_*`` / ``ATOF_*`` exporter vars into a Relay ``plugins.toml``.
 
-The Relay cutover (Aug 2026) stopped honouring the legacy exporter variables: a profile that still
-carries them and no ``HERMES_NEMO_RELAY_PLUGINS_TOML`` logs one warning and initialises NO exporters,
-so users who followed the earlier docs lost every trace silently. This module turns those variables
-into ``<profile home>/relay-plugins.toml`` (built from the ``nemo_relay.observability`` dataclasses so
-the file is exactly what Relay validates), points ``HERMES_NEMO_RELAY_PLUGINS_TOML`` at it, and
-comments the legacy lines out. It runs from ``hermes update`` for every profile home and from
-``hermes relay migrate`` for the active one.
+The Relay cutover (Aug 2026) stopped honouring the legacy exporter variables. This module turns
+those variables into ``<profile home>/relay-plugins.toml`` (built from the
+``nemo_relay.observability`` dataclasses so the file is exactly what Relay validates), points
+``HERMES_NEMO_RELAY_PLUGINS_TOML`` at it, and comments the legacy lines out. It runs from
+``hermes update`` for every profile home and from ``hermes migrate relay`` for the active one.
 """
 
 from __future__ import annotations
@@ -209,7 +207,7 @@ def migrate_all_profile_relay_envs(*, validate: bool = True) -> list[RelayMigrat
 
 
 def print_relay_migration_report(results: list[RelayMigrationResult]) -> None:
-    """Loud, actionable notice for `hermes update` / `hermes relay migrate`."""
+    """Loud, actionable notice for `hermes update` / `hermes migrate relay`."""
     migrated = [r for r in results if r.migrated]
     failed = [r for r in results if r.validation_error]
     if not migrated and not failed:
@@ -217,14 +215,14 @@ def print_relay_migration_report(results: list[RelayMigrationResult]) -> None:
     print()
     if migrated:
         print("\033[1;33m⚠  NeMo Relay exporter configuration migrated\033[0m")
-        print("   The legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* variables stopped producing traces after the")
-        print("   Relay cutover. Each profile below now has a generated relay-plugins.toml selected by")
+        print("   Relay no longer reads the legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* variables.")
+        print("   Each profile below now has a generated relay-plugins.toml selected by")
         print(f"   {RELAY_PLUGINS_CONFIG_ENV} in its .env (legacy lines commented out, not deleted):")
         for r in migrated:
             extra = f" ({len(r.diagnostics)} Relay diagnostic(s))" if r.diagnostics else ""
             label = r.home.name if r.home.parent.name == "profiles" else "default"
             print(f"     • {label}: {r.toml_path}{extra}")
-        print("   Restart the gateway to resume exports. Review the file and adjust paths if needed.")
+        print("   Restart the gateway to apply the migrated exporter settings. Review the file and adjust paths if needed.")
     for r in failed:
         print(f"   ✗ {r.home}: could not migrate Relay exporter vars — {r.validation_error}")
         print(f"     Write {r.home / RELAY_PLUGINS_TOML_NAME} by hand and set {RELAY_PLUGINS_CONFIG_ENV}.")

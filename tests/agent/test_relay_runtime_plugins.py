@@ -156,27 +156,31 @@ def explicit_static_config(tmp_path, monkeypatch):
     return config
 
 
-def test_unset_config_disables_plugin_initialization(monkeypatch):
+def test_unset_config_uses_relay_discovery(monkeypatch):
     monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
     relay = _FakeRelay()
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
 
     try:
-        assert not host.managed_execution_enabled()
+        assert host.managed_execution_enabled()
         assert (
             host._plugin_configuration_state
-            is relay_runtime._RelayPluginConfigurationState.DISABLED
+            is relay_runtime._RelayPluginConfigurationState.ACTIVE
         )
+        assert relay.initialized_from == [None]
         host.ensure_session({"session_id": "session"})
-        assert relay.events[0][0:2] == ("scope.push", relay_runtime.SESSION_SCOPE)
-        assert not any(event[0].startswith("plugin.") for event in relay.events)
+        assert relay.events[0] == ("plugin.initialize", {})
+        assert relay.events[1][0:2] == ("scope.push", relay_runtime.SESSION_SCOPE)
     finally:
         host.shutdown()
 
-    assert not any(event[0] == "subscribers.flush_async" for event in relay.events)
+    assert relay.events[-2:] == [
+        ("subscribers.flush_async",),
+        ("plugin.activation.close",),
+    ]
 
 
-def test_first_profile_plugin_decision_applies_to_later_profile(
+def test_first_profile_ambient_plugin_decision_applies_to_later_profile(
     tmp_path,
     monkeypatch,
 ):
@@ -190,17 +194,18 @@ def test_first_profile_plugin_decision_applies_to_later_profile(
     host_b = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-b")
 
     try:
-        assert not host_a.managed_execution_enabled()
-        assert not host_b.managed_execution_enabled()
+        assert host_a.managed_execution_enabled()
+        assert host_b.managed_execution_enabled()
         assert (
             host_a._plugin_configuration_state
-            is relay_runtime._RelayPluginConfigurationState.DISABLED
+            is relay_runtime._RelayPluginConfigurationState.ACTIVE
         )
         assert (
             host_b._plugin_configuration_state
-            is relay_runtime._RelayPluginConfigurationState.DISABLED
+            is relay_runtime._RelayPluginConfigurationState.ACTIVE
         )
-        assert not any(event[0].startswith("plugin.") for event in relay.events)
+        assert relay.events == [("plugin.initialize", {})]
+        assert relay.initialized_from == [None]
     finally:
         host_a.shutdown()
         host_b.shutdown()
@@ -315,7 +320,7 @@ def test_real_binding_leaves_foreign_plugin_host_unchanged(
         relay_runtime._resolve_plugin_awaitable(activation.close())
 
 
-def test_legacy_exporter_env_without_plugins_toml_warns_and_stays_disabled(
+def test_legacy_exporter_env_warns_without_disabling_ambient_discovery(
     monkeypatch,
     caplog,
 ):
@@ -328,15 +333,17 @@ def test_legacy_exporter_env_without_plugins_toml_warns_and_stays_disabled(
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
 
     try:
-        assert not host.managed_execution_enabled()
+        assert host.managed_execution_enabled()
         assert (
             host._plugin_configuration_state
-            is relay_runtime._RelayPluginConfigurationState.DISABLED
+            is relay_runtime._RelayPluginConfigurationState.ACTIVE
         )
-        assert relay.events == []
+        assert relay.events == [("plugin.initialize", {})]
+        assert relay.initialized_from == [None]
         assert "no HERMES_NEMO_RELAY_PLUGINS_TOML was provided" in caplog.text
         assert "HERMES_NEMO_RELAY_ATOF_ENABLED" in caplog.text
         assert "HERMES_NEMO_RELAY_ATIF_EXPORT_TIMEOUT_S" in caplog.text
+        assert "standard user or system plugins.toml still applies" in caplog.text
     finally:
         host.shutdown()
 
@@ -486,8 +493,8 @@ def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown(
     assert host_b.managed_execution_enabled()
     assert (
         caplog.text.count(
-            "Relay plugins are active process-wide and apply to all profiles "
-            "hosted by this Hermes process."
+            "The Relay plugin host is active process-wide and applies to all "
+            "profiles hosted by this Hermes process."
         )
         == 1
     )
@@ -648,7 +655,7 @@ manifest = "relay-plugin.toml"
         )
         assert [event[0] for event in relay.events] == ["plugin.initialize"]
         assert "Hermes Relay plugin initialization failed" in caplog.text
-        assert "Relay plugins are active process-wide" not in caplog.text
+        assert "The Relay plugin host is active process-wide" not in caplog.text
     finally:
         host.shutdown()
 
@@ -956,7 +963,7 @@ mode = "strict"
         relay_runtime._reset_for_tests()
 
 
-def test_real_binding_ignores_project_config_without_explicit_opt_in(
+def test_real_binding_discovers_user_and_ignores_project_config(
     tmp_path,
     monkeypatch,
 ):
@@ -967,49 +974,31 @@ def test_real_binding_ignores_project_config_without_explicit_opt_in(
     project_root = tmp_path / "project"
     working_directory = project_root / "workspace"
     config_directory = project_root / ".nemo-relay"
-    atof_dir = tmp_path / "atof"
     working_directory.mkdir(parents=True)
     config_directory.mkdir()
-    (config_directory / "plugins.toml").write_text(
-        f"""
-version = 1
-
-[[components]]
-kind = "observability"
-enabled = true
-
-[components.config]
-version = 3
-
-[components.config.atof]
-enabled = true
-
-[[components.config.atof.sinks]]
-type = "file"
-output_directory = "{atof_dir}"
-filename = "events.jsonl"
-mode = "overwrite"
-""".strip(),
-        encoding="utf-8",
-    )
+    project_config = config_directory / "plugins.toml"
+    project_config.write_text("", encoding="utf-8")
     xdg_config_home = tmp_path / "xdg"
-    xdg_config_home.mkdir()
+    user_config = xdg_config_home / "nemo-relay" / "plugins.toml"
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text("", encoding="utf-8")
     monkeypatch.chdir(working_directory)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
     monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
 
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
-        assert not host.managed_execution_enabled()
-        host.ensure_session({"session_id": "native-no-plugins"})
+        assert host.managed_execution_enabled()
+        report = relay_runtime._PLUGIN_CONFIGURATION._activation.report
+        config_paths = set(report["config_paths"])
+        assert str(user_config) in config_paths
+        assert str(project_config) not in config_paths
     finally:
         host.shutdown()
         relay_runtime._reset_for_tests()
 
-    assert not (atof_dir / "events.jsonl").exists()
 
-
-def test_real_binding_ignores_project_config_with_explicit_opt_in(
+def test_real_binding_explicit_config_replaces_user_and_ignores_project(
     tmp_path,
     monkeypatch,
 ):
@@ -1021,58 +1010,17 @@ def test_real_binding_ignores_project_config_with_explicit_opt_in(
     working_directory = project_root / "workspace"
     config_directory = project_root / ".nemo-relay"
     selected_directory = tmp_path / "selected-config"
-    project_atof_dir = tmp_path / "project-atof"
-    selected_atof_dir = tmp_path / "selected-atof"
     working_directory.mkdir(parents=True)
     config_directory.mkdir()
     selected_directory.mkdir()
-    (config_directory / "plugins.toml").write_text(
-        f"""
-version = 1
-
-[[components]]
-kind = "observability"
-enabled = true
-
-[components.config]
-version = 3
-
-[components.config.atof]
-enabled = true
-
-[[components.config.atof.sinks]]
-type = "file"
-output_directory = "{project_atof_dir}"
-filename = "events.jsonl"
-mode = "overwrite"
-""".strip(),
-        encoding="utf-8",
-    )
+    project_config = config_directory / "plugins.toml"
+    project_config.write_text("", encoding="utf-8")
     selected_config = selected_directory / "plugins.toml"
-    selected_config.write_text(
-        f"""
-version = 1
-
-[[components]]
-kind = "observability"
-enabled = true
-
-[components.config]
-version = 4
-
-[components.config.atof]
-enabled = true
-
-[[components.config.atof.sinks]]
-type = "file"
-output_directory = "{selected_atof_dir}"
-filename = "events.jsonl"
-mode = "overwrite"
-""".strip(),
-        encoding="utf-8",
-    )
+    selected_config.write_text("", encoding="utf-8")
     xdg_config_home = tmp_path / "xdg"
-    xdg_config_home.mkdir()
+    user_config = xdg_config_home / "nemo-relay" / "plugins.toml"
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text("", encoding="utf-8")
     monkeypatch.chdir(working_directory)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
     monkeypatch.setenv(
@@ -1083,13 +1031,14 @@ mode = "overwrite"
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
         assert host.managed_execution_enabled()
-        host.ensure_session({"session_id": "native-explicit-plugins"})
+        report = relay_runtime._PLUGIN_CONFIGURATION._activation.report
+        config_paths = set(report["config_paths"])
+        assert str(selected_config) in config_paths
+        assert str(user_config) not in config_paths
+        assert str(project_config) not in config_paths
     finally:
         host.shutdown()
         relay_runtime._reset_for_tests()
-
-    assert (selected_atof_dir / "events.jsonl").is_file()
-    assert not (project_atof_dir / "events.jsonl").exists()
 
 
 def test_real_binding_keeps_two_profile_trajectories_separate_in_shared_exporters(

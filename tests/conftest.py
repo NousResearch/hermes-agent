@@ -341,6 +341,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
     "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
+    "HERMES_NEMO_RELAY_PLUGINS_TOML",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to
     # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.
@@ -494,9 +495,9 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
 def _hermetic_environment(tmp_path, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 
-    Also redirects HOME and HERMES_HOME to per-test tempdirs so code that
-    reads ``~/.hermes/*`` can't touch the real one, and pins TZ/LANG so
-    datetime/locale-sensitive tests are deterministic.
+    Also redirects HERMES_HOME and XDG_CONFIG_HOME to per-test tempdirs so
+    code under test cannot read the developer's Hermes or Relay configuration,
+    and pins TZ/LANG so datetime/locale-sensitive tests are deterministic.
     """
     # 1. Blank every credential-shaped env var that's currently set.
     for name in list(os.environ.keys()):
@@ -541,6 +542,9 @@ def _hermetic_environment(tmp_path, monkeypatch):
     if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
         monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
+    fake_xdg_config_home = tmp_path / "xdg_config"
+    fake_xdg_config_home.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg_config_home))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
     # hermes_state's live-DB guard stays armed in them even when the test

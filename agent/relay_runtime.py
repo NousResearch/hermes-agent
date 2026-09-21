@@ -147,7 +147,7 @@ def _same_handle(a: Any, b: Any) -> bool:
 
 
 # Process-wide plugin-configuration result shared by every currently hosted profile.
-_RelayPluginConfigurationState = Enum("_RelayPluginConfigurationState", "UNINITIALIZED DISABLED ACTIVE FOREIGN FAILED")
+_RelayPluginConfigurationState = Enum("_RelayPluginConfigurationState", "UNINITIALIZED ACTIVE FOREIGN FAILED")
 
 
 class _RelayPluginConfigurationLoadError(RuntimeError):
@@ -234,15 +234,15 @@ class _ProcessRelayPluginConfiguration:
                 self._state = self._preflight(relay) or self._activate(relay)
                 if self._state is _RelayPluginConfigurationState.ACTIVE:
                     logger.info(
-                        "Relay plugins are active process-wide and apply to all profiles hosted by this Hermes process."
+                        "The Relay plugin host is active process-wide and applies to all profiles hosted by this "
+                        "Hermes process."
                     )
             self._owners.add(id(owner))
             return self._state
 
     def _activate(self, relay: Any) -> _RelayPluginConfigurationState:
         try:
-            if not self._initialize(relay):
-                return _RelayPluginConfigurationState.DISABLED
+            self._initialize(relay)
         except Exception as exc:
             self._activation = None
             if _is_relay_host_conflict(exc):
@@ -265,17 +265,14 @@ class _ProcessRelayPluginConfiguration:
             return _RelayPluginConfigurationState.FAILED
         return None
 
-    def _initialize(self, relay: Any) -> bool:
-        """Initialize Relay from the selected plugins.toml; False when none is selected."""
+    def _initialize(self, relay: Any) -> None:
+        """Initialize Relay with its ambient or explicitly selected configuration."""
         config_path = _configured_plugin_inputs()
-        if config_path is None:
-            return False
-        # Relay replaces the user file with the explicit file, then applies the system file above it.
+        # An explicit file replaces Relay's user file; its system file always remains above either source.
         activation = _resolve_plugin_awaitable(relay.plugin.initialize({}, additional_plugins_toml=config_path))
         if activation is None:
             raise RuntimeError("NeMo Relay plugin initialization returned no activation handle")
         self._activation = activation
-        return True
 
     def release(self, owner: Any) -> None:
         """Release one host and clear Relay after the final host exits."""
@@ -324,7 +321,7 @@ atexit.register(_PLUGIN_CONFIGURATION.retry_pending_cleanup)
 
 
 class RelayRuntime:
-    """Own Relay session scopes and optional process plugin configuration."""
+    """Own Relay session scopes and the process plugin configuration."""
 
     def __init__(self, relay: Any = None, *, profile_key: str | None = None) -> None:
         self.relay = relay or _load_nemo_relay()
@@ -1214,15 +1211,16 @@ def _load_nemo_relay() -> Any:
 
 
 def _configured_plugin_inputs() -> Path | None:
-    """Return the selected plugins.toml once it parses, or ``None`` when none was selected."""
+    """Return the parseable explicit override, or ``None`` to use Relay discovery."""
     configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
     if not configured:
         if legacy_vars := configured_legacy_relay_env_vars(os.environ):
             logger.warning(
-                "Legacy NeMo Relay exporter variables are set but no %s was provided — NO traces are being "
-                "exported. %s no longer activate Relay exporters. Run `hermes migrate relay` (or `hermes update`, "
-                "which runs it for every profile) to generate %s from them and select it in .env.",
-                RELAY_PLUGINS_CONFIG_ENV, ", ".join(legacy_vars),
+                "Legacy NeMo Relay exporter variables are set but no %s was provided. %s no longer configure "
+                "Relay exporters; any standard user or system plugins.toml still applies. Run `hermes migrate "
+                "relay` (or `hermes update`, which runs it for every profile) to generate %s and select it in .env.",
+                RELAY_PLUGINS_CONFIG_ENV,
+                ", ".join(legacy_vars),
                 get_hermes_home() / "relay-plugins.toml",
             )
         return None

@@ -18,10 +18,11 @@ as a no-op compatibility alias for existing installation commands.
 > This removes the Hermes `observability/nemo_relay` plugin. Existing users
 > must remove `observability/nemo_relay` (or its legacy `nemo_relay` alias)
 > from `plugins.enabled` and move exporter configuration into a Relay
-> `plugins.toml` selected with `HERMES_NEMO_RELAY_PLUGINS_TOML`. The legacy
-> `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables no
-> longer activate exporters. Without the new variable, Hermes does not run
-> Relay plugin discovery, configuration layering, middleware, or exporters.
+> `plugins.toml`. `HERMES_NEMO_RELAY_PLUGINS_TOML` can select an explicit
+> file, and `hermes update` or `hermes migrate relay` creates one when
+> migrating legacy `HERMES_NEMO_RELAY_ATOF_*` and
+> `HERMES_NEMO_RELAY_ATIF_*` settings. Those legacy variables no longer
+> configure Relay exporters themselves.
 
 On supported platforms, Hermes requires NeMo Relay 0.9 for managed provider
 and tool calls.
@@ -58,13 +59,13 @@ This choice is read from the profile's own `config.yaml`. A machine-managed
 configuration overlay cannot enable or disable shared metrics on the profile's
 behalf.
 
-Relay plugin activation remains explicitly opt-in. Set
-`HERMES_NEMO_RELAY_PLUGINS_TOML` to select a `plugins.toml`. When set, Relay
-uses that file instead of the user configuration and applies the machine-wide
-system configuration at higher precedence. Repository-local configuration is
-ignored. If the selected file cannot be loaded, Hermes reports the error and
-continues without Relay plugins rather than falling back to another
-configuration.
+Hermes uses Relay's normal process-wide plugin discovery. Without an explicit
+selection, Relay loads the user `plugins.toml` and then the machine-wide system
+configuration at higher precedence. `HERMES_NEMO_RELAY_PLUGINS_TOML` replaces
+the user file with an explicit file; the system configuration still applies
+above it. Repository-local configuration is ignored. If an explicitly selected
+file cannot be loaded, Hermes reports the error and continues without Relay
+plugins rather than falling back to another configuration.
 
 ## Session-Span Segmentation for Continuous Sessions
 
@@ -99,7 +100,7 @@ static middleware, dynamic plugins, subscribers, exporters, and guardrail
 policy. After initialization succeeds, Hermes logs:
 
 ```text
-Relay plugins are active process-wide and apply to all profiles hosted by this Hermes process.
+The Relay plugin host is active process-wide and applies to all profiles hosted by this Hermes process.
 ```
 
 Profile scopes still preserve causal isolation inside that shared policy.

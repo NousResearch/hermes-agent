@@ -192,8 +192,8 @@ def gate_manifest(
     # Relay lifecycle is core-owned; an old plugin copy would compete for its registries.
     if names & LEGACY_RELAY_PLUGIN_KEYS:
         error = (
-            "removed — Relay lifecycle is owned by Hermes core; configure "
-            f"{RELAY_PLUGINS_CONFIG_ENV} instead"
+            "removed — Relay lifecycle is owned by Hermes core; configure a standard user or system Relay "
+            f"plugins.toml, or use {RELAY_PLUGINS_CONFIG_ENV} for an explicit user-file override"
         )
         return _placeholder(error, logging.WARNING, "Refusing to load removed Hermes Relay plugin '%s'; %s", error)
     if names & disabled:

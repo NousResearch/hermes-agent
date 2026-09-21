@@ -209,35 +209,29 @@ export function collectUnspokenTurnSpeech(
 const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 /**
- * Drop earlier text parts that a later text part repeats verbatim (after
- * whitespace normalization). Providers that continue a turn after a tool
- * call sometimes re-send the previous assistant text as the next message's
- * prefix (tool_calls row, then a stop row with identical prose) — the turn
- * merge then holds the same paragraph twice and everything in it renders
- * twice, most visibly ::preview frames. The LAST occurrence is the
- * authoritative one; keep it.
+ * Collapse repeated representations of the same durable text occurrence.
+ * Equal prose in different tool rounds (or without provenance) is not proof
+ * of duplicate delivery and must survive hydration.
  */
 export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessagePart[] {
-  const lastByText = new Map<string, number>()
+  const lastByOccurrence = new Map<string, number>()
 
   parts.forEach((part, index) => {
-    if (part.type === 'text') {
-      const key = normalizeWs(part.text)
+    if (part.type === 'text' && part.sourceRowId !== undefined) {
+      const key = `${part.sourceRowId}:${normalizeWs(part.text)}`
 
-      if (key) {
-        lastByText.set(key, index)
-      }
+      lastByOccurrence.set(key, index)
     }
   })
 
   const dropped = parts.filter((part, index) => {
-    if (part.type !== 'text') {
+    if (part.type !== 'text' || part.sourceRowId === undefined) {
       return true
     }
 
-    const key = normalizeWs(part.text)
+    const key = `${part.sourceRowId}:${normalizeWs(part.text)}`
 
-    return !key || lastByText.get(key) === index
+    return lastByOccurrence.get(key) === index
   })
 
   return dropped.length === parts.length ? parts : dropped

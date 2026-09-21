@@ -37,6 +37,7 @@ import type { ClientSessionState } from '../../../types'
 import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
+import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -542,7 +543,16 @@ export function useMessageStream({
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleText = stripGeneratedImageEchoes(authoritativeText, generatedImageEchoSources(parts)).trim()
 
-          return mergeFinalAssistantText(parts, visibleText, occurredAt)
+          // A later response can share this bubble after a suppressed interim.
+          // A seal arriving after its tools, without any newer text, still
+          // confirms the pre-tool response (legacy/delayed seal ordering).
+          const hasNewResponse = currentResponseParts(parts).some(part =>
+            (part.type === 'text' || part.type === 'reasoning') && part.text.trim()
+          )
+
+          return hasNewResponse
+            ? mergeCurrentResponseText(parts, visibleText, occurredAt)
+            : mergeFinalAssistantText(parts, visibleText, occurredAt)
         }
 
         let nextMessages = state.messages
@@ -635,10 +645,12 @@ export function useMessageStream({
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
           : undefined
 
-        const replaceTextPart = (parts: ChatMessagePart[]) => {
+        const replaceTextPart = (parts: ChatMessagePart[], interim: boolean) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
 
-          return mergeFinalAssistantText(parts, visibleFinalText, occurredAt)
+          return interim
+            ? mergeFinalAssistantText(parts, visibleFinalText, occurredAt)
+            : mergeCurrentResponseText(parts, visibleFinalText, occurredAt)
         }
 
         // Settling the final response onto a bubble makes it the turn's real
@@ -650,6 +662,7 @@ export function useMessageStream({
             parts: completeOpenTimelineParts(message.parts, occurredAt),
             pending: false,
             interim: false,
+            recovered: false,
             ...(durationS !== undefined ? { durationS } : {}),
             ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
           }
@@ -660,7 +673,7 @@ export function useMessageStream({
 
           return {
             ...settled,
-            parts: completeOpenTimelineParts(replaceTextPart(settled.parts), occurredAt),
+            parts: completeOpenTimelineParts(replaceTextPart(settled.parts, Boolean(message.interim)), occurredAt),
             ...(completionError ? { error: completionError } : {})
           }
         }
@@ -683,7 +696,13 @@ export function useMessageStream({
         const prev = state.messages
         let nextMessages = prev
 
-        const streamIndex = streamId ? prev.findIndex(message => message.id === streamId) : -1
+        // A new prompt or correction starts another occurrence, even when its
+        // text (or answer) repeats. Hidden user rows are boundaries too.
+        const lastUserIndex = prev.findLastIndex(message => message.role === 'user')
+
+        const streamIndex = streamId
+          ? prev.findIndex((message, index) => index > lastUserIndex && message.id === streamId)
+          : -1
 
         let collapsed: DuplicateFinalCollapse | null = null
 
@@ -698,14 +717,18 @@ export function useMessageStream({
             collapsed?.messages ??
             prev.map((message, index) => (index === streamIndex ? completeMessage(message) : message))
         } else {
-          const fallbackIndex = [...prev]
-            .reverse()
-            .findIndex(message => message.role === 'assistant' && !message.hidden)
+          const fallbackIndex = prev.findLastIndex(
+            (message, index) => index > lastUserIndex && message.role === 'assistant' && !message.hidden
+          )
 
           if (fallbackIndex >= 0) {
-            const index = prev.length - 1 - fallbackIndex
+            const index = fallbackIndex
             const existing = prev[index]
-            const existingText = chatMessageText(existing).trim()
+
+            const existingText = chatMessageText({
+              ...existing,
+              parts: existing.interim ? existing.parts : currentResponseParts(existing.parts)
+            }).trim()
 
             // The last assistant row is a sealed interim (a tool-call turn or a
             // verify-on-stop candidate — `message.interim` fires for BOTH, see
@@ -745,11 +768,10 @@ export function useMessageStream({
               //
               // • finalContinuesInterim (prefix-either-way continuity, same
               //   text or one a prefix of the other) is safe to settle
-              //   flag-free: continuity can only hold for the SAME message,
-              //   so a `message.start` reset landing between this turn's
-              //   `message.interim` and `message.complete` must not force an
-              //   append of a duplicate bubble (#74560). This also closes the
-              //   non-previewed tool-call gap from #63679.
+              //   flag-free within this user occurrence: a `message.start`
+              //   reset between this turn's interim and completion must not
+              //   force an append of a duplicate bubble (#74560). This also
+              //   closes the non-previewed tool-call gap from #63679.
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
@@ -767,15 +789,18 @@ export function useMessageStream({
         // tool-call parts that never saw their completion event.
         nextMessages = sealOpenToolParts(nextMessages)
 
-        const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
+        const hasInlineError = nextMessages.some(
+          (m, index) => index > lastUserIndex && m.role === 'assistant' && m.error && !m.hidden
+        )
+
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
 
-        const sameTurnId = collapsed?.keptId ?? streamId
+        const sameTurnId = collapsed?.keptId ?? (streamIndex >= 0 ? streamId : null)
 
         const sameTurnAssistant = sameTurnId
           ? nextMessages.find(m => m.id === sameTurnId)
-          : [...nextMessages].reverse().find(m => m.role === 'assistant' && !m.hidden)
+          : nextMessages.findLast((m, index) => index > lastUserIndex && m.role === 'assistant' && !m.hidden)
 
         const localVisibleText = sameTurnAssistant ? chatMessageText(sameTurnAssistant).trim() : ''
         // Having streamed the reply normally means this window owns the whole

@@ -197,15 +197,15 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     expect(settled.indexOf(tail!)).toBeGreaterThan(settledSteerIndex)
   })
 
-  it('steer with no post-steer deltas: completion settles above, bubble stays at the tail', async () => {
+  it('an accepted steer bounds completion even when no post-steer delta arrived', async () => {
     await mountHarness()
 
     emit({ payload: {}, session_id: SID, type: 'message.start' })
     emit({ payload: { text: 'the whole reply already streamed' }, session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
-    // Steer accepted during the final API call — the reply was already
-    // complete, so the correction becomes the NEXT turn's prompt.
+    // The gateway explicitly accepts this as redirected, not queued. Equal
+    // output alone cannot place its completion back above the correction.
     await steer('one more thing')
 
     emit({ payload: { text: 'the whole reply already streamed' }, session_id: SID, type: 'message.complete' })
@@ -213,15 +213,10 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     const messages = states.get(SID)!.messages
     const steerIndex = messages.findIndex(message => message.role === 'user')
 
-    // The already-streamed reply settles onto its sealed bubble ABOVE the
-    // correction; the correction stays the tail, waiting for its own turn —
-    // no duplicate reply row appended below it. Load-bearing assumption: a
-    // completion settles the sealed pre-steer bubble in place and never
-    // appends/merges below the correction — if the reducer ever changes that,
-    // this test is the tripwire.
-    expect(steerIndex).toBe(messages.length - 1)
+    expect(steerIndex).toBe(messages.length - 2)
+    expect(messages.at(-1)?.role).toBe('assistant')
     expect(messages.filter(message => chatMessageText(message).includes('whole reply already streamed'))).toHaveLength(
-      1
+      2
     )
     expect(messages.every(message => message.pending !== true)).toBe(true)
   })

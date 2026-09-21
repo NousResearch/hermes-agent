@@ -1185,6 +1185,69 @@ describe('preserveLocalPendingTurnMessages', () => {
     ])
   })
 
+  it('does not keep a settled final-answer bubble already folded into the tool-round message', () => {
+    const folded = {
+      id: '1790016993.1043298-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' },
+        { type: 'text' as const, text: 'The result is 71.' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'inspect the fixture'), folded]
+
+    const previous = [
+      msg('1-user', 'user', 'inspect the fixture'),
+      { ...folded, parts: folded.parts.slice(0, 2) },
+      msg('assistant-stream-placeholder', 'assistant', '', { pending: false }),
+      msg('assistant-stream-final', 'assistant', 'The result is 71.', { pending: false })
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    const finals = preserved.flatMap(message =>
+      message.parts.filter(part => part.type === 'text' && part.text === 'The result is 71.')
+    )
+
+    expect(finals).toHaveLength(1)
+    expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
+  })
+
+  it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {
+    const toolRound = {
+      id: 'row-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'inspect the fixture'), toolRound]
+    const previous = [...next, msg('assistant-stream-final', 'assistant', 'The result is 71.', { pending: false })]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain('assistant-stream-final')
+  })
+
+  it('keeps an equal final answer that belongs to a later turn history has not stored', () => {
+    const folded = {
+      id: 'row-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' },
+        { type: 'text' as const, text: 'The result is 71.' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'first'), folded, msg('2-user', 'user', 'again')]
+    const previous = [...next, msg('assistant-stream-later', 'assistant', 'The result is 71.', { pending: false })]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain('assistant-stream-later')
+  })
+
   // The whole point of replacing rather than appending: one reply on screen,
   // and the committed history around the live turn untouched.
   it('does not duplicate or rewrite committed history around the live turn', () => {

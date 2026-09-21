@@ -1,4 +1,5 @@
 import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
+import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 
 /**
  * Crash-survivable in-flight turn journal.
@@ -140,6 +141,7 @@ function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
             Boolean(part) &&
             typeof part === 'object' &&
             typeof part.type === 'string' &&
+            (part.sourceRowId === undefined || (typeof part.sourceRowId === 'number' && Number.isFinite(part.sourceRowId))) &&
             (part.type !== 'text' && part.type !== 'reasoning'
               ? part.type !== 'tool-call' ||
                 (typeof part.toolName === 'string' &&
@@ -154,6 +156,8 @@ function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
         (message.branchGroupId === undefined || typeof message.branchGroupId === 'string') &&
         (message.hidden === undefined || typeof message.hidden === 'boolean') &&
         (message.interim === undefined || typeof message.interim === 'boolean') &&
+        (message.recovered === undefined || typeof message.recovered === 'boolean') &&
+        (message.durableComplete === undefined || typeof message.durableComplete === 'boolean') &&
         (message.attachmentRefs === undefined ||
           (Array.isArray(message.attachmentRefs) && message.attachmentRefs.every(ref => typeof ref === 'string'))) &&
         (message.rowId === undefined || (typeof message.rowId === 'number' && Number.isFinite(message.rowId)))
@@ -270,6 +274,7 @@ function boundedPart(part: ChatMessagePart): ChatMessagePart | null {
     return {
       type: 'text',
       text: boundedString(part.text, MAX_TEXT_PART_CHARS),
+      ...(part.sourceRowId === undefined ? {} : { sourceRowId: part.sourceRowId }),
       ...(part.parentId === undefined ? {} : { parentId: boundedString(part.parentId, MAX_METADATA_CHARS) })
     }
   }
@@ -362,6 +367,8 @@ function boundedMessages(messages: ChatMessage[]): ChatMessage[] | null {
       : { branchGroupId: boundedString(message.branchGroupId, MAX_METADATA_CHARS) }),
     ...(message.hidden === undefined ? {} : { hidden: message.hidden }),
     ...(message.interim === undefined ? {} : { interim: message.interim }),
+    ...(message.recovered === undefined ? {} : { recovered: message.recovered }),
+    ...(message.durableComplete === undefined ? {} : { durableComplete: message.durableComplete }),
     ...(message.attachmentRefs === undefined
       ? {}
       : {
@@ -528,6 +535,7 @@ function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
   return (
     left.role === 'user' &&
     right.role === 'user' &&
+    (left.rowId === undefined || right.rowId === undefined || left.rowId === right.rowId) &&
     normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right)) &&
     attachmentSignature(left) === attachmentSignature(right)
   )
@@ -611,7 +619,8 @@ function normalizeRecoveredTail(tail: ChatMessage[], keepPending: boolean): Chat
     message.role === 'assistant'
       ? {
           ...message,
-          pending: keepPending ? (message.pending ?? true) : false
+          pending: keepPending ? (message.pending ?? true) : false,
+          ...(keepPending ? {} : { recovered: true })
         }
       : { ...message, pending: false }
   )
@@ -693,10 +702,8 @@ function withoutBaseIds(rows: ChatMessage[], baseMessages: ChatMessage[]): ChatM
   return rows.filter(row => !baseIds.has(row.id))
 }
 
-/** Whether every recoverable assistant row in the journal tail already exists
- *  as committed text in the base transcript. When true, the journal outlived
- *  the turn it recorded and appending it would re-render the same answers at
- *  the end of the transcript (the "scrambled conversation" regression). */
+/** Without a matched user interval, only explicit row identity can establish
+ *  coverage. An older turn saying the same thing does not retire this journal. */
 function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages: ChatMessage[]): boolean {
   const recoverable = tailAssistants.filter(assistantHasRecoverableContent)
 
@@ -704,19 +711,21 @@ function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages
     return false
   }
 
-  const baseTexts = new Set(
-    baseMessages
-      .filter(message => message.role === 'assistant' && !message.hidden)
-      .map(message => normalizedText(chatMessageText(message)))
-  )
+  return recoverable.every(message => baseMessages.some(base =>
+    base.role === 'assistant' && !base.hidden && !isLiveProjectionRow(base) && !base.recovered &&
+    (base.id === message.id || (base.rowId !== undefined && base.rowId === message.rowId)) &&
+    base.error === message.error &&
+    normalizedText(chatMessageText(base)) === normalizedText(chatMessageText(message)) &&
+    message.parts.every(part => {
+      if (part.type === 'tool-call') {
+        return base.parts.some(candidate => candidate.type === 'tool-call' && Boolean(part.toolCallId) &&
+          candidate.toolCallId === part.toolCallId)
+      }
 
-  return recoverable.every(message => {
-    const text = normalizedText(chatMessageText(message))
-
-    // Error-only rows carry no text to verify against — keep the conservative
-    // append path rather than risk dropping a recoverable failure.
-    return text.length > 0 && baseTexts.has(text)
-  })
+      return part.type !== 'reasoning' || base.parts.some(candidate => candidate.type === 'reasoning' &&
+        normalizedText(candidate.text) === normalizedText(part.text))
+    })
+  ))
 }
 
 export function mergeInFlightMessages(
@@ -738,10 +747,10 @@ export function mergeInFlightMessages(
     return noop
   }
 
-  const tailUserIndex = tail.findIndex(message => message.role === 'user')
+  const tailUserIndex = tail.findLastIndex(message => message.role === 'user')
   const tailUser = tailUserIndex >= 0 ? tail[tailUserIndex] : null
-  const tailAssistants = tail.slice(tailUserIndex + 1)
-  const lastJournalRow = tailAssistants.findLast(assistantHasRecoverableContent) ?? null
+  let tailAssistants = tail.slice(tailUserIndex + 1)
+  let lastJournalRow = tailAssistants.findLast(assistantHasRecoverableContent) ?? null
   const matchingUserIndex = tailUser ? baseMessages.findLastIndex(message => userMessagesMatch(message, tailUser)) : -1
 
   if (matchingUserIndex < 0) {
@@ -761,29 +770,35 @@ export function mergeInFlightMessages(
       applied: true,
       caughtUp: false,
       messages: [...baseMessages, ...withoutBaseIds(tail, baseMessages)],
-      // Only a genuinely running turn keeps a live stream target. On an idle
-      // resume, carrying the stale streamId would keep the journal entry alive
-      // (persistInFlightTurnState only clears when streamId is null) and the
-      // same tail would be folded again on every open.
+      // Recovered output stays journaled without pretending the backend is busy.
       streamId: options.keepPending ? streamId : null,
       turnStartedAt: null
     }
   }
 
-  const afterUser = baseMessages.slice(matchingUserIndex + 1)
+  const nextUserIndex = baseMessages.findIndex((message, index) => index > matchingUserIndex && message.role === 'user')
+  const end = nextUserIndex < 0 ? baseMessages.length : nextUserIndex
+  const afterUser = baseMessages.slice(matchingUserIndex + 1, end)
 
   const completedReply = afterUser.find(
-    message => assistantHasRecoverableContent(message) && !isLiveProjectionRow(message)
+    message => assistantHasRecoverableContent(message) && !isLiveProjectionRow(message) && !message.recovered &&
+      (message.durableComplete === true || (message.durableComplete === undefined && !message.interim &&
+        !message.parts.some(part => part.type === 'tool-call')))
   )
 
   if (completedReply) {
-    // The transcript already holds this turn's committed reply — the journal
-    // entry is stale.
+    // A final reply, not merely a persisted tool round, supersedes this tail.
     return { ...noop, caughtUp: true }
   }
 
-  const projectionIndex = baseMessages.findIndex(
-    (message, index) => index > matchingUserIndex && message.role === 'assistant' && isLiveProjectionRow(message)
+  tailAssistants = withoutCoveredAssistantPrefix(
+    afterUser.filter(message => !isLiveProjectionRow(message) && !message.recovered), tailAssistants
+  )
+  lastJournalRow = tailAssistants.findLast(assistantHasRecoverableContent) ?? null
+
+  const projectionIndex = baseMessages.findLastIndex(
+    (message, index) => index > matchingUserIndex && index < end && message.role === 'assistant' &&
+      !message.interim && isLiveProjectionRow(message)
   )
 
   if (projectionIndex < 0) {
@@ -796,11 +811,9 @@ export function mergeInFlightMessages(
     return {
       applied: true,
       caughtUp: false,
-      messages: [...baseMessages, ...withoutBaseIds(tailAssistants, baseMessages)],
-      // Same idle-resume rule as the other exit paths: only a running turn
-      // keeps the stream target alive. Carrying the stale streamId here kept
-      // the journal entry alive (persistInFlightTurnState only clears when
-      // streamId is null), so the same tail was folded again on every open.
+      messages: [...baseMessages.slice(0, end), ...withoutBaseIds(tailAssistants, baseMessages), ...baseMessages.slice(end)],
+      // Only a running turn keeps a stream target; recovered metadata retains
+      // the journal independently until durable completion is observed.
       streamId: options.keepPending ? streamId : null,
       turnStartedAt: null
     }
@@ -818,7 +831,7 @@ export function mergeInFlightMessages(
 
   const messages = [
     ...baseMessages.slice(0, projectionIndex),
-    ...sealedRows,
+    ...withoutBaseIds(sealedRows, baseMessages),
     merged,
     ...baseMessages.slice(projectionIndex + 1)
   ]
@@ -827,9 +840,7 @@ export function mergeInFlightMessages(
     applied: true,
     caughtUp: false,
     messages,
-    // Same idle-resume rule as the append path: only a running turn keeps the
-    // stream target alive, so an idle resume clears the journal instead of
-    // re-folding the same tail on every open.
+    // Idle recovered output must not reopen a streaming bubble.
     streamId: options.keepPending ? merged.id : null,
     turnStartedAt: null
   }
@@ -924,7 +935,8 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
     return
   }
 
-  if (!state.busy && !state.awaitingResponse && !state.streamId) {
+  if (!state.busy && !state.awaitingResponse && !state.streamId &&
+      !recoverableTail(state.messages, null).some(message => message.recovered)) {
     clearInFlightTurnJournal(storedSessionId)
 
     return

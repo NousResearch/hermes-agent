@@ -159,6 +159,8 @@ const _chatMessageFieldsExhaustive: {
 } = {}
 
 const COMPARED_FIELDS = [
+  'durableComplete',
+  'recovered',
   'asyncResult',
   'asyncResultKind',
   'id',
@@ -222,6 +224,10 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   }
 
   if (aPart.type === 'text' || aPart.type === 'reasoning') {
+    if (aPart.sourceRowId !== bPart.sourceRowId) {
+      return false
+    }
+
     return (aPart as { text: string }).text === (bPart as { text: string }).text
   }
 
@@ -274,6 +280,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.role !== b.role ||
+    a.durableComplete !== b.durableComplete ||
+    a.recovered !== b.recovered ||
     a.pending !== b.pending ||
     a.error !== b.error ||
     // Structural compare — the descriptor arrives as a fresh object per
@@ -534,6 +542,56 @@ const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessa
   return merged
 }
 
+/** Text of the response that follows a folded tool round, not the commentary before it. */
+function lastFoldedResponseText(message: ChatMessage): string {
+  let afterTool = false
+  let text = ''
+
+  for (const part of message.parts) {
+    if (part.type === 'tool-call') {
+      afterTool = true
+      text = ''
+
+      continue
+    }
+
+    if (afterTool && part.type === 'text') {
+      text = textWithoutReferenceLines(part.text).trim()
+    }
+  }
+
+  return afterTool ? text : ''
+}
+
+/**
+ * History folds a final answer into the preceding tool-round bubble. A live
+ * stream bubble holding only that answer is the same occurrence, but full-bubble
+ * equality cannot see it.
+ */
+function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessage): boolean {
+  const needle = textWithoutReferenceLines(chatMessageText(live)).trim()
+
+  if (!needle || live.parts.some(part => part.type === 'tool-call')) {
+    return false
+  }
+
+  const lastUser = messages.findLastIndex(message => message.role === 'user' && !isGatewaySystemMarker(message))
+
+  return messages.slice(lastUser + 1).some(message => {
+    if (
+      message.role !== 'assistant' ||
+      message.id.startsWith('assistant-stream-') ||
+      message.id.startsWith('inflight-assistant-')
+    ) {
+      return false
+    }
+
+    const folded = lastFoldedResponseText(message)
+
+    return folded === needle || isStrictAnswerTextExtension(folded, needle)
+  })
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -734,6 +792,16 @@ export function preserveLocalPendingTurnMessages(
 
         continue
       }
+    }
+
+    const lastPreviousUser = previousMessages.findLastIndex(row => row.role === 'user' && !isGatewaySystemMarker(row))
+
+    if (
+      isPendingAssistant &&
+      previousMessages.indexOf(message) > lastPreviousUser &&
+      durableFoldCoversLiveResponse(nextMessages, message)
+    ) {
+      continue
     }
 
     preserved.push(message)

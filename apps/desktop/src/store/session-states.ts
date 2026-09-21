@@ -36,6 +36,7 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import { gatewayModeForProfile } from './gateway'
 import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
@@ -1258,15 +1259,21 @@ syncPreviewScope()
  * window currently shows; its RPCs already route to their own owner via
  * `requestForSessionProfile`, but a caller that instead reads ambient mode to
  * decide image.attach vs image.attach_bytes ships a client-local path to a
- * remote backend that can't resolve it (#94640). A bare profile name (no
- * connectionId) is a pool profile of the ambient connection, so ambient mode
- * still applies there.
+ * remote backend that can't resolve it (#94640). Routes restored from rows
+ * or captured at creation need not carry mode; use the owning gateway's
+ * resolved descriptor, including per-profile overrides of a local source.
+ * An unresolved known owner requires bytes until its filesystem is proven
+ * local. Only a draft/legacy caller with no owner uses the ambient mode.
  */
 export function isSessionRemote(sessionId: null | string | undefined): boolean {
   const owner = knownOwnerForSession(sessionId)
 
-  if (owner && typeof owner === 'object' && owner.mode) {
-    return owner.mode === 'remote'
+  if (owner && typeof owner === 'object') {
+    return gatewayModeForProfile(owner.profile, owner.connectionId) !== 'local'
+  }
+
+  if (typeof owner === 'string') {
+    return gatewayModeForProfile(owner) !== 'local'
   }
 
   return $connection.get()?.mode === 'remote'

@@ -10,7 +10,15 @@ import {
   setWorkspaceScope,
   workspaceScopeKey
 } from '@/components/pane-shell/workspace-scope'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { closeSecondaryGateways, setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $newChatRoute,
+  captureNewChatSource,
+  resolveNewChatOwnerRoute
+} from '@/store/profile'
 import {
   $activeSessionId,
   $connection,
@@ -1374,6 +1382,8 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
 
 describe('isSessionRemote (#94640)', () => {
   beforeEach(() => {
+    closeSecondaryGateways()
+    setPrimaryGateway({} as never)
     $activeGatewayProfile.set('default')
     $sessionTiles.set([])
   })
@@ -1381,6 +1391,11 @@ describe('isSessionRemote (#94640)', () => {
     $sessionTiles.set([])
     setSessions([])
     $connection.set(null)
+    setPrimaryGateway(null)
+    $connectionsRegistry.set(null)
+    $newChatRoute.set(null)
+    $newChatProfile.set(null)
+    captureNewChatSource(null)
   })
 
   it('falls back to the ambient connection when the session has no known owner route', () => {
@@ -1410,10 +1425,68 @@ describe('isSessionRemote (#94640)', () => {
     expect(isSessionRemote('stored-1')).toBe(true)
   })
 
-  it('falls back to ambient when the owner is a bare pool profile (no connectionId/mode)', () => {
+  it('requires bytes when a bare pool profile has no resolved connection descriptor', () => {
     $connection.set({ mode: 'remote' } as never)
     setSessions([{ id: 'stored-2', profile: 'loki' } as never])
 
     expect(isSessionRemote('stored-2')).toBe(true)
+  })
+
+  it.each([
+    ['ssh', 'remote'],
+    ['remote', 'remote'],
+    ['cloud', 'remote'],
+    ['local', 'local'],
+    ['local', 'remote']
+  ] as const)(
+    'uses the resolved %s source (%s backend) for created and restored routes across foreground switches',
+    (kind, backendMode) => {
+      const connectionId = kind === 'local' ? 'local' : 'attachment-owner'
+      setPrimaryGatewayConnection({ connectionId, mode: backendMode })
+      $connectionsRegistry.set({
+        connections: [{ id: connectionId, kind, label: 'Owner', tokenSet: false, tokenPreview: null }],
+        primary: 'local',
+        secureTokenStorage: false,
+        version: 2
+      })
+      $newChatRoute.set(null)
+      $newChatProfile.set('default')
+      captureNewChatSource(connectionId)
+      const ownerRoute = resolveNewChatOwnerRoute()!
+
+      for (const mode of ['local', 'remote', 'local'] as const) {
+        $connection.set({ connectionId: 'foreground', mode } as never)
+        $sessionTiles.set([{ ownerRoute, runtimeId: 'attachment-runtime', storedSessionId: 'attachment-created' }])
+        expect(isSessionRemote('attachment-runtime')).toBe(backendMode === 'remote')
+        expect(isSessionRemote('attachment-created')).toBe(backendMode === 'remote')
+
+        $sessionTiles.set([
+          {
+            ownerRoute: { ...ownerRoute, mode: backendMode === 'local' ? 'remote' : 'local' },
+            storedSessionId: 'attachment-created'
+          }
+        ])
+        expect(isSessionRemote('attachment-created')).toBe(backendMode === 'remote')
+
+        setSessions([{ id: 'attachment-restored', connection_id: connectionId, profile: 'default' } as never])
+        expect(isSessionRemote('attachment-restored')).toBe(backendMode === 'remote')
+      }
+    }
+  )
+
+  it('requires bytes for unresolved foreign and pooled owners without borrowing the foreground mode', () => {
+    $connectionsRegistry.set(null)
+    $connection.set({ connectionId: 'local', mode: 'local' } as never)
+    setSessions([{ id: 'cold-pool', profile: 'cold-remote-override' } as never])
+    expect(isSessionRemote('cold-pool')).toBe(true)
+
+    for (const ownerRoute of [
+      { connectionId: 'unresolved-source', profile: 'default' },
+      { connectionId: 'legacy-remote', profile: 'default', mode: 'remote' as const },
+      { connectionId: 'local', profile: 'default', mode: 'local' as const }
+    ]) {
+      $sessionTiles.set([{ ownerRoute, storedSessionId: 'cold-owner' }])
+      expect(isSessionRemote('cold-owner')).toBe(true)
+    }
   })
 })

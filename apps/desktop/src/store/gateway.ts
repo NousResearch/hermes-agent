@@ -548,6 +548,24 @@ export function activeGatewayConnectionId(): null | string {
   return g.secondaries.get(g.activeKey)?.connectionId ?? null
 }
 
+/** Read an owner's descriptor without activating or dialing it. Even a local
+ * registry profile may have a remote override; an unopened or pruned owner
+ * has no proven mode and must not borrow another source's descriptor. */
+export function gatewayModeForProfile(profile: string, connectionId?: null | string): 'local' | 'remote' | null {
+  const key = normKey(profile)
+  const id = (connectionId ?? '').trim()
+
+  if (id) {
+    return isPrimaryRegistryRoute(id, key)
+      ? (g.primaryConnectionMode ?? null)
+      : (g.secondaries.get(registryBackendScopeKey(id, key))?.connection?.mode ?? null)
+  }
+
+  return key === g.primaryProfile
+    ? (g.primaryConnectionMode ?? null)
+    : (g.secondaries.get(key)?.connection?.mode ?? null)
+}
+
 /**
  * Registry connections currently served by a live (open-socket) secondary.
  * Used by the reconnect path when the restarted primary's own registry

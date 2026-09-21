@@ -1803,7 +1803,7 @@ def test_auto_provider_lookalike_cloud_host_does_not_bypass_to_cloud(monkeypatch
 
 
 def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeypatch):
-    """extra_headers must survive the credential-pool path too."""
+    """extra_headers must survive the credential-pool fallback path too."""
     pool_return_value = {
         "provider": "custom",
         "api_mode": "chat_completions",
@@ -1819,7 +1819,7 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
         lambda p: {
             "name": "lmstudio",
             "base_url": "https://lmstudio.example.com/v1",
-            "api_key": "not-used-when-pooled",
+            "api_key": "",
             "extra_headers": {
                 "CF-Access-Client-Id": "xxx.access",
                 "CF-Access-Client-Secret": "yyy",

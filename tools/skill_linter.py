@@ -124,6 +124,74 @@ def _check_frontmatter(frontmatter: Dict[str, Any], skill_dir: Optional[Path]) -
                         f"expected a subset of {sorted(valid)}.")
 
 
+def _static_tool_names() -> set[str]:
+    """Every tool name the static toolset table can resolve, plus whatever the registry holds.
+
+    At CLI time the registry is usually empty (tools register on module import), so the static
+    union carries the check; plugin/MCP tools are only visible once registered, which is why an
+    unknown *tool* name is a warning, never an error."""
+    import toolsets
+    names: set[str] = set()
+    for toolset in toolsets.TOOLSETS:
+        names.update(toolsets.resolve_toolset(toolset, include_registry=False))
+    try:
+        from tools.registry import registry
+        names.update(registry.get_all_tool_names())
+    except Exception:
+        pass
+    return names
+
+
+def _check_conditions(frontmatter: Dict[str, Any]) -> Iterator[LintFinding]:
+    """Conditional-activation names must resolve, or the skill is hidden with no signal.
+
+    ``_skill_should_show`` (prompt builder) drops a skill whose ``requires_toolsets`` names anything
+    absent from the session's toolsets — and it cannot tell a typo (``files``) from a toolset that is
+    valid but unavailable on this box (``browser`` on a headless gateway), so it stays silent for
+    both. Lint runs where the registry is knowable: a near-miss of a registered toolset is an author
+    typo (error); a name nothing resolves may be a plugin toolset not loaded here (warning); a tool
+    name is always a warning because plugin/MCP tools are not statically knowable. Known but
+    unavailable is never a finding."""
+    from difflib import get_close_matches
+
+    import toolsets
+    from agent.skill_utils import extract_skill_conditions
+    conditions = extract_skill_conditions(frontmatter)
+    toolset_names = toolsets.get_toolset_names()
+    tool_names: Optional[set[str]] = None
+    for key in ("requires_toolsets", "fallback_for_toolsets"):
+        for name in _condition_names(conditions.get(key)):
+            if toolsets.validate_toolset(name):
+                continue
+            close = get_close_matches(name, toolset_names, n=1, cutoff=0.6)
+            if close:
+                yield _err("unknown-toolset", f"metadata.hermes.{key} names '{name}', which is not a "
+                           f"registered toolset — did you mean '{close[0]}'? The skill is silently "
+                           f"hidden from every session until this resolves.")
+            else:
+                yield _warn("unknown-toolset", f"metadata.hermes.{key} names '{name}', which no "
+                            f"registered toolset or alias resolves here; if it is not a plugin "
+                            f"toolset, the skill is hidden from every session.")
+    for key in ("requires_tools", "fallback_for_tools"):
+        for name in _condition_names(conditions.get(key)):
+            if tool_names is None:
+                tool_names = _static_tool_names()
+            if name in tool_names:
+                continue
+            close = get_close_matches(name, sorted(tool_names), n=1, cutoff=0.6)
+            hint = f" — did you mean '{close[0]}'?" if close else ""
+            yield _warn("unknown-tool", f"metadata.hermes.{key} names '{name}', which no registered "
+                        f"tool resolves here{hint} Unless a plugin/MCP server provides it, the skill "
+                        f"is hidden from every session.")
+
+
+def _condition_names(value: Any) -> List[str]:
+    """String entries of a condition list; ``None``/scalars/non-string items are skipped."""
+    if not isinstance(value, list):
+        return []
+    return [v.strip() for v in value if isinstance(v, str) and v.strip()]
+
+
 def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
     if len(body) > _BODY_SOFT_BUDGET_CHARS:
         yield _warn("oversized-body",
@@ -202,7 +270,8 @@ def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[Lint
     the create path needs before the file exists.
     """
     frontmatter, body = parse_frontmatter(content)
-    findings = list(_check_frontmatter(frontmatter, skill_dir)) + list(_check_body(body, skill_dir))
+    findings = (list(_check_frontmatter(frontmatter, skill_dir)) + list(_check_conditions(frontmatter))
+                + list(_check_body(body, skill_dir)))
     if skill_dir is not None:
         findings += _check_files(frontmatter, skill_dir)
     return findings

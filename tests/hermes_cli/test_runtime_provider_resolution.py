@@ -2252,6 +2252,14 @@ class TestApiKeyProviderPoolAttachment:
         assert resolved["api_key"] == "env-zai-key"
         assert resolved["credential_pool"] is pool
 
+    def test_foreign_provider_pool_not_attached_despite_matching_env_key(self, monkeypatch):
+        pool = self._pool_with([SimpleNamespace(runtime_api_key="env-zai-key")])
+        pool.provider = "ollama-cloud"
+        resolved = self._resolve_zai(monkeypatch, pool)
+        assert resolved["provider"] == "zai"
+        assert resolved["api_key"] == "env-zai-key"
+        assert resolved["credential_pool"] is None
+
     def test_pool_not_attached_when_env_key_is_not_pool_member(self, monkeypatch):
         pool = self._pool_with([SimpleNamespace(runtime_api_key="some-other-key")])
         resolved = self._resolve_zai(monkeypatch, pool)

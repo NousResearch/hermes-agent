@@ -100,7 +100,7 @@ _SQLITE_SIDECAR_SUFFIXES = (".db-wal", ".db-shm", ".db-journal")
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", *_SQLITE_SIDECAR_SUFFIXES)
 
 # File names to skip (runtime state that's meaningless on another machine)
-_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
+_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "interrupted_turns.json"}
 
 # The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
 # — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;

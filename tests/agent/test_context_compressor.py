@@ -1200,7 +1200,7 @@ class TestSummaryFallbackToMainModel:
         """Aux model returns empty content -> falls back to main model -> succeeds (#94448)."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
-        mock_ok.choices[0].message.content = "summary via main model after empty aux"
+        mock_ok.choices[0].message.content = _valid_summary("summary via main model after empty aux")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(

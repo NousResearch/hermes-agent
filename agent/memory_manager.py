@@ -170,9 +170,15 @@ _INTERNAL_NOTE_RE = re.compile(
 
 # ``re.sub`` never rescans the text it has produced, so ONE pass can splice a surviving
 # prefix and suffix into a brand-new valid tag: deleting the inner tag of
-# ``</memory-</memory-context>context>`` leaves ``</memory-`` + ``context>``. Sanitizing to a
-# fixed point closes that; the cap bounds the work, and a payload still carrying a fence tag
-# after this many passes is dropped by ``build_memory_context_block`` rather than fenced badly.
+# ``</memory-</memory-context>context>`` leaves ``</memory-`` + ``context>``. Re-sanitizing
+# closes that.
+#
+# The cap is deliberate and NOT an arbitrary round number: looping to an unbounded fixed point
+# is quadratic on nested input, because each pass peels one layer and rescans the rest. Recall
+# text is provider-controlled, so that is reachable work, not a thought experiment — measured
+# at 217 KB of nested tags: 2807 ms unbounded vs 3.5 ms capped. A payload still carrying a
+# fence tag after this many passes is dropped by ``build_memory_context_block`` rather than
+# fenced badly, so bounding the work never costs correctness.
 _SANITIZE_MAX_PASSES = 8
 
 

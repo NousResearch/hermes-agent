@@ -812,6 +812,9 @@ class TestMemoryContextFencing:
                         "<memory-<memory-context>context>"):
             once = sanitize_context(payload)
             assert not _FENCE_TAG_RE.search(once), f"{payload!r} sanitized into {once!r}"
+            # Idempotence is the property that makes the result safe to fence, and it is
+            # what the single-pass version lacked (assertion from RelaxJonh's #109086).
+            assert sanitize_context(once) == once, f"{payload!r} is not a fixed point"
             assert sanitize_context(once) == once, "sanitize_context must be idempotent"
 
     def test_a_reassembled_tag_never_closes_the_model_facing_fence_early(self):

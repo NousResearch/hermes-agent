@@ -101,7 +101,7 @@ describe('group-turn presence', () => {
 })
 
 describe('pre-warm is hover-scoped, never roster-wide', () => {
-  it('warms nothing on paint and exactly the hovered bot on pointer entry', async () => {
+  it('warms nothing on paint and exactly the hovered bot after pointer movement', async () => {
     const row = renderRow({ name: 'alpha' } as RosterRow)
 
     expect(warmProfile).not.toHaveBeenCalled()
@@ -110,6 +110,7 @@ describe('pre-warm is hover-scoped, never roster-wide', () => {
 
     try {
       fireEvent.pointerEnter(row)
+      fireEvent.pointerMove(row)
 
       expect(warmProfile).not.toHaveBeenCalled()
       vi.runOnlyPendingTimers()
@@ -134,6 +135,7 @@ describe('pre-warm is hover-scoped, never roster-wide', () => {
 
     try {
       fireEvent.pointerEnter(row)
+      fireEvent.pointerMove(row)
       expect(warmAgent).not.toHaveBeenCalled()
       vi.runOnlyPendingTimers()
 
@@ -170,7 +172,9 @@ describe('pre-warm is hover-scoped, never roster-wide', () => {
       const [alpha, beta] = getAllByRole('button')
 
       fireEvent.pointerEnter(alpha)
+      fireEvent.pointerMove(alpha)
       fireEvent.pointerEnter(beta)
+      fireEvent.pointerMove(beta)
       vi.runOnlyPendingTimers()
 
       expect(warmProfile.mock.calls).toEqual([['beta']])

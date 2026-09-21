@@ -144,9 +144,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "updates.non_interactive_local_changes": _select(
         "When the chat app / gateway updates Hermes (no terminal prompt), "
         "what to do with uncommitted local source edits. 'stash' keeps them "
-        "and re-applies them after the update; 'discard' throws them away. "
+        "and re-applies them after the update; 'discard' throws them away; "
+        "'abort' leaves the checkout untouched and refuses the update. "
         "Terminal updates always ask, regardless of this setting.",
-        "stash", "discard",
+        "stash", "discard", "abort",
     ),
     "updates.refresh_cua_driver": {
         "type": "boolean",

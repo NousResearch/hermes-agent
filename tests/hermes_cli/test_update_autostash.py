@@ -129,6 +129,7 @@ def _make_update_side_effect(
     update_ref_fails=False,
     pre_pull_sha_unavailable=False,
     existing_rescue_refs=None,
+    status_porcelain="",
 ):
     """Build a subprocess.run side_effect for cmd_update tests.
 
@@ -160,6 +161,8 @@ def _make_update_side_effect(
             if fetch_fails:
                 return SimpleNamespace(stdout="", stderr=fetch_stderr, returncode=128)
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if "status" in joined and "--porcelain" in joined:
+            return SimpleNamespace(stdout=status_porcelain, stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
         if "show-current" in joined:
@@ -526,6 +529,79 @@ def _setup_setting_test(monkeypatch, tmp_path, mode):
     side_effect, recorded = _make_update_side_effect()
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
     return restore_calls, discard_calls, recorded
+
+
+def test_update_abort_policy_refuses_dirty_checkout_before_stash(monkeypatch, tmp_path, capsys):
+    """A non-interactive abort policy leaves HEAD/worktree untouched, even with --keep-stash."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        hermes_config, "load_config",
+        lambda *a, **kw: {"updates": {"non_interactive_local_changes": "abort"}},
+    )
+    stash_calls = []
+    monkeypatch.setattr(
+        hermes_main, "_stash_local_changes_if_needed",
+        lambda *a, **kw: stash_calls.append(1) or "must-not-exist",
+    )
+    self_heal_calls = []
+    monkeypatch.setattr(
+        update_cmd, "_discard_lockfile_churn",
+        lambda *a, **kw: self_heal_calls.append("lockfile"),
+    )
+    monkeypatch.setattr(
+        update_cmd, "_normalize_managed_eol",
+        lambda *a, **kw: self_heal_calls.append("eol"),
+    )
+    receipt_steps = []
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.record_step",
+        lambda *args: receipt_steps.append(args),
+    )
+    side_effect, recorded = _make_update_side_effect(
+        status_porcelain=" M tracked.py\0?? new file.py\0",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace(yes=True, keep_stash=True))
+
+    assert stash_calls == []
+    assert self_heal_calls == []
+    assert not any("checkout" in command or "merge" in command for command in recorded)
+    assert receipt_steps[-1] == (
+        "local_changes", False, "blocked: dirty checkout (tracked.py, new file.py)",
+    )
+    out = capsys.readouterr().out
+    assert "tracked.py" in out
+    assert "new file.py" in out
+    assert "commit, move, or remove" in out.lower()
+    assert "non_interactive_local_changes=stash" in out
+
+
+def test_update_abort_policy_allows_clean_checkout(monkeypatch, tmp_path):
+    """The abort policy is a dirty-tree gate, not a blanket update block."""
+    restore_calls, discard_calls, recorded = _setup_setting_test(monkeypatch, tmp_path, "abort")
+
+    hermes_main.cmd_update(SimpleNamespace(yes=True, keep_stash=False))
+
+    assert restore_calls == [1]
+    assert discard_calls == []
+    assert any("status --porcelain=v1 -z" in " ".join(command) for command in recorded)
+    assert any("merge --ff-only origin/main" in " ".join(command) for command in recorded)
+
+
+def test_interactive_update_ignores_abort_policy(monkeypatch, tmp_path):
+    """Interactive terminals retain the existing stash-and-restore behavior."""
+    restore_calls, discard_calls, recorded = _setup_setting_test(monkeypatch, tmp_path, "abort")
+    monkeypatch.setattr(update_cmd.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(update_cmd.sys.stdout, "isatty", lambda: True)
+
+    hermes_main.cmd_update(SimpleNamespace(yes=False, keep_stash=False))
+
+    assert restore_calls == [1]
+    assert discard_calls == []
+    assert not any("status --porcelain=v1 -z" in " ".join(command) for command in recorded)
 
 
 # ---------------------------------------------------------------------------

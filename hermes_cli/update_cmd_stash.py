@@ -58,6 +58,59 @@ def _git_paths_z(git_cmd: list[str], args: list[str], cwd: Path):
     return {path for path in result.stdout.split("\0") if path}
 
 
+def _porcelain_paths_z(porcelain_z: str) -> tuple[str, ...]:
+    """Return every path named by ``git status --porcelain=v1 -z`` in stable order."""
+    records = porcelain_z.split("\0")
+    paths: list[str] = []
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if len(record) < 4:
+            continue
+        status = record[:2]
+        paths.append(record[3:])
+        if any(code in "RC" for code in status) and index < len(records):
+            source = records[index]
+            index += 1
+            if source:
+                paths.append(source)
+    return tuple(dict.fromkeys(paths))
+
+
+def _abort_update_if_local_changes(git_cmd: list[str], repo_root: Path) -> None:
+    """Abort a non-interactive update without mutating a dirty checkout."""
+    from hermes_cli.update_receipt import record_step
+
+    status = _git_quiet(
+        git_cmd,
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        repo_root,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
+    if status is None or status.returncode != 0:
+        detail = "blocked: could not inspect local changes"
+        record_step("local_changes", False, detail)
+        print("✗ Update aborted: could not inspect this checkout for local changes.")
+        raise SystemExit(1)
+
+    paths = _porcelain_paths_z(status.stdout)
+    if not paths:
+        return
+
+    detail = f"blocked: dirty checkout ({', '.join(paths)})"
+    record_step("local_changes", False, detail)
+    print("✗ Update aborted: this checkout has local changes:")
+    for path in paths:
+        print(f"  - {path!r}")
+    print("  Commit, move, or remove these paths, then re-run `hermes update`.")
+    print("  To preserve the previous automatic-stash behavior, set")
+    print("  updates.non_interactive_local_changes=stash in config.yaml.")
+    raise SystemExit(1)
+
+
 def _reset_hard(git_cmd: list[str], cwd: Path) -> None:
     subprocess.run(git_cmd + ["reset", "--hard", "HEAD"], cwd=cwd, capture_output=True)
 

@@ -373,7 +373,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   ],
   // NeuTTS local inference device.
   'tts.neutts.device': ['cpu', 'cuda', 'mps'],
-  'updates.non_interactive_local_changes': ['stash', 'discard']
+  'updates.non_interactive_local_changes': ['stash', 'discard', 'abort']
 }
 
 // Voice/model name fields render as a free-input combobox (Input + datalist)
@@ -680,7 +680,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   updates: {
     nonInteractiveLocalChanges:
-      'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash) or throw them away (discard). Terminal updates always ask.'
+      'When Hermes updates itself from the app (no terminal prompt), keep local source edits (stash), throw them away (discard), or refuse to update a dirty checkout (abort). Terminal updates always ask.'
   }
 })
 

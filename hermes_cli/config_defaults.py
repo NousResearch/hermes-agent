@@ -2314,7 +2314,8 @@ DEFAULT_CONFIG = {
         # Uncommitted source-tree changes during NON-interactive updates (desktop, gateway — no TTY;
         # interactive updates always stash and ask). stash = stash, pull, restore on top (conflicts
         # stay in a git stash). discard = stash and drop after the pull (stash-and-drop, not reset
-        # --hard + clean -fd, so ignored paths like node_modules/venv are never touched).
+        # --hard + clean -fd, so ignored paths like node_modules/venv are never touched). abort =
+        # refuse a dirty checkout before any branch switch, stash, checkout, or pull.
         "non_interactive_local_changes": "stash",
         # If the checkout is parked on a feature branch and the tree is clean, switch to the update
         # target (commits stay on the branch; a loud notice names it) so non-interactive updates

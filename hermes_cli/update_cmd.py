@@ -64,11 +64,12 @@ from hermes_cli.update_cmd_zip import (  # noqa: F401
     _is_zip_preserved_entry_status_line, _is_zip_staging_artifact_status_line, _stage_replacement,
     _update_via_zip, _zip_overlay_block_reason)
 from hermes_cli.update_cmd_stash import (  # noqa: F401
-    _AUTOSTASH_NAME_PREFIX, _AUTOSTASH_WARN_AGE_DAYS, _discard_stashed_changes,
-    _git_untracked_paths, _park_stashed_changes, _print_stash_cleanup_guidance,
-    _reject_unsafe_stash_restore, _resolve_stash_selector, _restore_stashed_changes,
-    _restored_python_paths, _stash_apply_failed_only_on_existing_untracked,
-    _stash_local_changes_if_needed, _warn_orphaned_update_autostashes)
+    _AUTOSTASH_NAME_PREFIX, _AUTOSTASH_WARN_AGE_DAYS, _abort_update_if_local_changes,
+    _discard_stashed_changes, _git_untracked_paths, _park_stashed_changes,
+    _print_stash_cleanup_guidance, _reject_unsafe_stash_restore, _resolve_stash_selector,
+    _restore_stashed_changes, _restored_python_paths,
+    _stash_apply_failed_only_on_existing_untracked, _stash_local_changes_if_needed,
+    _warn_orphaned_update_autostashes)
 from hermes_cli.update_cmd_config import (  # noqa: F401
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
     _print_items, _run_config_check_fresh, _run_migrate_config_fresh)
@@ -951,10 +952,13 @@ def _apply_parked_branch_guard(
 
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
-    switch_branch, _windows_gateway_resume):
-    """Parked-branch guard, land on the target, stash, count new commits. Exits when the
-    checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up to
-    date, -1 when tips differ but the shallow count is unrecoverable."""
+    switch_branch, abort_local_changes, _windows_gateway_resume):
+    """Validate local state, land on the target, stash, and count new commits. Exits when
+    the checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up
+    to date, -1 when tips differ but the shallow count is unrecoverable."""
+    if abort_local_changes:
+        _abort_update_if_local_changes(git_cmd, _m().PROJECT_ROOT)
+
     parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
         git_cmd, branch, current_branch, switch_branch=switch_branch,
         _windows_gateway_resume=_windows_gateway_resume)
@@ -1033,6 +1037,7 @@ class _UpdateOptions:
     keep_stash: bool
     switch_branch: bool
     discard_local_changes: bool
+    abort_local_changes: bool = False
     no_gateway_restart: bool = False
 
 
@@ -1065,19 +1070,21 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
     no_gateway_restart = bool(getattr(args, "no_gateway_restart", False))
 
     # Interactive terminals always stash-and-ask; only non-interactive updates consult
-    # updates.non_interactive_local_changes (auto-restore vs discard).
+    # updates.non_interactive_local_changes (abort vs auto-restore vs discard).
     discard_local_changes = False
+    abort_local_changes = False
     if gateway_mode or assume_yes or not (sys.stdin.isatty() and sys.stdout.isatty()):
         # A config read failure must never change the safe default.
         with _best_effort("Could not read updates.non_interactive_local_changes: %s"):
             _mode = str(_updates_config().get("non_interactive_local_changes", "stash")).lower()
             discard_local_changes = _mode == "discard"
+            abort_local_changes = _mode == "abort"
     return _UpdateOptions(
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, pre_update_version=pre_update_version,
         gw_input_fn=gw_input_fn, assume_yes=assume_yes, keep_stash=keep_stash,
         switch_branch=switch_branch, discard_local_changes=discard_local_changes,
-        no_gateway_restart=no_gateway_restart)
+        abort_local_changes=abort_local_changes, no_gateway_restart=no_gateway_restart)
 
 
 def _begin_update_receipt_and_plan(args):
@@ -1127,7 +1134,7 @@ def _begin_update_receipt_and_plan(args):
     return _pre_update_plan
 
 
-def _prepare_git_command() -> tuple[bool, list, bool]:
+def _prepare_git_command(*, abort_local_changes: bool = False) -> tuple[bool, list, bool]:
     """Return ``(use_zip_update, git_cmd, is_fork)``; ``sys.exit(1)`` when not a git repo
     on a non-Windows host (Windows falls back to ZIP: broken git file I/O, AV, NTFS filters)."""
     git_dir = _m().PROJECT_ROOT / ".git"
@@ -1147,8 +1154,10 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
 
     # Before stash/branch logic: npm rewrites package-lock.json non-deterministically and
     # line-ending churn is machine-made dirt; both would otherwise force an autostash every update.
-    _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
-    _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
+    # An explicit abort policy is strictly read-only, so it skips these best-effort self-heals.
+    if not abort_local_changes:
+        _discard_lockfile_churn(git_cmd, _m().PROJECT_ROOT)
+        _normalize_managed_eol(git_cmd, _m().PROJECT_ROOT)
 
     origin_url = _m()._get_origin_url(git_cmd, _m().PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
@@ -1598,7 +1607,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
     had_desktop_app_before_update = _desktop_app_present(desktop_dir)
 
-    use_zip_update, git_cmd, is_fork = _prepare_git_command()
+    use_zip_update, git_cmd, is_fork = _prepare_git_command(
+        abort_local_changes=opts.abort_local_changes)
 
     if use_zip_update:
         try:
@@ -1650,6 +1660,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
+            abort_local_changes=opts.abort_local_changes,
             _windows_gateway_resume=_windows_gateway_resume)
         commit_count = _plan.commit_count
 

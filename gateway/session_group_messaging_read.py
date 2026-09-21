@@ -634,8 +634,10 @@ class _InventoryRead:
             if room['room_id'] in grants:
                 row['room_ref'] = json.loads(grants[room['room_id']])['room_ref']
             projected.append(row)
-        self._detail_grants(state, result['rooms'], grants)
         self.require_current()
+        # The last blocking read must validate every authority in the page,
+        # not only inventory consent after a separate room grant was checked.
+        self._detail_grants(state, result['rooms'], grants)
         return dict(rooms=projected, next_offset=result['next_offset'])
 
 

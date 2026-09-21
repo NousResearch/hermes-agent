@@ -271,3 +271,50 @@ async def test_room_revoke_rolls_back_if_receipt_insert_fails(bound):
         bound.alice, 'revoke', room_revoke_params(inventory, grant))
     assert response['error']['message'] == 'storage_unavailable'
     assert room_rows(bound) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('regrant', [False, True])
+async def test_projection_rechecks_room_grant_after_final_inventory_wait(bound, monkeypatch, regrant):
+    from gateway.session_group_messaging_read import (
+        _InventoryRead, _attest_inventory, read_messaging_inventory_page,
+    )
+
+    inventory, grant = await granted(bound)
+    context = _attest_inventory(bound.runner, bound.event())
+    page = {'rooms': [room for room in rooms.list_rooms(bound.db.db_path)
+                      if room['room_id'] == 'alice-room'], 'next_offset': None}
+    assert len(page['rooms']) == 1
+    entered, resume = threading.Event(), threading.Event()
+    original = _InventoryRead.require_current
+    calls = 0
+
+    def held(self):
+        nonlocal calls
+        if self is context:
+            calls += 1
+            if calls == 2:
+                entered.set()
+                assert resume.wait(10)
+        return original(self)
+
+    monkeypatch.setattr(_InventoryRead, 'require_current', held)
+    pending = asyncio.create_task(asyncio.to_thread(context.project, page))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        revoked = await room_rpc(bound.alice, 'revoke', room_revoke_params(inventory, grant))
+        assert 'result' in revoked
+        replacement = None
+        if regrant:
+            response = await room_rpc(bound.alice, params=room_grant_params(
+                inventory, request_id='projection-regrant',
+                expected_generation=revoked['result']['generation']))
+            replacement = response['result']['room_ref']
+            assert replacement != grant['room_ref']
+    finally:
+        resume.set()
+    with pytest.raises(RuntimeStoreError, match='messaging_room_read_stale'):
+        await asyncio.wait_for(pending, 10)
+    assert calls == 2
+    fresh = await read_messaging_inventory_page(bound.runner, bound.event())
+    assert fresh['rooms'][0].get('room_ref') == replacement

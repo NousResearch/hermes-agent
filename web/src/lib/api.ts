@@ -1968,6 +1968,10 @@ export interface MemoryPressureStatus {
   /** Identity of the current gateway life (sentinel started_at). Changes on
    * every restart; keys per-incident banner dismissal. */
   boot_id?: string | null;
+  /** Profile this sample belongs to — proves the banner reflects the profile
+   * currently shown rather than a stale or mismatched one. Absent on older
+   * gateways or an unrecognized home layout. */
+  profile?: string | null;
 }
 
 /** NS-656: coarse disk telemetry served by /api/status. Live statvfs

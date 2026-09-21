@@ -131,6 +131,12 @@ scoped to the current gateway boot: dismissing a warning surfaces the next
 active one, a gateway restart or an escalation (elevated → critical) re-opens
 it, and a stale heartbeat renders nothing rather than a spurious alert.
 
+A live memory warning (critical or elevated) also names the sampled numbers
+in parentheses — available/total memory, how long ago the gateway's
+heartbeat took the sample, and which profile it belongs to — so you can
+tell a transient blip, a stale sample, or a profile mix-up apart from an
+actual current condition instead of guessing from the copy alone.
+
 ### Chat
 
 The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
@@ -449,7 +455,9 @@ The response also carries two advisory resource blocks (they never affect the
   lifecycle ledger. Fields: `pressure` (`ok` / `elevated` / `critical` /
   `unknown`), `gateway_rss_mb`, `system_total_mb`, `system_available_mb`,
   `swap_used_mb`, `sampled_at`, `boot_id`, `last_boot_unclean`,
-  `last_boot_suspected_oom`. Pressure is `elevated` below 128 MiB (or 15%) of
+  `last_boot_suspected_oom`, `profile` (the profile the sample belongs to;
+  `null` when the home doesn't resolve to a known profile). Pressure is
+  `elevated` below 128 MiB (or 15%) of
   available system memory and `critical` below 64 MiB (or 5%) — the same
   levels at which a subsequent unclean exit would be flagged as a suspected
   OOM kill. Heartbeats older than 150 seconds (or future-dated) keep their

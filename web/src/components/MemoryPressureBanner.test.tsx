@@ -376,6 +376,49 @@ describe("MemoryPressureBanner", () => {
     expect(banner()?.textContent).toContain("disk is almost full");
   });
 
+  it("shows available/total memory, sample age, and profile for a critical trigger", async () => {
+    const sampledAt = new Date(Date.now() - 45_000).toISOString();
+    await render(
+      <MemoryPressureBanner
+        status={statusWith({
+          pressure: "critical",
+          system_available_mb: 1229,
+          system_total_mb: 2867,
+          sampled_at: sampledAt,
+          profile: "alpha",
+        })}
+      />,
+    );
+    const text = banner()?.textContent ?? "";
+    expect(text).toContain("1229 MB / 2867 MB available");
+    expect(text).toContain("sampled 45s ago");
+    expect(text).toContain("profile: alpha");
+  });
+
+  it("omits the diagnostic parenthetical when no diagnostic fields are present", async () => {
+    await render(
+      <MemoryPressureBanner status={statusWith({ pressure: "elevated" })} />,
+    );
+    expect(banner()?.textContent).not.toContain("(");
+  });
+
+  it("does not show live diagnostics on the OOM-restart notice (no live sample)", async () => {
+    await render(
+      <MemoryPressureBanner
+        status={statusWith({
+          pressure: "ok",
+          last_boot_suspected_oom: true,
+          system_available_mb: 10,
+          system_total_mb: 2000,
+          profile: "alpha",
+        })}
+      />,
+    );
+    const text = banner()?.textContent ?? "";
+    expect(text).toContain("restarted unexpectedly");
+    expect(text).not.toContain("profile: alpha");
+  });
+
   it("disk recovery does NOT reset memory dismissals (and vice versa)", async () => {
     // Dismiss a memory warning while disk is also elevated.
     await render(

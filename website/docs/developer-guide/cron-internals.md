@@ -169,7 +169,9 @@ home under `_profile_cron_scope`) evaluate the identical record. One gateway
 process per host ticks *every* profile's store — `gateway.multiplex_profiles`
 gates adapters, not cron — and per-run bookkeeping (in-flight claims, the
 parallel worker pool, the stale-code yield decision) is keyed by profile home,
-so two profiles may carry identically named jobs without colliding.
+so two profiles may carry identically named jobs without colliding. A profile
+that runs its own gateway is skipped per tick, so the two processes never race
+its store and its deliveries always leave through its own live adapters.
 
 **Fire-claim lease during a run.** A firing run holds `fire_claim = {at, by}` and
 a heartbeat thread refreshes `at` every 60 s (the lease is 300 s). A heartbeat

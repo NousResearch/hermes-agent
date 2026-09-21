@@ -1689,6 +1689,33 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
         return homes
 
 
+def _cron_profile_gate(name: str, home: "Path") -> bool:
+    """Tick ``home`` this cycle unless ANOTHER gateway process owns it.
+
+    Same stand-down the serve/Desktop ticker applies (``hermes_cli/web_server.py``): a host
+    deliberately pinned to per-profile gateways (``gateway.multiplex_profiles: false``, the s6
+    per-profile services in ``container_boot.reconcile_profile_gateways``) runs profile B's own
+    gateway, and without this both it and this process race B's ``cron/.tick.lock``. The lock
+    stops a simultaneous double-run but not the race: when this process wins, B's delivery leaves
+    through ``SharedRouteAdapters``/fail-closed instead of B's live adapters.
+
+    The liveness answer is compared against our OWN pid, never used bare: this process holds the
+    launch home's ``gateway.pid`` and publishes every served profile in ``served_profiles``, so a
+    bare ``_check_gateway_running`` reports "running" for every home we serve — standing us down
+    from all of them and stopping cron host-wide.
+    """
+    from gateway.status import get_running_pid, resolve_gateway_liveness
+
+    try:
+        liveness = resolve_gateway_liveness(
+            profile_dir=Path(home), use_cache=False,
+            pid_probe=lambda path: get_running_pid(path, cleanup_stale=False))
+    except Exception as exc:
+        logger.debug("Cron profile gate probe failed for %s (ticking it): %s", name, exc)
+        return True
+    return not (liveness.running and liveness.pid is not None and liveness.pid != os.getpid())
+
+
 def _enable_multiplex_log_routing(config: object) -> bool:
     """Route agent.log/errors.log/gateway.log records to their owning profile (inert single-profile).
     ``setup_logging(mode="gateway")`` binds file handlers to the launch home, so under multiplexing
@@ -5271,6 +5298,8 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while
         # the gateway runs gets its jobs fired without a restart (hot-serve).
         cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
+        # Stand down, per tick, for a profile whose OWN gateway process ticks it.
+        cron_start_kwargs["profile_gate"] = _cron_profile_gate
         # Per-profile adapters so each profile's cron output goes via its own bot, not the
         # default's. Absent (no multiplexed adapters), delivery for a secondary profile falls
         # back to the primary's routed adapters or fails closed — the job still FIRES.

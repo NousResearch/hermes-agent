@@ -556,6 +556,23 @@ def _inflight_key(job_id: str, home: Optional[Union[Path, str]] = None) -> tuple
     return (hermes_home_key(home) if home is not None else hermes_home_key(_get_hermes_home()), job_id)
 
 
+# Home key -> the real home Path that produced it. ``hermes_home_key`` normcases (it lower-cases on
+# Windows), so ``Path(key[0])`` is a case-folded path that matches nothing else on disk; bookkeeping
+# that needs the profile home reads it here instead of reconstructing it from the key.
+_inflight_home_paths: Dict[str, Path] = {}
+
+
+def _remember_inflight_home(home: Path) -> Path:
+    """Record ``home`` under its key so a claim can be mapped back to a usable path."""
+    _inflight_home_paths[hermes_home_key(home)] = home
+    return home
+
+
+def _inflight_home_path(home_key: str) -> Path:
+    """Real home Path for an in-flight key's home half (falls back to the key itself)."""
+    return _inflight_home_paths.get(home_key) or Path(home_key)
+
+
 # In-flight state below is keyed by ``_inflight_key``; the public accessors still report bare job
 # ids so host-wide consumers (shutdown drain, idle-exit, metrics) see the union across profiles.
 _running_job_ids: set = set()
@@ -689,6 +706,20 @@ def get_wedged_job_ids() -> "frozenset[str]":
         key[1] for key, age in ages.items() if age >= max(allowances[key], floor_seconds))
 
 
+def is_job_running(job_id: str, home: Optional[Union[Path, str]] = None) -> bool:
+    """True when THIS process has an in-flight run of ``job_id`` FOR ``home`` (default: the active
+    cron scope's home).
+
+    The bare-id accessors above report the host-wide union so the shutdown drain and metrics see
+    every profile's work. Liveness consumers must not: one process ticks every profile, so a
+    ``daily-brief`` running in profile A would otherwise report profile B's idle ``daily-brief``
+    as running and keep B's stale one-shot alive as a "possibly live run".
+    """
+    key = _inflight_key(job_id, home)
+    with _running_lock:
+        return key in _running_job_ids or key in _running_fire_owners
+
+
 def try_register_running_job(job_id: str) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
@@ -704,7 +735,7 @@ def try_register_running_job(job_id: str) -> bool:
     """
     from hermes_cli.backend_retirement import retirement
 
-    key = _inflight_key(job_id)
+    key = _inflight_key(job_id, _remember_inflight_home(_get_hermes_home()))
     with retirement.work() as admitted, _running_lock:
         if not admitted or key in _running_job_ids:
             return False
@@ -716,9 +747,15 @@ def try_register_running_job(job_id: str) -> bool:
         return True
 
 
-def release_running_job(job_id: str) -> None:
-    """Remove ``job_id`` (in the active profile scope) from the in-flight running set (idempotent)."""
-    key = _inflight_key(job_id)
+def release_running_job(job_id: str, home: Optional[Union[Path, str]] = None) -> None:
+    """Remove ``job_id`` from the in-flight running set (idempotent).
+
+    ``home`` MUST be passed by any caller that does not run inside the same cron scope the claim
+    was registered under. The scope is a ContextVar the ticker binds per profile: a pool worker
+    releasing in a ``finally`` outside ``ctx.run`` resolves the default (launch) home instead, so
+    the discard misses the real key and every secondary profile's claim leaks.
+    """
+    key = _inflight_key(job_id, home)
     with _running_lock:
         _running_job_ids.discard(key)
         _running_since.pop(key, None)
@@ -996,9 +1033,10 @@ def mark_running_jobs_interrupted(
         registered_keys = {key for _t, key, _o, _p in active_fires}
         if only_owners is None:
             # The key's home half IS the profile home this claim belongs to — the only record of
-            # it for a claim that never reached ``_running_fire_owners``.
+            # it for a claim that never reached ``_running_fire_owners``. Read the real Path back
+            # from the key, never ``Path(key[0])``: the key is normcased.
             active_fires.extend(
-                (None, key, None, Path(key[0]))
+                (None, key, None, _inflight_home_path(key[0]))
                 for key in (
                     _running_job_ids - registered_keys - restart_safe_waiters
                 )
@@ -1101,7 +1139,7 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
     a single process-global pool is created by whichever profile the multiplexing gateway ticks
     first and then silently imposes that profile's limit on every other profile.
     """
-    home = hermes_home_key(_get_hermes_home())
+    home = hermes_home_key(_remember_inflight_home(_get_hermes_home()))
     pool = _parallel_pools.get(home)
     if pool is None or _parallel_pool_max_workers.get(home) != max_workers:
         if pool is not None:
@@ -1111,6 +1149,21 @@ def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadP
         _parallel_pools[home] = pool
         _parallel_pool_max_workers[home] = max_workers
     return pool
+
+
+def discard_parallel_pools(home_keys) -> None:
+    """Drop the parallel pools of homes this process no longer ticks.
+
+    Pools are per home and used to live until ``atexit``: a host that serves many profiles — or
+    churns them — accumulated one ThreadPoolExecutor and its live ``cron-parallel`` threads per
+    home ever ticked, and a deleted profile's pool was never reclaimed. ``wait=False`` so the
+    ticker is never blocked; queued work still drains before the executor dies.
+    """
+    for key in list(home_keys):
+        pool = _parallel_pools.pop(key, None)
+        _parallel_pool_max_workers.pop(key, None)
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=False)
 
 
 def _shutdown_parallel_pool() -> None:
@@ -3980,6 +4033,10 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     if not try_register_running_job(job_id):
         logger.info("Job '%s' already running — skipping", job_label)
         return None
+    # The home the claim was registered under. The pool worker's ``finally`` runs OUTSIDE
+    # ``ctx.run``, where the per-profile cron scope is not bound, so releasing without it would
+    # discard the LAUNCH home's key and leak every secondary profile's claim.
+    _claim_home = _get_hermes_home()
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
     try:
         execution = create_execution(
@@ -3988,22 +4045,22 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         _ctx = contextvars.copy_context()
     except Exception as execution_err:
         # Release the claim so the next tick retries instead of wedging "already running".
-        release_running_job(job_id)
+        release_running_job(job_id, home=_claim_home)
         _clear_run_claim_best_effort()
         logger.exception(
             "Job '%s' not dispatched: execution creation failed: %s", job_label, execution_err)
         return None
 
-    def _run_and_release(j=dispatched_job, ctx=_ctx):
+    def _run_and_release(j=dispatched_job, ctx=_ctx, home=_claim_home):
         try:
             return ctx.run(process_job, j)
         finally:
-            release_running_job(j["id"])
+            release_running_job(j["id"], home=home)
 
     try:
         fut = pool.submit(_run_and_release)
     except Exception as submit_err:
-        release_running_job(job_id)
+        release_running_job(job_id, home=_claim_home)
         _clear_run_claim_best_effort()
         finish_execution(
             execution["id"], success=False, error=f"Executor dispatch failed: {submit_err}")
@@ -4014,7 +4071,7 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         return None
 
     with _running_lock:
-        _submit_key = _inflight_key(job_id)
+        _submit_key = _inflight_key(job_id, _claim_home)
         if _submit_key in _running_job_ids:
             _running_futures[_submit_key] = fut
     return fut

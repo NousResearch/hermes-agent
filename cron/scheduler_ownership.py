@@ -31,14 +31,25 @@ _ticked_lock = threading.Lock()
 
 
 def register_ticked_homes(homes) -> None:
-    """Publish the set of profile homes this process's cron ticker owns this cycle."""
+    """Publish the set of profile homes this process's cron ticker owns this cycle.
+
+    A home that leaves the set also loses its cron worker pool: pools are per home and otherwise
+    live until process exit, so serving (or churning) many profiles leaks one ThreadPoolExecutor
+    and its worker threads per home ever ticked.
+    """
     resolved = {}
     for home in homes:
         path = Path(home)
         resolved[hermes_home_key(path)] = path
     with _ticked_lock:
+        departed = set(_ticked_homes) - set(resolved)
         _ticked_homes.clear()
         _ticked_homes.update(resolved)
+    if departed:
+        # Late import: cron.scheduler imports this module.
+        from cron.scheduler import discard_parallel_pools
+
+        discard_parallel_pools(departed)
 
 
 def ticked_homes() -> dict:

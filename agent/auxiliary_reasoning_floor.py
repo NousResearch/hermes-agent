@@ -90,7 +90,7 @@ def known_reasoning_floor(
     if (_route_key(provider, base_url), str(model or "")) not in _FLOORED_ROUTES:
         return reasoning_config
     logger.info(
-        "Auxiliary %s: %s (%s) cannot disable reasoning; sending effort=%s up front",
-        task or "call", _route_key(provider, base_url) or "provider", model or "model", REASONING_FLOOR_EFFORT,
+        "Auxiliary route cannot disable reasoning; sending effort=%s up front",
+        REASONING_FLOOR_EFFORT,
     )
     return floor_reasoning_config(reasoning_config)

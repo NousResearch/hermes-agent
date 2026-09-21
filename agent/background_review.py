@@ -265,9 +265,9 @@ def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: st
     was a debug-level line nobody saw (#116055): the misrouted model never ran and nothing said so.
     User-visible notice once per agent (same rail as the reasoning_effort notice); log every time."""
     message = (
-        f"⚠ auxiliary.background_review.provider='{task_provider}' (model '{task_model}') could not be "
-        f"resolved: {str(error).splitlines()[0]} — background reviews run on the main model "
-        f"{agent.provider}/{agent.model} instead. Run 'hermes doctor' to check auxiliary routing."
+        "⚠ The configured auxiliary.background_review route could not be resolved "
+        f"({type(error).__name__}) — background reviews run on the main model instead. "
+        "Run 'hermes doctor' to check auxiliary routing."
     )
     logger.warning("%s", message)
     if getattr(agent, "_warned_bg_review_routing", False):

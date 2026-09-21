@@ -70,6 +70,16 @@ def test_load_picker_context_coerces_numeric_yaml_provider():
     assert ctx.current_base_url == "http://192.168.1.10:8082/v1"
 
 
+def test_load_picker_context_carries_per_model_reasoning_defaults():
+    cfg = _cfg(model={"provider": "custom:LocalReasoner", "default": "local-reasoner"})
+    cfg["agent"] = {"reasoning_overrides": {"local-reasoner": "medium"}}
+
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        ctx = load_picker_context()
+
+    assert ctx.reasoning_overrides == {"local-reasoner": "medium"}
+
+
 # ─── with_overrides ────────────────────────────────────────────────────
 
 

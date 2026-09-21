@@ -12,6 +12,7 @@ import {
   setModelVisibilityOpen,
   setVisibleModels
 } from '@/store/model-visibility'
+import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalRuntimeJob } from '@/types/hermes'
 
 import { ModelCatalogMenu, type ModelMenuController } from './model-catalog-menu'
@@ -45,6 +46,7 @@ beforeEach(() => {
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
   setModelVisibilityOpen(false)
+  $defaultReasoningEffort.set('max')
   getGlobalModelOptions.mockResolvedValue({
     providers: [{ models: ['gemini-3.1-pro', 'gemini-2.5-flash'], name: 'Google', slug: 'google' }]
   })
@@ -60,13 +62,14 @@ afterEach(() => {
 
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
-function renderMenu() {
+function renderMenu(presetFor: ModelMenuController['presetFor'] = () => ({})) {
   const select = vi.fn()
+  const applyPreset = vi.fn()
 
   const controller: ModelMenuController = {
-    applyPreset: vi.fn(),
+    applyPreset,
     current: { effort: '', fast: false, model: '', provider: '' },
-    presetFor: () => ({}),
+    presetFor,
     select,
     setOptions: vi.fn()
   }
@@ -83,8 +86,82 @@ function renderMenu() {
     </QueryClientProvider>
   )
 
-  return select
+  return { applyPreset, select }
 }
+
+describe('per-model configured reasoning defaults', () => {
+  it('uses the model-specific effort instead of copying the global effort into the new route', async () => {
+    const model = 'local-reasoner-27b'
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          capabilities: {
+            [model]: { default_reasoning_effort: 'medium', fast: false, reasoning: true }
+          },
+          models: [model],
+          name: 'LocalReasoner',
+          slug: 'custom:localreasoner'
+        }
+      ]
+    })
+    const { applyPreset } = renderMenu()
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'reasoner' } })
+
+    let modelRow: HTMLElement | undefined
+    await waitFor(() => {
+      // eslint-disable-next-line no-restricted-globals
+      modelRow = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item =>
+        item.textContent?.toLowerCase().includes('27b')
+      )
+      expect(modelRow).toBeDefined()
+    })
+    fireEvent.click(modelRow!)
+
+    await waitFor(() =>
+      expect(applyPreset).toHaveBeenCalledWith(
+        { effort: 'medium', fast: undefined },
+        { model, provider: 'custom:localreasoner' }
+      )
+    )
+  })
+
+  it('repairs a legacy preset that merely froze the conflicting global default', async () => {
+    const model = 'local-reasoner-27b'
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          capabilities: {
+            [model]: { default_reasoning_effort: 'medium', fast: false, reasoning: true }
+          },
+          models: [model],
+          name: 'LocalReasoner',
+          slug: 'custom:localreasoner'
+        }
+      ]
+    })
+    const { applyPreset } = renderMenu(() => ({ effort: 'max' }))
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'reasoner' } })
+
+    let modelRow: HTMLElement | undefined
+    await waitFor(() => {
+      // eslint-disable-next-line no-restricted-globals
+      modelRow = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item =>
+        item.textContent?.toLowerCase().includes('27b')
+      )
+      expect(modelRow).toBeDefined()
+    })
+    fireEvent.click(modelRow!)
+
+    await waitFor(() =>
+      expect(applyPreset).toHaveBeenCalledWith(
+        { effort: 'medium', fast: undefined },
+        { model, provider: 'custom:localreasoner' }
+      )
+    )
+  })
+})
 
 // Curation is ONE global preference, so it belongs to the catalog rather than
 // to whichever surface mounted it. If a host had to opt in, the composer and

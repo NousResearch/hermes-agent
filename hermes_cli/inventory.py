@@ -23,6 +23,7 @@ class ConfigContext:
     user_providers: dict
     custom_providers: list
     excluded_providers: list = None
+    reasoning_overrides: dict | None = None
 
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
@@ -52,11 +53,14 @@ def load_picker_context() -> ConfigContext:
     else:  # config.model can be a bare string in older configs
         current_model, current_provider, current_base_url = (str(model_cfg) if model_cfg else ""), "", ""
     excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    reasoning_overrides = agent_cfg.get("reasoning_overrides")
     return ConfigContext(
         current_provider=current_provider, current_model=current_model, current_base_url=current_base_url,
         user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
+        reasoning_overrides=reasoning_overrides if isinstance(reasoning_overrides, dict) else {},
     )
 
 
@@ -144,6 +148,7 @@ def build_models_payload(
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier, cached_only=pricing_cache_only)
     if capabilities:
         _apply_capabilities(rows)
+        _apply_configured_reasoning_defaults(rows, ctx.reasoning_overrides)
     if featured:
         _apply_featured(rows)
     _apply_custom_aliases(rows)
@@ -344,6 +349,27 @@ def _apply_capabilities(rows: list[dict]) -> None:
             caps[model] = entry
 
         row["capabilities"] = caps
+
+
+def _apply_configured_reasoning_defaults(rows: list[dict], reasoning_overrides: dict | None) -> None:
+    """Expose only the user's configured per-model default, never provider-advertised effort lists."""
+    from hermes_constants import resolve_per_model_reasoning_effort
+
+    for row in rows:
+        capabilities = row.get("capabilities")
+        if not isinstance(capabilities, dict):
+            continue
+        for model in row.get("models") or []:
+            entry = capabilities.get(model)
+            if not isinstance(entry, dict):
+                continue
+            configured = resolve_per_model_reasoning_effort(model, reasoning_overrides)
+            if configured is None:
+                continue
+            if configured.get("enabled") is False:
+                entry["default_reasoning_effort"] = "none"
+            elif configured.get("effort"):
+                entry["default_reasoning_effort"] = str(configured["effort"])
 
 
 # Newest N models per lab an aggregator row features by default (older tail behind search/show-all);

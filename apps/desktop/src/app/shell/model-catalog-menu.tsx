@@ -289,6 +289,16 @@ export function ModelCatalogMenu({
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
     const caps = provider.capabilities?.[family.id]
     const preset = controller.presetFor(provider.slug, family.id)
+    const configuredEffort = caps?.default_reasoning_effort
+
+    // Before model-specific defaults were carried by the catalog, selecting a model with no
+    // remembered effort copied the GLOBAL default into the preset store. Treat that legacy value
+    // as inherited when it conflicts with an explicit per-model default; genuine non-default
+    // choices (low/xhigh/etc.) still win.
+    const presetEffort =
+      configuredEffort && preset.effort === defaultEffort && preset.effort !== configuredEffort
+        ? undefined
+        : preset.effort
 
     // Variant-fast models (no speed param) express "fast" as a separate `-fast`
     // id, so honor the remembered preset by selecting that sibling. Param-fast
@@ -302,7 +312,9 @@ export function ModelCatalogMenu({
 
     controller.applyPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
+        effort: (caps?.reasoning ?? true)
+          ? (presetEffort ?? configuredEffort ?? defaultEffort)
+          : undefined,
         fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
       },
       { model: family.id, provider: provider.slug }

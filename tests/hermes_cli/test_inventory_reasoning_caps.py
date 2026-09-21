@@ -60,6 +60,51 @@ def test_advertised_efforts_never_reach_the_picker(monkeypatch):
     assert "supported_efforts" not in rows[0]["capabilities"]["deepseek/deepseek-v4-pro"]
 
 
+def test_configured_per_model_effort_reaches_picker_without_exposing_catalog_efforts(monkeypatch):
+    """A model-specific config override is the picker's default for that model.
+
+    Otherwise the Desktop copies the previous/global effort into a fresh
+    session and outranks the backend override before the first request.
+    """
+    _patch_catalog(monkeypatch, {})
+    model = "local-reasoner-27b"
+    rows = [{"slug": "custom:localreasoner", "models": [model, "other-model"]}]
+
+    inv._apply_capabilities(rows)
+    inv._apply_configured_reasoning_defaults(rows, {model: "medium"})
+
+    assert rows[0]["capabilities"][model]["default_reasoning_effort"] == "medium"
+    assert "default_reasoning_effort" not in rows[0]["capabilities"]["other-model"]
+
+
+def test_model_options_payload_threads_configured_effort_into_the_provider_row(monkeypatch):
+    model = "local-reasoner-27b"
+    row = {
+        "slug": "custom:localreasoner",
+        "name": "LocalReasoner",
+        "models": [model],
+        "is_user_defined": True,
+    }
+    ctx = inv.ConfigContext(
+        current_provider="openai-codex",
+        current_model="gpt-5.6-sol",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        reasoning_overrides={model: "medium"},
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.list_authenticated_providers", lambda **_kw: [row])
+    monkeypatch.setattr(inv, "_local_runtime_row", lambda _ctx: None)
+    monkeypatch.setattr(inv, "_moa_provider_row", lambda _provider: None)
+    monkeypatch.setattr(inv, "_reasoning_catalog_reader", lambda _slug: None)
+    monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda _model: False)
+    monkeypatch.setattr("agent.models_dev.get_model_capabilities", lambda _provider, _model: None)
+
+    payload = inv.build_models_payload(ctx, capabilities=True)
+
+    assert payload["providers"][0]["capabilities"][model]["default_reasoning_effort"] == "medium"
+
+
 def test_non_reasoning_route_offers_no_reasoning_controls(monkeypatch):
     """The serving provider's catalog outranks the models.dev inference.
 

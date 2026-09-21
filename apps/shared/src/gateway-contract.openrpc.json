@@ -15298,6 +15298,18 @@
             ],
             "default": null,
             "title": "Can Disable Reasoning"
+          },
+          "default_reasoning_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Default Reasoning Effort"
           }
         },
         "required": [

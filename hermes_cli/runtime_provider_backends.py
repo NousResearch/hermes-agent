@@ -157,9 +157,9 @@ def _resolve_openrouter_runtime(
     )
     if is_openrouter_context:
         # Same read order as the credential pool and _resolve_api_key_provider_secret
-        # (.env, then scope-aware os.environ). get_secret_str sees os.environ only, so a key
-        # living solely in ~/.hermes/.env was lost once the pool entry went exhausted/benched
-        # (#117667).
+        # (.env, then scope-aware os.environ, raw op:// references yielding to the resolved
+        # scoped value). get_secret_str sees os.environ only, so a key living solely in
+        # ~/.hermes/.env was lost once the pool entry went exhausted/benched (#117667).
         from hermes_cli.config import get_env_value_prefer_dotenv
         candidates = [
             explicit_api_key,

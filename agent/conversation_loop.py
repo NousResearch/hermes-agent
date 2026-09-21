@@ -225,6 +225,8 @@ _LOCAL_PROCESSING_MODULES = frozenset({
     "agent_runtime_helpers",
     "message_content",
     "message_sanitization",
+    # 2K-law shard of agent_runtime_helpers (#79925); same frames, new basename.
+    "prompt_cache_policy",
     "chat_completion_helpers",  # only local when NOT also an API-call module
 })
 _API_CALL_MODULES = frozenset({"chat_completion_helpers"})

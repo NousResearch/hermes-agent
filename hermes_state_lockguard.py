@@ -41,6 +41,10 @@ _SHARED_SIZE = 510
 _SHM_DMS_BYTE = 128
 
 try:
+    # Windows may have an importable fcntl compatibility shim, but SQLite's
+    # POSIX OFD lock geometry does not apply there (nor need its constants).
+    if sys.platform == "win32":
+        raise ImportError("POSIX WAL lock guard is unavailable on Windows")
     import fcntl
     # CPython exports F_OFD_SETLK only from 3.12. The kernel ABI values are stable: 37 on every
     # Linux arch (asm-generic/fcntl.h), 90 on XNU (bsd/sys/fcntl.h, documented in fcntl(2)).

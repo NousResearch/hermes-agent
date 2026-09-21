@@ -196,13 +196,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     onRequest: callback => {
       const channel = 'hermes:screenshot:request'
       const listener = (_event, requestId) => callback(requestId)
+
       if (ipcRenderer.listenerCount(channel) === 0) {
         ipcRenderer.send('hermes:screenshot:subscribe', true)
       }
+
       ipcRenderer.on(channel, listener)
 
       return () => {
         ipcRenderer.removeListener(channel, listener)
+
         if (ipcRenderer.listenerCount(channel) === 0) {
           ipcRenderer.send('hermes:screenshot:subscribe', false)
         }
@@ -318,6 +321,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   selectSavePath: options => ipcRenderer.invoke('hermes:selectSavePath', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
+  writeClipboardRich: (payload: { html: string; text: string }) =>
+    ipcRenderer.invoke('hermes:writeClipboardRich', payload),
   readClipboard: () => ipcRenderer.invoke('hermes:readClipboard'),
   saveGatewayFile: payload => ipcRenderer.invoke('hermes:saveGatewayFile', payload),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),

@@ -60,6 +60,7 @@ import {
   VolumeXIcon,
   XIcon
 } from '@/lib/icons'
+import { renderedMessageHtml } from '@/lib/message-clipboard-html'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -991,7 +992,13 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             <GitForkIcon className="size-3.5" />
           </TooltipIconButton>
         )}
-        <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
+        <CopyButton
+          appearance="icon"
+          buttonSize="icon"
+          html={renderedMessageHtml}
+          label={copy.copy}
+          text={getMessageText}
+        />
         <ReadAloudButton getText={getMessageText} messageId={messageId} />
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>

@@ -14,13 +14,40 @@ type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'contex
 type CopyStatus = 'copied' | 'error' | 'idle'
 const COPIED_RESET_MS = 1_500
 
-export async function writeClipboardText(text: string) {
+/**
+ * Write `text` (and optionally an HTML rendering of the same content) to the
+ * clipboard. With `html`, rich targets (mail, docs) paste formatting while
+ * plain targets (editors, terminals) still receive `text` — the Markdown the
+ * agent wrote — so a copied reply reads well wherever it lands.
+ */
+export async function writeClipboardText(text: string, html?: null | string) {
   if (!text) {
     return
   }
 
-  if (window.hermesDesktop?.writeClipboard) {
-    await window.hermesDesktop.writeClipboard(text)
+  const bridge = window.hermesDesktop
+
+  if (html && bridge?.writeClipboardRich) {
+    await bridge.writeClipboardRich({ html, text })
+
+    return
+  }
+
+  if (bridge?.writeClipboard) {
+    await bridge.writeClipboard(text)
+
+    return
+  }
+
+  // Browser-hosted renderer (web dashboard): the async clipboard API carries
+  // both flavours; fall back to text-only where ClipboardItem is absent.
+  if (html && navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([text], { type: 'text/plain' })
+      })
+    ])
 
     return
   }
@@ -43,6 +70,10 @@ export interface CopyButtonProps {
   disabled?: boolean
   errorMessage?: string
   haptic?: boolean
+  /** Optional HTML flavour of `text`, resolved at copy time from the button
+   *  element (so callers can read the rendered DOM it sits in). Null/empty
+   *  keeps the copy text-only. */
+  html?: (anchor: HTMLElement | null) => null | string | undefined
   iconClassName?: string
   label?: string
   onCopied?: () => void
@@ -64,6 +95,7 @@ export function CopyButton({
   disabled = false,
   errorMessage,
   haptic = true,
+  html,
   iconClassName,
   label,
   onCopied,
@@ -106,7 +138,9 @@ export function CopyButton({
           return
         }
 
-        await writeClipboardText(value)
+        const anchor = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null
+
+        await writeClipboardText(value, html?.(anchor))
 
         if (haptic) {
           triggerHaptic('selection')
@@ -136,7 +170,7 @@ export function CopyButton({
         }, COPIED_RESET_MS)
       }
     },
-    [haptic, onCopied, onCopyError, preventDefault, stopPropagation, text]
+    [haptic, html, onCopied, onCopyError, preventDefault, stopPropagation, text]
   )
 
   const Icon = status === 'copied' ? Check : status === 'error' ? X : Copy

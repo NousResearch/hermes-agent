@@ -17398,6 +17398,20 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
+// Both flavours in one write: rich editors take the HTML, plain ones the text.
+ipcMain.handle('hermes:writeClipboardRich', (_event, payload: { html?: unknown; text?: unknown } = {}) => {
+  const text = String(payload.text || '')
+  const html = String(payload.html || '')
+
+  if (!html) {
+    clipboard.writeText(text)
+  } else {
+    clipboard.write({ html, text })
+  }
+
+  return true
+})
+
 // Native save-location picker (profile export etc.) — the write itself happens
 // elsewhere (the backend, for profile archives); this only picks the path.
 ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {

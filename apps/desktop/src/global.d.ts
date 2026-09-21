@@ -313,6 +313,9 @@ declare global {
         title?: string
       }) => Promise<null | string>
       writeClipboard: (text: string) => Promise<boolean>
+      /** text/plain + text/html in one write. Absent on older shells — callers
+       *  fall back to writeClipboard. */
+      writeClipboardRich?: (payload: { html: string; text: string }) => Promise<boolean>
       readClipboard: () => Promise<string>
       saveGatewayFile?: (payload: {
         connectionId?: null | string

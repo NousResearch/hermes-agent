@@ -879,6 +879,35 @@ class TestBackgroundReviewDeleteGate:
         assert result["staged"] is True
         # Atomic: the batch is only a proposal — its add must not land either.
         assert "fork consolidation" not in store._entries_for("memory")
+        assert "holds 1 add operation" in result["message"]
+
+    def test_repeated_proposal_is_deduplicated_and_queue_is_bounded(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        store.add("memory", "rule one")
+        token = set_current_write_origin("background_review")
+        try:
+            first = json.loads(memory_tool(
+                action="replace", old_text="rule one", content="replacement", store=store))
+            repeated = json.loads(memory_tool(
+                action="replace", old_text="rule one", content="replacement", store=store))
+            assert repeated["pending_id"] == first["pending_id"]
+            assert repeated["deduplicated"] is True
+
+            from tools.memory_tool import _MAX_BACKGROUND_MEMORY_PROPOSALS
+            for index in range(1, _MAX_BACKGROUND_MEMORY_PROPOSALS):
+                result = json.loads(memory_tool(
+                    action="replace", old_text="rule one", content=f"replacement {index}", store=store))
+                assert result["proposal_staged"] is True
+            overflow = json.loads(memory_tool(
+                action="replace", old_text="rule one", content="one proposal too many", store=store))
+        finally:
+            reset_current_write_origin(token)
+
+        from tools.write_approval import MEMORY, pending_count
+        assert pending_count(MEMORY) == _MAX_BACKGROUND_MEMORY_PROPOSALS
+        assert overflow["proposal_blocked"] is True
+        assert overflow["staged"] is False
+        assert "already await review" in overflow["message"]
 
     def test_add_still_allowed_in_background_review(self, store):
         token = set_current_write_origin("background_review")

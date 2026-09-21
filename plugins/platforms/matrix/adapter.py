@@ -10,7 +10,8 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
-  MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
+  MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_REPLY_TO_MODE off|first|all (default first);
+  MATRIX_MAX_MESSAGE_LENGTH (default 16000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
   true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
 
@@ -833,6 +834,18 @@ class MatrixAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.MATRIX)
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
+        # reply_to_mode ("off"|"first"|"all"), mirroring Discord/Telegram: "off" sends plain
+        # messages without the m.in_reply_to quote anchor; threaded sends keep their m.thread
+        # relation (the in_reply_to fallback inside a thread relation stays, per spec it is what
+        # unthreaded clients render). YAML 1.1 parses a bare `off`/`on` as a bool — normalized.
+        # The `extra:` spelling is resolved at config-load time by the YAML bridge → env (discord
+        # pattern); the adapter reads the typed PlatformConfig key.
+        _rtm = getattr(config, "reply_to_mode", None)
+        if isinstance(_rtm, bool):
+            _rtm = "all" if _rtm else "off"
+        self._reply_to_mode: str = str(_rtm or "first").strip().lower()
+        if self._reply_to_mode not in {"off", "first", "all"}:
+            self._reply_to_mode = "first"
         # A chunk near the outbound limit almost certainly has a continuation.
         self._SPLIT_THRESHOLD = max(100, self.max_message_length - 100)
         # Homeserver/user_id/device_id go through the same scoped reader as the token/password:
@@ -1396,9 +1409,11 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         last_event_id = None
-        for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
+        for index, chunk in enumerate(self.truncate_message(self.format_message(content), self.max_message_length)):
             msg_content = self._build_text_message_content(chunk)
-            self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            # "first" (default) anchors chunk 0 only, "all" anchors every chunk, "off" none.
+            chunk_reply_to = reply_to if self._should_reply_anchor(reply_to, index) else None
+            self._apply_relation_metadata(msg_content, reply_to=chunk_reply_to, metadata=metadata)
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -2813,12 +2828,32 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["formatted_body"] = html
         return msg_content
 
+    def _should_reply_anchor(self, reply_to: Optional[str], chunk_index: int) -> bool:
+        """Whether this chunk (0 = first) carries the plain m.in_reply_to anchor, per reply_to_mode.
+
+        Mirrors Telegram's _should_thread_reply: "off" never, "all" always, "first" (default)
+        only chunk 0. Thread relations are per-send, not chunk-gated (see _apply_relation_metadata).
+        """
+        if not reply_to:
+            return False
+        if self._reply_to_mode == "off":
+            return False
+        if self._reply_to_mode == "all":
+            return True
+        return chunk_index == 0  # "first" (default)
+
     def _apply_relation_metadata(
         self, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Apply Matrix reply/thread relation metadata to an outbound payload."""
+        """Apply Matrix reply/thread relation metadata to an outbound payload.
+
+        ``reply_to`` arrives already chunk-gated from send() via _should_reply_anchor;
+        the off-check below also guards single-shot callers (media/voice sends).
+        """
         thread_id = str((metadata or {}).get("thread_id") or "")
-        if reply_to:
+        # reply_to_mode "off" drops the plain reply anchor (no quote pill); a thread relation
+        # still carries its in_reply_to fallback so non-thread clients keep rendering the pill.
+        if reply_to and self._reply_to_mode != "off":
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
@@ -3125,6 +3160,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
     ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
+    ("reply_to_mode", "MATRIX_REPLY_TO_MODE", "lower"),
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
@@ -3134,6 +3170,14 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
+    # reply_to_mode: top-level preferred, falls back to extra; YAML 1.1 parses a bare `off`/`on`
+    # as a bool, so normalize before bridging (a "false" env value would be ignored by
+    # _ReplyMode) — same shape as the discord bridge.
+    _matrix_extra: dict = matrix_cfg.get("extra") if isinstance(matrix_cfg.get("extra"), dict) else {}  # type: ignore[assignment]
+    if "reply_to_mode" not in matrix_cfg and "reply_to_mode" in _matrix_extra:
+        matrix_cfg = {**matrix_cfg, "reply_to_mode": _matrix_extra["reply_to_mode"]}
+    if isinstance(matrix_cfg.get("reply_to_mode"), bool):
+        matrix_cfg = {**matrix_cfg, "reply_to_mode": "all" if matrix_cfg["reply_to_mode"] else "off"}
     return _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE)
 
 

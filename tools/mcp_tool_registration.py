@@ -6,6 +6,7 @@ live, ``_register_from_cache_sync`` lazy) build ``_Candidate`` records for ``_re
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
@@ -72,16 +73,75 @@ def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
             (config or {}).get("trust"))
 
 
-def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
-    """Remember the exact raw MCP server that registered *tool_name*."""
+def _track_mcp_tool_server(tool_name: str, server_name: str, scope: Optional[str] = None) -> None:
+    """Remember the exact raw MCP server that registered *tool_name* (for *scope*'s overlay)."""
     with _core._lock:
         _core._mcp_tool_server_names[tool_name] = server_name
+        # Provenance that OUTLIVES deregistration (see _describe_unknown_mcp_tool); bounded because a
+        # server whose tool list churns would otherwise accumulate names for the life of the process.
+        owners = _core._known_mcp_tool_owners
+        owners[(scope, tool_name)] = server_name
+        owners.move_to_end((scope, tool_name))
+        while len(owners) > _core._MAX_REMEMBERED_TOOL_OWNERS:
+            owners.popitem(last=False)
 
 
 def _forget_mcp_tool_server(tool_name: str) -> None:
-    """Forget MCP server provenance for a deregistered tool."""
+    """Forget MCP server provenance for a deregistered tool. Only the LIVE map is cleared:
+    ``_known_mcp_tool_owners`` keeps the association, since a deregistered tool is exactly the
+    case where the model still has the name in its byte-stable schema."""
     with _core._lock:
         _core._mcp_tool_server_names.pop(tool_name, None)
+
+
+def _describe_unknown_mcp_tool(tool_name: str, scope: Optional[str] = None) -> Optional[str]:
+    """Unknown-tool resolver (``tools.registry``): explain a vanished MCP tool precisely, or None
+    when the name was never ours. When a server parks or fails to connect its tools leave the
+    registry, but the conversation's schema is byte-stable (prompt caching), so the model keeps
+    calling them; "Unknown tool" reads as proof the capability does not exist and a transport
+    outage of seconds becomes a permanent-looking loss of capability. The verdict says WHICH is
+    true: connected but no longer offering the tool, in connect backoff, parked and self-probing,
+    reconnecting, or gone from this process. Under a profile multiplexer the verdict describes
+    the DISPATCHING profile's connection: *scope* is the registry dispatch scope (the current
+    context's when the caller passed none); a single-profile process keeps bare keys."""
+    current = _core._mcp_registry_scope()
+    mcp_scope = None if current is None else (scope or current)
+    with _core._lock:
+        server_name = _core._known_mcp_tool_owners.get((mcp_scope, tool_name))
+        if not server_name:
+            return None
+        server = _core._servers.get(_resolve_server_key(server_name, mcp_scope, current=False))
+        backoff_until = _core._server_connect_retry_after.get(_server_key(server_name, mcp_scope, current=False), 0.0)
+    if server is None:  # known name, no live server task: removed from the config, or never came up
+        return (f"MCP tool '{tool_name}' is not currently available. Its server '{server_name}' has no running "
+                f"connection in this process — it may have been removed from the MCP configuration, or failed to "
+                f"start. Ask the user to check `hermes mcp list` rather than assuming the capability does not exist.")
+    parked = bool(getattr(server, "_was_parked", False))
+    # A CONNECTED server that does not offer this tool is a different answer: the name is genuinely gone,
+    # and "wait for the reconnect" would loop the model against a server that is already up. Checked
+    # BEFORE the backoff, whose deadline a retained-server recovery does not clear.
+    registered = list(getattr(server, "_registered_tool_names", None) or [])
+    if getattr(server, "session", None) is not None and not parked and registered:
+        return (f"MCP tool '{tool_name}' no longer exists on server '{server_name}'. The server is connected and "
+                f"serving {len(registered)} other tools, so this is not an outage — the tool was removed, renamed, "
+                f"or filtered out of the configuration since this conversation started. Do NOT retry it. Use the "
+                f"tools currently available, or ask the user to check the server's configuration.")
+    prefix = (f"MCP tool '{tool_name}' is temporarily unavailable: its server '{server_name}' is configured and "
+              f"known, but is not connected right now.")
+    dont_conclude = ("This is a transport outage, NOT a missing capability — do NOT tell the user that Hermes cannot "
+                     "do this, and do NOT look for another way to do it on the assumption the tool does not exist.")
+    remaining = int(backoff_until - time.monotonic())
+    if remaining > 0:
+        remaining = max(1, remaining)
+        return (f"{prefix} It is in connect backoff after repeated failures and will retry in ~{remaining}s. "
+                f"{dont_conclude} Wait for that window before retrying, or continue with other work.")
+    if parked:
+        return (f"{prefix} It exhausted its reconnect budget and parked; it self-probes every "
+                f"{_core._PARKED_RETRY_INTERVAL}s and re-registers its tools as soon as it is back. {dont_conclude} "
+                f"Retry after that interval, or continue with other work meanwhile.")
+    return (f"{prefix} A reconnect is in progress. {dont_conclude} Wait a few seconds and retry this call ONCE. If "
+            f"it fails again, stop retrying and tell the user the '{server_name}' MCP server is not responding so "
+            f"they can check it.")
 
 
 def _server_key_for_task(server) -> object:
@@ -347,7 +407,7 @@ def _register_candidates(name: str, candidates: List[_Candidate], *, check_fn: C
             name=c.registry_name, toolset=toolset_name, schema=c.schema, handler=c.handler, check_fn=check_fn,
             is_async=False, description=c.schema.get("description") or "", scope=scope_value)
         if registry.get_toolset_for_tool(c.registry_name) == toolset_name:
-            _track_mcp_tool_server(c.registry_name, name)
+            _track_mcp_tool_server(c.registry_name, name, scope_value)
             if scope_value is not None:
                 with _core._lock:
                     _core._server_tool_scopes.setdefault(key, set()).add(scope_value)

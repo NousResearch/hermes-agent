@@ -19,6 +19,7 @@ import os
 import sys
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -513,6 +514,11 @@ def _reset_server_error(server_name: str) -> None:
 _parallel_safe_servers: set = set()
 # registry tool name -> raw server name (the generated name is lossy; never re-parse it).
 _mcp_tool_server_names: Dict[str, str] = {}
+# (registry scope, registry tool name) -> raw server name, KEPT after deregistration (bounded,
+# oldest first out): a call to a parked server's tool gets a precise verdict instead of "Unknown
+# tool". Scoped like the connection ledgers: two profiles' servers can normalize to one tool name.
+_known_mcp_tool_owners: "OrderedDict[tuple, str]" = OrderedDict()
+_MAX_REMEMBERED_TOOL_OWNERS = 2000
 
 # Dedicated event loop in a background daemon thread; _lock guards the loop handles, _servers,
 # the status maps and the PID ledgers.
@@ -691,6 +697,20 @@ _MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 0.5
 # Waiter budget (max_retries * delay) must outlast the pass ceiling: 320 s > 300 s.
 _MCP_DISCOVERY_LOCK_MAX_RETRIES = int(
     _MCP_DISCOVERY_PASS_MAX_SEC / _MCP_DISCOVERY_LOCK_RETRY_DELAY_S) + 20
+
+
+def _describe_unknown_mcp_tool(tool_name: str, scope: Optional[str] = None) -> Optional[str]:
+    """Unknown-tool resolver; the verdicts live in ``mcp_tool_registration`` (imported lazily, like
+    every split module). Registered here because a remembered tool name implies this module loaded."""
+    from tools.mcp_tool_registration import _describe_unknown_mcp_tool as _describe
+    return _describe(tool_name, scope)
+
+
+try:
+    from tools.registry import registry as _tool_registry
+    _tool_registry.register_unknown_tool_resolver(_describe_unknown_mcp_tool)
+except Exception:  # never block import on the hook
+    logger.debug("Could not register the MCP unknown-tool resolver", exc_info=True)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

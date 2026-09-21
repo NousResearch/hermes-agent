@@ -429,6 +429,27 @@ def _ensure_direct_aliases() -> None:
         DIRECT_ALIASES.update(_load_direct_aliases())
 
 
+def resolve_direct_alias(name: Optional[str]) -> Optional[DirectAlias]:
+    """Return the exact :class:`DirectAlias` configured for ``name``, else None.
+
+    The single entry point for "is this string a configured alias?", so every
+    caller agrees on the answer: the one-shot path (``hermes -z ... -m``),
+    ``hermes chat -m``, and ``/model <alias>``.  Lookup is case-insensitive and
+    loads config lazily on first use.
+
+    Returns ``None`` for an empty/unknown name and never raises — a caller with
+    a literal model id must be able to fall through to normal resolution.
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return None
+    try:
+        _ensure_direct_aliases()
+    except Exception:
+        return None
+    return DIRECT_ALIASES.get(raw.lower())
+
+
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------

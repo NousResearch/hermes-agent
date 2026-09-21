@@ -2506,6 +2506,35 @@ def _resolve_use_tui(args) -> bool:
         return False
 
 
+def _expand_model_alias_flag(args) -> None:
+    """Expand a configured model alias passed to ``--model``, in place.
+
+    ``hermes chat -m sol`` must reach the model the user configured.  Without
+    this, the literal alias string is passed on as a model id: with no
+    ``--provider`` the configured provider's fuzzy normalizer silently
+    substitutes an unrelated default (``sol`` -> the profile default model),
+    and with an explicit ``--provider`` the upstream API rejects it with a 400.
+    ``hermes -z ... -m <alias>`` (oneshot) and ``/model <alias>`` already
+    resolve — both now share :func:`~hermes_cli.model_switch.resolve_direct_alias`
+    with this path so the three agree.
+
+    An explicit ``--provider`` wins: only the model half is expanded then, so
+    ``hermes chat -m sol --provider openrouter`` still asks OpenRouter for it.
+    """
+    try:
+        from hermes_cli.model_switch import resolve_direct_alias
+    except Exception:
+        return
+    alias = resolve_direct_alias(getattr(args, "model", None))
+    if alias is None:
+        return
+    args.model = alias.model
+    if not (getattr(args, "provider", None) or "").strip():
+        args.provider = alias.provider
+    if alias.base_url:
+        args.base_url = alias.base_url.rstrip("/")
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
     use_tui = _resolve_use_tui(args)
@@ -2667,6 +2696,12 @@ def cmd_chat(args):
 
     _pin_kanban_board_env()
 
+    # Expand a configured `model_aliases:` / `model.aliases` entry passed to
+    # -m/--model before anything consumes it, so both the TUI child (via
+    # HERMES_INFERENCE_MODEL) and the CLI/quiet-query path below get the real
+    # model+provider instead of the literal alias string.
+    _expand_model_alias_flag(args)
+
     if use_tui:
         _launch_tui(
             getattr(args, "resume", None),
@@ -2693,6 +2728,9 @@ def cmd_chat(args):
     kwargs = {
         "model": args.model,
         "provider": getattr(args, "provider", None),
+        # Only set by _expand_model_alias_flag() when the matched alias carries
+        # its own endpoint (custom/local server aliases).
+        "base_url": getattr(args, "base_url", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
         "verbose": getattr(args, "verbose", None),

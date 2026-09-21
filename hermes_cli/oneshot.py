@@ -355,13 +355,14 @@ def _run_agent(
         # path and the configured provider is already correct).
         explicit_model = (model or "").strip() or env_model
         if explicit_model:
-            # First check DIRECT_ALIASES populated from config.yaml `model_aliases:`.
-            # These map a user-defined alias to (model, provider, base_url) for
-            # endpoints not in any catalog (local servers, custom proxies, etc.).
+            # First check DIRECT_ALIASES populated from config.yaml
+            # `model_aliases:` / `model.aliases`.  These map a user-defined
+            # alias to (model, provider, base_url) for endpoints not in any
+            # catalog (local servers, custom proxies, etc.).  Shared with the
+            # `hermes chat -m` path via resolve_direct_alias() so both agree.
             try:
                 from hermes_cli import model_switch as _ms
-                _ms._ensure_direct_aliases()
-                direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
+                direct = _ms.resolve_direct_alias(explicit_model)
             except Exception:
                 direct = None
             if direct is not None:

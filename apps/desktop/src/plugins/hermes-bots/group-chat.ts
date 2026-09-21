@@ -12,6 +12,7 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
+import { GROUP_QUOTE_TEXT_CHARS } from './group-quote'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
@@ -333,6 +334,16 @@ export function groupChatSyncSnapshot(
         },
         text: compacted.text,
         at: Number(entry?.at || 0),
+        ...(entry?.replyTo
+          ? {
+              // Bounded like every other field: the mirror is a byte budget.
+              replyTo: {
+                at: Number(entry.replyTo.at || 0),
+                from: String(entry.replyTo.from || '').slice(0, 128),
+                text: compactGroupChatSyncText(String(entry.replyTo.text || ''), GROUP_QUOTE_TEXT_CHARS).text
+              }
+            }
+          : {}),
         ...(entry?.thread
           ? {
               thread: String(entry.thread).slice(0, 128)
@@ -1516,7 +1527,9 @@ export function trimGroupChatLog(
   let keep = 0
 
   for (let i = capped.length - 1; i >= 0 && keep < limit; i--) {
-    total += capped[i].text.length
+    // The quote is stored characters too: counting only the body let a log at
+    // the char budget overshoot by up to GROUP_QUOTE_TEXT_CHARS per entry.
+    total += capped[i].text.length + (capped[i].replyTo?.text.length ?? 0)
 
     if (keep && total > chars) {
       break

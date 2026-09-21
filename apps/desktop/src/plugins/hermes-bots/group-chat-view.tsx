@@ -967,6 +967,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         ...(current.pendingAttachments || {}),
         [thread]: []
       },
+      // Consumed here too: a quote armed in the thread must not ride out on the
+      // next main-composer send.
+      quote: null,
       replies: {
         ...(current.replies || {}),
         [thread]: ''
@@ -974,8 +977,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }))
 
     // Reply box = CONTINUE this thread; the member turns it triggers are
-    // scoped to it.
-    const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images)
+    // scoped to it. The quote rides the same way it does from the main
+    // composer.
+    const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images, composerDraft.quote || undefined)
 
     if (!sent) {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
@@ -984,6 +988,39 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         setComposerDraft(restored)
       }
     }
+  }
+
+  /** The armed quote, above whichever composer owns the next send: the main
+   *  composer and a thread's reply box both consume it. */
+  const quoteStrip = () => {
+    const quote = composerDraft.quote
+
+    if (!quote) {
+      return null
+    }
+
+    return (
+      <div
+        className="mx-1 mb-1 flex items-start gap-1.5 border-l-2 border-(--ui-accent) bg-(--chrome-action-hover) px-2 py-1"
+        data-slot="group-quote-draft"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[0.625rem] font-semibold text-(--ui-text-tertiary)">{quote.from}</div>
+          <div className="truncate text-[0.6875rem] text-(--ui-text-secondary)">{quote.text}</div>
+        </div>
+        <Tip label={b.group.quoteClear}>
+          <Button
+            aria-label={b.group.quoteClear}
+            className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+            onClick={() => updateComposerDraft(current => ({ ...current, quote: null }))}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <Codicon name="close" />
+          </Button>
+        </Tip>
+      </div>
+    )
   }
 
   /** Pending-attachment chips + the picker for one composer (thread = null →
@@ -1172,19 +1209,21 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                     </Button>
                   </Tip>
                 )}
-                <Tip label={`${b.group.quote} ${display}`}>
-                  <Button
-                    aria-label={`${b.group.quote} ${display}`}
-                    className="text-(--ui-text-tertiary) hover:text-foreground"
-                    onClick={() =>
-                      updateComposerDraft(current => ({ ...current, quote: quoteFromMessage(entry, display) }))
-                    }
-                    size="icon"
-                    variant="ghost"
-                  >
-                    <Codicon name="quote" />
-                  </Button>
-                </Tip>
+                {entry.text.trim() ? (
+                  <Tip label={`${b.group.quote} ${display}`}>
+                    <Button
+                      aria-label={`${b.group.quote} ${display}`}
+                      className="text-(--ui-text-tertiary) hover:text-foreground"
+                      onClick={() =>
+                        updateComposerDraft(current => ({ ...current, quote: quoteFromMessage(entry, display) }))
+                      }
+                      size="icon"
+                      variant="ghost"
+                    >
+                      <Codicon name="quote" />
+                    </Button>
+                  </Tip>
+                ) : null}
                 {entry.text.trim() ? <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} /> : null}
               </div>
             ) : null}
@@ -1270,6 +1309,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             submitReply(id)
           }}
         >
+          {quoteStrip()}
           {attachmentRow(id)}
           <div className="flex items-center gap-1.5">
             <GroupMentionInput
@@ -1383,30 +1423,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             submit()
           }}
         >
-          {composerDraft.quote ? (
-            <div
-              className="mx-1 mb-1 flex items-start gap-1.5 border-l-2 border-(--ui-accent) bg-(--chrome-action-hover) px-2 py-1"
-              data-slot="group-quote-draft"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[0.625rem] font-semibold text-(--ui-text-tertiary)">
-                  {composerDraft.quote.from}
-                </div>
-                <div className="truncate text-[0.6875rem] text-(--ui-text-secondary)">{composerDraft.quote.text}</div>
-              </div>
-              <Tip label={b.group.quoteClear}>
-                <Button
-                  aria-label={b.group.quoteClear}
-                  className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
-                  onClick={() => updateComposerDraft(current => ({ ...current, quote: null }))}
-                  size="icon-sm"
-                  variant="ghost"
-                >
-                  <Codicon name="close" />
-                </Button>
-              </Tip>
-            </div>
-          ) : null}
+          {quoteStrip()}
           {attachmentRow(null)}
           <div className="flex items-center gap-1.5">
             <GroupMentionInput

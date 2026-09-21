@@ -170,7 +170,7 @@ export interface GroupMessageAuthor {
 /** What a message is answering: a SNAPSHOT, not a pointer — the room log is
  *  trimmed, and a quote has to keep rendering after its original ages out. */
 export interface GroupQuote {
-  /** Epoch ms of the quoted message, for the reference's age. */
+  /** Epoch ms when the quote was TAKEN (not the quoted message's own age). */
   at: number
   /** The speaker's display name when the quote was taken. */
   from: string

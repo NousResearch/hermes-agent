@@ -57,7 +57,11 @@ vi.mock('./avatar', () => ({ avatarColor: () => '#888', botAppearance: () => ({}
 vi.mock('./group-chat-parts', () => ({
   GroupClarifyCard: () => null,
   GroupImageControls: () => null,
-  GroupMentionInput: () => null
+  // A real input so a test can type into a composer and submit it; the shipped
+  // component is the mention-aware editor.
+  GroupMentionInput: ({ onChange, value }: { onChange?: (text: string) => void; value?: string }) => (
+    <input onChange={event => onChange?.(event.target.value)} value={value ?? ''} />
+  )
 }))
 afterEach(cleanup)
 
@@ -134,4 +138,44 @@ it('quotes a message into the composer, and renders the quoted line on the reply
   fireEvent.click(getByLabelText('Clear quote'))
   expect(container.querySelector('[data-slot="group-quote-draft"]')).toBeNull()
   expect(getByText('no — the second number')).toBeTruthy()
+})
+
+
+it('moves the armed quote into a thread reply box and consumes it on send', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { $groupChats } = await import('./group-chat')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+
+  $groupChats.set({
+    Room: {
+      log: [
+        { from: { kind: 'member' as const, name: 'builder' }, id: 'm1', text: 'totals are 5', thread: 'a', at: 2 }
+      ],
+      sessions: {},
+      watermarks: {}
+    }
+  })
+
+  const { container, getByLabelText, getByText } = render(
+    <GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />
+  )
+
+  fireEvent.click(getByLabelText('Quote Builder'))
+  expect(container.querySelectorAll('[data-slot="group-quote-draft"]')).toHaveLength(1)
+
+  // The reply box takes the quote over — and still shows it while typing.
+  fireEvent.click(getByLabelText('Reply to Builder'))
+  const strip = container.querySelector('[data-slot="group-quote-draft"]')
+  expect(strip).toBeTruthy()
+  expect(strip?.closest('form')).toBeTruthy()
+
+  const replyForm = strip!.closest('form') as HTMLFormElement
+  fireEvent.change(replyForm.querySelector('input') as HTMLElement, { target: { value: 'agreed' } })
+  fireEvent.submit(replyForm)
+
+  // Consumed, not leaked: the reply carries the quote, and nothing stays armed
+  // for the next main-composer send.
+  expect(container.querySelector('[data-slot="group-quote-draft"]')).toBeNull()
+  expect($groupChats.get().Room.log.at(-1)?.replyTo?.text).toBe('totals are 5')
+  expect(getByText('agreed')).toBeTruthy()
 })

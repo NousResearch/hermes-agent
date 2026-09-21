@@ -151,7 +151,7 @@ def claim_session_input(db, *, epoch: int, session_id: str) -> dict | None:
 
 
 def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, outcome: str,
-                         result: dict | None = None) -> dict:
+                         result: dict | None = None, _terminal_write=None) -> dict:
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
         raise RuntimeStoreError('invalid_params')
     encoded = _json(result) if result is not None else None
@@ -163,6 +163,10 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
                 or type(generation) is not int or row['generation'] != generation
                 or session['runtime_generation'] != generation):
             raise RuntimeStoreError('stale_generation')
+        if _terminal_write is not None:
+            # Trusted owner-only metadata mutation. It shares this transaction,
+            # must not commit or perform physical effects, and may run on retry.
+            _terminal_write(conn, _row(row), outcome, result)
         _retire_admission_workers(conn, row, epoch)
         if encoded is not None:
             from hermes_state_terminal import RESULT_PREFIX
@@ -175,7 +179,7 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
     return db._execute_write(write)
 
 
-def cancel_session_input(db, *, epoch: int, admission_id: str) -> dict:
+def cancel_session_input(db, *, epoch: int, admission_id: str, _terminal_write=None) -> dict:
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
@@ -184,6 +188,8 @@ def cancel_session_input(db, *, epoch: int, admission_id: str) -> dict:
         if row['status'] == 'started':
             raise RuntimeStoreError('stale_generation')
         if row['status'] == 'queued':
+            if _terminal_write is not None:
+                _terminal_write(conn, _row(row), 'cancelled', None)
             conn.execute("UPDATE session_admissions SET status='terminal',outcome='cancelled' WHERE admission_id=?", (admission_id,))
         return _row(_admission(conn, admission_id))
     return db._execute_write(write)
@@ -357,13 +363,16 @@ def import_legacy_session_admissions(db, *, epoch: int, source_path, principal_i
         return db._execute_write(write)
 
 
-def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generation: int) -> dict:
+def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generation: int,
+                                  _terminal_write=None) -> dict:
     """Explicit operator acknowledgement; resolves uncertainty, never requeues it."""
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
         if type(generation) is not int or row['status'] != 'unknown' or row['generation'] != generation:
             raise RuntimeStoreError('stale_generation')
+        if _terminal_write is not None:
+            _terminal_write(conn, _row(row), 'interrupted', None)
         _retire_admission_workers(conn, row, row['owner_epoch'])
         conn.execute("UPDATE session_admissions SET status='terminal',outcome='interrupted' WHERE admission_id=?", (admission_id,))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))

@@ -541,3 +541,27 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
                 _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8"))
                 if _m and not profile_exists(_m.group(1)):
                     check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+
+
+@doctor_check("")  # Diagnostics must still finish if one profile's files are unreadable.
+def _check_cross_profile_gateway_credentials(should_fix: bool, f: Finding) -> None:
+    """Report bot credentials that would make local profile gateways fight each other."""
+    from hermes_cli.profile_channels import scan_local_profile_credential_collisions
+
+    report = scan_local_profile_credential_collisions()
+    if not report.collisions and not report.unreadable_paths:
+        return
+    _section("Gateway Profile Credentials")
+    if report.collisions:
+        check_warn("Duplicate platform credentials across local profile homes", f"({report.format_for_display()})")
+        f.manual_issues.append(
+            "Duplicate gateway platform credentials across local profiles — give each profile its own bot "
+            "credential or stop/remove the other profile gateway before starting it."
+        )
+    if report.unreadable_paths:
+        paths = ", ".join(str(path) for path in report.unreadable_paths)
+        check_warn("Could not inspect gateway credentials in local profile homes", f"({paths})")
+        f.manual_issues.append(
+            "Could not inspect one or more local profile homes for duplicate gateway credentials; "
+            "check their path permissions and configuration files."
+        )

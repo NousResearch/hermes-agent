@@ -1600,6 +1600,25 @@ def _print_other_profiles_gateway_status() -> None:
         pass
 
 
+def _print_cross_profile_credential_warnings() -> None:
+    """Surface bot-token collisions even when profile gateways run standalone."""
+    try:
+        from hermes_cli.profile_channels import scan_local_profile_credential_collisions
+
+        report = scan_local_profile_credential_collisions()
+    except Exception:
+        return
+    if not report.collisions and not report.unreadable_paths:
+        return
+    print()
+    if report.collisions:
+        print("⚠ Duplicate platform credentials across local profile homes")
+        print(f"  {report.format_for_display()}")
+        print("  Give each profile its own bot credential, or stop/remove the other profile gateway.")
+    if report.unreadable_paths:
+        print("⚠ Could not inspect gateway credentials in: " + ", ".join(map(str, report.unreadable_paths)))
+
+
 def _gateway_list() -> None:
     """List every profile and whether its gateway is running."""
     try:
@@ -5021,6 +5040,7 @@ def _cmd_status(args):
             print("  hermes gateway run      # Run in foreground")
             _print_lines(*_STATUS_STOPPED_HINTS[_status_host_kind()])
 
+    _print_cross_profile_credential_warnings()
     _print_other_profiles_gateway_status()
 
 

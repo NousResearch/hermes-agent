@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from tests.gateway.conftest import _ensure_discord_mock
 
 
 class _FakeAllowedMentions:
@@ -22,54 +23,22 @@ class _FakeAllowedMentions:
         self.replied_user = replied_user
 
 
-def _ensure_discord_mock():
-    """Install (or augment) a mock ``discord`` module.
-
-    Always force ``AllowedMentions`` onto whatever is in ``sys.modules`` —
-    other test files also stub the module via ``setdefault``, and we need
-    ``_build_allowed_mentions()``'s return value to have real attribute
-    access regardless of which file loaded first.
-    """
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
-        return
-
-    if sys.modules.get("discord") is None:
-        discord_mod = MagicMock()
-        discord_mod.Intents.default.return_value = MagicMock()
-        discord_mod.Client = MagicMock
-        discord_mod.File = MagicMock
-        discord_mod.DMChannel = type("DMChannel", (), {})
-        discord_mod.Thread = type("Thread", (), {})
-        discord_mod.ForumChannel = type("ForumChannel", (), {})
-        discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
-        discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, danger=3, green=1, blurple=2, red=3, grey=4, secondary=5)
-        discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4)
-        discord_mod.Interaction = object
-        discord_mod.Embed = MagicMock
-        discord_mod.app_commands = SimpleNamespace(
-            describe=lambda **kwargs: (lambda fn: fn),
-            choices=lambda **kwargs: (lambda fn: fn),
-            Choice=lambda **kwargs: SimpleNamespace(**kwargs),
-        )
-        discord_mod.opus = SimpleNamespace(is_loaded=lambda: True)
-
-        ext_mod = MagicMock()
-        commands_mod = MagicMock()
-        commands_mod.Bot = MagicMock
-        ext_mod.commands = commands_mod
-
-        sys.modules["discord"] = discord_mod
-        sys.modules.setdefault("discord.ext", ext_mod)
-        sys.modules.setdefault("discord.ext.commands", commands_mod)
-
-    sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
-
-
 _ensure_discord_mock()
+sys.modules["discord"].AllowedMentions = _FakeAllowedMentions
 
 import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+
+
+def test_discord_mock_setup_keeps_adapter_module_identity():
+    """Repeated setup must not replace the module held by the adapter."""
+    original = sys.modules["discord"]
+
+    _ensure_discord_mock()
+
+    assert sys.modules["discord"] is original
+    assert discord_platform.discord is original
+    assert original.MessageType.default is discord_platform.discord.MessageType.default
 
 
 @pytest.fixture(autouse=True)

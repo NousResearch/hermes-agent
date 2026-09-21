@@ -340,7 +340,12 @@ Resolution rules:
 Plugin context engines can reuse the same resolution logic via
 `from agent.context_compressor import resolve_model_threshold`; engines that
 override `update_model()` own their own compaction policy and may ignore the
-map.
+map. On every model switch, fallback activation, and window correction the host
+forwards the current output budget (`max_tokens`) through
+`agent.context_engine.update_engine_model()`; `None` means unspecified and keeps
+any existing reservation. Committed compactions fan out to the optional
+`on_compaction_completed` engine event in addition to the existing
+`on_session_start(boundary_reason="compression")` lineage call.
 
 ### Codex gpt-5.x / Astra threshold autoraise
 

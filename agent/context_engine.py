@@ -8,7 +8,9 @@ should_compress() / compress() -> on_session_end() at real session boundaries on
 (CLI exit, /reset, gateway expiry), never per-turn.
 """
 
+import inspect
 import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -180,6 +182,21 @@ class ContextEngine(ABC):
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Session begins: load persisted state. kwargs may include hermes_home, platform, model."""
 
+    def on_compaction_completed(
+        self, *, session_id: str, old_session_id: str = "",
+        in_place: bool = False, compression_count: int = 0, **kwargs: Any,
+    ) -> None:
+        """Explicit compaction boundary after a committed compaction.
+
+        Complements ``on_session_start(boundary_reason="compression")`` (lineage)
+        with an observer event engines can count on without parsing lifecycle
+        kwargs. Fires from committed boundaries only — never on abort, timeout,
+        or superseded attempts. Failures are swallowed by the host. ``kwargs``
+        carries best-effort ``runtime`` (``"local"`` / ``"codex_app_server"``),
+        ``thread_id`` and ``turn_id``. Return value is ignored.
+        """
+        return None
+
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Real session boundary (CLI exit, /reset, gateway expiry) — never per-turn."""
 
@@ -224,13 +241,20 @@ class ContextEngine(ABC):
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: str = "",
-        provider: str = "", api_mode: str = "",
+        provider: str = "", api_mode: str = "", max_tokens: int | None = None,
     ) -> None:
         """Model switch / fallback: recompute threshold_tokens (override for more).
 
         Per-model threshold override (longest substring match), else the raw config
         percent — snapshotted ONCE so repeated switches fall back to the configured
         value, not the previous model's override.
+
+        ``max_tokens=None`` means "unspecified": keep any existing output
+        reservation. Engines that reserve output space should subtract it from
+        the window before applying the percentage, mirroring the built-in
+        ``(context_length - max_tokens) * threshold_percent`` trigger. Engines
+        that do not need it may omit the parameter; the host filters kwargs by
+        signature so older overrides keep working.
         """
         self.context_length = context_length
         from agent.context_compressor import resolve_model_threshold
@@ -239,4 +263,80 @@ class ContextEngine(ABC):
         self._base_threshold_percent = resolve_model_threshold(
             model, getattr(self, "model_thresholds", {}), self._config_threshold_percent, provider)
         self.threshold_percent = self._base_threshold_percent
-        self.threshold_tokens = int(context_length * self.threshold_percent)
+        effective_window = context_length - (max_tokens or 0)
+        if effective_window <= 0:
+            effective_window = context_length
+        self.threshold_tokens = int(effective_window * self.threshold_percent)
+
+
+_logger = logging.getLogger(__name__)
+
+
+def update_engine_model(
+    engine: Any, model: str, context_length: int, *,
+    base_url: str = "", api_key: Any = "", provider: str = "",
+    api_mode: str = "", max_tokens: int | None = None,
+) -> None:
+    """Forward a model/window update to any engine without breaking older overrides.
+
+    Inspects ``engine.update_model`` first (the same inspect-first pattern as
+    ``conversation_compression._supported_compression_kwargs``): engines with
+    ``**kwargs`` receive the full set, engines with a subset receive only what
+    they accept, and un-inspectable callables fall back to the legacy
+    ``(model, context_length)`` shape. Never catches ``TypeError`` around the
+    call itself, so a genuine engine failure still surfaces.
+    """
+    candidates: Dict[str, Any] = {
+        "model": model, "context_length": context_length, "base_url": base_url,
+        "api_key": api_key, "provider": provider, "api_mode": api_mode,
+        "max_tokens": max_tokens,
+    }
+    try:
+        parameters = inspect.signature(engine.update_model).parameters
+    except (TypeError, ValueError):
+        engine.update_model(model, context_length)
+        return
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        engine.update_model(**candidates)
+        return
+    engine.update_model(**{k: v for k, v in candidates.items() if k in parameters})
+
+
+def emit_compaction_completed(
+    engine: Any, *, session_id: str, old_session_id: str = "",
+    in_place: bool = False, compression_count: int = 0, **kwargs: Any,
+) -> bool:
+    """Invoke the optional ``on_compaction_completed`` hook; never raises.
+
+    Signature-filtered like :func:`update_engine_model` so overrides with a
+    subset of parameters keep working. Returns True when an override ran.
+    The base-class no-op is skipped so non-implementing engines pay nothing.
+    """
+    callback = getattr(engine, "on_compaction_completed", None)
+    if not callable(callback):
+        return False
+    if getattr(callback, "__func__", None) is ContextEngine.on_compaction_completed:
+        return False
+    candidates: Dict[str, Any] = {
+        "session_id": session_id, "old_session_id": old_session_id,
+        "in_place": in_place, "compression_count": compression_count, **kwargs,
+    }
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        try:
+            callback(session_id=session_id)
+        except Exception:
+            _logger.debug("context engine on_compaction_completed failed", exc_info=True)
+        return True
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        filtered = candidates
+    else:
+        filtered = {k: v for k, v in candidates.items() if k in parameters}
+        if "session_id" not in parameters:
+            return False
+    try:
+        callback(**filtered)
+    except Exception:
+        _logger.debug("context engine on_compaction_completed failed", exc_info=True)
+    return True

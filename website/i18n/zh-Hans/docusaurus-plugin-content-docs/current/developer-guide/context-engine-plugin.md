@@ -91,7 +91,8 @@ compression_count: int = 0       # compress() 已运行的次数
 | `on_session_start(session_id, **kwargs)` | 空操作 | 需要加载持久化状态（DAG、DB）时 |
 | `on_session_end(session_id, messages)` | 空操作 | 需要刷新状态、关闭连接时 |
 | `on_session_reset()` | 重置 token 计数器 | 有需要清除的会话级状态时 |
-| `update_model(model, context_length, ...)` | 更新 context_length 和阈值 | 需要在切换模型时重新计算预算时 |
+| `update_model(model, context_length, ..., max_tokens=None)` | 更新 context_length 和阈值 | 需要在切换模型时重新计算预算时。`max_tokens=None` 表示未指定（保留现有输出预留）；预留输出空间时请在应用百分比前从窗口中减去它。不需要时可省略该参数——宿主按签名过滤参数，旧覆盖保持兼容。 |
+| `on_compaction_completed(*, session_id, old_session_id="", in_place=False, compression_count=0, **kwargs)` | 空操作 | 在已提交的压缩后需要显式事件时（`on_session_start(boundary_reason="compression")` 血缘调用仍然会触发）。中止/超时时从不触发；失败不会传播。 |
 | `get_tool_schemas()` | 返回 `[]` | 引擎提供 agent 可调用的工具时（例如 `lcm_grep`） |
 | `handle_tool_call(name, args, **kwargs)` | 返回错误 JSON | 实现工具处理器时 |
 | `should_compress_preflight(messages)` | 返回 `False` | 可在 API 调用前进行低成本预估时 |

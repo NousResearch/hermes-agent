@@ -205,6 +205,103 @@ class TestPluginContextEngineSlot:
 
 
 
+class TestEngineModelForwarding:
+    """update_engine_model() forwards max_tokens without breaking legacy overrides."""
+
+    def test_legacy_override_without_max_tokens_still_works(self):
+        from agent.context_engine import update_engine_model
+
+        class LegacyEngine(ContextEngine):
+            def __init__(self):
+                self.context_length = 0
+                self.threshold_tokens = 0
+                self.seen = {}
+
+            @property
+            def name(self):
+                return "legacy"
+
+            def update_model(self, model, context_length, base_url="", api_key="",
+                             provider="", api_mode=""):
+                self.seen = {"model": model, "context_length": context_length}
+                self.context_length = context_length
+                self.threshold_tokens = int(context_length * 0.5)
+
+            def update_from_response(self, usage):
+                pass
+
+            def should_compress(self, prompt_tokens=None):
+                return False
+
+            def compress(self, messages, current_tokens=None):
+                return messages
+
+        engine = LegacyEngine()
+        update_engine_model(engine, model="m", context_length=100_000, max_tokens=4096)
+        assert engine.seen == {"model": "m", "context_length": 100_000}
+        assert engine.threshold_tokens == 50_000
+
+    def test_new_override_receives_max_tokens(self):
+        from agent.context_engine import update_engine_model
+
+        class BudgetEngine(ContextEngine):
+            def __init__(self):
+                self.context_length = 0
+                self.threshold_tokens = 0
+
+            @property
+            def name(self):
+                return "budget"
+
+            def update_model(self, model, context_length, base_url="", api_key="",
+                             provider="", api_mode="", max_tokens=None):
+                effective = context_length - (max_tokens or 0)
+                self.context_length = context_length
+                self.threshold_tokens = int(effective * 0.5)
+
+            def update_from_response(self, usage):
+                pass
+
+            def should_compress(self, prompt_tokens=None):
+                return False
+
+            def compress(self, messages, current_tokens=None):
+                return messages
+
+        engine = BudgetEngine()
+        update_engine_model(engine, model="m", context_length=100_000, max_tokens=20_000)
+        assert engine.threshold_tokens == 40_000
+
+
+class TestCompactionCompletedEvent:
+    """emit_compaction_completed() is optional, filtered, and never raises."""
+
+    def test_base_engine_is_noop(self):
+        from agent.context_engine import emit_compaction_completed
+        engine = StubEngine()
+        assert emit_compaction_completed(engine, session_id="new", old_session_id="old") is False
+
+    def test_override_receives_filtered_kwargs_and_failures_swallowed(self):
+        from agent.context_engine import emit_compaction_completed
+        seen = {}
+
+        class EventEngine(StubEngine):
+            def on_compaction_completed(self, *, session_id, in_place=False):
+                seen.update({"session_id": session_id, "in_place": in_place})
+
+        assert emit_compaction_completed(
+            EventEngine(), session_id="new", old_session_id="old",
+            in_place=True, compression_count=2, runtime="local",
+        ) is True
+        assert seen == {"session_id": "new", "in_place": True}
+
+        class FailingEngine(StubEngine):
+            def on_compaction_completed(self, *, session_id, **kwargs):
+                raise RuntimeError("observer must not break the commit")
+
+        assert emit_compaction_completed(FailingEngine(), session_id="new") is True
+
+
 class TestPluginContextEngineDeepCopy:
     """Verify that the plugin context engine singleton is deep-copied before
     mutation in agent_init — regression test for #42449."""

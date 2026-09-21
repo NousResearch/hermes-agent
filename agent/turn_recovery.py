@@ -1597,9 +1597,12 @@ def _cap_long_context_tier(agent: Any) -> int:
     compressor = agent.context_compressor
     old_ctx = compressor.context_length
     if old_ctx > _LONG_CONTEXT_TIER_CAP:
-        compressor.update_model(
+        from agent.context_engine import update_engine_model
+        update_engine_model(
+            compressor,
             model=agent.model, context_length=_LONG_CONTEXT_TIER_CAP, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+            max_tokens=getattr(agent, "max_tokens", None),
         )
         # Context probing flags exist only on the built-in compressor (plugin engines
         # manage their own). Don't persist — a tier limit, not a model capability;

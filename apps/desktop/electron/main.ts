@@ -271,6 +271,7 @@ import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
 import { registerHudIpc } from './hud-ipc'
+import { installHudModifierTap } from './hud-modifier'
 import { applyHudElectronOverlay, promoteHudOverlay } from './hud-overlay'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
@@ -304,6 +305,7 @@ import {
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
+import { createMinimizeToTray } from './minimize-to-tray'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
 import { oauthSessionIsLive, resolveJsonBody, resolveReadinessProbeAuth } from './native-auth-decisions'
 import {
@@ -11423,7 +11425,11 @@ function profileRouteOptions(profile, request?) {
 // primary, so legacy callers are unchanged.
 async function ensureBackend(
   profile,
-  opts: { passive?: boolean; request?: { method?: string; path?: string }; spawnPriority?: LocalBackendSpawnPriority } = {}
+  opts: {
+    passive?: boolean
+    request?: { method?: string; path?: string }
+    spawnPriority?: LocalBackendSpawnPriority
+  } = {}
 ) {
   localBackendLifecycle.assertCanStart()
   const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
@@ -13847,6 +13853,14 @@ function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onReve
 // builder live in session-windows.ts so they stay unit-testable.
 const sessionWindows = createSessionWindowRegistry()
 
+const minimizeToTray = createMinimizeToTray({
+  preferencesPath: path.join(app.getPath('userData'), 'minimize-to-tray.json'),
+  getIconPath: getAppIconPath,
+  restoreMainWindow: () => ensureMainWindow(mainWindow, { isReady: app.isReady(), createWindow, focusWindow }),
+  isQuittingForHandoff: () => isQuittingForHandoff,
+  log: rememberLog
+})
+
 function focusWindow(win) {
   if (!win || win.isDestroyed()) {
     return
@@ -13893,6 +13907,7 @@ function spawnSecondaryWindow({
 
   // Chat-surface registration: applyWindowTranslucency swaps this window's
   // backing between opaque-themed and alpha-0 when glass toggles.
+  minimizeToTray.registerWindow(win)
   translucencyBackedWindows.add(win)
 
   if (IS_MAC) {
@@ -14005,6 +14020,7 @@ function spawnBrowserWindow(tabId) {
     recentReloadTimesRef: rendererReloadTimesRef
   })
 
+  minimizeToTray.registerWindow(win)
   win.on('closed', () => notifyBrowserPopoutClosed(tabId))
 
   loadWindowUrl(
@@ -14079,6 +14095,7 @@ function createInstanceWindow(
   })
 
   instanceWindows.add(win)
+  minimizeToTray.registerWindow(win)
   recordWindowConnectionRoute(win.webContents, { ...route, registryScoped: route.connectionId !== null })
 
   // Chat-surface registration: see applyWindowTranslucency.
@@ -15076,6 +15093,7 @@ function createWindow() {
   })
 
   const createdMainWindow = mainWindow
+  minimizeToTray.registerWindow(createdMainWindow)
   const defaultRoute = desktopProfilePreferences.getDefault()
 
   if (defaultRoute) {
@@ -18679,6 +18697,7 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   keepAwake.set(readPersistedKeepAwake())
+  void minimizeToTray.start()
   f12Blocked = readPersistedDisableF12()
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.
@@ -18691,6 +18710,14 @@ app.whenReady().then(() => {
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
   installCommandScreenshot({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
+  installHudModifierTap({
+    rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
+    summon: () => {
+      if (!isQuittingForHandoff && !backendShutdown.hasStarted()) {
+        openHudWindow(null, null)
+      }
+    }
+  })
 
   if (IS_MAC) {
     const reposition = () => wakeIndicatorController.reposition()
@@ -18760,11 +18787,22 @@ function configureSpellChecker() {
 // and the confirmation is on screen; "Quit Anyway" re-enters before-quit with
 // the latch set and falls straight through to the teardown below.
 function heldQuitForActiveWork(event: Electron.Event): boolean {
-  if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || quitPromptOpen) {
+  if (SKIP_QUIT_CONFIRM || quitConfirmedWithActiveWork || isQuittingForHandoff) {
     return false
   }
 
+  if (quitPromptOpen) {
+    event.preventDefault()
+
+    return true
+  }
+
   const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
+
+  // A tray quit with live work still needs the ordinary visible confirmation.
+  if (prompt && minimizeToTray.status().available) {
+    minimizeToTray.restore()
+  }
 
   // A hidden aux window must never parent the quit prompt: the dialog would
   // be invisible and the held quit unanswerable (#116376 §E).
@@ -18810,6 +18848,8 @@ app.on('before-quit', event => {
   if (heldQuitForActiveWork(event)) {
     return
   }
+
+  minimizeToTray.beginQuit()
 
   // A detached remote updater can outlive this Electron process. Do not tear
   // down its SSH observer/restore transaction at the generic SSH shutdown

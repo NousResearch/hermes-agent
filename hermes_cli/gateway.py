@@ -3690,7 +3690,9 @@ def _served_profile_needs_no_service() -> bool:
     Shared by ``hermes setup gateway`` / ``hermes setup`` / ``hermes import`` (``ensure_gateway_service``)
     and the ``hermes gateway setup`` wizard. See #111958."""
     if not named_profile_served_by_running_multiplexer():
-        return False
+        # Not served (yet): a named profile still gets no service of its own — same rule and text
+        # as `gateway install`, so `hermes -p X setup` cannot grow a fleet member the verb refuses.
+        return _named_profile_refused_under_multiplexer()
     print_success(
         f"Profile '{_current_profile_name()}' is already served by the default multiplexer."
     )
@@ -3700,39 +3702,61 @@ def _served_profile_needs_no_service() -> bool:
 
 
 def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
-    """Print the served-profile refusal and return True when a named-profile gateway must not start:
-    a multiplexing default gateway already serves it (a second one would double-bind its platforms: two
-    pollers on one token, port fights). ``--force`` overrides. Shared by ``run`` and the service verbs
-    (``start``/``install``/``restart``): a refusal only inside ``gateway run`` leaves the service manager
-    to discover it — systemd parks the unit on exit 78 while the CLI prints "started"; launchd
-    (KeepAlive, no exit-status gating) respawns it every ThrottleInterval forever."""
+    """Print the refusal and return True when a NAMED profile must not get a gateway of its own.
+
+    One gateway per host serves every profile, so a ``<root>/profiles/<name>`` home never installs or
+    starts a standalone gateway: either the host gateway already serves it (a second one would
+    double-bind its platforms: two pollers on one token, port fights) or no host gateway runs yet and
+    the DEFAULT profile is where it is installed. Refusing only the served case let a host with no
+    multiplexer running (or one that had not rescanned yet) grow a brand-new per-profile fleet member.
+    ``--force`` is the one escape (a fleet split across UNIX users or a ``HERMES_HOME`` outside
+    ``profiles/``); a service it already installed stays startable without it. Shared by ``run`` and the service verbs (``start``/``install``/``restart``): a
+    refusal only inside ``gateway run`` leaves the service manager to discover it — systemd parks the
+    unit on exit 78 while the CLI prints "started"; launchd (KeepAlive, no exit-status gating)
+    respawns it every ThrottleInterval forever."""
     if force:
         return False
     try:
         suffix = _current_profile_name()
+        from hermes_constants import profile_name_for_home
+        # A unit/plist/task already registered for this home was installed with --force: that fleet
+        # member (and the supervisor relaunching it, whose ExecStart carries no --force) is not NEW.
+        new_standalone = (profile_name_for_home(get_hermes_home()) not in (None, "default")
+                          and not _is_service_installed())
     except Exception:
         return False
     owner = _served_by_another_host_gateway()
-    if owner is None and not named_profile_served_by_running_multiplexer():
+    served = owner is not None or named_profile_served_by_running_multiplexer()
+    if not served and not new_standalone:
         return False
 
-    print_error(
-        f"The host gateway already serves profile '{suffix}'."
-    )
-    if owner is not None:
-        print(f"  {owner.describe()}")
+    if served:
+        print_error(f"The host gateway already serves profile '{suffix}'.")
+        if owner is not None:
+            print(f"  {owner.describe()}")
+    else:
+        print_error(f"Profile '{suffix}' does not get a gateway of its own.")
     print(
         "  Exactly one gateway per host is the inbound process for every\n"
         "  profile. Starting a separate gateway for this profile would\n"
         "  double-bind its platforms (two pollers on one bot token, port\n"
         "  conflicts).\n"
     )
-    print("  Manage the host gateway instead:")
+    if served:
+        print("  Manage the host gateway instead:")
+        print()
+        print(f"    hermes -p {owner.profile_label if owner is not None else 'default'} gateway restart")
+    else:
+        print("  Install or start the host gateway from the default profile; it serves this one too:")
+        print()
+        print("    hermes gateway install")
+        print()
+        print("  Or fold an existing per-profile fleet onto one host gateway:")
+        print()
+        print("    hermes gateway migrate --multiplex")
     print()
-    print(f"    hermes -p {owner.profile_label if owner is not None else 'default'} gateway restart")
-    print()
-    print("  Pass --force to start a separate profile gateway anyway (not")
-    print("  recommended while the host gateway is running).")
+    print("  A separate per-profile gateway (for a fleet split across UNIX users or a")
+    print(f"  HERMES_HOME outside profiles/) needs --force:  hermes -p {suffix} gateway install --force")
     return True
 
 

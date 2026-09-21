@@ -996,6 +996,11 @@ export const en: Translations = {
       daysAgo: count => `${count} days ago`
     },
     config: {
+      minimizeToTrayTitle: 'Minimize to tray',
+      minimizeToTrayDesc:
+        'Hide minimized windows in the system tray (menu bar on macOS) while Hermes keeps running. Close, Alt+F4, and Cmd+Q keep their normal behavior. Off by default; applies only to this device.',
+      minimizeToTrayUnavailable:
+        'The system tray is unavailable. Windows will minimize and close normally. Turn this off and on to retry.',
       none: 'None',
       noneParen: '(none)',
       builtinOnly: 'Built-in only',
@@ -1023,6 +1028,18 @@ export const en: Translations = {
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
       showOptions: 'Show options'
+    },
+    hudModifier: {
+      title: 'Tap to summon HUD',
+      description:
+        'Tap and release ⌘ + Option on Mac, or Ctrl + Alt on Windows/Linux, to bring the HUD forward from any app. Off by default; applies only to this device.',
+      statusTitle: 'HUD gesture status',
+      ready:
+        'Ready. Release both keys within half a second, without another key or mouse action. Other shortcuts stay unchanged.',
+      permission:
+        'Allow Hermes in System Settings → Privacy & Security → Input Monitoring, then retry. This gesture does not record keystrokes or capture your screen.',
+      unavailable:
+        'This gesture is unavailable here. Linux requires an X11 session; Wayland does not expose global modifier taps. The existing HUD shortcut still works inside Hermes.'
     },
     screenshot: {
       enabledTitle: 'Screenshot shortcut',

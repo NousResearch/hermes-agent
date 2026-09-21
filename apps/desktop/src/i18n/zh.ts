@@ -1208,6 +1208,10 @@ export const zh = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      minimizeToTrayTitle: '最小化到托盘',
+      minimizeToTrayDesc:
+        '将最小化的窗口隐藏到系统托盘（macOS 上为菜单栏），Hermes 继续运行。关闭窗口、Alt+F4 和 Cmd+Q 的行为不变。默认关闭，仅适用于此设备。',
+      minimizeToTrayUnavailable: '系统托盘不可用。窗口将正常最小化和关闭。关闭此选项后重新开启即可重试。',
       none: '无',
       noneParen: '(无)',
       builtinOnly: '仅内置',
@@ -1235,6 +1239,16 @@ export const zh = defineLocale({
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
       showOptions: '显示选项'
+    },
+    hudModifier: {
+      title: '轻按唤出 HUD',
+      description:
+        '在 Mac 上按下并松开 ⌘ + Option，在 Windows/Linux 上按下并松开 Ctrl + Alt，即可从任意应用将 HUD 置于前台。默认关闭，仅适用于此设备。',
+      statusTitle: 'HUD 手势状态',
+      ready: '已就绪。请在半秒内松开两个键，期间不要按其他键或操作鼠标。其他快捷键不受影响。',
+      permission: '请在系统设置 → 隐私与安全性 → 输入监控中允许 Hermes，然后重试。此手势不会记录按键或截取屏幕。',
+      unavailable:
+        '此处无法使用该手势。Linux 需要 X11 会话；Wayland 不提供全局修饰键轻按事件。Hermes 内原有的 HUD 快捷键仍可使用。'
     },
     screenshot: {
       enabledTitle: '截图快捷键',

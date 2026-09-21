@@ -103,8 +103,10 @@ def test_setup_wizard_skips_service_install_for_profile_served_by_multiplexer(
 
 def test_setup_gateway_service_step_skips_install_for_served_profile(served_root, monkeypatch, capsys):
     """``hermes -p <profile> setup gateway`` (and ``hermes setup`` / ``hermes import``) reach the service
-    step through ``ensure_gateway_service``: a served profile gets the multiplexer note and no unit/plist,
-    while a profile the live record does not list is still installed (#111958)."""
+    step through ``ensure_gateway_service``: a served profile gets the multiplexer note and no unit/plist
+    (#111958), and a named profile the live record does not list gets no unit/plist either — one host
+    gateway serves every profile, so setup must not grow a standalone fleet member that
+    ``gateway install`` refuses (#109417)."""
     import hermes_cli.gateway as gw
 
     calls: list[str] = []
@@ -121,7 +123,8 @@ def test_setup_gateway_service_step_skips_install_for_served_profile(served_root
 
     monkeypatch.setenv("HERMES_HOME", str(served_root / "profiles" / "other"))  # not in the live record
     assert gw.ensure_gateway_service(context="setup") is True
-    assert calls == ["install", "start"]
+    assert calls == []
+    assert "Profile 'other' does not get a gateway of its own" in capsys.readouterr().out
 
 
 def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_root):

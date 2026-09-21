@@ -998,6 +998,10 @@ export const zhHant = defineLocale({
       daysAgo: count => `${count} 天前`
     },
     config: {
+      minimizeToTrayTitle: '最小化至系統匣',
+      minimizeToTrayDesc:
+        '將最小化的視窗隱藏至系統匣（macOS 上為選單列），讓 Hermes 繼續執行。關閉視窗、Alt+F4 和 Cmd+Q 的行為不變。預設關閉，僅適用於此裝置。',
+      minimizeToTrayUnavailable: '系統匣無法使用。視窗將正常最小化和關閉。關閉此選項後重新開啟即可重試。',
       none: '無',
       noneParen: '(無)',
       builtinOnly: '僅內建',
@@ -1016,6 +1020,16 @@ export const zhHant = defineLocale({
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
       showOptions: '顯示選項'
+    },
+    hudModifier: {
+      title: '輕按叫出 HUD',
+      description:
+        '在 Mac 上按下並放開 ⌘ + Option，在 Windows/Linux 上按下並放開 Ctrl + Alt，即可從任何應用程式將 HUD 帶到前景。預設關閉，僅適用於此裝置。',
+      statusTitle: 'HUD 手勢狀態',
+      ready: '已就緒。請在半秒內放開兩個按鍵，期間不要按其他鍵或操作滑鼠。其他快速鍵不受影響。',
+      permission: '請在系統設定 → 隱私權與安全性 → 輸入監控中允許 Hermes，然後重試。此手勢不會記錄按鍵或擷取畫面。',
+      unavailable:
+        '此處無法使用這個手勢。Linux 需要 X11 工作階段；Wayland 不提供全域修飾鍵輕按事件。Hermes 內原有的 HUD 快速鍵仍可使用。'
     },
     screenshot: {
       enabledTitle: '螢幕截圖快速鍵',

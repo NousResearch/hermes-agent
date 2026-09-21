@@ -14,6 +14,11 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_dispatch as kbd
 
 
+def _unwrap_worker_log_wrapper(command: list[str]) -> list[str]:
+    wrapper_index = command.index("hermes_cli.kanban_worker_log")
+    return command[command.index("--", wrapper_index) + 1 :]
+
+
 @pytest.fixture
 def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, kb.Task]:
     root = tmp_path / ".hermes"
@@ -82,8 +87,7 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     unit_index = captured_cmd.index("--unit")
     assert captured_cmd[unit_index + 1] == "hermes-worker-kanban-t_candidate_restart-run-23"
     assert "MemoryMax=536870912" in captured_cmd
-    separator = captured_cmd.index("--")
-    assert captured_cmd[separator + 1 : separator + 4] == ["hermes", "-p", "coder"]
+    assert _unwrap_worker_log_wrapper(captured_cmd)[:3] == ["hermes", "-p", "coder"]
     assert captured_cwd == str(workspace)
     assert captured_env["HERMES_KANBAN_TASK"] == task.id
     assert captured_env["HERMES_KANBAN_RUN_ID"] == "23"
@@ -140,7 +144,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     )
 
     assert kbd._default_spawn(task, str(workspace)) == 4243
-    assert captured_cmd[:3] == ["hermes", "-p", "coder"]
+    assert _unwrap_worker_log_wrapper(captured_cmd)[:3] == ["hermes", "-p", "coder"]
 
 
 @pytest.mark.linux_only
@@ -178,7 +182,7 @@ def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
     monkeypatch.setattr(process_registry, "_scope_degraded_warned", False)
     with caplog.at_level("WARNING", logger=process_registry.logger.name):
         kbd._default_spawn(task, str(workspace))
-    assert spawned[-1][:3] == ["hermes", "-p", "coder"]
+    assert _unwrap_worker_log_wrapper(spawned[-1])[:3] == ["hermes", "-p", "coder"]
     warned = [r.getMessage() for r in caplog.records if "KILLED when the unit exits" in r.getMessage()]
     assert len(warned) == 1 and "KillMode=process" in warned[0]
 
@@ -208,6 +212,9 @@ def test_real_user_systemd_scope_preserves_worker_context(
         "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); time.sleep(0.5)"
     )
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: [sys.executable, "-c", script, str(receipt)])
+    # The wrapper runs as ``python -m hermes_cli.kanban_worker_log``. Supply
+    # this checkout explicitly because it is not installed in the test venv.
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2]))
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
 
@@ -218,7 +225,7 @@ def test_real_user_systemd_scope_preserves_worker_context(
 
     assert receipt.exists()
     payload = json.loads(receipt.read_text(encoding="utf-8"))
-    assert payload["pid"] == pid
+    assert payload["pid"] != pid
     assert payload["cwd"] == str(workspace)
     assert payload["task"] == task.id
     assert payload["run"] == "23"

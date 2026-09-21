@@ -300,7 +300,8 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
 
             timed_out = kbd.enforce_max_runtime(conn, signal_fn=_signal_fn)
             assert tid in timed_out
-            assert killed and killed[0][0] == os.getpid()
+            expected_pid = -os.getpid() if hasattr(os, "killpg") else os.getpid()
+            assert killed and killed[0][0] == expected_pid
 
             task = kb.get_task(conn, tid)
             assert task.status == "ready",                 f"timed-out task should reset to ready, got {task.status}"
@@ -720,6 +721,7 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
         return FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, cmd: cmd)
 
     conn = kbc.connect()
     try:
@@ -732,7 +734,8 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     finally:
         conn.close()
 
-    cmd = captured["cmd"]
+    wrapper_index = captured["cmd"].index("hermes_cli.kanban_worker_log")
+    cmd = captured["cmd"][captured["cmd"].index("--", wrapper_index) + 1 :]
     assert "--skills" not in cmd, (
         f"spawn argv should not auto-load any skill: {cmd}"
     )

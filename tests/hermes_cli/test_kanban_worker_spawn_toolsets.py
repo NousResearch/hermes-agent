@@ -3,6 +3,11 @@ from __future__ import annotations
 import subprocess
 
 
+def _unwrap_worker_log_wrapper(command: list[str]) -> list[str]:
+    wrapper_index = command.index("hermes_cli.kanban_worker_log")
+    return command[command.index("--", wrapper_index) + 1 :]
+
+
 def _make_task(kb, *, assignee: str):
     return kb.Task(
         id="t_spawn_tools",
@@ -63,6 +68,7 @@ agent:
     from hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, cmd: cmd)
 
     captured = {}
 
@@ -84,8 +90,9 @@ agent:
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
-    assert "--toolsets" in captured["cmd"]
-    pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
+    cmd = _unwrap_worker_log_wrapper(captured["cmd"])
+    assert "--toolsets" in cmd
+    pinned = cmd[cmd.index("--toolsets") + 1].split(",")
     for required in ("terminal", "web", "file", "skills", "code_execution", "delegation"):
         assert required in pinned
 
@@ -107,6 +114,7 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
     from hermes_cli._parser import build_top_level_parser
 
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, cmd: cmd)
     captured = {}
 
     class FakeProc:
@@ -128,8 +136,9 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
     # Profile selection is attached by the outer CLI bootstrap rather than
     # build_top_level_parser(); remove that already-validated prefix and parse
     # the worker flags/subcommand through the real shared parser.
-    assert captured["cmd"][1:3] == ["-p", "elias"]
-    args = parser.parse_args(captured["cmd"][3:])
+    cmd = _unwrap_worker_log_wrapper(captured["cmd"])
+    assert cmd[1:3] == ["-p", "elias"]
+    args = parser.parse_args(cmd[3:])
 
     assert args.command == "chat"
     assert args.model == "gpt-5.6-sol"
@@ -156,6 +165,7 @@ def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp
     from hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, cmd: cmd)
 
     captured = {}
 

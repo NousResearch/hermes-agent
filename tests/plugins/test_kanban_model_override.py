@@ -121,6 +121,7 @@ def test_migration_adds_provider_override_column(conn):
 
 def _spawn_and_capture(monkeypatch, tmp_path, task):
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda _task, cmd: cmd)
     captured = {}
 
     class FakeProc:
@@ -134,7 +135,8 @@ def _spawn_and_capture(monkeypatch, tmp_path, task):
     workspace = tmp_path / "ws"
     workspace.mkdir(exist_ok=True)
     kbd._default_spawn(task, str(workspace))
-    return captured["cmd"]
+    wrapper_index = captured["cmd"].index("hermes_cli.kanban_worker_log")
+    return captured["cmd"][captured["cmd"].index("--", wrapper_index) + 1 :]
 
 
 def test_spawn_passes_model_and_provider(monkeypatch, tmp_path, conn):

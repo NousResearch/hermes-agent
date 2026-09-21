@@ -1043,13 +1043,17 @@ _IGNORED_MANAGED_VALUES = frozenset({"brew", "homebrew"})
 _MANAGED_FALSE_VALUES = frozenset({"false", "0", "no", "off"})
 
 
-def get_managed_system() -> str | None:
+def get_managed_system(home: str | Path | None = None) -> str | None:
     """Return the package manager owning this install, if any.
     Signals: HERMES_MANAGED env var (systemd service) or a ``.managed`` marker file in
     HERMES_HOME (NixOS activation script — interactive shells don't see the service env).
-    An unreadable or empty marker still counts as managed (the legacy NixOS shape)."""
+    An unreadable or empty marker still counts as managed (the legacy NixOS shape).
+
+    ``home`` names the home whose marker file is read, for callers that already resolved it
+    (:func:`apply_secure_dir_policy` at boot, before ``--profile`` re-homes the process).
+    Defaults to the effective home."""
     marker = os.getenv("HERMES_MANAGED", "").strip().lower() or None
-    managed_marker = get_hermes_home() / ".managed"
+    managed_marker = (Path(home) if home else get_hermes_home()) / ".managed"
     if marker is None and managed_marker.exists():
         try:
             marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()
@@ -1111,7 +1115,7 @@ def _chown_to_hermes_uid(path) -> None:
         pass
 
 
-def apply_secure_dir_policy(path) -> None:
+def apply_secure_dir_policy(path, home: str | Path | None = None) -> None:
     """Apply the canonical Hermes home-directory permission policy to *path*.
 
     Owner-only ``0700`` by default, but the operator's explicit and managed sharing choices
@@ -1121,10 +1125,13 @@ def apply_secure_dir_policy(path) -> None:
     ``HERMES_HOME_MODE`` (e.g. ``0701``, ``2770``) overrides the mode. ``HERMES_UID`` /
     ``HERMES_GID`` ownership is applied when those env vars are set (#34107).
 
+    ``home`` is the home the managed-mode marker is read from, for callers that already
+    resolved it; without it the effective home is consulted.
+
     Import-safe twin of ``hermes_cli.config._secure_dir`` (which delegates here), so callers
     outside the CLI package — like :func:`get_scratch_dir` — share one policy implementation.
     """
-    if get_managed_system() is not None:
+    if get_managed_system(home) is not None:
         return
     explicit_mode = os.environ.get("HERMES_HOME_MODE", "").strip()
     if _container_or_chmod_skipped() and not explicit_mode:
@@ -1157,7 +1164,9 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
     try:
         scratch.mkdir(parents=True, exist_ok=True)
         if sys.platform != "win32":
-            apply_secure_dir_policy(scratch)
+            # The caller's home decides the policy: re-reading the effective home here would
+            # warn about a profile the CLI has not switched to yet (boot scratch setup).
+            apply_secure_dir_policy(scratch, home=base)
     except OSError:
         pass
     if prune:

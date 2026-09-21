@@ -317,7 +317,7 @@ class TestUnifiedCronjobTool:
 
         assert updated["success"] is True
         stored = get_job(job_id)
-        assert stored["schedule_display"] == "every 2h"
+        assert stored["schedule"]["minutes"] == 120
         assert stored["state"] == stored_state
         assert stored["enabled"] is enabled
 

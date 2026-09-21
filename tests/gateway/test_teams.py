@@ -2100,3 +2100,199 @@ class TestTeamsFileConsent:
         assert f(SimpleNamespace(reply_to_id=None, replyToId=None)) is None
         assert f(SimpleNamespace()) is None
 
+
+class TestTeamsStreaming:
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.send = AsyncMock(return_value=MagicMock(id="act-1"))
+        return adapter
+
+    def _wire_update(self, adapter):
+        update = AsyncMock()
+        ops = MagicMock()
+        ops.update = update
+        ops.delete = AsyncMock()
+        adapter._app.api.conversations.activities = MagicMock(return_value=ops)
+        return update, ops
+
+    def test_flat_conversation_id_strips_messageid_suffix(self):
+        f = _teams_mod._flat_conversation_id
+        assert f("19:abc@thread.tacv2") == "19:abc@thread.tacv2"
+        assert f("19:abc@thread.tacv2;messageid=12345") == "19:abc@thread.tacv2"
+        assert f("19:abc@thread.tacv2;messageId=12345") == "19:abc@thread.tacv2"
+        assert f("") == ""
+
+    def test_draft_stream_is_message_stays_false(self):
+        adapter = self._make_adapter()
+        assert adapter.draft_stream_is_message is False
+        assert TeamsAdapter.draft_stream_is_message is False
+
+    @pytest.mark.anyio
+    async def test_send_then_progressive_edit_then_finalize(self):
+        adapter = self._make_adapter()
+        update, _ops = self._wire_update(adapter)
+
+        created = await adapter.send("19:abc@thread.v2", "Hel")
+        assert created.success is True
+        assert created.message_id == "act-1"
+        adapter._app.send.assert_awaited_once()
+
+        mid = await adapter.edit_message(
+            "19:abc@thread.v2", "act-1", "Hello wor", finalize=False)
+        assert mid.success is True
+        assert mid.message_id == "act-1"
+        fin = await adapter.edit_message(
+            "19:abc@thread.v2", "act-1", "Hello world", finalize=True)
+        assert fin.success is True
+        assert fin.message_id == "act-1"
+
+        adapter._app.api.conversations.activities.assert_called_with("19:abc@thread.v2")
+        assert update.await_count == 2
+        assert update.await_args_list[0].args[0] == "act-1"
+        assert update.await_args_list[1].args[0] == "act-1"
+
+    @pytest.mark.anyio
+    async def test_edit_strips_messageid_before_activity_update(self):
+        adapter = self._make_adapter()
+        update, _ops = self._wire_update(adapter)
+        result = await adapter.edit_message(
+            "19:abc@thread.tacv2;messageid=999", "act-1", "Hello")
+        assert result.success is True
+        adapter._app.api.conversations.activities.assert_called_once_with(
+            "19:abc@thread.tacv2")
+        update.assert_awaited_once()
+        assert update.await_args.args[0] == "act-1"
+
+    @pytest.mark.anyio
+    async def test_identical_midstream_edits_are_coalesced(self):
+        adapter = self._make_adapter()
+        update, _ops = self._wire_update(adapter)
+        first = await adapter.edit_message(
+            "19:abc@thread.v2", "act-1", "same text", finalize=False)
+        second = await adapter.edit_message(
+            "19:abc@thread.v2", "act-1", "same text", finalize=False)
+        assert first.success is True and second.success is True
+        assert update.await_count == 1
+
+    @pytest.mark.anyio
+    async def test_update_unsupported_falls_back_to_nonstreaming_send(self):
+        adapter = self._make_adapter()
+        update, _ops = self._wire_update(adapter)
+
+        class _Unsupported(Exception):
+            status_code = 405
+
+        update.side_effect = _Unsupported("Method Not Allowed")
+        edited = await adapter.edit_message(
+            "19:abc@thread.v2", "act-1", "partial", finalize=False)
+        assert edited.success is False
+        sent = await adapter.send("19:abc@thread.v2", "full reply")
+        assert sent.success is True
+        assert sent.message_id == "act-1"
+
+    @pytest.mark.anyio
+    async def test_edit_falls_back_to_rest_when_sdk_client_missing(self):
+        adapter = self._make_adapter()
+        adapter._app.api = None
+        adapter._update_activity_via_rest = AsyncMock()
+        result = await adapter.edit_message("19:abc@thread.v2", "act-1", "Hello")
+        assert result.success is True
+        adapter._update_activity_via_rest.assert_awaited_once_with(
+            "19:abc@thread.v2", "act-1", "Hello")
+
+    @pytest.mark.anyio
+    async def test_rest_update_uses_flat_conversation_id(self):
+        adapter = self._make_adapter()
+        adapter._app.api = None
+        adapter._get_botframework_token = AsyncMock(return_value="tok")
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            request = MagicMock()
+
+            def raise_for_status(self):
+                pass
+
+        class _Client:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def put(self, url, json=None, headers=None):
+                captured["url"] = url
+                captured["json"] = json
+                captured["headers"] = headers
+                return _Resp()
+
+        with patch("httpx.AsyncClient", _Client):
+            result = await adapter.edit_message(
+                "19:abc@thread.tacv2;messageid=42", "act-9", "**hi**")
+        assert result.success is True
+        assert "/v3/conversations/19:abc@thread.tacv2/activities/act-9" in captured["url"]
+        assert ";messageid=" not in captured["url"]
+        assert captured["json"]["type"] == "message"
+        assert captured["json"]["id"] == "act-9"
+        assert captured["headers"]["Authorization"] == "Bearer tok"
+
+    @pytest.mark.anyio
+    async def test_short_429_retries_inline(self):
+        adapter = self._make_adapter()
+
+        class _RateLimit(Exception):
+            status_code = 429
+            response = SimpleNamespace(headers={"Retry-After": "0"})
+
+        adapter._update_activity = AsyncMock(side_effect=[_RateLimit("slow down"), None])
+        result = await adapter.edit_message("19:abc@thread.v2", "act-1", "Hello")
+        assert result.success is True
+        assert adapter._update_activity.await_count == 2
+
+    @pytest.mark.anyio
+    async def test_dismiss_still_uses_activities_delete(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_ALLOW_ALL_USERS", "true")
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter._app.send = AsyncMock(return_value=MagicMock(id="consent-1"))
+        adapter._upload_consented_file = AsyncMock()
+        adapter._send_file_info_card = AsyncMock()
+        delete = AsyncMock()
+        ops = MagicMock()
+        ops.delete = delete
+        adapter._app.api.conversations.activities = MagicMock(return_value=ops)
+        adapter._pending_uploads["fid-1"] = {"name": "report.pdf", "bytes": b"%PDF"}
+        activity = MagicMock()
+        activity.from_ = MagicMock(id="29:user", aad_object_id="aad-1", name="Ada")
+        activity.conversation = MagicMock(id="19:abc@thread.tacv2;messageid=77")
+        activity.reply_to_id = "consent-card-1"
+        activity.replyToId = "consent-card-1"
+        activity.value = {
+            "action": "accept",
+            "context": {"file_id": "fid-1"},
+            "uploadInfo": {
+                "uploadUrl": "https://contoso.sharepoint.com/upload",
+                "name": "report.pdf",
+                "uniqueId": "uid",
+                "fileType": "pdf",
+                "contentUrl": "https://contoso.sharepoint.com/file",
+            },
+        }
+        ctx = MagicMock()
+        ctx.activity = activity
+        with patch("tools.url_safety.is_safe_url", lambda url: True):
+            await adapter._on_file_consent(ctx)
+        adapter._app.api.conversations.activities.assert_called_with("19:abc@thread.tacv2")
+        delete.assert_awaited_once_with("consent-card-1")
+        adapter._upload_consented_file.assert_awaited_once()
+

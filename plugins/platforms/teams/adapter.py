@@ -155,6 +155,10 @@ _REACTION_EMOJI_BY_TYPE = {
     "laugh": "😆", "surprised": "😮", "sad": "😢", "angry": "😠",
 }
 _REACTION_TYPE_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+# Inline wait for HTTP 429 on activity updates; longer Retry-After fails the edit so
+# the stream consumer falls back to a single non-streaming send (Telegram flood pattern).
+_EDIT_FLOOD_INLINE_WAIT_CAP_SECS = 2.0
+_EDIT_CACHE_MAX = 64
 
 
 def _bf_token_request(tenant_id: str, client_id: str, client_secret: str) -> tuple[str, dict]:
@@ -199,6 +203,71 @@ def _to_teams_reaction_type(emoji: Optional[str]) -> Optional[str]:
     if _REACTION_TYPE_RE.match(raw):
         return raw
     return None
+
+
+def _flat_conversation_id(chat_id: str) -> str:
+    """Strip Teams ``;messageid=`` so Bot Framework REST uses a flat conversation id.
+
+    Channel thread activities often arrive as ``19:…@thread.tacv2;messageid=123``.
+    ``conversations.activities.update`` / ``delete`` reject that suffix.
+    """
+    raw = str(chat_id or "").strip()
+    marker = ";messageid="
+    idx = raw.lower().find(marker)
+    return raw[:idx] if idx != -1 else raw
+
+
+def _bf_activity_url(service_url: str, conversation_id: str, activity_id: str) -> str:
+    """``/v3/conversations/{id}/activities/{id}`` on an allowlisted service URL."""
+    return (
+        f"{service_url}v3/conversations/{quote(conversation_id, safe=':@-_.')}"
+        f"/activities/{quote(activity_id, safe=':@-_.')}"
+    )
+
+
+def _http_status_from_exc(exc: BaseException) -> Optional[int]:
+    """Best-effort HTTP status on SDK / httpx errors."""
+    for attr in ("status_code", "status"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int):
+            return val
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        val = getattr(resp, "status_code", None) or getattr(resp, "status", None)
+        if isinstance(val, int):
+            return val
+    return None
+
+
+def _retry_after_seconds(source: Any) -> Optional[float]:
+    """Parse ``Retry-After`` from a response or exception, if present."""
+    headers = getattr(source, "headers", None)
+    if headers is None:
+        resp = getattr(source, "response", None)
+        headers = getattr(resp, "headers", None) if resp is not None else None
+    if not headers:
+        return None
+    try:
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+    except Exception:
+        return None
+    if raw is None or raw == "":
+        return None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _activity_update_unsupported(exc: BaseException, status: Optional[int]) -> bool:
+    """True when the connector cannot update this activity (fallback to a plain send)."""
+    if status in (404, 405, 501):
+        return True
+    blob = str(exc).lower()
+    return any(s in blob for s in (
+        "method not allowed", "not supported", "cannot be updated",
+        "activity not found", "message not found",
+    ))
 
 
 def _reaction_to_emoji(reaction_type: Optional[str]) -> str:
@@ -478,13 +547,15 @@ async def _standalone_send(
         (service_url is None, f"TEAMS_SERVICE_URL host is not on the Bot Framework allowlist; "
                               f"expected one of {sorted(_ALLOWED_TEAMS_SERVICE_HOSTS)}"),
         (not chat_id, "chat_id (conversation ID) is required"),
-        (not _TEAMS_CONV_ID_RE.match(chat_id or ""), "chat_id contains characters outside the Bot Framework conversation ID set"),
+        (not _TEAMS_CONV_ID_RE.match(_flat_conversation_id(chat_id or "")),
+         "chat_id contains characters outside the Bot Framework conversation ID set"),
         (not _TEAMS_CONV_ID_RE.match(tenant_id), "TEAMS_TENANT_ID contains characters outside the expected set"),
         (not AIOHTTP_AVAILABLE, "aiohttp not installed")):
         if failed:
             return send_error(f"Teams standalone send: {error}")
     token_url, token_form = _bf_token_request(tenant_id, client_id, client_secret)
-    activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
+    conv_id = _flat_conversation_id(chat_id or "")
+    activities_url = f"{service_url}v3/conversations/{quote(conv_id, safe=':@-_.')}/activities"
     try:
         import aiohttp as _aiohttp
         # Per-request timeouts so a slow STS endpoint cannot starve the activity POST.
@@ -617,6 +688,9 @@ class TeamsAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
     splits_long_messages = True  # send() chunks via truncate_message()
+    # Edit-based streaming (send then conversations.activities.update). Not Slack-style
+    # native stream-is-the-message; do not flip this without a distinct Teams stream object.
+    draft_stream_is_message = False
     # Processing-lifecycle reactions (👀 while working, ✅/❌ on complete). Unicode maps to
     # Teams reaction ids in _REACTION_TYPE_BY_ALIAS.
     _ACK_EMOJI = "👀"
@@ -655,6 +729,9 @@ class TeamsAdapter(BasePlatformAdapter):
         # file-consent acceptContext id → {name, bytes, mime} (bounded).
         self._pending_uploads: Dict[str, Dict[str, Any]] = {}
         self._pending_upload_ids: deque = deque()
+        # (chat_id, activity_id) → last edited text / saturated mid-stream preview.
+        self._last_edit_text: Dict[tuple, str] = {}
+        self._last_overflow_preview: Dict[tuple, str] = {}
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
@@ -813,7 +890,7 @@ class TeamsAdapter(BasePlatformAdapter):
         conv = activity.conversation
         conv_id = getattr(conv, "id", None)
         if conv_id:  # cache the conversation reference for proactive sends (approval cards, etc.)
-            self._conv_refs[conv_id] = ctx.conversation_ref
+            self._remember_conv_ref(str(conv_id), ctx.conversation_ref)
             self._remember_graph_file_target(str(conv_id), activity)
         text = activity.text if hasattr(activity, "text") and activity.text else ""
         conv_type = getattr(conv, "conversation_type", None)
@@ -1154,13 +1231,25 @@ class TeamsAdapter(BasePlatformAdapter):
 
     async def _send_via_conv_ref(self, chat_id: str, activity: Any, fallback: Any) -> Any:
         """Send ``activity`` through the cached ConversationReference, else ``App.send(fallback)``."""
-        conv_ref = self._conv_refs.get(chat_id)
+        conv_ref = self._conv_ref_for(chat_id)
         if conv_ref:
             result = await self._app.activity_sender.send(activity, conv_ref)
         else:
             result = await self._app.send(chat_id, fallback)
         self._remember_sent(result)
         return result
+
+    def _remember_conv_ref(self, chat_id: str, conv_ref: Any) -> None:
+        """Cache a conversation reference under the wire id and the flat Bot Framework id."""
+        if not chat_id:
+            return
+        self._conv_refs[chat_id] = conv_ref
+        flat = _flat_conversation_id(chat_id)
+        if flat != chat_id:
+            self._conv_refs[flat] = conv_ref
+
+    def _conv_ref_for(self, chat_id: str) -> Any:
+        return self._conv_refs.get(chat_id) or self._conv_refs.get(_flat_conversation_id(chat_id))
 
     def _remember_sent(self, result: Any) -> None:
         """Track an outbound activity id (bounded deque) for the require_mention reply exemption."""
@@ -1271,6 +1360,84 @@ class TeamsAdapter(BasePlatformAdapter):
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
+
+    async def edit_message(
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+    ) -> SendResult:
+        """Progressively update a bot activity (gateway send-then-edit streaming).
+
+        Mid-stream (``finalize=False``) truncates oversize text in place so the
+        edit target stays this activity. Identical payloads are skipped. HTTP 429
+        with a short Retry-After is waited inline; a longer wait or 404/405
+        returns ``success=False`` so the stream consumer falls back to a plain send.
+        ``draft_stream_is_message`` stays False: Teams has no native stream object.
+        """
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+        if not chat_id or not message_id:
+            return SendResult(success=False, error="missing conversation or activity id")
+        formatted = self.format_message(content)
+        key = (str(chat_id), str(message_id))
+        oversize = len(formatted) > self.MAX_MESSAGE_LENGTH
+        if oversize:
+            formatted = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
+            if not finalize and self._last_overflow_preview.get(key) == formatted:
+                return SendResult(success=True, message_id=str(message_id))
+            if not finalize:
+                self._remember_edit_cache(self._last_overflow_preview, key, formatted)
+        elif not finalize:
+            self._last_overflow_preview.pop(key, None)
+        if finalize:
+            self._last_overflow_preview.pop(key, None)
+        if not finalize and self._last_edit_text.get(key) == formatted:
+            return SendResult(success=True, message_id=str(message_id))
+        try:
+            await self._update_activity(str(chat_id), str(message_id), formatted)
+        except Exception as e:
+            return await self._on_edit_activity_error(
+                e, chat_id=str(chat_id), message_id=str(message_id), text=formatted)
+        self._remember_edit_cache(self._last_edit_text, key, formatted)
+        return SendResult(success=True, message_id=str(message_id))
+
+    def _remember_edit_cache(self, cache: Dict[tuple, str], key: tuple, text: str) -> None:
+        if key not in cache and len(cache) >= _EDIT_CACHE_MAX:
+            cache.pop(next(iter(cache)))
+        cache[key] = text
+
+    async def _on_edit_activity_error(
+        self, exc: BaseException, *, chat_id: str, message_id: str, text: str,
+    ) -> SendResult:
+        """Classify an activity-update failure: short 429 retry, unsupported → fallback send."""
+        status = _http_status_from_exc(exc)
+        retry_after = _retry_after_seconds(exc)
+        if status == 429 or retry_after is not None:
+            wait = float(retry_after) if retry_after is not None else 1.0
+            if wait <= _EDIT_FLOOD_INLINE_WAIT_CAP_SECS:
+                logger.debug("[teams] activity update 429, waiting %.1fs", wait)
+                await asyncio.sleep(wait)
+                try:
+                    await self._update_activity(chat_id, message_id, text)
+                    self._remember_edit_cache(
+                        self._last_edit_text, (chat_id, message_id), text)
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as retry_err:
+                    logger.warning("[teams] activity update retry failed: %s", retry_err)
+                    return SendResult(
+                        success=False, error=str(retry_err), retryable=True,
+                        error_kind="rate_limited")
+            return SendResult(
+                success=False, error=str(exc), retryable=True, retry_after=wait,
+                error_kind="rate_limited")
+        if _activity_update_unsupported(exc, status):
+            logger.info("[teams] activity update unsupported (%s); stream will fall back to send",
+                        status or exc)
+            return SendResult(
+                success=False, error=str(exc),
+                error_kind="not_found" if status == 404 else None)
+        logger.warning("[teams] edit_message failed: %s", exc)
+        return SendResult(
+            success=False, error=str(exc),
+            retryable=status is None or status >= 500)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if self._app:
@@ -1475,7 +1642,7 @@ class TeamsAdapter(BasePlatformAdapter):
 
     def _conversation_type(self, chat_id: str) -> Optional[str]:
         """Cached conversation_type for ``chat_id``, or ``None`` when unseen this process."""
-        ref = self._conv_refs.get(chat_id)
+        ref = self._conv_ref_for(chat_id)
         conv = getattr(ref, "conversation", None)
         cached_type = getattr(conv, "conversation_type", None) or getattr(conv, "conversationType", None)
         if cached_type:
@@ -1595,38 +1762,80 @@ class TeamsAdapter(BasePlatformAdapter):
     async def _dismiss_consent_card(self, chat_id: Optional[str], activity_id: Optional[str]) -> None:
         """Delete the FileConsentCard so Accept/Decline cannot be clicked again.
 
-        Uses ``api.conversations.activities(chat_id).delete`` (same client as the streaming TODO).
-        Failures are logged and never fail the upload path.
+        Uses ``api.conversations.activities(chat_id).delete`` — the same client as
+        streaming ``edit_message`` (``activities.update``). Failures are logged and
+        never fail the upload path.
         """
         if not chat_id or not activity_id:
             return
         try:
-            api = getattr(self._app, "api", None) if self._app else None
-            conversations = getattr(api, "conversations", None) if api is not None else None
-            activities_fn = getattr(conversations, "activities", None) if conversations is not None else None
-            if callable(activities_fn):
-                ops = activities_fn(str(chat_id))
-                delete_fn = getattr(ops, "delete", None)
-                if callable(delete_fn):
-                    result = delete_fn(str(activity_id))
-                    if inspect.isawaitable(result):
-                        await result
-                    return
-            await self._delete_activity_via_rest(str(chat_id), str(activity_id))
+            conv_id, ops = self._conversation_activity_ops(chat_id)
+            delete_fn = getattr(ops, "delete", None) if ops is not None else None
+            if callable(delete_fn):
+                result = delete_fn(str(activity_id))
+                if inspect.isawaitable(result):
+                    await result
+                return
+            await self._delete_activity_via_rest(conv_id, str(activity_id))
         except Exception as e:
             logger.debug("[teams] file consent card dismiss failed: %s", e)
+
+    def _conversation_activity_ops(self, chat_id: str) -> tuple[str, Any]:
+        """``(flat conversation id, SDK activities client or None)``."""
+        conv_id = _flat_conversation_id(chat_id)
+        api = getattr(self._app, "api", None) if self._app else None
+        conversations = getattr(api, "conversations", None) if api is not None else None
+        activities_fn = getattr(conversations, "activities", None) if conversations is not None else None
+        if not callable(activities_fn):
+            return conv_id, None
+        return conv_id, activities_fn(str(conv_id))
+
+    async def _update_activity(self, chat_id: str, activity_id: str, text: str) -> None:
+        """PUT the activity via the SDK client, else Bot Framework REST."""
+        conv_id, ops = self._conversation_activity_ops(chat_id)
+        if not _TEAMS_CONV_ID_RE.match(conv_id) or not _TEAMS_CONV_ID_RE.match(activity_id):
+            raise ValueError("conversation/activity id outside the Bot Framework charset")
+        update_fn = getattr(ops, "update", None) if ops is not None else None
+        if callable(update_fn):
+            from microsoft_teams.api import MessageActivityInput
+            activity = MessageActivityInput()
+            adder = getattr(activity, "add_text", None) or getattr(activity, "with_text", None)
+            if callable(adder):
+                activity = adder(text) or activity
+            with suppress(Exception):
+                activity.id = str(activity_id)
+            result = update_fn(str(activity_id), activity)
+            if inspect.isawaitable(result):
+                await result
+            return
+        await self._update_activity_via_rest(conv_id, activity_id, text)
+
+    async def _update_activity_via_rest(self, conversation_id: str, activity_id: str, text: str) -> None:
+        """PUT ``/v3/conversations/{id}/activities/{id}`` (ConversationActivityClient.update)."""
+        import httpx
+        conv_id = _flat_conversation_id(conversation_id)
+        if not _TEAMS_CONV_ID_RE.match(conv_id) or not _TEAMS_CONV_ID_RE.match(activity_id):
+            raise ValueError("conversation/activity id outside the Bot Framework charset")
+        token = await self._get_botframework_token()
+        url = _bf_activity_url(self._service_url_for(conversation_id), conv_id, activity_id)
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {"type": "message", "id": activity_id, "text": text, "textFormat": "markdown"}
+        async with httpx.AsyncClient(timeout=15.0, trust_env=gateway_trust_env()) as client:
+            response = await client.put(url, json=payload, headers=headers)
+            if response.status_code == 429:
+                raise httpx.HTTPStatusError(
+                    f"Teams activity update rate-limited ({response.status_code})",
+                    request=response.request, response=response)
+            response.raise_for_status()
 
     async def _delete_activity_via_rest(self, chat_id: str, activity_id: str) -> None:
         """DELETE ``/v3/conversations/{id}/activities/{id}`` (ConversationActivityClient.delete)."""
         import httpx
-        if not _TEAMS_CONV_ID_RE.match(chat_id) or not _TEAMS_CONV_ID_RE.match(activity_id):
+        conv_id = _flat_conversation_id(chat_id)
+        if not _TEAMS_CONV_ID_RE.match(conv_id) or not _TEAMS_CONV_ID_RE.match(activity_id):
             raise ValueError("conversation/activity id outside the Bot Framework charset")
         token = await self._get_botframework_token()
-        service_url = self._service_url_for(chat_id)
-        url = (
-            f"{service_url}v3/conversations/{quote(chat_id, safe=':@-_.')}"
-            f"/activities/{quote(activity_id, safe=':@-_.')}"
-        )
+        url = _bf_activity_url(self._service_url_for(chat_id), conv_id, activity_id)
         headers = {"Authorization": f"Bearer {token}"}
         async with httpx.AsyncClient(timeout=15.0, trust_env=gateway_trust_env()) as client:
             response = await client.delete(url, headers=headers)
@@ -1680,13 +1889,14 @@ class TeamsAdapter(BasePlatformAdapter):
 
     def _service_url_for(self, chat_id: str) -> str:
         """Bot Framework service URL for this conversation (conv-ref, else the allowlisted default)."""
-        ref = self._conv_refs.get(chat_id)
+        ref = self._conv_ref_for(chat_id)
         raw = getattr(ref, "service_url", None) or _DEFAULT_TEAMS_SERVICE_URL
         return _validate_teams_service_url(str(raw)) or _DEFAULT_TEAMS_SERVICE_URL
 
     async def _react(self, chat_id: str, message_id: str, reaction_type: str, *, remove: bool) -> bool:
         """Add or remove a Teams reaction via the SDK client, else Bot Framework REST."""
-        if not self._app or not chat_id or not message_id or not _REACTION_TYPE_RE.match(reaction_type):
+        conv_id = _flat_conversation_id(chat_id)
+        if not self._app or not conv_id or not message_id or not _REACTION_TYPE_RE.match(reaction_type):
             return False
         api = getattr(self._app, "api", None)
         reactions = getattr(api, "reactions", None) if api is not None else None
@@ -1694,9 +1904,9 @@ class TeamsAdapter(BasePlatformAdapter):
         sdk_fn = getattr(reactions, method_name, None)
         try:
             if callable(sdk_fn):
-                await sdk_fn(chat_id, message_id, reaction_type)
+                await sdk_fn(conv_id, message_id, reaction_type)
             else:
-                await self._react_via_rest(chat_id, message_id, reaction_type, remove=remove)
+                await self._react_via_rest(conv_id, message_id, reaction_type, remove=remove)
         except Exception as e:
             logger.debug("[teams] reaction %s failed (%s): %s", method_name, reaction_type, e)
             return False
@@ -1711,13 +1921,12 @@ class TeamsAdapter(BasePlatformAdapter):
     async def _react_via_rest(self, chat_id: str, message_id: str, reaction_type: str, *, remove: bool) -> None:
         """PUT/DELETE ``/v3/conversations/{id}/activities/{id}/reactions/{type}`` (SDK ReactionClient)."""
         import httpx
-        if not _TEAMS_CONV_ID_RE.match(chat_id) or not _TEAMS_CONV_ID_RE.match(message_id):
+        conv_id = _flat_conversation_id(chat_id)
+        if not _TEAMS_CONV_ID_RE.match(conv_id) or not _TEAMS_CONV_ID_RE.match(message_id):
             raise ValueError("conversation/activity id outside the Bot Framework charset")
         token = await self._get_botframework_token()
-        service_url = self._service_url_for(chat_id)
         url = (
-            f"{service_url}v3/conversations/{quote(chat_id, safe=':@-_.')}"
-            f"/activities/{quote(message_id, safe=':@-_.')}"
+            f"{_bf_activity_url(self._service_url_for(chat_id), conv_id, message_id)}"
             f"/reactions/{quote(reaction_type, safe='')}"
         )
         headers = {"Authorization": f"Bearer {token}"}
@@ -1845,11 +2054,6 @@ class TeamsAdapter(BasePlatformAdapter):
             await platform_handler(envelope, source)
         except Exception:
             logger.debug("[teams] gateway_platform_event reaction dispatch failed", exc_info=True)
-
-    # TODO(streaming): Teams Bot Framework supports activity updates (``conversations.activities.update``)
-    # which could become progressive edits. FileConsent dismiss already uses the same client
-    # (``activities.delete``). Streaming itself is not wired — draft-stream-is-message contract
-    # is a follow-up; do not enable ``draft_stream_is_message`` without that work.
 
 
 _SETUP_CREDENTIALS = (

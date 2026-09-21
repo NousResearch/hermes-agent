@@ -276,9 +276,34 @@ When the agent needs to run a potentially dangerous command, it sends an Adaptiv
 
 Clicking a button resolves the approval inline and replaces the card with the decision.
 
-### Streaming (not yet)
+### Streaming
 
-Teams can update an in-flight activity (Bot Framework `conversations.activities.update`), but Hermes does **not** stream replies on Teams yet. Progressive edits would need the gateway's draft-stream contract; that is a follow-up, not part of files/reactions.
+Teams can update an in-flight bot activity (`PUT /v3/conversations/{id}/activities/{id}`, the SDK's `conversations.activities.update`). When gateway streaming is on, Hermes posts the first tokens as a new activity, then progressively edits that same activity (`edit_message(finalize=False)`) and writes the completed reply with `finalize=True`.
+
+This is the same Bot Framework client path FileConsent uses to dismiss the card (`activities.delete`). Conversation ids that carry a `;messageid=` thread suffix are flattened before the update — the connector requires a flat conversation id.
+
+Streaming is **not** Slack-style native `draft_stream_is_message` (Teams has no distinct stream object). It is the gateway's standard send-then-edit consumer, the same shape as Discord and Telegram's edit path.
+
+Enable it with the global gateway switch:
+
+```yaml
+streaming:
+  enabled: true
+  transport: auto   # Teams uses the edit transport (no native draft API)
+```
+
+Optional per-platform override:
+
+```yaml
+display:
+  platforms:
+    teams:
+      streaming: true   # or false to keep whole-message replies
+```
+
+If an activity update is rejected (405 / 404 / not supported), Hermes falls back to a single non-streaming send for the rest of that turn — you will not get a flood of partial messages. Identical mid-stream payloads are skipped, and a short `Retry-After` on HTTP 429 is waited inline; a longer rate-limit disables further edits for that turn.
+
+Typing indicators (`send_typing`) still fire while the agent works. Processing reactions (👀 / ✅ / ❌) are independent of streaming.
 
 ### Meeting Summary Delivery (Teams Meeting Pipeline)
 

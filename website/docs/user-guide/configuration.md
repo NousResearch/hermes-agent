@@ -2518,7 +2518,7 @@ display:
 
 When enabled, responses appear token-by-token inside a streaming box. Tool calls are still captured silently. If the provider doesn't support streaming, it falls back to the normal display automatically.
 
-### Gateway Streaming (Telegram, Discord, Slack)
+### Gateway Streaming (Telegram, Discord, Slack, Teams)
 
 ```yaml
 streaming:

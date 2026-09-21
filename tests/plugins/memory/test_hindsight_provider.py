@@ -557,11 +557,25 @@ class TestToolHandlers:
         second_client.arecall.return_value = SimpleNamespace(
             results=[SimpleNamespace(text="Recovered memory")]
         )
-        clients = iter([first_client, second_client])
+        clients = iter([second_client])
 
         provider._mode = "local_embedded"
         provider._client = first_client
-        monkeypatch.setattr(provider, "_get_client", lambda **_: next(clients))
+        # The retry compares the rebuild to the client it retired; mirror the real
+        # _get_client: first call returns the failing client, the retire call swaps
+        # in the rebuild, and retiring an already-rebuilt client is a no-op.
+        calls = []
+        holder = {"client": first_client}
+
+        def _fake_get_client(*, retire=None):
+            calls.append(retire)
+            if retire is not None and retire is holder["client"] and "next" not in holder:
+                holder["next"] = next(clients)
+                holder["client"] = holder["next"]
+                provider._client = holder["client"]
+            return holder["client"]
+
+        monkeypatch.setattr(provider, "_get_client", _fake_get_client)
 
         result = json.loads(provider.handle_tool_call(
             "hindsight_recall", {"query": "test"}
@@ -1539,6 +1553,58 @@ class TestClientLifecycleLock:
         orphans = [c for c in built if c is not broken and c is not provider._client]
         assert orphans == []
         assert sum(c is not broken for c in built) == 1
+
+    def test_concurrent_retries_retire_the_broken_client_once(self, provider, monkeypatch):
+        """Two threads failing against the same stale daemon must not evict each
+        other's replacement. Sharing the broken identity through an instance field
+        let the second thread stamp the *first thread's freshly built* client as
+        broken and evict it (orphaning its aiohttp session); passing the identity
+        as an argument keeps stamp-and-retire atomic per thread, so exactly one
+        replacement is built and it wins."""
+        provider._mode = "local_embedded"
+
+        build_gate = threading.Event()
+        built = []
+
+        def _build():
+            build_gate.wait(timeout=5.0)  # park both retries inside the lock window
+            client = SimpleNamespace()
+            built.append(client)
+            return client
+
+        monkeypatch.setattr(provider, "_new_embedded_client", _build)
+
+        broken = SimpleNamespace()
+        provider._client = broken
+
+        def op(client):
+            async def _attempt():
+                if client is broken:
+                    raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+                return "ok"
+            return _attempt()
+
+        barrier = threading.Barrier(2, timeout=5.0)
+
+        def _failer():
+            barrier.wait()  # release both into the failure branch together
+            return provider._run_hindsight_operation(op)
+
+        threads = [threading.Thread(target=_failer, daemon=True) for _ in range(2)]
+        for t in threads:
+            t.start()
+        # Both threads must observe the SAME broken client before either rebuilds.
+        time.sleep(0.2)
+        build_gate.set()
+        for t in threads:
+            t.join(timeout=10.0)
+
+        replacements = [c for c in built if c is not broken]
+        assert len(replacements) == 1, f"built {len(replacements)} replacements"
+        assert provider._client is replacements[0]
+        # The broken client was never re-created: with identity passing, a miss
+        # leaves _client intact rather than handing back a second copy.
+        built.clear()
 
     def test_shutdown_closes_retired_client_and_allows_rebuild(self, provider, monkeypatch):
         """shutdown() retires the client before closing it, so a later

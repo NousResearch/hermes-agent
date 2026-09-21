@@ -335,9 +335,6 @@ class HindsightMemoryProvider(MemoryProvider):
         # _run_sync/operation(client) or while taking _prefetch_lock /
         # _pending_retain_ops_lock.
         self._client_lock = threading.Lock()
-        # Client observed broken by the stale-daemon retry; only its observer may
-        # retire it (identity-checked against _client under _client_lock).
-        self._broken_client = None
         self._api_url, self._llm_base_url, self._mode = _DEFAULT_API_URL, "", "cloud"
         self._timeout, self._idle_timeout = _DEFAULT_TIMEOUT, _DEFAULT_IDLE_TIMEOUT
         self._bank_id, self._budget, self._bank_id_template = "hermes", "mid", ""
@@ -516,20 +513,24 @@ class HindsightMemoryProvider(MemoryProvider):
                      self._api_url, bool(self._api_key), kwargs["timeout"])
         return Hindsight(**kwargs)
 
-    def _get_client(self, *, recreate: bool = False):
+    def _get_client(self, *, retire: Any = None):
         """Return the cached Hindsight client (created once, reused).
 
-        *recreate* is used by the stale-daemon retry path: it drops the cached
-        client (if it is still the broken one we observed) and rebuilds it
-        exactly once, under the lock.
+        *retire* is the stale-daemon retry path: pass the exact client object we
+        observed failing and this call drops the cached copy *only if* it is still
+        that object (a sibling thread may have already rebuilt it), then rebuilds
+        exactly once, under the lock. Passing the identity as an argument rather
+        than through shared state keeps the stamp-and-retire pair atomic against a
+        concurrent retry: two threads that both saw the same broken client retire
+        it once and share the single replacement.
         """
-        if not recreate and (client := self._client) is not None:
+        if retire is None and (client := self._client) is not None:
             return client
         with self._client_lock:
-            if recreate:
+            if retire is not None:
                 # Only retire the client we actually observed as broken; a sibling
                 # thread may have already rebuilt it after our failure.
-                if self._client is not None and self._client is not getattr(self, "_broken_client", None):
+                if self._client is not None and self._client is not retire:
                     return self._client
                 self._client = None
             if self._client is None:
@@ -543,17 +544,18 @@ class HindsightMemoryProvider(MemoryProvider):
     def _run_hindsight_operation(self, operation):
         """Run an async client operation; for local_embedded, a stale-daemon
         connection failure recreates the client and retries once."""
+        client = self._get_client()
         try:
-            return self._run_sync(operation(self._get_client()))
+            return self._run_sync(operation(client))
         except Exception as exc:
             text = f"{type(exc).__name__}: {exc}".lower()
             if self._mode != "local_embedded" or not any(m in text for m in _RETRIABLE_CONNECTION_MARKERS):
                 raise
             logger.info("Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s", exc)
-            self._broken_client = self._client
-            self._client = client = self._get_client(recreate=True)
-            self._broken_client = None
-            return self._run_sync(operation(client))
+            replacement = self._get_client(retire=client)
+            if replacement is client:
+                raise  # nothing was retired (a sibling owns the rebuild); surface the original error
+            return self._run_sync(operation(replacement))
 
     # -- retain writer thread + server-side visibility -------------------------
 

@@ -401,10 +401,21 @@ def _try_resolve_from_custom_pool(
 
 
 def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
+    request_overrides: Dict[str, Any] = {}
     extra_body = custom_provider.get("extra_body")
-    if not isinstance(extra_body, dict) or not extra_body:
-        return {}
-    return {"extra_body": dict(extra_body)}
+    if isinstance(extra_body, dict) and extra_body:
+        request_overrides["extra_body"] = dict(extra_body)
+    # Per-provider output caps (#118066): only ``extra_body`` was lifted, so a
+    # configured ``max_tokens`` never reached the request path and the endpoint
+    # applied its own default cap, truncating replies (cron brief family).
+    # ``max_output_tokens`` is accepted as the alias (#21498 family) and
+    # normalized to the wire key the transports consume.
+    for key in ("max_tokens", "max_output_tokens"):
+        value = custom_provider.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            request_overrides["max_tokens"] = value
+            break
+    return request_overrides
 
 
 def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model: Optional[str], result: Dict[str, Any]) -> None:

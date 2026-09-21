@@ -152,6 +152,10 @@ def _idle_compaction(
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
     if not (agent.compression_enabled and _idle_after > 0 and messages):
         return
+    # A detached review fork never owns a compression pass (#118438), idle-triggered
+    # included: the pass would be discarded whole if a live turn supersedes the fork.
+    if _tc._review_fork_compression_disallowed(agent):
+        return
     _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
     if _idle_gap < _idle_after:
         return
@@ -240,7 +244,11 @@ def _preflight_compression(
         _rearm_uncompressed_overflow_warn(agent, out.messages, out.active_system_prompt)
         return
     _compressor = agent.context_compressor
-    if _tc._review_fork_first_request_pending(agent) or not _tc._should_run_preflight_estimate(
+    # A detached review fork never owns a compression pass (#118438): a supersede
+    # would discard it whole and the next live turn's preflight restarts from zero.
+    if _tc._review_fork_first_request_pending(agent) or _tc._review_fork_compression_disallowed(
+        agent
+    ) or not _tc._should_run_preflight_estimate(
         out.messages, _compressor.protect_first_n, _compressor.protect_last_n,
         _compressor.threshold_tokens,
     ):

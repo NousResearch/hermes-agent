@@ -892,6 +892,14 @@ def _detach_fork_compression(review_agent: Any) -> None:
     review_agent.compression_enabled = detached
     if detached:
         review_agent._review_defer_compaction_before_first_response = True
+        # #118438: the fork must never OWN a compression pass. A live turn supersedes
+        # the fork with a hard interrupt, discarding an in-flight summary whole after
+        # minutes of streaming, and the next turn's preflight restarts it from zero —
+        # one superseded pass can white-burn 10+ minutes at the default 600s ceiling.
+        # Compression owns the conversation lifecycle; the replayed snapshot stays
+        # bounded by the aggregate input budget and the deterministic tool-result
+        # prune. All automatic compression gates honor this marker.
+        review_agent._review_fork_compression_disallowed = True
 
 
 def _routed_reasoning_config(task_cfg: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

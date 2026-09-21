@@ -387,6 +387,17 @@ def _review_fork_first_request_pending(agent: Any) -> bool:
     )
 
 
+def _review_fork_compression_disallowed(agent: Any) -> bool:
+    """Whether this agent is a detached background-review fork that must never own a
+    compression pass (#118438): a new live turn supersedes the fork with a hard
+    interrupt, discarding any in-flight summary whole after minutes of streaming, and
+    the next turn's preflight restarts the same compression from zero. Compression
+    owns the conversation lifecycle — the fork stays bounded by its aggregate
+    input-token budget and the deterministic tool-result prune, neither of which needs
+    an LLM call. Dormant without the marker set by ``_detach_fork_compression``."""
+    return bool(getattr(agent, "_review_fork_compression_disallowed", False))
+
+
 def _compression_warrants_another_preflight_pass(
     orig_tokens: int, new_tokens: int, threshold_tokens: int
 ) -> bool:

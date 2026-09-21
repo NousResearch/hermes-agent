@@ -19,7 +19,9 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression, ensure_compression_feasibility_checked,
 )
-from agent.turn_context import _review_fork_first_request_pending
+from agent.turn_context import (
+    _review_fork_compression_disallowed, _review_fork_first_request_pending,
+)
 from agent.turn_context_compaction import (
     _apply_grown_window, _blocked_compress_reason, _clear_overflow_warn, _refund_api_call,
     _reset_retry_state_after_compaction,
@@ -96,6 +98,7 @@ def run_preflight_compression(
     if (
         _eligible
         and not _review_fork_first_request_pending(agent)
+        and not _review_fork_compression_disallowed(agent)
         and (not v._preflight_compression_blocked or provider_overflow_preflight)
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
         and not _compression_cooldown
@@ -293,6 +296,7 @@ def compress_after_tool_results(
     if (
         agent.compression_enabled
         and compression_attempts < max_compression_attempts
+        and not _review_fork_compression_disallowed(agent)
         and not bool(
             getattr(_compressor, "awaiting_real_usage_after_compression", False)
         )

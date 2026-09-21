@@ -35,6 +35,17 @@ STALE_AFTER_SECONDS = 24 * 60 * 60
 _RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_ROWS = 500
 
+# Retention is a housekeeping sweep over a 7-day window and a 500-row cap, but it ran on EVERY
+# recorded obligation — a second connection (schema check + journal pragma) plus an unconditional
+# COUNT(*), for a table that cannot meaningfully change between two consecutive replies. Sweeping on
+# whichever of these comes first keeps the cap honest under a burst (50 << _MAX_ROWS, so growth
+# between sweeps can never reach the cap) without paying for it per message.
+_PRUNE_EVERY_N_RECORDS = 50
+_PRUNE_MIN_INTERVAL_SECONDS = 300.0
+# ``at`` is -inf until the first sweep: ``time.monotonic()`` has no fixed epoch and can start near
+# zero, which would otherwise read as "swept just now" and skip the first sweep of the process.
+_prune_state = {"records": 0, "at": float("-inf")}
+
 # Visible prefixes for redeliveries that might duplicate an already-received message (crash mid-send /
 # post-rejection retry) — honest at-least-once. Runtime recovery uses a distinct marker: no restart
 # occurred, but a network rejection's acknowledgement can still have been lost independently.
@@ -276,7 +287,24 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
                VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
              content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
-    _prune()
+    if _prune_due():
+        _prune()
+
+
+def _prune_due(now_monotonic: Optional[float] = None) -> bool:
+    """True when the retention sweep is due; advances the counters as a side effect.
+
+    Called under ``_DB_LOCK``'s caller but deliberately not holding it — the sweep itself takes its
+    own connection, exactly as before.
+    """
+    now = time.monotonic() if now_monotonic is None else now_monotonic
+    state = _prune_state
+    state["records"] += 1
+    if state["records"] < _PRUNE_EVERY_N_RECORDS and (now - state["at"]) < _PRUNE_MIN_INTERVAL_SECONDS:
+        return False
+    state["records"] = 0
+    state["at"] = now
+    return True
 
 
 def mark_attempting(obligation_id: str) -> None:

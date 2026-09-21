@@ -379,6 +379,47 @@ class TestPrune:
         dl._prune()
         assert _row("ob-1") is None
 
+    def test_recording_does_not_sweep_on_every_message(self, monkeypatch):
+        """Retention is a 7-day/500-row sweep; running it per reply cost a second
+        connection and an unconditional COUNT(*) for a table that cannot have
+        meaningfully changed between two consecutive replies."""
+        calls = []
+        monkeypatch.setattr(dl, "_prune", lambda *a, **kw: calls.append(1))
+        dl._prune_state.update(records=0, at=float("-inf"))
+
+        for i in range(dl._PRUNE_EVERY_N_RECORDS):
+            _record(oid=f"ob-sweep-{i}")
+
+        # The first record of the process sweeps; the rest of the window does not.
+        assert calls == [1], f"expected one sweep across {dl._PRUNE_EVERY_N_RECORDS} records, got {len(calls)}"
+
+    def test_sweep_resumes_after_the_record_window(self, monkeypatch):
+        """The count bound must still fire, so a burst can never outrun _MAX_ROWS."""
+        calls = []
+        monkeypatch.setattr(dl, "_prune", lambda *a, **kw: calls.append(1))
+        dl._prune_state.update(records=0, at=0.0)
+        monkeypatch.setattr(dl.time, "monotonic", lambda: 0.0)  # freeze time: only the count can fire
+
+        for i in range(dl._PRUNE_EVERY_N_RECORDS * 2):
+            _record(oid=f"ob-burst-{i}")
+
+        assert len(calls) == 2, f"expected 2 sweeps in {dl._PRUNE_EVERY_N_RECORDS * 2} records, got {len(calls)}"
+        assert dl._PRUNE_EVERY_N_RECORDS < dl._MAX_ROWS, "growth between sweeps must not reach the row cap"
+
+    def test_sweep_fires_on_the_time_bound_when_traffic_is_slow(self, monkeypatch):
+        """A quiet gateway still sweeps: the interval bound fires without the count."""
+        calls = []
+        monkeypatch.setattr(dl, "_prune", lambda *a, **kw: calls.append(1))
+        dl._prune_state.update(records=0, at=0.0)
+        clock = {"t": 0.0}
+        monkeypatch.setattr(dl.time, "monotonic", lambda: clock["t"])
+
+        _record(oid="ob-slow-1")
+        assert calls == []
+        clock["t"] = dl._PRUNE_MIN_INTERVAL_SECONDS + 1
+        _record(oid="ob-slow-2")
+        assert calls == [1]
+
 
 class TestLedgerEnabled:
     def test_default_on(self):

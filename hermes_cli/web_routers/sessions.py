@@ -537,6 +537,21 @@ def _with_tool_call_labels(message: dict) -> dict:
     return {**message, "tool_call_labels": labels} if labels else message
 
 
+def _skill_invocation_display(message: dict) -> Optional[str]:
+    """Typed invocation of a stored, untyped skill-expanded user row; None keeps the row as-is.
+
+    Explicit display metadata (desktop model-switch markers, an existing
+    projection) wins over re-deriving one. The stored ``content`` keeps the full
+    scaffold the model needs on replay; the derived invocation matches the
+    WebSocket history projection (tui_gateway ``_skill_scaffold_projection``).
+    """
+    if message.get("role") != "user" or message.get("display_content") or message.get("display_kind"):
+        return None
+    from agent.skill_commands import describe_skill_invocation
+
+    return describe_skill_invocation(message.get("content"), separator=" ")
+
+
 def _project_for_display(messages: list) -> list:
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
@@ -545,6 +560,14 @@ def _project_for_display(messages: list) -> list:
     for message in messages:
         message = _with_tool_call_labels(message)
         if not is_compaction_summary_message(message):
+            invocation = _skill_invocation_display(message)
+            if invocation:
+                # Display-only: never persisted, so rewind still re-sends the scaffold.
+                projected = message.copy()
+                projected["display_content"] = invocation
+                projected["display_kind"] = "skill_invocation"
+                projected_messages.append(projected)
+                continue
             projected_messages.append(message)
             continue
         display_view = project_compaction_message_for_display(message)

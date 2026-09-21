@@ -111,6 +111,9 @@ def _installed_skill_index() -> _SkillIndex:
 
     names: set[str] = set()
     by_category: dict[str, list[str]] = {}
+    # ``skip_disabled=True`` skips the disabled FILTER, i.e. disabled skills are listed
+    # here. They are separated out by ``disabled`` below; treating an installed-but-
+    # disabled name as resolvable is exactly the case the worker rejects.
     for entry in _find_all_skills(skip_disabled=True):
         name = str(entry.get("name") or "").strip()
         if not name:
@@ -160,30 +163,38 @@ def _project_skill_names(project_path: Optional[str]) -> frozenset[str]:
     return frozenset(names)
 
 
-def _resolves_directly(name: str) -> bool:
-    """Last-chance lookup through the exact loader the worker will use.
+def _resolved_skill_name(name: str) -> Optional[str]:
+    """The canonical name *name* loads as through the exact loader the worker uses.
 
     The index is the fast path; this catches names the enumerator does not list
     (``plugin:skill`` namespaces, path-shaped identifiers) so validation never refuses
-    a card the worker would have loaded fine.
+    a card the worker would have loaded fine. The canonical name is returned rather
+    than a bool because the worker checks the LOADED name against the disabled list
+    too (``_load_skill_blocks``), and a path-shaped identifier does not carry it.
     """
     try:
         from agent.skill_commands import _load_skill_payload
 
-        return _load_skill_payload(name) is not None
+        loaded = _load_skill_payload(name)
+        return str(loaded[2] or name) if loaded else None
     except Exception:
-        return False
+        return None
 
 
 def _classify(name: str, index: _SkillIndex, project_names: frozenset[str]) -> Optional[ForcedSkillProblem]:
+    # Disabled is checked BEFORE "installed": the index lists disabled skills (they are
+    # installed), but ``build_preloaded_skills_prompt`` loads with
+    # ``disabled_as_missing=True`` — a forced disabled skill is reported missing and the
+    # worker runs without it, which is the silent failure this validator exists to stop.
     if name in index.names or name in project_names:
-        return None
-    if name in index.disabled:
-        return ForcedSkillProblem(name, "disabled")
+        return ForcedSkillProblem(name, "disabled") if name in index.disabled else None
     if name in index.categories:
         return ForcedSkillProblem(name, "category", index.by_category.get(name, ())[:_MAX_SUGGESTIONS])
-    if _resolves_directly(name):
-        return None
+    resolved = _resolved_skill_name(name)
+    if resolved is not None:
+        # The loader disables on the identifier OR the loaded name; mirror both.
+        return (ForcedSkillProblem(name, "disabled")
+                if resolved in index.disabled or name in index.disabled else None)
     pool = sorted(index.names | project_names)
     return ForcedSkillProblem(
         name, "unknown", tuple(difflib.get_close_matches(name, pool, n=_MAX_SUGGESTIONS, cutoff=0.6)))

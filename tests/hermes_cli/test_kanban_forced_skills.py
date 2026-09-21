@@ -114,6 +114,37 @@ def test_close_name_gets_a_suggestion(board):
     assert "translation" in str(excinfo.value)
 
 
+def test_disabled_skill_is_refused_because_the_worker_will_not_load_it(board, tmp_path):
+    """Installed is not the same as loadable.
+
+    ``build_preloaded_skills_prompt`` loads forced skills with
+    ``disabled_as_missing=True``, so an operator-disabled name reaches the worker as
+    *missing* — the exact silent failure this validation exists to stop. Asserted
+    against that loader rather than against a string: the two must agree on what a
+    forced name resolves to, whichever way either side is rewritten.
+    """
+    import yaml
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile_home = tmp_path / ".hermes" / "profiles" / "alpha"
+    (profile_home / "config.yaml").write_text(
+        yaml.safe_dump({"skills": {"disabled": ["translation"]}}), encoding="utf-8")
+
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        from agent.skill_commands import build_preloaded_skills_prompt
+        _text, loaded, missing = build_preloaded_skills_prompt(["translation"])
+    finally:
+        reset_hermes_home_override(token)
+    assert missing == ["translation"] and loaded == [], (loaded, missing)
+
+    with pytest.raises(ValueError) as excinfo:
+        _create(board, skills=["translation"])
+    assert "translation" in str(excinfo.value)
+    assert _task_count(board) == 0
+
+
 def test_validation_resolves_against_the_assignee_not_the_creator(board, tmp_path):
     """The creating profile's skills say nothing about the assignee's.
 

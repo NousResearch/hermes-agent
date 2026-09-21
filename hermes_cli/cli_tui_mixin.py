@@ -297,7 +297,7 @@ class CLITuiMixin:
         try:
             from hermes_cli.peer_presence import peer_presence_summary
 
-            peer = peer_presence_summary(force=True)
+            peer = peer_presence_summary()
             if peer is None:
                 return []
             live = int(peer.get("live_count") or 0)
@@ -327,7 +327,6 @@ class CLITuiMixin:
             return frags
         except Exception:
             return []
-    # ── END KENSEI CUSTOM ──
 
     def _get_tui_prompt_fragments(self):
         """prompt_toolkit fragments for the current interactive state."""

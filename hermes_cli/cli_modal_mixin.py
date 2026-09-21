@@ -217,6 +217,230 @@ class CLIModalMixin:
         except Exception as e:
             logger.debug("undo: prefill buffer failed: %s", e)
 
+    def _prompt_free_text_modal(self, title: str, prompt: str, timeout: float = 120) -> str | None:
+        """Prompt for free text through the prompt_toolkit composer.
+
+        Thread-safe from the slash-worker daemon thread: the modal is set up on
+        ``self._app.loop`` via ``call_soon_threadsafe`` and the Enter binding
+        submits the typed buffer text (mirrors ``_secret_state``). Falls back
+        to ``_prompt_text_input`` when no app is running.
+
+        Returns the typed text (stripped), ``None`` on cancel/ESC/empty.
+        """
+        import queue
+        import threading
+        import time as _time
+
+        if not getattr(self, "_app", None):
+            return self._prompt_text_input(f"{prompt} ")
+
+        app_loop = getattr(self._app, "loop", None)
+        response_queue = queue.Queue()
+
+        def _setup() -> None:
+            self._capture_modal_input_snapshot()
+            self._free_text_state = {
+                "title": title,
+                "prompt": prompt,
+                "response_queue": response_queue,
+            }
+            self._free_text_deadline = _time.monotonic() + timeout
+            try:
+                self._app.current_buffer.reset()
+            except Exception:
+                pass
+            self._invalidate()
+
+        def _teardown() -> None:
+            self._free_text_state = None
+            self._free_text_deadline = 0
+            self._restore_modal_input_snapshot()
+            self._invalidate()
+
+        def _run_on_app_loop(fn) -> bool:
+            if threading.current_thread() is threading.main_thread() or app_loop is None:
+                fn()
+                return True
+            ready = threading.Event()
+
+            def _wrapped() -> None:
+                try:
+                    fn()
+                finally:
+                    ready.set()
+
+            try:
+                app_loop.call_soon_threadsafe(_wrapped)
+            except Exception:
+                return False
+            return ready.wait(timeout=5)
+
+        if not _run_on_app_loop(_setup):
+            return self._prompt_text_input(f"{prompt} ")
+
+        try:
+            while True:
+                try:
+                    value = response_queue.get(timeout=1)
+                    _run_on_app_loop(_teardown)
+                    value = (value or "").strip()
+                    return value or None
+                except queue.Empty:
+                    if self._free_text_deadline and _time.monotonic() > self._free_text_deadline:
+                        break
+        finally:
+            if self._free_text_state is not None:
+                _run_on_app_loop(_teardown)
+        return None
+
+
+    def _submit_free_text_response(self, value: str | None) -> None:
+        state = self._free_text_state
+        if not state:
+            return
+        state["response_queue"].put(value)
+        self._free_text_state = None
+        self._free_text_deadline = 0
+        self._invalidate()
+
+
+    def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
+        """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
+        import threading
+        from hermes_cli.curses_ui import curses_single_select
+
+        result = [None]
+
+        def _pick():
+            result[0] = curses_single_select(title, items, default_index=default_index)
+
+        # run_in_terminal requires an asyncio event loop — only exists in the
+        # main prompt_toolkit thread.  If we're in a background thread (e.g.
+        # process_loop), fall back to direct curses call.
+        in_main_thread = threading.current_thread() is threading.main_thread()
+
+        if self._app and in_main_thread:
+            from prompt_toolkit.application import run_in_terminal
+            was_visible = self._status_bar_visible
+            self._status_bar_visible = False
+            self._app.invalidate()
+            try:
+                run_in_terminal(_pick)
+            finally:
+                self._status_bar_visible = was_visible
+                self._app.invalidate()
+        else:
+            _pick()
+
+        return result[0]
+
+
+    def _run_interactive_spec(self, spec: dict, command_name: str = "") -> object:
+        """Recursive nested-menu engine for plugin interactive results.
+
+        A plugin handler returns ``{"interactive": {...}}`` where the spec has:
+          - title:    picker title
+          - items:    list of {label, value, detail?, actions?, children?}
+          - actions:  global actions [{key, label, run_prompt?, spec?}]
+          - prompt:   optional free-text step {label, action} run after pick
+          - empty:    text when no items
+
+        The loop: pick an item (arrow keys) → on Enter:
+          - if item has children → recurse into that spec
+          - elif item has actions → show an action picker, run the chosen one
+            (an action may itself return a spec via a ``run`` callback passed
+            in ``actions``' ``handler``, or prompt for free text)
+          - else → print the item's detail
+        Esc pops one level; Esc at the root exits. Global actions are
+        appended after items so they're reachable by scrolling.
+        """
+        import copy
+        from cli import _cprint
+
+        def _print_detail(item: dict) -> None:
+            _detail = item.get("detail")
+            _cprint(_detail if _detail else item.get("label", ""))
+
+        def _run_action(action: dict, item: dict | None) -> None:
+            value = item.get("value") if item else None
+            handler = action.get("handler")
+            # 1) handler with a nested picker (children): recurse, then feed the
+            #    chosen child value back into the handler so it executes.
+            children = action.get("children")
+            if children is not None:
+                chosen = self._run_interactive_spec(children, command_name)
+                if chosen is not None and handler is not None:
+                    _render(handler(value, chosen))
+                return
+            # 2) handler with a free-text prompt: collect text, then run.
+            prompt = action.get("prompt")
+            if prompt:
+                text = self._prompt_free_text_modal(command_name, prompt)
+                if text is None:
+                    return  # Esc / empty
+                if handler is not None:
+                    _render(handler(value, text))
+                return
+            # 3) bare handler (no extra input) or plain detail print.
+            if handler is not None:
+                _render(handler(value, None))
+                return
+            _print_detail(item or {})
+
+        def _render(result) -> None:
+            """Render a handler's return: nested spec (recurse) or string."""
+            if isinstance(result, dict) and result.get("interactive"):
+                self._run_interactive_spec(result["interactive"], command_name)
+            elif result:
+                _cprint(str(result))
+
+        def _level(spec: dict) -> object:
+            _items = spec.get("items") or []
+            _actions = spec.get("actions") or []
+            _title = spec.get("title") or command_name
+            if not _items and not _actions:
+                _cprint(spec.get("empty", "No items."))
+                return None
+            # Build the picker rows: item labels + a trailing action block.
+            _labels = [i.get("label", str(i)) for i in _items]
+            for _a in _actions:
+                _labels.append(f"  [{_a.get('key', '?')}] {_a.get('label', '')}")
+            _idx = self._run_curses_picker(_title, _labels, default_index=0)
+            if _idx is None:
+                return None  # Esc
+            if _idx < len(_items):
+                _item = _items[_idx]
+                _item_actions = _item.get("actions") or []
+                _children = _item.get("children")
+                if _children:
+                    chosen = self._run_interactive_spec(_children, command_name)
+                    if chosen is not None and _item_actions:
+                        # Feed the chosen child value into the item's
+                        # children-action handler.
+                        for _a in _item_actions:
+                            if _a.get("children") is not None and _a.get("handler") is not None:
+                                _render(_a["handler"](_item.get("value"), chosen))
+                                break
+                    return chosen
+                elif _item_actions:
+                    _act_labels = [f"[{a.get('key','?')}] {a.get('label','')}" for a in _item_actions]
+                    _act_idx = self._run_curses_picker(
+                        f"{_item.get('label','')} — actions", _act_labels, default_index=0
+                    )
+                    if _act_idx is not None and 0 <= _act_idx < len(_item_actions):
+                        _run_action(_item_actions[_act_idx], _item)
+                    return _item.get("value")
+                else:
+                    _print_detail(_item)
+                    return _item.get("value")
+            else:
+                _action = _actions[_idx - len(_items)]
+                _run_action(_action, None)
+                return None
+
+        return _level(spec)
+
+
     def _prompt_text_input(self, prompt_text: str) -> str | None:
         """Prompt for free-text input safely inside or outside prompt_toolkit.
 
@@ -948,41 +1172,67 @@ class CLIModalMixin:
 
     # --- Batch clarify (multi-question, issue #18450) -----------------------
     def _clarify_batch_set_active(self, state, index) -> None:
-        """Point the batch clarify panel at question ``index``: mirror it into the flat keys the
-        single-question keybindings/renderer read so ↑/↓/Space/number keys work unchanged;
-        open-ended drops into freetext; re-visiting restores the earlier cursor/checkboxes."""
+        """Point the batch clarify panel at question ``index``.
+
+        Mirrors the active question's data into the flat keys the existing
+        single-question keybindings and renderer read (``question``,
+        ``choices``, ``selected``, ``multi_select``, ``selected_indices``),
+        so ↑/↓/Space/number keys operate on the active question unchanged.
+        Open-ended questions drop straight into freetext, matching the
+        single-question path. Re-visiting an answered question restores the
+        cursor to the earlier selection (choice answers highlight their row,
+        an "Other" answer highlights the Other row) so the user can see and
+        edit what they picked.
+        """
         questions_list = state["questions"]
         index = max(0, min(index, len(questions_list) - 1))
         entry = questions_list[index]
-        choices = entry["choices"] or []
         state["active"] = index
+        state["reviewing"] = False
+        state["submitted"] = False
         state["question"] = entry["question"]
-        state["choices"] = choices
+        from tools.clarify_tool import strip_recommended
+        state["choices"] = sorted(
+            entry["choices"] or [], key=lambda c: c == strip_recommended(c))
         state["selected"] = 0
         state["multi_select"] = bool(entry["multi_select"])
         state["selected_indices"] = set() if entry["multi_select"] else None
         self._clarify_freetext = not entry["choices"]
         self._clarify_multi_base = None
+        from hermes_cli.cli_clarify_panel import restore_draft
+        if restore_draft(self, state, index):
+            return
+        # Restore the earlier answer's cursor/checkbox position on re-visit.
         meta = (state.get("answer_meta") or {}).get(entry["qid"])
+        choices = state["choices"]
         if meta is None:
             return
-        kind = meta.get("kind")
-        if kind == "choice":
+        if meta.get("kind") == "choice":
             answer = state["answers"].get(entry["qid"])
             if answer in choices:
                 state["selected"] = choices.index(answer)
-        elif kind == "other":
+        elif meta.get("kind") == "other":
             state["selected"] = len(choices)
-        elif kind == "multi":
-            checked = {choices.index(c) for c in meta.get("choices") or [] if c in choices}
+        elif meta.get("kind") == "multi":
+            checked = set()
+            for label in meta.get("choices") or []:
+                if label in choices:
+                    checked.add(choices.index(label))
             if meta.get("other_text"):
                 checked.add(len(choices))
             state["selected_indices"] = checked
 
     def _clarify_batch_lock(self, state, answer, meta=None) -> None:
-        """Lock ``answer`` for the active batch question (overwriting an earlier one) and advance to
-        the next unanswered; ``meta`` ({"kind": "choice"|"other"|"multi", ...}) lets a re-visit
-        restore the cursor / prefill an "Other" edit. All answered → resolve the queue, tear down."""
+        """Lock ``answer`` for the active batch question and advance.
+
+        Overwrites any earlier answer for the same question (locked answers
+        stay editable until the batch completes). ``meta`` records how the
+        answer was produced ({"kind": "choice"|"other"|"multi", ...}) so a
+        re-visit can restore the cursor and prefill an "Other" edit. Advances
+        ``active`` to the next unanswered question; when every question has
+        an answer, puts the answers dict on the response queue and tears down
+        the panel.
+        """
         entry = state["questions"][state["active"]]
         state["answers"][entry["qid"]] = answer
         state.setdefault("answer_meta", {})[entry["qid"]] = meta or {"kind": "choice"}
@@ -993,27 +1243,33 @@ class CLIModalMixin:
             if state["questions"][candidate]["qid"] not in state["answers"]:
                 self._clarify_batch_set_active(state, candidate)
                 return
-        try:
-            state["response_queue"].put(dict(state["answers"]))
-        except Exception:
-            pass
-        self._clarify_state = None
+        # Every question is staged. Enter a review state and require one more
+        # explicit confirmation before the callback returns to the agent.
+        state["reviewing"] = True
         self._clarify_freetext = False
         self._clarify_multi_base = None
 
     def _clarify_batch_enter(self, state) -> None:
-        """Enter in batch choice mode: lock the active selection. Multi-select locks a JSON array of
-        checked labels (parsed by the tool core); "Other" switches to freetext, prefilled with an
-        earlier typed answer so Enter on an answered Other edits instead of retyping."""
+        """Enter in batch choice mode: lock the active question's selection.
+
+        Multi-select questions lock a JSON array string of the checked
+        labels (the tool core parses it via ``_parse_multi_select_response``).
+        Selecting "Other" switches to freetext; the freetext submit path
+        locks the typed answer. Entering "Other" on a question whose earlier
+        answer was typed prefills the composer with that text for editing.
+        """
         choices = state.get("choices") or []
         selected = state.get("selected", 0)
         entry = state["questions"][state["active"]]
         meta = (state.get("answer_meta") or {}).get(entry["qid"]) or {}
         if state.get("multi_select"):
-            sorted_idx = sorted(state.get("selected_indices") or set())
+            indices = state.get("selected_indices") or set()
+            sorted_idx = sorted(indices)
             selected_choices = [choices[i] for i in sorted_idx if i < len(choices)]
-            if len(choices) in sorted_idx:
-                # Stash the checked real choices so the freetext submit appends the typed answer.
+            other_checked = len(choices) in sorted_idx
+            if other_checked:
+                # Stash the checked real choices (possibly none) so the
+                # freetext submit appends the typed answer to the array.
                 self._clarify_multi_base = selected_choices
                 self._clarify_freetext = True
                 self._clarify_prefill = meta.get("other_text") or ""
@@ -1021,13 +1277,20 @@ class CLIModalMixin:
             self._clarify_batch_lock(
                 state,
                 json.dumps(selected_choices, ensure_ascii=False),
-                meta={"kind": "multi", "choices": selected_choices, "other_text": ""})
+                meta={"kind": "multi", "choices": selected_choices, "other_text": ""},
+            )
             return
         if selected < len(choices):
-            self._clarify_batch_lock(state, choices[selected], meta={"kind": "choice"})
+            self._clarify_batch_lock(
+                state, choices[selected], meta={"kind": "choice"}
+            )
             return
+        # "Other" highlighted → switch to freetext; prefill an earlier typed
+        # answer so Enter on an answered Other edits instead of retyping.
         self._clarify_freetext = True
-        self._clarify_prefill = meta.get("other_text") or "" if meta.get("kind") == "other" else ""
+        self._clarify_prefill = (
+            meta.get("other_text") or "" if meta.get("kind") == "other" else ""
+        )
 
     def _clarify_callback_batch(self, questions):
         """Batch clarify panel (A-compact): all questions, one active. Returns
@@ -1351,6 +1614,19 @@ class CLIModalMixin:
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_multi_base = None
+    # ── END KENSEI CUSTOM ──
+
+
+    def _clarify_batch_submit(self, state) -> None:
+        """Submit every staged answer after the explicit review step."""
+        if state.get("submitted"):
+            return
+        state["submitted"] = True
+        state["response_queue"].put(dict(state["answers"]))
+        self._clarify_state = None
+        self._clarify_freetext = False
+        self._clarify_multi_base = None
+
 
     def _ask_user_questions_callback(self, questions):
         """
@@ -1374,8 +1650,6 @@ class CLIModalMixin:
         import queue as _queue
 
         from tools.clarify_gateway import resolve_clarify_timeout
-
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint
 
         timeout = resolve_clarify_timeout(CLI_CONFIG)
         response_queue = _queue.Queue()
@@ -1434,6 +1708,8 @@ class CLIModalMixin:
         # Return sentinel so the tool knows it timed out
         return {i: "__skipped__" for i in range(total)}
         # ── END KENSEI CUSTOM ──
+
+    # --- Batch clarify (multi-question, issue #18450) -----------------------
 
     def _submit_secret_response(self, value: str) -> None:
         if not self._secret_state:

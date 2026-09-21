@@ -904,10 +904,10 @@ def _tenv_read(name: str, default: str = "") -> str:
 _BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
 # (config key, default) pairs forwarded to _create_environment's container_config.
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
+# OS and kernel help the model select compatible commands without disclosing user-specific paths or identity.
 _BACKEND_PROBE_CMD = (
-    "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
-    "\"$(uname -r 2>/dev/null || echo unknown)\" "
-    "\"$HOME\" \"$(pwd)\" \"$(whoami 2>/dev/null || id -un 2>/dev/null || echo unknown)\""
+    "printf 'os=%s\\nkernel=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
+    "\"$(uname -r 2>/dev/null || echo unknown)\""
 )
 
 
@@ -952,7 +952,6 @@ def _format_backend_probe(output: str) -> str:
     known = lambda key: parsed.get(key) if parsed.get(key) != "unknown" else None  # noqa: E731
     fields = (
         ("OS", " ".join(x for x in (known("os"), known("kernel")) if x)),
-        ("User", known("user")), ("Home", parsed.get("home")), ("Working directory", parsed.get("cwd")),
     )
     return "\n".join(f"  {label}: {value}" for label, value in fields if value)
 

@@ -870,8 +870,11 @@ class TestEnvironmentHints:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         _pb._BACKEND_PROBE_CACHE.clear()
 
+        probe_command = {}
+
         class _FakeEnv:
             def execute(self, cmd, timeout=None):
+                probe_command["value"] = cmd
                 return {
                     "returncode": 0,
                     "output": (
@@ -895,7 +898,14 @@ class TestEnvironmentHints:
         assert created.get("env_type") == "docker"
         assert line is not None
         assert "Linux 6.8.0" in line
-        assert "root" in line
+        assert "User:" not in line
+        assert "Home:" not in line
+        assert "Working directory:" not in line
+        assert "/root" not in line
+        assert "/workspace" not in line
+        assert "$HOME" not in probe_command["value"]
+        assert "pwd" not in probe_command["value"]
+        assert "whoami" not in probe_command["value"]
 
     def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
         """THE BUG: the probe leaked a second, permanently idle sandbox.

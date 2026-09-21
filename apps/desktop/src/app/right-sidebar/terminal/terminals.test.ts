@@ -58,6 +58,22 @@ describe('terminal store persistence', () => {
     })
   })
 
+  it('persists a user tab appearance and ignores appearance changes for agent mirrors', async () => {
+    const { $terminals, createTerminal, ensureAgentTerminal, updateTerminalAppearance } = await loadTerminalStore()
+
+    const userId = createTerminal('/repo')
+    const agentId = ensureAgentTerminal('proc-1', 'background task')!
+
+    updateTerminalAppearance(userId, { color: 'blue', icon: 'server' })
+    updateTerminalAppearance(agentId, { color: 'orange', icon: 'beaker' })
+
+    expect($terminals.get().find(term => term.id === userId)).toMatchObject({ color: 'blue', icon: 'server' })
+    expect($terminals.get().find(term => term.id === agentId)).not.toHaveProperty('color')
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}').terminals).toEqual([
+      expect.objectContaining({ color: 'blue', icon: 'server', id: userId })
+    ])
+  })
+
   it('never attaches a revive buffer to an agent tab', async () => {
     const { $terminals, ensureAgentTerminal, updateTerminalReviveBuffer } = await loadTerminalStore()
 

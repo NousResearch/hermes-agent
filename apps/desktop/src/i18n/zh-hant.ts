@@ -3038,6 +3038,12 @@ export const zhHant = defineLocale({
     terminalNew: '新增終端機',
     terminalCloseOthers: '關閉其他',
     terminalCloseAll: '全部關閉',
+    terminalRename: '重新命名…',
+    terminalRenameTitle: '重新命名終端機',
+    terminalRenameDesc: '顯示於終端機分頁列與分頁提示中。',
+    terminalIcon: '圖示',
+    terminalColor: '顏色',
+    terminalAppearanceReset: '重設名稱與外觀',
     addToChat: '新增至聊天'
   },
 

@@ -7,6 +7,12 @@ import { setTerminalTakeover } from '../store'
 
 import { seedAgentTerminalCommand } from './agent-terminal-stream'
 
+export const TERMINAL_ICONS = ['terminal', 'code', 'server', 'database', 'github', 'beaker'] as const
+export type TerminalIcon = (typeof TERMINAL_ICONS)[number]
+
+export const TERMINAL_COLORS = ['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple'] as const
+export type TerminalColor = (typeof TERMINAL_COLORS)[number]
+
 /** One in-app terminal tab. `id` is the renderer-side handle (distinct from the
  *  PTY session id the main process mints); each instance owns its own shell. */
 export interface TerminalEntry {
@@ -33,12 +39,18 @@ export interface TerminalEntry {
    *  background process (`terminal(background=true)`), keyed by `procId`. */
   kind: 'user' | 'agent'
   procId?: string
+  /** User-selected rail tint. Absent = the theme's default icon color. */
+  color?: TerminalColor
+  /** User-selected rail glyph. Absent = the kind's default (`terminal` / `agent`). */
+  icon?: TerminalIcon
 }
 
 interface PersistedTerminalEntry {
   auto: boolean
+  color?: TerminalColor
   cwd: string
   id: string
+  icon?: TerminalIcon
   restoreCwd?: string
   reviveBuffer?: string
   title: string
@@ -56,6 +68,16 @@ const TERMINALS_STORAGE_KEY = 'hermes.desktop.terminals.v1'
 // default (100 lines) once the serialized escape codes are counted in.
 const MAX_REVIVE_BUFFER_CHARS = 48_000
 
+/** Narrow a persisted value to a supported rail glyph. */
+export function isTerminalIcon(value: unknown): value is TerminalIcon {
+  return typeof value === 'string' && (TERMINAL_ICONS as readonly string[]).includes(value)
+}
+
+/** Narrow a persisted value to a supported rail tint. */
+export function isTerminalColor(value: unknown): value is TerminalColor {
+  return typeof value === 'string' && (TERMINAL_COLORS as readonly string[]).includes(value)
+}
+
 function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null
@@ -67,6 +89,8 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
   const cwd = typeof record.cwd === 'string' ? record.cwd : ''
   const restoreCwd = typeof record.restoreCwd === 'string' && record.restoreCwd ? record.restoreCwd : undefined
   const reviveBuffer = typeof record.reviveBuffer === 'string' ? record.reviveBuffer : undefined
+  const color = isTerminalColor(record.color) ? record.color : undefined
+  const icon = isTerminalIcon(record.icon) ? record.icon : undefined
 
   if (!id) {
     return null
@@ -74,8 +98,10 @@ function sanitizePersistedTerminal(value: unknown): PersistedTerminalEntry | nul
 
   return {
     auto: typeof record.auto === 'boolean' ? record.auto : true,
+    ...(color ? { color } : {}),
     cwd,
     id,
+    ...(icon ? { icon } : {}),
     ...(restoreCwd ? { restoreCwd } : {}),
     ...(reviveBuffer ? { reviveBuffer } : {}),
     title: title || 'Terminal'
@@ -122,8 +148,10 @@ function persistTerminals(list: readonly TerminalEntry[], activeTerminalId: null
     .filter(term => term.kind === 'user')
     .map(term => ({
       auto: term.auto,
+      ...(term.color ? { color: term.color } : {}),
       cwd: term.cwd,
       id: term.id,
+      ...(term.icon ? { icon: term.icon } : {}),
       ...(term.restoreCwd ? { restoreCwd: term.restoreCwd } : {}),
       ...(term.reviveBuffer ? { reviveBuffer: term.reviveBuffer } : {}),
       title: term.title
@@ -383,6 +411,25 @@ export function renameTerminal(id: string, title: string): void {
 
   $terminals.set(
     $terminals.get().map(term => (term.id === id ? { ...term, title: trimmed || term.title, auto: false } : term))
+  )
+}
+
+/** Set — or, with an omitted/undefined field, clear — the rail appearance of an
+ *  interactive tab. Agent mirrors keep their fixed agent glyph and are never
+ *  restyled; appearance lives on the tab, so it survives relaunch like the title. */
+export function updateTerminalAppearance(id: string, appearance: { color?: TerminalColor; icon?: TerminalIcon }): void {
+  $terminals.set(
+    $terminals.get().map(term => {
+      if (term.id !== id || term.kind !== 'user') {
+        return term
+      }
+
+      return {
+        ...term,
+        ...(appearance.color ? { color: appearance.color } : { color: undefined }),
+        ...(appearance.icon ? { icon: appearance.icon } : { icon: undefined })
+      }
+    })
   )
 }
 

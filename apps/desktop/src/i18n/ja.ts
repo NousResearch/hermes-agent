@@ -3078,6 +3078,12 @@ export const ja = defineLocale({
     terminalNew: '新しいターミナル',
     terminalCloseOthers: '他を閉じる',
     terminalCloseAll: 'すべて閉じる',
+    terminalRename: '名前を変更…',
+    terminalRenameTitle: 'ターミナル名を変更',
+    terminalRenameDesc: 'ターミナルタブバーとタブのヒントに表示されます。',
+    terminalIcon: 'アイコン',
+    terminalColor: '色',
+    terminalAppearanceReset: '名前と外観をリセット',
     addToChat: 'チャットに追加'
   },
 

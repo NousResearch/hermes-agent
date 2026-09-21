@@ -3642,6 +3642,12 @@ export const en: Translations = {
     terminalNew: 'New terminal',
     terminalCloseOthers: 'Close others',
     terminalCloseAll: 'Close all',
+    terminalRename: 'Rename…',
+    terminalRenameTitle: 'Rename terminal',
+    terminalRenameDesc: 'Shown on the tab rail and in the tab tooltip.',
+    terminalIcon: 'Icon',
+    terminalColor: 'Color',
+    terminalAppearanceReset: 'Reset name & appearance',
     addToChat: 'Add to chat'
   },
 

@@ -1,13 +1,27 @@
 import { useStore } from '@nanostores/react'
+import * as React from 'react'
 
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Tip, TipHintLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { formatCombo } from '@/lib/keybinds/combo'
@@ -24,12 +38,50 @@ import {
   closeOtherTerminals,
   closeTerminal,
   createTerminal,
+  renameTerminal,
   selectTerminal,
-  type TerminalEntry
+  TERMINAL_COLORS,
+  TERMINAL_ICONS,
+  type TerminalColor,
+  type TerminalEntry,
+  type TerminalIcon,
+  updateTerminalAppearance
 } from './terminals'
 
 const RAIL_ACTION =
   'grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:bg-(--chrome-action-hover) focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring [-webkit-app-region:no-drag]'
+
+/** Rail tints, mapped onto the skin's own palette variables so every theme and
+ *  light/dark mode keeps them legible. Exported so a test can assert the mapping
+ *  without restating it. */
+export const TERMINAL_COLOR_VARS: Record<TerminalColor, string> = {
+  blue: 'var(--ui-blue)',
+  cyan: 'var(--ui-cyan)',
+  green: 'var(--ui-green)',
+  orange: 'var(--ui-orange)',
+  purple: 'var(--ui-purple)',
+  red: 'var(--ui-red)',
+  yellow: 'var(--ui-yellow)'
+}
+
+export const TERMINAL_ICON_LABELS: Record<TerminalIcon, string> = {
+  beaker: 'Beaker',
+  code: 'Code',
+  database: 'Database',
+  github: 'GitHub',
+  server: 'Server',
+  terminal: 'Terminal'
+}
+
+export const TERMINAL_COLOR_LABELS: Record<TerminalColor, string> = {
+  blue: 'Blue',
+  cyan: 'Cyan',
+  green: 'Green',
+  orange: 'Orange',
+  purple: 'Purple',
+  red: 'Red',
+  yellow: 'Yellow'
+}
 
 /** Thin icon "bookmark" strip blended into the terminal surface, shown whenever a
  *  terminal exists. Each square is a tab (name + hotkey on hover); close via the
@@ -109,52 +161,177 @@ interface TerminalRailItemProps {
 
 function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: TerminalRailItemProps) {
   const { t } = useI18n()
+  const [renaming, setRenaming] = React.useState(false)
+  const [draft, setDraft] = React.useState(term.title)
   const label = `${index + 1}. ${term.title}`
 
+  // An agent mirror is a fixed, app-owned view of a background process: its name
+  // and glyph come from the process, so only user tabs are restyleable.
+  const stylable = term.kind === 'user'
+  const icon = term.icon ?? (term.kind === 'agent' ? 'agent' : 'terminal')
+  const tint = term.color ? TERMINAL_COLOR_VARS[term.color] : undefined
+
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        <li className="relative flex w-full justify-center [-webkit-app-region:no-drag]">
-          {active && (
-            <span
-              aria-hidden="true"
-              className="absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm bg-(--ui-stroke-primary)"
-            />
-          )}
-          <Tip label={<TipHintLabel hint={toggleHint && formatCombo(toggleHint)} text={label} />} side="left">
-            <button
-              aria-label={label}
-              aria-selected={active}
-              className={cn(
-                'grid size-7 place-items-center rounded-md transition-colors',
-                active
-                  ? 'bg-(--chrome-action-hover) text-foreground'
-                  : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-              )}
-              {...middleClickHandlers(() => closeTerminal(term.id))}
-              // ⌘-click closes (the pane-tab gesture); a plain click selects.
-              onClick={event => (isMetaClose(event) ? closeTerminal(term.id) : selectTerminal(term.id))}
-              role="tab"
-              type="button"
-            >
-              <Codicon
-                className={cn(term.kind === 'agent' && !active && 'text-primary')}
-                name={term.kind === 'agent' ? 'agent' : 'terminal'}
-                size="0.875rem"
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <li className="relative flex w-full justify-center [-webkit-app-region:no-drag]">
+            {active && (
+              <span
+                aria-hidden="true"
+                className="absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm bg-(--ui-stroke-primary)"
               />
-            </button>
-          </Tip>
-        </li>
-      </ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => closeTerminal(term.id)}>{t.common.close}</ContextMenuItem>
-        <ContextMenuItem disabled={!canCloseOthers} onSelect={() => closeOtherTerminals(term.id)}>
-          {t.rightSidebar.terminalCloseOthers}
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={closeAllTerminals}>{t.rightSidebar.terminalCloseAll}</ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => setTerminalTakeover(false)}>{t.rightSidebar.terminalHide}</ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+            )}
+            <Tip label={<TipHintLabel hint={toggleHint && formatCombo(toggleHint)} text={label} />} side="left">
+              <button
+                aria-label={label}
+                aria-selected={active}
+                className={cn(
+                  'grid size-7 place-items-center rounded-md transition-colors',
+                  active
+                    ? 'bg-(--chrome-action-hover) text-foreground'
+                    : 'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
+                )}
+                {...middleClickHandlers(() => closeTerminal(term.id))}
+                // ⌘-click closes (the pane-tab gesture); a plain click selects.
+                onClick={event => (isMetaClose(event) ? closeTerminal(term.id) : selectTerminal(term.id))}
+                role="tab"
+                type="button"
+              >
+                <Codicon
+                  className={cn(term.kind === 'agent' && !active && 'text-primary')}
+                  data-terminal-color={term.color}
+                  name={icon}
+                  size="0.875rem"
+                  style={tint ? { color: tint } : undefined}
+                />
+              </button>
+            </Tip>
+          </li>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem
+            disabled={!stylable}
+            onSelect={() => {
+              setDraft(term.title)
+              setRenaming(true)
+            }}
+          >
+            {t.rightSidebar.terminalRename}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuSub>
+            <ContextMenuSubTrigger disabled={!stylable}>{t.rightSidebar.terminalIcon}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              {TERMINAL_ICONS.map(name => (
+                <ContextMenuItem key={name} onSelect={() => updateTerminalAppearance(term.id, { icon: name })}>
+                  <Codicon name={name} size="0.875rem" />
+                  {TERMINAL_ICON_LABELS[name]}
+                  {term.icon === name && <Codicon className="ml-auto text-(--ui-accent)" name="check" size="0.75rem" />}
+                </ContextMenuItem>
+              ))}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger disabled={!stylable}>{t.rightSidebar.terminalColor}</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              {TERMINAL_COLORS.map(name => (
+                <ContextMenuItem key={name} onSelect={() => updateTerminalAppearance(term.id, { color: name })}>
+                  <Codicon name="circle-filled" size="0.75rem" style={{ color: TERMINAL_COLOR_VARS[name] }} />
+                  {TERMINAL_COLOR_LABELS[name]}
+                  {term.color === name && (
+                    <Codicon className="ml-auto text-(--ui-accent)" name="check" size="0.75rem" />
+                  )}
+                </ContextMenuItem>
+              ))}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+          <ContextMenuItem
+            disabled={!stylable || (!term.color && !term.icon && term.auto)}
+            onSelect={() => {
+              updateTerminalAppearance(term.id, {})
+
+              if (!term.auto) {
+                renameTerminal(term.id, '')
+              }
+            }}
+          >
+            {t.rightSidebar.terminalAppearanceReset}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => closeTerminal(term.id)}>{t.common.close}</ContextMenuItem>
+          <ContextMenuItem disabled={!canCloseOthers} onSelect={() => closeOtherTerminals(term.id)}>
+            {t.rightSidebar.terminalCloseOthers}
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={closeAllTerminals}>{t.rightSidebar.terminalCloseAll}</ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => setTerminalTakeover(false)}>{t.rightSidebar.terminalHide}</ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+
+      <TerminalRenameDialog
+        onChange={setDraft}
+        onClose={() => setRenaming(false)}
+        onRename={title => {
+          renameTerminal(term.id, title)
+          setRenaming(false)
+        }}
+        open={renaming}
+        value={draft}
+      />
+    </>
+  )
+}
+
+/** Rename prompt for a terminal tab. A dialog rather than an inline field: the
+ *  rail is a 36px icon strip with no room for one. */
+function TerminalRenameDialog({
+  onChange,
+  onClose,
+  onRename,
+  open,
+  value
+}: {
+  onChange: (value: string) => void
+  onClose: () => void
+  onRename: (title: string) => void
+  open: boolean
+  value: string
+}) {
+  const { t } = useI18n()
+  const trimmed = value.trim()
+
+  return (
+    <Dialog onOpenChange={open => (open ? undefined : onClose())} open={open}>
+      <DialogContent bodyClassName="gap-5" className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t.rightSidebar.terminalRenameTitle}</DialogTitle>
+          <DialogDescription>{t.rightSidebar.terminalRenameDesc}</DialogDescription>
+        </DialogHeader>
+        <form
+          className="grid gap-4"
+          onSubmit={event => {
+            event.preventDefault()
+            onRename(trimmed)
+          }}
+        >
+          <Input
+            autoComplete="off"
+            autoCorrect="off"
+            onChange={event => onChange(event.target.value)}
+            spellCheck={false}
+            value={value}
+          />
+          <DialogFooter>
+            <Button onClick={onClose} type="button" variant="ghost">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={!trimmed} type="submit">
+              {t.common.save}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }

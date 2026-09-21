@@ -3804,6 +3804,12 @@ export const zh = defineLocale({
     terminalNew: '新建终端',
     terminalCloseOthers: '关闭其他',
     terminalCloseAll: '关闭全部',
+    terminalRename: '重命名…',
+    terminalRenameTitle: '重命名终端',
+    terminalRenameDesc: '显示在终端标签栏和标签提示中。',
+    terminalIcon: '图标',
+    terminalColor: '颜色',
+    terminalAppearanceReset: '重置名称与外观',
     addToChat: '添加到对话'
   },
 

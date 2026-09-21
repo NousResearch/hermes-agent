@@ -3172,6 +3172,12 @@ export interface Translations {
     terminalNew: string
     terminalCloseOthers: string
     terminalCloseAll: string
+    terminalRename: string,
+    terminalRenameTitle: string,
+    terminalRenameDesc: string,
+    terminalIcon: string,
+    terminalColor: string,
+    terminalAppearanceReset: string,
     addToChat: string
   }
 

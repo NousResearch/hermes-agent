@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $bindings } from '@/store/keybinds'
 
-import { TerminalRail } from './rail'
+import { TERMINAL_COLOR_VARS, TerminalRail } from './rail'
 import { $activeTerminalId, $terminals } from './terminals'
 
 describe('TerminalRail', () => {
@@ -47,5 +47,22 @@ describe('TerminalRail', () => {
     fireEvent.click(screen.getByRole('tab', { name: '1. PowerShell' }))
     expect($activeTerminalId.get()).toBe('term-1')
     expect($terminals.get()).toHaveLength(1)
+  })
+
+  it('renders the tab icon and tint the entry carries, falling back to the kind default', () => {
+    $terminals.set([
+      { auto: false, color: 'green', cwd: 'C:\\repo', icon: 'server', id: 'term-1', kind: 'user', title: 'api' },
+      { auto: true, cwd: 'C:\\repo', id: 'term-2', kind: 'user', title: 'plain' }
+    ])
+
+    render(<TerminalRail />)
+
+    const styled = screen.getByRole('tab', { name: '1. api' }).querySelector('[data-terminal-color]')
+    expect(styled?.classList.contains('codicon-server')).toBe(true)
+    expect(styled?.getAttribute('data-terminal-color')).toBe('green')
+    expect((styled as HTMLElement | null)?.style.color).toBe(TERMINAL_COLOR_VARS.green)
+
+    const plain = screen.getByRole('tab', { name: '2. plain' }).querySelector('[data-terminal-color]')
+    expect(plain).toBeNull()
   })
 })

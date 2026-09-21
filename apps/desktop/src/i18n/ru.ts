@@ -3380,6 +3380,12 @@ export const ru = defineLocale({
     terminalNew: 'Новый терминал',
     terminalCloseOthers: 'Закрыть другие',
     terminalCloseAll: 'Закрыть все',
+    terminalRename: 'Переименовать…',
+    terminalRenameTitle: 'Переименовать терминал',
+    terminalRenameDesc: 'Отображается на панели вкладок и в подсказке вкладки.',
+    terminalIcon: 'Значок',
+    terminalColor: 'Цвет',
+    terminalAppearanceReset: 'Сбросить имя и оформление',
     addToChat: 'Добавить в чат'
   },
   preview: {

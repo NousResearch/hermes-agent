@@ -295,7 +295,7 @@ kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dep
 
 最终的 `kanban_complete` / `kanban_block` 调用是 worker 协议的一部分。如果 worker 进程以状态 0 退出而任务仍处于 `running` 状态，调度器将其视为协议违规，发出 `protocol_violation` 事件，并在下一个 tick 自动阻塞任务而不是重新启动它进入同一循环。这通常意味着模型写了一个纯文本答案并退出，而没有使用 Kanban 工具界面。
 
-调度器还会分派另一种退出：worker 干净退出（rc=0）但**从未记录过任何心跳**（`last_heartbeat_at` 为空且无 `heartbeat` 事件），且已过崩溃宽限期 —— 说明它从未接触过模型。这被归类为**路由失败**（`route_failure: true`），而非协议违规；它有自己独立的两次尝试预算，且**不**参考任务的 `max_retries`。低于该预算时卡片无失败记录地返回 `ready`；达到预算时发出 `gave_up`（携带 `route_failures` / `route_failure_limit`）并阻塞卡片。路由失败既不消耗也不重置协议违规连续计数。
+调度器还会分派另一种退出：worker 干净退出（rc=0）但**从未记录过任何心跳**（`last_heartbeat_at` 为空且无 `heartbeat` 事件），且已过崩溃宽限期 —— 说明它从未接触过模型。这被归类为**路由失败**，而非协议违规：调度器为该次运行发出独立的 `route_failure` 事件（而非 `crashed`），不过该运行自身的 `outcome` 仍记为 `crashed`；运行元数据携带 `route_failure: true`。它有自己独立的两次尝试预算，且**不**参考任务的 `max_retries`。低于该预算时卡片无失败记录地返回 `ready`；达到预算时发出 `gave_up`（携带 `route_failures` / `route_failure_limit`）并阻塞卡片。路由失败既不消耗也不重置协议违规连续计数。
 
 ### 为特定任务固定额外 skill
 
@@ -850,7 +850,8 @@ hermes kanban runs t_abcd
 | `spawned` | `{pid}` | 调度器成功启动 worker 进程。 |
 | `heartbeat` | `{note?}` | Worker 在长时间操作期间调用 `hermes kanban heartbeat $TASK` 发出存活信号。 |
 | `reclaimed` | `{stale_lock}` | 认领 TTL 在完成前过期；任务返回 `ready`。 |
-| `crashed` | `{pid, claimer, route_failure?, exit_signal?}` | Worker PID 不再存活但 TTL 尚未过期。`route_failure: true` 与 `exit_signal: "heartbeat_null"` 标记一次干净退出且从未记录心跳的情况 —— worker 从未接触过模型 —— 计入其独立的路由失败预算，而非协议违规连续计数。 |
+| `crashed` | `{pid, claimer}` | Worker PID 不再存活但 TTL 尚未过期。 |
+| `route_failure` | `{pid, claimer, exit_code, exit_signal, elapsed, route_failure, reap_status}` | 调度器派生的 worker 干净退出（rc=0）且从未记录过任何心跳（`last_heartbeat_at` 为空且无 `heartbeat` 事件），已过崩溃宽限期 —— 说明它从未接触过模型。该次运行发出此事件而非 `crashed`；这不是协议违规，因为 worker 从未有机会跳过看板协议，但该运行自身的 `outcome` 仍记为 `crashed`。计入路由失败预算（见下方 `gave_up`），不计入协议违规连续计数。 |
 | `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | 超过 `max_runtime_seconds`；调度器发送 SIGTERM（5 秒宽限后发送 SIGKILL）并重新排队。 |
 | `stale` | `{elapsed_seconds, last_heartbeat_at, heartbeat_age_seconds, timeout_seconds, pid, terminated}` | 任务运行时间超过 `kanban.dispatch_stale_timeout_seconds`（默认 4 小时）**且**最近一小时内没有 `kanban_heartbeat`。调度器向本地 worker（如有）发送 SIGTERM，将任务重置为 `ready` 重新调度。**不**增加失败计数器（stale 是调度器端的缺席检测，不是 worker 故障）。运行长时间操作的 Worker 应至少每小时调用一次 `kanban_heartbeat` 以避免此情况。 |
 | `respawn_guarded` | `{reason}` | 调度器拒绝在本 tick 重新启动此就绪任务。原因：`blocker_auth`（上次失败是配额/认证/429 错误 —— 等待速率窗口重置）、`recent_success`（最近一小时内有完成的运行 —— 在重新运行前等待审查）、`active_pr`（最近的评论中出现 GitHub PR URL —— 先前的 worker 已经打开了 PR）。任务保持在 `ready`；下一个 tick 有另一次启动机会。如果底层条件持续存在，正常的 `consecutive_failures` 熔断器将在 `failure_limit` 次失败后通过 `gave_up` 自动阻塞。 |

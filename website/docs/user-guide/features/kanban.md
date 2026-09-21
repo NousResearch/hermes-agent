@@ -589,8 +589,10 @@ A different exit shape gets its own classification: a dispatcher-spawned
 worker that exits cleanly (rc=0) with **zero heartbeats ever recorded** — no
 `last_heartbeat_at` value and no `heartbeat` event — after the crash grace
 window has elapsed never reached the model at all. The dispatcher treats
-this as a **route failure**, not a protocol violation: the run metadata
-carries `route_failure: true` with the error text from `_ROUTE_FAILURE_ERROR`.
+this as a **route failure**, not a protocol violation: it emits its own
+`route_failure` event instead of `crashed` for that run — though the run's
+own `outcome` is still booked as `crashed` — and the run metadata carries
+`route_failure: true` with the error text from `_ROUTE_FAILURE_ERROR`.
 Route failures get their own bounded streak of two attempts
 (`_ROUTE_FAILURE_FAILURE_LIMIT`) that deliberately does **not** consult the
 task's `max_retries` — a task's own retry budget for its agent work says
@@ -1429,7 +1431,8 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `spawned` | `{pid}` | Dispatcher successfully started a worker process. |
 | `heartbeat` | `{note?}` | Worker called `hermes kanban heartbeat $TASK` to signal liveness during long operations. |
 | `reclaimed` | `{stale_lock}` | Claim TTL expired without a completion; task goes back to `ready`. An automatic reclaim counts as one non-successful attempt toward the `gave_up` breaker (a claim that never spawned a worker would otherwise loop claim → reclaim → claim forever); an operator `reclaim` resets the counter instead. |
-| `crashed` | `{pid, claimer, exit_kind?, exit_code?, worker_output?, route_failure?, exit_signal?}` | Worker PID no longer alive but TTL hadn't expired yet. `worker_output` is the tail of the worker's own log (its final response or the rendered provider error, chrome stripped, ≤ 400 chars) and is also appended to the task's `last_failure_error`, so the board shows *why* instead of only the exit code. `route_failure: true` with `exit_signal: "heartbeat_null"` marks a clean exit with zero heartbeats ever recorded — the worker never reached the model — booked against its own route-failure budget instead of the protocol-violation streak. |
+| `crashed` | `{pid, claimer, exit_kind?, exit_code?, worker_output?}` | Worker PID no longer alive but TTL hadn't expired yet. `worker_output` is the tail of the worker's own log (its final response or the rendered provider error, chrome stripped, ≤ 400 chars) and is also appended to the task's `last_failure_error`, so the board shows *why* instead of only the exit code. |
+| `route_failure` | `{pid, claimer, exit_code, exit_signal, elapsed, route_failure, reap_status}` | A dispatcher-spawned worker exited cleanly (rc=0) with zero heartbeats ever recorded (no `last_heartbeat_at` and no `heartbeat` event) after the crash grace window elapsed — it never reached the model at all. Emitted instead of `crashed` for that run; the run is not a protocol violation because the worker never had the chance to skip the board protocol, but the run's own `outcome` is still booked as `crashed`. Booked against the route-failure budget (see `gave_up` below), never the protocol-violation streak. |
 | `timed_out` | `{pid, elapsed_seconds, limit_seconds, sigkill}` | `max_runtime_seconds` exceeded; dispatcher SIGTERM'd (then SIGKILL'd after 5 s grace) and re-queued. |
 | `stale` | `{elapsed_seconds, last_heartbeat_at, heartbeat_age_seconds, timeout_seconds, pid, terminated}` | Task ran longer than `kanban.dispatch_stale_timeout_seconds` (default 4 h) AND no `kanban_heartbeat` arrived in the last hour. Dispatcher SIGTERM'd the host-local worker (if any), reset the task to `ready` for re-dispatch. Does NOT tick the failure counter (stale is dispatcher-side absence detection, not a worker fault). Workers running long operations should call `kanban_heartbeat` at least once an hour to avoid this. |
 | `reconciled` | `{reason, claim_lock, claim_expires, worker_pid}` | Orphaned-card reconciliation: the card was `running` with broken claim bookkeeping (`claim_lock` or `claim_expires` NULL — crash mid-claim, manual SQL, DB restore) and no live worker, so none of the TTL/crash/stale paths could ever recover it. The dispatcher requeued it to `ready` with an explanatory comment. Gated by `kanban.reconcile_orphans` in config.yaml (default `true`). |

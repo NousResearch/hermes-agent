@@ -28,6 +28,27 @@ HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(1500, env_int("HERMES_KANBAN_SPECIFY_MAX_
 
 logger = logging.getLogger(__name__)
 
+# Board-level aux calls (specify/decompose) run outside any agent turn, so the ambient
+# accounting context from agent/aux_accounting is unbound and their token usage is
+# silently dropped from session_model_usage. Attribute them to one synthetic per-process
+# session so per-task cost views can see this lane; the id is stable for the process
+# lifetime, keeping the placeholder session row count at one.
+_KANBAN_AUX_SESSION_PREFIX = "kanban-aux-"
+_KANBAN_AUX_SESSION_ID = ""
+
+
+def _kanban_aux_session_id() -> str:
+    """Stable per-process id for the board aux lane; minted on first use."""
+    global _KANBAN_AUX_SESSION_ID
+    if not _KANBAN_AUX_SESSION_ID:
+        import os
+        import uuid
+
+        _KANBAN_AUX_SESSION_ID = (
+            f"{_KANBAN_AUX_SESSION_PREFIX}{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        )
+    return _KANBAN_AUX_SESSION_ID
+
 
 _SYSTEM_PROMPT = """You are the Kanban triage specifier for the Hermes Agent board.
 A user dropped a rough idea into the Triage column. Your job is to turn it
@@ -142,6 +163,23 @@ def _task_prompt_fields(task: kb.Task) -> dict[str, str]:
     }
 
 
+def _bind_kanban_aux_accounting():
+    """Publish the aux-accounting context for a board-level call so its usage is recorded.
+
+    Best-effort: without a session store the call keeps running, just unattributed
+    (the pre-fix behaviour). Returns the reset token or None.
+    """
+    try:
+        from agent.aux_accounting import set_accounting_context
+        from hermes_state import SessionDB, _default_db_path
+
+        db = SessionDB(_default_db_path())
+        return set_accounting_context(db, _kanban_aux_session_id())
+    except Exception:
+        logger.debug("kanban aux accounting context unavailable", exc_info=True)
+        return None
+
+
 def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
               max_tokens: int, timeout: int, log: logging.Logger = logger) -> tuple[Optional[str], str]:
     """One auxiliary LLM call; ``(reply_text, "")`` or ``(None, reason)``.
@@ -162,6 +200,7 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
     # in-turn caller keeps its conversation's key.
     from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
     affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
+    accounting_token = _bind_kanban_aux_accounting()
     try:
         # Route through call_llm so auxiliary.triage_specifier.* config (provider/model/base_url,
         # extra_body, reasoning_effort, retries) all apply — the direct-create path dropped extra_body
@@ -180,6 +219,10 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
     finally:
         if affinity_token is not None:
             reset_affinity_scope(affinity_token)
+        if accounting_token is not None:
+            from agent.aux_accounting import reset_accounting_context
+
+            reset_accounting_context(accounting_token)
     try:
         return resp.choices[0].message.content or "", ""
     except Exception:

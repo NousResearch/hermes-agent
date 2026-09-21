@@ -5,13 +5,20 @@ One home for the resolution order — ``hermes_cli.kanban``, ``kanban_specify`` 
 
   1. an author bound by the calling surface for this call (:func:`bind_author` — the gateway
      passes the routed chat profile, its programmatic equivalent of ``--author``),
-  2. ``HERMES_PROFILE_NAME``,
-  3. ``HERMES_PROFILE``.
+  2. ``kanban.review_profile`` from THIS home's config (:func:`home_author_profile`) — the
+     identity this home declares for its own board writes,
+  3. ``HERMES_PROFILE_NAME``,
+  4. ``HERMES_PROFILE``.
 
-Anything else raises :class:`KanbanAuthorRequired`. There is deliberately NO home-derived
+Anything else raises :class:`KanbanAuthorRequired`. There is deliberately NO home-DERIVED
 fallback: ``HERMES_HOME`` follows ``hermes profile use``, so an unpinned caller used to
 attribute its comments and status moves to whichever lane was last made active, and a
-comment that reads as a human operator's can be a stale sticky profile's.
+comment that reads as a human operator's can be a stale sticky profile's. Step 2 is not that
+bug: the value is declared in this home's own ``config.yaml`` and read through the config
+already scoped to this home, so another profile's activity cannot move it — and it sits BELOW a
+call-bound author, so a multiplexed gateway still attributes to the routed chat's profile
+instead of one home-wide name. Unset -> the ambient ``HERMES_PROFILE*`` signals decide,
+exactly as before, and an unpinned caller still raises rather than naming a profile.
 """
 
 from __future__ import annotations
@@ -54,10 +61,29 @@ def bind_author(author: Optional[str]) -> Iterator[None]:
         _bound_author.reset(token)
 
 
+def home_author_profile() -> Optional[str]:
+    """``kanban.review_profile`` from this home's config, or ``None`` when it names nothing.
+
+    The key a home uses to declare the profile its own board writes are attributed to
+    (the same per-home key review dispatch reads, ``kanban_db_dispatch.review_profile``).
+    Unset, blank, or not a string -> ``None``, which leaves the ambient ``HERMES_PROFILE``
+    signals to decide — so an install that never sets the key behaves exactly as before.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("review_profile")
+    except Exception:
+        return None
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
+
+
 def resolve_author() -> str:
     """Return the explicitly signalled author, or raise :class:`KanbanAuthorRequired`."""
     for candidate in (
         _bound_author.get(),
+        home_author_profile(),
         os.environ.get("HERMES_PROFILE_NAME"),
         os.environ.get("HERMES_PROFILE"),
     ):

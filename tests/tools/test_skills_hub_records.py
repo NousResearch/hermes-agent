@@ -98,9 +98,10 @@ def test_failed_atomic_publication_preserves_record_file(tmp_path, monkeypatch):
     def fail_replace(_source, _target):
         raise OSError("injected publication failure")
 
-    monkeypatch.setattr("utils.atomic_replace", fail_replace)
-    with pytest.raises(OSError, match="injected publication failure"):
-        _install(lock, "failed")
+    with monkeypatch.context() as patch:
+        patch.setattr("utils.atomic_replace", fail_replace)
+        with pytest.raises(OSError, match="injected publication failure"):
+            _install(lock, "failed")
 
     assert lock.path.read_bytes() == before
     _install(lock, "recovered")

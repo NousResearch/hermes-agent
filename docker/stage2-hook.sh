@@ -627,7 +627,7 @@ fi
 # after first-boot seeding and before supervised gateway services start.
 # Set HERMES_SKIP_CONFIG_MIGRATION=1 for controlled/manual migrations.
 if [ -f "$HERMES_HOME/config.yaml" ]; then
-    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
+    as_hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
         || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi
 
@@ -663,7 +663,7 @@ if [ -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]
     if refuse_symlinked_path "reseed" "$HERMES_HOME/auth.json"; then
         :
     else
-        s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" \
+        as_hermes "$INSTALL_DIR/.venv/bin/python" \
             "$INSTALL_DIR/scripts/docker_rebootstrap_nous_session.py" \
             "$HERMES_HOME/auth.json" \
             || echo "[stage2] Warning: docker_rebootstrap_nous_session.py failed; continuing"

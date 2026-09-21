@@ -4856,6 +4856,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] gmail-triage script missing: %s", self.name, script_path)
             return
         success = False
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 str(script_path), arg, *extra_args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -4876,6 +4877,12 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:
             label = f"❌ {verb} error: {exc}"
             logger.error("[%s] gmail-triage callback exception: verb=%s arg=%s err=%s", self.name, verb, arg, exc, exc_info=True)
+        finally:
+            if proc is not None and proc.returncode is None:
+                # wait_for() only cancels communicate(): the script would keep running and could still send/archive
+                # the email after the button reported a timeout. Kill it before answering.
+                from agent.deadline import kill_process_tree
+                await asyncio.to_thread(kill_process_tree, proc.pid)
         await query.answer(text=label)
         if not success:
             return

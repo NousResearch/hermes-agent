@@ -19,10 +19,15 @@ import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_
 type ConfigReadOrigin = { connectionId?: string; priority?: 'foreground'; profile?: string }
 
 const configReadOrigins = new WeakMap<object, ConfigReadOrigin>()
+// Every origin object ever bound, so resolveConfigWriteScope can tell a
+// captured read origin handed back as `writeScope` apart from a fresh
+// `{ connectionId, profile }` pin from the scope selector.
+const knownConfigReadOrigins = new WeakSet<ConfigReadOrigin>()
 
 /** Snapshot the `(connectionId, profile)` that served a config GET. */
 export function bindConfigReadOrigin(record: object, origin: ConfigReadOrigin): void {
   configReadOrigins.set(record, origin)
+  knownConfigReadOrigins.add(origin)
 }
 
 export function peekConfigReadOrigin(record: object | undefined | null): ConfigReadOrigin | undefined {
@@ -52,7 +57,12 @@ export function resolveConfigWriteScope(
   requestScope?: ProfileScope
 ): { connectionId?: string; priority?: 'foreground'; profile?: string } {
   if (requestScope && typeof requestScope === 'object') {
-    return capabilityScoped(requestScope)
+    // A captured read origin (the hook's `writeScope`) is already a
+    // capabilityScoped() result. Spread it exactly like the WeakMap branch
+    // below instead of re-running capabilityScoped, which would stamp
+    // `priority: 'foreground'` onto an AMBIENT origin that never carried it —
+    // the two branches must yield the same tag for the same read.
+    return knownConfigReadOrigins.has(requestScope) ? { ...requestScope } : capabilityScoped(requestScope)
   }
 
   const captured = peekConfigReadOrigin(record)

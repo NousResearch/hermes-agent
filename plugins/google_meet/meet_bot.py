@@ -164,13 +164,25 @@ _LEAVE_CALL_JS = (
     " if (b) b.click(); }")
 
 # True once past the lobby: leave button, caption region (once our observer is installed)
-# or participant list visible.
+# or participant list visible. NOT sufficient on its own — the leave-call button also renders
+# in the waiting room (#118049 item 1), so callers that need "actually admitted" must also
+# check _LOBBY_WAITING_JS is false.
 _ADMISSION_PROBE_JS = r"""
     (() => {
       if (document.querySelector('button[aria-label*="eave call" i]')) return true;
       if (window.__hermesMeetInstalled && document.querySelector(
           '[role="region"][aria-label*="aption" i], div[jsname="YSxPC"], div[jsname="tgaKEf"]')) return true;
       return !!document.querySelector('[aria-label*="articipants" i]');
+    })();
+    """
+
+# English only — Meet's own copy while a guest is still waiting to be let in. The waiting
+# room shares markup (including the leave-call button) with an actual call, so this is the
+# only reliable signal that _ADMISSION_PROBE_JS's leave-button check is a false positive.
+_LOBBY_WAITING_JS = r"""
+    (() => {
+      const text = document.body ? document.body.innerText || '' : '';
+      return /wait until a meeting host brings you into the call|waiting for someone to let you in|asking to be let in/i.test(text);
     })();
     """
 
@@ -401,7 +413,7 @@ def _drain_loop(page, cfg: _BotConfig, state: _BotState, rt: dict, stop_flag: di
             return
         if not state.in_call and (now - last_admission_check) > 3.0:
             last_admission_check = now
-            if _probe(page, _ADMISSION_PROBE_JS):
+            if _probe(page, _ADMISSION_PROBE_JS) and not _probe(page, _LOBBY_WAITING_JS):
                 state.set(in_call=True, lobby_waiting=False, joined_at=now, mic_state=_ensure_mic_on(page),
                           captions_enabled_attempted=_enable_captions(page))
             elif now > lobby_deadline:

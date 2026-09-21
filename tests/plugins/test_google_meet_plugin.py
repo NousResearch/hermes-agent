@@ -273,16 +273,19 @@ def test_detect_admission_returns_false_on_error():
 def test_captions_enabled_via_trusted_keypress_only_after_admission(tmp_path):
     """Meet ignores the synthetic KeyboardEvent a page.evaluate(...dispatchEvent...) can send —
     only a genuine ``page.keyboard.press`` is trusted (#118049). The toggle must also fire once
-    admission is confirmed, not while the bot is still sitting in the lobby."""
-    from plugins.google_meet.meet_bot import _ADMISSION_PROBE_JS, _BotConfig, _BotState, _drain_loop
+    admission is confirmed, not while the bot is still sitting in the lobby — including when
+    _ADMISSION_PROBE_JS's leave-button check false-positives because that button also renders
+    in the waiting room (#118049 item 1); _LOBBY_WAITING_JS must veto that case too."""
+    from plugins.google_meet.meet_bot import (
+        _ADMISSION_PROBE_JS, _LOBBY_WAITING_JS, _BotConfig, _BotState, _drain_loop)
 
     class _Keyboard:
         def __init__(self, page): self.page = page
         def press(self, key): self.page.pressed.append(key)
 
     class _Page:
-        def __init__(self, admitted, stop):
-            self.admitted, self.stop, self.pressed = admitted, stop, []
+        def __init__(self, admitted, in_lobby, stop):
+            self.admitted, self.in_lobby, self.stop, self.pressed = admitted, in_lobby, stop, []
             self.keyboard = _Keyboard(self)
 
         def locator(self, sel):
@@ -291,14 +294,16 @@ def test_captions_enabled_via_trusted_keypress_only_after_admission(tmp_path):
         def evaluate(self, js):
             if js is _ADMISSION_PROBE_JS:
                 return self.admitted
+            if js is _LOBBY_WAITING_JS:
+                return self.in_lobby
             self.stop["stop"] = True  # one caption-drain / denial-probe pass, then exit
             return []
 
         def is_closed(self): return False
 
-    def run(admitted, out_dir):
+    def run(admitted, in_lobby, out_dir):
         stop = {"stop": False}
-        page = _Page(admitted=admitted, stop=stop)
+        page = _Page(admitted=admitted, in_lobby=in_lobby, stop=stop)
         state = _BotState(tmp_path / out_dir, "abc-defg-hij", "https://meet.google.com/abc-defg-hij")
         with patch("plugins.google_meet.meet_bot.time.sleep"):
             _drain_loop(page, _BotConfig(guest_name="Bot", duration_s=0, lobby_timeout=30), state,
@@ -306,12 +311,20 @@ def test_captions_enabled_via_trusted_keypress_only_after_admission(tmp_path):
         return page, state
 
     # Still in the lobby: no admission yet, so no keypress and no attempt recorded.
-    page, state = run(admitted=False, out_dir="lobby")
+    page, state = run(admitted=False, in_lobby=True, out_dir="lobby")
     assert page.pressed == []
     assert state.captions_enabled_attempted is False
 
-    # Admitted: a real, trusted keypress fires and the attempt is recorded.
-    page, state = run(admitted=True, out_dir="admitted")
+    # The leave-call button already renders in the waiting room (#118049 item 1) so
+    # _ADMISSION_PROBE_JS alone says True, but Meet's own "please wait" copy is still on
+    # screen — must not be treated as admission.
+    page, state = run(admitted=True, in_lobby=True, out_dir="lobby_false_positive")
+    assert page.pressed == []
+    assert state.captions_enabled_attempted is False
+
+    # Actually admitted: both probes agree, a real trusted keypress fires and the attempt
+    # is recorded.
+    page, state = run(admitted=True, in_lobby=False, out_dir="admitted")
     assert page.pressed == ["c"]
     assert state.captions_enabled_attempted is True
 

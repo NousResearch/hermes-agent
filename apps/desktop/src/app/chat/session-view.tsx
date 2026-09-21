@@ -151,7 +151,7 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $messagesEmpty: computed($primaryMessages, messages => messages.length === 0),
   $model: primaryIdentityField(state => state.model, $currentModel),
   $provider: primaryIdentityField(state => state.provider, $currentProvider),
-  $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
+  $reasoningEffort: primaryIdentityField(state => state.reasoningEffort, $currentReasoningEffort),
   $reasoningEffortPending: $primaryReasoningEffortPending,
   $reasoningEffortWire: primaryField<string>(state => state.reasoningEffortWire ?? '', $currentReasoningEffortWire),
   $runtimeId: $activeSessionId,

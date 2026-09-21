@@ -154,7 +154,17 @@ def _nvidia_vram() -> tuple[int, int] | None:
             capture_output=True, text=True, timeout=10)
         if out.returncode != 0 or not out.stdout.strip():
             return None
-        total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
+        # One CSV row per GPU (tensor-split engines like llama.cpp address the sum), so
+        # every row must be totaled — reading only GPU 0 budgets a 2x24GiB rig at one card.
+        total_mib = free_mib = 0
+        for line in out.stdout.strip().splitlines():
+            parts = line.split(",")
+            if len(parts) < 2:
+                continue
+            total_mib += int(parts[0])
+            free_mib += int(parts[1])
+        if total_mib <= 0:
+            return None
         return total_mib << 20, free_mib << 20
     return None
 

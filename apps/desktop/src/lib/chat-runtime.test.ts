@@ -7,6 +7,7 @@ import {
   attachmentDisplayText,
   attachmentId,
   coalesceToolOnlyAssistants,
+  coerceGatewayText,
   coerceThinkingText,
   createToolMergeCache,
   messageCreatedAt,
@@ -96,6 +97,34 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
+  })
+})
+
+describe('coerceGatewayText', () => {
+  it('renders a legacy cli question envelope instead of exposing raw JSON', () => {
+    const legacy = JSON.stringify({
+      name: 'cli',
+      args: {
+        arguments: {
+          questions: [
+            {
+              choices: ['Audit the open PRs', 'Review the board only'],
+              question: 'What should I include?'
+            }
+          ]
+        }
+      }
+    })
+
+    expect(coerceGatewayText(legacy)).toBe(
+      'I need a little more information before I continue:\n\n1. What should I include?\n   - Audit the open PRs\n   - Review the board only'
+    )
+  })
+
+  it('leaves unrelated JSON assistant output unchanged', () => {
+    const json = '{"name":"cli","args":{"command":"pwd"}}'
+
+    expect(coerceGatewayText(json)).toBe(json)
   })
 })
 

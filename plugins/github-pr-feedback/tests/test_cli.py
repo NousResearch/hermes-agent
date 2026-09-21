@@ -212,6 +212,12 @@ def test_register_exposes_the_github_feedback_cli_command() -> None:
     parser = argparse.ArgumentParser()
     command["setup_fn"](parser)
     assert parser.parse_args(["scan"]).github_pr_feedback_action == "scan"
+    assert (
+        parser.parse_args(
+            ["historical-merged-scan", "--repository", "acme/widgets"]
+        ).github_pr_feedback_action
+        == "historical-merged-scan"
+    )
 
 
 def test_scan_prioritizes_feedback_before_degraded_repair_maintenance(

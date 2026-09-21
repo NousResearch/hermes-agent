@@ -5380,7 +5380,7 @@ def _claim_host_gateway_role(force: bool = False) -> None:
         logger.warning("--force: starting a second gateway although %s owns this host.",
                        hr.describe(owner) if owner else "another process")
         return
-    if _owner_is_standalone():
+    if _owner_is_standalone(owner):
         # COMPOSITION with #118236: `host_attach.decide` sent us here with START precisely because
         # the owner is another profile's STANDALONE gateway and will never serve us. Refusing now
         # exits 75, the supervisor retries in 5s, and the next claim loses the same race — the host
@@ -5401,22 +5401,85 @@ def _migrate_command() -> str:
     return MIGRATE_COMMAND
 
 
-def _owner_is_standalone() -> bool:
-    """True when the host owner answers that it does NOT multiplex (an unmigrated fleet).
+def _owner_is_standalone(owner=None) -> bool:
+    """True when the host owner does NOT multiplex (an unmigrated per-profile fleet).
 
-    Asked only on the lock-losing path, and any failure answers False: an owner we cannot reach
-    is treated as a multiplexer, which keeps the second-gateway refusal as the default.
+    Asked only on the lock-losing path, from two sources in order of authority:
+
+    1. the owner's control socket (:func:`_owner_socket_says_standalone`) — definitive whenever it
+       answers, including its "I am a multiplexer" answer;
+    2. the owner's own ``gateway_state.json`` (:func:`_owner_state_declares_standalone`), consulted
+       ONLY when the socket path could not answer at all.
+
+    (1) alone was not enough, and the gap is not the socket: it is reached through
+    ``host_attach.host_gateway()``, which drops any rendezvous record whose incarnation cannot be
+    PROVEN — and that proof compares the record's ABSOLUTE epoch ``createTime`` against a live
+    ``psutil`` reading (2 s tolerance). An absolute create time is derived from the host's boot
+    time, so a boot-time correction (WSL, a resumed VM, an NTP step) makes every record written
+    before the correction look like PID reuse for a process that never died. The probe then reports
+    "no owner" while the host lock we just lost proves an owner exists — and that lock is per OS
+    USER, so every gateway takes it and a second profile can NEVER win the retry. Answering False
+    there refused, exited 75, and spun the unit at the supervisor's restart interval forever, which
+    is the exact loop this carve-out exists to prevent. ``gateway_state.json`` carries a
+    boot-RELATIVE start-time fingerprint, which survives that correction.
+
+    Ambiguity still answers False at every step: the refusal must survive for a real multiplexer,
+    and only a positive standalone declaration lifts it.
     """
+    answered = _owner_socket_says_standalone()
+    return _owner_state_declares_standalone(owner) if answered is None else answered
+
+
+def _owner_socket_says_standalone() -> Optional[bool]:
+    """Ask the owner directly; ``None`` when it could not be reached or would not answer."""
     try:
         from gateway.host_attach import host_gateway, profile_name_for_home, request_serve_profile
 
         owner = host_gateway()
-        if owner is None or owner.pid == os.getpid():
+        if owner is None:
+            return None
+        if owner.pid == os.getpid():
             return False
         answered = request_serve_profile(profile_name_for_home(get_hermes_home()), owner=owner)
-        return bool(answered is not None and answered.standalone)
+        return None if answered is None else bool(answered.standalone)
     except Exception:
-        logger.debug("standalone-owner probe failed; keeping the second-gateway refusal",
+        logger.debug("standalone-owner probe failed; falling back to the owner's own state file",
+                     exc_info=True)
+        return None
+
+
+def _owner_state_declares_standalone(owner) -> bool:
+    """Does the lock owner's own ``gateway_state.json`` positively declare that it runs standalone?
+
+    The owner writes that file, it is readable with no port and no socket, and its start-time
+    fingerprint is boot-relative — so it answers for exactly the owner whose rendezvous record the
+    liveness probe could not prove. Every ambiguity answers False and keeps the refusal: no record,
+    no home, a snapshot naming another PID or another home, a PID that is gone or recycled, a
+    heartbeat older than the snapshot TTL, a gateway that says it stopped, or one that declares no
+    standalone reason at all (which is what a multiplexer looks like).
+    """
+    if owner is None or getattr(owner, "pid", None) in (None, os.getpid()):
+        return False
+    home_raw = str(getattr(owner, "home", "") or "").strip()
+    if not home_raw:
+        return False
+    home = Path(home_raw)
+    try:
+        from gateway.status import (_same_hermes_home, read_runtime_status,
+                                    runtime_status_is_stale, runtime_status_pid_is_live)
+
+        state = read_runtime_status(home / "gateway_state.json")
+        if not isinstance(state, dict) or runtime_status_is_stale(state):
+            return False
+        if state.get("pid") != owner.pid or not runtime_status_pid_is_live(state):
+            return False
+        if state.get("gateway_state") in {None, "stopped", "startup_failed"}:
+            return False
+        if not _same_hermes_home(Path(str(state.get("hermes_home") or home)), home):
+            return False
+        return bool(state.get("multiplex_standalone_reason"))
+    except Exception:
+        logger.debug("owner state-file fallback failed; keeping the second-gateway refusal",
                      exc_info=True)
         return False
 

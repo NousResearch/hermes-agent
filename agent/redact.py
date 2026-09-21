@@ -737,6 +737,22 @@ _URL_BARE_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Incoming-webhook URLs. The URL IS the credential: anyone holding it can post into the
+# workspace as the app, with no other secret. Web URLs are otherwise passed through on purpose
+# (magic links, OAuth callbacks the agent must follow), so this stays vendor-shaped like
+# _DB_CONNSTR_RE and _URL_BARE_TOKEN_RE: only the three fixed host/path forms below match, and
+# only the credential segment is masked, leaving the host and ids readable for diagnosis.
+# Hermes stores one as ``incoming_webhook_url`` for Teams delivery and ships Slack and Discord
+# adapters, so these land in config dumps, tool output and logs. Telegram's is already covered
+# by _TELEGRAM_RE, which masks the bot token inside its API URL.
+_WEBHOOK_URL_RE = re.compile(
+    r"(https://hooks\.slack\.com/(?:services|workflows)/[A-Z0-9]+/[A-Z0-9]+/)([A-Za-z0-9]{8,})"
+    r"|(https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/)([\w-]{8,})"
+    r"|(https://[A-Za-z0-9.-]*\.?(?:webhook\.office\.com/webhookb2|outlook\.office\.com/webhook)/)(\S+)",
+    re.IGNORECASE,
+)
+
+
 # JWTs always start with "eyJ" (base64 "{"); 1-, 2- and 3-part forms.
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 
@@ -1417,8 +1433,9 @@ def _redact_userinfo_passwords(text: str) -> str:
     return _URL_USERINFO_PAIR_RE.sub(_sub, text)
 
 
-def _redact_url_credentials(text: str, code_file: bool) -> str:
-    """DB connection-string passwords, bare-token and ``user:pass`` URL userinfo (``://`` text only)."""
+def _redact_url_credentials(text: str, code_file: bool, *, file_read: bool = False) -> str:
+    """DB connection-string passwords, incoming-webhook secrets, bare-token and ``user:pass`` URL
+    userinfo (``://`` text only)."""
     def _redact_db(m):
         # code_file: a pure ``{...}`` password is an f-string template reference
         # (f"postgresql://{user}:{pass}@{host}"), not a literal credential.
@@ -1429,7 +1446,18 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
         if m.group(1).endswith("://:") and _DSN_PW_PLACEHOLDER_RE.fullmatch(pw):
             return m.group(0)
         return f"{m.group(1)}***{m.group(3)}"
+    def _redact_webhook(m):
+        # file_read: the non-reusable sentinel, so an agent that reads a stored webhook out of a
+        # config file cannot write a truncated-looking mask back over it (#35519).
+        mask = _mask_token_nonreusable if file_read else _mask_token
+        for prefix, secret in ((m.group(1), m.group(2)), (m.group(3), m.group(4)),
+                               (m.group(5), m.group(6))):
+            if prefix:
+                return f"{prefix}{mask(secret)}"
+        return m.group(0)
+
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
+    text = _WEBHOOK_URL_RE.sub(_redact_webhook, text)
     text = _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
     return _redact_userinfo_passwords(text)
 
@@ -1555,7 +1583,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # in the password group, so a single-line template's group(2) is exactly the brace expression. See issue
     # #33801.
     if "://" in text:
-        text = _redact_url_credentials(text, code_file)
+        text = _redact_url_credentials(text, code_file, file_read=file_read)
     if force and "//" in text:
         text = _NETWORK_PATH_USERINFO_RE.sub(_mask_network_path_userinfo, text)
 

@@ -532,6 +532,12 @@ class BuzzAdapter(BasePlatformAdapter):
         _rm_cfg = _setting_or("BUZZ_REQUIRE_MENTION", extra, "require_mention", True)
         self.require_mention = str(_rm_cfg).strip().lower() not in ("false", "0", "no", "off")
         self._reply_to_mode: str = _reply_to_mode(config, extra)
+        # Whether a quote-reply in a 1:1 DM opens its own session (default, matching channels) or stays
+        # in the DM's main conversation. In a channel a thread keeps parallel topics apart; in a DM the
+        # same split leaves one person with conversations that cannot see each other, so "shorten that"
+        # sent as a reply to a draft reaches a blank session that has never seen the draft.
+        _dt_cfg = _setting_or("BUZZ_DM_THREADS", extra, "dm_threads", True)
+        self.dm_threads = str(_dt_cfg).strip().lower() not in ("false", "0", "no", "off")
         # Inbound transport: "auto" (WebSocket with poll fallback), "websocket" (required), "poll".
         _transport_raw = _scoped_platform_setting("BUZZ_TRANSPORT", extra, "transport")
         _transport = (_transport_raw or str(extra.get("transport", "auto") or "auto")).strip().lower()
@@ -1524,7 +1530,9 @@ class BuzzAdapter(BasePlatformAdapter):
         # Strip a leading @mention (DMs often open with one too) so "@Chip /whoami" is recognized as a command.
         dispatch_text = self._strip_mention(content)
         # NIP-10 root scopes the session; remember it so our reply joins the SAME thread instead of nesting.
-        thread_id = self._extract_thread_root(event)
+        # With dm_threads off, a DM reply keeps the main session; the root is still recorded so our answer
+        # anchors under the message it replies to, and reply_to_text still carries the quoted context.
+        thread_id = self._extract_thread_root(event) if (self.dm_threads or not is_dm) else None
         self._record_thread_root(event_id, event)
         # Attachment fetch spends credentials: only the gateway's explicit ``True`` permits it (else fail closed).
         # The message still dispatches so GatewayRunner can apply denial/pairing.

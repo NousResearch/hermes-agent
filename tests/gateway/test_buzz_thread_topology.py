@@ -53,7 +53,7 @@ def _no_ambient_env(monkeypatch, tmp_path):
         "BUZZ_POLL_INTERVAL", "BUZZ_CLI_PATH", "BUZZ_CREDENTIALS_FILE",
         "BUZZ_ALLOWED_USERS", "BUZZ_ALLOW_ALL_USERS", "BUZZ_PRIVATE_KEY",
         "BUZZ_REQUIRE_MENTION", "BUZZ_REPLY_IN_THREAD", "BUZZ_REPLY_TO_MODE",
-        "BUZZ_TRANSPORT",
+        "BUZZ_TRANSPORT", "BUZZ_DM_THREADS",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path / "no-creds")
@@ -345,3 +345,53 @@ class TestDisplayDefaults:
         # No user config: must come from the buzz platform tier, not the
         # verbose _GLOBAL_DEFAULTS ("all").
         assert resolve_display_setting({}, "buzz", "tool_progress") != "all"
+
+
+# ── DM replies: own session or the main conversation ─────────────────────
+
+
+class TestDmThreadSessions:
+    """A quote-reply in a 1:1 DM can stay in the DM's main conversation."""
+
+    async def _dispatch(self, adapter, chat_type, event):
+        adapter._channel_state[CHANNEL] = {"chat_type": chat_type, "last_ts": 0, "seen": {}}
+        dispatched = []
+
+        async def capture(ev):
+            dispatched.append(ev)
+
+        adapter._message_handler = AsyncMock()
+        adapter.handle_message = capture
+        adapter.send_reaction = AsyncMock(return_value=True)
+        adapter._run_cli = _stub_cli
+        await adapter._handle_event(CHANNEL, adapter._channel_state[CHANNEL], event)
+        assert dispatched
+        return dispatched[0]
+
+    @pytest.mark.asyncio
+    async def test_default_keeps_dm_replies_in_their_own_session(self):
+        """Unchanged behaviour unless the operator opts in."""
+        ev = await self._dispatch(_make_adapter(), "dm",
+                                  _nip10_reply_event("r1", root=ROOT_EVT, parent=MID_EVT, content="shorter"))
+        assert ev.source.thread_id == ROOT_EVT
+
+    @pytest.mark.asyncio
+    async def test_dm_threads_off_keeps_a_dm_reply_in_the_main_conversation(self):
+        ev = await self._dispatch(_make_adapter({"dm_threads": False}), "dm",
+                                  _nip10_reply_event("r2", root=ROOT_EVT, parent=MID_EVT, content="shorter"))
+        assert ev.source.thread_id is None
+        # the quoted parent is still carried, so the context of the reply is not lost
+        assert ev.reply_to_message_id == MID_EVT
+
+    @pytest.mark.asyncio
+    async def test_dm_threads_off_leaves_channel_threads_alone(self):
+        ev = await self._dispatch(_make_adapter({"dm_threads": False}), "group",
+                                  _nip10_reply_event("r3", root=ROOT_EVT, parent=MID_EVT, content="@Chip shorter"))
+        assert ev.source.thread_id == ROOT_EVT
+
+    @pytest.mark.asyncio
+    async def test_env_dm_threads_false_wins(self, monkeypatch):
+        monkeypatch.setenv("BUZZ_DM_THREADS", "false")
+        ev = await self._dispatch(_make_adapter(), "dm",
+                                  _nip10_reply_event("r4", root=ROOT_EVT, parent=MID_EVT, content="shorter"))
+        assert ev.source.thread_id is None

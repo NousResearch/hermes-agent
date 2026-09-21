@@ -19,12 +19,45 @@ locals {
   # "111122223333.dkr.ecr.eu-west-2.amazonaws.com/nova:1.4.0" -> the repository it lives in.
   # Scoped to the one repository rather than the whole registry: an instance that can pull
   # any image in the account can pull one nobody reviewed.
-  image_registry   = split("/", var.image_uri)[0]
-  image_repository = split(":", split("@", join("/", slice(split("/", var.image_uri), 1, length(split("/", var.image_uri)))))[0])[0]
-  image_account_id = split(".", local.image_registry)[0]
-  image_region     = split(".", local.image_registry)[3]
+  #
+  # This deployment legitimately runs two images from two repositories — the control plane
+  # and, when declared, the Hermes runtime that dispatches its work. They are parsed by one
+  # expression rather than two copies of it: the tag-versus-digest handling below is the
+  # fiddly part, and a second hand-written copy is a second place to get it subtly wrong.
+  # An empty worker_image_uri drops out here, so a control-plane-only deployment derives
+  # exactly the one ARN it did before.
+  ecr_image_uris = {
+    for name, uri in { control_plane = var.image_uri, worker = var.worker_image_uri } :
+    name => uri if trimspace(uri) != ""
+  }
 
-  image_repository_arn = "arn:${local.partition}:ecr:${local.image_region}:${local.image_account_id}:repository/${local.image_repository}"
+  # The registry host: "111122223333.dkr.ecr.eu-west-2.amazonaws.com". Its account and
+  # region are positional — index 3 is the region for both `ecr.` and `ecr-fips.` hosts,
+  # and in China, where the suffix is longer but the prefix is not.
+  ecr_registries = {
+    for name, uri in local.ecr_image_uris : name => split("/", uri)[0]
+  }
+
+  # Everything after the host, with a ":tag" or an "@sha256:..." digest stripped. The
+  # `join`/`slice` keeps a namespaced repository ("team/nova") whole.
+  ecr_repositories = {
+    for name, uri in local.ecr_image_uris :
+    name => split(":", split("@", join("/", slice(split("/", uri), 1, length(split("/", uri)))))[0])[0]
+  }
+
+  ecr_repository_arns = {
+    for name, repository in local.ecr_repositories :
+    name => format(
+      "arn:%s:ecr:%s:%s:repository/%s",
+      local.partition,
+      split(".", local.ecr_registries[name])[3],
+      split(".", local.ecr_registries[name])[0],
+      repository,
+    )
+  }
+
+  # Sorted by key, so a plan does not churn on map ordering.
+  image_repository_arns = values(local.ecr_repository_arns)
 
   secret_arn_pattern = "arn:${local.partition}:secretsmanager:${var.region}:${local.account_id}:secret:${var.secret_prefix}*"
 

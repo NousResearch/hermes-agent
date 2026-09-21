@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -627,3 +629,189 @@ def test_the_session_manager_grant_still_comes_from_the_managed_policy():
         "the managed policy attachment is gone. The boundary only caps permissions; "
         "with nothing attached that grants them, the agent still cannot register"
     )
+
+
+# ---------------------------------------------------------------------------
+# ECR repository scoping
+#
+# The deployment runs two images from two repositories: the control plane, and
+# the Hermes runtime that dispatches its work. The runtime role's pull grant was
+# derived from `image_uri` alone, so a worker in its own repository could not be
+# pulled — the instance would come up with a systemd unit that fails on
+# `docker pull` and a dispatcher that never starts.
+#
+# The fix is a derivation, not a list: this module deploys into arbitrary
+# customer accounts and arbitrary repositories, so a hardcoded name would be
+# wrong everywhere except the account it was written in.
+# ---------------------------------------------------------------------------
+
+_ECR_PULL_ACTIONS = (
+    "ecr:BatchCheckLayerAvailability",
+    "ecr:BatchGetImage",
+    "ecr:GetDownloadUrlForLayer",
+)
+
+
+def _pull_statement() -> str:
+    iam = (MODULE / "iam.tf").read_text(encoding="utf-8")
+    start = iam.index('sid    = "PullItsOwnImage"')
+    return iam[start : iam.index("}", iam.index("resources", start))]
+
+
+def test_the_pull_grant_covers_every_image_this_deployment_runs():
+    """A worker in its own repository is unpullable if this names only one."""
+    assert "local.image_repository_arns" in _pull_statement(), (
+        "the ECR pull statement still scopes to a single derived repository, so a "
+        "deployment with a worker_image_uri cannot pull its worker image"
+    )
+
+
+def test_both_repository_arns_are_derived_from_their_image_uris():
+    """Never a hardcoded repository name: this module deploys into customer accounts."""
+    main = _main_tf()
+    assert "control_plane = var.image_uri" in main
+    assert "worker        = var.worker_image_uri" in main or "worker = var.worker_image_uri" in main
+    for hardcoded in ("repository/nova-runtime", "repository/nova-control-plane"):
+        assert hardcoded not in main, (
+            f"{hardcoded} is hardcoded; the ARN must be derived from the image URI so "
+            "the module works in a customer's own account and repositories"
+        )
+
+
+def test_an_absent_worker_derives_exactly_one_repository():
+    """The control-plane-only deployment must be unchanged, not merely still valid."""
+    main = _main_tf()
+    assert 'name => uri if trimspace(uri) != ""' in main, (
+        "an empty worker_image_uri must drop out of the derivation; otherwise a "
+        "control-plane-only deployment derives a malformed second ARN"
+    )
+
+
+def test_the_pull_grant_never_widens_to_a_whole_registry():
+    """The refusal this file exists for. Two named repositories, never a wildcard."""
+    statement = _pull_statement()
+    for forbidden in ('"*"', "repository/*", ":repository/*"):
+        assert forbidden not in statement, (
+            f"the ECR pull statement contains {forbidden}; an instance that can pull any "
+            "image in the account can pull one nobody reviewed"
+        )
+
+
+def test_the_pull_grant_gains_no_unrelated_ecr_permissions():
+    """Layer reads only. Push, delete and describe are not part of running an image."""
+    statement = _pull_statement()
+    for action in re.findall(r'"(ecr:[A-Za-z]+)"', statement):
+        assert action in _ECR_PULL_ACTIONS, (
+            f"the pull statement now grants {action}, which is not needed to run an image"
+        )
+
+
+def test_the_auth_token_grant_is_unchanged_and_still_account_wide():
+    """`ecr:GetAuthorizationToken` takes no resource; AWS models it as account-wide.
+    Scoping it to a repository would silently break every pull."""
+    iam = (MODULE / "iam.tf").read_text(encoding="utf-8")
+    start = iam.index('sid       = "EcrAuth"')
+    block = iam[start : iam.index("}", start)]
+    assert '"ecr:GetAuthorizationToken"' in block
+    assert 'resources = ["*"]' in block
+
+
+def test_the_boundary_bounds_ecr_by_service_not_by_repository():
+    """The boundary must not carry its own repository list.
+
+    A boundary is an intersection. Two repository lists that drift apart produce an
+    AccessDenied naming neither of them — the shape of the SSM heartbeat failure. The
+    boundary says which services may be touched; the runtime policy says which
+    repositories.
+    """
+    ceiling = _boundary_ceiling_actions()
+    for action in _ECR_PULL_ACTIONS:
+        assert _permits(ceiling, action), (
+            f"the boundary no longer permits {action}, so the runtime policy's pull "
+            "grant is capped away and the instance cannot pull any image"
+        )
+    iam = (MODULE / "iam.tf").read_text(encoding="utf-8")
+    boundary = iam[iam.index('data "aws_iam_policy_document" "runtime_boundary"') : iam.index(
+        'resource "aws_iam_policy" "runtime_boundary"'
+    )]
+    assert "image_repository_arns" not in boundary, (
+        "the boundary now carries its own copy of the repository list; keep the "
+        "resource scoping in one place"
+    )
+
+
+def test_a_non_ecr_worker_image_is_refused_with_a_sentence():
+    """The derivation reads the registry host positionally, so a Docker Hub reference
+    would fail mid-plan with 'Invalid index' rather than saying what is wrong."""
+    variables = (MODULE / "variables.tf").read_text(encoding="utf-8")
+    worker = variables[variables.index('variable "worker_image_uri"') :]
+    worker = worker[: worker.index("\nvariable ")]
+    assert "validation {" in worker
+    assert 'trimspace(var.worker_image_uri) == ""' in worker, (
+        "the validation must still admit the empty control-plane-only default"
+    )
+    assert "dkr" in worker and "ecr" in worker
+
+
+@pytest.mark.skipif(
+    shutil.which("terraform") is None, reason="terraform is not installed here"
+)
+@pytest.mark.parametrize(
+    "image, worker, expected",
+    [
+        pytest.param(
+            "369607682697.dkr.ecr.eu-west-2.amazonaws.com/nova-control-plane@sha256:" + "5" * 64,
+            "",
+            ["arn:aws:ecr:eu-west-2:369607682697:repository/nova-control-plane"],
+            id="control-plane-only-by-digest",
+        ),
+        pytest.param(
+            "369607682697.dkr.ecr.eu-west-2.amazonaws.com/nova-control-plane@sha256:" + "5" * 64,
+            "369607682697.dkr.ecr.eu-west-2.amazonaws.com/nova-runtime@sha256:" + "2" * 64,
+            [
+                "arn:aws:ecr:eu-west-2:369607682697:repository/nova-control-plane",
+                "arn:aws:ecr:eu-west-2:369607682697:repository/nova-runtime",
+            ],
+            id="both-images",
+        ),
+        pytest.param(
+            "111122223333.dkr.ecr-fips.us-east-1.amazonaws.com/team/nova:1.4.0",
+            "444455556666.dkr.ecr.eu-west-2.amazonaws.com/nova-runtime:0.21.1",
+            [
+                "arn:aws:ecr:us-east-1:111122223333:repository/team/nova",
+                "arn:aws:ecr:eu-west-2:444455556666:repository/nova-runtime",
+            ],
+            id="fips-host-namespaced-repo-and-a-second-account",
+        ),
+    ],
+)
+def test_terraform_derives_the_expected_repository_arns(tmp_path, image, worker, expected):
+    """Evaluated by Terraform itself, not re-implemented in Python.
+
+    The tag-versus-digest handling is the part that is easy to get wrong, and a second
+    implementation of it here would assert my reading of the expression rather than the
+    expression. The locals are lifted verbatim into a provider-free module so this runs
+    offline.
+    """
+    main = _main_tf()
+    block = main[main.index("  ecr_image_uris = {") : main.index(
+        "  image_repository_arns = values(local.ecr_repository_arns)"
+    ) + len("  image_repository_arns = values(local.ecr_repository_arns)")]
+    (tmp_path / "main.tf").write_text(
+        'variable "image_uri" { type = string }\n'
+        'variable "worker_image_uri" { type = string }\n\n'
+        'locals {\n  partition = "aws"\n' + block + "\n}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["terraform", "init", "-backend=false", "-input=false"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+    result = subprocess.run(
+        ["terraform", "console", "-var", f"image_uri={image}",
+         "-var", f"worker_image_uri={worker}"],
+        cwd=tmp_path, input="local.image_repository_arns\n",
+        text=True, capture_output=True, check=True,
+    )
+    derived = re.findall(r'"(arn:[^"]+)"', result.stdout)
+    assert derived == expected, result.stdout

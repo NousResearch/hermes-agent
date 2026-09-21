@@ -86,9 +86,24 @@ variable "worker_image_uri" {
     Built from the repository's root `Dockerfile`. The unit runs it with HERMES_UID=10001
     so it matches the state volume's owner, and HERMES_HOME pointed at the same home the
     control plane serves, so both processes see one board.
+
+    Must be an ECR URI: the runtime role's pull permission is derived from it by parsing
+    the registry host, so a Docker Hub or GHCR reference would both fail that parse and
+    leave the instance unable to pull what it was told to run.
   EOT
   type        = string
   default     = ""
+
+  validation {
+    # Empty is the control-plane-only deployment. Otherwise the host has to be an ECR
+    # registry, so the derivation in main.tf fails here with a sentence rather than
+    # mid-plan with "Invalid index". `ecr[.-]` covers ecr. and ecr-fips.; the suffix is
+    # left open so China (amazonaws.com.cn) is not excluded.
+    condition = trimspace(var.worker_image_uri) == "" || can(
+      regex("^[0-9]{12}\\.dkr\\.ecr[.-][a-z0-9-]+\\.", var.worker_image_uri)
+    )
+    error_message = "worker_image_uri must be empty or an ECR image URI (<account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>)."
+  }
 }
 
 variable "ami_id" {

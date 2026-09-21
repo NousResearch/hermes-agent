@@ -46,6 +46,10 @@ data "aws_iam_policy_document" "runtime_boundary" {
     actions = [
       "bedrock:InvokeModel",
       "bedrock:InvokeModelWithResponseStream",
+      # The boundary bounds SERVICES; the repositories are named by the runtime policy's
+      # `PullItsOwnImage` statement below. Deliberately not repeated here: a boundary is an
+      # intersection, so a repository list in two places that drift apart shows up as an
+      # AccessDenied naming neither of them — which is how the SSM heartbeat was lost.
       "ecr:BatchCheckLayerAvailability",
       "ecr:BatchGetImage",
       "ecr:GetAuthorizationToken",
@@ -130,7 +134,11 @@ data "aws_iam_policy_document" "runtime" {
       "ecr:BatchGetImage",
       "ecr:GetDownloadUrlForLayer",
     ]
-    resources = [local.image_repository_arn]
+    # One entry per image this deployment actually runs — the control plane, and the
+    # worker when one is declared. Both are named repositories, never the registry: an
+    # instance that can pull any image in the account can pull one nobody reviewed. A
+    # control-plane-only deployment gets the single ARN it always had.
+    resources = local.image_repository_arns
   }
 
   statement {

@@ -1270,3 +1270,46 @@ async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapt
     monkeypatch.setattr("run_agent.AIAgent", CapturingAgent)
     adapter._create_agent(session_id="gated", interim_assistant_callback=lambda *_a, **_k: None)
     assert captured["interim_assistant_callback"] is None
+
+
+def _named_provider_home(tmp_path, monkeypatch):
+    """Temp HERMES_HOME whose default provider is a named custom endpoint, plus a stale
+    OpenRouter key in .env — the credential a mis-resolution would silently fall back to."""
+    (tmp_path / "config.yaml").write_text(
+        "model:\n"
+        "  default: work-bifrost/vllm/base-model\n"
+        "  provider: work-bifrost\n"
+        "providers:\n"
+        "  work-bifrost:\n"
+        "    base_url: https://bifrost.internal/v1\n"
+        "    api_key: sk-bifrost\n"
+    )
+    (tmp_path / ".env").write_text("OPENROUTER_API_KEY=sk-or-stale\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+
+@pytest.mark.parametrize("branch", ["session_persisted", "session_override"])
+def test_session_model_turns_keep_the_named_provider_endpoint(adapter, tmp_path, monkeypatch, branch):
+    """#118426: from turn 2 on, a session-scoped model re-resolved the *resolved* provider
+    ("custom", what a named endpoint collapses to), which drops the configured base_url/api_key
+    and lands on the OpenRouter default — the session's turns would leave the private endpoint."""
+    _named_provider_home(tmp_path, monkeypatch)
+    from gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
+
+    session_model = "work-bifrost/vllm/glm-5.3-flash"
+    if branch == "session_override":
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: {"model": session_model})
+
+    runtime_kwargs = _resolve_runtime_agent_kwargs()
+    model = runtime_kwargs.pop("model", None) or _resolve_gateway_model()
+    assert runtime_kwargs["base_url"] == "https://bifrost.internal/v1"  # precondition: turn 1 is correct
+
+    model, _override, _req_model, _req_provider = adapter._select_agent_runtime(
+        runtime_kwargs, model, requested_model=None, requested_provider=None, route=None,
+        session_model=None if branch == "session_override" else session_model,
+        confirmed_runtime_lock=False, gateway_session_key="sess-1", session_id="sess-1")
+
+    assert model == session_model
+    assert runtime_kwargs["base_url"] == "https://bifrost.internal/v1"
+    assert runtime_kwargs["api_key"] == "sk-bifrost"
+    assert runtime_kwargs["requested_provider"] == "work-bifrost"

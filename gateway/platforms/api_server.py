@@ -2114,7 +2114,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         route_provider = _clean_request_string(route_cfg.get("provider"))
         session_key = gateway_session_key or session_id
         session_row_model = _clean_request_string(session_model)
-        current_provider = _clean_request_string(runtime_kwargs.get("provider"))
+        # The resolved ``provider`` is the transport family a named provider collapses into
+        # ("custom"), so re-resolving it drops the configured endpoint/key and falls back to the
+        # bare-custom default. Re-resolution reuses the name the runtime was requested under.
+        requested_runtime_provider = _clean_request_string(runtime_kwargs.get("requested_provider"))
+        current_provider = (
+            requested_runtime_provider if requested_runtime_provider and requested_runtime_provider != "auto"
+            else _clean_request_string(runtime_kwargs.get("provider")))
         session_override = None if confirmed_runtime_lock else self._session_model_override_for(session_key)
         # Model-string precedence (override > session-persisted > global) is owned by
         # hermes_cli.model_switch.resolve_effective_model.

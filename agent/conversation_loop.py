@@ -1082,11 +1082,10 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     if len(content) == 1:
         content[0]["text"] = effective
         return True
-    if len(content) == 2:
-        head = content[0].get("text") or ""
-        if head and effective.startswith(head) and effective[len(head):]:
-            content[1]["text"] = effective[len(head):]
-            return True
+    head = "".join(part.get("text") or "" for part in content[:-1])
+    if head and effective.startswith(head) and effective[len(head):]:
+        content[-1]["text"] = effective[len(head):]
+        return True
     return False
 
 

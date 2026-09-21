@@ -724,20 +724,6 @@ def _join_tier(parts: List[Optional[str]]) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
-class _ContextTier(str):
-    """Rendered context tier with its byte-stable head retained for caching."""
-
-    def __new__(cls, value: str, cacheable_head: str):
-        instance = super().__new__(cls, value)
-        instance.cacheable_head = cacheable_head
-        return instance
-
-    def __getnewargs__(self):
-        # copy/deepcopy/pickle rebuild str subclasses via __new__; without this the
-        # two-argument constructor raises TypeError on every deepcopy of the parts.
-        return (str(self), self.cacheable_head)
-
-
 class _SystemCachePrefix(str):
     """Largest reusable system prefix, carrying its stable-tier boundary."""
 
@@ -759,8 +745,7 @@ def _static_cache_prefix(parts: Dict[str, str]) -> str:
     can differ when a persisted prompt is resumed by another process.
     """
     stable = parts.get("stable", "")
-    context = parts.get("context", "")
-    cacheable_context = getattr(context, "cacheable_head", "")
+    cacheable_context = parts.get("context_cacheable", "")
     prefix = "\n\n".join(part for part in (stable, cacheable_context) if part)
     return _SystemCachePrefix(prefix, stable) if prefix else ""
 
@@ -830,7 +815,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         volatile_parts.append(f"{_pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{environment_hints}\n\n{_pb.RUNTIME_ENVIRONMENT_END}")
     return {
         "stable": _join_tier(stable_parts),
-        "context": _ContextTier(_join_tier(context_parts), context_cacheable),
+        "context": _join_tier(context_parts),
+        "context_cacheable": context_cacheable,
         "volatile": _join_tier(volatile_parts),
     }
 

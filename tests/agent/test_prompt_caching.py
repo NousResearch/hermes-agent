@@ -91,24 +91,23 @@ def test_t20880_tool_heavy_native_loop_reproduction():
     assert _count_cache_markers(after_exchange.messages, after_exchange.tools) <= 4
 
 
-def test_native_tool_cache_marks_stable_and_context_boundaries_within_budget():
-    """Native tool-cache requests retain both reusable system tiers and one transaction."""
-    class CacheableContextPrefix(str):
-        stable_prefix = "stable prefix"
+def test_native_tool_cache_preserves_two_transaction_endpoints_with_context_prefix():
+    """Two system tiers leave room for both completed-turn endpoints, not a tools marker."""
+    from agent.system_prompt import _SystemCachePrefix
 
     plan = build_prompt_cache_plan(
         _tool_heavy_native_history(),
         _tool_heavy_native_tools(),
         native_anthropic=True,
-        static_system_prefix=CacheableContextPrefix("stable prefix\nvolatile suffix"),
+        static_system_prefix=_SystemCachePrefix("stable prefix\nvolatile suffix", "stable prefix"),
         direct_native_tool_cache=True,
     )
 
     system_parts = plan.messages[0]["content"]
     assert [part["text"] for part in system_parts] == ["stable prefix", "\nvolatile suffix"]
     assert all(part.get("cache_control") == MARKER for part in system_parts)
-    assert plan.tools[-1]["cache_control"] == MARKER
-    assert len(_native_marker_indexes(plan.messages) - {0}) == 1
+    assert "cache_control" not in plan.tools[-1]
+    assert len(_native_marker_indexes(plan.messages) - {0}) == 2
     assert _count_cache_markers(plan.messages, plan.tools) == 4
 
 

@@ -312,6 +312,9 @@ def build_prompt_cache_plan(
         )
     else:
         system_markers = 0
+    # A two-tier system layout already pins the tools array in Anthropic's ordered
+    # prefix. Spending another marker there would leave only one completed-turn
+    # endpoint and lose the shared endpoint on tool-heavy consecutive turns.
     if system_markers < 2:
         planned_tools[-1]["cache_control"] = dict(marker)
     transaction_budget = 3 - system_markers if system_markers < 2 else 2

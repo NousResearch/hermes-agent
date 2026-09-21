@@ -124,16 +124,15 @@ export function getHermesConfig(profile?: string): Promise<HermesConfig> {
   })
 }
 
-export async function getHermesConfigRecord(
-  profile?: ProfileScope,
-  { includeDefaults = true }: { includeDefaults?: boolean } = {}
+/** GET a config record on the capability scope and bind the serving
+ *  `(connectionId, profile)` to it so the matching write routes back there. */
+async function fetchBoundConfigRecord(
+  profile: ProfileScope,
+  request: { path: string; timeoutMs?: number }
 ): Promise<HermesConfigRecord> {
   const origin = capabilityScoped(profile ?? undefined)
 
-  const record = await window.hermesDesktop.api<HermesConfigRecord>({
-    ...origin,
-    path: includeDefaults ? '/api/config' : '/api/config?include_defaults=false'
-  })
+  const record = await window.hermesDesktop.api<HermesConfigRecord>({ ...origin, ...request })
 
   if (record && typeof record === 'object') {
     bindConfigReadOrigin(record, origin)
@@ -142,20 +141,20 @@ export async function getHermesConfigRecord(
   return record
 }
 
-export async function getHermesConfigDefaults(profile?: ProfileScope): Promise<HermesConfigRecord> {
-  const origin = capabilityScoped(profile ?? undefined)
+export function getHermesConfigRecord(
+  profile?: ProfileScope,
+  { includeDefaults = true }: { includeDefaults?: boolean } = {}
+): Promise<HermesConfigRecord> {
+  return fetchBoundConfigRecord(profile, {
+    path: includeDefaults ? '/api/config' : '/api/config?include_defaults=false'
+  })
+}
 
-  const record = await window.hermesDesktop.api<HermesConfigRecord>({
-    ...origin,
+export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
+  return fetchBoundConfigRecord(undefined, {
     path: '/api/config/defaults',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
-
-  if (record && typeof record === 'object') {
-    bindConfigReadOrigin(record, origin)
-  }
-
-  return record
 }
 
 export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSchemaResponse> {

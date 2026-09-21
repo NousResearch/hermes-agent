@@ -86,6 +86,20 @@ _MODEL_PICKER_ACTION_IDS = (
 )
 
 
+def _explicit_opt_in(value: Any) -> bool:
+    """Return True only for explicit boolean true values.
+
+    Platform ``extra`` accepts YAML-native booleans and values persisted by
+    config tooling as strings. Unknown types and words stay disabled so a
+    malformed restart-recovery setting cannot broaden autonomous behavior.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
+
 def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     """Explicitly configured link-preview controls (omitted key = Slack default). String bools are
     coerced (config tooling persists YAML bools as strings); junk is dropped, NOT coerced to False,
@@ -1027,6 +1041,13 @@ class SlackAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
+        # Safe default: interactive platforms report recovery and wait. This
+        # Slack-only opt-in reuses the existing non-interactive recovery path,
+        # which continues fresh interrupted work while preserving new-message
+        # priority, freshness checks, authorization, and stuck-loop guards.
+        self.interactive_resume = not _explicit_opt_in(
+            (config.extra or {}).get("auto_continue_resume_pending")
+        )
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._socket_mode_task: Optional[asyncio.Task] = None

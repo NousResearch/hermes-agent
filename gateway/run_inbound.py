@@ -1260,8 +1260,11 @@ class GatewayInboundMixin:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        _startup_receipt = getattr(event, "_hermes_startup_restore_receipt", None)
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
+            if isinstance(_startup_receipt, dict):
+                _startup_receipt["resolved"] = True
             return None
         event, source, is_internal = _admitted
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
@@ -1275,9 +1278,15 @@ class GatewayInboundMixin:
 
         _paused_notice = self._hm_estop_gate(event, source, is_internal)
         if _paused_notice is not None:
+            if isinstance(_startup_receipt, dict):
+                _startup_receipt["resolved"] = True
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
+        if isinstance(_startup_receipt, dict):
+            _startup_receipt["admitted"] = True
+            _startup_receipt["resolved"] = True
+            _startup_receipt["session_key"] = _quick_key
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply

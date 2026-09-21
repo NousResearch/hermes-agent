@@ -236,6 +236,22 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     _EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
     _EDIT_APPROVAL_POLICY_DEFAULT = "ask"
     _MODE_DEFAULT = "default"
+    # LOCAL PATCH (2026-08-10, rockstartom) — see scripts/reapply-acp-edit-approval-patch.sh
+    # ``mode`` is only ever set by ``setattr`` when a client negotiates one via
+    # session/set_mode or session/set_config_option; SessionState has no such
+    # field, so "attribute absent" reliably means "client never negotiated".
+    #
+    # buzz-acp (Buzz 0.5.8) never sends either call. It derives its own
+    # permission_mode from respond_to (owner-only -> bypassPermissions), keeps
+    # that entirely client-side, and then does NOT answer the resulting
+    # session/request_permission. So the old `ask` default made every
+    # write_file/patch round-trip a request nobody replies to -> 60s timeout ->
+    # "Edit approval denied by ACP client". Agents told to keep durable notes
+    # simply could not write files.
+    #
+    # Only the never-negotiated case changes. A client that explicitly selects
+    # "Default" (Zed, JetBrains) still gets `ask` exactly as before.
+    _EDIT_APPROVAL_POLICY_UNNEGOTIATED = "workspace_session"
     # mode id -> (edit approval policy, display name, description)
     _MODES: dict[str, tuple[str, str, str]] = {
         "default": ("ask", "Default", "Ask before edits."),
@@ -291,7 +307,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         )
 
     def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
-        mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
+        raw_mode = getattr(state, "mode", None)
+        if raw_mode is None:
+            # workspace_session: auto-approve under the session cwd and the
+            # temp dir; sensitive names (.env, id_rsa, ...) and paths outside
+            # the workspace still go through the normal prompt.
+            return self._EDIT_APPROVAL_POLICY_UNNEGOTIATED, state.cwd
+        mode = str(raw_mode or self._MODE_DEFAULT)
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
 

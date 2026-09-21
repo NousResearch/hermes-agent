@@ -2202,7 +2202,15 @@ class MatrixAdapter(BasePlatformAdapter):
         if msgtype == "m.image":
             return MessageType.PHOTO, event_mimetype or "image/png", False
         if msgtype == "m.audio":
-            is_voice = source_content.get("org.matrix.msc3245.voice") is not None
+            # MSC3245 is the native voice flag; some clients omit it and only send body
+            # "Voice message" — without this, audio is treated as a file and never STT'd,
+            # so DM voice notes get silence instead of a reply.
+            body_l = str(source_content.get("body") or "").strip().lower()
+            is_voice = (
+                source_content.get("org.matrix.msc3245.voice") is not None
+                or body_l in {"voice message", "voice msg", "audio message", "voice note"}
+                or body_l.startswith("voice message")
+            )
             return (MessageType.VOICE if is_voice else MessageType.AUDIO), event_mimetype or "audio/ogg", is_voice
         if msgtype == "m.video":
             return MessageType.VIDEO, event_mimetype or "video/mp4", False
@@ -2249,6 +2257,13 @@ class MatrixAdapter(BasePlatformAdapter):
         # Only authorized inviters — otherwise any federated user could pull the bot into rooms.
         if not self._is_authorized_user(inviter):
             logger.warning("Matrix: rejecting invite to %s from unauthorized user %s", room_id, inviter)
+            # Leave so the invite does not sit in rooms.invite and re-warn on every restart/sync.
+            if room_id and self._client is not None:
+                async def _decline() -> None:
+                    with suppress(Exception):
+                        await self._client.leave_room(RoomID(room_id))
+                        logger.info("Matrix: declined unauthorized invite to %s", room_id)
+                asyncio.create_task(_decline())
             return
         logger.info("Matrix: invited to %s — joining (is_direct=%s)", room_id, is_direct)
         # Join off the sync path; a declared DM is recorded in m.direct once the join lands.
@@ -2320,6 +2335,15 @@ class MatrixAdapter(BasePlatformAdapter):
                     room_id,
                     inviter,
                 )
+                # Decline so pending invites from bots like hermes-server2 do not
+                # reappear on every gateway restart.
+                rid = str(room_id)
+                if rid and self._client is not None:
+                    async def _decline_pending(room: str = rid) -> None:
+                        with suppress(Exception):
+                            await self._client.leave_room(RoomID(room))
+                            logger.info("Matrix: declined unauthorized pending invite to %s", room)
+                    asyncio.create_task(_decline_pending())
                 continue
             logger.info(
                 "Matrix: reconciling pending invite for %s (is_direct=%s)",

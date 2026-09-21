@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 # Providers that can ground generation on a reference image, in preference order.
 # OpenRouter/Nous run a quality-first model chain and may fall back depending on
 # account access, so fidelity can vary by configured backend.
-_REF_CAPABLE = ("nous", "openai", "openai-codex", "openrouter", "krea")
+_REF_CAPABLE = ("nous", "openai", "openai-codex", "openrouter", "krea", "omniroute")
 # Friendly display label per reference-capable provider (desktop pet-gen picker).
-_PROVIDER_LABELS = {"nous": "Nous Portal", "openrouter": "OpenRouter", "openai": "OpenAI", "openai-codex": "OpenAI (Codex)", "krea": "Krea"}
+_PROVIDER_LABELS = {"nous": "Nous Portal", "openrouter": "OpenRouter", "openai": "OpenAI", "openai-codex": "OpenAI (Codex)", "krea": "Krea", "omniroute": "Omnirequest"}
 
 
 class GenerationError(RuntimeError):

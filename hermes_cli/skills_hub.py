@@ -671,10 +671,12 @@ def _confirm_install(c: Console, bundle, category: str) -> bool:
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None) -> bool:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
-    cannot resolve to a same-named skill elsewhere."""
+    cannot resolve to a same-named skill elsewhere. Returns whether the skill is installed when
+    the call ends (freshly installed, or already present and left alone); a cancelled, blocked or
+    failed install is ``False`` so batch callers can tell a restore from a no-op."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
@@ -682,17 +684,17 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     ensure_hub_dirs()
     sources = _pinned_sources(c, _sources(), source_id, identifier)
     if sources is None:
-        return
+        return False
     identifier = _full_identifier(identifier, sources, c)
     if not identifier:
-        return
+        return False
     c.print(f"\n[bold]Fetching:[/] {identifier}")
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
         _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
-        return
+        return False
     if not _resolve_url_bundle_name(c, bundle, meta, identifier, name_override, skip_confirm):
-        return
+        return False
 
     # URL-sourced skills: pick a category interactively when none was given (TTY only;
     # non-interactive installs fall through to flat install like every other source).
@@ -708,7 +710,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
             c.print("Use --force to reinstall.\n")
-            return
+            return True
 
     extra_metadata = {**(getattr(meta, "extra", {}) or {}), **bundle.metadata}
 
@@ -716,7 +718,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         q_path = quarantine_bundle(bundle)
     except ValueError as exc:
         _invalid_path(c, bundle, exc)
-        return
+        return False
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     result = _scan_quarantined(c, q_path, bundle, meta, identifier)
@@ -724,7 +726,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if not allowed:
         _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
                          f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
-        return
+        return False
     # Advisory second opinion — warn-and-continue by design (PII-class findings are
     # informational); the install confirmation below is where the user decides.
     _print_tier1_advisory(q_path, c)
@@ -735,18 +737,19 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
     if not force and not skip_confirm and not _confirm_install(c, bundle, category):
         shutil.rmtree(q_path, ignore_errors=True)
-        return
+        return False
 
     try:
         install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     except ValueError as exc:
         _invalid_path(c, bundle, exc, q_path)
-        return
+        return False
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
     _announce_blueprint(c, bundle.name)
     _finish_change(c, invalidate_cache, "Skill will be available", "activate")
+    return True
 
 
 def _print_tier1_advisory(skill_dir, console) -> None:
@@ -1279,19 +1282,21 @@ def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> N
 
 
 def do_snapshot_import(input_path: str, force: bool = False,
-                       console: Optional[Console] = None) -> None:
-    """Re-install skills from a snapshot file."""
+                       console: Optional[Console] = None) -> bool:
+    """Re-install skills from a snapshot file. Returns whether every identified skill is
+    installed afterwards; a cancelled prompt (unattended stdin answers "no"), a blocked scan or
+    a fetch failure leaves the snapshot unrestored and must not read as success (#107640)."""
     from tools.skills_hub import TapsManager
     c = console or _console
     inp = Path(input_path)
     if not inp.exists():
         _print_error(c, f"File not found: {inp}")
-        return
+        return False
     try:
         snapshot = json.loads(inp.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         _print_error(c, f"Invalid JSON in {inp}")
-        return
+        return False
 
     taps = snapshot.get("taps", [])
     if taps:
@@ -1304,16 +1309,28 @@ def do_snapshot_import(input_path: str, force: bool = False,
     skills = snapshot.get("skills", [])
     if not skills:
         c.print("[dim]No skills in snapshot to install.[/]\n")
-        return
+        return True
     c.print(f"[bold]Importing {len(skills)} skill(s) from snapshot...[/]\n")
+    identified = 0
+    not_restored: List[str] = []
     for entry in skills:
         identifier = entry.get("identifier", "")
         if not identifier:
             c.print(f"[yellow]Skipping entry with no identifier: {entry.get('name', '?')}[/]")
             continue
+        identified += 1
         c.print(f"[bold]--- {entry.get('name', identifier)} ---[/]")
-        do_install(identifier, category=entry.get("category", ""), force=force, console=c)
-    c.print("[bold green]Snapshot import complete.[/]\n")
+        if not do_install(identifier, category=entry.get("category", ""), force=force, console=c):
+            not_restored.append(identifier)
+    if not_restored:
+        c.print(f"[bold red]Snapshot import failed:[/] {identified - len(not_restored)} of {identified} "
+                f"skill(s) restored. Not installed (cancelled, blocked or unavailable): "
+                f"{', '.join(not_restored)}\n"
+                "[dim]An unattended import answers every install prompt with no; run it from an "
+                "interactive terminal to confirm each skill.[/]\n")
+        return False
+    c.print(f"[bold green]Snapshot import complete.[/] {identified} skill(s) restored.\n")
+    return True
 
 
 # --- CLI argparse entry point ---
@@ -1323,7 +1340,9 @@ def _snapshot_cli(args) -> None:
     if snap_action == "export":
         do_snapshot_export(args.output)
     elif snap_action == "import":
-        do_snapshot_import(args.input, force=getattr(args, "force", False))
+        # A recovery script reads the exit status: a snapshot that restored nothing is a failure.
+        if not do_snapshot_import(args.input, force=getattr(args, "force", False)):
+            raise SystemExit(1)
     else:
         _console.print("Usage: hermes skills snapshot [export|import]\n")
 

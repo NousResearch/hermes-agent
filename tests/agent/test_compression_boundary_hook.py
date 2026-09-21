@@ -98,6 +98,32 @@ class TestCompressionBoundaryHook:
                 f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
             assert len(comp_calls) == 1
 
+    def test_memory_switch_is_queued_after_compression_commit(self):
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            agent = self._make_agent(db)
+            compressor = MagicMock()
+            compressor.compress.return_value = [{"role": "user", "content": "summary"}]
+            compressor.compression_count = 1
+            compressor.last_prompt_tokens = 0
+            compressor.last_completion_tokens = 0
+            compressor._last_summary_error = None
+            compressor._last_compress_aborted = False
+            agent.context_compressor = compressor
+            agent._memory_manager = MagicMock()
+            original_sid = agent.session_id
+
+            agent._compress_context(
+                [{"role": "user", "content": "m" * 400}], "sys", approx_tokens=100
+            )
+
+            agent._memory_manager.on_session_switch_async.assert_called_once_with(
+                agent.session_id, parent_session_id=original_sid, reset=False, reason="compression"
+            )
+            agent._memory_manager.on_session_switch.assert_not_called()
+
     def test_automatic_notification_follows_core_persistence(self):
         from hermes_state import SessionDB
 

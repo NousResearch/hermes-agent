@@ -30,6 +30,8 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 # blocks interpreter exit.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+_EXTERNAL_BACKGROUND_HOOK_TIMEOUT_S = 30.0
+_BACKGROUND_FAILURE_NOTICE_THRESHOLD = 2
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
@@ -287,7 +289,9 @@ class MemoryManager:
     swallows per-provider exceptions.
     """
 
-    def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
+    def __init__(self, *, external_prefetch_timeout: Optional[float] = None,
+                 external_hook_timeout: Optional[float] = None,
+                 warning_callback: Optional[Callable[[str], None]] = None) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._external_prefetch_spill_config: Optional[Dict[str, Any]] = None
@@ -299,6 +303,16 @@ class MemoryManager:
         self._external_prefetch_timeout = timeout
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
         self._external_prefetch_lock = threading.Lock()
+        hook_timeout = external_hook_timeout
+        hook_timeout = _EXTERNAL_BACKGROUND_HOOK_TIMEOUT_S if hook_timeout is None else float(hook_timeout)
+        if hook_timeout <= 0:
+            raise ValueError("external_hook_timeout must be positive")
+        self._external_hook_timeout = hook_timeout
+        self._warning_callback = warning_callback
+        self._external_hook_threads: Dict[str, threading.Thread] = {}
+        self._external_hook_lock = threading.Lock()
+        self._external_hook_failures: Dict[str, int] = {}
+        self._external_hook_failure_notified: set[str] = set()
         # Single-worker background executor for end-of-turn sync/prefetch, created lazily so
         # the builtin-only path spawns no threads; one worker serializes a provider's writes.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
@@ -322,6 +336,72 @@ class MemoryManager:
             except Exception as e:
                 logger.log(level, "Memory provider '%s' %s: %s", provider.name, label, e, exc_info=exc_info)
         return results
+
+    def _record_external_hook_failure(self, provider: MemoryProvider, hook: str, detail: str) -> None:
+        """Log every background-hook failure and surface persistent degradation once per failure streak."""
+        name = provider.name
+        count = self._external_hook_failures.get(name, 0) + 1
+        self._external_hook_failures[name] = count
+        if count < _BACKGROUND_FAILURE_NOTICE_THRESHOLD or name in self._external_hook_failure_notified:
+            return
+        self._external_hook_failure_notified.add(name)
+        callback = self._warning_callback
+        if not callable(callback):
+            return
+        message = (
+            f"⚠ Memory provider '{name}' failed {count} consecutive background hooks "
+            f"(latest: {hook} — {detail}). Memory writes may be stale; check the logs and provider configuration."
+        )
+        try:
+            callback(message)
+        except Exception:
+            logger.debug("Memory provider degradation warning callback failed", exc_info=True)
+
+    def _record_external_hook_success(self, provider: MemoryProvider) -> None:
+        name = provider.name
+        self._external_hook_failures.pop(name, None)
+        self._external_hook_failure_notified.discard(name)
+
+    def _call_background_hook(self, provider: MemoryProvider, hook: str, call: Callable[[], Any]) -> Any:
+        """Bound external write/switch hooks without overlapping a provider whose prior call is still stuck."""
+        if provider.name == "builtin":
+            return call()
+
+        result_box: Dict[str, Any] = {}
+
+        def _run() -> None:
+            try:
+                result_box["value"] = call()
+            except BaseException as exc:
+                result_box["error"] = exc
+
+        thread = spawn_context_thread(_run, name=f"memory-{hook}-{provider.name}")
+        with self._external_hook_lock:
+            existing = self._external_hook_threads.get(provider.name)
+            blocked = existing is not None and existing.is_alive()
+            if not blocked:
+                self._external_hook_threads[provider.name] = thread
+                thread.start()
+        if blocked:
+            detail = "the previous provider hook is still running"
+            self._record_external_hook_failure(provider, hook, detail)
+            raise TimeoutError(detail)
+
+        thread.join(self._external_hook_timeout)
+        if thread.is_alive():
+            detail = f"timed out after {self._external_hook_timeout:.1f}s"
+            self._record_external_hook_failure(provider, hook, detail)
+            raise TimeoutError(detail)
+
+        with self._external_hook_lock:
+            if self._external_hook_threads.get(provider.name) is thread:
+                self._external_hook_threads.pop(provider.name, None)
+        if "error" in result_box:
+            error = result_box["error"]
+            self._record_external_hook_failure(provider, hook, str(error))
+            raise error
+        self._record_external_hook_success(provider)
+        return result_box.get("value")
 
     def add_provider(self, provider: MemoryProvider) -> None:
         """Register a provider; builtin always accepted, only ONE external allowed."""
@@ -497,7 +577,9 @@ class MemoryManager:
             for keyword, value in optional_kwargs.items():
                 if value is not None and self._provider_sync_accepts(provider, keyword):
                     kwargs[keyword] = value
-            provider.sync_turn(clean_user_content, assistant_content, **kwargs)
+            self._call_background_hook(
+                provider, "sync_turn", lambda: provider.sync_turn(clean_user_content, assistant_content, **kwargs)
+            )
 
         self._submit_background(
             lambda: self._each_provider("sync_turn failed", _sync, level=logging.WARNING, providers=providers)
@@ -655,7 +737,23 @@ class MemoryManager:
             kwargs["rewound"] = True
         self._each_provider(
             "on_session_switch failed",
-            lambda p: p.on_session_switch(new_session_id, parent_session_id=parent_session_id, reset=reset, **kwargs),
+            lambda p: self._call_background_hook(
+                p, "on_session_switch",
+                lambda: p.on_session_switch(
+                    new_session_id, parent_session_id=parent_session_id, reset=reset, **kwargs
+                ),
+            ),
+        )
+
+    def on_session_switch_async(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False,
+                                rewound: bool = False, **kwargs) -> None:
+        """Queue provider rebinding without keeping a compaction commit fence or interrupt path waiting."""
+        if not new_session_id or not self._providers:
+            return
+        self._submit_background(
+            lambda: self.on_session_switch(
+                new_session_id, parent_session_id=parent_session_id, reset=reset, rewound=rewound, **kwargs
+            )
         )
 
     @staticmethod

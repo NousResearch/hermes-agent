@@ -562,7 +562,11 @@ hermes kanban create "audit auth flow" \
 
 **From the dashboard**, type the skills comma-separated into the **skills** field of the create-task dialog.
 
-The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
+The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes -p <assignee> skills list` to see what's available); there's no runtime install.
+
+Names are checked against that profile before the card is queued, and a bad list is rejected whole — no card is created and the error names every unusable entry with the closest installed match. A **category** (the directory a skill lives in, e.g. `writing`) is not a skill and is refused as such. Project-local skills under a repo listed in `skills.trusted_project_dirs` count as installed for cards anchored to that project.
+
+Two cases are deliberately not refused at creation time: an assignee with no Hermes profile on disk (control-plane lanes), and a check that cannot run. Those are caught by the dispatcher instead — just before spawning, a card whose forced skills still do not resolve is **blocked** with the same explanation rather than spawning a worker that would quietly run without them. That block does not count against `kanban.failure_limit`: the card is malformed, not flaky, so it waits for `hermes kanban unblock <id>` after you fix the names.
 
 ### Per-task model override
 

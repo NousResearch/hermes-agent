@@ -16,7 +16,8 @@ from typing import Any, Callable, Optional
 
 from agent.i18n import t
 
-from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
+from gateway.kanban_watchers_common import (
+    CRASH_RETRY_NOTE, _list_boards, _to_thread_process_service, gave_up_cause, logger)
 
 
 def _kbc():
@@ -390,8 +391,9 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
 def _fmt_gave_up(ev, n) -> tuple:
     # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
     # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
-    failures = _payload(ev, "failures")
-    count = f"it failed {int(failures)} times in a row" if failures else "it kept failing"
+    # ``trigger_outcome`` says which — sending a crash-tripped trip to the spawn logs
+    # costs the operator the first half of the investigation.
+    count = gave_up_cause(getattr(ev, "payload", None))
     last = _clip(ev, "error", " (last: {})", 160)
     return (
         f"⛔ {n.head} is now blocked: {count}{last}. Fix the cause, then `hermes kanban unblock "
@@ -404,7 +406,9 @@ def _fmt_timed_out(ev, n) -> tuple:
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
     span = f"its {minutes}-minute limit" if minutes else "its time limit"
-    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+    # Same conditional as ``crashed``: ``enforce_max_runtime`` emits this event, then
+    # charges the failure, and the charge may be the one that trips the breaker.
+    return f"⏱ {n.head} ran past {span} and was stopped; {CRASH_RETRY_NOTE}.", None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but
@@ -415,7 +419,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
     "gave_up": _fmt_gave_up,
     "crashed": lambda ev, n: (
-        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
+        f"✖ {n.head} — its worker stopped unexpectedly; {CRASH_RETRY_NOTE}.", None, None,
     ),
     "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),

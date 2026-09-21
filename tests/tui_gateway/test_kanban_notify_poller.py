@@ -262,7 +262,9 @@ class TestFormatKanbanEventText:
     def test_timed_out_with_bad_payload_does_not_raise(self):
         ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": "not-a-number"})
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
-        assert "timed out" in text
+        # Unparseable limit falls back to the unnumbered phrasing and never leaks the raw value.
+        assert "time limit" in text
+        assert "not-a-number" not in text
 
 
 class TestNotificationPollerLoopKanbanWiring:

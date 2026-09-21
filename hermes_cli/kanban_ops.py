@@ -105,6 +105,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "blocked_malformed": [
+                {"task_id": tid, "assignee": who} for (tid, who) in res.blocked_malformed
+            ],
         }, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -136,6 +139,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    for tid, who in res.blocked_malformed:
+        print(f"Blocked (card unrunnable for {who} — see `hermes kanban show {tid}`): {tid}")
     return 0
 
 

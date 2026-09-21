@@ -1743,6 +1743,11 @@ export { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 export { RowButton } from '@/components/ui/row-button'
 export { ScrollArea } from '@/components/ui/scroll-area'
 export { SearchField } from '@/components/ui/search-field'
+export {
+  SearchableSelect,
+  type SearchableSelectGroup,
+  type SearchableSelectOption
+} from '@/components/ui/searchable-select'
 export { SegmentedControl } from '@/components/ui/segmented-control'
 export { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 export { Separator } from '@/components/ui/separator'
@@ -1929,6 +1934,9 @@ export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnai
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'
+/** Model-search alias haystack (`k3` → `k3 kimi-k3 kimi`) used by every model
+ *  picker's filter — a plugin surfacing model lists searches identically. */
+export { modelSearchText } from '@hermes/shared'
 /** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
  *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
 export {

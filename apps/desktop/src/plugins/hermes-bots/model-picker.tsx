@@ -10,11 +10,8 @@ import {
   Button,
   GlyphSpinner,
   Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  modelSearchText,
+  SearchableSelect,
   useI18n,
   useQuery
 } from '@hermes/plugin-sdk'
@@ -218,12 +215,27 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
     ? (activeProvider.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
     : []
 
+  // Provider rows display the name but bind the slug; every row also carries
+  // both strings as search keywords so typing either finds it. Model rows add
+  // the shared alias haystack (`modelSearchText` — typing "kimi" finds `k3`),
+  // matching the composer model picker's search semantics.
+  const providerOptions = [
+    { label: b.editor.inheritLaunch, value: NONE },
+    ...providers.map(p => ({
+      keywords: [p.name, p.slug].filter((k): k is string => Boolean(k)),
+      label: p.name ? `${p.name} (${p.slug})` : p.slug,
+      value: p.slug
+    })),
+    { label: b.editor.enterManually, value: CUSTOM }
+  ]
+
   return (
     <div className="grid grid-cols-[1fr_1.4fr] gap-2.5">
       {labeled(
         t.settings.model.provider,
-        <Select
-          onValueChange={v => {
+        <SearchableSelect
+          className="h-8 rounded-md"
+          onChange={v => {
             if (v === NONE) {
               onChange({
                 provider: '',
@@ -241,44 +253,31 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
               })
             }
           }}
+          options={providerOptions}
+          placeholder="Search providers…"
           value={value.provider || NONE}
-        >
-          <SelectTrigger className="h-8 rounded-md">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>{b.editor.inheritLaunch}</SelectItem>
-            {providers.map(p => (
-              <SelectItem key={p.slug} value={p.slug}>
-                {p.name ? `${p.name} (${p.slug})` : p.slug}
-              </SelectItem>
-            ))}
-            <SelectItem value={CUSTOM}>{b.editor.enterManually}</SelectItem>
-          </SelectContent>
-        </Select>
+        />
       )}
       {labeled(
         t.settings.model.model,
         activeProvider && models.length > 0 ? (
-          <Select
-            onValueChange={v =>
+          <SearchableSelect
+            className="h-8 rounded-md"
+            onChange={v =>
               onChange({
                 model: v
               })
             }
+            options={models.map(m => ({
+              keywords: [modelSearchText(m), activeProvider.name ?? '', activeProvider.slug].filter(
+                (k): k is string => Boolean(k)
+              ),
+              label: m,
+              value: m
+            }))}
+            placeholder="Search models…"
             value={value.model || (models[0] ?? '')}
-          >
-            <SelectTrigger className="h-8 rounded-md">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {models.map(m => (
-                <SelectItem key={m} value={m}>
-                  {m}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          />
         ) : (
           <Input
             onChange={event =>

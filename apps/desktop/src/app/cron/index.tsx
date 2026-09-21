@@ -1,4 +1,4 @@
-import { createCronTriggerController, type CronTriggerController } from '@hermes/shared'
+import { createCronTriggerController, type CronTriggerController, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
@@ -19,12 +19,11 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldHint } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { SearchableSelect, type SearchableSelectGroup } from '@/components/ui/searchable-select'
 import {
   Select,
   SelectContent,
-  SelectGroup,
   SelectItem,
-  SelectLabel,
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
@@ -1149,13 +1148,36 @@ function CronEditorDialog({
   )
 
   // A previously pinned model that has since left the catalog (provider
-  // removed / model retired) would render Radix's blank trigger. Keep the
-  // stored pin visible and re-selectable rather than silently dropping it.
+  // removed / model retired) would render a blank trigger. Keep the stored pin
+  // visible and re-selectable rather than silently dropping it.
   const modelChoiceKnown =
     modelChoice === MODEL_DEFAULT_VALUE ||
     modelProviders.some(provider =>
       (provider.models ?? []).some(model => cronModelChoiceValue(provider.slug, model) === modelChoice)
     )
+
+  // Searchable picker groups: the ungrouped default pin first, then one group
+  // per provider. Model rows carry provider name/slug and the shared alias
+  // haystack (`modelSearchText`, e.g. "kimi" finds `k3`) as keywords, matching
+  // how the composer model picker searches.
+  const modelSelectGroups: SearchableSelectGroup[] = [
+    {
+      options: [
+        { label: c.modelDefault, value: MODEL_DEFAULT_VALUE },
+        ...(modelChoiceKnown
+          ? []
+          : [{ label: parseCronModelChoiceValue(modelChoice)?.model ?? modelChoice, value: modelChoice }])
+      ]
+    },
+    ...modelProviders.map(provider => ({
+      label: provider.name || provider.slug,
+      options: (provider.models ?? []).map(model => ({
+        keywords: [provider.name, provider.slug, modelSearchText(model)].filter((k): k is string => Boolean(k)),
+        label: model,
+        value: cronModelChoiceValue(provider.slug, model)
+      }))
+    }))
+  ]
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -1351,33 +1373,15 @@ function CronEditorDialog({
 
             {!scriptOnlyJob && (
               <Field htmlFor="cron-model" label={c.modelLabel} optional optionalLabel={c.optional}>
-                <Select onValueChange={setModelChoice} value={modelChoice}>
-                  <SelectTrigger className="h-9 rounded-md" id="cron-model">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
-                    {!modelChoiceKnown && (
-                      <SelectItem className="font-mono" value={modelChoice}>
-                        {parseCronModelChoiceValue(modelChoice)?.model ?? modelChoice}
-                      </SelectItem>
-                    )}
-                    {modelProviders.map(provider => (
-                      <SelectGroup key={provider.slug}>
-                        <SelectLabel>{provider.name}</SelectLabel>
-                        {(provider.models ?? []).map(model => {
-                          const value = cronModelChoiceValue(provider.slug, model)
-
-                          return (
-                            <SelectItem className="font-mono" key={value} value={value}>
-                              {model}
-                            </SelectItem>
-                          )
-                        })}
-                      </SelectGroup>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <SearchableSelect
+                  ariaLabel={c.modelLabel}
+                  className="w-full"
+                  emptyMessage={t.settings.config.noResults}
+                  groups={modelSelectGroups}
+                  onChange={setModelChoice}
+                  placeholder={t.settings.config.searchPlaceholder}
+                  value={modelChoice}
+                />
               </Field>
             )}
 

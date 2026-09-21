@@ -11,6 +11,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import tempfile
 import threading
 import time
 import types
@@ -29,6 +30,7 @@ from tools.delegate_tool import (
     _build_child_system_prompt,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
+    _resolve_child_context_length,
     _resolve_delegation_credentials,
 )
 from hermes_state import SessionDB
@@ -146,6 +148,94 @@ class TestChildSystemPrompt(unittest.TestCase):
         prompt = _build_child_system_prompt("Reply with the single word PONG and stop.")
         self.assertNotIn("Reply with the single word PONG and stop.", prompt)
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_context_length_scales_context_file_cap(self):
+        """Regression for #108891: a child on a large-context model must not be
+        capped at the 20,000-char floor. Passing a real context_length window
+        lets the context file breathe past the floor that ``None`` falls back to.
+        """
+        import inspect
+
+        sig = inspect.signature(_build_child_system_prompt)
+        self.assertIn("context_length", sig.parameters)
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, ".git"))
+            with open(os.path.join(d, "AGENTS.md"), "w") as f:
+                f.write("RULE: do X. " * 4000)  # ~52K chars, well past the 20K floor
+            floor_prompt = _build_child_system_prompt("g", workspace_path=d, context_length=None)
+            large_prompt = _build_child_system_prompt("g", workspace_path=d, context_length=1_000_000)
+            # The large-window child must include more of the context file than the
+            # floor-capped child; the floor version is truncated to ~20K.
+            self.assertGreater(len(large_prompt), len(floor_prompt))
+            self.assertLess(len(floor_prompt), 25_000)
+
+
+class TestResolveChildContextLength(unittest.TestCase):
+    """Regression for #108891: the child's context_length must resolve so context
+    files scale with the child's window rather than the 20,000-char floor."""
+
+    def _parent(self, model="anthropic/claude-sonnet-4", ctx=200_000):
+        parent = _make_mock_parent()
+        parent.model = model
+        if ctx is not None:
+            compressor = MagicMock()
+            compressor.context_length = ctx
+            parent.context_compressor = compressor
+        else:
+            parent.context_compressor = None
+        return parent
+
+    def test_no_override_returns_parent_window(self):
+        """Same model as parent → the parent's resolved window is the child's, no metadata lookup."""
+        parent = self._parent(ctx=200_000)
+        with patch("agent.model_metadata.get_model_context_length") as meta:
+            self.assertEqual(
+                _resolve_child_context_length(parent, None, override_provider=None, override_base_url=None), 200_000,
+            )
+            meta.assert_not_called()
+
+    def test_same_model_override_returns_parent_window(self):
+        """An explicit model equal to the parent's still uses the parent's window."""
+        parent = self._parent(model="anthropic/claude-sonnet-4", ctx=128_000)
+        self.assertEqual(
+            _resolve_child_context_length(parent, "anthropic/claude-sonnet-4", override_provider=None, override_base_url=None),
+            128_000,
+        )
+
+    def test_missing_parent_window_falls_back_to_static_metadata(self):
+        """Compressor window unset at spawn time (see #108891 discussion) → static
+        get_model_context_length resolves the window instead of the 20K floor."""
+        parent = self._parent(ctx=None)
+        with patch("agent.model_metadata.get_model_context_length", return_value=1_000_000):
+            self.assertEqual(
+                _resolve_child_context_length(parent, None, override_provider=None, override_base_url=None), 1_000_000,
+            )
+
+    def test_override_model_uses_static_metadata(self):
+        """A delegation.model override resolves its own window via metadata, not the parent's."""
+        parent = self._parent(model="anthropic/claude-sonnet-4", ctx=128_000)
+        with patch("agent.model_metadata.get_model_context_length", return_value=500_000) as meta:
+            self.assertEqual(
+                _resolve_child_context_length(parent, "google/gemini-2.5-pro", override_provider=None, override_base_url=None),
+                500_000,
+            )
+            meta.assert_called_once()
+
+    def test_metadata_failure_falls_back_to_parent_then_none(self):
+        """Best-effort: a metadata error falls back to the parent's window; with no
+        parent window either, the child keeps the floor (None)."""
+        parent = self._parent(ctx=128_000)
+        with patch("agent.model_metadata.get_model_context_length", side_effect=RuntimeError("boom")):
+            self.assertEqual(
+                _resolve_child_context_length(parent, "google/gemini-2.5-pro", override_provider=None, override_base_url=None),
+                128_000,
+            )
+        bare = self._parent(ctx=None)
+        with patch("agent.model_metadata.get_model_context_length", side_effect=RuntimeError("boom")):
+            self.assertIsNone(
+                _resolve_child_context_length(bare, None, override_provider=None, override_base_url=None),
+            )
+
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):

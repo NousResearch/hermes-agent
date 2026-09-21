@@ -586,3 +586,46 @@ def _resolve_child_runtime(
     if isinstance(child_max_tokens, int):
         kwargs["max_tokens"] = child_max_tokens
     return kwargs
+
+
+def _resolve_child_context_length(
+    parent_agent, model: Optional[str], *, override_provider: Optional[str], override_base_url: Optional[str],
+) -> Optional[int]:
+    """Resolve the child's model context window so context-file caps scale with the
+    child's window instead of the 20,000-char floor (#108891).
+
+    The child's system prompt (which carries context files) is built *before* the
+    child ``AIAgent`` exists, so ``context_compressor.context_length`` is not yet
+    available. Resolution order:
+
+    - No model override (the common case) → the child runs on the parent's model,
+      so the parent's already-resolved ``context_length`` is the child's exactly.
+    - A ``delegation.model``/``delegation.provider`` override → look the override
+      model up via ``get_model_context_length`` (static catalog / persistent cache,
+      no network probe for known models).
+
+    Fallback when the compressor value is missing: the parent path can itself land
+    on the floor when ``context_compressor.context_length`` is unset at prompt-build
+    time (see #108891 discussion) — both paths need one, and the static metadata
+    lookup knows the window without a probe. Best-effort throughout: never block a
+    spawn on metadata resolution; final fallback ``None`` keeps the 20K floor.
+    """
+    parent_cc = getattr(getattr(parent_agent, "context_compressor", None), "context_length", None)
+    parent_ctx = parent_cc if isinstance(parent_cc, int) and parent_cc > 0 else None
+    effective_model = model or getattr(parent_agent, "model", None)
+    effective_base_url = override_base_url or getattr(parent_agent, "base_url", "") or ""
+    effective_provider = override_provider or getattr(parent_agent, "provider", None) or ""
+    same_model = not model or model == getattr(parent_agent, "model", None)
+    if same_model and parent_ctx is not None:
+        return parent_ctx
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        ctx = get_model_context_length(
+            effective_model, base_url=effective_base_url, provider=effective_provider,
+        )
+        if isinstance(ctx, int) and ctx > 0:
+            return ctx
+    except Exception as exc:  # best-effort: never block a spawn on metadata resolution
+        logger.debug("delegate: could not resolve child context_length for %s: %s", effective_model, exc)
+    return parent_ctx

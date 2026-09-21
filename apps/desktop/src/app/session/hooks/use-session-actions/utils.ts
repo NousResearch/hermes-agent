@@ -703,6 +703,13 @@ export function preserveLocalPendingTurnMessages(
     //     final version of the still-streaming local copy
     //  3. local extends authoritative text -> local is further along; replace
     //     the committed row with the richer body instead of appending
+    //  4. authoritative CONTAINS local text -> a multi-narration turn (tool
+    //     calls between narration segments) hydrates as ONE merged row:
+    //     toChatMessages folds the segments into the active assistant bubble,
+    //     so a local mid-turn bubble's text is a substring of that merged row,
+    //     not its prefix. Without this arm every segment past the first misses
+    //     the match, falls through to preserved.push, and pins below newer
+    //     turns — the background-task "answer stuck at the bottom" report.
     if (isPendingAssistant) {
       const nextText = textWithoutReferenceLines(chatMessageText(message))
 
@@ -711,7 +718,9 @@ export function preserveLocalPendingTurnMessages(
           candidate.role === 'assistant' &&
           !isLiveTailRow(candidate) &&
           (textWithoutReferenceLines(chatMessageText(candidate)) === nextText ||
-            isStrictAnswerTextExtension(textWithoutReferenceLines(chatMessageText(candidate)), nextText))
+            isStrictAnswerTextExtension(textWithoutReferenceLines(chatMessageText(candidate)), nextText) ||
+            (nextText.length > 0 &&
+              textWithoutReferenceLines(chatMessageText(candidate)).includes(nextText)))
       )
 
       if (committedMatch) {

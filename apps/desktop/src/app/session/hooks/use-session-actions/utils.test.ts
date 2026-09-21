@@ -899,6 +899,59 @@ describe('preserveLocalPendingTurnMessages', () => {
     ])
   })
 
+  // A multi-narration turn (tool calls between narration segments — the
+  // background-process shape) streams locally as SEVERAL pending bubbles, but
+  // hydrates as ONE merged row: toChatMessages folds tool-separated narration
+  // segments into the active assistant bubble. Ordinal pairing then misses for
+  // every segment past the first (the merged row occupies one ordinal), and
+  // the old committedMatch arms (identical / strict-extension) cannot rescue
+  // them: a mid-turn segment's text is a SUBSTRING of the merged row, never
+  // its prefix. Each missed segment fell through to preserved.push — appended
+  // BELOW newer turns, so the turn that started the background task looked
+  // pinned to the bottom of the transcript while later Q&A stacked above it.
+  it('drops mid-turn narration bubbles whose text the merged authoritative row already contains', () => {
+    const previous = [
+      msg('1-user', 'user', 'run the build'),
+      msg('assistant-stream-1', 'assistant', 'starting the build', { pending: true, interim: true }),
+      msg('assistant-stream-2', 'assistant', 'build finished for mac arm64', { pending: true, interim: true }),
+      msg('assistant-stream-3', 'assistant', 'the x64 build failed mid-way', { pending: true, interim: true }),
+      msg('assistant-stream-4', 'assistant', 'classic trap, the dmg mount was stale', { pending: true, interim: true }),
+      msg('assistant-stream-5', 'assistant', 'rerunning after the dmg mount cleanup', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'run the build'),
+      msg(
+        '2-assistant-merged',
+        'assistant',
+        'starting the buildbuild finished for mac arm64the x64 build failed mid-wayclassic trap, the dmg mount was stalererunning after the dmg mount cleanup'
+      ),
+      msg('3-system-stored', 'system', 'Background Process Finished: bash build-tauri.sh'),
+      msg('4-assistant-stored', 'assistant', 'build verified and published'),
+      msg('5-user-stored', 'user', 'installed it, same problem'),
+      msg('6-assistant-stored', 'assistant', 'then it is not the line-count issue')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  // The containment arm must not over-correct: a pending bubble whose text is
+  // NOT carried by any settled authoritative row is still the only copy of a
+  // live reply and must survive the reconcile.
+  it('still keeps a pending bubble whose text no authoritative row contains', () => {
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('assistant-stream-1', 'assistant', 'a genuinely uncommitted partial reply', { pending: true })
+    ]
+
+    const next = [msg('1-user-stored', 'user', 'first')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      'assistant-stream-1'
+    ])
+  })
+
   // #70720: the gateway persists an attached image as a leading `@image:<path>`
   // directive line, while the local optimistic composer keeps it as separate
   // `attachmentRefs`. A naive text compare (chatMessageText a === b) therefore

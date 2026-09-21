@@ -1336,6 +1336,9 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
         r'max_tokens\s*:\s*\d+\s*>\s*(\d+)\s*,?\s*which is the maximum allowed number of output tokens',
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
+        # SenseNova: "field MaxTokens invalid, should be in [1, 65536]" — CamelCase field name (no
+        # underscore) with "invalid," between it and the range, so the DashScope pattern misses it.
+        r'max_?tokens?[^\[\]]{0,40}?should be in\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
         r'available\s+tokens[:\s]+(\d+)',
         # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
@@ -1407,8 +1410,9 @@ _INPUT_OVERFLOW_SIGNALS = (
 )
 # Narrower than _OUTPUT_CAP_SIGNALS: only phrasings we can extract a number from.
 # "requested N output tokens" means the OUTPUT cap is the problem (the input fits) —
-# reduce max_tokens, don't compress. DashScope's bounded range upper bound IS the
-# real max-output cap ("Range of max_tokens should be [1, 65536]").
+# reduce max_tokens, don't compress. DashScope's and SenseNova's bounded range upper
+# bound IS the real max-output cap ("Range of max_tokens should be [1, 65536]",
+# "field MaxTokens invalid, should be in [1, 65536]").
 _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("max_tokens", "available_tokens"), ("max_tokens", "available tokens"),
     ("in the output", "maximum context length"),
@@ -1417,7 +1421,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
     ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
-    ("limited to",),
+    ("limited to",), ("max_tokens", "should be in"), ("maxtokens", "should be in"),
 )
 
 
@@ -1445,7 +1449,8 @@ def is_output_cap_error(error_msg: str) -> bool:
     # SGLang states both figures: input >= window is that same genuine overflow.
     _m_sglang = _sglang_window_and_input(error_lower)
     return (
-        any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens", "tokens for the completion"))
+        # "maxtokens" (no underscore) is SenseNova's spelling: "field MaxTokens invalid, should be in [1, 65536]".
+        any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens", "tokens for the completion", "maxtokens"))
         and _any_phrase_group(error_lower, _OUTPUT_CAP_SIGNALS)
         and not any(p in error_lower for p in _INPUT_OVERFLOW_SIGNALS)
         and not (_m_sglang and _m_sglang[1] >= _m_sglang[0])

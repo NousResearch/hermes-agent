@@ -211,7 +211,7 @@ class TestParseVllmTokenBasedOutputCap:
 
 
 class TestParseAdvertisedCeilingWordings:
-    """Azure and SGLang name the ceiling without any phrase the parser knew (#78405, #83521).
+    """Azure, SGLang and SenseNova name the ceiling without any phrase the parser knew (#78405, #83521).
     Unrecognized, the 400 carried the bare ``max_tokens`` substring (or nothing at all) into
     the compression path and a fresh session died with "cannot be shrunk further"."""
 
@@ -223,6 +223,9 @@ class TestParseAdvertisedCeilingWordings:
          "a total of 132528 tokens: 66992 tokens from the input messages and 65536 tokens for the completion. "
          "Please reduce the number of tokens in the input messages or the completion to fit within the limit.",
          64080),
+        # SenseNova (verbatim from a custom-provider deployment): same bounded range as DashScope, but the
+        # field is spelled CamelCase and "invalid," sits between it and the range, so that pattern missed it.
+        ("field MaxTokens invalid, should be in [1, 65536]", 65536),
     ])
     def test_ceiling_is_parsed_and_classified_as_output_cap(self, msg, available):
         assert parse_available_output_tokens_from_error(msg) == available

@@ -78,8 +78,28 @@ case "$command" in
         ensure_state
         require_bundle
         if [ -n "${NOVA_APPLY_ON_START:-}" ]; then
-            log "applying $NOVA_BUNDLE before serving"
-            python -m nova apply "$NOVA_BUNDLE"
+            # Reconcile the bundle into runtime profiles before serving. Without this the
+            # declared agents exist only as YAML: the dispatcher asks
+            # `profiles.profile_exists(assignee)` before spawning, and a name with no
+            # profile directory is refused silently — the board fills with `ready` tasks
+            # nothing will ever claim. That is not hypothetical; it is how the first field
+            # deployment failed.
+            #
+            # A failing apply does NOT stop the serve. `set -e` would turn a malformed
+            # bundle into a crash-looping container, and the control plane is the surface
+            # an operator uses to see WHY it is malformed — taking it away is the one
+            # response that removes the diagnosis along with the symptom. The failure is
+            # logged loudly, the exit status is kept, and the tasks screen reports the
+            # board as unattended on its own.
+            log "applying $NOVA_BUNDLE before serving (NOVA_APPLY_ON_START)"
+            if python -m nova apply "$NOVA_BUNDLE"; then
+                log "apply finished; declared agents are materialized as runtime profiles"
+            else
+                status=$?
+                log "APPLY FAILED (exit $status). Serving anyway so the Control API can say"
+                log "why — but no new agent profiles were written, so work assigned to an"
+                log "agent that has never been applied will sit in 'ready' unclaimed."
+            fi
         fi
         log "serving $NOVA_BUNDLE on $NOVA_BIND_HOST:$NOVA_BIND_PORT (state: $NOVA_HOME)"
         # Read the flag list into positional parameters without a subshell swallowing the

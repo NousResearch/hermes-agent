@@ -42,6 +42,13 @@ NOVA_INTEGRATIONS=${integrations}
 ENVEOF
 chmod 0640 /etc/nova.env
 
+# NOVA_APPLY_ON_START reconciles the tenant bundle into runtime profiles on every start.
+# Declaring an agent and materializing it are different acts: the dispatcher refuses to
+# spawn an assignee with no profile directory, and refuses it silently, so a deployment
+# that never applied accepts objectives and lets the work sit. Applying at start makes the
+# bundle on the volume the thing that decides what exists, every boot, with no operator
+# step to forget. It is idempotent — an unchanged bundle reports `unchanged` and writes
+# nothing new — and never removes an agent, so this cannot delete state.
 cat > /etc/systemd/system/nova.service <<UNITEOF
 [Unit]
 Description=NOVA runtime
@@ -55,6 +62,7 @@ EnvironmentFile=/etc/nova.env
 ExecStartPre=-/usr/bin/docker rm -f nova
 ExecStart=/usr/bin/docker run --rm --name nova \
   --env-file /etc/nova.env \
+  --env NOVA_APPLY_ON_START=1 \
   --network host \
   --volume ${state_mount}:/var/lib/nova \
   --log-driver awslogs \

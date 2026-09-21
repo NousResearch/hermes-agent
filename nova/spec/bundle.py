@@ -107,14 +107,56 @@ class TenantBundle:
     def enabled_agents(self) -> tuple[AgentSpec, ...]:
         return tuple(spec for spec in self.agents if spec.enabled)
 
+    def _portable_knowledge(self) -> dict[str, Any]:
+        """The knowledge catalogue with source roots made relative to the bundle.
+
+        A source's ``root`` is resolved against wherever the bundle happens to sit, so
+        including it verbatim made the digest a property of the filesystem rather than of
+        the configuration: the same bundle hashed one way in ``~/nova/bundles/test`` and
+        another in ``/var/lib/nova/bundle``, which is precisely the comparison the digest
+        exists to serve. Relative paths still distinguish two sources that point at
+        different directories — the part that is about the configuration — while a move
+        or a copy no longer reads as a change.
+        """
+        catalogue = self.knowledge.to_dict()
+        sources = catalogue.get("sources")
+        if not isinstance(sources, list):
+            return catalogue
+        # Both sides resolved: a bundle loaded as `nova/examples/acme` carries a relative
+        # root while its knowledge sources resolved to absolute paths, and a lexical
+        # relative_to between the two silently fails — which is the same "digest depends
+        # on how you typed the path" bug one level down.
+        base = Path(self.root).expanduser().resolve(strict=False)
+        portable = []
+        for source in sources:
+            if not isinstance(source, dict) or "root" not in source:
+                portable.append(source)
+                continue
+            entry = dict(source)
+            candidate = Path(str(entry["root"])).expanduser().resolve(strict=False)
+            try:
+                # A root outside the bundle is kept as written: it is a real, deliberate
+                # difference between two deployments, not an artifact of where the bundle
+                # was copied to.
+                entry["root"] = candidate.relative_to(base).as_posix()
+            except ValueError:
+                entry["root"] = str(candidate)
+            portable.append(entry)
+        return {**catalogue, "sources": portable}
+
     def digest(self) -> str:
-        """Content hash of the whole bundle — every agent plus identity and org."""
+        """Content hash of the whole bundle — every agent plus identity and org.
+
+        Path-independent by construction: the same declarations hash the same on a
+        laptop, in an archive and on a runtime host, so an operator can compare the
+        number printed at package time against the one the host reports.
+        """
         canonical = json.dumps(
             {
                 "organization": self.organization.to_dict(),
                 "identity": self.identity.to_dict(),
                 "policy": self.policy.to_dict() if self.policy else None,
-                "knowledge": self.knowledge.to_dict(),
+                "knowledge": self._portable_knowledge(),
                 "objectives": [spec.to_dict() for spec in self.objectives],
                 "deployment": self.deployment.to_dict(),
                 "channels": [c.to_dict() for c in self.channels],

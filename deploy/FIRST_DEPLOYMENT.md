@@ -456,14 +456,16 @@ is gated by IAM and logged by AWS.
 Get the bundle onto the state volume. Simplest for a first deployment:
 
 ```bash
-# from your laptop
-tar czf /tmp/bundle.tgz -C bundles yourfirm
+# from your laptop. `package` validates first, so an archive never carries declarations
+# that do not parse, and prints both digests: the bundle digest (the parsed configuration
+# — what you reviewed) and the archive sha256 (the bytes — what travels).
+nova bundle package bundles/yourfirm --out /tmp/bundle.tgz
 aws s3 cp /tmp/bundle.tgz "s3://your-private-bucket/bundle.tgz"
 
 # in the SSM session
 sudo aws s3 cp s3://your-private-bucket/bundle.tgz /tmp/
-sudo mkdir -p /var/lib/nova/bundle
-sudo tar xzf /tmp/bundle.tgz -C /var/lib/nova/bundle --strip-components=1
+sha256sum /tmp/bundle.tgz            # must match the archive sha256 printed above
+sudo docker exec nova python -m nova bundle unpack /tmp/bundle.tgz --into /var/lib/nova/bundle
 
 # and the principals file from step 11
 sudo vi /var/lib/nova/home/control-principals.yaml
@@ -471,9 +473,17 @@ sudo vi /var/lib/nova/home/control-principals.yaml
 # Anything you copied in over SSM arrived owned by root. The container runs as uid 10001.
 sudo chown -R 10001:10001 /var/lib/nova
 
-sudo systemctl restart nova
-sudo docker exec nova python -m nova apply /var/lib/nova/bundle
+sudo systemctl restart nova      # NOVA_APPLY_ON_START reconciles the bundle on start
+sudo docker exec nova python -m nova status /var/lib/nova/bundle
 ```
+
+> **Do not extract this archive with `tar` by hand.** The archive is rooted at the
+> bundle's contents, so `tar xzf ... -C /var/lib/nova` scatters `organization.yaml` into
+> the state root, and the older tenant-rooted recipe (`tar czf -C bundles yourfirm`, then
+> `--strip-components=1`) leaves a `/var/lib/nova/<tenant>/` directory beside the real
+> bundle if the strip is forgotten. Nothing reads that directory, so the deployment looks
+> complete and keeps serving the configuration it already had. `nova bundle unpack`
+> refuses members that would land outside the destination and has no strip to forget.
 
 Warnings that each agent "cannot run yet" are correct, not errors. Step 25 fixes them.
 

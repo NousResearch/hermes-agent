@@ -58,6 +58,27 @@ def _build_parser() -> argparse.ArgumentParser:
     validate.add_argument("bundle", type=Path)
     validate.add_argument("--json", action="store_true", help="print the resolved bundle as JSON")
 
+    bundle_cmd = sub.add_parser(
+        "bundle", help="package a tenant bundle for transport to a runtime host"
+    )
+    bundle_sub = bundle_cmd.add_subparsers(dest="bundle_command", required=True)
+
+    bundle_package = bundle_sub.add_parser(
+        "package", help="write a deterministic archive of a validated bundle"
+    )
+    bundle_package.add_argument("bundle", type=Path)
+    bundle_package.add_argument(
+        "--out", type=Path, required=True, help="archive to write (.tgz)"
+    )
+    bundle_package.add_argument("--json", action="store_true")
+
+    bundle_unpack = bundle_sub.add_parser(
+        "unpack", help="extract an archive onto a runtime host's bundle directory"
+    )
+    bundle_unpack.add_argument("archive", type=Path)
+    bundle_unpack.add_argument("--into", type=Path, required=True)
+    bundle_unpack.add_argument("--json", action="store_true")
+
     plan = sub.add_parser("plan", help="show what applying a bundle would change")
     plan.add_argument("bundle", type=Path)
 
@@ -476,6 +497,37 @@ def _token(args) -> int:
         "\nCallers send it as:  Authorization: Bearer <token>\n"
         "Revoke by deleting the entry; no other principal is affected."
     )
+    return 0
+
+
+def _bundle(args) -> int:
+    """``nova bundle`` — the transport step, made reproducible.
+
+    Packaging validates first, so an archive never carries declarations that do not parse;
+    the archive is rooted at the bundle's contents, so there is no ``--strip-components``
+    to forget and no tenant-named directory to strand beside the real one.
+    """
+    import json as _json
+
+    from nova import package as _package
+
+    if args.bundle_command == "package":
+        report = _package.package(args.bundle, args.out)
+        if args.json:
+            print(_json.dumps(report, indent=2, sort_keys=True))
+            return 0
+        print(f"{report['tenant_id']}: {report['files']} file(s) -> {report['archive']}")
+        print(f"  bundle digest:  {report['bundle_digest']}")
+        print(f"  archive sha256: {report['archive_sha256']}")
+        print("\nOn the host, extract with `nova bundle unpack <archive> --into "
+              "/var/lib/nova/bundle`, then `nova apply /var/lib/nova/bundle`.")
+        return 0
+
+    report = _package.unpack(args.archive, args.into)
+    if args.json:
+        print(_json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    print(f"extracted {report['files']} file(s) into {report['destination']}")
     return 0
 
 
@@ -1015,6 +1067,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         if args.command == "objective":
             return _objective(args)
+
+        if args.command == "bundle":
+            return _bundle(args)
 
         if args.command == "doctor":
             return _doctor(args)

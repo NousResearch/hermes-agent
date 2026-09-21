@@ -9,7 +9,6 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 
 from __future__ import annotations
 
-import copy
 import logging
 import locale
 import math
@@ -25,7 +24,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _sanitize_tools_non_ascii, _strip_images_from_messages, _strip_non_ascii,
+    _strip_images_from_messages, _strip_non_ascii,
     close_interrupted_tool_sequence,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
@@ -184,7 +183,6 @@ def _recover_unicode_encode_error(
     # succeed — return False so the error surfaces through the normal path
     # instead of burning both sanitization passes on unchanged requests.
     if not _runtime_uses_ascii_encoding():
-        agent._force_ascii_payload = False
         _headers_sanitized, _credential_sanitized = _repair_transport_credentials(agent)
         if not (_headers_sanitized or _credential_sanitized):
             return False, active_system_prompt
@@ -196,20 +194,11 @@ def _recover_unicode_encode_error(
         return True, active_system_prompt
 
     agent._force_ascii_payload = True
-    # Strip all non-ASCII from request-local messages, tools, and kwargs. The
-    # canonical agent state is shared across turns and must remain byte-stable.
+    # Strip all non-ASCII from the request-local api_messages (reused across retries). The
+    # failed attempt's api_kwargs is NOT touched: build_api_request rebuilds it from
+    # ``agent.tools`` on the next iteration and ``sanitize_outbound_kwargs`` strips the whole
+    # payload under ``_force_ascii_payload``. Canonical agent state stays byte-stable.
     _messages_sanitized = isinstance(api_messages, list) and _sanitize_messages_non_ascii(api_messages)
-    _tools_sanitized = False
-    if isinstance(api_kwargs, dict):
-        # The retry rebuilds kwargs from ``agent.tools`` and ``sanitize_outbound_kwargs`` detaches
-        # that alias before stripping; here only strip a request-local tools list, never the
-        # canonical schemas.
-        _tools = api_kwargs.pop("tools", None)
-        _tools_sanitized = _sanitize_structure_non_ascii(api_kwargs)
-        if _tools is not None:
-            if _tools is not getattr(agent, "tools", None):
-                _tools_sanitized = _sanitize_tools_non_ascii(_tools) or _tools_sanitized
-            api_kwargs["tools"] = _tools
 
     _system_sanitized = False
     if isinstance(active_system_prompt, str):
@@ -226,7 +215,7 @@ def _recover_unicode_encode_error(
     _vlines(
         agent,
         "⚠️  System encoding is ASCII — stripped non-ASCII characters from request payload. Retrying..."
-        if (_messages_sanitized or _tools_sanitized or _system_sanitized
+        if (_messages_sanitized or _system_sanitized
             or _headers_sanitized or _credential_sanitized) else
         "⚠️  System encoding is ASCII — enabling full-payload sanitization for retry...",
     )

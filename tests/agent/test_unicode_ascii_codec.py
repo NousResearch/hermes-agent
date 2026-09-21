@@ -358,10 +358,9 @@ class TestSanitizeMessagesPersistMarker:
         assert canonical[0][_DB_PERSISTED_MARKER] is True
         assert api_messages[0] is not canonical[0]
         api_messages[0]["content"].encode("ascii")
-        api_kwargs["extra_body"]["note"].encode("ascii")
-        # Recovery leaves the aliased canonical tools alone; the outbound chokepoint detaches
-        # the alias on the retry before stripping, so agent.tools stays byte-stable.
-        assert api_kwargs["tools"] is agent.tools
+        # Recovery no longer touches the failed attempt's api_kwargs (the retry rebuilds
+        # them); the outbound chokepoint detaches the aliased canonical tools before
+        # stripping, so agent.tools stays byte-stable.
         assert agent._force_ascii_payload is True
         retry_kwargs = {"tools": agent.tools, "extra_body": {"note": "retry ☕"}}
         sanitize_outbound_kwargs(agent, retry_kwargs)

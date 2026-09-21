@@ -304,13 +304,22 @@ describe('requestForBot rides the bot’s own source', () => {
   it('coerces a JSON-RPC rejection into an Error with a string name (#94471)', async () => {
     // React 19 formats query errors with `(error.name || '').trim()`; a
     // numeric JSON-RPC `name` crashed the Routines pane and hid the cause.
-    hostMock.request.mockRejectedValue({ code: -32000, message: 'profile busy', name: -32000 })
+    const rejection = Object.freeze({
+      code: -32000,
+      data: { reason: 'profile_busy' },
+      message: 'profile busy',
+      name: -32000
+    })
+
+    hostMock.request.mockRejectedValue(rejection)
 
     const error = await requestForBot({ name: 'ops' }, 'cron.list', {}).catch((thrown: unknown) => thrown)
 
     expect(error).toBeInstanceOf(Error)
     expect(typeof (error as Error).name).toBe('string')
     expect((error as Error).message).toBe('profile busy')
+    expect(error).toMatchObject({ code: rejection.code, data: rejection.data, cause: rejection })
+    expect(rejection.name).toBe(-32000)
   })
 })
 

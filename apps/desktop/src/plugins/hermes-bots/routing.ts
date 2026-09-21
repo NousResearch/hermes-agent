@@ -250,6 +250,8 @@ export async function requestForBot<T = unknown>(
 /** A rejection duck-typed across realms: an Error-like whose fields are only
  *  conventionally typed, so every read stays `unknown` until it is checked. */
 export interface RpcErrorLike {
+  code?: unknown
+  data?: unknown
   message?: unknown
   name?: unknown
   stack?: unknown
@@ -281,8 +283,20 @@ function asRpcError(value: unknown, fallback: string): unknown {
 
   if (isObject) {
     const text = hasStringMessage && String(message).trim() ? String(message) : fallback
-    const error = new Error(text)
+    const error: Error & Pick<RpcErrorLike, 'code' | 'data'> = new Error(text)
     error.cause = value
+
+    // Session recovery and failure labels inspect RPC metadata directly.
+    // Normalizing React's error name must not erase those discriminators.
+    const rpc = value as RpcErrorLike
+
+    if (typeof rpc.code === 'number') {
+      error.code = rpc.code
+    }
+
+    if (rpc.data !== undefined) {
+      error.data = rpc.data
+    }
 
     return error
   }

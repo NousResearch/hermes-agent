@@ -63,6 +63,35 @@ beforeEach(() => {
 })
 
 describe('session resolution', () => {
+  it.each([LOCAL_MEMBER, ROUTED_MEMBER])(
+    'creates and reuses a session after a plain RPC 4007 for $name ($connectionId)',
+    async member => {
+      const room = await loadRoom()
+      room.chat.updateGroupChat('Room', current => current)
+
+      // Hosts may reject with a serialized RPC object rather than an Error.
+      // Exercise the actual bot router and session resolver across that boundary.
+      const door = member.connectionId ? 'requestProfile' : 'request'
+      const request = host[door] as (...args: unknown[]) => Promise<unknown>
+
+      host[door] = async (...args: unknown[]) => {
+        try {
+          return await request(...args)
+        } catch (error) {
+          const rpc = error as Error & { code?: number }
+          throw Object.freeze({ code: rpc.code, message: rpc.message })
+        }
+      }
+
+      const first = await room.turns.ensureGroupChatSession('Room', member, 't1')
+      const resumed = await room.turns.ensureGroupChatSession('Room', member, 't1')
+
+      expect(first.stored).toBeTruthy()
+      expect(resumed.stored).toBe(first.stored)
+      expect(room.gateway.sessions.size).toBe(1)
+    }
+  )
+
   it('pins session titles to the roomId, with a legacy fallback to the display name', async () => {
     const room = await loadRoom()
 

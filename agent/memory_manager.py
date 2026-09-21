@@ -263,6 +263,11 @@ class StreamingContextScrubber:
             self._at_block_boundary = self._ends_at_block_boundary(text)
 
 
+# A markdown bullet: a marker, whitespace, then content. The whitespace matters — it is what keeps
+# ``**Preferences**`` (a bold heading) and ``*emphasis*`` out of the rule.
+_RECALL_BULLET_RE = re.compile(r"[-*+]\s+\S")
+
+
 def _drop_repeated_recall_lines(text: str) -> str:
     """Drop a recalled bullet that an EARLIER line of this same block already states.
 
@@ -272,19 +277,28 @@ def _drop_repeated_recall_lines(text: str) -> str:
     into the user row's ``api_content`` sidecar and replayed verbatim on every later request for as
     long as that row is in context, so each duplicate is paid once per turn, forever.
 
-    Only list items are considered, and only when identical after stripping: headings, prose,
-    blank lines and separators are left exactly as the provider wrote them, so section structure —
-    and any line a provider deliberately repeats as prose — survives untouched.
+    Only a SELF-CONTAINED bullet is considered — a marker, whitespace, content, and no continuation
+    line indented beneath it. A bullet that carries continuation lines is never dropped and never
+    suppresses a later one, because two entries can share a headline and differ underneath it
+    (``- prefers draft PRs`` / ``  (logged 12 Jan, builtin)`` vs the same headline logged elsewhere):
+    dropping one would re-parent its provenance under the other and invent a record neither provider
+    reported. Headings — including ``**bold**`` ones — prose, blank lines, separators and numbered
+    items are left exactly as written.
     """
+    lines = text.split("\n")
     seen: set[str] = set()
     kept: list[str] = []
-    for line in text.split("\n"):
+    for index, line in enumerate(lines):
         stripped = line.strip()
-        # A bullet with actual content; a bare "-" or a "---" rule is structure, never a duplicate.
-        if stripped[:1] in ("-", "*") and any(ch.isalnum() for ch in stripped):
-            if stripped in seen:
-                continue
-            seen.add(stripped)
+        if _RECALL_BULLET_RE.match(stripped):
+            following = lines[index + 1] if index + 1 < len(lines) else ""
+            indent = len(line) - len(line.lstrip())
+            carries_continuation = bool(following.strip()) and (
+                len(following) - len(following.lstrip())) > indent
+            if not carries_continuation:
+                if stripped in seen:
+                    continue
+                seen.add(stripped)
         kept.append(line)
     return "\n".join(kept)
 

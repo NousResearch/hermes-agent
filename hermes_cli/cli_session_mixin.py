@@ -334,6 +334,11 @@ class CLISessionMixin:
         sessions = self._list_recent_sessions(limit=limit)
         if not sessions:
             return False
+        # A bare `/resume` displays numbered rows and arms the next bare number.
+        # Keep this exact snapshot: fetching again at selection time can reorder or
+        # shorten the list, making a visible number resume the wrong session.
+        if reason == "resume":
+            self._pending_resume_sessions = list(sessions)
 
         from hermes_cli.timefmt import relative_time as _relative_time
 
@@ -590,10 +595,24 @@ class CLISessionMixin:
                 print("(^_^)v New session started!")
 
     def _consume_pending_resume_selection(self, text: str) -> bool:
-        """Never consume ordinary chat input as a session selection.
-
-        """
-        return False
+        """Consume one bare numeric choice from the exact list shown by `/resume`."""
+        sessions = getattr(self, "_pending_resume_sessions", None) or []
+        # The prompt is deliberately one-shot: any submitted value (including
+        # ordinary chat) disarms it, so stale list positions cannot be reused.
+        self._pending_resume_sessions = None
+        choice = text.strip()
+        if not (choice.isascii() and choice.isdecimal()):
+            return False
+        index = int(choice)
+        if not 1 <= index <= len(sessions):
+            from cli import _cprint
+            _cprint(f"  Resume index {index} is out of range.")
+            return True
+        session_id = sessions[index - 1].get("id")
+        if not session_id:
+            return False
+        self._handle_resume_command(f"/resume {session_id}")
+        return True
 
     def save_conversation(self, cmd: str = "/save"):
         """Handle ``/save [json|md|html] [filename] [redact]``.

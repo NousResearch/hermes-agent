@@ -164,9 +164,28 @@ class TestPendingResumeNumberedSelection:
         cli_obj._show_recent_sessions.assert_called_once_with(reason="resume")
 
 
-    def test_bare_number_is_not_consumed_as_resume_selection(self):
+    def test_bare_number_resumes_the_id_captured_when_list_was_displayed(self):
         cli_obj = _make_cli()
-        assert cli_obj._consume_pending_resume_selection("2") is False
+        # The refreshed recent list is shorter and has a different #2. Selection
+        # must use the immutable snapshot shown to the user, not re-query it.
+        cli_obj._pending_resume_sessions = [
+            {"id": "shown-first"},
+            {"id": "shown-second"},
+        ]
+        cli_obj._list_recent_sessions = MagicMock(return_value=[{"id": "refreshed-only"}])
+
+        with patch.object(cli_obj, "_handle_resume_command") as resume:
+            assert cli_obj._consume_pending_resume_selection("2") is True
+
+        resume.assert_called_once_with("/resume shown-second")
+        assert cli_obj._pending_resume_sessions is None
+
+    def test_pending_resume_selection_disarms_on_non_numeric_input(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_resume_sessions = [{"id": "shown"}]
+
+        assert cli_obj._consume_pending_resume_selection("continue normally") is False
+        assert cli_obj._pending_resume_sessions is None
 
 
 

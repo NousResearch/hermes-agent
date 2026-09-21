@@ -221,6 +221,17 @@ export interface SessionDeleteResponse {
   deleted: string
 }
 
+/** Persisted-session management responses used by the session switcher. */
+export interface SessionRenameResponse {
+  session_id: string
+  title: string
+}
+
+export interface SessionExportResponse {
+  file: string
+  session_id: string
+}
+
 export interface SessionMostRecentResponse {
   session_id?: null | string
   source?: string

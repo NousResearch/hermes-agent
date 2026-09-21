@@ -2923,10 +2923,13 @@ export interface SessionListParams {
   profile?: string | null
   title?: string | null
   limit?: number | null
+  offset?: number | null
+  query?: string | null
   include_hidden?: boolean
 }
 export interface SessionListResult {
   sessions: SessionListRow[]
+  has_more?: boolean
 }
 /** ``methods_session._session_row_summary``; ``resolved_id`` only on a title lookup that followed a compression lineage to its tip. */
 export interface SessionListRow {
@@ -2937,6 +2940,8 @@ export interface SessionListRow {
   started_at?: number
   message_count?: number
   source?: string
+  model?: string
+  last_active?: number
 }
 export interface SessionMostRecentParams {
   profile?: string | null
@@ -2975,6 +2980,23 @@ export interface SessionDeleteParams {
 }
 export interface SessionDeleteResult {
   deleted: string
+}
+export interface SessionRenameParams {
+  session_id: string
+  profile?: string | null
+  title: string
+}
+export interface SessionRenameResult {
+  session_id: string
+  title: string
+}
+export interface SessionExportParams {
+  session_id: string
+  profile?: string | null
+}
+export interface SessionExportResult {
+  session_id: string
+  file: string
 }
 export interface SessionTitleParams {
   session_id: string
@@ -4990,6 +5012,8 @@ export interface RpcMethods {
   'session.events.since': { params: SessionEventsSinceParams; result: SessionEventsSinceResult }
   /** Replay-buffer occupancy telemetry (ops/debug). */
   'session.events.stats': { params: SessionEventsStatsParams; result: SessionEventsStatsResult }
+  /** Export a stored session as JSON under the selected profile's saved-session directory. */
+  'session.export': { params: SessionExportParams; result: SessionExportResult }
   /** Import a foreign session into this profile's history (idempotent per origin). */
   'session.foreign.import': { params: SessionForeignIdParams; result: SessionForeignImportResult }
   /** One page of Claude Code / Codex sessions found on the serving backend. */
@@ -5006,6 +5030,8 @@ export interface RpcMethods {
   'session.most_recent': { params: SessionMostRecentParams; result: SessionMostRecentResult }
   /** Redirect the active turn (queued for the next turn while the agent is still building). */
   'session.redirect': { params: SessionCorrectionParams; result: SessionCorrectionResult }
+  /** Rename a stored session. */
+  'session.rename': { params: SessionRenameParams; result: SessionRenameResult }
   /** Attach to a stored session: reuse it if live here, else lazy / deferred / cold / eager rebuild. */
   'session.resume': { params: SessionResumeParams; result: SessionResumeResult }
   /** Export the transcript to ~/.hermes/sessions/saved (classic /save). */
@@ -5287,6 +5313,7 @@ export const RPC_METHODS = [
   'session.delete',
   'session.events.since',
   'session.events.stats',
+  'session.export',
   'session.foreign.import',
   'session.foreign.list',
   'session.foreign.preview',
@@ -5295,6 +5322,7 @@ export const RPC_METHODS = [
   'session.list',
   'session.most_recent',
   'session.redirect',
+  'session.rename',
   'session.resume',
   'session.save',
   'session.set_hidden',

@@ -186,6 +186,8 @@ method("session.activate", params=SessionActivateParams, result=SessionActivateR
 class SessionListParams(ProfileParams):
     title: str | None = None  # exact-title lookup (title as identity); windowless
     limit: int | None = None
+    offset: int | None = None
+    query: str | None = None
     include_hidden: bool = False
 
 
@@ -200,10 +202,13 @@ class SessionListRow(Result):
     started_at: float = 0
     message_count: int = 0
     source: str = ""
+    model: str = ""
+    last_active: float = 0
 
 
 class SessionListResult(Result):
     sessions: list[SessionListRow]
+    has_more: bool = False
 
 
 method("session.list", params=SessionListParams, result=SessionListResult,
@@ -265,6 +270,32 @@ class SessionDeleteResult(Result):
 
 method("session.delete", params=SessionDeleteParams, result=SessionDeleteResult,
        doc="Delete a stored session + transcripts; refused while it is live here.")
+
+
+class SessionRenameParams(SessionParams):
+    title: str
+
+
+class SessionRenameResult(Result):
+    session_id: str
+    title: str
+
+
+method("session.rename", params=SessionRenameParams, result=SessionRenameResult,
+       doc="Rename a stored session.")
+
+
+class SessionExportParams(SessionParams):
+    pass
+
+
+class SessionExportResult(Result):
+    session_id: str
+    file: str
+
+
+method("session.export", params=SessionExportParams, result=SessionExportResult,
+       doc="Export a stored session as JSON under the selected profile's saved-session directory.")
 
 
 class SessionTitleParams(SessionParams):

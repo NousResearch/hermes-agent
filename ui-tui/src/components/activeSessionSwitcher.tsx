@@ -1,4 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
@@ -9,8 +10,6 @@ import type {
   SessionCloseResponse,
   SessionDeleteResponse,
   SessionExportResponse,
-  SessionListItem,
-  SessionListResponse,
   SessionRenameResponse,
   SessionTitleResponse
 } from '../gatewayTypes.js'
@@ -88,7 +87,7 @@ export const relativeSessionAge = (ts?: number) => {
 }
 
 /** Drop already-live sessions from the resumable history list. */
-export const resumableHistory = (history: readonly SessionListItem[], live: readonly SessionActiveItem[]) => {
+export const resumableHistory = (history: readonly SessionListRow[], live: readonly SessionActiveItem[]) => {
   const liveSessionIds = new Set(live.map(session => session.session_key ?? session.id))
 
   return history.filter(session => !liveSessionIds.has(session.id))
@@ -301,7 +300,7 @@ export function ActiveSessionSwitcher({
   t
 }: ActiveSessionSwitcherProps) {
   const [items, setItems] = useState<SessionActiveItem[]>([])
-  const [history, setHistory] = useState<SessionListItem[]>([])
+  const [history, setHistory] = useState<SessionListRow[]>([])
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -317,7 +316,7 @@ export function ActiveSessionSwitcher({
   const [deleting, setDeleting] = useState(false)
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
-  const [renameTarget, setRenameTarget] = useState<null | SessionActiveItem | SessionListItem>(null)
+  const [renameTarget, setRenameTarget] = useState<null | SessionActiveItem | SessionListRow>(null)
   const [renameValue, setRenameValue] = useState('')
   const [hasMore, setHasMore] = useState(false)
   const initialSelectionAppliedRef = useRef(false)
@@ -325,12 +324,12 @@ export function ActiveSessionSwitcher({
   // re-derives the resumable list from this against the latest live set, so a
   // session that was hidden while live reappears in history once it closes —
   // without re-querying the DB. Only refreshed on a full (includeHistory) load.
-  const rawHistoryRef = useRef<SessionListItem[]>([])
+  const rawHistoryRef = useRef<SessionListRow[]>([])
   // Mirror the displayed lists so the async poll can re-anchor the selection to
   // the *same* row (by session id) after live sessions appear/disappear, rather
   // than keeping a now-stale flat index.
   const itemsRef = useRef<SessionActiveItem[]>([])
-  const historyDisplayRef = useRef<SessionListItem[]>([])
+  const historyDisplayRef = useRef<SessionListRow[]>([])
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the switcher its cell budget.
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -364,7 +363,7 @@ export function ActiveSessionSwitcher({
             current_session_id: currentSessionId
           }),
           includeHistory
-            ? gw.request<SessionListResponse>('session.list', {
+            ? gw.request<SessionListResult>('session.list', {
                 limit: PAGE_SIZE,
                 offset: append ? rawHistoryRef.current.length : 0,
                 query: query || undefined
@@ -390,7 +389,7 @@ export function ActiveSessionSwitcher({
 
         if (includeHistory) {
           if (histRes.status === 'fulfilled') {
-            const parsedHist = asRpcResult<SessionListResponse>(histRes.value)
+            const parsedHist = asRpcResult<SessionListResult>(histRes.value)
 
             if (parsedHist) {
               rawHistoryRef.current = append

@@ -3175,6 +3175,24 @@
       }
     },
     {
+      "name": "session.export",
+      "summary": "Export a stored session as JSON under the selected profile's saved-session directory.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionExportParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionExportResult"
+        }
+      }
+    },
+    {
       "name": "session.foreign.import",
       "summary": "Import a foreign session into this profile's history (idempotent per origin).",
       "params": [
@@ -3315,6 +3333,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionCorrectionResult"
+        }
+      }
+    },
+    {
+      "name": "session.rename",
+      "summary": "Rename a stored session.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionRenameParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionRenameResult"
         }
       }
     },
@@ -29018,6 +29054,51 @@
         "title": "SessionEventsStatsResult",
         "type": "object"
       },
+      "SessionExportParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionExportParams",
+        "type": "object"
+      },
+      "SessionExportResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "file": {
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "file"
+        ],
+        "title": "SessionExportResult",
+        "type": "object"
+      },
       "SessionForeignIdParams": {
         "additionalProperties": false,
         "properties": {
@@ -29372,6 +29453,30 @@
             "default": null,
             "title": "Limit"
           },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Offset"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query"
+          },
           "include_hidden": {
             "default": false,
             "title": "Include Hidden",
@@ -29390,6 +29495,11 @@
             },
             "title": "Sessions",
             "type": "array"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
           }
         },
         "required": [
@@ -29442,6 +29552,16 @@
             "default": "",
             "title": "Source",
             "type": "string"
+          },
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "last_active": {
+            "default": 0,
+            "title": "Last Active",
+            "type": "number"
           }
         },
         "required": [
@@ -29836,6 +29956,56 @@
           "reason"
         ],
         "title": "SessionReclaimedPayload",
+        "type": "object"
+      },
+      "SessionRenameParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "title"
+        ],
+        "title": "SessionRenameParams",
+        "type": "object"
+      },
+      "SessionRenameResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "title"
+        ],
+        "title": "SessionRenameResult",
         "type": "object"
       },
       "SessionResumeParams": {

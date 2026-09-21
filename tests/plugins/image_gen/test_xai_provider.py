@@ -161,6 +161,30 @@ class TestConfig:
         payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json", {})
         assert payload.get("model") == "grok-imagine-image-quality"
 
+    def test_configured_quality_reaches_text_to_image_payload(self, monkeypatch):
+        """``image_gen.xai.quality`` (case-insensitive) rides the text-to-image payload and the
+        generation metadata; an unrecognised value falls back to the default tier."""
+        import plugins.image_gen.xai as xai_mod
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        monkeypatch.setattr(xai_mod, "load_image_gen_config", lambda sub=None: {"quality": "High"})
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"data": [{"b64_json": "dGVzdA=="}]}
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp) as mock_post:
+            with patch("plugins.image_gen._common.save_b64_image", return_value="/tmp/out.png"):
+                result = XAIImageGenProvider().generate(prompt="test")
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json", {})
+        assert payload.get("quality") == "high"
+        assert result.get("quality") == "high"
+
+        monkeypatch.setattr(xai_mod, "load_image_gen_config", lambda sub=None: {"quality": "ultra"})
+        assert xai_mod._resolve_quality() == xai_mod.DEFAULT_QUALITY
+
 
 # ---------------------------------------------------------------------------
 # Live catalog merge tests

@@ -129,6 +129,7 @@ export async function getHermesConfigRecord(
   { includeDefaults = true }: { includeDefaults?: boolean } = {}
 ): Promise<HermesConfigRecord> {
   const origin = capabilityScoped(profile ?? undefined)
+
   const record = await window.hermesDesktop.api<HermesConfigRecord>({
     ...origin,
     path: includeDefaults ? '/api/config' : '/api/config?include_defaults=false'

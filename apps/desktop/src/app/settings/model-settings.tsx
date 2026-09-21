@@ -593,7 +593,6 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
       try {
         await saveHermesConfig(setNested({}, key, value), writeScope ?? scopeProfile)
-
       } catch (err) {
         setConfig(prev)
         notifyError(err, m.defaultsFailed)

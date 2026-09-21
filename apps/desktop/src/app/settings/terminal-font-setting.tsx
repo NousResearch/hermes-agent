@@ -92,7 +92,6 @@ export function TerminalFontSetting() {
       // Sparse patch: PUT /api/config deep-merges, and echoing the cached
       // snapshot would overwrite keys other surfaces changed since it loaded.
       void saveHermesConfig(setNested({}, 'terminal.font_family', value), writeScope)
-
         .then(result => {
           if (!result.ok) {
             throw new Error(t.settings.config.autosaveFailed)

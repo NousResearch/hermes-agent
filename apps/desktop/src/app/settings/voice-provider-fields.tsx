@@ -102,7 +102,6 @@ export function VoiceProviderFields({
           setBaseline(config)
           writeConfigCache(config)
         })
-
         .catch(err => notifyError(err, t.settings.config.autosaveFailed))
     }, 550)
 

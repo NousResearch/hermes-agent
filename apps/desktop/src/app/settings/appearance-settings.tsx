@@ -96,7 +96,6 @@ function ResumeLastSessionSetting() {
     // Sparse patch: PUT /api/config deep-merges, and echoing the cached
     // snapshot would overwrite keys other surfaces changed since it loaded.
     void saveHermesConfig(setNested({}, 'display.resume_last_session', on), writeScope)
-
       .then(result => {
         if (!result.ok) {
           throw new Error(t.settings.config.autosaveFailed)

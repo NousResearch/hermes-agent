@@ -29,62 +29,50 @@ def isolated_home(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "model_block",
+    ("model_block", "expected"),
     [
         pytest.param(
             "model:\n  default: nvidia/Nemotron\n  provider: custom\n"
             "  base_url: http://127.0.0.1:8000/v1\n  api_key: dummy\n",
+            "custom",
             id="provider-custom",
         ),
         pytest.param(
             "model:\n  default: qwen3\n  provider: vllm\n  base_url: http://127.0.0.1:8000/v1\n",
+            "custom",
             id="local-server-alias",
         ),
         pytest.param(
             "model:\n  default: qwen3\n  base_url: http://localhost:8080/v1\n",
+            "custom",
             id="loopback-base-url-only",
         ),
+        # #109397: ``model.provider: openrouter`` is explicit intent like a registry pin, not
+        # "nothing configured" (both ``custom`` and ``openrouter`` are absent from PROVIDER_REGISTRY).
         pytest.param(
             "model:\n  default: openrouter/auto\n  provider: openrouter\n",
+            "openrouter",
             id="provider-openrouter",
         ),
+        # A non-openrouter ``base_url`` under the openrouter pin is a deliberate mirror (#10622).
         pytest.param(
             "model:\n  default: openrouter/auto\n  provider: openrouter\n"
             "  base_url: https://openrouter-mirror.example.com/api/v1\n",
+            "openrouter",
             id="provider-openrouter-mirror",
         ),
     ],
 )
-def test_configured_custom_endpoint_resolves_as_a_provider(isolated_home, model_block):
+def test_configured_custom_endpoint_resolves_as_a_provider(isolated_home, model_block, expected):
     (isolated_home / "config.yaml").write_text(model_block, encoding="utf-8")
     from hermes_cli.auth import resolve_provider
     from hermes_cli.free_tier_bootstrap import run_bootstrap
 
-    assert resolve_provider("auto") in ("custom", "openrouter")
+    assert resolve_provider("auto") == expected
     record = run_bootstrap(announce=False)
     assert record.provider_configured is True
     assert record.other_providers is True
-
-
-def test_configured_openrouter_pin_resolves_as_a_provider(isolated_home):
-    """``model.provider: openrouter`` is explicit intent like a registry pin, not "nothing
-    configured".
-
-    Regression for #109397: ``_config_model_provider()`` recognised ``custom`` but not
-    ``openrouter`` (both are intentionally absent from PROVIDER_REGISTRY), so the boot inventory
-    parked dashboard sessions on Setup Required for openrouter-pinned installs.
-    """
-    (isolated_home / "config.yaml").write_text(
-        "model:\n  default: openrouter/auto\n  provider: openrouter\n", encoding="utf-8",
-    )
-    from hermes_cli.auth import resolve_provider
-    from hermes_cli.free_tier_bootstrap import run_bootstrap
-
-    assert resolve_provider("auto") == "openrouter"
-    record = run_bootstrap(announce=False)
-    assert record.provider_configured is True
-    assert record.other_providers is True
-    assert record.inference_provider == "openrouter"
+    assert record.inference_provider == expected
 
 
 def test_named_provider_pin_resolves_as_a_provider(isolated_home):

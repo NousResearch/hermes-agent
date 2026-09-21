@@ -187,7 +187,7 @@ def test_optional_backfill_preserves_corrupt_record(tmp_path, monkeypatch):
     monkeypatch.setattr(skills_sync_optional, "_ss", lambda: FakeSync)
 
     with pytest.raises(ValueError, match="Invalid skills hub lock file"):
-        skills_sync_optional._backfill_optional_provenance(quiet=True)
+        skills_sync_optional._read_hub_install_paths()
     assert lock_path.read_text(encoding="utf-8") == "{"
 
 

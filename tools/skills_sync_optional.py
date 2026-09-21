@@ -1,7 +1,6 @@
 """Official optional-skill provenance: hub-lock backfill and restore. Profile-scoped paths and
 patchable helpers resolve through ``_ss()`` at call time so ``tools.skills_sync`` patches work."""
 
-import json
 import logging
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -68,12 +67,11 @@ def _skill_file_list(skill_dir: Path) -> List[str]:
             if not _is_runtime_cache(f, skill_dir) and f.is_file()]
 
 
-def _load_hub_lock() -> Optional[dict]:
-    """Parse the skills-hub lock; None when missing or unreadable."""
-    try:
-        return json.loads((_ss()._skills_dir() / ".hub" / "lock.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return None
+def _load_hub_lock() -> dict:
+    """Load validated hub provenance; missing files are empty and corrupt files fail closed."""
+    from tools.skills_hub import HubLockFile
+
+    return HubLockFile(_ss()._skills_dir() / ".hub" / "lock.json").load()
 
 
 def _hub_lock_entries(data: Optional[dict]) -> List[dict]:

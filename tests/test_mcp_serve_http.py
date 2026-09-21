@@ -21,6 +21,17 @@ def test_remote_http_requires_auth_and_host_allowlist(monkeypatch):
         )
     assert missing_host.value.code == 2
 
+    monkeypatch.delenv("TEST_MCP_TOKEN", raising=False)
+    with pytest.raises(SystemExit) as proxied_without_token:
+        mcp_serve.run_mcp_server(
+            transport="http",
+            host="127.0.0.1",
+            token_env="TEST_MCP_TOKEN",
+            allowed_hosts=["mcp.example.com:*"],
+            public_url="https://mcp.example.com/mcp",
+        )
+    assert proxied_without_token.value.code == 2
+
     pytest.importorskip("mcp")
     from starlette.testclient import TestClient
 
@@ -61,6 +72,27 @@ def test_wildcard_http_bind_requires_client_reachable_public_url(monkeypatch, ca
 
     assert missing_public_url.value.code == 2
     assert "wildcard MCP HTTP binds require --public-url" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("port", [-1, 0, 65536])
+def test_http_rejects_invalid_bind_port_before_starting_bridge(
+    monkeypatch, capsys, port,
+):
+    import mcp_serve
+
+    starts = []
+
+    class Bridge:
+        def start(self):
+            starts.append(True)
+
+    monkeypatch.setattr(mcp_serve, "EventBridge", Bridge)
+    with pytest.raises(SystemExit) as invalid_port:
+        mcp_serve.run_mcp_server(transport="http", port=port)
+
+    assert invalid_port.value.code == 2
+    assert "port must be between 1 and 65535" in capsys.readouterr().err
+    assert starts == []
 
 
 @pytest.mark.parametrize(
@@ -209,10 +241,13 @@ def test_loopback_http_enforces_explicit_transport_security(
     monkeypatch.setattr(mcp_serve, "create_mcp_server", lambda **kwargs: Server())
 
     supplied_hosts = None if host == "LOCALHOST" else allowed_hosts
+    if supplied_hosts:
+        monkeypatch.setenv("TEST_MCP_TOKEN", "secret")
     mcp_serve.run_mcp_server(
         transport="http",
         host=host,
         allowed_hosts=supplied_hosts,
+        token_env="TEST_MCP_TOKEN",
     )
 
     assert calls["http"]["host"] == host.lower()

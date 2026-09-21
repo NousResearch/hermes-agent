@@ -738,6 +738,19 @@ def _is_loopback_host(host: str) -> bool:
 
 
 _LOOPBACK_ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+_LOOPBACK_ALLOWED_HOST_SET = {value.lower() for value in _LOOPBACK_ALLOWED_HOSTS}
+
+
+def _http_requires_auth(
+    host: str,
+    allowed_hosts: Optional[List[str]],
+    public_url: Optional[str],
+) -> bool:
+    return (
+        not _is_loopback_host(host)
+        or public_url is not None
+        or any(value.lower() not in _LOOPBACK_ALLOWED_HOST_SET for value in allowed_hosts or [])
+    )
 
 
 def _valid_http_url(value: str) -> bool:
@@ -772,6 +785,9 @@ def run_mcp_server(
     if not path.startswith("/"):
         print("Error: MCP HTTP path must start with '/'", file=sys.stderr)
         sys.exit(2)
+    if not 1 <= port <= 65535:
+        print("Error: MCP HTTP port must be between 1 and 65535", file=sys.stderr)
+        sys.exit(2)
 
     host = host.lower()
     if public_url and not _valid_http_url(public_url):
@@ -780,10 +796,11 @@ def run_mcp_server(
 
     bearer_token = os.environ.get(token_env, "") if transport == "http" and token_env else ""
     remote_http = transport == "http" and not _is_loopback_host(host)
-    if remote_http and not bearer_token:
+    auth_required = transport == "http" and _http_requires_auth(host, allowed_hosts, public_url)
+    if auth_required and not bearer_token:
         print(
             "Error: "
-            f"Remote MCP HTTP requires a bearer token in {token_env}; "
+            f"Externally reachable MCP HTTP requires a bearer token in {token_env}; "
             "bind to a loopback host for unauthenticated local use",
             file=sys.stderr,
         )

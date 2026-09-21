@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from contextlib import suppress
@@ -296,9 +297,9 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
         func(fpath)
 
     try:
-        try:
+        if sys.version_info >= (3, 12):
             shutil.rmtree(path, onexc=_on_error)
-        except TypeError:  # ``onexc`` is 3.12+; 3.11 only knows ``onerror``
+        else:
             shutil.rmtree(path, onerror=_on_error)
     except OSError:
         # ``ignore_errors`` still gets the read-only recovery; it only swallows

@@ -102,3 +102,19 @@ def test_non_permission_failures_propagate(tmp_path, monkeypatch):
 
     assert excinfo.value.errno == 39
     assert len(attempts) == 1  # no second attempt for a non-permission failure
+
+
+def test_typeerror_during_removal_is_not_misread_as_api_fallback(tmp_path, monkeypatch):
+    """A callback TypeError is a real failure, not a signal to rerun the partial deletion."""
+    attempts: list = []
+
+    def _fake(path, **kwargs):
+        attempts.append((path, kwargs))
+        raise TypeError("callback bug")
+
+    monkeypatch.setattr(utils.shutil, "rmtree", _fake)
+
+    with pytest.raises(TypeError, match="callback bug"):
+        rmtree_readonly(tmp_path)
+
+    assert len(attempts) == 1

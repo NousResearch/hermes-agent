@@ -545,7 +545,9 @@ def _skill_invocation_display(message: dict) -> Optional[str]:
     scaffold the model needs on replay; the derived invocation matches the
     WebSocket history projection (tui_gateway ``_skill_scaffold_projection``).
     """
-    if message.get("role") != "user" or message.get("display_content") or message.get("display_kind"):
+    # Key presence, not truthiness: an explicit "" or None display_content is still
+    # caller-owned metadata and must not be overwritten with a derived invocation.
+    if message.get("role") != "user" or "display_content" in message or message.get("display_kind"):
         return None
     from agent.skill_commands import describe_skill_invocation
 

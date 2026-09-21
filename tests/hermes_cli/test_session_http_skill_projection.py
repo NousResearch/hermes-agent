@@ -91,6 +91,8 @@ def test_projection_preserves_explicit_display_metadata_and_plain_text(http_stor
         {"role": "user", "content": scaffold, "display_kind": "hidden"},
         {"role": "user", "content": scaffold, "display_kind": "model_switch"},
         {"role": "user", "content": scaffold, "display_content": "Explicit projection"},
+        {"role": "user", "content": scaffold, "display_content": ""},
+        {"role": "user", "content": scaffold, "display_content": None},
         {"role": "assistant", "content": scaffold},
     ]
     before = deepcopy(rows)

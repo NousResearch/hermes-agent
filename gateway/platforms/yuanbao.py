@@ -660,7 +660,7 @@ class RecallGuardMiddleware(InboundMiddleware):
             return
         # Branch B: not found in transcript → append system note
         store.append_to_transcript(sid, {
-            "role": "system", "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "role": "system", "timestamp": time.time(),
             "content": f'[recall] message_id="{recalled_id}" has been recalled; do not quote or reference it.',
         })
         logger.info("[%s] Recall: system note for msg_id=%s (branch B)", adapter.name, recalled_id)
@@ -1092,7 +1092,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
                     body_text = f"{text}\n{summary}" if text else summary
             entry: dict = {
                 "role": "user", "content": f"[{sender_display}|{source.user_id or 'unknown'}]\n{body_text}",
-                "timestamp": datetime.now(tz=timezone.utc).isoformat(), "observed": True,
+                "timestamp": time.time(), "observed": True,
             }
             if msg_id:
                 entry["message_id"] = msg_id

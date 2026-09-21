@@ -391,12 +391,22 @@ class MemoryStore:
                 "note": "Write saved. This update is complete — do not repeat it."}
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """System prompt block: header + usage indicator + entries ("" when empty)."""
+        """System prompt block: header + usage indicator + entries ("" when empty).
+
+        Entries are joined with ``\\n\\n`` (not ``ENTRY_DELIMITER``) for display —
+        the section-sign delimiter is a file-format detail needed only for parsing
+        and drift detection, not for the system prompt. Using ``\\n\\n`` here keeps
+        § out of the LLM context window on every turn while the on-disk format,
+        budget calculations, and drift guard all continue to use
+        ``ENTRY_DELIMITER`` unchanged. Usage percentage is computed from
+        ``_char_count`` (file-format size) so it stays accurate regardless of the
+        render separator."""
         if not entries:
             return ""
-        content, sep = ENTRY_DELIMITER.join(entries), "═" * 46
+        content = "\n\n".join(entries)
+        sep = "═" * 46
         title = MEMORY_BLOCK_HEADERS["user" if target == "user" else "memory"]
-        return f"{sep}\n{title} [{self._usage_pct(target, len(content))}]\n{sep}\n{content}"
+        return f"{sep}\n{title} [{self._usage_pct(target, self._char_count(target))}]\n{sep}\n{content}"
 
     @staticmethod
     def _read_raw_checked(path: Path) -> Tuple[str, bool]:

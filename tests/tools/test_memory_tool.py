@@ -366,6 +366,24 @@ class TestMemoryStoreSnapshot:
         assert "loaded at start" in snapshot
         assert "added later" not in snapshot
 
+    def test_render_block_omits_section_sign_delimiter(self, store):
+        """The system-prompt block must NOT contain the § section-sign delimiter.
+
+        § is the on-disk entry delimiter (ENTRY_DELIMITER = "\\n§\\n") used for
+        parsing and drift detection, but it must not leak into the LLM context
+        window. ``_render_block`` joins entries with ``\\n\\n`` for display."""
+        store.add("memory", "first entry")
+        store.add("memory", "second entry")
+        store.load_from_disk()
+
+        snapshot = store.format_for_system_prompt("memory")
+        assert snapshot is not None
+        assert "§" not in snapshot, "§ delimiter must not appear in the rendered system prompt block"
+        assert "first entry" in snapshot
+        assert "second entry" in snapshot
+        # Entries should be separated by \n\n, not \n§\n
+        assert "first entry\n\nsecond entry" in snapshot
+
 
 # =========================================================================
 # memory_tool() dispatcher

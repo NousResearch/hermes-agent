@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 # Files younger than this are presumed live (a fetch may be in flight) and are never removed. Lock
@@ -35,7 +37,8 @@ def _git_proc_running() -> bool:
     try:
         if os.name == "nt":
             proc = subprocess.run(["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"],
-                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                                  creationflags=windows_hide_flags())
             return "git.exe" in proc.stdout.lower()
         proc = subprocess.run(["pgrep", "-x", "git"], capture_output=True, text=True, encoding="utf-8", errors="replace",
                               timeout=10)
@@ -121,6 +124,7 @@ def is_ancestor_of_head(repo_root: Path, rev: str) -> bool:
             ["git", "merge-base", "--is-ancestor", rev, "HEAD"],
             cwd=str(repo_root),
             capture_output=True, text=True, timeout=10,
+            creationflags=windows_hide_flags(),
         )
         return result.returncode == 0
     except Exception:
@@ -135,6 +139,7 @@ def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
         result = subprocess.run(
             ["git", *args], cwd=str(repo_root),
             capture_output=True, text=True, timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return []
@@ -163,6 +168,7 @@ def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
             input=request.encode(),
             capture_output=True,
             timeout=30,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return set()
@@ -200,6 +206,7 @@ def _batch_missing_parents(repo_root: Path, candidates: List[str]) -> set[str]:
             input=("\n".join(sorted(parents)) + "\n").encode(),
             capture_output=True,
             timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if check.returncode != 0:
             return set()
@@ -280,6 +287,7 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
         probe = subprocess.run(
             ["git", "rev-list", "--count", "--all", "--reflog"],
             cwd=str(repo_root), capture_output=True, timeout=10,
+            creationflags=windows_hide_flags(),
         )
         if probe.returncode == 0:
             return 0

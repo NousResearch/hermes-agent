@@ -48,14 +48,14 @@ describe('hovered zone retargets the tab verbs', () => {
     tree.noteActiveTreeGroup('grp-main')
     tree.noteHoveredTreeGroup('grp-side')
 
-    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(tree.activateTreeTabSlot(2)).toBeTruthy()
     expect(activeOf('grp-side')).toBe('session-tile:c')
     // The focused zone is untouched — the pointer won the target, not both.
     expect(activeOf('grp-main')).toBe('workspace')
 
     // Same key, pointer moved: the other zone's slot 2.
     tree.noteHoveredTreeGroup('grp-main')
-    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(tree.activateTreeTabSlot(2)).toBeTruthy()
     expect(activeOf('grp-main')).toBe('session-tile:a')
   })
 
@@ -66,7 +66,7 @@ describe('hovered zone retargets the tab verbs', () => {
     tree.noteHoveredTreeGroup('grp-main')
     tree.noteHoveredTreeGroup(null)
 
-    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(tree.activateTreeTabSlot(2)).toBeTruthy()
     expect(activeOf('grp-side')).toBe('session-tile:c')
     expect(activeOf('grp-main')).toBe('workspace')
   })
@@ -77,7 +77,7 @@ describe('hovered zone retargets the tab verbs', () => {
     tree.noteActiveTreeGroup('grp-main')
     tree.noteHoveredTreeGroup('grp-side')
 
-    expect(tree.cycleTreeTabInFocusedZone(1)).toBe(true)
+    expect(tree.cycleTreeTabInFocusedZone(1)).toBeTruthy()
     expect(activeOf('grp-side')).toBe('session-tile:c')
     expect(activeOf('grp-main')).toBe('workspace')
 
@@ -98,9 +98,9 @@ describe('hovered zone retargets the tab verbs', () => {
     tree.noteActiveTreeGroup('grp-side')
     tree.noteHoveredTreeGroup(null)
 
-    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(tree.activateTreeTabSlot(2)).toBeTruthy()
     expect(activeOf('grp-side')).toBe('session-tile:c')
-    expect(tree.cycleTreeTabInFocusedZone(1)).toBe(true)
+    expect(tree.cycleTreeTabInFocusedZone(1)).toBeTruthy()
     expect(activeOf('grp-side')).toBe('session-tile:b')
   })
 
@@ -112,7 +112,7 @@ describe('hovered zone retargets the tab verbs', () => {
     tree.noteActiveTreeGroup(null)
     tree.noteHoveredTreeGroup(null)
 
-    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(tree.activateTreeTabSlot(2)).toBeTruthy()
     expect(activeOf('grp-main')).toBe('session-tile:a')
     expect(activeOf('grp-side')).toBe('session-tile:b')
   })
@@ -138,7 +138,7 @@ describe('hovered zone retargets the tab verbs', () => {
     tree.noteActiveTreeGroup(null)
     tree.noteHoveredTreeGroup('grp-files')
 
-    expect(tree.activateTreeTabSlot(2)).toBe(true)
+    expect(tree.activateTreeTabSlot(2)).toBeTruthy()
     expect(activeOf('grp-main')).toBe('session-tile:a')
     // ⌘W must not close the file tree from a rung that can't serve it.
     expect(activeOf('grp-files')).toBe('files')

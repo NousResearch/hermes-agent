@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
@@ -15,9 +16,11 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { pathLeaf } from '@/lib/display-path'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-import { untombstoneSessions } from '@/store/projects'
-import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
+import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd } from '@/store/session'
+import { untombstoneSessions } from '@/store/session-removal'
+import { forgetSessionUnread } from '@/store/session-unread'
 import type { HermesConfigRecord, SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -27,7 +30,23 @@ const DEFAULT_AUTO_ARCHIVE_DAYS = 3
 
 const ARCHIVED_FETCH_LIMIT = 200
 
-export function SessionsSettings() {
+interface SessionsSettingsProps {
+  subpage?: string
+}
+
+export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
+  if (subpage === 'default-directory') {
+    return (
+      <SettingsContent>
+        <DefaultProjectDirSetting />
+      </SettingsContent>
+    )
+  }
+
+  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} />
+}
+
+function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
@@ -61,7 +80,7 @@ export function SessionsSettings() {
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
         untombstoneSessions([session.id, session._lineage_root_id])
-        setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
+        restoreListedSession({ ...session, archived: false })
         triggerHaptic('selection')
         notify({ durationMs: 2_000, kind: 'success', message: s.restored })
       } catch (err) {
@@ -75,7 +94,13 @@ export function SessionsSettings() {
 
   const remove = useCallback(
     async (session: SessionInfo) => {
-      if (!window.confirm(s.deleteConfirm(sessionTitle(session)))) {
+      const ok = await confirm({
+        confirmLabel: s.deletePermanently,
+        destructive: true,
+        title: s.deleteConfirm(sessionTitle(session))
+      })
+
+      if (!ok) {
         return
       }
 
@@ -83,6 +108,9 @@ export function SessionsSettings() {
 
       try {
         await deleteSession(session.id, session.profile)
+        // Permanent delete bypasses removeSession, so retire the persisted
+        // unread state here too rather than leaving it to rot.
+        forgetSessionUnread([session.id, session._lineage_root_id], session.profile)
         setLocalSessions(prev => prev.filter(s => s.id !== session.id))
         triggerHaptic('warning')
       } catch (err) {
@@ -106,7 +134,7 @@ export function SessionsSettings() {
 
   return (
     <SettingsContent>
-      <DefaultProjectDirSetting />
+      {includeDefaultDirectory && <DefaultProjectDirSetting />}
 
       <AutoArchiveSetting />
 
@@ -228,7 +256,9 @@ function AutoArchiveSetting() {
       setConfig(updated)
 
       try {
-        await saveHermesConfig(updated)
+        // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+        // snapshot would overwrite keys other surfaces changed since it loaded.
+        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } })
       } catch (err) {
         notifyError(err, s.autoArchiveFailed)
       }
@@ -365,7 +395,7 @@ function DefaultProjectDirSetting() {
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title={s.defaultDirTitle} />
+      <SectionHeading icon={FolderOpen} page title={s.defaultDirTitle} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.defaultDirDesc}
       </p>

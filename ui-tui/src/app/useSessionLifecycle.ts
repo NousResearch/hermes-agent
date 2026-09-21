@@ -2,7 +2,8 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import { type RefObject, useCallback, useEffect, useRef } from 'react'
+import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
+import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -12,19 +13,21 @@ import type {
   SessionActivateResponse,
   SessionCloseResponse,
   SessionCreateResponse,
-  SessionInflightTurn,
-  SessionResumeResponse,
   SessionTitleResponse,
   SetupStatusResponse
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
-import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
+import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
+import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { describeCredentialWarning } from './userMessages.js'
+
+export { refreshSessionView, scheduleResumeScrollToBottom } from './sessionResumeView.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
 
@@ -52,13 +55,20 @@ export const writeActiveSessionFile = (sessionId: null | string, file = process.
   }
 }
 
-export const liveSessionInflightMessages = (inflight?: null | SessionInflightTurn): Msg[] => {
+export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg[] => {
   const user = String(inflight?.user ?? '').trim()
 
-  return user ? [{ role: 'user', text: user }] : []
+  return user
+    ? toTranscriptMessages([{
+        role: 'user',
+        text: user,
+        ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
+        ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
+      }])
+    : []
 }
 
-export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn) => {
+export const hydrateLiveSessionInflight = (inflight?: null | InflightTurn) => {
   const assistant = String(inflight?.assistant ?? '')
 
   if (!assistant && !inflight?.streaming) {
@@ -80,35 +90,6 @@ export const signalFreshSessionBoundary = (
   onFreshSessionStarted(nextSid)
 
   return true
-}
-
-export const scheduleResumeScrollToBottom = (
-  scrollRef: RefObject<null | ScrollBoxHandle>,
-  delays: readonly number[] = [0, 80, 240]
-) => {
-  const startedAt = Date.now()
-
-  const timers = delays.map((delay, index) =>
-    setTimeout(() => {
-      const scroll = scrollRef.current
-
-      if (!scroll) {
-        return
-      }
-
-      const manuallyScrolledAfterResume = scroll.getLastManualScrollAt() > startedAt
-
-      if (!manuallyScrolledAfterResume && (index === 0 || scroll.isSticky())) {
-        scroll.scrollToBottom()
-      }
-    }, delay)
-  )
-
-  return () => {
-    for (const timer of timers) {
-      clearTimeout(timer)
-    }
-  }
 }
 
 const trimTail = (items: Msg[]) => {
@@ -174,7 +155,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     turnController.fullReset()
     setVoiceRecording(false)
     setVoiceProcessing(false)
-    patchUiState({ bgTasks: new Set(), info: null, sid: null, usage: ZERO })
+    patchUiState({ bgTasks: new Set(), info: null, sid: null, storedSid: null, usage: ZERO })
     setHistoryItems([])
     setLastUserMsg('')
     setStickyPrompt('')
@@ -234,17 +215,21 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return null
       }
 
-      const info = r.info ?? null
+      // The durable id lives on the create result; the lazy-create `info` does
+      // not carry it, and session.resume / the exit epilogue need the stored id.
+      const storedSid = r.stored_session_id || r.session_id
+      const info = r.info ? { ...r.info, stored_session_id: storedSid } : null
       const requestedTitle = title?.trim() ?? ''
 
       resetSession()
       setSessionStartedAt(Date.now())
 
-      writeActiveSessionFile(r.session_id)
+      writeActiveSessionFile(storedSid)
       patchUiState({
         info,
         sid: r.session_id,
         status: info?.version ? 'ready' : 'starting agent…',
+        storedSid,
         usage: usageFrom(info)
       })
 
@@ -253,7 +238,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       }
 
       if (info?.credential_warning) {
-        sys(`warning: ${info.credential_warning}`)
+        sys(`warning: ${describeCredentialWarning(info.credential_warning)}`)
       }
 
       if (info?.config_warning) {
@@ -276,6 +261,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             const nextTitle = (result.title ?? requestedTitle).trim()
             const suffix = result.pending ? ' (queued while session initializes)' : ''
+            patchUiState({ sessionTitle: nextTitle })
             sys(`session title set: ${nextTitle}${suffix}`)
           })
           .catch((err: unknown) => {
@@ -325,18 +311,22 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           }
 
           const info = r.info ?? null
+          // Agent-less (lazy) activations answer with `_fallback_session_info`, which
+          // has no stored_session_id; the durable id is the response's session_key.
+          const storedSid = r.session_key || r.session_id
           const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
           resetSession()
           setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
           const transcript = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
           setHistoryItems(info ? [introMsg(info), ...transcript] : transcript)
-          writeActiveSessionFile(r.session_key ?? r.session_id)
+          writeActiveSessionFile(storedSid)
           patchUiState({
             busy: running,
             info,
             sid: r.session_id,
             status: statusFromLiveSession(r.status, running),
+            storedSid,
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
@@ -356,7 +346,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
-      rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+      return rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
         if (setup?.provider_configured === false) {
           panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
           patchUiState({ status: 'setup required' })
@@ -366,9 +356,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
+        return gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
-            const r = asRpcResult<SessionResumeResponse>(raw)
+            const r = asRpcResult<SessionResumeResult>(raw)
 
             if (!r) {
               sys('error: invalid response: session.resume')
@@ -376,7 +366,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               return patchUiState({ status: 'ready' })
             }
 
-            const info = r.info ?? null
+            const storedSid = r.info?.stored_session_id || r.stored_session_id || r.resumed || id
+            const info = r.info ? { ...r.info, stored_session_id: storedSid } : null
+
             const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
             resetSession()
@@ -385,12 +377,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
 
             setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
-            writeActiveSessionFile(r.resumed ?? r.session_id)
+            writeActiveSessionFile(storedSid)
             patchUiState({
               busy: running,
               info,
               sid: r.session_id,
-              status: statusFromLiveSession(r.status, running),
+              status: statusFromLiveSession(r.status ?? undefined, running),
+              storedSid,
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)
@@ -423,15 +416,28 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     [sys]
   )
 
-  return {
-    activateLiveSession,
-    closeSession,
-    guardBusySessionSwitch,
-    newLiveSession,
-    newSession,
-    resetSession,
-    resetVisibleHistory,
-    resumeById,
-    trimLastExchange: trimTail
-  }
+  return useMemo(
+    () => ({
+      activateLiveSession,
+      closeSession,
+      guardBusySessionSwitch,
+      newLiveSession,
+      newSession,
+      resetSession,
+      resetVisibleHistory,
+      resumeById,
+      trimLastExchange: trimTail
+    }),
+    [
+      activateLiveSession,
+      closeSession,
+      guardBusySessionSwitch,
+      newLiveSession,
+      newSession,
+      resetSession,
+      resetVisibleHistory,
+      resumeById,
+      trimTail
+    ]
+  )
 }

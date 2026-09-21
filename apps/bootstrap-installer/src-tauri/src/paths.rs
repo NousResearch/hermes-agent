@@ -98,6 +98,12 @@ pub fn update_in_progress_marker() -> PathBuf {
 /// that path), where copying onto ourselves would be a Windows sharing
 /// violation. Best-effort: a failure here must not fail the install, so the
 /// caller logs and continues.
+///
+/// NOTE: because of that no-op, a user's staged installer is only ever written
+/// by a full install/repair. Every later `--update` runs the ORIGINAL binary,
+/// so an installer-protocol change can strand the whole installed base on a
+/// binary that predates it (see `restage_from_checkout`, which repairs this
+/// from the freshly-updated checkout).
 pub fn copy_self_to_hermes_home() -> std::io::Result<()> {
     let src = std::env::current_exe()?;
     let dest = installer_dest();

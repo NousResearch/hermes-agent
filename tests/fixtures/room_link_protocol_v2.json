@@ -1,0 +1,12 @@
+{
+  "protocol_version": 2,
+  "catalog": {
+    "installation_id": "install:peer",
+    "protocol_versions": [2],
+    "link_modes": ["direct"],
+    "persistent_process": true,
+    "text": true,
+    "attachments": false,
+    "catalog_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}

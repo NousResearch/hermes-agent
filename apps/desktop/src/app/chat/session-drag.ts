@@ -28,9 +28,7 @@
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
-import { findGroup } from '@/components/pane-shell/tree/model'
 import {
-  type DoubleTapContext,
   rectContains,
   slotBefore,
   snapshotStrips,
@@ -40,18 +38,20 @@ import {
   subZonePosition
 } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
-  $layoutTree,
   $treeDragging,
+  closeTreePane,
   type DropHint,
-  isSessionStripPane,
   revealTreePane,
   SESSION_TILE_DRAG
 } from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
-import { openSessionTile, type TileDock } from '@/store/session-states'
+import { requestFreshSession } from '@/store/profile'
+import { $selectedStoredSessionId } from '@/store/session'
+import { $sessionTiles, nextSessionTileForWorkspace, openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
 import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './composer/inline-refs'
+import { tileZoneHost } from './tile-zone-host'
 
 /** A chat surface's drag-start geometry: the anchor pane id it advertises
  *  (`data-session-anchor`) and the composer a link drop routes to
@@ -79,33 +79,29 @@ function snapshotSurfaces(): SurfaceSnapshot[] {
   }))
 }
 
-/** A session may land in a zone only if it hosts a chat surface — never the
- *  sidebar/terminal zones. Returns the pane a stack anchors to. */
-function chatZonePane(groupId: string): null | string {
-  const tree = $layoutTree.get()
-  const panes = tree ? (findGroup(tree, groupId)?.panes ?? []) : []
-
-  return panes.find(isSessionStripPane) ?? null
-}
+/** A session may land in any zone hosting a MAIN tile — another chat stack, a
+ *  Browser tile, a page — never the sidebar/terminal zones. Resolves via the
+ *  shared {@link tileZoneHost} (tile-zone-host.ts) so the eligibility answer
+ *  is byte-identical to what the zone overlay paints. */
 
 /**
  * Begin dragging a session — a sidebar row OR a tile's own tab (same drop
  * language either way: stack, split, or composer link). Sub-threshold releases
- * stay ordinary clicks, so `opts.onTap` (activate the tile) and `opts.double`
- * (hide the tab bar) ride the tab's gestures; Esc aborts instantly. A stack/
- * split commits through `openSessionTile`, which OPENS a new tile from a sidebar
- * row and MOVES the existing one when its tab is the drag source.
+ * stay ordinary clicks, so `opts.onTap` (activate the tile) rides the tab's
+ * gesture; Esc aborts instantly. A stack/split commits through
+ * `openSessionTile`, which OPENS a new tile from a sidebar row and MOVES the
+ * existing one when its tab is the drag source.
  */
 export function startSessionDrag(
   payload: SessionDragPayload,
   e: ReactPointerEvent<HTMLElement>,
-  opts?: { double?: DoubleTapContext; onTap?: () => void }
+  opts?: { onTap?: () => void }
 ) {
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
   let surfaces: SurfaceSnapshot[] = []
   let composers: ZoneRect[] = []
-  let zoneHost = new Map<string, null | string>()
+  let zoneHost = new Map<string, ReturnType<typeof tileZoneHost>>()
 
   // Commit intent, updated per resolved move (the machinery flushes the final
   // move before commit, so these always match the released-at position).
@@ -120,7 +116,6 @@ export function startSessionDrag(
   const restoreOpacity = source?.style.opacity ?? ''
 
   startDragSession(e, {
-    double: opts?.double,
     ghost: { label: sessionLabel(payload) },
     onTap: opts?.onTap,
 
@@ -129,7 +124,7 @@ export function startSessionDrag(
       strips = snapshotStrips()
       surfaces = snapshotSurfaces()
       composers = queryAllVisible('[data-slot="composer-root"]').map(snapRect)
-      zoneHost = new Map(zones.map(zone => [zone.id, chatZonePane(zone.id)]))
+      zoneHost = new Map(zones.map(zone => [zone.id, tileZoneHost(zone.id)]))
       source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the
       // whole drop language (sheets, pills, caret, link overlay) lights up.
@@ -160,7 +155,7 @@ export function startSessionDrag(
         // Exclude the tile's OWN tab from the slots so re-dropping it in its
         // home strip reorders cleanly (a no-op for a sidebar-row drag).
         const stack = slotBefore(strip.slots, x, `session-tile:${payload.id}`)
-        split = { anchor: host, before: stack.before, pos: 'center' }
+        split = { anchor: host.pane, before: stack.before, pos: 'center' }
         link = null
 
         return { kind: 'group', groupId: zone.id, groupIds: [zone.id], pos: 'center', stack }
@@ -171,11 +166,16 @@ export function startSessionDrag(
       const pos = composers.some(rect => rectContains(rect, x, y)) ? 'center' : subZonePosition(zones, zone.id, x, y)
       const surface = surfaces.find(s => rectContains(s.rect, x, y))
 
-      if (pos === 'center') {
+      if (pos === 'center' && host.chat) {
         split = null
         link = surface?.composerTarget ?? 'main'
+      } else if (pos === 'center') {
+        // A preview/page zone has no composer to link to — its center stacks
+        // the session as a tab, same as dropping on the strip's tail.
+        split = { anchor: host.pane, pos: 'center' }
+        link = null
       } else {
-        split = { anchor: surface?.anchor ?? 'workspace', pos }
+        split = { anchor: surface?.anchor ?? host.pane, pos }
         link = null
       }
 
@@ -184,11 +184,29 @@ export function startSessionDrag(
 
     onCommit() {
       if (split) {
+        const fromMain = payload.id === $selectedStoredSessionId.get()
+
         openSessionTile(payload.id, split.pos, split.anchor, split.before)
         // A tile for this session may already exist (openSessionTile is
         // idempotent — e.g. persisted from an earlier run): a drop must never
         // feel dead, so front/unhide/un-dismiss it either way.
         revealTreePane(`session-tile:${payload.id}`)
+
+        // Dragging MAIN's own tab out is a MOVE. A session lives in exactly one
+        // surface (two panes on one runtime would fight over it), so once the
+        // tile exists main lets go the way its Close does: the next stacked
+        // tab shifts in, else a fresh draft. Never promote the tile just
+        // minted — that would pull the chat straight back and read as a dead
+        // drop.
+        if (fromMain && $sessionTiles.get().some(t => t.storedSessionId === payload.id)) {
+          const next = nextSessionTileForWorkspace()
+
+          if (next && next !== payload.id) {
+            closeTreePane('workspace')
+          } else {
+            requestFreshSession()
+          }
+        }
       } else if (link) {
         // The "link to chat" drop: an @session chip in that surface's composer.
         requestComposerInsertRefs([sessionInlineRef(payload)], { target: link })

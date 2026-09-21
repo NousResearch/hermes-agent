@@ -120,7 +120,7 @@ tail -f ~/.hermes/logs/update.log
 ### 查看当前版本
 
 ```bash
-hermes version
+hermes --version
 ```
 
 与 [GitHub releases 页面](https://github.com/NousResearch/hermes-agent/releases) 上的最新版本进行比较。

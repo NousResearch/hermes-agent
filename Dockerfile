@@ -41,14 +41,14 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make install
 
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
-# Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
-# which reached EOL in April 2026 — we copy node + npm + corepack from the
-# upstream node:22 image instead so we can stay on a supported LTS without
-# waiting for Debian 14 (forky, ~mid-2027).  Bookworm-based slim image used
-# so the produced binary links against glibc 2.36, which runs cleanly on
-# our Debian 13 (trixie, glibc 2.41) runtime.  Bumping to a new Node major
-# is a one-line ARG change; see #4977.
-FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
+# Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
+# which reached EOL in April 2026 — we copy node + npm from the upstream
+# node:26 image instead (Hermes pins its toolchain to Node 26 everywhere).
+# Bookworm-based slim image used so the produced binary links
+# against glibc 2.36, which runs cleanly on our Debian 13 (trixie, glibc
+# 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
+# #4977.
+FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -70,7 +70,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
@@ -151,17 +151,20 @@ RUN useradd -u 10000 -m -d /opt/data hermes
 
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
-# Node 22 LTS: copy the node binary plus the bundled npm + corepack JS
-# installs from the upstream image.  npm and npx are recreated as symlinks
-# because they're symlinks in the source image (and need to live on PATH).
+# Node 26: copy the node binary plus the bundled npm JS install from the
+# upstream image.  npm and npx are recreated as symlinks because they're
+# symlinks in the source image (and need to live on PATH).
+#
+# No corepack: Node unbundled it upstream, so node:26 ships only npm in
+# /usr/local/lib/node_modules.  Nothing here needs it — no package.json
+# declares a `packageManager`, and no build step shells out to yarn or pnpm.
+#
 # See node_source stage at the top of the file for the version-bump
 # rationale (#4977).
 COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
 COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
-COPY --from=node_source /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
-    ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 WORKDIR /opt/hermes
 
@@ -258,10 +261,15 @@ RUN cd plugins/platforms/photon/sidecar && \
 # avoids the cross-platform failures that kept [matrix] out of [all]
 # while still making Matrix work in the published container. Fixes #30399.
 #
+# Google Chat's [google-chat] extra (google-cloud-pubsub + Chat API clients)
+# is baked so hosted/immutable images can enable the adapter without writing
+# the sealed venv. Runtime --install-deps still routes through lazy_deps into
+# HERMES_LAZY_INSTALL_TARGET when the extra is not present.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra google-chat
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
@@ -295,7 +303,7 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 USER root
 RUN mkdir -p /opt/hermes/bin && \
     cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
-    chmod 0755 /opt/hermes/bin/hermes && \
+    chmod 0755 /opt/hermes /opt/hermes/bin/hermes && \
     printf 'docker\n' > /opt/hermes/.install_method
 # The ``.install_method`` stamp is baked next to the running code (the install
 # tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
@@ -308,7 +316,11 @@ RUN mkdir -p /opt/hermes/bin && \
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
 # run as the default hermes user (UID 10000).
 
-# ---------- Bake build-time git revision ----------
+# ---------- Bake image provenance + build-time git revision ----------
+# The versioned, non-secret provenance marker is the authoritative runtime
+# signal that this filesystem came from an immutable image.  It deliberately
+# lives outside both /opt/hermes (which operators sometimes bind-mount as a
+# checkout) and /opt/data (the mutable HERMES_HOME volume).
 # .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
 # container always returns nothing — meaning `hermes dump` reports
 # "(unknown)" and the startup banner drops its `· upstream <sha>` suffix.
@@ -321,14 +333,18 @@ RUN mkdir -p /opt/hermes/bin && \
 # banner.get_git_banner_state() try the baked SHA first, then fall back
 # to live `git rev-parse` for source installs (unchanged behaviour).
 #
-# The arg is optional — local `docker build` without --build-arg simply
-# omits the file, and the runtime falls back to live-git lookup.  CI
+# The arg is optional — local `docker build` without --build-arg omits the
+# SHA file (and records a null provenance revision), so build-info falls back
+# to live-git lookup.  CI
 # (.github/workflows/docker.yml) passes ${{ github.sha }} so
 # every published image has it.
 ARG HERMES_GIT_SHA=
-RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
+RUN set -eu; \
+    if [ -n "${HERMES_GIT_SHA}" ]; then \
         printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \
-    fi
+    fi; \
+    mkdir -p /etc/hermes; \
+    HERMES_GIT_SHA="${HERMES_GIT_SHA}" python3 -c 'import json, os, pathlib, tomllib; project = tomllib.loads(pathlib.Path("/opt/hermes/pyproject.toml").read_text(encoding="utf-8"))["project"]; marker = pathlib.Path("/etc/hermes/image-provenance.json"); marker.write_text(json.dumps({"schema": 1, "deployment_kind": "image", "manager": "docker", "image": "nousresearch/hermes-agent", "version": project["version"], "revision": os.environ.get("HERMES_GIT_SHA") or None}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"); marker.chmod(0o444)'
 
 # ---------- s6-overlay service wiring ----------
 # Static services declared at build time: main-hermes + dashboard.

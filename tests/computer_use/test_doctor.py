@@ -440,3 +440,17 @@ class TestDoctorVersionIdentity:
         payload = json.loads(out.getvalue())
         assert payload["hermes_identity"]["version_mismatch"] is False
 
+
+
+def test_fallback_tcc_row_hint_names_the_stale_row_reset_for_that_service():
+    """The fallback ``tcc_*`` fail row must carry the stale-grant recovery for its own TCC service (Screen Recording
+    is the ``ScreenCapture`` row), because System Settings can show the toggle ON while the daemon is denied."""
+    from tools.computer_use import doctor
+
+    ctx = {"perms": {"accessibility": True, "screen_recording": False}, "perm_err": None, "plat": "darwin"}
+    status, message, extra = doctor._tcc_row("screen_recording", "Screen Recording", True, ctx)
+
+    assert status == "fail"
+    assert "tccutil reset ScreenCapture com.trycua.driver" in extra["hint"]
+    assert "reset Accessibility" not in extra["hint"]
+    assert extra["data"] == {"screen_recording": False}

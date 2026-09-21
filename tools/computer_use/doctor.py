@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.permissions import _child_env as _sanitized_cua_env
+from tools.computer_use.permissions import stale_tcc_grant_hint
 
 # Match the ALLOWED_STATUS_VALUES + ALLOWED_OVERALL_VALUES the cua-driver integration test pins.
 _STATUS_GLYPH = {"pass": "✅", "fail": "❌", "skip": "⏭️"}
@@ -207,7 +208,7 @@ def _tcc_row(field: str, label: str, platform_bound: bool, ctx: Report) -> _Row:
         off_platform = platform_bound and ctx["plat"] != "darwin"
         return "skip", f"not applicable on {ctx['plat']}" if off_platform else f"{field} field absent from check_permissions", {}
     if not granted:
-        return "fail", f"{label} is not granted.", {"hint": _TCC_HINT.format(label), "data": {field: False}}
+        return "fail", f"{label} is not granted.", {"hint": f"{_TCC_HINT.format(label)} {stale_tcc_grant_hint(field)}", "data": {field: False}}
     data = {field: True, **({"screen_recording_capturable": perms.get("screen_recording_capturable")} if field == "screen_recording" else {})}
     if data.get("screen_recording_capturable") is False:  # the granted-but-not-capturable row wins over plain pass
         return "fail", "Screen Recording granted but not capturable.", {"hint": (

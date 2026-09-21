@@ -18,6 +18,22 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 
 _RUNTIME_PLATFORMS = frozenset({"darwin", "win32", "linux"})  # mirrors the toolset platform_gate
 _BOOLS = ("accessibility", "screen_recording", "screen_recording_capturable")
+_TCC_SERVICES = {"accessibility": "Accessibility", "screen_recording": "ScreenCapture"}  # status field -> tccutil service
+
+def stale_tcc_grant_hint(*missing: str) -> str:
+    """Recovery text for grants the daemon reports missing while System Settings shows the CuaDriver toggle ON.
+
+    TCC keys each row to the app's code-signing requirement, so a row written for an earlier CuaDriver build can
+    stop matching after a driver update: the toggle stays ON, the daemon is denied, and flipping the toggle does
+    not rewrite the requirement (trycua/cua#3170; the cua-driver >= 0.22 installer repairs this on update). Only a
+    reset + re-grant recovers it, so the hint names the exact rows for the *missing* status fields.
+    """
+    resets = " && ".join(f"tccutil reset {_TCC_SERVICES[f]} com.trycua.driver" for f in missing if f in _TCC_SERVICES)
+    if not resets:
+        return ""
+    return ("If System Settings already shows CuaDriver ON, the stored grant is stale (it no longer matches the installed "
+            f"driver's signature): run `{resets}`, then `hermes computer-use permissions grant`. "
+            "`hermes computer-use install --upgrade` moves to a driver whose installer repairs stale rows on update.")
 
 def _child_env() -> Dict[str, str]:
     """cua-driver child env (telemetry policy + provider secrets stripped); ``os.environ`` on import error.

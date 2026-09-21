@@ -368,7 +368,8 @@ def _sweep_orphaned_session_rows() -> list[str]:
                 candidates += [getattr(session.get("agent"), "session_id", None), session.get("session_key")]
             live_ids.update(str(c) for c in candidates if c)
     swept = db.sweep_orphaned_sessions(
-        max_idle_seconds=_SESSION_TTL_S, sources=_ORPHAN_SWEEP_SOURCES, exclude_ids=tuple(sorted(live_ids)))
+        max_idle_seconds=_SESSION_TTL_S, sources=_ORPHAN_SWEEP_SOURCES,
+        exclude_ids=tuple(sorted(live_ids)), exclude_pinned=True)
     if swept:
         logger.info(
             "Closed %d orphaned session row(s) from a previous gateway process (startup_orphan_reap): %s",

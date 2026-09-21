@@ -49,7 +49,7 @@ export function useCanonicalFiles({
 
     return {
       binding: { ...binding }, authority: authority ? { ...authority } : undefined,
-      sourceCurrent: () => sourceCurrent() && (authorityCurrent?.() ?? true)
+      sourceCurrent: () => sourceCurrent() && (binding.isCurrent?.() ?? true) && (authorityCurrent?.() ?? true)
     }
   })
 

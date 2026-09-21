@@ -359,6 +359,30 @@ it('browses current backend metadata through registry, real client and named Sav
   expect(request.mock.calls.every(call => call[0].connectionId === binding.connectionId && call[0].targetProfile === binding.profile)).toBe(true)
 })
 
+it.each([false, true])('fences native Save after digest when the captured route expires: %s', async expire => {
+  let current = true
+  const digest = deferred<ArrayBuffer>()
+  const receipt = await downloadReceipt()
+  const hash = await webcrypto.subtle.digest('SHA-256', new Uint8Array([65]))
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.attachment.list') { return filePage() }
+
+    if (method === 'groups.attachment.download') { return receipt }
+    throw new Error(`Unexpected method ${method}`)
+  })
+  render(<CanonicalGroupFiles {...props} binding={{ ...FILE_BINDING, isCurrent: () => current }} />)
+  openFiles()
+  const held = vi.spyOn(crypto.subtle, 'digest').mockReturnValueOnce(digest.promise)
+  fireEvent.click(await screen.findByRole('button', { name: 'Download: file-20.txt' }))
+  await waitFor(() => expect(held).toHaveBeenCalledOnce())
+  current = !expire
+  await act(async () => {
+    digest.resolve(hash)
+    await new Promise(resolve => setTimeout(resolve, 0))
+  })
+  expect(observed.click).toHaveBeenCalledTimes(expire ? 0 : 1)
+})
+
 it.each(['authority', 'denied', 'missing', 'malformed', 'unchanged', 'stale-authority', 'stale-denied'] as const)(
   'the current workspace writer fences Save before React commit: %s', async change => {
     const digest = deferred<ArrayBuffer>()

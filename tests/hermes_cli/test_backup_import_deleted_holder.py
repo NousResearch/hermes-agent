@@ -19,9 +19,7 @@ import pytest
 
 from hermes_cli import backup as backup_mod
 
-pytestmark = pytest.mark.skipif(
-    not sys.platform.startswith("linux"), reason="/proc holder scan is Linux-only"
-)
+pytestmark = pytest.mark.linux_only
 
 _HOLDER = (
     "import sqlite3, sys, time\n"

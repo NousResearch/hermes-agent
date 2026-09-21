@@ -6,7 +6,6 @@ Also tests the vision_tools and browser_tool model override env vars.
 
 import os
 import sys
-from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -16,11 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def _run_auxiliary_bridge(config_dict, monkeypatch):
-    """Simulate the auxiliary config → env var bridging logic shared by CLI and gateway.
-
-    This mirrors the code in cli.py load_cli_config() and gateway/run.py.
-    Both use the same pattern; we test it once here.
-    """
+    """Exercise the CLI's real config merge and auxiliary environment bridge."""
     # Clear env vars
     for key in (
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
@@ -30,41 +25,15 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
     ):
         monkeypatch.delenv(key, raising=False)
 
-    # Compression config is read directly from config.yaml — no env var bridging.
+    from hermes_cli.cli_config_load import (
+        _cli_config_defaults,
+        _merge_file_config,
+        _mirror_config_to_env,
+    )
 
-    # Auxiliary bridge
-    auxiliary_cfg = config_dict.get("auxiliary", {})
-    if auxiliary_cfg and isinstance(auxiliary_cfg, dict):
-        aux_task_env = {
-            "vision": {
-                "provider": "AUXILIARY_VISION_PROVIDER",
-                "model": "AUXILIARY_VISION_MODEL",
-                "base_url": "AUXILIARY_VISION_BASE_URL",
-                "api_key": "AUXILIARY_VISION_API_KEY",
-            },
-            "approval": {
-                "provider": "AUXILIARY_APPROVAL_PROVIDER",
-                "model": "AUXILIARY_APPROVAL_MODEL",
-                "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-                "api_key": "AUXILIARY_APPROVAL_API_KEY",
-            },
-        }
-        for task_key, env_map in aux_task_env.items():
-            task_cfg = auxiliary_cfg.get(task_key, {})
-            if not isinstance(task_cfg, dict):
-                continue
-            prov = str(task_cfg.get("provider", "")).strip()
-            model = str(task_cfg.get("model", "")).strip()
-            base_url = str(task_cfg.get("base_url", "")).strip()
-            api_key = str(task_cfg.get("api_key", "")).strip()
-            if prov and prov != "auto":
-                os.environ[env_map["provider"]] = prov
-            if model:
-                os.environ[env_map["model"]] = model
-            if base_url:
-                os.environ[env_map["base_url"]] = base_url
-            if api_key:
-                os.environ[env_map["api_key"]] = api_key
+    defaults = _cli_config_defaults()
+    _merge_file_config(defaults, config_dict)
+    _mirror_config_to_env(defaults, False)
 
 
 # ── Config bridging tests ────────────────────────────────────────────────────
@@ -119,49 +88,48 @@ class TestAuxiliaryConfigBridge:
 # ── Gateway bridge parity test ───────────────────────────────────────────────
 
 
-class TestGatewayBridgeCodeParity:
-    """Verify the gateway/run.py config bridge contains the auxiliary section."""
+class TestGatewayBridgeBehavior:
+    """Exercise the gateway's actual auxiliary config-to-environment bridge."""
 
-    def test_gateway_has_auxiliary_bridge(self):
-        """The gateway config bridge must include auxiliary.* bridging.
+    def test_gateway_bridges_builtin_and_plugin_auxiliary_tasks(self, monkeypatch):
+        for key in (
+            "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
+            "AUXILIARY_APPROVAL_PROVIDER", "AUXILIARY_APPROVAL_MODEL",
+            "AUXILIARY_REVIEW_PROVIDER", "AUXILIARY_REVIEW_MODEL",
+        ):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_auxiliary_tasks",
+            lambda: [{"key": "review"}],
+        )
 
-        After the plugin-aux-task API refactor (2026-05), gateway env-var
-        names are derived dynamically (``AUXILIARY_<KEY_UPPER>_*``) so the
-        literal strings ``AUXILIARY_VISION_PROVIDER`` etc. no longer appear
-        in source. Assert the dynamic shape and the canonical built-in keys
-        bridged set instead.
-        """
-        gateway_path = Path(__file__).parent.parent.parent / "gateway" / "run.py"
-        # Pin encoding to UTF-8: source files in this repo are UTF-8, but
-        # Path.read_text() defaults to the system locale — which is cp1252
-        # on most Western Windows installs and crashes as soon as the file
-        # contains any non-ASCII byte (e.g. an em-dash in a comment).
-        content = gateway_path.read_text(encoding="utf-8")
-        # Dynamic env-var derivation present
-        assert 'f"AUXILIARY_{_upper}_PROVIDER"' in content
-        # MODEL / BASE_URL / API_KEY are bridged through one generalized
-        # field->suffix loop; assert the loop table and the dynamic key shape.
-        assert 'f"AUXILIARY_{_upper}_{_suffix}"' in content
-        for field, suffix in (("model", "MODEL"), ("base_url", "BASE_URL"), ("api_key", "API_KEY")):
-            assert f'("{field}", "{suffix}")' in content
-        # Built-in bridged keys present
-        assert "_aux_bridged_keys" in content
-        assert '"vision"' in content
-        assert '"approval"' in content
-        # web_extract no longer uses an auxiliary LLM (truncate-and-store) —
-        # it must NOT be in the bridged set.
-        assert '_aux_bridged_keys = {"vision", "approval"}' in content
-        # Plugin-aux-task discovery hooked into bridging
-        assert "get_plugin_auxiliary_tasks" in content
+        from gateway.run import _bridge_auxiliary_config_to_env
 
-    def test_gateway_no_compression_env_bridge(self):
-        """Gateway should NOT bridge compression config to env vars (config-only)."""
-        gateway_path = Path(__file__).parent.parent.parent / "gateway" / "run.py"
-        # See note in test_gateway_has_auxiliary_bridge — pin UTF-8 so the
-        # test runs on Windows where the default locale is cp1252.
-        content = gateway_path.read_text(encoding="utf-8")
-        assert "CONTEXT_COMPRESSION_PROVIDER" not in content
-        assert "CONTEXT_COMPRESSION_MODEL" not in content
+        _bridge_auxiliary_config_to_env({
+            "vision": {"provider": "openai", "model": "vision-model"},
+            "approval": {"provider": "nous", "model": "approval-model"},
+            "review": {"provider": "openrouter", "model": "review-model"},
+        })
+
+        assert os.environ["AUXILIARY_VISION_PROVIDER"] == "openai"
+        assert os.environ["AUXILIARY_VISION_MODEL"] == "vision-model"
+        assert os.environ["AUXILIARY_APPROVAL_PROVIDER"] == "nous"
+        assert os.environ["AUXILIARY_APPROVAL_MODEL"] == "approval-model"
+        assert os.environ["AUXILIARY_REVIEW_PROVIDER"] == "openrouter"
+        assert os.environ["AUXILIARY_REVIEW_MODEL"] == "review-model"
+
+    def test_gateway_keeps_compression_settings_out_of_auxiliary_environment(self, monkeypatch):
+        monkeypatch.delenv("CONTEXT_COMPRESSION_PROVIDER", raising=False)
+        monkeypatch.delenv("CONTEXT_COMPRESSION_MODEL", raising=False)
+
+        from gateway.run import _bridge_config_to_env
+
+        _bridge_config_to_env({
+            "compression": {"provider": "openai", "model": "compression-model"}
+        })
+
+        assert "CONTEXT_COMPRESSION_PROVIDER" not in os.environ
+        assert "CONTEXT_COMPRESSION_MODEL" not in os.environ
 
 
 # ── Vision model override tests ──────────────────────────────────────────────
@@ -228,25 +196,27 @@ class TestDefaultConfigShape:
 
 
 class TestCLIDefaultsHaveAuxiliaryKeys:
-    """Verify cli.py load_cli_config() defaults dict does NOT include auxiliary
-    (it comes from config.yaml deep merge, not hardcoded defaults)."""
+    """Verify CLI config values reach the environment through the real loader helpers."""
 
-    def test_cli_defaults_can_merge_auxiliary(self):
-        """The load_cli_config deep merge logic handles keys not in defaults.
-        Verify auxiliary would be picked up from config.yaml."""
-        # This is a structural assertion: cli.py's second-pass loop
-        # carries over keys from file_config that aren't in defaults.
-        # So auxiliary config from config.yaml gets merged even though
-        # cli.py's defaults dict doesn't define it.
-        import inspect
+    def test_cli_config_file_auxiliary_values_are_bridged(self, monkeypatch):
+        for key in (
+            "AUXILIARY_APPROVAL_PROVIDER", "AUXILIARY_APPROVAL_MODEL",
+            "AUXILIARY_APPROVAL_BASE_URL", "AUXILIARY_APPROVAL_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
 
-        import cli as _cli_mod
-        # load_cli_config lives in hermes_cli/cli_config_load.py (re-exported by
-        # ``cli``); follow the function to its source file rather than pinning
-        # cli.py. See note in test_gateway_has_auxiliary_bridge — pin UTF-8 so
-        # the test runs on Windows where the default locale is cp1252.
-        source = Path(inspect.getsourcefile(_cli_mod.load_cli_config)).read_text(encoding="utf-8")
-        assert "auxiliary_config = defaults.get(\"auxiliary\"" in source
-        assert "_AUXILIARY_TASK_ENV" in source
-        assert "AUXILIARY_VISION_PROVIDER" in source
-        assert "AUXILIARY_VISION_MODEL" in source
+        _run_auxiliary_bridge({
+            "auxiliary": {
+                "approval": {
+                    "provider": "nous",
+                    "model": "gemini-2.5-flash",
+                    "base_url": "https://example.test/v1",
+                    "api_key": "test-key",
+                }
+            }
+        }, monkeypatch)
+
+        assert os.environ["AUXILIARY_APPROVAL_PROVIDER"] == "nous"
+        assert os.environ["AUXILIARY_APPROVAL_MODEL"] == "gemini-2.5-flash"
+        assert os.environ["AUXILIARY_APPROVAL_BASE_URL"] == "https://example.test/v1"
+        assert os.environ["AUXILIARY_APPROVAL_API_KEY"] == "test-key"

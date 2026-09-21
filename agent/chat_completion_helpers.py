@@ -2102,14 +2102,16 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
+def try_activate_fallback(
+    agent, reason: "FailoverReason | None" = None, reset_at=None, *, retry_exhausted: bool = False,
+) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     if reason == FailoverReason.unsupported_thinking:
         return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
-    if switch_deferred_by_reset(agent, reason, reset_at):
+    if switch_deferred_by_reset(agent, reason, reset_at, retry_exhausted=retry_exhausted):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:

@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { VoiceLiveSession } from './voice-live'
-vi.mock('@/api/client', () => ({ profileScoped: () => ({}) }))
+vi.mock('@/api/client', () => ({ profileScoped: () => ({}), ownerScoped: () => ({}) }))
 vi.mock('@/hermes', () => ({ hermesApi: async () => ({ ok: true, transport: { sdp: 'answer' } }) }))
 afterEach(() => {
   vi.unstubAllGlobals()

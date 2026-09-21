@@ -846,7 +846,10 @@ class _ChatTurn:
     stop_event: Optional[threading.Event] = None
     tts_normal_exit: bool = False
     voice_prefix: str = ""
-from hermes_cli.cli_conversation_worktree_mixin import CLIConversationWorktreeMixin
+from hermes_cli.cli_conversation_worktree_mixin import (
+    CLIConversationWorktreeMixin,
+    _should_use_legacy_worktree,
+)
 from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
 
@@ -916,14 +919,17 @@ class HermesCLI(CLIConversationWorktreeMixin, CLIInitMixin, CLITuiRuntimeMixin, 
 
     def _release_active_session(self) -> None:
         lease = getattr(self, "_active_session_lease", None)
-        if lease is None:
-            return
-        try:
-            lease.release()
-        except Exception:
-            logger.debug("Failed to release active session slot", exc_info=True)
-        finally:
-            self._active_session_lease = None
+        if lease is not None:
+            try:
+                lease.release()
+            except Exception:
+                logger.debug("Failed to release active session slot", exc_info=True)
+            finally:
+                self._active_session_lease = None
+        self._retry_failed_conversation_root_leases()
+        root_lease = getattr(self, "_conversation_root_lease", None)
+        self._conversation_root_lease = None
+        self._release_conversation_root_lease(root_lease, context="CLI shutdown")
 
     _PET_FRAME_INTERVAL = 0.16
     _PET_CFG_INTERVAL = 2.5
@@ -1570,7 +1576,9 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
     Returns a join callable that publishes ``_active_worktree``/TERMINAL_CWD and
     schedules stale-worktree GC, or None when no worktree is wanted.
     """
-    if list_tools or list_toolsets or not (worktree or w or CLI_CONFIG.get("worktree", False)):
+    if list_tools or list_toolsets or not _should_use_legacy_worktree(
+        worktree=worktree, shorthand=w, config=CLI_CONFIG
+    ):
         return None
     # Overlap tool discovery with the I/O-bound worktree setup so show_banner() hits a warm
     # cache (~0.4s). Only on the -w path: plain `hermes` has no I/O wait to hide.

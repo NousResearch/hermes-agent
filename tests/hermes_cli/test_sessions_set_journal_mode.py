@@ -47,8 +47,7 @@ def test_set_journal_mode_converts_wal_store_offline(tmp_path, monkeypatch, caps
     assert "wal → delete" in capsys.readouterr().out
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="foreign_state_db_holders has no Windows scan; the --force refusal covers that lane")
+@pytest.mark.linux_only
 def test_set_journal_mode_refuses_while_another_process_holds_the_store(tmp_path, monkeypatch, capsys):
     db = tmp_path / "state.db"
     _wal_store(db)

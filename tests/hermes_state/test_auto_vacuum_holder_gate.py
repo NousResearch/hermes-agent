@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="holder scan is unavailable on Windows")
+pytestmark = pytest.mark.linux_only
 
 _HOLDER = (
     "import sqlite3, sys\n"

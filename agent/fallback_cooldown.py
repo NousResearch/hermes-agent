@@ -21,12 +21,15 @@ def _provider_reset_delay(reset_at) -> float | None:
     return None
 
 
-def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -> bool:
+def switch_deferred_by_reset(
+    agent, reason: "FailoverReason | None", reset_at, *, retry_exhausted: bool = False,
+) -> bool:
     """Opt-in ``fallback.min_switch_reset_seconds`` (default 0 = off, #117484): when the primary's
     rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so
-    the fallback walk is skipped and the retry loop's own backoff rides out the window. Only for
-    rate-limit failovers leaving the primary with a valid future ``reset_at``."""
-    if reason not in _RATE_LIMIT_FAILOVER_REASONS or getattr(agent, "_fallback_activated", False):
+    the fallback walk is skipped while retries remain. Once retries are exhausted, allow the
+    configured fallback to run. Only applies to rate-limit failovers leaving the primary with a
+    valid future ``reset_at``."""
+    if retry_exhausted or reason not in _RATE_LIMIT_FAILOVER_REASONS or getattr(agent, "_fallback_activated", False):
         return False
     try:
         from hermes_cli.config import load_config

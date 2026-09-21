@@ -67,9 +67,8 @@ import crypto from "node:crypto";
 import { once } from "node:events";
 import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 import { chooseSendFormat } from "./send-format.mjs";
+import { probeUpstream as probeUpstreamWithSdk } from "./upstream-probe.mjs";
 import {
-  classifyProbeRejection,
-  createProbeMessageId,
   shouldProbe,
   isZombieSuspect,
 } from "./stream-staleness.mjs";
@@ -731,36 +730,13 @@ function inboundStreamErrorMessage(e) {
 //     shared lines can be legitimately quiet for hours.
 
 async function probeUpstream() {
-  if (typeof app?.stop !== "function") {
-    return { alive: false, hung: false, reason: "spectrum app not constructed" };
-  }
-  const probeId = createProbeMessageId();
-  let timer = null;
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(
-      () => resolve({ alive: false, hung: true, reason: "probe timed out" }),
-      STREAM_PROBE_TIMEOUT_MS
-    );
-    timer.unref();
+  return probeUpstreamWithSdk({
+    app,
+    imessage,
+    spaceId: PROBE_SPACE_ID,
+    timeoutMs: STREAM_PROBE_TIMEOUT_MS,
+    staleness,
   });
-  const attempt = (async () => {
-    try {
-      const im = imessage(app);
-      const space = await im.space.get(PROBE_SPACE_ID);
-      await space.getMessage(probeId);
-      // Resolving for a synthetic id is unexpected but is still a completed
-      // round-trip: the channel is alive.
-      return { alive: true, hung: false, reason: "round-trip completed" };
-    } catch (e) {
-      const verdict = classifyProbeRejection(e);
-      return { alive: verdict.alive, hung: false, reason: verdict.reason };
-    }
-  })();
-  const outcome = await Promise.race([attempt, timeout]);
-  if (timer) clearTimeout(timer);
-  staleness.lastProbeAt = Date.now();
-  staleness.lastProbeOutcome = outcome.alive ? "alive" : "inconclusive";
-  return outcome;
 }
 
 let watchdogProbeInFlight = false;

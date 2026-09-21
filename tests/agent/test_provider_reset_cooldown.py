@@ -122,3 +122,55 @@ def test_eager_rate_limit_fallback_forwards_extracted_reset_time():
     agent._try_activate_fallback.assert_called_once_with(
         reason=FailoverReason.rate_limit, reset_at=reset_at,
     )
+
+
+def test_exhausted_retries_allow_fallback_before_imminent_reset(monkeypatch):
+    """An imminent provider reset may defer fallback during retries, but not after exhaustion."""
+    from agent.turn_api_error import settle_unrecovered_error
+
+    agent = _agent_with_one_fallback()
+    retry = SimpleNamespace(primary_recovery_attempted=True)
+    api_error = SimpleNamespace(status_code=429, message="rate limited")
+    classified = SimpleNamespace(
+        reason=FailoverReason.rate_limit,
+        retryable=True,
+        should_compress=False,
+        should_fallback=True,
+        billing_unverified=False,
+    )
+    reset_at = 1_700_000_030
+
+    with (
+        patch("agent.auxiliary_client.resolve_provider_client", return_value=(_fallback_client(), "gpt-5.5")),
+        patch("hermes_cli.config.load_config", return_value={"fallback": {"min_switch_reset_seconds": 120}}),
+        patch("agent.fallback_cooldown.time.time", return_value=1_700_000_000),
+        patch("agent.conversation_loop._arm_fallback_restart", return_value="fallback prompt"),
+    ):
+        verdict = settle_unrecovered_error(
+            agent,
+            api_error=api_error,
+            classified=classified,
+            _retry=retry,
+            status_code=429,
+            error_msg="rate limited",
+            is_context_length_error=False,
+            is_rate_limited=True,
+            _is_zai_coding_overload=False,
+            _provider="openrouter",
+            _base="https://openrouter.ai/api/v1",
+            _model="primary/model",
+            messages=[],
+            api_messages=[],
+            api_kwargs={},
+            active_system_prompt="system",
+            conversation_history=[],
+            approx_tokens=0,
+            retry_count=3,
+            max_retries=3,
+            compression_attempts=0,
+            api_call_count=1,
+            error_context={"reset_at": reset_at},
+        )
+
+    assert verdict.action == "break"
+    assert agent.model == "gpt-5.5"

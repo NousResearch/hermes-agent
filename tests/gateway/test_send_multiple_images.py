@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 def _run(coro):
@@ -270,6 +270,119 @@ class TestDiscordMultiImage:
         _run(adapter.send_image("67890", public_url, "caption"))
 
         mock_channel.send.assert_not_awaited()
+
+    def _forum_channel(self, thread):
+        forum_channel = MagicMock()
+        forum_channel.id = 999
+        forum_channel.create_thread = AsyncMock(return_value=thread)
+        return forum_channel
+
+    def test_forum_batch_failure_is_not_reported_delivered(self, adapter, tmp_path, monkeypatch):
+        """_forum_post_file reports failure in-band (thread created with no
+        attachments) rather than raising; send_multiple_images must not discard
+        the result and mark the chunk delivered."""
+        img = tmp_path / "pic.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        thread = types.SimpleNamespace(
+            id=7,
+            message=types.SimpleNamespace(id=8, attachments=[]),
+            thread=types.SimpleNamespace(id=7, send=AsyncMock()),
+        )
+        forum_channel = self._forum_channel(thread)
+        adapter._client.get_channel = MagicMock(return_value=forum_channel)
+        adapter._is_forum_parent = MagicMock(return_value=True)
+        fallback = AsyncMock(return_value=SendResult(success=False, error="per-image send failed"))
+        monkeypatch.setattr(BasePlatformAdapter, "send_multiple_images", fallback)
+
+        result = _run(adapter.send_multiple_images("99999", [(f"file://{img}", "caption")]))
+
+        assert result.success is False
+        forum_channel.create_thread.assert_awaited_once()
+        fallback.assert_awaited_once()
+
+    def test_forum_batch_thread_error_falls_back_per_image(self, adapter, tmp_path, monkeypatch):
+        """create_thread raising lands in _forum_post_file's SendResult too; the
+        same per-image fallback an exception would hit must run."""
+        img = tmp_path / "pic.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        forum_channel = MagicMock()
+        forum_channel.id = 999
+        forum_channel.create_thread = AsyncMock(side_effect=RuntimeError("forums unavailable"))
+        adapter._client.get_channel = MagicMock(return_value=forum_channel)
+        adapter._is_forum_parent = MagicMock(return_value=True)
+        fallback = AsyncMock(return_value=SendResult(success=True, message_id="fb1"))
+        monkeypatch.setattr(BasePlatformAdapter, "send_multiple_images", fallback)
+
+        result = _run(adapter.send_multiple_images("99999", [(f"file://{img}", "caption")]))
+
+        assert result.success is True
+        fallback.assert_awaited_once()
+
+    def test_forum_batch_success_reports_delivered(self, adapter, tmp_path, monkeypatch):
+        """Control: a successful forum post reports delivered and never touches
+        the per-image fallback."""
+        img = tmp_path / "pic.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        thread = types.SimpleNamespace(
+            id=7,
+            message=types.SimpleNamespace(id=8, attachments=[types.SimpleNamespace(filename="pic.png")]),
+            thread=types.SimpleNamespace(id=7, send=AsyncMock()),
+        )
+        forum_channel = self._forum_channel(thread)
+        adapter._client.get_channel = MagicMock(return_value=forum_channel)
+        adapter._is_forum_parent = MagicMock(return_value=True)
+        fallback = AsyncMock()
+        monkeypatch.setattr(BasePlatformAdapter, "send_multiple_images", fallback)
+
+        result = _run(adapter.send_multiple_images("99999", [(f"file://{img}", "caption")]))
+
+        assert result.success is True
+        fallback.assert_not_awaited()
+
+    def test_forum_batch_failure_real_per_image_fallback(self, adapter, tmp_path):
+        """E2E through the real fallback: a failed forum batch must run the base
+        per-image loop, so each file lands as its own forum thread."""
+        img = tmp_path / "pic.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        empty_starter = types.SimpleNamespace(
+            id=7,
+            message=types.SimpleNamespace(id=8, attachments=[]),
+            thread=types.SimpleNamespace(id=7, send=AsyncMock()),
+        )
+        ok_thread = types.SimpleNamespace(
+            id=9,
+            message=types.SimpleNamespace(id=10, attachments=[types.SimpleNamespace(filename="pic.png")]),
+            thread=types.SimpleNamespace(id=9, send=AsyncMock()),
+        )
+        forum_channel = MagicMock()
+        forum_channel.id = 999
+        forum_channel.create_thread = AsyncMock(side_effect=[empty_starter, ok_thread, ok_thread])
+        adapter._client.get_channel = MagicMock(return_value=forum_channel)
+        adapter._is_forum_parent = MagicMock(return_value=True)
+
+        result = _run(adapter.send_multiple_images("99999", [(f"file://{img}", "a"), (f"file://{img}", "b")]))
+
+        assert result.success is True
+        calls = forum_channel.create_thread.await_args_list
+        assert len(calls) == 3  # 1 failed batch + 2 per-image posts
+        assert len(calls[0].kwargs["files"]) == 2
+        assert all(len(c.kwargs["files"]) == 1 for c in calls[1:])
+
+    def test_forum_batch_and_fallback_both_fail_reports_failure(self, adapter, tmp_path):
+        """E2E honest-failure arm: batch fails and every per-image forum post
+        fails too, so the batch result must be success=False, not delivered."""
+        img = tmp_path / "pic.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        forum_channel = MagicMock()
+        forum_channel.id = 999
+        forum_channel.create_thread = AsyncMock(side_effect=RuntimeError("forums down"))
+        adapter._client.get_channel = MagicMock(return_value=forum_channel)
+        adapter._is_forum_parent = MagicMock(return_value=True)
+
+        result = _run(adapter.send_multiple_images("99999", [(f"file://{img}", "a"), (f"file://{img}", "b")]))
+
+        assert result.success is False
+        assert forum_channel.create_thread.await_count == 3  # batch + both retries
 
 
 # ---------------------------------------------------------------------------

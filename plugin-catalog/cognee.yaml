@@ -1,0 +1,23 @@
+name: cognee
+repo: https://github.com/topoteretes/cognee-integrations
+subdir: integrations/hermes-agent
+sha: f9355258435836d67fa4233e4098ad9a85568e8d
+version: "1.2.2"
+description: Knowledge-graph memory for Hermes — recall, remember, forget, and code search, backed by a local cognee server or Cognee Cloud.
+maintainer: topoteretes
+tier: community
+category: memory
+docs_url: https://github.com/topoteretes/cognee-integrations/tree/main/integrations/hermes-agent#readme
+readme: true
+capabilities:
+  provides_tools:
+    - cognee_recall
+    - cognee_remember
+    - cognee_forget
+    - cognee_switch_dataset
+    - cognee_code_search
+  provides_hooks:
+    - on_session_end
+    - on_memory_write
+  provides_middleware: []
+  requires_env: []

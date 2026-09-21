@@ -82,6 +82,12 @@ def _blocked_compress_reason(
     except Exception:
         return None
     if attempts_spent is not None and _should_now and not _reason:
+        # Engine says RUN with no reason, yet the caller skipped: usually the
+        # post-compression latch (awaiting_real_usage) rather than a spent
+        # budget — "attempts_exhausted:0" sent the user hunting for a config
+        # knob that didn't exist (2026-09-21 eBay-bot incident).
+        if bool(getattr(compressor, "awaiting_real_usage_after_compression", False)):
+            return "awaiting_real_usage"
         return f"attempts_exhausted:{attempts_spent}"
     return _reason
 

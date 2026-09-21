@@ -15,6 +15,7 @@ from tools.registry import tool_error
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
+from tools import mcp_tool_recovery as _recovery
 from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
@@ -27,6 +28,11 @@ _MISSING = object()
 _NEEDS_REAUTH_MSG = (
     "MCP server '{s}' requires re-authentication. Run `hermes mcp login {s}` (or delete the tokens file under "
     "~/.hermes/mcp-tokens/ and restart). Do NOT retry this tool — ask the user to re-authenticate.")
+_AUTH_RECOVERY_DEFERRED_MSG = (
+    "MCP server '{s}' rejected this call's credentials, and this turn has already spent its MCP recovery wait "
+    "budget, so token recovery was NOT attempted. This is not a verdict that re-authentication is needed. Do NOT "
+    "retry this tool again in this turn — continue with other work, or tell the user the '{s}' call could not be "
+    "completed right now; the next turn attempts the recovery.")
 _STDIO_NO_RESPAWN_MSG = (
     "MCP server '{s}' stdio subprocess had exited (this is not a timeout — the call never reached the server). A "
     "respawn was requested but no fresh session came back within {t:.0f}s. Wait a few seconds before retrying; if it "
@@ -101,6 +107,21 @@ def _check_circuit_breaker(server_name: str) -> Optional[str]:
                       f"this tool yet — use alternative approaches or ask the user to check the MCP server.")
 
 
+def _budgeted_session_wait(server, requested: float) -> bool:
+    """The brief wait for a reconnect to publish its session, charged to the turn's recovery
+    budget; a spent budget skips it (the caller still signals the reconnect)."""
+    with _recovery._recovery_wait("session-ready", requested) as budget:
+        return budget > 0.0 and _loop._wait_for_server_session_ready(server, timeout=budget)
+
+
+def _budgeted_reconnect_wait(op: str, requested: float, server_name: str, srv, op_description: str) -> bool:
+    """``_signal_reconnect_and_wait`` under the turn's recovery budget. A zero budget still
+    SIGNALS the reconnect — the server task rebuilds in the background — and only the wait for it
+    is skipped."""
+    with _recovery._recovery_wait(op, requested) as budget:
+        return _loop._signal_reconnect_and_wait(server_name, srv, op_description=op_description, timeout=budget)
+
+
 def _acquire_call_server(server_name: str, tool_timeout: float):
     """``(server, None)`` when a call may be dispatched, else ``(None, error)``. No session: a
     reconnect may be completing, so wait briefly before a breaker strike; still down -> ask the
@@ -108,8 +129,7 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     from tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
     not_connected = tool_error(f"MCP server '{server_name}' is not connected")
     server = _discovery._get_connected_server_for_call(server_name)
-    wait = min(5.0, float(tool_timeout or 5.0))
-    if server and (server.session or _loop._wait_for_server_session_ready(server, timeout=wait)):
+    if server and (server.session or _budgeted_session_wait(server, min(5.0, float(tool_timeout or 5.0)))):
         return server, None
     _core._bump_server_error(server_name)
     if server and _loop._signal_reconnect(server):
@@ -176,7 +196,12 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         return None
     from tools.mcp_oauth_manager import get_manager
     try:
-        recovered = _loop._run_on_mcp_loop(lambda: get_manager().handle_401(server_name, None), timeout=10)
+        with _recovery._recovery_wait("oauth-recovery", 10.0) as budget:
+            if budget <= 0.0:
+                # No budget left to sit on the OAuth manager. NOT the needs_reauth verdict: recovery was
+                # never attempted, and a refreshable token must not send the user to `hermes mcp login`.
+                return _strike(server_name, _AUTH_RECOVERY_DEFERRED_MSG.format(s=server_name))
+            recovered = _loop._run_on_mcp_loop(lambda: get_manager().handle_401(server_name, None), timeout=budget)
     except Exception as rec_exc:
         logger.warning("MCP OAuth '%s': recovery attempt failed: %s", server_name, rec_exc)
         recovered = False
@@ -184,8 +209,8 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         srv = _lookup_reconnectable_server(server_name)
         # Recovery + reconnect is independent evidence of viability: close the breaker here, not only on
         # retry success (else a failing retry pins it open forever).
-        if srv is not None and _loop._signal_reconnect_and_wait(
-                server_name, srv, op_description=f"{op_description} after OAuth recovery", timeout=15):
+        if srv is not None and _budgeted_reconnect_wait(
+                "oauth-reconnect", 15.0, server_name, srv, f"{op_description} after OAuth recovery"):
             _core._reset_server_error(server_name)
         result = _retry_once(server_name, retry_call, op_description, "auth recovery")
         if result is not None:
@@ -216,8 +241,8 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
     if call_may_have_side_effects:
         # Even without a signallable server the outcome is still uncertain: a generic "call failed"
         # would invite the model to re-invoke a write that may already have landed.
-        reconnected = srv is not None and _loop._signal_reconnect_and_wait(
-            server_name, srv, op_description=f"{op_description} (write, no auto-retry)", timeout=15)
+        reconnected = srv is not None and _budgeted_reconnect_wait(
+            "session-expired-reconnect", 15.0, server_name, srv, f"{op_description} (write, no auto-retry)")
         if reconnected:  # session state failed, not server health: no breaker strike
             _core._reset_server_error(server_name)
         else:
@@ -232,9 +257,10 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
         return None
     logger.info("MCP server '%s': %s failed with session-expired error (%s); signalling transport reconnect "
                 "and retrying once.", server_name, op_description, exc)
-    if not _loop._signal_reconnect_and_wait(server_name, srv, op_description=op_description, timeout=15):
-        logger.warning("MCP server '%s': reconnect did not ready within 15s after session-expired error; "
-                       "falling through to error response.", server_name)
+    if not _budgeted_reconnect_wait("session-expired-reconnect", 15.0, server_name, srv, op_description):
+        logger.warning("MCP server '%s': reconnect did not ready within the recovery wait after session-expired "
+                       "error; falling through to error response. The transport rebuild continues in the "
+                       "background.", server_name)
         return None
     return _retry_once(server_name, retry_call, op_description, "session reconnect")
 
@@ -263,15 +289,16 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
     """
     if not isinstance(exc, _StdioChildExited):
         return None
-    reconnected = False
+    reconnected, waited = False, _core._STDIO_RESPAWN_WAIT_SEC
     srv = _lookup_reconnectable_server(server_name)
     if srv is not None:
         action = "reconnecting without replay" if exc.in_flight else "respawning and retrying once"
         logger.info("MCP server '%s': %s found the stdio subprocess dead (%s); %s.",
                     server_name, op_description, exc, action)
         if _mcp_loop_running():
-            reconnected = _loop._signal_reconnect_and_wait(
-                server_name, srv, op_description=op_description, timeout=_core._STDIO_RESPAWN_WAIT_SEC)
+            with _recovery._recovery_wait("stdio-respawn", _core._STDIO_RESPAWN_WAIT_SEC) as waited:
+                reconnected = _loop._signal_reconnect_and_wait(
+                    server_name, srv, op_description=op_description, timeout=waited)
         else:  # No MCP loop to wait on (non-async adapters, tests): still request the respawn.
             _loop._signal_reconnect(srv)
     if exc.in_flight:
@@ -281,7 +308,7 @@ def _handle_stdio_child_exited_and_retry(server_name: str, exc: Exception, retry
             outcome_uncertain=True,
         )
     if not reconnected:
-        return _strike(server_name, _STDIO_NO_RESPAWN_MSG.format(s=server_name, t=_core._STDIO_RESPAWN_WAIT_SEC))
+        return _strike(server_name, _STDIO_NO_RESPAWN_MSG.format(s=server_name, t=waited))
     try:
         return _record_call_outcome(server_name, retry_call())
     except _StdioChildExited as retry_exc:

@@ -20,10 +20,19 @@ import { $gateway } from './gateway'
 const WIRE = {
   deadline_at: 1_800_000_000,
   op_id: 'op-1',
+  seq: 1,
   tool_call_id: 'call-1',
   timeout_seconds: 120,
   targets: [
-    { action: 'connect' as const, kind: 'connector' as const, name: 'gmail', state: 'pending' as const },
+    {
+      action: 'connect' as const,
+      discovery_error: 'tool discovery failed',
+      instructions: 'Authorize Gmail.',
+      kind: 'connector' as const,
+      name: 'gmail',
+      required_env: [{ default: 'primary', name: 'ACCOUNT', prompt: 'Account', required: true, secret: false }],
+      state: 'pending' as const
+    },
     { action: 'connect' as const, kind: 'connector' as const, name: 'notion', state: 'pending' as const }
   ]
 }
@@ -42,6 +51,10 @@ function request(sessionId: string | null, opId = 'op-1'): ConnectionRequest {
 type Snapshot = Parameters<typeof applyOperationStatus>[1]
 type Frame = Parameters<typeof applyConnectionUpdate>[1]
 
+/** The backend stamps every write with a rising `seq`; the fixture counts the same way so a frame
+ *  built later is newer than one built earlier unless a test says otherwise. */
+let nextSeq = WIRE.seq + 1
+
 /** Every `connection.update` frame carries the operation snapshot; `states` overrides per-target state. */
 function frame(
   states: Record<string, Snapshot['targets'][number]['state']>,
@@ -50,6 +63,7 @@ function frame(
   return {
     deadline_at: WIRE.deadline_at,
     op_id: 'op-1',
+    seq: nextSeq++,
     settled: false,
     settled_by: null,
     targets: WIRE.targets.map(target => ({ ...target, state: states[target.name] ?? target.state })),
@@ -76,6 +90,11 @@ describe('connection-request store', () => {
       ['gmail', 'connector', 'pending'],
       ['notion', 'connector', 'pending']
     ])
+    expect(parsed?.targets[0]).toMatchObject({
+      discoveryError: 'tool discovery failed',
+      instructions: 'Authorize Gmail.',
+      requiredEnv: [{ default: 'primary', name: 'ACCOUNT', prompt: 'Account', required: true, secret: false }]
+    })
     expect(parsed?.settled).toBe(false)
   })
 
@@ -102,6 +121,7 @@ describe('connection-request store', () => {
     const overlaid = applyOperationStatus(req, {
       deadline_at: WIRE.deadline_at,
       op_id: 'op-1',
+      seq: nextSeq++,
       settled: false,
       settled_by: null,
       targets: [

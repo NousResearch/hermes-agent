@@ -663,6 +663,26 @@ class TestReplyCapture:
         finally:
             adapter._pop_pending("task-ok")
 
+    def test_on_processing_complete_recovers_streamed_reply(self):
+        """#116944: when the gateway's normal final send is suppressed because streaming
+        already delivered the body, send() is never called with notify=True and the future
+        is resolved here instead. It must carry the reply text the gateway stashed on the
+        event, not resolve TASK_STATE_COMPLETED with an empty string."""
+        from gateway.platforms.event import ProcessingOutcome
+
+        adapter = _bare_adapter()
+        fut = adapter._add_pending("task-streamed", "ctx-streamed")
+        event = SimpleNamespace(message_id="task-streamed", _streamed_final_response="SSE_OK")
+
+        async def run():
+            await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        try:
+            asyncio.run(run())
+            assert fut.result(timeout=0) == (protocol.STATE_COMPLETED, "SSE_OK")
+        finally:
+            adapter._pop_pending("task-streamed")
+
 
 # --------------------------------------------------------------------------
 # Adapter RPC handlers (driven directly, no HTTP)

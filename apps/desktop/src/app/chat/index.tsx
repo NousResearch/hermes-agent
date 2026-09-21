@@ -73,7 +73,7 @@ import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
-import { routedSessionIsLoading, threadLoadingState } from './thread-loading'
+import { composerStaysMounted, routedSessionIsLoading, threadLoadingState } from './thread-loading'
 import {
   backfillOlderTranscriptPage,
   mergeOlderTranscriptPage,
@@ -407,7 +407,16 @@ export function ChatRuntimeBoundary({
       // Submission is handled explicitly by ChatBar.
       // Keeping this no-op avoids duplicate prompt.submit calls.
     },
-    onEdit: isHistorical ? undefined : onEdit,
+    // Editing stays AVAILABLE on a history page. `isDisabled` above blocks
+    // submit/reload/branch and keeps the page static, but the rail jump is
+    // the only way into that page and it has no in-thread exit — so dropping
+    // `onEdit` left the inline composer unopenable after ANY far rail jump
+    // (the throw "Runtime does not support editing", infectious downward,
+    // healed only by the floating jump button's returnToLatest). `editMessage`
+    // already resolves its target against the live session store
+    // (use-prompt-actions), never the display page, so the edit is correct;
+    // sending one rewinds the live transcript and drops the page.
+    onEdit,
     onCancel: isHistorical ? undefined : async () => onCancel(),
     onReload: isHistorical ? undefined : onReload
   })
@@ -632,7 +641,25 @@ const ChatViewContent = memo(function ChatViewContent({
   // Hide the composer in the exhausted error state too: there's no live runtime
   // to send to until a retry rebinds one. Watch windows are pure spectators of a
   // subagent run driven elsewhere — no composer, transcript is read-only.
-  const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
+  //
+  // Once this route has rendered with its composer, a later transient loader
+  // (periodic list/status refresh, hydrate through an empty frame) must not
+  // unmount it again — see composerStaysMounted (#117375).
+  const settledRoutedSessionRef = useRef<null | string>(null)
+
+  if (!loadingSession && isRoutedSessionView) {
+    settledRoutedSessionRef.current = routedSessionId
+  } else if (!isRoutedSessionView) {
+    settledRoutedSessionRef.current = null
+  }
+
+  const showChatBar = composerStaysMounted({
+    hideComposer: resumeExhausted || isWatchWindow(),
+    loadingSession,
+    routedSessionId,
+    settledRoutedSessionId: settledRoutedSessionRef.current
+  })
+
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResult>({

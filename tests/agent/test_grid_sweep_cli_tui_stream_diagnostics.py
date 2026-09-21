@@ -179,10 +179,10 @@ def test_cli_provider_fallback_notice_honors_policy(tmp_path, monkeypatch, setti
 @pytest.mark.parametrize("setting", MODES)
 def test_cli_session_store_unavailable_banner_honors_policy(tmp_path, monkeypatch, setting, capsys):
     _policy(tmp_path, monkeypatch, setting)
-    import cli as climod
+    from hermes_cli import cli_init_mixin as m
     from hermes_state_user_copy import describe_storage_failure, storage_failure_details
     from rich.console import Console
-    _cli_block(climod, "failure = describe_storage_failure(e)", "_run_state_db_auto_maintenance(self._session_db)",
+    _cli_block(m, "failure = describe_storage_failure(e)", "_run_state_db_auto_maintenance(self._session_db)",
                {"e": RuntimeError("disk I/O error"), "describe_storage_failure": describe_storage_failure,
                 "storage_failure_details": storage_failure_details, "Console": Console})
     err = capsys.readouterr().err

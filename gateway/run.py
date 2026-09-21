@@ -4594,7 +4594,12 @@ def _housekeeping_org_skill_sync() -> None:
 
 def _housekeeping_auto_archive() -> None:
     """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
-    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
+    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound.
+
+    Profile-scoped by its caller: ``acquire()`` and ``load_config()`` both resolve through
+    ``get_hermes_home()``, so an unscoped tick swept only the LAUNCH profile's store and a
+    multiplexed secondary was never archived by anyone — the dashboard/serve trigger defers to
+    the gateway for every profile a gateway owns (``web_server_sessions``)."""
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
@@ -4693,11 +4698,12 @@ def _start_gateway_housekeeping(
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
-        # Per served profile: each profile has its own skills tree, curator state and Nous login.
+        # Per served profile: each profile has its own skills tree, curator state, Nous login
+        # and state.db.
         (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
         (60, "Sync pull tick", profile_scoped_chore(runner, _housekeeping_skill_sync)),
         (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
-        (60, "Auto-archive tick", _housekeeping_auto_archive),
+        (60, "Auto-archive tick", profile_scoped_chore(runner, _housekeeping_auto_archive)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),

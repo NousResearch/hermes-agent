@@ -446,6 +446,12 @@ def _probe_single_server(
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
+        from tools import mcp_tool as _core
+
+        claimed = []
+        claim_token = _core._connect_server_claim.set(claimed.append)
+        if details is not None:
+            details["initialized"] = False
         try:
             server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
         except asyncio.TimeoutError:
@@ -454,6 +460,10 @@ def _probe_single_server(
                 f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
                 "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
             ) from None
+        finally:
+            _core._connect_server_claim.reset(claim_token)
+            if details is not None and claimed:
+                details["initialized"] = claimed[0].initialize_result is not None
         try:
             for t in server._tools:
                 desc = getattr(t, "description", "") or ""

@@ -477,6 +477,15 @@ _DYNAMIC_SCHEMA_REWRITERS = {
 def _apply_dynamic_schemas(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Apply _DYNAMIC_SCHEMA_REWRITERS in list order; the availability set is a
     snapshot taken before any rewrite (no rewriter's inputs are droppable)."""
+    from agent.tool_guardrails import RESEARCH_COLLECTION_TOOL_NAMES, RESEARCH_INTENT_FIELD
+
+    intent_schema = {
+        "type": "string",
+        "description": (
+            "Stable caller-declared label for the fact-check or research intent. "
+            "Keep it identical when retrying the same intent with a reworded query or URL."
+        ),
+    }
     available = {t["function"]["name"] for t in tool_defs}
     out = []
     for td in tool_defs:
@@ -484,6 +493,28 @@ def _apply_dynamic_schemas(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, An
         if rewrite is not None:
             td = rewrite(td, available)
         if td is not None:
+            name = td["function"]["name"]
+            if name in RESEARCH_COLLECTION_TOOL_NAMES:
+                function = td.get("function", {})
+                parameters = function.get("parameters")
+                if isinstance(parameters, dict) and parameters.get("type") == "object":
+                    properties = parameters.get("properties")
+                    if not isinstance(properties, dict):
+                        properties = {}
+                    if RESEARCH_INTENT_FIELD not in properties:
+                        td = {
+                            **td,
+                            "function": {
+                                **function,
+                                "parameters": {
+                                    **parameters,
+                                    "properties": {
+                                        **properties,
+                                        RESEARCH_INTENT_FIELD: {**intent_schema},
+                                    },
+                                },
+                            },
+                        }
             out.append(td)
     return out
 

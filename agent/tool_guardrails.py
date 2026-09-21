@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import threading
+import time
+import unicodedata
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
@@ -80,6 +84,127 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
 
+# Research tasks opt into a smaller, task-scoped collection budget. The existing
+# 50-search loop cap remains independent and is deliberately left unchanged.
+RESEARCH_BUDGET_EXHAUSTED = "RESEARCH_BUDGET_EXHAUSTED"
+RESEARCH_COLLECTION_STATE = "COLLECT"
+RESEARCH_SYNTHESIS_STATE = "SYNTHESIZE_REQUIRED"
+RESEARCH_TERMINAL_STATE = "TERMINAL"
+RESEARCH_BUDGET_ENV = "HERMES_KANBAN_RESEARCH_BUDGET"
+RESEARCH_MODE_ENV = "HERMES_KANBAN_RESEARCH_MODE"
+RESEARCH_SYNTHESIS_ONLY_MODE = "synthesis_only"
+RESEARCH_SYNTHESIS_ONLY = "RESEARCH_SYNTHESIS_ONLY"
+RESEARCH_INTENT_FIELD = "research_intent"
+RESEARCH_INTENT_REQUIRED = "RESEARCH_INTENT_REQUIRED"
+RESEARCH_INTENT_INVALID = "RESEARCH_INTENT_INVALID"
+RESEARCH_COLLECTION_TOOL_NAMES = frozenset({
+    "web_search", "web_extract",
+    "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
+    "browser_scroll", "browser_back", "browser_press", "browser_get_images",
+    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "browser_exec", "browser_vault_list", "browser_vault_unlock", "browser_vault_fill",
+    "browser_vault_save_login", "browser_vault_enter_code", "browser_extract",
+})
+_RESEARCH_EXTRACT_TOOL_NAMES = frozenset({"web_extract", "browser_extract"})
+
+_RESEARCH_BUDGET_INT_FIELDS = frozenset({
+    "web_search_max", "browser_extract_max", "repeated_intent_max",
+})
+_RESEARCH_BUDGET_FLOAT_FIELDS = frozenset({
+    "collection_deadline_seconds", "synthesis_reserve_seconds",
+})
+_RESEARCH_BUDGET_FIELDS = (
+    _RESEARCH_BUDGET_INT_FIELDS
+    | _RESEARCH_BUDGET_FLOAT_FIELDS
+    | {"collection_tools"}
+)
+
+_MAX_RESEARCH_INTENT_CHARS = 128
+
+
+def normalize_research_intent(value: Any) -> str | None:
+    """Normalize one caller-declared research intent label.
+
+    Labels are deliberately explicit and exact: this normalizes Unicode width,
+    surrounding/collapsed whitespace, and case, but never infers intent from a
+    query or URL. ``None`` means the value is missing or malformed.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = unicodedata.normalize("NFKC", value).strip().casefold()
+    normalized = " ".join(normalized.split())
+    if not normalized or len(normalized) > _MAX_RESEARCH_INTENT_CHARS:
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        return None
+    return normalized
+
+
+def normalize_research_budget(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Validate the typed Kanban research-budget payload.
+
+    Profile YAML keeps the forgiving ``from_mapping`` behavior for backwards
+    compatibility. A task override is a persisted/runtime boundary, however,
+    so unknown fields and malformed values are rejected instead of silently
+    widening the worker's collection policy.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("research_budget must be a JSON object")
+    unknown = set(value) - _RESEARCH_BUDGET_FIELDS
+    if unknown:
+        names = ", ".join(sorted(repr(name) for name in unknown))
+        raise ValueError(f"research_budget has unknown field(s): {names}")
+
+    normalized: dict[str, Any] = {}
+    for name, raw in value.items():
+        if raw is None:
+            normalized[name] = None
+            continue
+        if name in _RESEARCH_BUDGET_INT_FIELDS:
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+                raise ValueError(f"research_budget.{name} must be a positive integer")
+            normalized[name] = raw
+            continue
+        if name in _RESEARCH_BUDGET_FLOAT_FIELDS:
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise ValueError(f"research_budget.{name} must be a positive number")
+            if not math.isfinite(float(raw)) or raw <= 0:
+                raise ValueError(f"research_budget.{name} must be a finite positive number")
+            normalized[name] = raw
+            continue
+        if name == "collection_tools":
+            if not isinstance(raw, (list, tuple)):
+                raise ValueError("research_budget.collection_tools must be an array")
+            names = list(raw)
+            if any(not isinstance(tool, str) or tool not in RESEARCH_COLLECTION_TOOL_NAMES for tool in names):
+                raise ValueError("research_budget.collection_tools contains an unknown tool")
+            if len(set(names)) != len(names):
+                raise ValueError("research_budget.collection_tools must not contain duplicates")
+            normalized[name] = names
+    return normalized
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _optional_positive_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) and parsed > 0 else None
+
 # Interactive surfaces plus bounded supervised task loops (subagent stopped by its parent;
 # api_server has a live client) doing real edit -> re-run work keep the warn-only default.
 _ATTENDED_PLATFORMS = frozenset({"cli", "tui", "desktop", "acp", "subagent", "api_server"})
@@ -114,6 +239,57 @@ class LoopCapConfig:
 
 
 @dataclass(frozen=True)
+class ResearchBudgetConfig:
+    """Optional bounded collection policy for research-style turns.
+
+    ``None`` means that dimension is not configured. A configured policy only
+    controls collection tools; report/file/Kanban tools remain available for
+    synthesis and finalization. ``browser_extract_max`` covers the existing
+    ``web_extract`` tool and the future-compatible ``browser_extract`` alias.
+    """
+
+    web_search_max: int | None = None
+    browser_extract_max: int | None = None
+    repeated_intent_max: int | None = None
+    collection_deadline_seconds: float | None = None
+    synthesis_reserve_seconds: float | None = None
+    collection_tools: frozenset[str] = field(default_factory=lambda: RESEARCH_COLLECTION_TOOL_NAMES)
+
+    @property
+    def enabled(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self.web_search_max,
+                self.browser_extract_max,
+                self.repeated_intent_max,
+                self.collection_deadline_seconds,
+                self.synthesis_reserve_seconds,
+            )
+        )
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> "ResearchBudgetConfig":
+        if not isinstance(data, Mapping):
+            return cls()
+        raw_tools = data.get("collection_tools")
+        if isinstance(raw_tools, (list, tuple, set, frozenset)):
+            collection_tools = frozenset(
+                str(name).strip() for name in raw_tools if str(name).strip()
+            ) or RESEARCH_COLLECTION_TOOL_NAMES
+        else:
+            collection_tools = RESEARCH_COLLECTION_TOOL_NAMES
+        return cls(
+            web_search_max=_optional_positive_int(data.get("web_search_max")),
+            browser_extract_max=_optional_positive_int(data.get("browser_extract_max")),
+            repeated_intent_max=_optional_positive_int(data.get("repeated_intent_max")),
+            collection_deadline_seconds=_optional_positive_float(data.get("collection_deadline_seconds")),
+            synthesis_reserve_seconds=_optional_positive_float(data.get("synthesis_reserve_seconds")),
+            collection_tools=collection_tools,
+        )
+
+
+@dataclass(frozen=True)
 class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection. Warnings never prevent execution; hard
     stops are opt-in on interactive platforms, default on for unattended gateway/cron platforms."""
@@ -130,6 +306,11 @@ class ToolCallGuardrailConfig:
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
+    research_budget: ResearchBudgetConfig = field(default_factory=ResearchBudgetConfig)
+    # Dispatcher-owned recovery mode. This is deliberately separate from the
+    # profile/task budget: a synthesis retry must disable collection even when
+    # the profile has no research policy of its own.
+    research_synthesis_only: bool = False
 
     @classmethod
     def from_mapping(
@@ -149,7 +330,29 @@ class ToolCallGuardrailConfig:
             return _int_at_least(nested, getattr(d, name), 1)
 
         thresholds = {name: threshold(name, *src) for name, src in _THRESHOLD_SOURCES.items()}
-        return cls(loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")), **flags, **thresholds)
+        research_data = data.get("research_budget")
+        # Accept direct fields for callers that already pass a dedicated policy
+        # mapping; the documented config surface is nested.
+        if not isinstance(research_data, Mapping) and any(
+            key in data
+            for key in (
+                "web_search_max", "browser_extract_max",
+                "repeated_intent_max",
+                "collection_deadline_seconds", "synthesis_reserve_seconds",
+            )
+        ):
+            research_data = data
+        research_mode = str(data.get("research_mode") or "").strip().lower()
+        synthesis_only = bool(_as_bool(data.get("research_synthesis_only"), False)) or (
+            research_mode == RESEARCH_SYNTHESIS_ONLY_MODE
+        )
+        return cls(
+            loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")),
+            research_budget=ResearchBudgetConfig.from_mapping(research_data),
+            research_synthesis_only=synthesis_only,
+            **flags,
+            **thresholds,
+        )
 
 
 @dataclass(frozen=True)
@@ -186,6 +389,8 @@ class ToolGuardrailDecision:
     tool_name: str = ""
     count: int = 0
     signature: ToolCallSignature | None = None
+    state: str = ""
+    terminal: bool = True
 
     @property
     def allows_execution(self) -> bool:
@@ -193,12 +398,16 @@ class ToolGuardrailDecision:
 
     @property
     def should_halt(self) -> bool:
-        return self.action in {"block", "halt"}
+        return self.action in {"block", "halt"} and self.terminal
 
     def to_metadata(self) -> dict[str, Any]:
         data = asdict(self)
         if data["signature"] is None:
             del data["signature"]
+        if not data["state"]:
+            del data["state"]
+        if data["terminal"]:
+            del data["terminal"]
         return data
 
 
@@ -281,6 +490,12 @@ _DECISION_MESSAGES: dict[str, str] = {
     ),
 }
 
+_RESEARCH_BUDGET_MESSAGE = (
+    "Research collection is bounded ({reason}). Collection tools are now disabled; "
+    "synthesize and finalize from the evidence already collected, marking unknown "
+    "facts explicitly instead of collecting more."
+)
+
 _IDENTICAL_CALL_NOTICE = (
     "[hermes note: this is the {ordinal} consecutive identical call to "
     "{tool_name} with identical arguments returning the same result. "
@@ -305,9 +520,21 @@ _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
-    def __init__(self, config: ToolCallGuardrailConfig | None = None):
+    def __init__(
+        self,
+        config: ToolCallGuardrailConfig | None = None,
+        *,
+        run_budget_seconds: Any = None,
+        clock: Callable[[], float] | None = None,
+    ):
         self.config = config or ToolCallGuardrailConfig()
+        self._clock = clock or time.monotonic
+        self._run_budget_seconds = _optional_positive_float(run_budget_seconds)
         self.reset_for_turn()
+
+    def set_run_budget_seconds(self, value: Any) -> None:
+        """Bind the existing agent wall-clock budget to the research reserve."""
+        self._run_budget_seconds = _optional_positive_float(value)
 
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
@@ -335,10 +562,216 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        policy = self.config.research_budget
+        self._research_state = RESEARCH_COLLECTION_STATE if policy.enabled else ""
+        if self.config.research_synthesis_only:
+            self._research_state = RESEARCH_SYNTHESIS_STATE
+        self._research_started_at = self._clock() if policy.enabled else None
+        self._research_transitioned_at: float | None = None
+        self._research_exhaustion_decision: ToolGuardrailDecision | None = None
+        self._research_recovery_decision: ToolGuardrailDecision | None = None
+        self._research_web_search_count = 0
+        self._research_browser_extract_count = 0
+        self._research_evidence_count = 0
+        self._research_intent_counts: dict[str, int] = {}
+        self._research_lock = threading.Lock()
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
+
+    @property
+    def research_budget_metadata(self) -> dict[str, Any] | None:
+        """Structured state for a configured research budget."""
+        policy = self.config.research_budget
+        if not policy.enabled and not self.config.research_synthesis_only:
+            return None
+        exhausted = self._research_exhaustion_decision is not None
+        recovery = self.config.research_synthesis_only
+        data: dict[str, Any] = {
+            "enabled": bool(policy.enabled),
+            "code": RESEARCH_BUDGET_EXHAUSTED if exhausted else None,
+            "state": self._research_state or RESEARCH_COLLECTION_STATE,
+            "action": "synthesize" if exhausted or recovery else "collect",
+            "exhausted": exhausted,
+            "recovery_mode": RESEARCH_SYNTHESIS_ONLY_MODE if recovery else None,
+            "collection_disabled": recovery,
+            "web_search_count": self._research_web_search_count,
+            "web_search_max": policy.web_search_max,
+            "browser_extract_count": self._research_browser_extract_count,
+            "browser_extract_max": policy.browser_extract_max,
+            "repeated_intent_max": policy.repeated_intent_max,
+            "intent_counts": dict(self._research_intent_counts),
+            "evidence_count": self._research_evidence_count,
+            "evidence_present": self._research_evidence_count > 0,
+            "collection_deadline_seconds": self._research_effective_deadline_seconds(),
+            "synthesis_reserve_seconds": policy.synthesis_reserve_seconds,
+        }
+        if self._research_started_at is not None:
+            data["elapsed_seconds"] = max(0.0, self._clock() - self._research_started_at)
+        if self._research_transitioned_at is not None and self._research_started_at is not None:
+            data["transition_elapsed_seconds"] = max(
+                0.0, self._research_transitioned_at - self._research_started_at
+            )
+        if self._research_exhaustion_decision is not None:
+            data["guardrail"] = self._research_exhaustion_decision.to_metadata()
+        if self._research_recovery_decision is not None:
+            data["guardrail"] = self._research_recovery_decision.to_metadata()
+        return data
+
+    def mark_terminal(self) -> None:
+        """Close the configured ``COLLECT -> SYNTHESIZE_REQUIRED`` lifecycle."""
+        if self._research_exhaustion_decision is not None or self.config.research_synthesis_only:
+            self._research_state = RESEARCH_TERMINAL_STATE
+
+    def _research_effective_deadline_seconds(self) -> float | None:
+        policy = self.config.research_budget
+        deadline = policy.collection_deadline_seconds
+        reserve = policy.synthesis_reserve_seconds
+        if self._run_budget_seconds is not None and reserve is not None:
+            reserve_deadline = max(0.0, self._run_budget_seconds - reserve)
+            deadline = reserve_deadline if deadline is None else min(deadline, reserve_deadline)
+        return deadline
+
+    def _research_elapsed_seconds(self) -> float:
+        if self._research_started_at is None:
+            return 0.0
+        return max(0.0, self._clock() - self._research_started_at)
+
+    def _research_counter(self, tool_name: str) -> tuple[str, int, int | None] | None:
+        policy = self.config.research_budget
+        if tool_name == "web_search":
+            return "_research_web_search_count", self._research_web_search_count, policy.web_search_max
+        if tool_name in _RESEARCH_EXTRACT_TOOL_NAMES:
+            return (
+                "_research_browser_extract_count",
+                self._research_browser_extract_count,
+                policy.browser_extract_max,
+            )
+        return None
+
+    def _research_transition(
+        self,
+        tool_name: str,
+        count: int,
+        signature: ToolCallSignature,
+        *,
+        reason: str,
+    ) -> ToolGuardrailDecision:
+        if self._research_state == RESEARCH_COLLECTION_STATE:
+            self._research_state = RESEARCH_SYNTHESIS_STATE
+            self._research_transitioned_at = self._clock()
+        decision = ToolGuardrailDecision(
+            action="block",
+            code=RESEARCH_BUDGET_EXHAUSTED,
+            message=_RESEARCH_BUDGET_MESSAGE.format(reason=reason),
+            tool_name=tool_name,
+            count=count,
+            signature=signature,
+            state=self._research_state,
+            terminal=False,
+        )
+        if self._research_exhaustion_decision is None:
+            self._research_exhaustion_decision = decision
+        return decision
+
+    def _research_before_call(
+        self, tool_name: str, signature: ToolCallSignature, args: Mapping[str, Any],
+    ) -> ToolGuardrailDecision | None:
+        policy = self.config.research_budget
+        if self.config.research_synthesis_only and tool_name in RESEARCH_COLLECTION_TOOL_NAMES:
+            decision = ToolGuardrailDecision(
+                action="block",
+                code=RESEARCH_SYNTHESIS_ONLY,
+                message=(
+                    "This recovery turn is synthesis-only: collection tools are disabled. "
+                    "Use the preserved evidence/checkpoint and finalize the task."
+                ),
+                tool_name=tool_name,
+                signature=signature,
+                state=self._research_state or RESEARCH_SYNTHESIS_STATE,
+                terminal=False,
+            )
+            self._research_recovery_decision = decision
+            return decision
+        if not policy.enabled or tool_name not in policy.collection_tools:
+            return None
+        with self._research_lock:
+            if self._research_state != RESEARCH_COLLECTION_STATE:
+                return self._research_transition(
+                    tool_name, 0, signature, reason="the synthesis phase has started"
+                )
+            deadline = self._research_effective_deadline_seconds()
+            if deadline is not None and self._research_elapsed_seconds() >= deadline:
+                return self._research_transition(
+                    tool_name, 0, signature,
+                    reason=f"the collection deadline of {deadline:.0f}s was reached",
+                )
+            counter = self._research_counter(tool_name)
+            if counter is not None:
+                _, count, limit = counter
+                if limit is not None and count >= limit:
+                    label = "web_search" if tool_name == "web_search" else "browser extract"
+                    return self._research_transition(
+                        tool_name, count, signature,
+                        reason=f"the {label} budget of {limit} was reached",
+                    )
+            if policy.repeated_intent_max is not None:
+                raw_intent = args.get(RESEARCH_INTENT_FIELD)
+                intent = normalize_research_intent(raw_intent)
+                if intent is None:
+                    missing = raw_intent is None
+                    return ToolGuardrailDecision(
+                        action="block",
+                        code=RESEARCH_INTENT_REQUIRED if missing else RESEARCH_INTENT_INVALID,
+                        message=(
+                            "Bounded research collection calls require a non-empty string "
+                            f"'{RESEARCH_INTENT_FIELD}' label. No collection call was executed; "
+                            "provide a stable label for this fact-check attempt."
+                        ),
+                        tool_name=tool_name,
+                        signature=signature,
+                        state=self._research_state,
+                        terminal=False,
+                    )
+                intent_count = self._research_intent_counts.get(intent, 0)
+                if intent_count >= policy.repeated_intent_max:
+                    return self._research_transition(
+                        tool_name,
+                        intent_count,
+                        signature,
+                        reason=f"the repeated intent budget of {policy.repeated_intent_max} was reached",
+                    )
+                self._research_intent_counts[intent] = intent_count + 1
+            if counter is not None:
+                setattr(self, counter[0], counter[1] + 1)
+        return None
+
+    def _research_after_call(
+        self, tool_name: str, signature: ToolCallSignature,
+    ) -> ToolGuardrailDecision | None:
+        policy = self.config.research_budget
+        if not policy.enabled or tool_name not in policy.collection_tools:
+            return None
+        with self._research_lock:
+            if self._research_state != RESEARCH_COLLECTION_STATE:
+                return self._research_exhaustion_decision
+            deadline = self._research_effective_deadline_seconds()
+            if deadline is not None and self._research_elapsed_seconds() >= deadline:
+                return self._research_transition(
+                    tool_name, 0, signature,
+                    reason=f"the collection deadline of {deadline:.0f}s was reached",
+                )
+            counter = self._research_counter(tool_name)
+            if counter is not None:
+                _, count, limit = counter
+                if limit is not None and count >= limit:
+                    label = "web_search" if tool_name == "web_search" else "browser extract"
+                    return self._research_transition(
+                        tool_name, count, signature,
+                        reason=f"the {label} budget of {limit} was reached",
+                    )
+        return None
 
     def _decide(
         self, action: str, code: str, tool_name: str, count: int, signature: ToolCallSignature,
@@ -357,6 +790,9 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         allow = ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
+        research_block = self._research_before_call(tool_name, signature, args)
+        if research_block is not None:
+            return research_block
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
         if cap_block is not None or not self.config.hard_stop_enabled:
@@ -376,8 +812,17 @@ class ToolCallGuardrailController:
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
+        research_transition = self._research_after_call(tool_name, signature)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
+        if (
+            not failed
+            and isinstance(result, str)
+            and result.strip()
+            and tool_name in self.config.research_budget.collection_tools
+        ):
+            with self._research_lock:
+                self._research_evidence_count += 1
         warnings = self.config.warnings_enabled
 
         if failed:
@@ -401,15 +846,19 @@ class ToolCallGuardrailController:
                 and tool_name not in FAILURE_TOLERANT_TOOL_NAMES
                 and same_count >= self.config.same_tool_failure_halt_after
             ):
-                return self._decide("halt", "same_tool_failure_halt", tool_name, same_count, signature)
+                decision = self._decide("halt", "same_tool_failure_halt", tool_name, same_count, signature)
+                return research_transition or decision
             if warnings and exact_count >= self.config.exact_failure_warn_after:
-                return self._decide("warn", "repeated_exact_failure_warning", tool_name, exact_count, signature)
+                decision = self._decide("warn", "repeated_exact_failure_warning", tool_name, exact_count, signature)
+                return research_transition or decision
             if warnings and same_count >= self.config.same_tool_failure_warn_after:
-                return self._decide(
+                decision = self._decide(
                     "warn", "same_tool_failure_warning", tool_name, same_count, signature,
                     message=_tool_failure_recovery_hint(tool_name, same_count),
                 )
-            return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
+                return research_transition or decision
+            decision = ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
+            return research_transition or decision
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
@@ -420,15 +869,18 @@ class ToolCallGuardrailController:
             self._same_tool_failure_counts.clear()
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
-            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+            decision = ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+            return research_transition or decision
 
         result_hash = _result_hash(result)
         previous = self._no_progress.get(signature)
         repeat_count = previous[1] + 1 if previous is not None and previous[0] == result_hash else 1
         self._no_progress[signature] = (result_hash, repeat_count)
         if warnings and repeat_count >= self.config.no_progress_warn_after:
-            return self._decide("warn", "idempotent_no_progress_warning", tool_name, repeat_count, signature)
-        return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+            decision = self._decide("warn", "idempotent_no_progress_warning", tool_name, repeat_count, signature)
+            return research_transition or decision
+        decision = ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+        return research_transition or decision
 
     def _is_idempotent(self, tool_name: str) -> bool:
         return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
@@ -566,9 +1018,16 @@ def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
 
 def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> str:
     """Append runtime guidance to the current tool result content."""
-    if decision.action not in {"warn", "halt"} or not decision.message:
+    nonterminal_block = decision.action == "block" and not decision.terminal
+    if decision.action not in {"warn", "halt"} and not nonterminal_block:
         return result
-    label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
+    if not decision.message:
+        return result
+    label = (
+        "Research budget transition"
+        if nonterminal_block
+        else "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
+    )
     return (result or "") + f"\n\n[{label}: {decision.code}; count={decision.count}; {decision.message}]"
 
 

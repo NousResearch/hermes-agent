@@ -571,6 +571,9 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
         setattr(agent, name, value)
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
+    _set_budget = getattr(agent._tool_guardrails, "set_run_budget_seconds", None)
+    if callable(_set_budget):
+        _set_budget(getattr(agent, "run_budget_seconds", None))
     agent._tool_guardrails.reset_for_turn()
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
     if callable(_reset_consol):

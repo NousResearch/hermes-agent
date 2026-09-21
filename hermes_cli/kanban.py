@@ -54,6 +54,20 @@ def _parse_metadata_flag(raw: Optional[str]) -> tuple[Optional[dict], int]:
     return metadata, 0
 
 
+def _parse_research_budget_flag(raw: Optional[str]) -> tuple[Optional[dict], int]:
+    """Parse and validate the typed ``kanban create --research-budget`` JSON object."""
+    if raw is None or not str(raw).strip():
+        return None, 0
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        return None, _err(f"kanban: --research-budget: {exc}", 2)
+    try:
+        return kb.normalize_research_budget(value), 0
+    except (TypeError, ValueError) as exc:
+        return None, _err(f"kanban: --research-budget: {exc}", 2)
+
+
 def _run_state_kwargs(args: argparse.Namespace, cmd: str) -> tuple[Optional[dict[str, str]], int]:
     """``--state-type``/``--state-name`` must be given together: ``(kwargs, 0)`` or ``(None, 2)``."""
     st = getattr(args, "state_type", None)
@@ -362,6 +376,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
         max_runtime = _parse_duration(getattr(args, "max_runtime", None))
     except ValueError as exc:
         return _err(f"kanban: --max-runtime: {exc}", 2)
+    research_budget, research_budget_rc = _parse_research_budget_flag(
+        getattr(args, "research_budget", None)
+    )
+    if research_budget_rc:
+        return research_budget_rc
     max_retries = getattr(args, "max_retries", None)
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
@@ -377,6 +396,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
             max_retries=max_retries, model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
+            research_budget=research_budget,
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),

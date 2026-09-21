@@ -548,6 +548,15 @@ DEFAULT_CONFIG = {
             "max_web_searches": 50,   # web_search calls per turn
             "max_subagents": 50,      # subagents spawned per turn
         },
+        # Profile-level research collection budget. A dispatcher-spawned Kanban
+        # task may provide a typed per-task override at worker startup.
+        "research_budget": {
+            "web_search_max": None,
+            "browser_extract_max": None,
+            "repeated_intent_max": None,
+            "collection_deadline_seconds": None,
+            "synthesis_reserve_seconds": None,
+        },
     },
 
     "compression": {

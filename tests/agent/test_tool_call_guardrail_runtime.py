@@ -407,6 +407,100 @@ def test_default_run_conversation_warns_without_guardrail_halt():
 
 
 
+def test_research_budget_blocks_collection_but_allows_synthesis_turn():
+    agent = _make_agent(
+        "web_search",
+        "terminal",
+        max_iterations=10,
+        config={
+            "tool_loop_guardrails": {
+                "research_budget": {"web_search_max": 1},
+            }
+        },
+    )
+    args = {"query": "bounded"}
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(args), "c-search")],
+        ),
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps({"query": "retry"}), "c-blocked")],
+        ),
+        _mock_response(content="synthesized", finish_reason="stop", tool_calls=None),
+    ]
+
+    with (
+        patch("model_tools.handle_function_call", return_value=json.dumps({"data": {"web": []}})) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("research once and synthesize")
+
+    mock_hfc.assert_called_once()
+    assert result["final_response"] == "synthesized"
+    assert result["turn_exit_reason"].startswith("text_response")
+    budget = result["research_budget"]
+    assert budget["code"] == "RESEARCH_BUDGET_EXHAUSTED"
+    assert budget["state"] == "TERMINAL"
+    assert budget["action"] == "synthesize"
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("RESEARCH_BUDGET_EXHAUSTED" in content for content in tool_contents)
+    assert any("Collection tools are now disabled" in content for content in tool_contents)
+
+
+def test_repeated_intent_guard_blocks_reworded_collection_but_allows_terminal():
+    agent = _make_agent(
+        "web_search",
+        "terminal",
+        config={
+            "tool_loop_guardrails": {
+                "research_budget": {"repeated_intent_max": 1},
+            }
+        },
+    )
+    calls = [
+        _mock_tool_call(
+            "web_search",
+            json.dumps({"query": "Kobe evening weather", "research_intent": "Evening Weather"}),
+            "c-intent-1",
+        ),
+        _mock_tool_call(
+            "web_search",
+            json.dumps({"query": "forecast near Sannomiya", "research_intent": "evening weather"}),
+            "c-intent-2",
+        ),
+        _mock_tool_call(
+            "terminal",
+            json.dumps({"command": "write final report"}),
+            "c-terminal",
+        ),
+    ]
+    messages = []
+
+    with patch(
+        "model_tools.handle_function_call",
+        side_effect=[json.dumps({"data": "evidence"}), json.dumps({"ok": True})],
+    ) as mock_hfc:
+        agent._execute_tool_calls_sequential(
+            SimpleNamespace(tool_calls=calls), messages, "task-1"
+        )
+
+    assert mock_hfc.call_count == 2
+    assert mock_hfc.call_args_list[0].args[1]["research_intent"] == "Evening Weather"
+    assert mock_hfc.call_args_list[1].args[0] == "terminal"
+    blocked = next(
+        message for message in messages
+        if message["tool_call_id"] == "c-intent-2"
+    )
+    assert "RESEARCH_BUDGET_EXHAUSTED" in blocked["content"]
+    assert any(message["tool_call_id"] == "c-terminal" for message in messages)
+
+
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     """Regression for #30770: when the guardrail halts the loop, the
     synthesized halt message must be pushed through ``stream_delta_callback``

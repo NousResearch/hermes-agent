@@ -443,6 +443,45 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "dispatcher SIGTERMs the worker and re-queues the "
                 "task with outcome='timed_out'."
         )),
+        "research_budget": {
+            "type": "object",
+            "description": (
+                "Optional typed collection policy for this task's worker. "
+                "It overrides the assignee profile's research_budget only "
+                "for this run; omitted means the profile policy is preserved."
+            ),
+            "properties": {
+                "web_search_max": {
+                    "type": "integer", "minimum": 1,
+                    "description": "Maximum web_search calls during collection.",
+                },
+                "browser_extract_max": {
+                    "type": "integer", "minimum": 1,
+                    "description": "Maximum web_extract/browser_extract calls during collection.",
+                },
+                "repeated_intent_max": {
+                    "type": "integer", "minimum": 1,
+                    "description": (
+                        "Maximum collection attempts for one normalized, explicitly declared "
+                        "research_intent label."
+                    ),
+                },
+                "collection_deadline_seconds": {
+                    "type": "number", "exclusiveMinimum": 0,
+                    "description": "Maximum collection time in seconds.",
+                },
+                "synthesis_reserve_seconds": {
+                    "type": "number", "exclusiveMinimum": 0,
+                    "description": "Seconds reserved for synthesis/finalization from the worker budget.",
+                },
+                "collection_tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional allowlist of collection tool names covered by this policy.",
+                },
+            },
+            "additionalProperties": False,
+        },
         "initial_status": {
             "type": "string",
             "enum": ["running", "blocked"],

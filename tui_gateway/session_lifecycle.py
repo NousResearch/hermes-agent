@@ -673,6 +673,23 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
         return True  # a transient registry/import failure must not become destructive cleanup
 
 
+def _session_has_active_completion_work(session: dict) -> bool:
+    """True while the session owns a running process that must deliver a completion."""
+    owners = getattr(session.get("agent"), "_process_owner_task_ids", ())
+    if not owners:
+        return False
+    try:
+        from tools.process_registry import process_registry
+        return any(
+            process.notify_on_complete
+            for owner in owners
+            for process in process_registry.running_owned_by(owner)
+        )
+    except Exception:
+        logger.debug("Failed to query active completion work", exc_info=True)
+        return True  # a transient registry/import failure must not become destructive cleanup
+
+
 # One pending WS-orphan reap Timer per live sid; guarded by _sessions_lock. Cancelled by _cancel_ws_orphan_reap from
 # every resume/reuse/transport-rebind path — else a reap on a reattached session triggers a reap->broadcast->resume storm.
 _pending_ws_reaps: dict[str, threading.Timer] = {}
@@ -777,7 +794,8 @@ def _schedule_ws_orphan_reap(
                 current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
-            if _session_has_active_delegations(sid, current):
+            if (_session_has_active_delegations(sid, current)
+                    or _session_has_active_completion_work(current)):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 session = _pop_session_by_id(sid)

@@ -83,7 +83,8 @@ _STORE_ACTIONS = {
     "add": (lambda store, target, content, old_text: store.add(target, content),
             lambda label, content, old_text: (f"add to {label}", content or "")),
     "replace": (lambda store, target, content, old_text: store.replace(target, old_text, content),
-                lambda label, content, old_text: (f"replace in {label}", f"old: {old_text}\nnew: {content}")),
+                lambda label, content, old_text: (f"replace in {label}",
+                                                  f"entry matching: {old_text}\nwhole entry becomes: {content}")),
     "remove": (lambda store, target, content, old_text: store.remove(target, old_text),
                lambda label, content, old_text: (f"remove from {label}", old_text or ""))}
 
@@ -93,7 +94,9 @@ def _batch_op_line(op: Dict[str, Any]) -> str:
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
         return f"- remove: {old}"
-    return f"- replace: {old} -> {content}" if act == "replace" else f"- {act}: {content}"
+    # Whole-entry contract (#117952): the approver must not read this as a span patch.
+    return (f"- replace entry matching '{old}' -> whole entry becomes: {content}" if act == "replace"
+            else f"- {act}: {content}")
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str], old_text: Optional[str],

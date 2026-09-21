@@ -1323,6 +1323,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._chat_locks: "collections.OrderedDict[str, asyncio.Lock]" = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._message_resource_cache: "OrderedDict[str, tuple[List[str], List[str]]]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -2597,6 +2598,14 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None) or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
+        if reply_to_message_id:
+            quoted_urls, quoted_types = await self._fetch_message_resources(reply_to_message_id)
+            seen = set(media_urls)
+            for quoted_url, quoted_type in zip(quoted_urls, quoted_types):
+                if quoted_url and quoted_url not in seen:
+                    media_urls.append(quoted_url)
+                    media_types.append(quoted_type)
+                    seen.add(quoted_url)
         sender_primary = (
             getattr(sender_id, "open_id", None) or getattr(sender_id, "user_id", None)
             or getattr(sender_id, "union_id", None) or "<unknown>"
@@ -3313,6 +3322,45 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
+
+    async def _fetch_message_resources(self, message_id: str) -> tuple[List[str], List[str]]:
+        """Download attachments carried by the message being replied to."""
+        if not self._client or not message_id:
+            return [], []
+        cache = getattr(self, "_message_resource_cache", None)
+        if cache is None:
+            cache = self._message_resource_cache = OrderedDict()
+        if message_id in cache:
+            cache.move_to_end(message_id)
+            urls, types = cache[message_id]
+            return list(urls), list(types)
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            if not self._response_succeeded(response):
+                return [], []
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            parent = items[0] if items else None
+            body = getattr(parent, "body", None)
+            normalized = self._normalize(
+                getattr(parent, "msg_type", "") or "",
+                getattr(body, "content", "") or "",
+                getattr(parent, "mentions", None),
+            )
+            urls, types = await self._download_feishu_message_resources(
+                message_id=message_id, normalized=normalized,
+            )
+            cache[message_id] = (list(urls), list(types))
+            while len(cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
+                cache.popitem(last=False)
+            return urls, types
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to fetch parent message resources %s",
+                message_id,
+                exc_info=True,
+            )
+            return [], []
 
     def _extract_text_from_raw_content(
         self, *, msg_type: str, raw_content: str, mentions: Optional[Sequence[Any]] = None,

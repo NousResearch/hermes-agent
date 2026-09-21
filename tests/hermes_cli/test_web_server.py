@@ -5,6 +5,7 @@ import os
 import json
 import re
 import shutil
+import stat
 import sys
 import threading
 import time
@@ -245,6 +246,27 @@ class TestSessionTokenInjection:
         assert ws.app is original_app
         assert ws._SESSION_HEADER_NAME == original_header_name
         assert ws._SESSION_TOKEN == original_token
+
+    def test_desktop_ready_file_publishes_final_resolved_token(self, tmp_path, monkeypatch):
+        """Electron must receive the token the backend actually adopted.
+
+        This is deliberately the module's final token rather than the spawn
+        environment: dotenv loading may have overridden the latter before the
+        server begins listening (#85327).
+        """
+        from hermes_cli.web_server_lifecycle import _write_dashboard_ready_file
+
+        ready_file = tmp_path / "desktop-ready.json"
+        monkeypatch.setenv("HERMES_DESKTOP_READY_FILE", str(ready_file))
+
+        _write_dashboard_ready_file(45678, "dotenv-resolved-token")
+
+        assert json.loads(ready_file.read_text(encoding="utf-8")) == {
+            "port": 45678,
+            "session_token": "dotenv-resolved-token",
+        }
+        if os.name != "nt":
+            assert stat.S_IMODE(ready_file.stat().st_mode) == 0o600
 
 
 # ---------------------------------------------------------------------------

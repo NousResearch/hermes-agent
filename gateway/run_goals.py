@@ -394,9 +394,13 @@ class GatewayGoalsMixin:
             with route_lock:
                 return _authority_current_locked()
 
-        def _mark_cache_refresh_if_current() -> None:
+        def _mark_cache_refresh_if_current(adopted_session_id=None) -> None:
             with route_lock:
-                if not _authority_current_locked():
+                live_entry = self.session_store._entries.get(session_key)
+                if (
+                    live_entry is not session_entry
+                    or live_entry.session_id not in {expected_session_id, adopted_session_id}
+                ):
                     return
                 current_state = self._peek_session_state(session_key)
                 if current_state is not None:

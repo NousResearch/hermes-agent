@@ -679,7 +679,7 @@ class GatewayAgentCacheMixin:
         *,
         expected_agent: Any = None,
         run_generation: Optional[int] = None,
-    ) -> None:
+    ) -> bool:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may

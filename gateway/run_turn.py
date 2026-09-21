@@ -1361,7 +1361,7 @@ class GatewayTurnMixin:
             )
             if cache_owner is not None and not evicted:
                 if cache_refresh_callback is not None:
-                    cache_refresh_callback()
+                    cache_refresh_callback(getattr(attempt.agent, "session_id", None))
                 elif commit_authority_check is None:
                     state = self._peek_session_state(session_key)
                     if state is not None:

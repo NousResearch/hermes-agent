@@ -5,7 +5,7 @@ import { interceptsTypedVoiceStop, isVoiceStopCommand } from './voice-stop-word'
 describe('isVoiceStopCommand', () => {
   it('matches bare stop commands', () => {
     for (const phrase of ['stop', 'Stop', 'STOP', 'stop.', 'stop!', ' stop ', 'stop…']) {
-      expect(isVoiceStopCommand(phrase)).toBe(true)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(true)
     }
   })
 
@@ -25,13 +25,13 @@ describe('isVoiceStopCommand', () => {
       'bye',
       'cancel'
     ]) {
-      expect(isVoiceStopCommand(phrase)).toBe(true)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(true)
     }
   })
 
   it('matches stop commands addressed to Hermes', () => {
     for (const phrase of ['hermes stop', 'hey hermes stop', 'hey hermes, stop', 'ok stop', 'okay stop']) {
-      expect(isVoiceStopCommand(phrase)).toBe(true)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(true)
     }
   })
 
@@ -44,20 +44,36 @@ describe('isVoiceStopCommand', () => {
       "don't stop now",
       'the bus stop is closed'
     ]) {
-      expect(isVoiceStopCommand(phrase)).toBe(false)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(false)
     }
   })
 
   it('does not match bare address words or empty input', () => {
     for (const phrase of ['', '  ', 'hermes', 'hey hermes', 'ok', 'okay', 'hey']) {
-      expect(isVoiceStopCommand(phrase)).toBe(false)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(false)
     }
   })
 
   it('does not match unrelated short utterances', () => {
     for (const phrase of ['hello', 'yes', 'what time is it', 'thanks']) {
-      expect(isVoiceStopCommand(phrase)).toBe(false)
+      expect(isVoiceStopCommand(phrase, { mode: 'default' })).toBe(false)
     }
+  })
+
+  it('honours configured voice.stop_phrases in any language (#117801)', () => {
+    const config = { mode: 'custom' as const, phrases: ['отбой', 'стоп', 'stop'] }
+
+    expect(isVoiceStopCommand('отбой', config)).toBe(true)
+    expect(isVoiceStopCommand('Стоп!', config)).toBe(true)
+    expect(isVoiceStopCommand('hermes отбой', config)).toBe(true)
+    expect(isVoiceStopCommand('stop the docker container', config)).toBe(false)
+    // Built-in English extras are NOT active when the key is set.
+    expect(isVoiceStopCommand('goodbye', config)).toBe(false)
+  })
+
+  it('disables spoken stop when voice.stop_phrases is an empty list', () => {
+    expect(isVoiceStopCommand('stop', { mode: 'disabled' })).toBe(false)
+    expect(isVoiceStopCommand('отбой', { mode: 'disabled' })).toBe(false)
   })
 })
 

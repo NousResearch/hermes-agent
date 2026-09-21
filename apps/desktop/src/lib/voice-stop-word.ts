@@ -11,9 +11,15 @@
 // phrase (optionally addressed to Hermes), so a real turn that merely contains
 // the word "stop" — e.g. "stop the docker container" or "how do I stop a
 // running process" — is never swallowed.
+//
+// Config: when `voice.stop_phrases` is set, those phrases are matched (any
+// language). When the key is absent, the built-in English list below is used.
+// An explicit empty list disables spoken stop entirely — mirroring
+// `tools.voice_mode.is_voice_stop_phrase` (#117801).
 
-// Canonical stop commands. Kept short and unambiguous; each must be the entire
-// spoken utterance to match.
+import { $voiceStopPhraseConfig, type VoiceStopPhraseConfig } from '@/store/voice-prefs'
+
+// Canonical English stop commands used when `voice.stop_phrases` is unset.
 const STOP_PHRASES: readonly string[] = [
   'stop',
   'stop listening',
@@ -63,13 +69,36 @@ function stripAddress(text: string): string {
   return text
 }
 
+function phrasesForConfig(config: VoiceStopPhraseConfig): readonly string[] | null {
+  if (config.mode === 'disabled') {
+    return null
+  }
+
+  if (config.mode === 'custom') {
+    return config.phrases.map(normalize).filter(phrase => phrase.length > 0)
+  }
+
+  return STOP_PHRASES
+}
+
 /**
  * True when the entire spoken utterance is a stop command (optionally addressed
  * to Hermes). Returns false for anything that merely contains "stop" as part of
  * a longer, substantive request.
+ *
+ * Pass `config` in tests; production reads `$voiceStopPhraseConfig`.
  */
-export function isVoiceStopCommand(transcript: string): boolean {
+export function isVoiceStopCommand(
+  transcript: string,
+  config: VoiceStopPhraseConfig = $voiceStopPhraseConfig.get()
+): boolean {
   if (!transcript) {
+    return false
+  }
+
+  const phrases = phrasesForConfig(config)
+
+  if (phrases == null || phrases.length === 0) {
     return false
   }
 
@@ -85,7 +114,7 @@ export function isVoiceStopCommand(transcript: string): boolean {
   const candidates = new Set([normalized, stripAddress(normalized)])
 
   for (const candidate of candidates) {
-    if (STOP_PHRASES.includes(candidate)) {
+    if (phrases.includes(candidate)) {
       return true
     }
   }

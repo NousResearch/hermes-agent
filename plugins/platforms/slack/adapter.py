@@ -2733,6 +2733,14 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _event_declares_bot_sender(self, event: dict) -> bool:
         """Return True when the Slack event itself identifies a bot sender."""
+        # A ``subtype: bot_message`` post is bot-authored no matter what; but a user-token
+        # (``xoxp-``) post can arrive stamped with the posting app's ``bot_id``/``bot_profile``
+        # *and* the real author's ``user`` — so consult the ``api_human_users`` allowlist before
+        # the bot short-circuit. This cannot readmit an app's own ``xoxb`` posts: those carry the
+        # *bot's* user id, which operators never allowlist (the list holds human ids only).
+        if (event.get("subtype") != "bot_message" and event.get("user")
+                and event.get("user") in self._slack_api_human_users()):
+            return False
         if event.get("bot_id") or event.get("bot_profile") or event.get("subtype") == "bot_message":
             return True
         profile = event.get("user_profile")

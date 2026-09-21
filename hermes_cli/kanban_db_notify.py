@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -30,6 +31,8 @@ _SCALAR_TYPES = (str, int, float, bool)
 # Subscription primary key predicate; every per-row statement below binds
 # ``(task_id, platform, chat_id, thread_id or "")`` against it.
 _SUB_KEY_WHERE = "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?"
+
+_log = logging.getLogger(__name__)
 
 
 def _sub_key(task_id: str, platform: str, chat_id: str, thread_id: Optional[str]) -> tuple:
@@ -106,7 +109,8 @@ def add_notify_sub(
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
         existing = conn.execute(
-            "SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            "SELECT delivery_metadata, notifier_profile FROM kanban_notify_subs "
+            + _SUB_KEY_WHERE,
             key,
         ).fetchone()
         existing_metadata = _decode_notify_delivery_metadata(existing["delivery_metadata"]) if existing else {}
@@ -148,6 +152,21 @@ def add_notify_sub(
                 f"UPDATE kanban_notify_subs SET {column} = ? " + _SUB_KEY_WHERE + guard,
                 (value, *key),
             )
+    # An explicit write-through that actually replaced a wrong (route-denied)
+    # stamp leaves an observable trail — the routed-subscription WARNING that
+    # advertises this repair is otherwise silent about it (#118123).
+    if (
+        notifier_profile_explicit
+        and notifier_profile
+        and existing
+        and existing["notifier_profile"] not in (None, "")
+        and existing["notifier_profile"] != notifier_profile
+    ):
+        _log.info(
+            "kanban notifier: notifier_profile %r -> %r for task %s on %s "
+            "(explicit re-subscribe)",
+            existing["notifier_profile"], notifier_profile, task_id, platform,
+        )
 
 
 def _notify_profile_filter(

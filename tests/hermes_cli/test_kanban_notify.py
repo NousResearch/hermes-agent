@@ -113,11 +113,16 @@ def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
     }
 
 
-def test_notify_subscribe_explicit_profile_write_through(kanban_home):
+def test_notify_subscribe_explicit_profile_write_through(kanban_home, caplog):
     """An explicit ``--notifier-profile`` re-subscribe overwrites a wrong stamp —
     the repair the routed-subscription WARNING advertises must not be a silent
-    no-op (#118123); the ambient fallback stays fill-only."""
+    no-op (#118123); the ambient fallback stays fill-only. Only an actual
+    correction leaves a log trail; fills and guarded writes stay silent."""
     import argparse
+    import logging
+
+    def _corrections() -> list:
+        return [r for r in caplog.records if "notifier_profile" in r.getMessage()]
 
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="stamp repair", assignee="worker")
@@ -135,22 +140,33 @@ def test_notify_subscribe_explicit_profile_write_through(kanban_home):
         ])
         assert kc.kanban_command(args) == 0
 
-    # Ambient subscribe fills the empty stamp.
-    with patch.object(kc, "_profile_author", return_value="default"):
-        _cli()
-    assert _stamp() == "default"
+    # Ambient subscribe fills the empty stamp; an ambient re-subscribe keeps the
+    # fill-only guard. Neither corrects anything, so neither leaves a trail.
+    with caplog.at_level(logging.INFO, logger="hermes_cli.kanban_db_notify"):
+        with patch.object(kc, "_profile_author", return_value="default"):
+            _cli()
+        assert _stamp() == "default"
 
-    # Ambient re-subscribe keeps the fill-only guard: an ambient (possibly
-    # wrong) profile must not silently re-stamp a routed subscription.
-    with patch.object(kc, "_profile_author", return_value="ambient"):
-        _cli()
-    assert _stamp() == "default"
+        # Ambient re-subscribe keeps the fill-only guard: an ambient (possibly
+        # wrong) profile must not silently re-stamp a routed subscription.
+        with patch.object(kc, "_profile_author", return_value="ambient"):
+            _cli()
+        assert _stamp() == "default"
+        assert _corrections() == []
 
-    # Explicit re-subscribe write-through: the advertised repair works.
-    _cli("--notifier-profile", "orchestrator")
+    # Explicit re-subscribe write-through: the advertised repair works and the
+    # correction is observable.
+    with caplog.at_level(logging.INFO, logger="hermes_cli.kanban_db_notify"):
+        _cli("--notifier-profile", "orchestrator")
     assert _stamp() == "orchestrator"
+    assert any(
+        "'default'" in r.getMessage() and "'orchestrator'" in r.getMessage()
+        for r in _corrections()
+    )
 
-    # An explicit re-subscribe also stamps a row the ambient path left blank.
+    # An explicit re-subscribe also stamps a row the ambient path left blank —
+    # a fill, not a correction, so it stays silent.
+    caplog.clear()
     with kbc.connect() as conn:
         other = kb.create_task(conn, title="blank stamp", assignee="worker")
     parser = argparse.ArgumentParser()
@@ -159,9 +175,11 @@ def test_notify_subscribe_explicit_profile_write_through(kanban_home):
         "kanban", "notify-subscribe", other, "--platform", "discord", "--chat-id", "thread",
         "--thread-id", "thread", "--notifier-profile", "orchestrator",
     ])
-    assert kc.kanban_command(args) == 0
+    with caplog.at_level(logging.INFO, logger="hermes_cli.kanban_db_notify"):
+        assert kc.kanban_command(args) == 0
     with kbc.connect() as conn:
         assert kbn.list_notify_subs(conn, other)[0]["notifier_profile"] == "orchestrator"
+    assert _corrections() == []
 
 
 def test_child_task_inherits_parent_delivery_mode(kanban_home):

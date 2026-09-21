@@ -1,5 +1,5 @@
 from hermes_cli.config import DEFAULT_CONFIG
-from hermes_cli.web_server import CONFIG_SCHEMA
+from hermes_cli.web_server_config import CONFIG_SCHEMA
 
 
 def test_desktop_composer_enter_sends_defaults_to_true():

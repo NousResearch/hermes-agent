@@ -5174,6 +5174,45 @@ def _prompt_allowlist_var(var: dict, platform_key: str, auto_owner_user_id) -> s
     return cleaned
 
 
+def _configured_dm_admins(platform_key: str) -> list[str]:
+    """Read the platform's configured direct-message slash-command admins."""
+    from hermes_cli.config import read_raw_config
+
+    config = read_raw_config()
+    platforms = config.get("platforms") if isinstance(config, dict) else None
+    platform = platforms.get(platform_key) if isinstance(platforms, dict) else None
+    raw = platform.get("allow_admin_from") if isinstance(platform, dict) else None
+    if isinstance(raw, str):
+        values = raw.split(",")
+    elif isinstance(raw, (list, tuple, set, frozenset)):
+        values = raw
+    elif raw is None:
+        values = ()
+    else:
+        values = (raw,)
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def _offer_first_operator_admin(platform_key: str, user_id: str) -> None:
+    """Offer opt-in DM slash-command admin setup without changing group policy."""
+    from hermes_cli.config import write_platform_config_field
+
+    existing = _configured_dm_admins(platform_key)
+    if existing:
+        print_info("  Direct-message slash-command admin access is already configured; leaving it unchanged.")
+        return
+
+    print()
+    _print_info_lines(
+        "  Optional: make your first allowed user a direct-message slash-command admin.",
+        "  Once enabled, other DM users can only run /help and /whoami unless you allow more commands.",
+        "  This only covers direct messages; group admins use group_allow_admin_from separately.",
+    )
+    if prompt_yes_no(f"  Make {user_id} the DM slash-command admin?", False):
+        write_platform_config_field(platform_key, "allow_admin_from", [user_id], raw=True)
+        print_success("  Direct-message slash-command admin saved.")
+
+
 def _setup_standard_platform(platform: dict):
     """Interactive setup for Telegram, Discord, or Slack."""
     from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
@@ -5234,6 +5273,11 @@ def _setup_standard_platform(platform: dict):
         first_id = allowed_val_set.split(",")[0].strip()
         if first_id:
             _offer_home_channel(home_var, first_id, "your user ID")
+
+    if allowed_val_set:
+        first_id = allowed_val_set.split(",")[0].strip()
+        if first_id:
+            _offer_first_operator_admin(platform["key"], first_id)
 
     print()
     print_success(f"{emoji} {label} configured!")

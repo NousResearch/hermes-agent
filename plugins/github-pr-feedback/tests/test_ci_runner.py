@@ -646,6 +646,27 @@ def test_windows_ci_runner_defaults_to_scripts_python() -> None:
     assert _default_python_argv() == (".venv/Scripts/python.exe",)
 
 
+@pytest.mark.windows_only
+def test_windows_ci_runner_probes_a_real_scripts_venv(tmp_path: Path) -> None:
+    import venv
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    venv.EnvBuilder(with_pip=False).create(worktree / ".venv")
+    version = ".".join(map(str, sys.version_info[:3]))
+    (worktree / ".python-version").write_text(version + "\n", encoding="utf-8")
+    ledger = FeedbackLedger(tmp_path / "ledger.sqlite3")
+    runner = LocalCIRunner(FakeGitHub(merge_state()), ledger)
+
+    evidence = runner._ensure_python_environment(
+        worktree, _isolated_ci_environment(tmp_path / "isolated-home")
+    )
+
+    assert runner._python_argv == (".venv/Scripts/python.exe",)
+    assert evidence is None
+    ledger.close()
+
+
 def test_ci_runner_environment_helper_drops_unlisted_variables(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

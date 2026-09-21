@@ -510,8 +510,13 @@ def _apply_main_model_assignment(model_cfg: "Any", result: "ModelSwitchResult", 
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten a dict-form ``model`` to its string form (the schema is built from
     DEFAULT_CONFIG where ``model`` is a string) and surface ``model_context_length``
-    as a top-level field (0 = auto-detect)."""
+    as a top-level field (0 = auto-detect).
+
+    Large integers (>= 2^53, JS Number.MAX_SAFE_INTEGER) are serialized as
+    strings so the browser's JSON.parse/stringify round-trip never loses
+    precision on 64-bit Discord/Telegram snowflakes."""
     config = dict(config)
+    config = _coerce_js_bigints_to_strings(config)
     model_val = config.get("model")
     if isinstance(model_val, dict):
         ctx_len = model_val.get("context_length", 0)
@@ -847,6 +852,28 @@ def _infer_provider_on_model_change(model_val: str, prev_provider: str) -> tuple
     return "", name
 
 
+def _coerce_js_bigints_to_strings(obj):
+    """Recursively convert integers > 2^53 (JS Number.MAX_SAFE_INTEGER) to strings.
+
+    Discord/Telegram IDs are 64-bit snowflakes. The dashboard's form-based
+    Config page round-trips config through ``JSON.stringify``/``JSON.parse`` in
+    the browser, where JS Number is IEEE 754 double (53-bit mantissa). Large
+    ints silently lose precision (last 2-3 digits rounded). Converting them
+    to strings here ensures they survive the round-trip and config.yaml stores
+    them as strings.
+    """
+    if isinstance(obj, dict):
+        return {k: _coerce_js_bigints_to_strings(v) for k, v in obj.items()}  # type: ignore[return-value]
+    if isinstance(obj, list):
+        return [_coerce_js_bigints_to_strings(v) for v in obj]  # type: ignore[return-value]
+    if isinstance(obj, int) and not isinstance(obj, bool) and abs(obj) >= _JS_MAX_SAFE_INTEGER:
+        return str(obj)
+    return obj
+
+
+_JS_MAX_SAFE_INTEGER = 2**53
+
+
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Reverse ``_normalize_config_for_web`` before saving.
 
@@ -863,6 +890,7 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     from hermes_cli.config import load_config
     config = dict(config)
     config.pop("_model_meta", None)
+    config = _coerce_js_bigints_to_strings(config)
 
     ctx_sent = "model_context_length" in config
     ctx_override = config.pop("model_context_length", 0)

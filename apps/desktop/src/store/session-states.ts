@@ -19,6 +19,7 @@
 import { type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
 import {
@@ -413,15 +414,62 @@ export function getRecentlySettledSessionIds(now: number = Date.now()): string[]
   return live
 }
 
+/** The session id the live HashRouter route names, or null when the route has
+ *  no session opinion (new-chat draft, reserved/overlay/contributed page, or
+ *  no hash at all). Desktop mounts HashRouter, so the app route lives in
+ *  `location.hash` (`#/stored-A`); `location.pathname` is always the
+ *  document's own path and never carries the session segment. */
+function windowRouteSessionId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  return routeSessionId(window.location.hash.replace(/^#/, ''))
+}
+
+/** Whether the user is still focused on a session that belongs to the same
+ *  durable lineage as the given stored id. Used to decide whether a
+ *  backgrounded session's delayed id-rotation may follow the route/selection
+ *  to its new tip, or whether the user has already navigated away.
+ *
+ *  Every surface that can name the on-screen session must agree: the focused
+ *  tile or primary (`$focusedStoredSessionId` already folds the layout's
+ *  interaction tracker, an open tile, and the primary selection into one
+ *  answer) AND the HashRouter route. A fast A -> B switch can leave route and
+ *  selection on A while tile B holds focus; either surface naming a session
+ *  outside the lineage means the user has already moved on (#86106). */
+export function isSessionInForeground(storedSessionId: string): boolean {
+  const sessions = $sessions.get()
+  const foregroundIds = new Set(lineageAliases(storedSessionId, sessions))
+  const focused = $focusedStoredSessionId.get()
+
+  if (focused !== null && !foregroundIds.has(focused)) {
+    return false
+  }
+
+  const routed = windowRouteSessionId()
+
+  if (routed !== null && !foregroundIds.has(routed)) {
+    return false
+  }
+
+  // Neither surface names a session: a fresh unpersisted chat is still the
+  // thing on screen. The caller already requires the rotating runtime to be
+  // $activeSessionId, so allow that session's own A -> A-next.
+  return true
+}
+
 // --- Transition detection (called automatically from publishSessionState) ---
 function handleTransition(previous: ClientSessionState | null, next: ClientSessionState, runtimeId: string) {
   // Compression id rotation: signal the route-follow effect with enough
   // provenance (previous id + runtime) that the consumer can reject the event
   // if the user navigated elsewhere before React handled it. A bare next id
   // could let a background session's delayed rotation steal the foreground
-  // route.
+  // route. Re-validate against the current route/selection, not just the
+  // runtime id, so a fast A -> B switch while A is still busy does not get
+  // pulled back to A's new tip (#86106).
   if (previous?.storedSessionId && next.storedSessionId && previous.storedSessionId !== next.storedSessionId) {
-    if (runtimeId === $activeSessionId.get()) {
+    if (runtimeId === $activeSessionId.get() && isSessionInForeground(previous.storedSessionId)) {
       setActiveSessionStoredIdRotation({
         nextStoredSessionId: next.storedSessionId,
         previousStoredSessionId: previous.storedSessionId,
@@ -1007,6 +1055,34 @@ const profileKey = () => normalizeProfileKey($activeGatewayProfile.get())
 // atom hydrates from the stored (runtime-less) tiles for the active profile.
 // A secondary window (single-chat pop-out) shows ONLY its routed session — no
 // tiles, and no repopulation on a profile switch.
+/** Stored ids of session tiles whose pane is PARKED (unmounted by the zone's
+ *  bounded keep-alive, pane-lifecycle.ts). A parked tile still exists, so it
+ *  used to count as "referenced" and its full transcript stayed pinned in the
+ *  warm cache forever — the retained-`$messages` leak of #77311. Parked tiles
+ *  are unreferenced for eviction; the tile's resume path re-hydrates from the
+ *  backend on unpark exactly as a cold mount does. */
+export const $parkedTileStoredIds = atom<ReadonlySet<string>>(new Set())
+
+const parkedTilesByZone = new Map<string, readonly string[]>()
+
+/** Each pane zone reports its own parked session tiles; the atom is the union. */
+export function setZoneParkedTiles(zoneKey: string, storedSessionIds: readonly string[]): void {
+  if (storedSessionIds.length === 0) {
+    parkedTilesByZone.delete(zoneKey)
+  } else {
+    parkedTilesByZone.set(zoneKey, storedSessionIds)
+  }
+
+  const next = new Set([...parkedTilesByZone.values()].flat())
+  const prev = $parkedTileStoredIds.get()
+
+  if (next.size === prev.size && [...next].every(id => prev.has(id))) {
+    return
+  }
+
+  $parkedTileStoredIds.set(next)
+}
+
 export const $sessionTiles = atom<SessionTile[]>(
   isSecondaryWindow() || isBrowserWindow()
     ? []

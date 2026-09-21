@@ -2502,6 +2502,10 @@ DEFAULT_CONFIG = {
         # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
         # strings; a single string is shell-split.
         "electron_flags": [],
+        # V8 old-space ceiling (MB) for the renderer, applied as --js-flags=--max-old-space-size=N by
+        # the app itself (also for Start-menu / .desktop launches). 0 = Chromium's default limit.
+        # A ceiling turns a machine-wide freeze into a bounded renderer reload (#77311).
+        "renderer_max_old_space_mb": 0,
         # Linux Ozone backend, bridged to ELECTRON_OZONE_PLATFORM_HINT (explicit env wins). auto =
         # Chromium default; x11 = XWayland, for compositors that ignore always-on-top for Wayland
         # clients (e.g. COSMIC) — also puts the HUD on the solid-window input path; wayland = force

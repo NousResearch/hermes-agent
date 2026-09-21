@@ -190,6 +190,29 @@ Under local WSLg, Hermes launches with `--ozone-platform=wayland` to avoid the X
 
 When `hermes gui` runs inside WSL2 with `/dev/dxg` present and Mesa's `d3d12_dri.so` installed, the launcher sets `GALLIUM_DRIVER=d3d12` for Electron so rendering uses the Windows GPU instead of the llvmpipe software rasterizer; an explicit `GALLIUM_DRIVER`, `MESA_LOADER_DRIVER_OVERRIDE`, `LIBGL_ALWAYS_SOFTWARE`, or `LIBGL_DRIVERS_PATH` in your environment is left untouched (for example `GALLIUM_DRIVER=llvmpipe hermes gui` keeps software rendering).
 
+#### Launch flags and the renderer heap ceiling
+
+Two `desktop.*` keys reach Chromium at launch on every path — `hermes desktop`, the Start-menu shortcut and the Linux `.desktop` entry alike (the app reads them from `config.yaml` before its first window opens):
+
+```yaml
+desktop:
+  electron_flags: ["--ozone-platform=x11"]   # extra Chromium switches; a single string is split on spaces
+  renderer_max_old_space_mb: 2048            # V8 heap ceiling for the chat renderer; 0 = Chromium default
+```
+
+`renderer_max_old_space_mb` is applied as `--js-flags=--max-old-space-size=N` and merged with any `--js-flags` you already pass, so neither overwrites the other. Set it when a very long, tool-heavy session drives the renderer past what the machine can spare: the renderer then hits its own limit and reloads (bounded to three reloads per minute) instead of freezing the whole machine.
+
+Both keys must be written exactly as shown — two spaces of indentation under a top-level `desktop:` key, and four spaces before the `-` of a block list:
+
+```yaml
+desktop:
+  electron_flags:
+    - "--ozone-platform=x11"
+    - "--js-flags=--expose-gc"
+```
+
+The pre-window reader is a small YAML subset, not the full parser the rest of Hermes uses, because it has to run before the app loads anything. Other indentations are valid YAML but are ignored here; when that happens the app logs `desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored` at startup and launches with Chromium's defaults.
+
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.

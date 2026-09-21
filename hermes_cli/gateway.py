@@ -3565,14 +3565,23 @@ def _launchd_reload_budget() -> float:
     return max(30.0, _get_restart_drain_timeout())
 
 
-def _launchctl_label_supervising_process(label: str) -> bool:
-    """True when launchd knows ``label`` AND runs a process for it. ``launchctl list`` exits 0 for a
-    mere registered definition (``state = not running`` on macOS 26+), so a positive PID is required."""
+def _launchctl_supervised_pid(label: str) -> int | None:
+    """PID launchd currently runs for ``label``, or None when it runs none. ``launchctl list`` exits 0 for
+    a mere registered definition (``state = not running`` on macOS 26+), so a PID — not the exit code — is
+    the answer. Domain-agnostic on purpose: ``launchctl print`` domain probes fail on macOS-26 per-user
+    domains, which is why the invoking profile verifies through this and not ``_launchd_print_service_pid``."""
     try:
         result = subprocess.run(["launchctl", "list", label], check=False, timeout=10, **_CAPTURE_TEXT)
     except (subprocess.TimeoutExpired, OSError):
-        return False
-    return result.returncode == 0 and _parse_launchd_pid_from_list_output(result.stdout) is not None
+        return None
+    if result.returncode != 0:
+        return None
+    return _parse_launchd_pid_from_list_output(result.stdout)
+
+
+def _launchctl_label_supervising_process(label: str) -> bool:
+    """True when launchd knows ``label`` AND runs a process for it."""
+    return _launchctl_supervised_pid(label) is not None
 
 
 def _retry_launchctl_bootstrap_until_registered(
@@ -4255,6 +4264,7 @@ def wait_for_launchd_gateway_supervision(
     timeout: float = LAUNCHD_SUPERVISION_VERIFY_TIMEOUT,
     label: str | None = None,
     poll_interval: float = 0.5,
+    old_pid: int | None = None,
 ) -> bool:
     """Poll launchd until it supervises a live gateway; True at once if the detached fallback is active.
     ``launchd_restart`` returns once the restart is *requested* (asynchronous), so it can't see a helper
@@ -4266,8 +4276,12 @@ def wait_for_launchd_gateway_supervision(
     bootstrap (#88848) — nor a ``launchctl bootstrap`` that exits 0 without registering, which the reporter
     measured on macOS 26.6.1.
     Judge the outcome the way #80491 taught the helper to judge it: by a live supervised pid, never by an
-    exit code.  :func:`_launchctl_label_supervising_process` is already that predicate, so this only adds
-    the wait.
+    exit code.  :func:`_launchctl_supervised_pid` is already that probe, so this only adds the wait.
+
+    ``old_pid`` is the pid launchd ran for the label *before* the restart: a restart that leaves the same
+    process running is not a restart, so passing it holds the invoking profile to the same fresh-pid
+    contract :func:`_wait_for_launchd_service_pid` enforces for sibling labels. With ``old_pid=None``
+    (no pre-restart pid was observable) any supervised pid counts, as before.
     """
     if _launchd_unsupported_marker_exists():
         return True
@@ -4275,7 +4289,8 @@ def wait_for_launchd_gateway_supervision(
     label = label or get_launchd_label()
     deadline = time.monotonic() + max(timeout, 0.0)
     while True:
-        if _launchctl_label_supervising_process(label):
+        pid = _launchctl_supervised_pid(label)
+        if pid is not None and pid != old_pid:
             return True
         if time.monotonic() >= deadline:
             return False

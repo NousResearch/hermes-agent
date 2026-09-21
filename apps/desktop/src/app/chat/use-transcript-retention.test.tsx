@@ -166,13 +166,16 @@ describe('useTranscriptRetention — the store releases paged-through history', 
     const { $messages, view } = sessionView(Array.from({ length: 60 }, (_, index) => row(index)))
     let state = { messages: $messages.get() }
 
-    vi.mocked(sessionTileDelegate).mockReturnValue({
-      updateSession: (_id: string, update: (previous: typeof state) => typeof state) => (state = update(state))
-    } as never)
+    const updateSession = vi.fn(
+      (_id: string, update: (previous: typeof state) => typeof state) => (state = update(state))
+    )
+
+    vi.mocked(sessionTileDelegate).mockReturnValue({ updateSession } as never)
     mountBoundary(view, () => {})
 
     // `beforeEach` left the tail store empty: nothing can fetch released rows,
-    // so they stay.
+    // so the plan is never even computed and they stay.
+    expect(updateSession).not.toHaveBeenCalled()
     expect(state.messages).toHaveLength(60)
   })
 })
@@ -181,6 +184,7 @@ describe('useTranscriptRetention — direct', () => {
   it('releases on the anchor it is given, and only when the anchor moves', () => {
     const messages = Array.from({ length: 60 }, (_, index) => row(index))
     let state = { messages }
+
     const updateSession = vi.fn((_id: string, update: (previous: typeof state) => typeof state) => {
       state = update(state)
 

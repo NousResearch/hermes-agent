@@ -1,7 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 
 import { sessionTileDelegate } from '@/store/session-states'
-import { rewindTranscriptTail, type TranscriptProfileScope } from '@/store/transcript-tail'
+import { rewindTranscriptTail, type TranscriptProfileScope, transcriptTailState } from '@/store/transcript-tail'
 
 import { boundRetainedTranscript } from './transcript-retention'
 
@@ -32,6 +32,10 @@ interface TranscriptRetentionOptions {
  * The cut is computed inside the store updater, from the array it is about to
  * replace: a view snapshot can be a flush behind the store, and writing a
  * trimmed version of it back would drop the newest rows of a live turn.
+ *
+ * `profile` must be referentially stable across renders (the chat view memoizes
+ * it): it is a dependency here, and the rewind has to address the same route
+ * the render resolved.
  */
 export function useTranscriptRetention({
   anchorId,
@@ -40,28 +44,31 @@ export function useTranscriptRetention({
   runtimeId,
   storedSessionId
 }: TranscriptRetentionOptions): void {
-  const profileRef = useRef(profile)
-  profileRef.current = profile
-
   useEffect(() => {
     if (!enabled || !runtimeId || !storedSessionId || anchorId === null) {
+      return
+    }
+
+    // Cheap pre-check: with no recorded tail entry there is no route to fetch
+    // released rows back from, so the plan below would be discarded anyway.
+    // The rewind inside the updater stays the authoritative arbiter.
+    if (!transcriptTailState(storedSessionId, profile)) {
       return
     }
 
     sessionTileDelegate()?.updateSession(runtimeId, state => {
       const retention = boundRetainedTranscript(state.messages, anchorId)
 
-      if (retention.releasedRows === 0) {
+      if (!retention.released) {
         return state
       }
 
-      // Nothing may be released until the rows are fetchable again: no tail
-      // entry means no recorded route to page them back from.
-      if (!rewindTranscriptTail(storedSessionId, retention.retainedPersistedRows, profileRef.current)) {
+      // Nothing may be released until the rows are fetchable again.
+      if (!rewindTranscriptTail(storedSessionId, retention.retainedPersistedRows, profile)) {
         return state
       }
 
       return { ...state, messages: retention.messages }
     })
-  }, [anchorId, enabled, runtimeId, storedSessionId])
+  }, [anchorId, enabled, profile, runtimeId, storedSessionId])
 }

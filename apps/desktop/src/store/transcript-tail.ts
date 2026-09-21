@@ -84,6 +84,32 @@ function matchingTailEntries(storedSessionId: string): Array<[string, Transcript
   })
 }
 
+/**
+ * Resolve the single tail entry an address refers to, returning its key too.
+ *
+ * `undefined` when the address is ambiguous (two scopes recorded for one stored
+ * session, no profile to disambiguate) or absent. Callers that page or rewind
+ * must then leave the transcript alone: a route that cannot be addressed
+ * exactly is a route that cannot be fetched from.
+ */
+function resolveTailEntry(
+  storedSessionId: string,
+  profile?: TranscriptProfileScope
+): [key: string, state: TranscriptTailState] | undefined {
+  const current = $transcriptTailBySessionId.get()
+
+  if (profile !== undefined) {
+    const key = transcriptTailKey(storedSessionId, profile)
+    const state = current[key]
+
+    return state ? [key, state] : undefined
+  }
+
+  const matches = matchingTailEntries(storedSessionId)
+
+  return matches.length === 1 ? matches[0] : undefined
+}
+
 function tailStateFromPage(page: TailPage, profile?: TranscriptProfileScope): TranscriptTailState {
   const pagination = page.pagination
 
@@ -160,24 +186,13 @@ export function recordTranscriptBackfillPage(
   page: TailPage,
   profile?: TranscriptProfileScope
 ): void {
-  const current = $transcriptTailBySessionId.get()
+  const entry = resolveTailEntry(storedSessionId, profile)
 
-  const selected: Array<[string, TranscriptTailState | undefined]> =
-    profile === undefined
-      ? matchingTailEntries(storedSessionId)
-      : [[transcriptTailKey(storedSessionId, profile), current[transcriptTailKey(storedSessionId, profile)]]]
-
-  if (selected.length !== 1) {
+  if (!entry) {
     return
   }
 
-  const [key, previous] = selected[0]
-
-  if (!previous) {
-    return
-  }
-
-  setTranscriptTailEntry(key, tailStateFromPage(page, previous.profile))
+  setTranscriptTailEntry(entry[0], tailStateFromPage(page, entry[1].profile))
 }
 
 /**
@@ -202,23 +217,16 @@ export function rewindTranscriptTail(
     return false
   }
 
-  const current = $transcriptTailBySessionId.get()
+  const entry = resolveTailEntry(storedSessionId, profile)
 
-  const selected: Array<[string, TranscriptTailState | undefined]> =
-    profile === undefined
-      ? matchingTailEntries(storedSessionId)
-      : [[transcriptTailKey(storedSessionId, profile), current[transcriptTailKey(storedSessionId, profile)]]]
-
-  if (selected.length !== 1 || !selected[0][1]) {
+  if (!entry) {
     return false
   }
 
-  const [key, previous] = selected[0]
-
-  setTranscriptTailEntry(key, {
+  setTranscriptTailEntry(entry[0], {
     nextOffset: retainedRows,
     possiblyTruncated: true,
-    profile: previous.profile
+    profile: entry[1].profile
   })
 
   return true
@@ -232,13 +240,7 @@ export function transcriptTailState(
     return undefined
   }
 
-  if (profile !== undefined) {
-    return $transcriptTailBySessionId.get()[transcriptTailKey(storedSessionId, profile)]
-  }
-
-  const matches = matchingTailEntries(storedSessionId)
-
-  return matches.length === 1 ? matches[0][1] : undefined
+  return resolveTailEntry(storedSessionId, profile)?.[1]
 }
 
 /** Drops the LRU order as well as the atom. */

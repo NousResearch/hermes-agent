@@ -14,22 +14,17 @@ record. ``default`` is just another served profile here, never a special owner.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Optional
-
-logger = logging.getLogger(__name__)
 
 
 def _normalized(name: Optional[str]) -> str:
     if not name:
         return ""
-    try:
-        from hermes_cli.profiles import normalize_profile_name
+    # Late import: ``hermes_cli.profiles`` imports gateway modules back.
+    from hermes_cli.profiles import normalize_profile_name
 
-        return normalize_profile_name(name)
-    except Exception:
-        return str(name).strip().lower()
+    return normalize_profile_name(name)
 
 
 @dataclass(frozen=True)
@@ -64,8 +59,10 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
         return None
     # A record whose (pid, createTime) cannot be POSITIVELY matched is a candidate, never an owner
     # (``host_rendezvous`` contract): reporting an unprovable record as the live host gateway would
-    # turn a leftover record into a permanent "running" lie on every surface.
-    if not hr.liveness_is_proven(record):
+    # turn a leftover record into a permanent "running" lie on every surface. A record with no
+    # recorded createTime is exactly that — ``_same_incarnation`` treats ``None`` as "matches", so
+    # liveness_is_proven() would bless ANY process that happens to hold the recorded PID today.
+    if record.create_time is None or not hr.liveness_is_proven(record):
         return None
     return HostGatewayTopology(pid=int(record.pid), profiles=tuple(record.profiles), source="host_record")
 
@@ -86,11 +83,7 @@ def _from_served_record() -> Optional[HostGatewayTopology]:
 def host_gateway_topology() -> Optional[HostGatewayTopology]:
     """The one live host gateway and its served profiles, or None when no gateway owns the role."""
     for rung in (_from_host_record, _from_served_record):
-        try:
-            topology = rung()
-        except Exception:
-            logger.debug("host gateway topology rung %s failed", rung.__name__, exc_info=True)
-            continue
+        topology = rung()
         if topology is not None:
             return topology
     return None
@@ -102,10 +95,7 @@ def host_gateway_serving(profile_name: Optional[str] = None) -> Optional[HostGat
     if topology is None:
         return None
     if profile_name is None:
-        try:
-            from hermes_cli.profiles import get_active_profile_name
+        from hermes_cli.profiles import get_active_profile_name
 
-            profile_name = get_active_profile_name()
-        except Exception:
-            return None
+        profile_name = get_active_profile_name()
     return topology if topology.serves(profile_name) else None

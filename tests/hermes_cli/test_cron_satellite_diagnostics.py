@@ -57,7 +57,10 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
 
     cron.cron_status()
     output = capsys.readouterr().out
-    assert ("Scheduler host: the host gateway" in output) == (mode in {"missing", "fresh", "stale"})
+    # This fixture leaves the rendezvous dir EMPTY, so the config-derived multiplexer rung is what
+    # answers here — assert its exact line, never a prefix the host-record rung also prints.
+    assert ("Scheduler host: the host gateway (multiplexing this profile)" in output) == (
+        mode in {"missing", "fresh", "stale"})
     assert ("will fire automatically" in output) == (mode in {"fresh", "local"})
     if mode in {"missing", "stale"}:
         assert "hermes --profile default gateway restart" in output
@@ -76,6 +79,29 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
     if mode == "external":
         assert "managed scheduler" in output
         assert "STALLED" not in output
+
+
+def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, capsys, monkeypatch):
+    """The OTHER rung: a published host record answers before the config-derived one.
+
+    Both rungs print a "Scheduler host: the host gateway…" line, so they are only distinguishable
+    by their full text — and the remediation they print must actually run for THIS audience:
+    `hermes gateway restart` exits 78 for a served named profile.
+    """
+    import os
+
+    from gateway import host_rendezvous as hr
+    from hermes_cli import cron
+
+    hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "probe"))
+
+    cron.cron_status()
+    output = capsys.readouterr().out
+
+    assert f"Scheduler host: the host gateway (PID {os.getpid()}) serving profiles default, probe" in output
+    assert "Scheduler host: the host gateway (multiplexing this profile)" not in output
+    assert "hermes --profile default gateway restart" in output
+    assert "\n  If heartbeat never appears, restart: hermes gateway restart" not in output
 
 
 @pytest.mark.parametrize("heartbeat", ["missing", "fresh", "stale"])

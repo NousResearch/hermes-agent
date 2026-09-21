@@ -1,7 +1,6 @@
 """Tests for hermes_cli.cron command handling."""
 
 import argparse
-import tempfile
 import time
 from argparse import Namespace
 from datetime import datetime, timedelta, timezone
@@ -610,10 +609,12 @@ class TestStatusSurfacesDeadScheduler:
     status` / `cron list` must not present the stale timestamp as an upcoming "Next run":
     flag it as overdue and say when the scheduler last ticked."""
 
-    def _dead_gateway(self, monkeypatch):
+    def _dead_gateway(self, monkeypatch, lock_dir):
         # No gateway owns the HOST role either: point the rendezvous dir at an empty scratch dir
-        # so an unrelated host record can never make this profile look served.
-        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", tempfile.mkdtemp(prefix="hermes-locks-"))
+        # so an unrelated host record can never make this profile look served. (Superseded by the
+        # tests/conftest.py hook in #118097 once that lands.)
+        lock_dir.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         monkeypatch.setattr(
             "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None
@@ -629,7 +630,7 @@ class TestStatusSurfacesDeadScheduler:
         self, tmp_cron_dir, capsys, monkeypatch
     ):
         job = create_job(prompt="Hourly", schedule="every 60m")
-        self._dead_gateway(monkeypatch)
+        self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
         self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(hours=7))
         (tmp_cron_dir / "cron" / "ticker_heartbeat").write_text(str(time.time() - 25 * 3600))
 
@@ -650,7 +651,7 @@ class TestStatusSurfacesDeadScheduler:
         # a few minutes behind the ticker's own cadence is not an outage yet, and status must
         # not flash OVERDUE while doctor calls the same job healthy.
         job = create_job(prompt="Hourly", schedule="every 60m")
-        self._dead_gateway(monkeypatch)
+        self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
         self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(minutes=5))
 
         cron_command(Namespace(cron_command="status"))

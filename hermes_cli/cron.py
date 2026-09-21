@@ -491,7 +491,9 @@ def cron_status():
                 served_by_multiplexer = named_profile_served_by_running_multiplexer()
         if host is not None:
             print(f"  Scheduler host: {host.describe()}")
-            _print_ticker_health([host.pid], restart_command="hermes gateway restart")
+            # `hermes gateway restart` exits 78 for a served NAMED profile
+            # (_guard_named_profile_under_multiplexer): the one host process is the default's.
+            _print_ticker_health([host.pid], restart_command="hermes --profile default gateway restart")
         elif pids or gateway_alive_via_lock or served_by_multiplexer:
             if served_by_multiplexer:
                 print("  Scheduler host: the host gateway (multiplexing this profile)")

@@ -233,6 +233,8 @@ def _report_host_gateway_slot(mgr, issues: list[str]) -> None:
         if not slots:
             return check_info("No gateway registered yet — run `hermes gateway install`")
         up = [p for p in slots if mgr.is_running(f"gateway-{p}")]
+        issues.append("No host gateway owns the gateway role — start the ONE host multiplexer: "
+                      "hermes --profile default gateway start")
         return check_warn(f"No host gateway owns the gateway role ({len(up)}/{len(slots)} supervision "
                           f"slots up: {', '.join(slots)})", "(nothing is serving these profiles)")
     check_ok(f"Host gateway: {topology.describe()}")
@@ -301,13 +303,14 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
     """
     try:
         from hermes_cli.gateway import (
-            _SERVICE_BASE, get_systemd_linger_status, get_systemd_unit_path, is_linux)
+            _SERVICE_BASE, get_systemd_linger_status, get_systemd_unit_path, is_linux,
+            user_systemd_unit_dir)
         from hermes_cli.service_manager import detect_service_manager
     except Exception as e:
         return check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
     if not is_linux() or detect_service_manager() == "s6":
         return
-    host_unit = Path.home() / ".config" / "systemd" / "user" / f"{_SERVICE_BASE}.service"
+    host_unit = user_systemd_unit_dir() / f"{_SERVICE_BASE}.service"
     if not (get_systemd_unit_path().exists() or host_unit.exists()):
         return
     _section("Gateway Service")

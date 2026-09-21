@@ -2194,11 +2194,22 @@ def get_service_name() -> str:
     return f"{_SERVICE_BASE}-{suffix}" if suffix else _SERVICE_BASE
 
 
+def user_systemd_unit_dir() -> Path:
+    """``$XDG_CONFIG_HOME/systemd/user`` (``~/.config`` only as the spec's default).
+
+    Hardcoding ``~/.config`` made every unit probe silently false-negative on a host that moves
+    XDG_CONFIG_HOME — doctor then reported no gateway unit while systemd was running ours.
+    """
+    config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(config_home) if config_home else Path.home() / ".config"
+    return base / "systemd" / "user"
+
+
 def get_systemd_unit_path(system: bool = False) -> Path:
     name = get_service_name()
     if system:
         return _SYSTEM_UNIT_DIR / f"{name}.service"
-    return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
+    return user_systemd_unit_dir() / f"{name}.service"
 
 
 class UserSystemdUnavailableError(RuntimeError):
@@ -2438,7 +2449,7 @@ _LEGACY_UNIT_EXECSTART_MARKERS: tuple[str, ...] = (
 
 def _legacy_unit_search_paths() -> list[tuple[bool, Path]]:
     """``[(is_system, base_dir), ...]`` to scan for legacy units; factored out so tests can monkeypatch."""
-    return [(False, Path.home() / ".config" / "systemd" / "user"), (True, _SYSTEM_UNIT_DIR)]
+    return [(False, user_systemd_unit_dir()), (True, _SYSTEM_UNIT_DIR)]
 
 
 def _find_legacy_hermes_units() -> list[tuple[str, Path, bool]]:

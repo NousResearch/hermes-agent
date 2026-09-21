@@ -50,3 +50,25 @@ def test_unprovable_record_is_a_candidate_not_the_host_gateway(host_gateway, mon
     monkeypatch.setattr("gateway.host_rendezvous.liveness_is_proven", lambda record: False)
     monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
     assert host_topology.host_gateway_topology() is None
+
+
+def test_record_without_createtime_is_never_the_host_gateway(host_gateway, monkeypatch):
+    """``createTime: null`` is the UNPROVABLE case, not the always-live one.
+
+    ``_same_incarnation`` treats a missing create_time as "matches", so liveness_is_proven() says
+    True for whatever process happens to own that PID today — a record pointing at an unrelated
+    `sleep 60` made every surface report a live host gateway."""
+    import json
+
+    from gateway import host_rendezvous as hr
+    from gateway import host_topology
+
+    monkeypatch.setattr("hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
+    path = hr.record_path(hr.ROLE_GATEWAY)
+    record = json.loads(path.read_text())
+    record["createTime"] = None
+    path.write_text(json.dumps(record))
+
+    parsed = hr.read_record(hr.ROLE_GATEWAY)
+    assert parsed is not None and parsed.create_time is None  # the record itself still parses
+    assert host_topology.host_gateway_topology() is None

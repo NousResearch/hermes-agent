@@ -31,7 +31,8 @@ import {
   clearAllSessionStates,
   reconcileBusyStatesOnReconnect,
   type SessionTileDelegate,
-  setSessionTileDelegate
+  setSessionTileDelegate,
+  setZoneParkedTiles
 } from '@/store/session-states'
 
 import { cachedSessionRow } from './use-session-actions/utils'
@@ -805,5 +806,87 @@ describe('useSessionStateCache — reconnect busy reconcile (#93059)', () => {
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.busy).toBe(false)
     expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-1')?.awaitingResponse).toBe(false)
     expect($sessionStates.get()['runtime-1']?.busy).toBe(false)
+  })
+})
+
+// #77311: a tile the pane shell PARKED (bounded keep-alive, pane-lifecycle.ts)
+// still exists in $sessionTiles, so the warm cache's isReferenced predicate used
+// to count it as visible and pin its transcript forever. Parking is the only
+// thing that changes here — no navigation, no publish — which is exactly the
+// idle-window case the fix has to cover.
+describe('useSessionStateCache — parked tiles release their warm transcript (#77311)', () => {
+  const runtime = 'parked-runtime'
+  const stored = 'parked-stored'
+
+  /** Fill the cache to its settled-entry cap with unreferenced sessions, so a
+   *  single additional candidate is enough to force one eviction. */
+  const fillToCap = (cache: Cache, count: number) => {
+    for (let i = 0; i < count; i += 1) {
+      act(() => {
+        cache.updateSessionState(
+          `parked-filler-${i}`,
+          state => ({ ...state, messages: transcriptForCache(`filler-${i}`) }),
+          `parked-filler-${i}-stored`
+        )
+      })
+    }
+  }
+
+  beforeEach(() => {
+    clearAllSessionStates()
+    setActiveSessionId(null)
+    $sessionTiles.set([{ storedSessionId: stored }])
+  })
+
+  afterEach(() => {
+    cleanup()
+    setZoneParkedTiles('parked-zone', [])
+    $sessionTiles.set([])
+    clearAllSessionStates()
+    setActiveSessionId(null)
+  })
+
+  it('evicts and releases a settled parked tile with no other state change', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    // Seeded first, so it is the least-recently-touched candidate once parked.
+    act(() => {
+      cache.updateSessionState(runtime, state => ({ ...state, messages: transcriptForCache('parked') }), stored)
+    })
+    fillToCap(cache, 24)
+
+    // Still on screen as a tile: referenced, therefore not even a candidate.
+    expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(true)
+
+    act(() => setZoneParkedTiles('parked-zone', [stored]))
+
+    expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(false)
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has(stored)).toBe(false)
+    // releaseSessionTranscript ran: the cheap status projection survives, the
+    // transcript bytes do not.
+    expect($sessionStates.get()[runtime]).toMatchObject({ storedSessionId: stored })
+    expect($sessionStates.get()[runtime]?.messages).toEqual([])
+  })
+
+  it('keeps a parked tile whose turn is still running', () => {
+    let cache!: Cache
+    render(<Harness activeSessionId={null} onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({ ...state, busy: true, messages: transcriptForCache('parked-busy') }),
+        stored
+      )
+    })
+    // One past the cap, so a drain definitely runs — the busy entry surviving
+    // it is the assertion, not an absence of pressure.
+    fillToCap(cache, 25)
+
+    act(() => setZoneParkedTiles('parked-zone', [stored]))
+
+    expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(true)
+    expect($sessionStates.get()[runtime]?.messages.length).toBe(2)
   })
 })

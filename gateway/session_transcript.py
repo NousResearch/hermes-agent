@@ -379,7 +379,11 @@ class SessionTranscriptMixin:
             tool_calls=message.get("tool_calls"),
             tool_call_id=message.get("tool_call_id"),
             **{k: message.get(k) if is_assistant else None for k in _ASSISTANT_ONLY_KEYS},
-            platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
+            platform_message_id=(
+                message.get("platform_message_id")
+                or message.get("message_id")
+                or message.get("_source_message_id")
+            ),
             observed=bool(message.get("observed")),
             timestamp=message.get("timestamp"),
             # Exact bytes sent to the API (prompt-cache-stable replay); must survive every
@@ -548,7 +552,9 @@ class SessionTranscriptMixin:
             db = self._db_for_session_id(session_id)
             session_id = db.get_compression_tip(session_id) or session_id
         try:
-            # repair_alternation: this feeds LIVE REPLAY; heal a durable user;user wedge once here.
+            # repair_alternation: this feeds LIVE REPLAY. Repair malformed assistant/tool
+            # structure in the restored copy; adjacent user rows stay distinct as canonical
+            # source boundaries (merged later on the per-request provider copy).
             return self._db_for_session_id(session_id).get_messages_as_conversation(
                 session_id, repair_alternation=True)
         except Exception as e:

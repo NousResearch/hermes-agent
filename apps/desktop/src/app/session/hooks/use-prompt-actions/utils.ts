@@ -732,6 +732,7 @@ export interface SubmitTextOptions {
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
   fromQueue?: boolean
+  messageId?: string
   /** Called once with the EXACT session identity the backend accepted the
    *  prompt into — the live runtime id after any stale-runtime recovery, plus
    *  the durable stored id when the caller knows it. A caller that must prove
@@ -746,4 +747,5 @@ export interface SubmitTextOptions {
   /** Stable stored session id for optimistic/cache updates and stale-runtime
    *  recovery. Distinct from the runtime session id minted by the gateway. */
   storedSessionId?: string | null
+  submittedAt?: number
 }

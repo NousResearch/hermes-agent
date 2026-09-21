@@ -7,7 +7,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-import { classifyGroupMention, renderGroupMentionText } from './group-mention-text'
+import { classifyGroupMention, groupMentionText, renderGroupMentionText } from './group-mention-text'
 import type { GroupMember } from './types'
 
 vi.mock('@hermes/plugin-sdk', async () => {
@@ -49,5 +49,22 @@ describe('group mention rendering', () => {
     // `@example.com` is not a room identity — no span around it.
     expect(html).not.toContain('data-ref="agent" title="Bot in this room">@example')
     expect(html.replace(/<[^>]+>/g, '')).toBe(text)
+  })
+
+  it('colours a mention nested in emphasis (bot markdown **@name**)', () => {
+    const html = renderToStaticMarkup(
+      <p>{groupMentionText(members)(['Please ', <strong key="s">@planner</strong>, ' take this'])}</p>
+    )
+
+    expect(html).toContain('<span class="ref font-medium" data-ref="agent"')
+    expect(html).toContain('>@planner</span>')
+    expect(html.replace(/<[^>]+>/g, '')).toBe('Please @planner take this')
+  })
+
+  it('leaves a mention inside inline code as prose', () => {
+    const html = renderToStaticMarkup(<p>{groupMentionText(members)(['run ', <code key="c">@planner</code>])}</p>)
+
+    expect(html).not.toContain('data-ref')
+    expect(html).toContain('@planner')
   })
 })

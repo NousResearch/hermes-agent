@@ -10,8 +10,8 @@
  * `broadcast`), i.e. accent text with weight, never a pill.
  */
 
-import type { ComponentProps, ReactNode } from 'react'
-import { Children, Fragment } from 'react'
+import type { ComponentProps, ReactElement, ReactNode } from 'react'
+import { Children, cloneElement, Fragment, isValidElement } from 'react'
 
 import { parseGroupChatMentions } from './group-rounds'
 import type { GroupMember } from './types'
@@ -19,6 +19,9 @@ import type { GroupMember } from './types'
 export type GroupMentionKind = 'agent' | 'broadcast' | 'human'
 
 const MENTION = /@([a-z0-9][a-z0-9._-]*)/gi
+
+/** Host inlines Streamdown wraps bot markdown in (`**@bot**`, `_@bot_`). */
+const NESTED_INLINE = new Set(['b', 'del', 'em', 'i', 'mark', 'small', 'span', 'strong', 'u'])
 
 /** What a lone `@token` means in this room, or null when routing ignores it. */
 export function classifyGroupMention(token: string, members: GroupMember[]): GroupMentionKind | null {
@@ -81,21 +84,42 @@ export function renderGroupMentionText(text: string, members: GroupMember[]): Re
 }
 
 function mapTextChildren(children: ReactNode, members: GroupMember[]): ReactNode {
-  return Children.map(children, child => (typeof child === 'string' ? renderGroupMentionText(child, members) : child))
+  return Children.map(children, child => {
+    if (typeof child === 'string') {
+      return renderGroupMentionText(child, members)
+    }
+
+    if (!isValidElement(child)) {
+      return child
+    }
+
+    const element = child as ReactElement<{ children?: ReactNode }>
+
+    if (element.type === Fragment) {
+      return <Fragment>{mapTextChildren(element.props.children, members)}</Fragment>
+    }
+
+    if (typeof element.type === 'string' && NESTED_INLINE.has(element.type)) {
+      return cloneElement(element, undefined, mapTextChildren(element.props.children, members))
+    }
+
+    return child
+  })
 }
 
 /** `decorateText` hook for the shell's `MessageTextContent`: the same
  *  splitter, applied to the direct text nodes of its paragraph-level
- *  containers (p / li / td). */
+ *  containers (p / li / td). Nested emphasis is walked so a bot's
+ *  `**@name**` still colours; code and links stay literal. */
 export function groupMentionText(members: GroupMember[]) {
   return (children: ReactNode) => mapTextChildren(children, members)
 }
 
 /** Streamdown `components` override (older shells without
  *  `MessageTextContent`): paragraph-level containers re-render
- *  their direct text nodes through the mention splitter. Nested inline
- *  markup (bold, links) and code stay as Streamdown produced them, so a
- *  mention inside a backtick span is left literal on purpose. */
+ *  their text through the mention splitter. Nested emphasis is walked
+ *  so a bot's `**@name**` still colours; a mention inside a backtick
+ *  or a link stays literal on purpose. */
 export function groupMentionComponents(members: GroupMember[]) {
   return {
     li: ({ children, ...props }: ComponentProps<'li'>) => <li {...props}>{mapTextChildren(children, members)}</li>,

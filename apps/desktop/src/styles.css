@@ -859,9 +859,13 @@
 
 /* Bot Mode group-room mentions (#91359): a routed @bot reads as an agent
    reference, @user as a human handoff the room is waiting on, and
-   @everyone/@all as a quieter broadcast. Text, not pills — same contract. */
+   @everyone/@all as a quieter broadcast. Text, not pills — same contract.
+
+   Agent mentions use the unmixed accent (same token as the speaker name).
+   Mixing toward `--foreground` washed `@bot` into the surrounding body
+   copy, which is the thing the colour is supposed to stand out against. */
 [data-ref='agent'] {
-  --ref-color: color-mix(in srgb, var(--ui-accent) 82%, var(--foreground));
+  --ref-color: var(--ui-accent);
 }
 
 [data-ref='human'] {

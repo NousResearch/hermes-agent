@@ -102,7 +102,7 @@ describe('inline reference colour cascade', () => {
     const rules = await topLevelRules()
 
     // A kinded reference resolves to ITS hue, never to the raw primary.
-    expect(resolvedRefColor(rules, 'agent')).toMatch(/^color-mix\(in srgb, var\(--ui-accent\)/)
+    expect(resolvedRefColor(rules, 'agent')).toBe('var(--ui-accent)')
     expect(resolvedRefColor(rules, 'human')).toMatch(/^color-mix\(in srgb, var\(--ui-warm\)/)
     expect(resolvedRefColor(rules, 'broadcast')).toMatch(/^color-mix\(in srgb, var\(--foreground\)/)
     expect(resolvedRefColor(rules, 'skill')).toMatch(/^color-mix\(in srgb, var\(--ui-warm\)/)

@@ -430,6 +430,22 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
+    # Named profiles use their own config and platform credentials, but cloud-model
+    # credentials are installation-wide.  Seed only the provider allowlist from the
+    # root store before layering the profile's .env so direct ``hermes -p NAME``
+    # commands resolve the same model catalogue as multiplexed turns.  The scoped
+    # gateway path does this through ``build_profile_secret_scope`` instead of
+    # mutating process-global environ.
+    try:
+        from agent.secret_scope import _shared_model_provider_secrets
+
+        for name, value in _shared_model_provider_secrets(home_path).items():
+            os.environ[name] = value
+    except Exception:
+        # Provider credential sharing is additive; a discovery/import failure must
+        # leave the ordinary profile dotenv path usable.
+        pass
+
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True, load_pass=load_pass)
         loaded.append(user_env)

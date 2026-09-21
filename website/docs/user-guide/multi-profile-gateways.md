@@ -127,8 +127,10 @@ gateway:
 convenience.) When multiplexing, the default gateway enumerates every profile,
 brings up each profile's enabled platforms under that profile's own
 credentials, and routes each inbound message to the profile it belongs to. Each
-turn resolves the routed profile's config, skills, memory, SOUL, **and provider
-keys** — credentials are never shared across profiles.
+turn resolves the routed profile's config, skills, memory, SOUL, and model route.
+Cloud model-provider credentials are read once from the installation root and are
+available to every named profile; platform, relay, and other service credentials
+remain profile-scoped.
 
 You do **not** run `hermes gateway start` for the secondary profiles — the
 default gateway serves them. See the contract changes below.
@@ -377,7 +379,7 @@ profile and never shares with the default or any sibling:
 
 | Concern | Resolved from | Behaviour when the profile lacks it |
 |---|---|---|
-| Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
+| Model-provider keys and base URLs, `${VAR}` refs for model providers in `config.yaml` | Shared model-provider entries from the installation root `.env`, overlaid by the profile's own `.env` | Unresolved only when neither store defines the provider key; platform and bot-token credentials never fall through from the root |
 | Provider logins and the credential pool (`auth.json`: OAuth tokens, `hermes auth add` keys) | The profile's own `auth.json` | "Not connected to any AI provider" with the `hermes -p <name> model` hint — never the default profile's login, and a refresh never writes to the root store |
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
 | HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |

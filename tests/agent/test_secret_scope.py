@@ -217,6 +217,27 @@ class TestEnvFileParsing:
             "ANTHROPIC_API_KEY": "sk-profile"
         }
 
+    def test_named_profile_inherits_shared_model_keys_only(self, tmp_path, monkeypatch):
+        """Cloud model credentials live once in the install root, not in every profile."""
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "worker"
+        profile.mkdir(parents=True)
+        (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n")
+        (root / ".env").write_text(
+            "OPENROUTER_API_KEY=sk-root-openrouter\n"
+            "NVIDIA_API_KEY=nvapi-root\n"
+            "TELEGRAM_BOT_TOKEN=telegram-root\n"
+        )
+        (profile / ".env").write_text("TELEGRAM_BOT_TOKEN=telegram-worker\n")
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        scope = ss.build_profile_secret_scope(profile)
+
+        assert scope["OPENROUTER_API_KEY"] == "sk-root-openrouter"
+        assert scope["NVIDIA_API_KEY"] == "nvapi-root"
+        assert scope["TELEGRAM_BOT_TOKEN"] == "telegram-worker"
+        assert "TELEGRAM_BOT_TOKEN" not in ss._shared_model_provider_secrets(profile)
+
     def test_build_profile_secret_scope_includes_home_external_secrets(
         self, tmp_path, monkeypatch
     ):

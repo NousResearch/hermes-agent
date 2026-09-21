@@ -3035,3 +3035,45 @@ def test_codex_text_only_max_output_incomplete_keeps_codex_continuation(monkeypa
     assert result["completed"] is True
     assert not any(m.get("_length_continuation_nudge") for m in result["messages"])
     assert any(m.get("finish_reason") == "incomplete" for m in result["messages"] if m["role"] == "assistant")
+
+
+def test_codex_empty_incomplete_without_reason_retries_with_observed_budget(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="claude-fable-5-1",
+        provider="openai-api",
+        api_mode="codex_responses",
+        base_url="https://gateway.example/v1",
+        api_key="test-key",
+        quiet_mode=True,
+        max_iterations=4,
+        reasoning_config={"enabled": True, "effort": "high"},
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    monkeypatch.setattr(agent, "_cleanup_task_resources", lambda task_id: None)
+    monkeypatch.setattr(agent, "_persist_session", lambda messages, conversation_history=None: None)
+    monkeypatch.setattr(agent, "_save_trajectory", lambda messages, user_query, completed: None)
+    incomplete = SimpleNamespace(
+        output=[SimpleNamespace(type="message", status="incomplete", content=[])],
+        usage=SimpleNamespace(input_tokens=100, output_tokens=4096, total_tokens=4196),
+        status="incomplete",
+        incomplete_details=None,
+        model="claude-fable-5-1",
+    )
+    responses = [incomplete, _codex_message_response("Done.")]
+    seen_requests = []
+
+    def _fake_call(api_kwargs):
+        seen_requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_call)
+
+    result = agent.run_conversation("finish the task")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Done."
+    assert [request.get("max_output_tokens") for request in seen_requests] == [None, 8192]
+    assert seen_requests[0]["reasoning"]["effort"] == "high"
+    assert seen_requests[1]["reasoning"]["effort"] == "none"

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
+from agent.skill_utils import is_external_skill_path
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -212,8 +212,9 @@ def _toggle_suppressed_name(skill_name: str, *, add: bool) -> None:
 def _iter_skill_mds(base: Path, *, local_only: bool) -> Iterator[Tuple[str, Path]]:
     """``(frontmatter name, SKILL.md)`` under *base* minus metadata/VCS/venv/cache dirs; *local_only* also skips
     external skill dirs mounted below the tree (curation must not touch them)."""
-    for skill_md in base.rglob("SKILL.md"):
-        if not (is_excluded_skill_path(skill_md) or (local_only and is_external_skill_path(skill_md))):
+    from agent.skill_utils import iter_skill_index_files
+    for skill_md in iter_skill_index_files(base, "SKILL.md"):
+        if not (local_only and is_external_skill_path(skill_md)):
             yield _read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
 
 
@@ -686,9 +687,9 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
 
 def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
     """Skill dir under configured external dirs by frontmatter name."""
-    from agent.skill_utils import get_all_skills_dirs
+    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files
     return next((found for base in get_all_skills_dirs()[1:] if base.exists()
-                 if (found := _match_skill_dir((p for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p)),
+                 if (found := _match_skill_dir(iter_skill_index_files(base, "SKILL.md"),
                                                skill_name)) is not None), None)
 
 

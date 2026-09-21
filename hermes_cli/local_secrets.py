@@ -37,6 +37,9 @@ def cmd_set(args) -> int:
     """Capture a value without accepting it in argv, then use the shared credential lifecycle."""
     from hermes_cli.config import get_env_path, save_env_value_secure, validate_env_var_name_for_write
 
+    if args._unexpected:
+        _error("secret values must use hidden input or redirected stdin, never command arguments.")
+        return 2
     name = args.name
     try:
         validate_env_var_name_for_write(name)
@@ -45,10 +48,14 @@ def cmd_set(args) -> int:
     value = _read_secret(from_stdin=bool(args.stdin))
     if value is None:
         return 1
+    if not value.isascii():
+        return _error("secret value must contain ASCII characters only.")
     try:
-        save_env_value_secure(name, value)
+        result = save_env_value_secure(name, value)
     except (RuntimeError, ValueError) as exc:
         return _error(str(exc))
+    if not result.get("success"):
+        return 1
     print(f"Stored {name} in {get_env_path()} (value hidden).")
     return 0
 

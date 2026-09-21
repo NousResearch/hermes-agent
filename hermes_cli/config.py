@@ -2603,11 +2603,11 @@ def _managed_source(filename: str):
     return (managed_dir / filename) if managed_dir else "the managed scope"
 
 
-def save_env_value(key: str, value: str):
+def save_env_value(key: str, value: str) -> bool:
     """Save or update a value in ~/.hermes/.env (also matching ``export KEY=`` lines, so a save
     never appends a second line that a later delete would resurrect)."""
     if _env_write_blocked(key, "set"):
-        return
+        return False
     validate_env_var_name_for_write(key)
     value = value.replace("\n", "").replace("\r", "")
     value = _check_non_ascii_credential(key, value)
@@ -2628,6 +2628,7 @@ def save_env_value(key: str, value: str):
     _write_env_lines(env_path, lines, preserve_mode=env_path.exists())
     _publish_env_value(key, value)
     invalidate_env_cache()
+    return True
 
 
 def custom_endpoint_key_env(identity: str) -> str:
@@ -2691,8 +2692,12 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
     # Route through the unified credential lifecycle so a rotation via the secret-capture path also
     # refreshes any config.yaml mirror of the old value and lifts a prior env-source suppression (#62269 fix
     # family).
-    save_provider_env_credential(key, value)
-    return {"success": True, "stored_as": key, "validated": False}
+    result = save_provider_env_credential(key, value)
+    return {
+        "success": bool(result.get("ok")),
+        "stored_as": key,
+        "validated": False,
+    }
 
 
 def reload_env() -> int:

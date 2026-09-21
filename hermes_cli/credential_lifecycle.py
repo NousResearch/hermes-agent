@@ -182,7 +182,14 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     from hermes_cli.config import load_env, save_env_value
 
     old_value = load_env().get(env_var)
-    save_env_value(env_var, value)
+    written = save_env_value(env_var, value)
+    if written is False:
+        return {
+            "ok": False,
+            "key": env_var,
+            "written": False,
+            "config_updates": [],
+        }
 
     config_updates: List[str] = []
     if value and old_value and old_value != value:
@@ -196,7 +203,12 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     # the pool already had this entry. Best-effort: never masks the successful .env write above.
     _for_each_provider(providers, "agent.credential_pool.load_pool")
 
-    return {"ok": True, "key": env_var, "config_updates": config_updates}
+    return {
+        "ok": True,
+        "key": env_var,
+        "written": True,
+        "config_updates": config_updates,
+    }
 
 
 def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:

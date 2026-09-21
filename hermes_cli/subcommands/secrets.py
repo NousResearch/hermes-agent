@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+
 
 def build_secrets_parser(subparsers) -> None:
     """Attach the ``secrets`` subcommand to ``subparsers``."""
@@ -20,6 +22,9 @@ def build_secrets_parser(subparsers) -> None:
     local_set.add_argument(
         "--stdin", action="store_true",
         help="Read the value from redirected stdin instead of prompting (never accepts a value in argv)")
+    local_set.add_argument(
+        "_unexpected", nargs="*", help=argparse.SUPPRESS,
+    )
     local_set.set_defaults(func=local_secrets.cmd_set)
 
     local_list = secrets_subparsers.add_parser("list", help="List local secret names (never values)")

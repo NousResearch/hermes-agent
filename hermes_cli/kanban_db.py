@@ -1970,6 +1970,8 @@ def record_auto_decompose_failure(
 
     safe_reason = _first_line(redact_sensitive_text(reason or "unknown failure", force=True), 500)
     changed = False
+    blocked_task = None
+    block_reason = None
     with write_txn(conn):
         if _task_status(conn, task_id) != "triage":
             return None
@@ -2009,8 +2011,11 @@ def record_auto_decompose_failure(
                     "blocked",
                     {"kind": "needs_input", "reason": block_reason, "source_status": "triage"},
                 )
+                blocked_task = get_task(conn, task_id)
     if changed:
-        notify_task_updated(conn, task_id, ("status", "block_kind"))
+        _fire_task_hook(
+            "kanban_task_blocked", blocked_task, task_id, None, reason=block_reason,
+        )
     return payload
 
 

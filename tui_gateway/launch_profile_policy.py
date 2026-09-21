@@ -51,28 +51,6 @@ def activate_multi_profile_hosting() -> None:
     set_multiplex_active(True)
 
 
-def _multiplex_disabled_explicitly() -> bool:
-    """True when this host has deliberately turned multiplexing OFF.
-
-    ``profiles_to_serve(multiplex=True)`` takes the flag as an argument and never reads config, so
-    the eager gate must consult the operator's setting itself or it arms the fail-closed guard on
-    hosts that pinned ``gateway.multiplex_profiles: false`` to keep per-profile gateways. Same
-    precedence the gateway boot uses: ``GATEWAY_MULTIPLEX_PROFILES`` over config.yaml; unset means
-    "not disabled" (the default is on, and the lazy backstop still fires either way).
-    """
-    from gateway.config import _coerce_bool, _env_multiplex_profiles_override
-    env_override = _env_multiplex_profiles_override()
-    if env_override is not None:
-        return not env_override
-    from hermes_cli.config import load_config
-    cfg = load_config() or {}
-    value = cfg.get("multiplex_profiles")
-    gateway_cfg = cfg.get("gateway")
-    if value is None and isinstance(gateway_cfg, dict):
-        value = gateway_cfg.get("multiplex_profiles")
-    return value is not None and not _coerce_bool(value, True)
-
-
 def _servable_profile_homes() -> set:
     """Resolved homes this host could be asked to serve: the launch home plus every profile dir
     carrying a real servability marker.
@@ -102,21 +80,19 @@ def activate_multi_profile_hosting_eagerly() -> bool:
     boot step: the frozen snapshot is the only source for launch keys with no ``.env`` to rebuild
     from, so every credential the boot still injects must already be in ``os.environ``.
 
+    ``gateway.multiplex_profiles: false`` is deliberately NOT consulted: it is retired as a
+    topology opt-out, and a multi-home host that skipped activation because of a stale ``false``
+    would serve a second profile with the LAUNCH profile's credentials — the exact fail-open this
+    guard exists to prevent.
+
     A genuinely single-profile host still never activates (byte-identical behaviour, ``os.environ``
-    precedence preserved), and so does one that pinned ``gateway.multiplex_profiles: false``. An
-    unreadable profiles directory fails CLOSED: we cannot prove the host is single-profile, and the
-    lazy backstop only fires once a request has already been answered. Returns True when this call
-    activated hosting.
+    precedence preserved). An unreadable profiles directory fails CLOSED: we cannot prove the host
+    is single-profile, and the lazy backstop only fires once a request has already been answered.
+    Returns True when this call activated hosting.
     """
     from agent.secret_scope import is_multiplex_active
     if is_multiplex_active():
         return False
-    try:
-        if _multiplex_disabled_explicitly():
-            return False
-    except Exception:
-        logger.warning("Could not read gateway.multiplex_profiles; continuing with the profile probe",
-                       exc_info=True)
     try:
         homes = _servable_profile_homes()
     except Exception:

@@ -77,18 +77,15 @@ def reconcile_profile_gateways(
     review).
     """
     actions: list[ReconcileAction] = []
-    # Under a multiplexing root gateway named slots are still registered but must not boot from
-    # their persisted run intent, or they would become additional multiplex owners.
-    # Explicit opt-in only: the unset default (on) is refused on s6 hosts by the gateway's own boot
-    # guard (per-profile gateways are s6 slots the preflight cannot fold), so the slots keep booting.
-    from gateway.config import load_gateway_config
-    from utils import is_truthy_value
-    try:
-        multiplex_profiles = load_gateway_config().multiplex_profiles is True
-    except Exception:
-        log.warning("Unable to load gateway configuration during container boot; using the "
-                    "GATEWAY_MULTIPLEX_PROFILES override if set.", exc_info=True)
-        multiplex_profiles = is_truthy_value(os.environ.get("GATEWAY_MULTIPLEX_PROFILES"))
+    # ONE gateway per container: named slots are registered (so `hermes -p X gateway start` has a
+    # target and `s6-svstat` can report them) but are NEVER booted from their persisted run intent.
+    # This is the s6 leg of the multiplex-only convergence: an image upgraded from a release that
+    # booted N per-profile slots comes back up with one multiplexing root gateway and no manual
+    # step, instead of N processes fighting over the same profiles.
+    #
+    # It used to be gated on `gateway.multiplex_profiles`, which made the UNSET default (on) boot
+    # the slots anyway — the container shipped the opt-out topology by accident. The key is retired
+    # as a topology switch (hermes_cli/gateway_multiplex_mode.py), so there is nothing to read.
 
     # A legacy `gateway run` container with no state yet seeds `running` (pre-s6 behavior).
     legacy_default_state = _maybe_migrate_legacy_gateway_run_state(
@@ -113,7 +110,8 @@ def reconcile_profile_gateways(
                 continue
 
             prior_state = _read_desired_state(entry)
-            should_start = not multiplex_profiles and prior_state in _AUTOSTART_STATES
+            # Registered down, always: a started named slot IS a second gateway on this host.
+            should_start = False
             if not dry_run:
                 _cleanup_stale_runtime_files(entry)
                 _register_service(scandir, entry.name, start=should_start)

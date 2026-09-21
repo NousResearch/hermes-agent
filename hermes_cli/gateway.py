@@ -1547,9 +1547,8 @@ def _print_multiplex_standalone_reason() -> None:
     except Exception:
         return
     if reason:
-        print(f"⚠ Serving the default profile only (gateway.multiplex_profiles unset): {reason}")
+        print(f"⚠ Serving the default profile only: {reason}")
         print("  Fold every profile onto this gateway: hermes gateway migrate --multiplex")
-        print("  Keep per-profile gateways: hermes config set gateway.multiplex_profiles false")
 
 
 def _print_served_ingress_urls(profile: str | None = None) -> None:

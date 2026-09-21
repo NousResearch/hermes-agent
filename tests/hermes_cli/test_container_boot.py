@@ -109,66 +109,57 @@ def _named_actions(actions: list[ReconcileAction]) -> list[ReconcileAction]:
 # ---------------------------------------------------------------------------
 
 
-def test_running_profile_is_registered_and_autostarted(tmp_path: Path) -> None:
+def test_a_named_profile_slot_is_registered_but_never_autostarted(tmp_path: Path) -> None:
+    """Multiplex-only: the container boots ONE gateway. A named slot that s6 starts on its own is
+    a second gateway process, so the slot is registered DOWN even when its run intent says
+    "running" -- that is how an image upgraded from the per-profile era converges with no manual
+    step (the root gateway serves `coder` instead)."""
     scandir = tmp_path / "run-service"; scandir.mkdir()
     _make_profile(tmp_path, "coder", state="running")
+    (tmp_path / "gateway_state.json").write_text('{"gateway_state": "running"}', encoding="utf-8")
 
     actions = reconcile_profile_gateways(
         hermes_home=tmp_path, scandir=scandir, dry_run=False,
     )
 
     assert _named_actions(actions) == [ReconcileAction(
-        profile="coder", prior_state="running", action="started",
+        profile="coder", prior_state="running", action="registered",
     )]
     svc = scandir / "gateway-coder"
     assert (svc / "run").exists()
     assert (svc / "run").stat().st_mode & 0o111  # executable
     assert (svc / "type").read_text().strip() == "longrun"
-    # Auto-start means no down-marker.
-    assert not (svc / "down").exists()
+    assert (svc / "down").exists(), "a named slot must not boot itself"
+    # The root profile's slot is the ONE gateway and keeps its run intent.
+    default = next(a for a in actions if a.profile == "default")
+    assert default.action == "started"
 
 
-@pytest.mark.parametrize(
-    "config_value,env_value,expected",
-    [
-        pytest.param("true", None, "registered", id="config-only-multiplex"),
-        pytest.param("true", "false", "started", id="env-false-overrides-config"),
-    ],
-)
-def test_boot_honors_config_multiplex_profiles(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config_value: str,
-    env_value: str | None,
-    expected: str,
+@pytest.mark.parametrize("config_value,env_value", [
+    pytest.param("false", None, id="config-false"),
+    pytest.param("true", "false", id="env-false-overrides-config"),
+])
+def test_the_retired_opt_out_cannot_boot_a_second_gateway_in_the_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_value: str, env_value: str | None,
 ) -> None:
-    """Container boot must resolve multiplex_profiles like the gateway does:
-    config.yaml opt-in honored (#85413), env override keeps precedence."""
+    """`gateway.multiplex_profiles: false` (and its env override) is retired as a topology switch.
+    It used to decide whether s6 booted the per-profile slots; reading it here is what shipped the
+    opt-out topology by accident on the UNSET default. The slot stays down either way."""
     scandir = tmp_path / "run-service"
     scandir.mkdir()
     _make_profile(tmp_path, "coder", state="running")
-    (tmp_path / "config.yaml").write_text(
-        f"multiplex_profiles: {config_value}\n",
-        encoding="utf-8",
-    )
+    (tmp_path / "config.yaml").write_text(f"multiplex_profiles: {config_value}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     if env_value is None:
         monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     else:
         monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", env_value)
 
-    actions = reconcile_profile_gateways(
-        hermes_home=tmp_path,
-        scandir=scandir,
-        dry_run=False,
-    )
+    actions = reconcile_profile_gateways(hermes_home=tmp_path, scandir=scandir, dry_run=False)
 
     assert _named_actions(actions) == [ReconcileAction(
-        profile="coder",
-        prior_state="running",
-        action=expected,
-    )]
-    assert (scandir / "gateway-coder" / "down").exists() is (expected == "registered")
+        profile="coder", prior_state="running", action="registered")]
+    assert (scandir / "gateway-coder" / "down").exists()
 
 
 def test_registered_profile_has_finish_script(tmp_path: Path) -> None:

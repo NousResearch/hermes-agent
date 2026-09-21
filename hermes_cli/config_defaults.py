@@ -2095,12 +2095,13 @@ DEFAULT_CONFIG = {
         "write_sessions_json": True,
         # One gateway for every profile on this host: the DEFAULT profile's gateway also connects
         # each named profile's bots (their own .env / config.yaml, per-profile secret scope) and
-        # stamps the profile into session keys. On by default. An UNSET key is a request, not a
-        # verdict: at boot the default gateway runs the migration preflight and stays standalone
-        # (logging why) when a secondary still runs its own gateway or a blocker exists — an
-        # explicit `true` (config or GATEWAY_MULTIPLEX_PROFILES) is honoured as before, an explicit
-        # `false` keeps per-profile gateways for good. `hermes gateway migrate --multiplex` folds a
-        # per-profile fleet (records a rollback manifest; `--standalone` undoes it and pins false).
+        # stamps the profile into session keys. This is the ONLY supported topology — there is no
+        # `false` opt-out any more: an explicit `false` still parses (it is the runtime mode flag
+        # every scoped code path reads) but is warned about and IGNORED for process topology, and
+        # `hermes gateway migrate --multiplex` folds any per-profile fleet that is left.
+        # An UNSET key is a request, not a verdict: at boot the gateway runs the migration
+        # preflight and stays standalone (logging why) while a secondary still runs its own
+        # gateway or a blocker exists, then converges once that is resolved.
         # Two profiles configuring the same bot token cannot be served together — the duplicate
         # adapter is parked; `hermes profile create --clone` therefore leaves messaging channels
         # behind unless --clone-channels is passed.
@@ -2108,9 +2109,9 @@ DEFAULT_CONFIG = {
         # May `hermes update` fold this install onto a multiplexed default gateway by itself?
         # True (the default) keeps today's behaviour: a multi-profile install whose secondaries run
         # their own gateways is migrated automatically after an update when nothing blocks it.
-        # Set to False to stay on per-profile gateways — a durable opt-out that survives updates, so
-        # the decision is not re-litigated on every release. Only the AUTOMATIC path reads this:
-        # `hermes gateway migrate --multiplex` is an explicit request and always proceeds.
+        # Set to False to choose WHEN you converge, not whether: the fold is left to you to run by
+        # hand (it is not an opt-out from the one-gateway-per-host model, which has none). Only the
+        # AUTOMATIC path reads this: `hermes gateway migrate --multiplex` is explicit and proceeds.
         "auto_multiplex_migration": True,
         # Route inbound chats of the default profile's bots to another profile
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].

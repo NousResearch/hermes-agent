@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -180,6 +180,24 @@ async def test_group_only_gating_leaves_dm_unrestricted():
     )
     result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="anyone", chat_type="dm")))
     assert "Tier: unrestricted" in result
+
+
+@pytest.mark.asyncio
+async def test_blank_chat_type_resolves_to_gated_scope():
+    """A blank chat_type (relay frames can send ""/null; restored rows keep a
+    stored empty value) used to resolve to group scope, so on a DM-only-gated
+    install the source landed in an ungated scope and every command ran."""
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": ["status"],
+        }
+    )
+    for blank in ("", None):
+        result = await runner._handle_message(
+            _make_event("/stop", _make_source(user_id="999", chat_type=blank))
+        )
+        assert "⛔" in result, repr(blank)
 
 
 # ---------------------------------------------------------------------------

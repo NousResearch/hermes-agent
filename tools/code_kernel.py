@@ -18,11 +18,13 @@ Also hosts what ``tools.code_kernel_remote`` shares: owner resolution, registry,
 from __future__ import annotations
 
 import atexit
+import glob
 import json
 import logging
 import os
 import queue
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -241,15 +243,14 @@ class CellAuthority:
         self.task_id = task_id
         self.ctx = contextvars.copy_context()
         self.active = True
-        self._api = None  # (get_approval, get_sudo, set_approval, set_sudo)
-        self._callbacks = (None, None)
+        # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
+        self._callbacks: list = []
         try:
             from tools.thread_context import _callback_api
-            self._api = _callback_api()
-            self._callbacks = (self._api[0](), self._api[1]())
+            self._callbacks = [(pair, pair[0]()) for pair in _callback_api()]
         except Exception:
             # Fail-closed like propagate_context_to_thread: no callbacks → dangerous approvals deny.
-            self._api = None
+            self._callbacks = []
 
     def retire(self) -> None:
         self.active = False
@@ -265,12 +266,11 @@ class CellAuthority:
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
         from model_tools import handle_function_call
         previous = None
-        if self._api is not None:
-            get_approval, get_sudo, set_approval, set_sudo = self._api
+        if self._callbacks:
             try:
-                previous = (get_approval(), get_sudo())
-                set_approval(self._callbacks[0])
-                set_sudo(self._callbacks[1])
+                previous = [(setter, getter()) for (getter, setter), _cb in self._callbacks]
+                for (_getter, setter), cb in self._callbacks:
+                    setter(cb)
             except Exception:
                 previous = None
         try:
@@ -278,8 +278,8 @@ class CellAuthority:
         finally:
             if previous is not None:
                 try:
-                    set_approval(previous[0])
-                    set_sudo(previous[1])
+                    for setter, cb in previous:
+                        setter(cb)
                 except Exception:
                     pass
 
@@ -319,6 +319,8 @@ class SessionKernel:
         # cell settles). Reaping/cap-eviction skip attached kernels: tearing one down mid-spawn
         # rmtree'd the staging dir under the spawner and killed live cells.
         self.attached: int = 0
+        # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
+        self.pinned: bool = False
         self.response_q: "queue.Queue[dict]" = queue.Queue()
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
@@ -365,11 +367,13 @@ class KernelRegistry:
         self.kernels: Dict[Tuple, Any] = {}
         self.lock, self._teardown = threading.Lock(), teardown
 
-    def shutdown(self, owner: Optional[str] = None) -> None:
-        """Tear down every kernel, or every kernel one owner (key[0]) holds."""
+    def shutdown(self, owner: Optional[str] = None, *, owner_matches: Optional[Callable[[str], bool]] = None) -> None:
+        """Tear down every kernel, every kernel one owner (key[0]) holds, or every kernel whose owner
+        satisfies ``owner_matches``."""
         with self.lock:
             doomed = [self.kernels.pop(key) for key in list(self.kernels)
-                      if owner is None or key[0] == owner]
+                      if (owner is None and owner_matches is None) or key[0] == owner
+                      or (owner_matches is not None and owner_matches(key[0]))]
         for kernel in doomed:
             self._teardown(kernel)
 
@@ -404,6 +408,9 @@ def _lifecycle_limits() -> Tuple[int, int]:
     return limit("max_session_kernels", DEFAULT_MAX_SESSION_KERNELS), limit("kernel_idle_timeout", DEFAULT_KERNEL_IDLE_TIMEOUT)
 
 
+_CHILD_OWNER_QUALIFIER = "::child::"
+
+
 def _resolve_owner(task_id: str) -> str:
     """The stable identity a session kernel belongs to: the conversation's approval session key
     (context-propagated, stable across turns, distinct per session). ``run_agent`` mints a fresh
@@ -425,7 +432,7 @@ def _resolve_owner(task_id: str) -> str:
         if is_delegated_child_context():
             from gateway.session_context import get_session_env
             child_id = get_session_env("HERMES_SESSION_ID", "") or (task_id or "")
-            owner = f"{owner}::child::{child_id}"
+            owner = f"{owner}{_CHILD_OWNER_QUALIFIER}{child_id}"
     except Exception:
         pass
     return owner
@@ -444,6 +451,26 @@ def shutdown_kernels_for_owner(owner: str) -> None:
     """
     if owner:
         _REGISTRY.shutdown(owner)
+
+
+def delegated_child_owner_matcher(child_session_id: str) -> Callable[[str], bool]:
+    """Predicate for the kernels a delegate_task child owns (``_resolve_owner`` qualifies a child's
+    owner with its delegation session id). Shared with the remote registry."""
+    suffix = f"{_CHILD_OWNER_QUALIFIER}{child_session_id}"
+    return lambda owner: owner.endswith(suffix)
+
+
+def shutdown_kernels_for_delegated_child(child_session_id: str) -> None:
+    """Dispose a finished child's kernels (local and remote). A child's kernel lives exactly as long as the
+    child: pinned against LRU eviction while it runs, torn down here — otherwise finished children's
+    kernels squatted the process-wide cap for ``kernel_idle_timeout`` and evicted LIVE children's kernels,
+    which then lost their state mid-task with no signal but ``reused: false``."""
+    if not child_session_id:
+        return
+    matcher = delegated_child_owner_matcher(child_session_id)
+    _REGISTRY.shutdown(owner_matches=matcher)
+    from tools.code_kernel_remote import shutdown_remote_kernels_where
+    shutdown_remote_kernels_where(matcher)
 
 
 atexit.register(shutdown_all_kernels)
@@ -540,7 +567,8 @@ def _bind_rpc_socket(kernel: SessionKernel) -> str:
         host, port = server_sock.getsockname()[:2]
         rpc_endpoint = f"tcp://{host}:{port}"
     else:
-        sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
+        from hermes_constants import socket_safe_tmpdir
+        sock_tmpdir = socket_safe_tmpdir()
         rpc_endpoint = kernel.sock_path = os.path.join(sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(kernel.sock_path)
@@ -625,18 +653,25 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     for target, args in ((_rpc_forever, (kernel, max_tool_calls, sandbox_tools)),
                          (_stdout_reader, (kernel,)), (_stderr_reader, (kernel,))):
         threading.Thread(target=target, args=args, daemon=True).start()
+    _ensure_background_reaper()
 
 
-def _acquire_kernel(key: Tuple, reset: bool) -> Tuple[SessionKernel, bool]:
+def _pop_idle_expired(now: float, idle_timeout: float) -> List[SessionKernel]:
+    """Pop (caller holds ``_REGISTRY.lock``) every kernel idle past *idle_timeout*. Kernels with
+    attached cells are skipped: the last cell out tears them down."""
+    return [_KERNELS.pop(k) for k in list(_KERNELS)
+            if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+
+
+def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[SessionKernel, bool]:
     """Look up or register the kernel for *key*; returns (kernel, state_reset). Every entry also
     sweeps idle-expired kernels and enforces the process-wide LRU cap (doomed kernels are popped
-    under the lock, torn down outside it), so a long-lived host stays bounded."""
+    under the lock, torn down outside it), so a long-lived host stays bounded. ``pinned`` kernels
+    (live delegate_task children) are exempt from the cap: their lifetime is the child's, ended by
+    ``shutdown_kernels_for_delegated_child``, so the cap has nothing to bound for them."""
     cap, idle_timeout = _lifecycle_limits()
     with _REGISTRY.lock:
-        now = time.monotonic()
-        # Reaping and eviction skip kernels with attached cells (the last cell out tears them down).
-        expired = [_KERNELS.pop(k) for k in list(_KERNELS)
-                   if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+        expired = _pop_idle_expired(time.monotonic(), idle_timeout)
         kernel = _KERNELS.get(key)
         state_reset = kernel is not None and (reset or kernel.dead())
         if state_reset:
@@ -646,14 +681,79 @@ def _acquire_kernel(key: Tuple, reset: bool) -> Tuple[SessionKernel, bool]:
             kernel = None
         if kernel is None:
             kernel = _KERNELS[key] = SessionKernel(key)
+            kernel.pinned = pinned
         kernel.last_used = time.monotonic()
         kernel.attached += 1
-        by_age = sorted((k for k in _KERNELS if k != key and _KERNELS[k].attached == 0),
+        unpinned = [k for k in _KERNELS if not _KERNELS[k].pinned]
+        by_age = sorted((k for k in unpinned if k != key and _KERNELS[k].attached == 0),
                         key=lambda k: _KERNELS[k].last_used)
-        expired.extend(_KERNELS.pop(k) for k in by_age[: max(0, len(_KERNELS) - cap)])
+        expired.extend(_KERNELS.pop(k) for k in by_age[: max(0, len(unpinned) - cap)])
     for doomed in expired:
         doomed.teardown()
     return kernel, state_reset
+
+
+# The acquire-path sweep above only fires on the NEXT kernel request. A host that stays
+# alive but stops executing anything (a pids-exhausted container whose tool dispatch is
+# fail-closed) never acquires again, so idle kernels and their thread pools survive
+# indefinitely (#117169). One low-frequency daemon thread reapplies the same criteria on
+# its own schedule, independent of tool traffic, and also sweeps staging dirs that
+# outlived a host which died without cleanup (SIGKILL / container restart).
+_STALE_STAGING_DIR_AGE = 7 * 86400
+_REAPER_INTERVAL_FLOOR, _REAPER_INTERVAL_CEIL = 30.0, 300.0
+_REAPER_STARTED = False
+
+
+def _sweep_stale_staging_dirs(now: Optional[float] = None) -> int:
+    """Remove ``hermes_kernel_*`` staging dirs untouched for over a week. A live host
+    rmtrees each dir within one idle timeout of the kernel's last use, so a week-old
+    dir belongs to a host that died before its cleanup could run; younger dirs are left
+    alone because a concurrently running host's live kernel may own one. rmtree never
+    follows symlinks, so a planted link is rejected rather than chased."""
+    now = time.time() if now is None else now
+    removed = 0
+    for path in glob.glob(os.path.join(tempfile.gettempdir(), "hermes_kernel_*")):
+        try:
+            if now - os.path.getmtime(path) > _STALE_STAGING_DIR_AGE:
+                # No ignore_errors: a rejected symlink (or a half-removed dir) must not
+                # count as swept — it stays for the next pass instead.
+                shutil.rmtree(path)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _reap_once() -> None:
+    """One background pass: the acquire-path idle criteria, then the stale-dir sweep."""
+    _, idle_timeout = _lifecycle_limits()
+    with _REGISTRY.lock:
+        expired = _pop_idle_expired(time.monotonic(), idle_timeout)
+    for doomed in expired:
+        doomed.teardown()
+    _sweep_stale_staging_dirs()
+
+
+def _ensure_background_reaper() -> None:
+    """Start the reaper once per process (on the first kernel spawn)."""
+    global _REAPER_STARTED
+    with _REGISTRY.lock:
+        if _REAPER_STARTED:
+            return
+        _REAPER_STARTED = True
+    threading.Thread(target=_background_reaper, daemon=True,
+                     name="hermes-kernel-idle-reaper").start()
+
+
+def _background_reaper() -> None:
+    while True:
+        _, idle_timeout = _lifecycle_limits()
+        time.sleep(min(_REAPER_INTERVAL_CEIL,
+                       max(_REAPER_INTERVAL_FLOOR, idle_timeout / 6.0)))
+        try:
+            _reap_once()
+        except Exception:
+            logger.exception("kernel idle reaper pass failed; retrying next interval")
 
 
 def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> Tuple[str, Dict[str, Any]]:
@@ -750,7 +850,8 @@ def execute_in_session_kernel(
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
     key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
-    kernel, state_reset = _acquire_kernel(key, reset)
+    from agent.delegation_context import is_delegated_child_context
+    kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,

@@ -15,9 +15,9 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
+    PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
-    conversation_history_after_compression,
+    conversation_history_after_compression, ensure_compression_feasibility_checked,
 )
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
@@ -90,6 +90,9 @@ def run_preflight_compression(
         and len(v.messages) > 1
         and v.compression_attempts < max_compression_attempts
     )
+    if _eligible:
+        # Aux clamp must land before the first compaction fires on the main-window threshold (#114707).
+        ensure_compression_feasibility_checked(agent, request_pressure_tokens)
     if (
         _eligible
         and not _review_fork_first_request_pending(agent)
@@ -285,6 +288,8 @@ def compress_after_tool_results(
             estimate_request_tokens_rough(messages, tools=agent.tools or None),
         )
 
+    if agent.compression_enabled and compression_attempts < max_compression_attempts:
+        ensure_compression_feasibility_checked(agent, _real_tokens)
     if (
         agent.compression_enabled
         and compression_attempts < max_compression_attempts
@@ -374,4 +379,8 @@ def compress_after_tool_results(
             # stale in-place flag the helper could seed unpersisted rows.
             if _pruned_n and _pruned_msgs is not messages:
                 messages = _pruned_msgs
+                # A committed prune is a content-loss boundary like compaction: demoted skill_view /
+                # read_file bodies survive only as one-line markers, so the repeat-read dedup must
+                # stop answering "unchanged" for them or the reload the marker asks for is refused.
+                _reset_read_dedup_caches(effective_task_id, session_id=agent.session_id or "")
     return _verdict(False)

@@ -29,6 +29,25 @@ def _sanitize_surrogates(text: str) -> str:
     return _SURROGATE_RE.sub('\ufffd', text)
 
 
+# OpenAI / Anthropic / Responses all bound ``function.name`` to this; one poisoned stored name
+# (``multi_tool_use.parallel``, a shell command a weak model put in ``name``) 400s every later
+# request on a strict endpoint (#51944).
+_VALID_TOOL_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def coerce_tool_name(name: Any, fallback: str = "invalid_tool_call") -> str:
+    """Coerce a *replayed* tool/function name to ``^[A-Za-z0-9_-]{1,64}$``. Valid names are returned
+    as-is (identity — prompt-cache safe); invalid runs collapse to ``_`` and the result is cut at 64;
+    empty/all-invalid → ``fallback``. Deterministic, so the same stored name always renders the same
+    bytes. Never apply to live tool definitions (schema names must match the dispatch registry)."""
+    if not isinstance(name, str):
+        return fallback
+    if _VALID_TOOL_NAME_RE.fullmatch(name):
+        return name
+    coerced = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_-]", "_", name.strip())).strip("_")
+    return coerced[:64] or fallback
+
+
 def _strip_non_ascii(text: str) -> str:
     """Drop non-ASCII characters — last resort for ASCII-only system encodings (LANG=C)."""
     return text.encode('ascii', errors='ignore').decode('ascii')
@@ -63,10 +82,13 @@ def _sanitize_messages(messages: list, fix: Callable[[str], str], *, deep: bool)
     """Apply ``fix`` to the string fields of every message dict in-place (content / part text,
     name, tool_call arguments, non-core top-level str fields). ``deep=True`` adds tool_call ids,
     function names, and NESTED non-core fields (``reasoning_details`` from byte-level models)."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
     found = False
     for msg in messages:
         if not isinstance(msg, dict):
             continue
+        msg_found = False
         content = msg.get("content")
         parts = [(p, "text") for p in content if isinstance(p, dict)] if isinstance(content, list) else None
         fields = parts if parts is not None else [(msg, "content")]
@@ -77,12 +99,17 @@ def _sanitize_messages(messages: list, fix: Callable[[str], str], *, deep: bool)
             fields += [(tc, "id")] if deep and isinstance(tc, dict) else []
             fields += ([(fn, "name")] if deep else []) + [(fn, "arguments")] if isinstance(fn, dict) else []
         for container, key in fields:
-            found |= _fix_str_field(container, key, fix)
+            msg_found |= _fix_str_field(container, key, fix)
         for key, value in [kv for kv in msg.items() if kv[0] not in _MESSAGE_CORE_KEYS]:
             if isinstance(value, str):
-                found |= _fix_str_field(msg, key, fix)
+                msg_found |= _fix_str_field(msg, key, fix)
             elif deep and isinstance(value, (dict, list)):
-                found |= _sanitize_structure(value, fix)
+                msg_found |= _sanitize_structure(value, fix)
+        if msg_found:
+            # In-place repair of a live dict stales its persisted row; pop the marker so the
+            # flush rewrites it (no-op on api_messages wire copies).
+            msg.pop(_DB_PERSISTED_MARKER, None)
+            found = True
     return found
 
 
@@ -93,6 +120,19 @@ _sanitize_messages_surrogates = partial(_sanitize_messages, fix=_sanitize_surrog
 _sanitize_structure_non_ascii = partial(_sanitize_structure, fix=_strip_non_ascii)
 _sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii, deep=False)
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
+
+
+def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
+    """Outbound-request chokepoint for every built kwargs dict (main loop and iteration summary).
+
+    Tool descriptions, extra_body and kwargs strings can carry invalid code points that
+    providers reject with a non-retryable 400 (#50959); one in-place walk makes the whole
+    payload json.dumps()-safe. The ASCII strip is opt-in via the recovery flag set after an
+    ASCII-codec rejection.
+    """
+    _sanitize_structure_surrogates(api_kwargs)
+    if agent._force_ascii_payload:
+        _sanitize_structure_non_ascii(api_kwargs)
 
 
 def _escape_invalid_chars_in_json_strings(raw: str) -> str:
@@ -127,6 +167,46 @@ def _loads_ok(text: str) -> bool:
         return False
 
 
+_JSON_CLOSERS = {"{": "}", "[": "]"}
+
+
+def _rebalance_json_closers(raw: str) -> str | None:
+    """Close a JSON prefix's open braces/brackets in stack order, ignoring delimiters
+    inside string values (``{"code": "}"}`` keeps one open brace, not a balanced
+    document). A closer that does not match the stack top but does match a deeper opener
+    gets the missing inner closers inserted BEFORE it: ``{"a": [{"b": 1}}`` → the model
+    dropped the ``]`` and let the neighbouring ``}`` close in its place, so the counts
+    balance and nothing can be appended. ``None`` when the text ends inside an
+    unterminated string — that content is unrecoverable and must not be guessed.
+    """
+    out: list[str] = []
+    stack: list[str] = []
+    in_string = False
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if in_string:
+            if ch == "\\":
+                out.append(raw[i:i + 2])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in _JSON_CLOSERS:
+            stack.append(ch)
+        elif ch in "}]" and ch in (_JSON_CLOSERS[o] for o in stack):
+            while _JSON_CLOSERS[stack[-1]] != ch:
+                out.append(_JSON_CLOSERS[stack.pop()])
+            stack.pop()
+        out.append(ch)
+        i += 1
+    if in_string:
+        return None
+    return "".join(out) + "".join(_JSON_CLOSERS[ch] for ch in reversed(stack))
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Repair malformed tool_call argument JSON (truncation, trailing commas, Python ``None``,
     control chars); ``"{}"`` if unrepairable so the request succeeds. Repairs log at WARNING."""
@@ -150,10 +230,13 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
-    # Passes 1-3: strip trailing commas, close unclosed structures, trim excess closers (bounded).
-    fixed = re.sub(r',\s*([}\]])', r'\1', raw_stripped)
-    fixed += '}' * max(0, fixed.count('{') - fixed.count('}'))
-    fixed += ']' * max(0, fixed.count('[') - fixed.count(']'))
+    # Passes 2-4: strip trailing commas, close unclosed structures, trim excess closers
+    # (bounded). Bracket counting is string-aware: delimiters inside string values
+    # ({"code": "}"}) are not structure, and the closers land in stack order — a truncated
+    # {"items": [{"n": 1}, {"n": 2 needs "}]}" appended, and a misnested
+    # {"a": [{"b": 1}, {"c": 2}} needs "]" inserted before the misplaced "}".
+    fixed = re.sub(r",\s*([}\]])", r"\1", raw_stripped)
+    fixed = _rebalance_json_closers(fixed) or fixed
     for _ in range(50):
         if _loads_ok(fixed) or not (
             (fixed.endswith('}') and fixed.count('}') > fixed.count('{'))
@@ -166,7 +249,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         logger.warning("Repaired malformed tool_call arguments for %s: %s → %s", tool_name, raw_stripped[:80], fixed[:80])
         return fixed
 
-    # Pass 4: escape control chars inside strings (strict=False alone fails when other
+    # Pass 5: escape control chars inside strings (strict=False alone fails when other
     # malformations are present too), then retry.
     escaped = _escape_invalid_chars_in_json_strings(fixed)
     if escaped != fixed and _loads_ok(escaped):
@@ -197,6 +280,32 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     return True
 
 
+# finish_reason wire normalization. Some OpenAI-compatible gateways fronting
+# Gemini backends emit the native uppercase reasons (STOP, MAX_TOKENS); every
+# downstream comparison uses the lowercase OpenAI literals, so an uppercase
+# reason silently skips stop handling and length recovery. Single owner —
+# call at wire intake (transport normalize_response, stream chunk capture),
+# never re-fold at comparison sites.
+_FINISH_REASON_ALIASES = {
+    "max_tokens": "length",  # Gemini-native / Anthropic-style cap reason
+    "end": "stop",  # some gateways' clean-completion spelling
+    "function_call": "tool_calls",  # OpenAI legacy pre-tools spelling
+}
+
+
+def normalize_finish_reason(raw: Any) -> Any:
+    """Fold a wire ``finish_reason`` to the lowercase OpenAI contract value.
+
+    Non-string and empty values pass through unchanged (callers keep their
+    ``or "stop"`` defaults and the Poolside int-reason path); contract values
+    are returned byte-identical.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw
+    lowered = raw.lower()
+    return _FINISH_REASON_ALIASES.get(lowered, lowered)
+
+
 def serialized_messages_bytes(messages: list) -> int:
     """Exact serialized byte size of ``messages`` (HTTP 413 is a BYTE-size error the token
     estimator, pricing images flat, cannot score). Non-serializable values fall back to
@@ -219,6 +328,7 @@ def _strip_images_from_messages(messages: list) -> bool:
     orphans the paired ``tool_call_id`` → HTTP 400); other now-empty messages are dropped.
     Rewritten messages lose their ``api_content`` sidecar (it carries the removed images).
     """
+    from agent.context_compressor import _DB_PERSISTED_MARKER
     from agent.turn_context import drop_stale_api_content
 
     found = False
@@ -232,8 +342,11 @@ def _strip_images_from_messages(messages: list) -> bool:
             found = True
             if new_parts:
                 msg["content"] = new_parts
+                # Rewriting a stamped live dict stales its persisted row; pop the marker.
+                msg.pop(_DB_PERSISTED_MARKER, None)
             elif msg.get("role") == "tool" or msg.get("tool_calls"):
                 msg["content"] = "[image content removed — server does not support images]"
+                msg.pop(_DB_PERSISTED_MARKER, None)
             else:
                 to_delete.append(i)
             drop_stale_api_content(msg)
@@ -287,9 +400,10 @@ def _looks_like_image_content_rejection(error_body: str) -> bool:
 __all__ = [
     "_SURROGATE_RE", "close_interrupted_tool_sequence",
     "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
+    "coerce_tool_name",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",
-    "_strip_images_from_messages", "_sanitize_structure_non_ascii",
+    "_strip_images_from_messages", "_sanitize_structure_non_ascii", "sanitize_outbound_kwargs",
     # call_id policy owners
     "deterministic_call_id", "coalesce_tool_call_id", "tool_call_id_variants",
     "tool_result_id_variants", "uniquify_tool_call_ids",

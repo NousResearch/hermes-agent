@@ -64,6 +64,42 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
+def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
+    """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
+    timeout = get_provider_request_timeout(fb_provider, fb_model)
+    if fb_provider == "bedrock" and fb_api_mode in ("anthropic_messages", "bedrock_converse"):
+        # Non-Mantle Bedrock: boto3-chain auth, no OpenAI/Anthropic SDK client to carry over.
+        from agent.bedrock_adapter import bind_bedrock_runtime
+        bind_bedrock_runtime(agent, fb_base_url, fb_api_mode)
+        return
+    # The SDK exposes an empty/stale api_key when a rotating source is installed.
+    key_provider = vars(fb_client).get("_api_key_provider")
+    credential = key_provider if callable(key_provider) else fb_client.api_key
+    if fb_api_mode == "anthropic_messages":
+        from agent.anthropic_adapter import build_anthropic_client
+        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
+        is_anthropic = fb_provider == "anthropic"
+        effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
+        agent.api_key = agent._anthropic_api_key = effective_key
+        agent._anthropic_base_url = fb_base_url
+        agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
+        agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
+        agent.client, agent._client_kwargs = None, {}
+        return
+    agent.api_key = credential
+    agent.client = fb_client
+    # Keep provider headers resolve_provider_client() baked into fb_client (SDK: _custom_headers), else
+    # later request-client rebuilds drop them and User-Agent-sentinel providers (Kimi Coding) 403.
+    fb_headers = getattr(fb_client, "_custom_headers", None) or getattr(fb_client, "default_headers", None)
+    agent._client_kwargs = {"api_key": credential, "base_url": fb_base_url}
+    if fb_headers:
+        agent._client_kwargs["default_headers"] = dict(fb_headers)
+    if timeout is not None:
+        agent._client_kwargs["timeout"] = timeout
+        # Rebuild now so the timeout applies to the very next request, not only after a rotation rebuild.
+        agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+
+
 class ClientLifecycleMixin:
     def _close_task_resources(self, task_id: str) -> None:
         """Release task resources without treating a shared environment as process ownership."""
@@ -84,7 +120,17 @@ class ClientLifecycleMixin:
             from tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
 
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use):
+        def forget_file_state() -> None:
+            # File tools key their read stamps / writer claims by the per-turn task_id (cron:
+            # ``cron:<job>:<uuid>``, subagents: ``subagent-N-xxxx``), which differs from session_id;
+            # cleanup_vm(session_id) alone leaves a finished run looking like a live sibling (#114446).
+            from tools.file_tools import clear_file_ops_cache
+            for owner in getattr(self, "_process_owner_task_ids", ()):
+                if owner and owner != task_id:
+                    clear_file_ops_cache(owner)
+
+        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
+                     release_computer_use, forget_file_state):
             _quietly(step)
 
     def _client_log_context(self) -> str:
@@ -370,6 +416,10 @@ class ClientLifecycleMixin:
             if cache["client"] is client:
                 cache["poisoned"] = True
         try:
+            # Non-HTTP providers cancel without closing owner-thread file descriptors.
+            if callable(getattr(type(client), "cancel", None)):
+                client.cancel()
+                return
             shutdown_count = self._force_close_tcp_sockets(client)
             # Zero sockets shut down means the worker stays blocked — WARN, not success.
             # tcp_force_closed=0 means the stranger-thread abort found no sockets to shut down — the worker
@@ -443,9 +493,9 @@ class ClientLifecycleMixin:
         return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
-        """OAuth flag only on native Anthropic; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
-        from agent.anthropic_credentials import _is_oauth_token
-        return _is_oauth_token(token) if self.provider == "anthropic" else False
+        """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
+        from agent.anthropic_credentials import anthropic_route_is_oauth
+        return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
@@ -567,8 +617,9 @@ class ClientLifecycleMixin:
         api_key, base_url = creds.get("api_key"), creds.get("base_url")
         if not _valid_credential_pair(api_key, base_url):
             return False
-        if str(api_key).strip() == str(self.api_key or "").strip():
-            return False  # store holds the same key: nothing to adopt, no client rebuild
+        if (str(api_key).strip() == str(self.api_key or "").strip()
+                and str(base_url).strip().rstrip("/") == str(self.base_url or "").strip().rstrip("/")):
+            return False  # store holds the same key on the same route: nothing to adopt, no client rebuild
         if require_account is not None:
             try:
                 from hermes_cli.auth_constants import _decode_jwt_claims
@@ -643,7 +694,12 @@ class ClientLifecycleMixin:
             env_url = get_env_prefer_dotenv(url_var).strip().rstrip("/") if url_var else ""
             default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
             base_url = env_url or default_base
-            if self.provider in ("kimi-coding", "zai"):
+            if self.provider == "actual":
+                from hermes_cli.auth import normalize_actual_base_url
+                from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
+                configured_base = _config_base_url_for_provider(_get_model_config(), "actual")
+                base_url = normalize_actual_base_url(configured_base or base_url)
+            elif self.provider in ("kimi-coding", "zai"):
                 from hermes_cli import auth as _auth
                 resolver = _auth._resolve_kimi_base_url if self.provider == "kimi-coding" else _auth._resolve_zai_base_url
                 base_url = resolver(api_key, pconfig.inference_base_url, env_url).rstrip("/")
@@ -824,7 +880,7 @@ class ClientLifecycleMixin:
             return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
-            new_token = resolve_anthropic_token()
+            new_token = resolve_anthropic_token(model=self.model)
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False
@@ -878,13 +934,30 @@ class ClientLifecycleMixin:
         if merged:
             self._client_kwargs["default_headers"] = merged
 
-    def _swap_credential(self, entry) -> None:
+    def _swap_credential(self, entry) -> bool:
+        """Adopt *entry* as the live credential. Returns False, changing nothing, when the entry's
+        route cannot serve this conversation's model (a conversation's model is never rewritten by a
+        rotation; the caller treats a refused swap as "no entry")."""
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        from hermes_cli.providers import is_actual_route
+        actual_route = is_actual_route(getattr(self, "provider", ""), runtime_base)
+        if actual_route:
+            from hermes_cli.auth import normalize_actual_base_url
+            runtime_base = normalize_actual_base_url(runtime_base)
+        stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
+        # Refuse BEFORE any state changes below: a refused swap must leave the agent exactly as it was.
+        from hermes_cli.anon_auth import route_can_serve_model
+        if not route_can_serve_model(getattr(self, "provider", None), stripped_base, getattr(self, "model", None)):
+            logger.info("Credential %s skipped: its route cannot serve model %s", getattr(entry, "id", "?"), self.model)
+            return False
+        if actual_route:
+            self.api_mode = "chat_completions"
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
         self._credential_pool_entry_id = getattr(entry, "id", None)
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
-        stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
         if self.api_mode == "anthropic_messages":
             with suppress(Exception):
                 self._anthropic_client.close()
@@ -892,13 +965,14 @@ class ClientLifecycleMixin:
             self._anthropic_client = self._build_direct_anthropic_client(runtime_key, self._anthropic_base_url)
             self._is_anthropic_oauth = self._anthropic_oauth_flag(runtime_key)
             self.api_key, self.base_url = runtime_key, stripped_base
-            return
+            return True
         self.api_key, self.base_url = runtime_key, stripped_base
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
         self._reapply_route_client_config(route_changed=route_changed)
         self._replace_primary_openai_client(reason="credential_rotation")
+        return True
 
     def _reapply_route_client_config(self, *, route_changed: bool) -> None:
         """Recompute route-derived client kwargs (TLS material, default headers) for ``self.base_url``.

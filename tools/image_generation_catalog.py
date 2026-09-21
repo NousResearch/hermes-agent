@@ -19,9 +19,10 @@ def _model(
     display: str, speed: str, strengths: str, price: str, *, style: str = "image_size_preset",
     sizes: Optional[Dict[str, Any]] = None, defaults: Dict[str, Any], supports: set,
     edit_endpoint: Optional[str] = None, edit_supports: Optional[set] = None,
-    max_reference_images: Optional[int] = None,
+    max_reference_images: Optional[int] = None, edit_image_param: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build one catalog entry; edit keys are present only for edit-capable models."""
+    """Build one catalog entry; edit keys are present only for edit-capable models. ``edit_image_param``
+    names the source-image key when the edit endpoint takes a singular ``image_url`` instead of ``image_urls``."""
     entry: Dict[str, Any] = {
         "display": display, "speed": speed, "strengths": strengths, "price": price,
         "size_style": style, "sizes": sizes if sizes is not None else _DEFAULT_SIZES[style],
@@ -31,6 +32,8 @@ def _model(
         entry["edit_endpoint"] = edit_endpoint
         entry["edit_supports"] = edit_supports
         entry["max_reference_images"] = max_reference_images
+        if edit_image_param:
+            entry["edit_image_param"] = edit_image_param
     return entry
 
 
@@ -153,6 +156,31 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         max_reference_images=16,
     ),
+    # Same minimum pixel count as GPT Image 2; keep medium quality explicit
+    # rather than inheriting FAL's higher-cost high default.
+    **{
+        f"openai/gpt-image-2.5/{variant}/text-to-image": _model(
+            f"GPT Image 2.5 {variant.title()}", speed, strengths, "Token-based pricing",
+            sizes={
+                "landscape": "landscape_4_3", "square": "square_hd", "portrait": "portrait_4_3",
+            },
+            defaults={"quality": "medium", "num_images": 1, "output_format": "png"},
+            supports={
+                "prompt", "image_size", "quality", "num_images", "output_format", "background",
+                "output_compression", "sync_mode",
+            },
+            edit_endpoint=f"openai/gpt-image-2.5/{variant}/edit",
+            edit_supports={
+                "prompt", "image_urls", "image_size", "quality", "num_images", "output_format",
+                "background", "output_compression", "sync_mode", "mask_url", "input_fidelity",
+            },
+            max_reference_images=16,
+        )
+        for variant, speed, strengths in (
+            ("flare", "Fast", "Everyday creation, natural lighting and textures"),
+            ("sunburst", "Slower", "Precision editing, subject and composition consistency"),
+        )
+    },
     "fal-ai/ideogram/v3": _model(
         "Ideogram V3", "~5s", "Best typography", "$0.03-0.09/image",
         defaults={"rendering_speed": "BALANCED", "expand_prompt": True, "style": "AUTO"},
@@ -321,6 +349,33 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
             "prompt", "image_urls", "num_images", "output_format", "resolution", "quality", "sync_mode",
         },
         max_reference_images=3,
+    ),
+    # 1K and 2K cost the same ($0.028/img) so 2K is the default. The i2i endpoint takes a SINGULAR
+    # `image_url` (one reference image), unlike every other FAL edit endpoint's `image_urls` list.
+    "fal-ai/kling-image/v3/text-to-image": _model(
+        "Kling Image v3", "~10s", "Kuaishou. Realistic detail, cheap native 2K, wide AR set", "$0.028/image",
+        style="aspect_ratio",
+        defaults={"num_images": 1, "output_format": "png", "resolution": "2K"},
+        supports={
+            "prompt", "aspect_ratio", "num_images", "output_format", "resolution", "negative_prompt", "sync_mode",
+        },
+        edit_endpoint="fal-ai/kling-image/v3/image-to-image",
+        edit_supports={
+            "prompt", "image_url", "aspect_ratio", "num_images", "output_format", "resolution", "sync_mode",
+        },
+        max_reference_images=1, edit_image_param="image_url",
+    ),
+    "meta/muse-image/text-to-image": _model(
+        "Meta Muse Image", "~5s", "Meta. Realism + typography at commodity price", "$0.01/image",
+        style="aspect_ratio",
+        # Muse accepts 21:9…9:21; aspect_ratio is always sent on text-to-image for deterministic
+        # framing and omitted on edits so Muse follows the input image. No seed in the vendor
+        # schema (like Grok Imagine 2.0) — the supports whitelist filters it.
+        defaults={"num_images": 1, "output_format": "png"},
+        supports={"prompt", "aspect_ratio", "num_images", "output_format", "sync_mode"},
+        edit_endpoint="meta/muse-image/edit",
+        edit_supports={"prompt", "image_urls", "num_images", "output_format", "sync_mode"},
+        max_reference_images=10,
     ),
 }
 

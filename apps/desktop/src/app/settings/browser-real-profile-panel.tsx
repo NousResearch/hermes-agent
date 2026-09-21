@@ -65,7 +65,9 @@ export function BrowserRealProfilePanel({ profile }: BrowserRealProfilePanelProp
       setConfig(next)
 
       try {
-        await saveHermesConfigRecord(next, profile)
+        // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+        // snapshot would overwrite keys other surfaces changed since it loaded.
+        await saveHermesConfigRecord({ browser: { use_real_profile: on } }, profile)
         notify({
           kind: 'info',
           title: on ? copy.enabledTitle : copy.disabledTitle,

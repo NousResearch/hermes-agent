@@ -69,9 +69,44 @@ export function currentGroupActivity(group: string) {
   return ($groupActivity.get()[group] || {}).events?.filter(event => (event.epoch || 0) === epoch) || []
 }
 
+/** Normalized cause for a pool-slot wait timeout — the local backend pool
+ *  had no free slot, so the member never started. Stored as the activity
+ *  event's `reason` so the feed can tell it apart from a bot crash.
+ *  The string deliberately contains "timeout": `attentionReasonFromError`
+ *  must keep classifying it as transient (never a roster badge). */
+export const GROUP_SLOT_WAIT_REASON = 'slot_wait_timeout'
+
+/** Stable coordinator phrase (`pool-spawn-coordinator.ts`), the
+ *  cross-process discriminator — same shape as `isLocalBackendSlotWaitTimeout`
+ *  in `store/pool-limits.ts`, kept local because the plugin fence cannot
+ *  import the store. Match narrowly so other backend failures keep their path. */
+export function isGroupSlotWaitTimeoutText(text: unknown): boolean {
+  return typeof text === 'string' && text.includes('timed out while waiting for a free slot')
+}
+
+/** Typed failure cause for a member-turn error: the gateway's
+ *  `data.reason` when present, else the normalized slot-wait cause when the
+ *  message carries the coordinator phrase, else ''. Single home for the
+ *  classification so the turn catch and the stranded harvest cannot drift. */
+export function groupFailureReason(error: unknown): string {
+  const typed = typeof (error as { data?: { reason?: unknown } })?.data?.reason === 'string'
+    ? String((error as { data: { reason: string } }).data.reason).trim()
+    : ''
+
+  if (typed) {
+    return typed
+  }
+
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+
+  return isGroupSlotWaitTimeoutText(message) ? GROUP_SLOT_WAIT_REASON : ''
+}
+
 /** Human label for one activity event, used by the collapsed summary and
- *  the expanded rows. */
-export function groupActivityLabel(event: GroupActivityEntry) {
+ *  the expanded rows. `group` scopes the same-name disambiguation to the
+ *  room's seats. A slot-wait failure renders distinctly from a bot crash so
+ *  pool saturation is not misread as a broken bot. */
+export function groupActivityLabel(event: GroupActivityEntry, group?: null | string) {
   const kind = event?.kind
   const base = GROUP_ACTIVITY_LABELS[kind] || kind || 'did something'
 
@@ -79,9 +114,14 @@ export function groupActivityLabel(event: GroupActivityEntry) {
     return base
   }
 
-  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot')
+  const who = event?.member === 'You' ? 'You' : groupSpeakerLabel(event?.member || 'A bot', group)
+  const reason = kind === 'failed' ? String(event?.reason || '').trim() : ''
 
-  return `${who} ${base}`
+  if (kind === 'failed' && reason === GROUP_SLOT_WAIT_REASON) {
+    return `${who} couldn't start — too many bots running`
+  }
+
+  return `${who} ${base}${reason ? ` — ${reason}` : ''}`
 }
 
 const GROUP_ACTIVITY_LABELS: Record<GroupActivityKind, string> = {

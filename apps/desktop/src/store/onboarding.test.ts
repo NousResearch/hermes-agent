@@ -12,6 +12,7 @@ import {
   refreshOnboarding,
   requestDesktopOnboarding,
   saveOnboardingLocalEndpoint,
+  setOnboardingModel,
   submitOnboardingCode
 } from './onboarding'
 
@@ -26,6 +27,7 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
     firstRunSkipped: false,
     manual: false,
     localEndpoint: false,
+    freeTierReady: false,
     ...overrides
   }
 }
@@ -80,6 +82,87 @@ function fallbackTimeoutGateway(): OnboardingContext['requestGateway'] {
 }
 
 describe('refreshOnboarding', () => {
+  it('keeps onboarding work in its initiating lifetime and profile', async () => {
+    const { startManualOnboarding, startProviderOAuth, saveOnboardingApiKey, closeManualOnboarding } =
+      await import('./onboarding')
+
+    const requests: { path: string; profile?: string }[] = []
+    let release!: () => void
+    let delayKey = true
+    installApiMock(async request => {
+      requests.push(request)
+
+      if (request.path === '/api/providers/oauth') {
+        return { providers: [] }
+      }
+
+      if (request.path.endsWith('/start')) {
+        return {
+          flow: 'device_code',
+          session_id: 'local-fixture',
+          user_code: 'FAKE',
+          verification_url: 'http://localhost/fixture',
+          expires_in: 600
+        }
+      }
+
+      if (request.path.includes('/poll/')) {
+        return { status: 'approved' }
+      }
+
+      if (request.path === '/api/env' && delayKey) {
+        await new Promise<void>(resolve => {
+          release = resolve
+        })
+      }
+
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'fixture', name: 'Fixture', models: ['fixture-model'] }] }
+      }
+
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { model: 'fixture-model' }
+      }
+
+      return { ok: true }
+    })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    let profile = 'beta'
+
+    const ctx: OnboardingContext = {
+      get profile() {
+        return profile
+      },
+      requestGateway: async method =>
+        (method === 'setup.status' ? { provider_configured: true } : { ok: true }) as never
+    }
+
+    try {
+      startManualOnboarding(null, 'beta')
+      const pending = saveOnboardingApiKey('FIREWORKS_API_KEY', 'fake-key', 'Fireworks', ctx)
+      await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+      closeManualOnboarding()
+      profile = 'alpha'
+      startManualOnboarding(null, 'alpha')
+      release()
+      await pending
+      expect(requests.some(r => r.path === '/api/model/set')).toBe(false)
+      expect($desktopOnboarding.get()).toMatchObject({ targetProfile: 'alpha', flow: { status: 'idle' } })
+      closeManualOnboarding()
+      delayKey = false
+      profile = 'beta'
+      startManualOnboarding(null, 'beta')
+      const startAt = requests.length
+      await startProviderOAuth(makeOAuthProvider('fixture'), ctx)
+      await vi.waitFor(() => expect($desktopOnboarding.get().flow.status).toBe('confirming_model'), { timeout: 5000 })
+      expect(requests.slice(startAt).some(r => r.path.includes('/poll/'))).toBe(true)
+      expect(requests.slice(startAt).some(r => r.path === '/api/model/set')).toBe(true)
+      expect(requests.slice(startAt).every(r => r.profile === 'beta')).toBe(true)
+    } finally {
+      closeManualOnboarding()
+    }
+  })
+
   beforeEach(() => {
     window.localStorage.clear()
     $desktopOnboarding.set(baseState())
@@ -606,6 +689,49 @@ describe('saveOnboardingLocalEndpoint', () => {
     })
   })
 
+  it('persists the resolved_base_url that served /models, not the URL as typed (#65488)', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // The probe fell through from the bare host root to its /v1 variant.
+        return {
+          ok: true,
+          reachable: true,
+          message: '',
+          models: ['llama-3.1-8b'],
+          resolved_base_url: 'http://127.0.0.1:1234/v1'
+        }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'llama-3.1-8b', base_url: 'http://127.0.0.1:1234/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:1234', '', {
+      requestGateway: readyGateway()
+    })
+
+    expect(result.ok).toBe(true)
+
+    // The runtime POSTs {base_url}/chat/completions verbatim, so Save must store
+    // the base that actually answered /models rather than the typed host root.
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'llama-3.1-8b',
+      base_url: 'http://127.0.0.1:1234/v1'
+    })
+  })
+
   it('reports the runtime reason when resolution still fails after saving', async () => {
     installApiMock(async ({ path }: { path: string }) => {
       if (path === '/api/providers/validate') {
@@ -703,7 +829,8 @@ describe('device-code poll expiry', () => {
     expect(flow.status).toBe('error')
 
     if (flow.status === 'error') {
-      expect(flow.message).toContain('Sign-in expired waiting for authorization')
+      expect(flow.message).toMatch(/timed out before you finished/)
+      expect(flow.message).not.toMatch(/server-side|CLI/)
     }
   })
 
@@ -736,5 +863,53 @@ describe('device-code poll expiry', () => {
       vi.advanceTimersByTime(700_000)
     })
     expect($desktopOnboarding.get().flow.status).toBe('idle')
+  })
+})
+
+// The happy path (cross-provider pick reaches /api/model/set with the picked
+// model's provider) is covered from the ConfirmingModelPanel in
+// components/onboarding/flow.test.tsx so it exercises the onSelect wiring.
+describe('setOnboardingModel', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  function confirmingModelState(overrides: Partial<Extract<DesktopOnboardingState['flow'], { status: 'confirming_model' }>> = {}) {
+    return baseState({
+      flow: {
+        status: 'confirming_model',
+        currentModel: 'gpt-5.6-terra',
+        label: 'OpenAI OAuth (ChatGPT)',
+        providerSlug: 'openai',
+        saving: false,
+        ...overrides
+      }
+    })
+  }
+
+  it('reverts the model, provider and label when persistence fails', async () => {
+    installApiMock(async () => {
+      throw new Error('backend down')
+    })
+    $desktopOnboarding.set(confirmingModelState())
+
+    await setOnboardingModel('deepseek/deepseek-v4-flash-0731', 'nous', 'Nous Portal')
+
+    const flow = $desktopOnboarding.get().flow
+    expect(flow.status).toBe('confirming_model')
+
+    if (flow.status === 'confirming_model') {
+      expect(flow.currentModel).toBe('gpt-5.6-terra')
+      expect(flow.providerSlug).toBe('openai')
+      expect(flow.label).toBe('OpenAI OAuth (ChatGPT)')
+      expect(flow.saving).toBe(false)
+    }
   })
 })

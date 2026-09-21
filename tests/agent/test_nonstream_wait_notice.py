@@ -7,6 +7,7 @@ import pytest
 
 from agent import chat_completion_helpers as h
 from agent.chat_completion_nonstream import _NonStreamRequest
+from agent.chat_completion_wait_notice import WaitNoticeState
 
 
 def _request():
@@ -29,6 +30,7 @@ def _request():
         retry_started_ts=None,
     )
     request.wait_notice_started_ts = None
+    request.wait_notice = WaitNoticeState()
     request.result = {"error": None, "response": None}
     return request, notices, touches
 
@@ -38,11 +40,13 @@ def _request():
     [
         (59.0, 59.0, None, None),  # Reasoning/text/tool arguments still arriving.
         (59.0, None, None, None),  # Lifecycle traffic is not transport silence either.
-        (10.0, 10.0, None, "50s with no stream events"),
-        (10.0, None, None, "50s with no stream events"),
-        (None, None, None, "60s with no response yet"),
+        (0.0, 0.0, None, "provider stream active; 60s without stream events"),
+        (0.0, None, None, "provider stream active; 60s without stream events"),
+        (1.0, None, None, None),  # 59 seconds of silence is still quiet.
+        (None, None, None, "60s waiting for the first provider event"),
         (10.0, 10.0, 59.0, None),  # Internal reconnect gets a fresh first-event wait.
-        (10.0, 10.0, 20.0, "40s with no response after reconnect"),
+        (0.0, 0.0, 0.0, "60s waiting for the first provider event after reconnect"),
+        (0.0, 0.0, 1.0, None),
     ],
 )
 def test_wait_notice_tracks_current_attempt_silence(event, progress, retry, expected):
@@ -51,6 +55,12 @@ def test_wait_notice_tracks_current_attempt_silence(event, progress, retry, expe
     state.last_event_ts = None if event is None else request.call_start + event
     state.last_progress_ts = None if progress is None else request.call_start + progress
     state.retry_started_ts = None if retry is None else request.call_start + retry
+    request._emit_wait_notice(30.0)
+    request._emit_wait_notice(59.0)
+    assert notices == []
+    assert touches
+    if event is None and retry is None:
+        assert "receiving" not in touches[-1]
     request._emit_wait_notice(60.0)
     if expected is None:
         assert notices == []
@@ -58,7 +68,7 @@ def test_wait_notice_tracks_current_attempt_silence(event, progress, retry, expe
     else:
         assert len(notices) == 1
         assert expected in notices[0]
-        assert "auto-reconnect at" in notices[0]
+        assert "auto-reconnect:" in notices[0]
 
 
 def test_resumed_events_clear_only_this_requests_wait_notice(monkeypatch):
@@ -74,19 +84,19 @@ def test_resumed_events_clear_only_this_requests_wait_notice(monkeypatch):
             pass
 
         def is_alive(self):
-            return ticks[0] < 104
+            return ticks[0] < 204
 
         def join(self, timeout):
             ticks[0] += 1
-            if ticks[0] >= 101:
+            if ticks[0] >= 201:
                 request.codex_watchdog_state.last_event_ts = 1000.0 + ticks[0] * 0.3
-            if ticks[0] == 104:
+            if ticks[0] == 204:
                 request.result["response"] = sentinel
 
     monkeypatch.setattr(h.threading, "Thread", Worker)
     monkeypatch.setattr(h.time, "time", lambda: 1000.0 + ticks[0] * 0.3)
     assert request.run() is sentinel
     assert len(notices) == 2
-    assert "no response yet" in notices[0]
+    assert "waiting for the first provider event" in notices[0]
     # Nonempty thinking.delta payloads enter TUI reasoning history.
     assert notices[1] == ""

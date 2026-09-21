@@ -8,6 +8,7 @@ development before the first push).
 from __future__ import annotations
 
 import operator
+import os
 import re
 import shutil
 import subprocess
@@ -230,16 +231,16 @@ def _looks_like_git_url(s: str) -> bool:
 def _git_clone(url: str, dest: Path) -> None:
     if _GITHUB_SHORTHAND_RE.match(url):
         url = f"https://{url.rstrip('/')}"
+    from hermes_cli.git_credentials import run_git_with_credential_fallback
     try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(dest)], check=True, capture_output=True,
-            stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
+        result = run_git_with_credential_fallback(
+            ["git", "clone", "--depth", "1", url, str(dest)], url, env=noninteractive_git_env(),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError as exc:
         raise DistributionError("git is required for git-URL installs") from exc
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
-        raise DistributionError(f"git clone failed: {stderr.strip()}") from exc
+    if result.returncode != 0:
+        raise DistributionError(f"git clone failed: {(result.stderr or '').strip()}")
 
 
 def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
@@ -355,35 +356,118 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
             yield src, rel_parts
 
 
+def _remove_existing(path: Path) -> None:
+    """Remove one destination entry without following a destination symlink."""
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        # Covers files, dangling/any symlinks, fifos and sockets alike.
+        path.unlink()
+
+
+def _replace_entry(src: Path, dest: Path) -> None:
+    """Replace *dest* with *src* wholesale so files retired upstream disappear and
+    file<->directory transitions cannot raise or leave stale content behind."""
+    _remove_existing(dest)
+    if src.is_dir():
+        shutil.copytree(src, dest)
+    else:
+        shutil.copy2(src, dest)
+
+
+def _real_dir(base: Path, parts: Tuple[str, ...]) -> Path:
+    """Return ``base/parts`` as a chain of real directories.
+
+    A user could have swapped an ancestor for a file; writing through it is impossible,
+    so a file is replaced by a real directory. A symlinked ancestor is refused rather
+    than silently unlinked: it is deliberate user configuration (a shared skills dir,
+    say) and writing through it would land the payload outside the profile."""
+    path = base
+    for part in parts:
+        path = path / part
+        _refuse_symlink(path)
+        if path.exists() and not path.is_dir():
+            _remove_existing(path)
+        path.mkdir(exist_ok=True)
+    return path
+
+
+def _refuse_symlink(path: Path) -> None:
+    if path.is_symlink():
+        raise DistributionError(
+            f"{path} is a symlink; refusing to replace it — remove the link "
+            "(or replace it with a real directory) and re-run"
+        )
+
+
+def _is_container(path: Path) -> bool:
+    """A shipped directory holding no files (a skills category) is a container of roots,
+    not a root itself; a skill dir always holds at least SKILL.md."""
+    return path.is_dir() and not any(p.is_file() for p in path.iterdir())
+
+
+def _merge_dir(src: Path, dest: Path) -> None:
+    """Replace only the roots *src* ships inside *dest*; a nested container
+    (``skills/<category>``) is merged, not replaced, so sibling roots the user
+    added under the same category survive."""
+    for child in src.iterdir():
+        if _is_container(child):
+            _merge_dir(child, _real_dir(dest, (child.name,)))
+        else:
+            _replace_entry(child, dest / child.name)
+
+
+def _refuse_symlinked_containers(src: Path, dest: Path) -> None:
+    for child in src.iterdir():
+        if _is_container(child):
+            _refuse_symlink(dest / child.name)
+            _refuse_symlinked_containers(child, dest / child.name)
+
+
+def _refuse_symlinked_targets(target: Path, entries) -> None:
+    """Refuse before the first write. The per-entry check in ``_real_dir`` fires mid-loop,
+    after earlier entries were already replaced and before the manifest is rewritten,
+    leaving a half-updated profile that fails identically on every retry."""
+    for src, rel_parts in entries:
+        # Directories are walked as containers, so the whole chain must be real;
+        # a file only needs a real parent chain (a symlinked file is unlinked, not followed).
+        depth = len(rel_parts) if src.is_dir() else len(rel_parts) - 1
+        path = target
+        for part in rel_parts[:depth]:
+            path = path / part
+            _refuse_symlink(path)
+        if src.is_dir() and len(rel_parts) == 1:
+            _refuse_symlinked_containers(src, path)
+
+
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
     """Copy distribution-owned files (see ``_owned_entries``) from *staged* into *target*.
 
     User-owned paths are never touched. ``config.yaml`` is replaced only when
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
-    as ``.env.EXAMPLE`` so it never shadows a real ``.env``."""
+    as ``.env.EXAMPLE`` so it never shadows a real ``.env``.
+
+    A top-level owned directory (``skills/``, ``cron/``, ...) is a container of roots: only
+    the roots the payload ships are replaced, so roots the user added (or that an older
+    version shipped) survive an update or forced reinstall."""
     target.mkdir(parents=True, exist_ok=True)
-    staged_resolved = staged.resolve()
+    entries = list(_owned_entries(staged, manifest))
+    _refuse_symlinked_targets(target, entries)
 
-    def _ignore_user_owned(d, names):
-        # Only the staged root's direct children are filtered.
-        return [n for n in names if n in USER_OWNED_EXCLUDE] if Path(d).resolve() == staged_resolved else []
-
-    for src, rel_parts in _owned_entries(staged, manifest):
+    for src, rel_parts in entries:
         if len(rel_parts) == 1:
             name = rel_parts[0]
             if name == ENV_TEMPLATE_FILENAME:
-                shutil.copy2(src, target / ENV_EXAMPLE_FILENAME)
+                # _replace_entry unlinks first so copy2 cannot write through a symlinked .env.EXAMPLE.
+                _replace_entry(src, target / ENV_EXAMPLE_FILENAME)
                 continue
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
-        dest = target.joinpath(*rel_parts)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if src.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest, ignore=_ignore_user_owned)
-        else:
-            shutil.copy2(src, dest)
+            if src.is_dir():
+                _merge_dir(src, _real_dir(target, rel_parts))
+                continue
+        parent = _real_dir(target, rel_parts[:-1])
+        _replace_entry(src, parent / rel_parts[-1])
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():
@@ -414,7 +498,8 @@ def install_distribution(
                 "Use `hermes profile update` to upgrade in place, or pass --force to overwrite."
             )
 
-        # Fresh install: config.yaml comes from the distribution.
+        # Fresh install (or --force): config.yaml comes from the distribution. Roots the
+        # payload does not ship are left alone either way, so --force keeps user skills.
         _bootstrap_user_dirs(plan.target_dir)
         _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
         if create_alias and check_alias_collision(plan.manifest.name) is None:

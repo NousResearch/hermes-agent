@@ -15,7 +15,9 @@ vi.mock('@/hermes', async importActual => ({
   setApiRequestConnection: vi.fn(),
   HermesGateway: class {
     connectionState = 'closed'
-    private eventHandlers = new Set<(event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void>()
+    private eventHandlers = new Set<
+      (event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void
+    >()
     request = vi.fn(async (method: string, params: Record<string, unknown>) => ({ method, params }))
 
     constructor() {
@@ -58,7 +60,9 @@ const {
 
 const { $profiles } = await import('./profile')
 
-const { $activeSessionId, _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } = await import('./session')
+const { $activeSessionId, _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } =
+  await import('./session')
+
 const { $gateway } = await import('./gateway')
 const { clearAllPrompts } = await import('./prompts')
 
@@ -125,7 +129,7 @@ afterEach(() => {
 })
 
 describe('profile-only secondary approval ownership', () => {
-  it('keeps a profile-only secondary event owner across a focus switch and dispatches approval on that secondary', async () => {
+  it('keeps a profile-only secondary event owner across a focus switch and dispatches the approval.respond fallback on that secondary', async () => {
     await expect(ensureGatewayForProfile('research')).resolves.toBeUndefined()
     const secondary = gatewayMocks.instances[0]
 
@@ -134,7 +138,10 @@ describe('profile-only secondary approval ownership', () => {
     expect($sessionTiles.get()).toEqual([])
     expect($sessionStates.get()).toEqual({})
 
-    secondary.emit({ session_id: 'rt-secondary', type: 'approval.request' })
+    // Prompts now arrive as server→client request frames, not events; owner
+    // scope is still learned from any session-stamped event the secondary
+    // socket emits (here the turn's status update).
+    secondary.emit({ session_id: 'rt-secondary', type: 'status.update' })
     await expect(ensureGatewayForProfile('default')).resolves.toBeUndefined()
 
     expect(knownOwnerForSession('rt-secondary')).toBe('research')
@@ -160,13 +167,14 @@ describe('profile-only secondary approval ownership', () => {
   it('rejects unproven profiles and retires only transient local ownership, never durable exact routes', async () => {
     recordSessionEventScope({ profile: 'research', session_id: 'rt-unproven' })
     expect(knownOwnerForSession('rt-unproven')).toBeUndefined()
-    await expect(requestForOwnedSession('rt-unproven', vi.fn() as never, 'approval.respond', {}))
-      .rejects.toSatisfy(isSessionOwnerResolutionError)
+    await expect(requestForOwnedSession('rt-unproven', vi.fn() as never, 'approval.respond', {})).rejects.toSatisfy(
+      isSessionOwnerResolutionError
+    )
 
     await ensureGatewayForProfile('research')
     const secondary = gatewayMocks.instances[0]
-    secondary.emit({ session_id: 'rt-retired', type: 'approval.request' })
-    secondary.emit({ session_id: 'rt-durable', type: 'approval.request' })
+    secondary.emit({ session_id: 'rt-retired', type: 'status.update' })
+    secondary.emit({ session_id: 'rt-durable', type: 'status.update' })
     expect(knownOwnerForSession('rt-retired')).toBe('research')
     const exact = { connectionId: 'remote-same-name', profile: 'research' }
     setSessionOwnerHint('rt-durable', exact)
@@ -178,8 +186,9 @@ describe('profile-only secondary approval ownership', () => {
     expect(knownOwnerForSession('rt-remote')).toEqual(exact)
     const getConnection = window.hermesDesktop!.getConnection
     vi.mocked(getConnection).mockClear()
-    await expect(requestForOwnedSession('rt-retired', vi.fn() as never, 'approval.respond', {}))
-      .rejects.toSatisfy(isSessionOwnerResolutionError)
+    await expect(requestForOwnedSession('rt-retired', vi.fn() as never, 'approval.respond', {})).rejects.toSatisfy(
+      isSessionOwnerResolutionError
+    )
     expect(getConnection).not.toHaveBeenCalled()
   })
 })

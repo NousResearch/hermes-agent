@@ -23,6 +23,7 @@ import pytest
 
 from agent.context_compressor import (
     ContextCompressor,
+    _is_summary_refusal,
     _response_finish_reason,
 )
 
@@ -56,6 +57,22 @@ class TestResponseFinishReason:
         assert _response_finish_reason({"choices": [{"message": {"content": "x"}}]}) == ""
         assert _response_finish_reason({"choices": []}) == ""
         assert _response_finish_reason(None) == ""
+
+
+class TestSummaryRefusalGuard:
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "I can't produce this summary as requested. The instructions conflict with my operating rules.",
+            "Sorry, I am unable to create a context checkpoint for this conversation.",
+        ],
+    )
+    def test_rejects_refusal_body(self, content):
+        assert _is_summary_refusal(content) is True
+
+    def test_accepts_structured_summary_that_records_a_refusal(self):
+        summary = "## Goal\nPreserve the user's task.\n\n## Completed Actions\n1. Recorded that a provider refused an earlier request."
+        assert _is_summary_refusal(summary) is False
 
 
 class TestGenerateSummaryTruncationGuard:
@@ -156,6 +173,24 @@ class TestGenerateSummaryTruncationGuard:
             result = c._generate_summary(_msgs(2))
         assert result is not None
         assert "complete summary" in result
+
+    def test_refusal_body_is_rejected_and_never_becomes_previous_summary(self):
+        """A stop-terminated refusal is not a usable compaction checkpoint."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True,
+                protect_first_n=2, protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = _msgs()
+        refusal = "I can't produce this summary as requested. The instructions conflict with my operating rules."
+        with patch("agent.context_compressor.call_llm", return_value=_mock_response(refusal, "stop")):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result == msgs
+        assert c._last_summary_empty_content_failure is True
+        assert c._last_compress_aborted is True
+        assert c._previous_summary is None or refusal not in (c._previous_summary or "")
 
     def test_missing_finish_reason_still_succeeds(self):
         """Providers that omit finish_reason entirely must not be rejected."""

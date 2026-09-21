@@ -434,21 +434,36 @@ def _register_connected(runner: _Runner, target: Target, name: str) -> tuple[Lis
         return [], _detail(exc, runner, target)
 
 
-def _registered_tool_names(name: str, wait_seconds: float = 10.0) -> List[str]:
-    """The server's callable names, read from the registry. Registration is a no-op for a server
-    the process already holds, and one that failed discovery earlier is parked with no tools: wake
-    it and wait for the fresh listing, so a retry reports what the user can now call."""
+def _registered_tool_names(name: str, wait_seconds: float = 30.0) -> List[str]:
+    """The server's callable names, read from the registry once its registration has finished.
+
+    Registration is a no-op for a server the process already holds, and that includes one another
+    task is still connecting: saving the configuration wakes the config watcher, which starts its
+    own connect, so a large server (hundreds of tools) was reported with no tools three seconds
+    before they were registered. A server that failed discovery earlier is parked with no tools
+    and is woken once. A server that finished registering with no tools is a valid empty list."""
+    from tools import mcp_tool as _core
     from tools.mcp_tool_loop import reconnect_mcp_server
+    from tools.mcp_tool_scope import _resolve_server_key
     from tools.registry import registry
 
-    names = registry.get_tool_names_for_toolset(f"mcp-{name}")
-    if names or not reconnect_mcp_server(name):
-        return names
+    key = _resolve_server_key(name)
     deadline = time.time() + wait_seconds
-    while not names and time.time() < deadline:
-        time.sleep(0.25)
+    woken = False
+    while True:
         names = registry.get_tool_names_for_toolset(f"mcp-{name}")
-    return names
+        if names or time.time() >= deadline:
+            return names
+        if key not in _core._server_connecting:
+            server = _core._servers.get(key)
+            finished = server is not None and getattr(server, "session", None) is not None \
+                and hasattr(server, "_registered_tool_names")
+            if finished:
+                return names
+            if woken or server is None or not reconnect_mcp_server(name):
+                return names
+            woken = True
+        time.sleep(0.25)
 
 
 def _connect(operation: ConnectionOperation, target: Target, tools: List[str], discovery_error: str = "") -> None:

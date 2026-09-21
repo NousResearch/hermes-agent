@@ -11,12 +11,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare:
+    name: Prepare test slices
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Restore shared duration estimates
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: test_durations.json
+          key: test-durations-never-exact
+          restore-keys: |
+            test-durations-
+      - name: Discover the suite once
+        run: python3 scripts/run_tests_parallel.py --generate-slices 4 > test-slices.json
+      - name: Publish the immutable slice assignment
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: python-test-slices
+          path: |
+            test-slices.json
+            test_durations.json
+          if-no-files-found: error
+          retention-days: 3
+
   test:
-    name: Run tests
+    name: Run tests (${{ matrix.slice }}/4)
+    needs: prepare
     # This fork does not have access to NousResearch's private 96-core runner.
-    # Use a standard GitHub-hosted runner with bounded per-file concurrency.
+    # Share one discovery/cache snapshot across four standard runners. Each
+    # file belongs to exactly one slice, even if the cache changes mid-run.
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,26 +88,28 @@ jobs:
       - name: Minimize uv cache
         run: uv cache prune --ci
 
-      - name: Restore per-file duration cache
-        # scripts/run_tests_parallel.py raises a file's timeout to
-        # 3x its last healthy duration (_effective_file_timeout) so a
-        # known-slow file dilated by load is not SIGKILL'd at the flat cap
-        # and laundered into a FLAKY retry. The scaler reads
-        # test_durations.json from the checkout; without this restore the
-        # file is absent on a fresh runner and the scaler is inert.
-        # Exact key never matches (run_id differs); restore-keys picks the
-        # most recent cache saved by a main push. PRs read, only main writes.
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Read the shared suite and duration snapshot
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: test_durations.json
-          key: test-durations-never-exact
-          restore-keys: |
-            test-durations-
+          name: python-test-slices
+
+      - name: Materialize this slice without shell argument limits
+        env:
+          SLICE_INDEX: ${{ matrix.slice }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          slices = json.loads(Path('test-slices.json').read_text())['slice']
+          files = next(s['files'].split(':') for s in slices if s['index'] == int(os.environ['SLICE_INDEX']))
+          assert files and all(files), 'Empty test slice'
+          Path('test-slice-files.txt').write_text('\n'.join(files) + '\n')
+          PY
 
       - name: Run tests
         run: |
           source .venv/bin/activate
-          scripts/run_tests.sh
+          scripts/run_tests.sh --files-from test-slice-files.txt
         env:
           HERMES_TEST_WORKERS: 4
           OPENROUTER_API_KEY: ""
@@ -90,7 +123,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test_durations.json
-          key: test-durations-${{ github.run_id }}
+          key: test-durations-${{ github.run_id }}-${{ matrix.slice }}
 
   e2e:
     runs-on: ubuntu-latest

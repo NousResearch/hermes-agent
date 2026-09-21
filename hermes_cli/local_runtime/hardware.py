@@ -54,6 +54,44 @@ _pool_probe_cache: tuple[float, "tuple[int, bool | None] | None"] | None = None
 # — greedy .* pins the LAST parenthesized group, so device names with parentheses parse.
 _DEVICE_LINE_RE = re.compile(r"CUDA\d+:.*\((\d+)\s*MiB,\s*\d+\s*MiB free\)\s*$")
 
+# The managed llama-server inherits CUDA_VISIBLE_DEVICES (server_child_env passes CUDA_* through
+# untouched), but NVML ignores the mask — an unfiltered nvidia-smi query lists every card. The
+# budget must therefore be restricted to the same device set the child can actually allocate;
+# on a 2x24GiB host masked to GPU 0 the full-rig sum would pick presets that fail at load.
+_CUDA_VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
+
+
+def _cuda_visible_admitter(mask: str | None):
+    """Row-admission predicate for SMI rows under a CUDA_VISIBLE_DEVICES value.
+
+    Returns None when the mask is unset (every row admitted). CUDA's own rules are
+    applied to SMI's index/uuid columns: indices may repeat and reorder, GPU-UUIDs
+    may be abbreviated, and an empty or unresolvable value (MIG instance UUIDs name
+    partitions no SMI row identifies) hides every device — the visible set is then
+    unknown, so admitting nothing fails closed instead of budgeting cards the
+    masked runtime cannot allocate.
+    """
+    if mask is None:
+        return None
+    tokens = [t.strip() for t in mask.split(",") if t.strip()]
+    if not tokens:
+        return lambda index, uuid: False  # empty mask: the runtime sees no GPU
+    numeric: set[int] = set()
+    prefixes: list[str] = []
+    for token in tokens:
+        if token.isdigit():
+            numeric.add(int(token))
+        elif token.upper().startswith("GPU-"):
+            prefixes.append(token.lower())
+        else:
+            return lambda index, uuid: False
+    def _admits(index: str, uuid: str) -> bool:
+        idx = index.strip()
+        if idx.isdigit() and int(idx) in numeric:
+            return True
+        return uuid.strip().lower().startswith(tuple(prefixes)) if prefixes else False
+    return _admits
+
 
 def _stdout(*argv: str) -> str:
     return subprocess.run(
@@ -148,18 +186,20 @@ def _nvidia_vram() -> tuple[int, int] | None:
     if exe is None:
         return None
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
-        out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
+        argv = [exe, "--query-gpu=index,uuid,memory.total,memory.free",
+                "--format=csv,noheader,nounits"]
+        out = subprocess.run(argv, capture_output=True, text=True, timeout=10)
         if out.returncode != 0 or not out.stdout.strip():
             return None
         # One CSV row per GPU (tensor-split engines like llama.cpp address the sum), so
-        # every row must be totaled — reading only GPU 0 budgets a 2x24GiB rig at one card.
+        # every VISIBLE row must be totaled — reading only GPU 0 budgets a 2x24GiB rig
+        # at one card, while summing masked-away cards budgets VRAM the runtime child
+        # cannot allocate. index+uuid columns identify each row for mask admission.
+        admit = _cuda_visible_admitter(os.environ.get(_CUDA_VISIBLE_DEVICES))
         total_mib = free_mib = 0
         for line in out.stdout.strip().splitlines():
             parts = line.split(",")
-            if len(parts) < 2:
+            if len(parts) < 4:
                 continue
             # A per-field "N/A" (driver mismatch, vGPU, WDDM) must skip only its own row:
             # letting the ValueError reach the outer suppress would discard the good rows
@@ -167,9 +207,11 @@ def _nvidia_vram() -> tuple[int, int] | None:
             # Parse both fields before committing either: smi reports "N/A" per field, so
             # "24576, N/A" would otherwise bump total before free fails to parse.
             try:
-                row_total = int(parts[0])
-                row_free = int(parts[1])
+                row_total = int(parts[2])
+                row_free = int(parts[3])
             except ValueError:
+                continue
+            if admit is not None and not admit(parts[0], parts[1]):
                 continue
             total_mib += row_total
             free_mib += row_free

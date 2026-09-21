@@ -1580,7 +1580,7 @@ class CLIModalMixin:
             self._clarify_freetext = False
             self._clarify_multi_base = None
         # ── KENSEI CUSTOM: cleanup auq overlay on interrupt ──
-        if self._auq_state:
+        if getattr(self, "_auq_state", None):
             try:
                 total = len(self._auq_state.get("questions", []))
                 self._auq_state["response_queue"].put(

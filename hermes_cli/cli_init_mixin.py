@@ -352,6 +352,7 @@ class CLIInitMixin:
         """Per-run mutable UI state; must exist before any chat() call since -q never goes through run()."""
         from cli import CLI_CONFIG, _status_bar_visible_from_display_config
         self._pending_input = queue.Queue()
+        self._injected_input = queue.Queue()  # KENSEI CUSTOM: plugin injection queue (H-101..H-108)
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn

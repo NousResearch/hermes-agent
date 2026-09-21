@@ -1006,6 +1006,65 @@ class CLISessionMixin:
                 finalize_context_engine_compression_notification(self.agent, committed=False)
                 print(f"  ❌ Compression failed: {e}")
 
+    def inject_message(
+        self,
+        content: str,
+        role: str = "user",
+        *,
+        mode: str = "queue",
+        target_session: str | None = None,
+    ) -> bool:
+        """Inject a message into this CLI conversation (public plugin seam).
+
+        This is the host-owned counterpart of ``PluginContext.inject_message``
+        and the only supported way for hosts/plugins to deliver external text
+        into the interactive loop. It never exposes the private pending or
+        interrupt queues to callers.
+
+        Modes:
+
+        - ``queue`` (default): idle → the message starts a new turn; busy →
+          queued at the safe boundary (delivered after the active turn ends).
+          Never touches ``_interrupt_queue`` and never cancels an active tool.
+        - ``steer``: explicit mid-turn steering via ``agent.steer()`` when the
+          agent is running; degrades to a queued next-turn message when idle.
+        - ``interrupt``: legacy hard-interrupt behaviour (busy → interrupt
+          queue; the agent loop drains it mid-turn).
+
+        ``target_session`` must be ``None`` (this session) or this CLI's own
+        ``session_id``; any other value fails closed with ``False``.
+
+        Returns ``True`` when the message was accepted by the host.
+        """
+        if mode not in ("queue", "steer", "interrupt"):
+            return False
+        if target_session is not None and str(target_session) != str(self.session_id):
+            return False
+
+        msg = content if role == "user" else f"[{role}] {content}"
+
+        if mode == "interrupt":
+            (self._interrupt_queue if self._agent_running else self._injected_input).put(msg)
+            return True
+
+        if mode == "steer" and self._agent_running:
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "steer"):
+                try:
+                    return bool(agent.steer(msg))
+                except Exception:
+                    return False
+
+        # queue mode (and steer/interrupt fallbacks): the dedicated injection
+        # queue — the TUI process loop transfers it to _pending_input, so idle
+        # injections start a new turn and busy ones deliver at the next safe
+        # boundary. Never touches _interrupt_queue (contract H-101..H-108).
+        self._injected_input.put(msg)
+        return True
+
+    # ── KENSEI CUSTOM (restored): batch-clarify state machine ──
+
+
     def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
         """Print a one-line scrollback summary of a resolved modal prompt (approval/clarify
         panels vanish on repaint); gated by ``display.persist_prompts``."""

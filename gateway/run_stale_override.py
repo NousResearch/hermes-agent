@@ -58,7 +58,7 @@ class GatewayStaleOverrideMixin:
         ):
             return
 
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         register = getattr(adapter, "register_post_delivery_callback", None)
         if not callable(register):
             await self._mark_stale_override_turn_completed(
@@ -265,7 +265,7 @@ class GatewayStaleOverrideMixin:
         if not decision.triggered:
             return False, None
 
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if adapter is None:
             return False, None
         # Keep routing/profile and transport provenance while authorizing the actor.
@@ -378,7 +378,7 @@ class GatewayStaleOverrideMixin:
             if not isinstance(getattr(held_event, "metadata", None), dict):
                 held_event.metadata = {}
             held_event.metadata["_stale_override_notice_bypass"] = True
-            resume_adapter = self._adapter_for_source(held_event.source) or adapter
+            resume_adapter = self._intake_adapter_for(held_event.source) or adapter
             await resume_adapter.handle_message(held_event)
             logger.info(
                 "Stale-override held message re-dispatched session=%s choice=%s",

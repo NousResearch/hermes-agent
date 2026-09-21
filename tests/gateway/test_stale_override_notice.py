@@ -179,7 +179,8 @@ def _runner(mode="info_only", *, picker_success=True):
     runner._stale_override_pending = {}
     runner._background_tasks = set()
     runner._adapter = _Adapter(picker_success=picker_success)
-    runner._adapter_for_source = lambda _source: runner._adapter
+    runner._delivery_adapter_for = lambda _source: runner._adapter
+    runner._intake_adapter_for = lambda _source: runner._adapter
     runner._thread_metadata_for_source = lambda *_args: None
     runner._reply_anchor_for_event = lambda _event: None
     runner._stale_override_decision = MagicMock(
@@ -394,7 +395,7 @@ async def test_conversation_boundary_makes_held_picker_inert():
 async def test_confirm_without_picker_fails_open_without_losing_message():
     runner = _runner("confirm")
     runner._adapter = SimpleNamespace(send=AsyncMock())
-    runner._adapter_for_source = lambda _source: runner._adapter
+    runner._delivery_adapter_for = lambda _source: runner._adapter
 
     handled, response = await runner._maybe_handle_stale_override_notice(
         _event(), "session-key"
@@ -473,7 +474,7 @@ async def test_completion_clock_is_deferred_until_platform_delivery():
             generation=generation,
         )
 
-    runner._adapter_for_source = lambda _source: SimpleNamespace(
+    runner._delivery_adapter_for = lambda _source: SimpleNamespace(
         register_post_delivery_callback=register
     )
 
@@ -496,7 +497,7 @@ async def test_completion_clock_is_deferred_until_platform_delivery():
 async def test_disabled_notice_does_not_register_or_write_completion_clock():
     runner = _runner("off")
     register = MagicMock()
-    runner._adapter_for_source = lambda _source: SimpleNamespace(
+    runner._delivery_adapter_for = lambda _source: SimpleNamespace(
         register_post_delivery_callback=register
     )
 
@@ -667,7 +668,7 @@ async def test_confirm_resumes_through_current_adapter_after_reconnect():
     callback = prompt_adapter.picker_call["on_choice_selected"]
 
     resume_adapter = _Adapter()
-    runner._adapter_for_source = lambda _source: resume_adapter
+    runner._intake_adapter_for = lambda _source: resume_adapter
     await callback("123", "continue")
 
     prompt_adapter.handle_message.assert_not_awaited()

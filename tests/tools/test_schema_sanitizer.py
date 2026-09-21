@@ -526,6 +526,99 @@ def test_collapse_const_unions_does_not_mutate_input():
     assert schema == snapshot
 
 
+def test_normalize_mcp_input_schema_preserves_required_only_constraint_fragments():
+    """``allOf``/``oneOf``/``if`` branches carrying only ``required`` must survive intact.
+
+    Regression: ``_repair_object_shape`` treated every dict with a ``required`` list as an
+    object declaration, so a fragment like ``{"required": ["chain"]}`` got
+    ``type: object`` + ``properties: {}``, and the pruning step then deleted ``chain`` from
+    ``required`` — turning the branch into an always-true ``{"type": "object",
+    "properties": {}}``. Sibling branches collapsed into identical schemas, and the enclosing
+    ``oneOf`` (which demands exactly one match) could never be satisfied, so every call to that
+    tool failed client-side argument validation while the server-side tool was perfectly
+    healthy. Real-world repro: Morpho's MCP ``morpho_query_markets``, whose
+    ``allOf: [{oneOf: [{required: [chain]}, {required: [chainId]}]}]`` made the tool
+    permanently un-dispatchable.
+    """
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "chain": {"type": "string"},
+            "chainId": {"type": "integer"},
+            "limit": {"type": "integer"},
+        },
+        "allOf": [{"oneOf": [{"required": ["chain"]}, {"required": ["chainId"]}]}],
+    }
+    out = _normalize_mcp_input_schema(schema)
+
+    assert out["allOf"] == [{"oneOf": [{"required": ["chain"]}, {"required": ["chainId"]}]}]
+
+    # Exactly-one semantics must be preserved, not just the branch text. jsonschema's
+    # Draft202012Validator is the same validator tools.tool_search_validation selects for a
+    # schema with no `$schema` key, so this exercises the real local-validation semantics.
+    from jsonschema.validators import Draft202012Validator
+
+    validator_cls = Draft202012Validator
+
+    def valid(args):
+        return validator_cls(out).is_valid(args)
+
+    assert valid({"chain": "ethereum", "limit": 3})
+    assert valid({"chainId": 1})
+    assert not valid({})
+    assert not valid({"chain": "ethereum", "chainId": 1})
+
+
+def test_normalize_mcp_input_schema_preserves_if_then_fragments():
+    """``if``/``then`` fragments are constraint-only dicts and must not be object-repaired."""
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+    out = _normalize_mcp_input_schema({
+        "type": "object",
+        "properties": {"mode": {"type": "string"}, "id": {"type": "integer"}},
+        "if": {"required": ["mode"]},
+        "then": {"required": ["id"]},
+    })
+    assert out["if"] == {"required": ["mode"]}
+    assert out["then"] == {"required": ["id"]}
+
+
+def test_normalize_mcp_input_schema_still_repairs_root_dangling_required():
+    """The root dangling-``required`` repair (PR #4651) must keep firing.
+
+    Only *nested* constraint fragments are exempt; the parameters-schema root is the single
+    node providers receive as the function's argument object, so a name in ``required`` that
+    has no matching ``properties`` entry still has to be pruned (Gemini 400s otherwise).
+    """
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+    out = _normalize_mcp_input_schema({
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a", "ghost"],
+    })
+    assert out["required"] == ["a"]
+
+    # Root typed object, required present, properties absent -> properties:{} still added.
+    bare = _normalize_mcp_input_schema({"type": "object", "required": ["a"]})
+    assert bare["type"] == "object"
+    assert bare["properties"] == {}
+
+
+def test_normalize_mcp_input_schema_still_repairs_nested_object_literals():
+    """A nested dict that *does* declare ``properties`` is still a literal object schema."""
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+    out = _normalize_mcp_input_schema({
+        "type": "object",
+        "properties": {"opts": {"properties": {"x": {"type": "string"}}}},
+    })
+    assert out["properties"]["opts"]["type"] == "object"
+    assert out["properties"]["opts"]["properties"] == {"x": {"type": "string"}}
+
+
 def test_collapse_is_deterministic():
     schema = {"anyOf": [{"const": "b"}, {"const": "a"}]}
     first = collapse_const_unions(copy.deepcopy(schema))

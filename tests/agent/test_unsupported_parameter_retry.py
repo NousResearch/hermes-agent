@@ -34,6 +34,10 @@ class TestIsUnsupportedParameterError:
         ("temperature", "HTTP 400: Unsupported parameter: temperature"),
         ("temperature", "Error code: 400 - {'error': {'code': 'unsupported_parameter', 'param': 'temperature'}}"),
         ("temperature", "this model does not support temperature"),
+        # Bedrock Converse wordings (xAI Grok contraction, inference-profile Claude deprecation, #111043)
+        ("temperature", "An error occurred (ValidationException) when calling the Converse operation: "
+                        "This model doesn't support the temperature field. Remove temperature and try again."),
+        ("temperature", "ValidationException: `temperature` is deprecated for this model."),
         # max_tokens phrasings
         ("max_tokens", "HTTP 400: Unsupported parameter: max_tokens"),
         ("max_tokens", "Unknown parameter: max_tokens — use max_completion_tokens"),

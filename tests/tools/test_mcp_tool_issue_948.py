@@ -9,7 +9,8 @@ import pytest
 
 from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 from tools.mcp_tool_errors import _format_connect_error
-from tools.mcp_tool_config import _resolve_stdio_command
+from tools.mcp_tool_config import _node_fallback, _resolve_stdio_command
+from tools.mcp_tool_config import _which_with_config_pathext
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
@@ -35,6 +36,45 @@ def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
 
     assert command == str(npx_path)
     assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
+
+
+def test_windows_managed_node_root_prefers_cmd_launchers(tmp_path):
+    """Managed Windows Node lives directly in ``<HERMES_HOME>/node`` (no ``bin``) as ``npx.cmd`` /
+    ``npm.cmd`` / ``node.exe``; a bare ``command: npx`` must resolve to those launchers (#111937).
+    The extensionless POSIX sibling is a shell script Windows cannot spawn, so it must never win."""
+    node_root = tmp_path / "node"
+    node_root.mkdir()
+    for name in ("npx", "npm", "npx.cmd", "npm.cmd", "node.exe"):
+        launcher = node_root / name
+        launcher.write_text("@echo off\r\n", encoding="utf-8")
+        launcher.chmod(0o755)
+
+    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}, clear=False):
+        assert _node_fallback("npx", windows=True) == str(node_root / "npx.cmd")
+        assert _node_fallback("npm", windows=True) == str(node_root / "npm.cmd")
+        assert _node_fallback("node", windows=True) == str(node_root / "node.exe")
+
+
+def test_node_fallback_uses_active_profile_home(tmp_path, monkeypatch):
+    """The managed-Node lookup follows ``get_hermes_home()`` (context override), not raw ``HERMES_HOME``:
+    a multiplexed profile whose home differs from the launch env must find ITS managed Node."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile_home = tmp_path / "profile"
+    npx_path = profile_home / "node" / "bin" / "npx"
+    npx_path.parent.mkdir(parents=True)
+    npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    npx_path.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch-home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))  # keep a real ~/.local/bin/npx out of the picture
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        with patch("tools.mcp_tool_config.shutil.which", return_value=None):
+            command, _env = _resolve_stdio_command("npx", {"PATH": "/usr/bin"})
+    finally:
+        reset_hermes_home_override(token)
+    assert command == str(npx_path)
 
 
 def test_resolve_stdio_command_falls_back_to_usr_local_bin():
@@ -68,6 +108,77 @@ def test_resolve_stdio_command_falls_back_to_usr_local_bin():
     # /usr/local/bin must be prepended so npx's shebang (`/usr/bin/env node`)
     # can find node in the same directory.
     assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(target)
+
+
+def test_resolve_stdio_command_absent_path_is_a_miss(tmp_path, monkeypatch):
+    """A server env without PATH must not resolve commands against the PARENT's PATH:
+    the child would be spawned without it and the lookup would pass on an env the
+    child never sees. Bare ``node`` still reaches the explicit well-known dirs."""
+    parent_bin = tmp_path / "parent-bin"
+    parent_bin.mkdir()
+    server_tool = parent_bin / "some-mcp-server"
+    server_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    server_tool.chmod(0o755)
+    node_tool = tmp_path / "node" / "bin" / "node"
+    node_tool.parent.mkdir(parents=True)
+    node_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    node_tool.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # the parent PATH contains BOTH names: an ambient hit would resolve either
+    monkeypatch.setenv("PATH", str(parent_bin))
+
+    command, _env = _resolve_stdio_command("some-mcp-server", {"OTHER": "1"})
+
+    # absent child PATH: honest miss, not an ambient hit
+    assert command == "some-mcp-server"
+
+    with patch.dict("os.environ", {"PATH": str(parent_bin)}):
+        command, _env = _resolve_stdio_command("node", {"OTHER": "1"})
+    assert command == str(node_tool)  # the explicit Node fallback dirs stay reachable
+
+
+def test_resolve_stdio_command_empty_path_is_a_miss(monkeypatch, tmp_path):
+    """An explicitly empty child PATH keeps its cwd-only meaning (never the parent's PATH):
+    ``which`` sees ``[""]`` -> cwd. The binary lives only in the parent's PATH dir, so the
+    lookup must miss rather than silently inheriting the parent's directories."""
+    parent_bin = tmp_path / "parent-bin"
+    parent_bin.mkdir()
+    server_tool = parent_bin / "other-mcp-server"
+    server_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    server_tool.chmod(0o755)
+    monkeypatch.setenv("PATH", str(parent_bin))
+
+    command, _env = _resolve_stdio_command("other-mcp-server", {"PATH": ""})
+
+    assert command == "other-mcp-server"  # cwd-only lookup: no ambient fallback
+
+
+def test_config_pathext_lookup_never_touches_parent_environ(tmp_path, monkeypatch):
+    """Resolving under a configured PATHEXT must not mutate the parent's ``os.environ``:
+    a multiplexed gateway resolves servers for several profiles from one process, and
+    any thread reading PATHEXT (or inheriting env for its own subprocess) inside the
+    lookup window would otherwise see this server's per-profile value."""
+    server_dir = tmp_path / "bin"
+    server_dir.mkdir()
+    (server_dir / "server.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    (server_dir / "server.cmd").chmod(0o755)
+    monkeypatch.delenv("PATHEXT", raising=False)
+    monkeypatch.setenv("PATH", str(server_dir))
+    seen = {}
+
+    import tools.mcp_tool_config as _cfg
+
+    def _spy(cmd, path=None):
+        seen["PATHEXT"] = os.environ.get("PATHEXT")
+        raise AssertionError("shutil.which must not be the lookup engine here")
+
+    with patch.object(_cfg.shutil, "which", side_effect=_spy):
+        cfg_env = {"PATHEXT": ".cmd;.exe"}
+        hit = _which_with_config_pathext("server", str(server_dir), cfg_env)
+
+    assert hit == str(server_dir / "server.cmd")
+    assert "PATHEXT" not in os.environ  # not written, not left behind
+    assert seen == {}  # and never consulted mid-lookup either
 
 
 # ---------------------------------------------------------------------------

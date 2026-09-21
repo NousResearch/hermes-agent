@@ -55,6 +55,17 @@ describe('linkifyUrls', () => {
   it('leaves text without a scheme alone', () => {
     expect(linkifyUrls('example.dev/a and src/foo.ts')).toBe('example.dev/a and src/foo.ts')
   })
+
+  // The paste handler runs resolveExactLinkPaste before linkifyUrls on the same
+  // payload; a match left in the shared regex's lastIndex made linkifyUrls skip
+  // the first link (a lone pasted URL landed as raw text) — see #112479.
+  it('still chips the first link after resolveExactLinkPaste saw the same payload', () => {
+    expect(resolveExactLinkPaste('https://example.dev/a/b')).toBe('https://example.dev/a/b')
+    expect(linkifyUrls('https://example.dev/a/b')).toBe('@url:`https://example.dev/a/b`')
+
+    resolveExactLinkPaste('https://a.dev and https://b.dev')
+    expect(linkifyUrls('https://a.dev and https://b.dev')).toBe('@url:`https://a.dev` and @url:`https://b.dev`')
+  })
 })
 
 describe('resolveExactLinkPaste', () => {
@@ -143,6 +154,12 @@ describe('markdownLinkFor', () => {
 
   it('escapes square brackets in the label', () => {
     expect(markdownLinkFor('a [b] c', 'https://example.dev')).toBe('[a \\[b\\] c](https://example.dev)')
+  })
+
+  it('escapes backslashes before parsing the label', () => {
+    const label = String.raw`a \ b`
+
+    expect(markdownLinkFor(label, 'https://example.dev')).toBe(String.raw`[a \\ b](https://example.dev)`)
   })
 })
 

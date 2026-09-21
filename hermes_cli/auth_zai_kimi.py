@@ -7,10 +7,17 @@ lazily per function so ``hermes_cli.auth.<helper>`` patches still intercept and 
 from __future__ import annotations
 
 import logging
+import hashlib
+import time
 from typing import Dict, Optional
 from hermes_cli.auth_constants import httpx
 
 logger = logging.getLogger("hermes_cli.auth")
+
+# In-process negative cache for Z.AI endpoint detection, keyed by key hash: a failed probe is not
+# retried for this long (a success persists to auth.json instead).
+_ZAI_PROBE_FAILURE_TTL_SECONDS = 300
+_zai_probe_failed_until: Dict[str, float] = {}
 
 # "sk-kimi-" keys only work on api.kimi.com/coding; legacy moonshot keys use the old default.
 # NO /v1 suffix: the anthropic SDK appends "/v1/messages" itself ("/coding/v1" would 404).
@@ -114,11 +121,16 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     if isinstance(cached, dict) and cached.get("base_url") and cached.get("key_hash", "") == key_hash:
         logger.debug("Z.AI: using cached endpoint %s", cached["base_url"])
         return cached["base_url"]
+    # Only a success is persisted, so a failing key (429/401 on every endpoint) would re-run the
+    # four chat-completion probes on every credential-pool load — dozens of times per picker open.
+    if _zai_probe_failed_until.get(key_hash, 0.0) > time.time():
+        return default_url
 
     # Probe — may take up to ~8s per endpoint.
     detected = detect_zai_endpoint(api_key)
     if not (detected and detected.get("base_url")):
         logger.debug("Z.AI: probe failed, falling back to default %s", default_url)
+        _zai_probe_failed_until[key_hash] = time.time() + _ZAI_PROBE_FAILURE_TTL_SECONDS
         return default_url
 
     detected_endpoint = {

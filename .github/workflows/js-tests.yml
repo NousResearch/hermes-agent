@@ -18,6 +18,20 @@ jobs:
           node-version: 26
           cache: npm
 
+      # The desktop SSH watchdog tests run their probe through a real zsh
+      # login shell (#111949). The ubuntu image ships no zsh and the tests
+      # skip without it, so install it here or those legs never run on CI.
+      #
+      # The desktop portal-session live test drives real Electron windows
+      # (electron/portal-session-live.test.ts) and skips without a display,
+      # so give the runner a virtual one the same way the Playwright lane does.
+      - name: Install zsh and a virtual display for Electron
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y zsh xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+
       - name: grab npm 12
         run: |
           npm --version | grep -q '^12\.' || npm i -g npm@12
@@ -42,6 +56,9 @@ jobs:
 
       - name: Verify workspace runner failure reporting
         run: node --test .github/scripts/run-workspace-checks.test.mjs
+
+      - name: Verify WhatsApp media cache containment
+        run: node --test scripts/whatsapp-bridge/media_paths.test.mjs
 
       - name: Run all workspace checks
         # The UI suite already uses a bounded Vitest pool. Keeping the outer
@@ -79,6 +96,9 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify native Windows media cache containment
+        run: node --test scripts/whatsapp-bridge/media_paths.test.mjs
+
       - name: Verify native Windows termination, ownership and path regressions
         shell: pwsh
         working-directory: apps/desktop
@@ -101,6 +121,8 @@ jobs:
             'electron/ssh-config.test.ts',
             'electron/ssh-connection.test.ts',
             'electron/update-handoff-marker.test.ts',
+            'electron/updater-process.test.ts',
+            'electron/updater-process.windows-live.test.ts',
             'electron/windows-hermes-path.test.ts',
             'electron/wsl-path-bridge.test.ts',
             'electron/wsl-path-bridge-gate.test.ts',

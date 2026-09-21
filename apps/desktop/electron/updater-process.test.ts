@@ -6,6 +6,7 @@ import { test } from 'vitest'
 
 import {
   collectRelaunchArgs,
+  describeUpdaterHandoffFailure,
   MARKER_SELF_ADOPT_EPOCH_MS,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
@@ -101,7 +102,7 @@ test('spawnUpdaterProcess hides the updater console and detaches the child on Wi
     {
       args: ['--update', '--branch', 'main'],
       command: 'hermes-setup.exe',
-      options: { cwd: 'C:\\Hermes', detached: true, stdio: 'ignore', windowsHide: true }
+      options: { cwd: 'C:\\Hermes', detached: true, stdio: 'ignore', windowsHide: true, shell: false }
     }
   ])
 })
@@ -123,7 +124,7 @@ test('spawnUpdaterProcess preserves updater options off Windows', () => {
     }
   )
 
-  assert.deepEqual(capturedOptions, { detached: true, stdio: 'ignore' })
+  assert.deepEqual(capturedOptions, { detached: true, stdio: 'ignore', shell: false })
 })
 
 test('resolveStagedUpdaterBinary hands Windows the staged installer it finds', () => {
@@ -218,7 +219,7 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
   assert.equal(handoff, null)
 })
 
-test('wrapHandoffForDetachedConsole routes through cmd start with own console', () => {
+test('wrapHandoffForDetachedConsole uses a hidden wrapper while keeping data out of cmd syntax', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
   const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
@@ -231,24 +232,53 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
   const wrapped = wrapHandoffForDetachedConsole(handoff, ['-InstallRoot', root, '-Branch', 'main'])
 
   assert.equal(wrapped.command, 'cmd.exe')
-  assert.deepEqual(wrapped.args, [
+  assert.equal(wrapped.detached, false)
+  assert.deepEqual(wrapped.args.slice(0, -1), [
     '/d',
+    '/v:off',
     '/s',
     '/c',
     'start',
     '',
-    '/min',
+    '/b',
     'powershell',
     '-NoProfile',
     '-ExecutionPolicy',
     'Bypass',
-    '-File',
-    expected,
-    '-InstallRoot',
-    root,
-    '-Branch',
-    'main'
+    '-EncodedCommand'
   ])
+  assert.match(wrapped.args.at(-1)!, /^[A-Za-z0-9+/]+=*$/)
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-Command', 'unexpected']))
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-Branch']))
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-NoGateway', 'false']))
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-NoGateway:$false']))
+  assert.throws(() => wrapHandoffForDetachedConsole(handoff, ['-NoGateway', '-Command', 'unexpected']))
+})
+
+test.each([
+  { switches: [], noGateway: undefined },
+  { switches: ['-NoGateway'], noGateway: true }
+])('Windows updater encodes NoGateway=$noGateway as a typed switch', ({ switches, noGateway }) => {
+  const handoff = {
+    command: 'powershell',
+    args: [],
+    scriptPath: String.raw`C:\Hermes & friends\windows.ps1`
+  }
+
+  // A switch can precede named values as well as follow them at the call site.
+  for (const extra of [
+    [...switches, '-Branch', '-feature/remote'],
+    ['-Branch', '-feature/remote', ...switches]
+  ]) {
+    const wrapped = wrapHandoffForDetachedConsole(handoff, extra)
+    const dispatcher = Buffer.from(wrapped.args.at(-1)!, 'base64').toString('utf16le')
+    const encodedPayload = dispatcher.match(/FromBase64String\('([A-Za-z0-9+/=]+)'\)/)?.[1]
+    assert.ok(encodedPayload)
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64').toString('utf8'))
+    assert.equal(payload.ScriptPath, handoff.scriptPath)
+    assert.equal(payload.Parameters.Branch, '-feature/remote')
+    assert.equal(payload.Parameters.NoGateway, noGateway)
+  }
 })
 
 test('resolvePosixScriptHandoff returns the bash recipe when the script exists', () => {
@@ -391,6 +421,20 @@ test('observeUpdaterHandoff reports a non-zero early exit', async () => {
   assert.equal(outcome.ok, false)
   assert.equal(outcome.reason, 'early-exit')
   assert.equal(outcome.code, 127)
+})
+
+test('describeUpdaterHandoffFailure leads with plain copy and confines the raw outcome to Details', () => {
+  for (const raw of ['updater exited 127 before the settle window elapsed', 'updater spawn failed: ENOENT']) {
+    const text = describeUpdaterHandoffFailure({ message: raw })
+    const [lead, details] = text.split('\n\nDetails: ')
+
+    assert.match(lead, /Hermes keeps running/)
+    assert.match(lead, /Try again/)
+    assert.doesNotMatch(lead, /exited|spawn|ENOENT|settle window|hermes update|\d/)
+    assert.equal(details, raw)
+  }
+
+  assert.doesNotMatch(describeUpdaterHandoffFailure({}), /Details:/)
 })
 
 test('observeUpdaterHandoff reports a signal death inside the window', async () => {

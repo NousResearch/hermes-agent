@@ -249,3 +249,26 @@ def test_abandoned_batch_does_not_dispatch_late(monkeypatch):
     assert agent._current_tool is None, (
         f"_current_tool left pointing at a dead tool: {agent._current_tool!r}"
     )
+
+
+def test_dict_error_result_reaches_the_model_from_a_concurrent_worker(monkeypatch):
+    """A tool returning a dict error payload must not kill the concurrent worker.
+
+    ``_detect_tool_failure`` classifies dict results as failures; the worker's
+    failure log line sliced ``result[:200]`` and raised TypeError, so the model
+    got "thread did not return a result" instead of the tool's own error.
+    """
+    agent = _make_agent(monkeypatch)
+    agent._tool_guardrails = MagicMock()
+    agent._tool_guardrails.before_call = lambda name, args: MagicMock(allows_execution=True)
+    payload = {"exit_code": 2, "output": "", "error": "boom"}
+    agent._invoke_tool = MagicMock(return_value=payload)
+
+    messages: list = []
+    agent._execute_tool_calls_concurrent(
+        _FakeAssistantMsg([_FakeToolCall("terminal", "tc_t")]), messages, "task"
+    )
+
+    (tool_msg,) = [m for m in messages if m.get("role") == "tool"]
+    assert "thread did not return a result" not in str(tool_msg["content"])
+    agent._invoke_tool.assert_called_once()

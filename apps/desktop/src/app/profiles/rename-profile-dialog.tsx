@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import type { ProfileScope } from '@/api/client'
+import { ambientOwnerConnectionId, capabilityScoped, connectionScoped, type ProfileScope } from '@/api/client'
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
 import {
@@ -18,6 +18,7 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { retireLocalProfileGateways } from '@/store/gateway'
+import { migrateTilesForProfile } from '@/store/session-states'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -41,8 +42,8 @@ export function RenameProfileDialog({
   onClose: () => void
   onRenamed?: (name: string) => Promise<void> | void
   open: boolean
-  /** Explicit (connection, profile) owner for a remote-gateway profile: the
-   *  rename executes there and no local backend is retired. */
+  /** Explicit (connection, profile) owner. A local pin retires and migrates
+   *  local state; a remote pin leaves same-named local profiles untouched. */
   scope?: ProfileScope
 }) {
   const { t } = useI18n()
@@ -85,16 +86,39 @@ export function RenameProfileDialog({
     setStatus('saving')
     setError(null)
 
+    // Match the API's explicit pin or ambient routing without turning an
+    // ambient request into a pin (legacy per-profile routing must stay intact).
+    const normalizedScope = capabilityScoped(scope)
+    const registryConnectionId = normalizedScope.connectionId ?? connectionScoped().connectionId
+    const ownerConnectionId = registryConnectionId ?? ambientOwnerConnectionId()
+    const renamesLocalProfile = !isDefault && ownerConnectionId === 'local'
+
+    // Retiring the active tab can switch the ambient registry connection.
+    // Preserve an existing registry tag, never invent one for legacy routing.
+    const renameScope = registryConnectionId
+      ? { connectionId: registryConnectionId, profile: normalizedScope.profile }
+      : scope
+
     try {
       // A retained renderer socket for the old name would treat the rename's
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
-      if (!isDefault && scope == null) {
+      if (renamesLocalProfile) {
         retireLocalProfileGateways(currentName)
       }
 
-      await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
+      await (renameScope == null
+        ? renameProfile(currentName, trimmed)
+        : renameProfile(currentName, trimmed, renameScope))
+
+      // The sessions moved with the directory; the tabs, cached tails and
+      // remembered ids keyed by the old name must follow, or every open
+      // dials a backend that no longer exists (#111868).
+      if (renamesLocalProfile) {
+        migrateTilesForProfile(currentName, trimmed)
+      }
+
       await onRenamed?.(trimmed)
       setStatus('done')
       window.setTimeout(onClose, 800)

@@ -133,7 +133,9 @@ def _ack_advisory(ack_target: str) -> None:
     if ack_advisory(ack_target):
         print(color(f"  ✓ Acknowledged advisory {ack_target}. It will no longer trigger startup banners.", Colors.GREEN))
     else:
-        print(color(f"  ✗ Failed to persist ack for {ack_target}. Check ~/.hermes/config.yaml is writable.", Colors.RED))
+        print(color(f"  ✗ Could not save the acknowledgement for {ack_target}. Make sure {_DHH}/config.yaml is "
+                    f"writable (`hermes config path` prints the exact file), then re-run "
+                    f"`hermes doctor --ack {ack_target}`.", Colors.RED))
         sys.exit(1)
 
 
@@ -183,6 +185,7 @@ def run_doctor(args):
         from hermes_cli.doctor_live import maybe_run_live_checks
         maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
+    return int(bool(total.issues or total.manual_issues))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

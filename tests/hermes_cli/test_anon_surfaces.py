@@ -42,7 +42,7 @@ def _jwt(**claims) -> str:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
     payload = {"sub": "nas_user:abc", "client_id": "nas-anonymous", "account_tier": "anonymous",
-               "scope": "inference:invoke tool:invoke", "exp": int(time.time()) + 10 ** 8, **claims}
+               "scope": "inference:invoke", "exp": int(time.time()) + 10 ** 8, **claims}
     return f"{seg({'alg': 'RS256'})}.{seg(payload)}.sig"
 
 
@@ -192,6 +192,7 @@ def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_
         "model_changed": True,
         "reason": "unknown",
         "detail": "private detail",
+        "retry_after": 0.0,
     }
     forbidden = re.compile(r"claim|nous portal|anonymous|guest", re.IGNORECASE)
     terminal_or_url = re.compile(r"hermes |https?://", re.IGNORECASE)

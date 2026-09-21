@@ -118,10 +118,11 @@ export function setMcpServerEnabled(
   })
 }
 
-export function getMcpCatalog(profile?: ProfileScope): Promise<McpCatalogResponse> {
+export function getMcpCatalog(profile?: ProfileScope, detectApps = false): Promise<McpCatalogResponse> {
   return window.hermesDesktop.api<McpCatalogResponse>({
     ...capabilityScoped(profile),
-    path: '/api/mcp/catalog'
+    path: `/api/mcp/catalog${detectApps ? '?detect_apps=true' : ''}`,
+    ...(detectApps ? { timeoutMs: 5000 } : {})
   })
 }
 

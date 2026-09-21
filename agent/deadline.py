@@ -398,7 +398,9 @@ def _process_tree_snapshot(pid: int, *, hard_kill: bool):
                 logger.debug("kill_process_tree: target already gone or resume refused", exc_info=True)
 
 
-def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
+def kill_process_tree(
+    pid: int, *, sig: Optional[int] = None, taskkill_timeout: float = 15
+) -> bool:
     """Terminate ``pid`` and all its descendants, portably; True when anything was signalled.
 
     Windows: ``taskkill /F /T`` (``sig`` ignored). POSIX: snapshot descendants via
@@ -416,7 +418,8 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
         try:
             proc = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True, timeout=15, check=False, creationflags=creationflags,
+                capture_output=True, timeout=taskkill_timeout, check=False,
+                creationflags=creationflags,
             )
             # taskkill exits non-zero for not-found / access-denied (False = nothing terminated).
             return proc.returncode == 0

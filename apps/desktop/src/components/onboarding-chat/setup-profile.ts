@@ -12,6 +12,7 @@
 
 import { atom } from 'nanostores'
 
+import type { ProfileScope } from '@/api/client'
 import type { HandoffReceipt } from '@/app/contrib/handoff-leg'
 import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
 import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
@@ -20,7 +21,8 @@ import { connectorTitle } from '@/lib/connector-tools'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { machineDescription } from '@/store/machine'
 import type { OnboardingAnswers } from '@/store/onboarding-answers'
-import { PLAIN_SPEECH } from '@/store/onboarding-script'
+import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
+import { FIRST_USE_GUIDANCE, PLAIN_SPEECH } from '@/store/onboarding-script'
 import { getSessionOwnerHint } from '@/store/session'
 
 /** Profile name of the onboarding guide. Prefixed so it cannot collide with a profile the user named "setup". */
@@ -144,7 +146,8 @@ export function buildFirstTaskRunbook(
   task: string,
   answers: OnboardingAnswers,
   plan: HandoffPlan = 'build',
-  pluginRoot = ''
+  pluginRoot = '',
+  capabilities = ''
 ): string {
   const name = (answers.name ?? '').trim()
   const context = (answers.context ?? '').trim()
@@ -164,9 +167,11 @@ export function buildFirstTaskRunbook(
       ? `Apps they said they use: ${tools.map(connectorTitle).join(', ')}. Some may already be connected from onboarding; check with manage_connections action="status" before assuming either way, and never require an unconnected one for this first build.`
       : '',
     connectFirst
-      ? 'Their next message is the go signal. Before any plan and before any other tool, connect their apps as the CONNECT FIRST section says; the work itself starts the moment the wait returns or they tell you to start.'
+      ? 'Their next message is the go signal. Before any plan and before any other tool, connect their apps as the CONNECT FIRST section says; the work itself starts the moment that call returns.'
       : 'Their next message is the go signal: really begin the work — plan briefly, then build (scaffold, research, first artifact).',
     "As you start, tell them in one short sentence: you'll ask for permissions as you go, and they can say no to anything or redirect you.",
+    capabilities,
+    FIRST_USE_GUIDANCE,
     ...planRunbook(plan, pluginRoot, connectFirst),
     ...(connectFirst ? connectFirstRunbook(tools) : []),
     'While the work runs, place ::onboarding{step="progress" title="what you\'re doing"} as its own paragraph at the start of each status turn — the card shows the build breathing live. Keep the titles short and present-tense ("Scaffolding the project", "Wiring the reminder"). Emit each exactly like that, alone on its own line.',
@@ -180,18 +185,16 @@ export function buildFirstTaskRunbook(
 const NO_AUTH_RULE =
   'CRITICAL: this first build must be finishable with NO external account or OAuth (no Gmail, no Slack, no Google sign-in) — connectors get wired only with their consent, and an app that is already connected may be used, one that is not may be offered. Everything else is fair game and the more visible the better: web research with the browser shown to the user as you work, scripts, computer use, a small app, a file-based tracker, a scheduled reminder, a generated page. If the idea needs an account that is not connected, build the no-auth core first and offer the connection as the next step. NEVER route around a connector: an unconnected Gmail is not a cue to install an IMAP client, ask for an app password, or find another way into the same account. The connector IS the way in; if they decline it, the app is out of this build.'
 
-/** The picks are gateway slugs the user chose during setup. The agent, rather than the app, waits for the connection
- *  result, as decided in D85. */
+/** The picks are gateway slugs the user chose during setup. The connection operation owns the wait: one call, one
+ *  card, and the settled result is the go signal (D85). The card carries Try again and Continue, so neither is a model
+ *  action. */
 function connectFirstRunbook(picks: string[]): string[] {
   const named = picks.map(slug => `${slug} (${connectorTitle(slug)})`).join(', ')
 
   return [
     `CONNECT FIRST. During setup the user picked these apps, given here as exact gateway slugs: ${named}. Your first action in this session, before any plan and before any other tool call, is ONE manage_connections call with action="connect" and connectors set to every one of those slugs. Do not call action="status" first; the slugs are exact and the catalog check is already done.`,
-    'If every result comes back already active, there is nothing to wait for: begin the task at once.',
-    "The app opens every sign-in from that result in the user's browser and shows one row per app, so never paste the links. In the same turn say one short line: which apps are being connected and, in a clause each, what this task gets from each one. Then end the turn.",
-    'Then call manage_connections action="wait" with the same slugs and timeout_seconds=120, and say nothing until it returns. If the wait comes back as pending because the links were minted moments ago, end your turn: the app sends a hidden note that begins with "[setup] links opened" once your turn ends and the sign-ins are open, and that note is your cue to call the same wait again. A note that arrives after you have already waited needs no reply.',
-    'The user can start early. A message from them that begins with "Start with" or "Start without" names the apps that are connected and the ones they skipped; treat it as the go signal and begin with the connected apps only.',
-    'When the wait returns with every app connected, begin the task at once. When it returns with apps still pending, stop and ask in one line: which apps did not connect, and whether they want you to continue without them or try connecting again (a fresh action="connect" mints new links). Wait for their answer. If they choose to continue without an app, build the version of the task that needs no account for that part and say in one line what the connection would have added.',
+    'That one call shows the user one card with a row per app and blocks until every app is connected, or the user presses Continue, or the deadline passes. Never paste links, and never call "connect" again while the card is up. Its result lists each app as connected, skipped or not_connected.',
+    'When the result shows every app connected, begin the task at once. When some are skipped or not_connected, the user moved on: begin with the connected apps only, build the version of the task that needs no account for the rest, and say in one line what each missing connection would have added. Do not offer to connect again; the user asks when they want that.',
     'Account data comes from the connected apps first. Tools already signed in on this machine, like a logged-in gh, are fair to use when the task benefits; say so in one line when you do.',
     "Discover a connected app's tools with tool_search and use real results for the task; never fabricate account data. Reading is separate from sending, deleting or scheduling: ask before those. No recurring job unless that is what they asked for.",
     'Make the result something they can open: a single HTML page when the idea allows it, and at least one real reading or action through a connected app.'
@@ -203,6 +206,7 @@ function connectFirstRunbook(picks: string[]): string[] {
 const MACHINE_SETUP_RUNBOOK = [
   'THIS IS A MACHINE SETUP JOB: get this computer genuinely ready to use, end to end, with the terminal. It is the one first task that does not need an account anywhere — never send them to a sign-in to complete it.',
   'START BY LOOKING, NOT PLANNING. Before proposing anything, use the terminal to find out what is actually here: OS name and version, architecture, pending system updates, free disk, which package manager exists (Homebrew / winget / apt / dnf), and which everyday things are already installed (a browser, an editor, git, python, node, docker, and whatever tools they mentioned earlier). On an NVIDIA machine also check the GPU and driver (nvidia-smi) and whether a container runtime and CUDA toolchain are present. Report what you found in a few short lines — plainly, no tables.',
+  'MATCH THE PLAN TO THEIR USE. Email, calendars, documents and meetings do not require a developer stack. WSL runs Linux tools on Windows; CUDA lets compatible software compute on an NVIDIA GPU. Recommend either only for a verified prerequisite of their chosen task, explain that concrete benefit before asking, and omit it otherwise. Prefer native or already-working tools. Do not suggest WSL on Linux or macOS, or reinstall CUDA just because this is a Spark.',
   'THEN PROPOSE, THEN ASK. Turn the gaps into a short numbered plan, cheapest and most obviously useful first: system updates, a package manager if missing, their everyday tools, sane defaults, and only then anything exotic. End that turn with ::ask{question="Want me to run this?" options="Go ahead|Change the list|Just the essentials"} alone as its own paragraph, emitted EXACTLY as written.',
   'THEN WORK IT ONE STEP AT A TIME, saying in one short line what each step is for before you run it. Prefer the official package manager over downloading installers. Never install something they did not agree to, never overwrite existing config without asking first, never disable security settings, and stop and ask the moment anything looks destructive or wants a password you were not given.',
   'Hardware and drivers: on Windows, check for missing/unknown devices and vendor GPU drivers, and say plainly when the OS already has it handled. On macOS, system updates and the App Store cover drivers — say so instead of inventing work. On Linux, check the kernel/driver pairing for the GPU before touching it.',
@@ -247,7 +251,7 @@ function machineSetupRunbook(): string[] {
   const description = machineDescription()
 
   return description
-    ? [`What the app can already see about it: ${description}.`, ...MACHINE_SETUP_RUNBOOK]
+    ? [`App-reported setup and hardware signals, not proof of device age: ${description}.`, ...MACHINE_SETUP_RUNBOOK]
     : MACHINE_SETUP_RUNBOOK
 }
 
@@ -256,11 +260,22 @@ function machineSetupRunbook(): string[] {
 export async function buildFirstTaskSeedMessages(
   task: string,
   answers: OnboardingAnswers,
-  plan: HandoffPlan = 'build'
+  plan: HandoffPlan = 'build',
+  scope?: ProfileScope
 ): Promise<{ content: string; display_kind?: 'hidden'; role: 'assistant' | 'user' }[]> {
   const root = plan === 'plugin' ? await window.hermesDesktop?.desktopPluginsRoot?.() : undefined
 
-  return [{ content: buildFirstTaskRunbook(task, answers, plan, root), display_kind: 'hidden', role: 'user' }]
+  const capabilities =
+    plan === 'machine-setup'
+      ? ''
+      : await readOnboardingCapabilities(scope, {
+          apps: answers.connectors,
+          context: `${task} ${answers.context}`
+        })
+
+  return [
+    { content: buildFirstTaskRunbook(task, answers, plan, root, capabilities), display_kind: 'hidden', role: 'user' }
+  ]
 }
 
 /** The hidden note sent to the welcome chat once the build session is live. The check-ins after it come from the
@@ -277,7 +292,6 @@ export async function ensureSetupProfile(request: GatewayRequest): Promise<void>
       description: 'Where Hermes met you — walks your first run, then checks in as you find your feet.',
       name: SETUP_PROFILE,
       clone_from: 'default',
-      share_auth: true,
       no_alias: true,
       soul: composeSetupSoul()
     })

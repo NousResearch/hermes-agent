@@ -13,6 +13,11 @@ import { textBeforeCaret } from './text-utils'
 // (a filename, a version, a sentence). Brackets and quotes fence a URL in prose;
 // parens don't, so they stay in and an unbalanced tail is trimmed below.
 const URL_RE = /https?:\/\/[^\s<>[\]{}"'`]+/gi
+// Anchored, non-global twin for the whole-payload check: `exec` on the shared
+// global `URL_RE` would leave its `lastIndex` past the match, and `matchAll`
+// inherits that offset, so the `linkifyUrls` call later in the same paste
+// handler would start scanning after the link and chip nothing.
+const EXACT_URL_RE = /^https?:\/\/[^\s<>[\]{}"'`]+$/i
 const TYPED_URL_RE = /(?:^|\s)(https?:\/\/[^\s<>[\]{}"'`]+)$/i
 
 /** A URL at the end of a sentence carries the punctuation that ended it. */
@@ -68,11 +73,7 @@ export function resolveExactLinkPaste(raw: string): string | null {
   const text = raw.trim()
   const unwrapped = text.startsWith('<') && text.endsWith('>') && text.length > 2 ? text.slice(1, -1).trim() : text
 
-  URL_RE.lastIndex = 0
-
-  const match = URL_RE.exec(unwrapped)
-
-  if (!match || match.index !== 0 || match[0].length !== unwrapped.length) {
+  if (!EXACT_URL_RE.test(unwrapped)) {
     return null
   }
 
@@ -121,7 +122,12 @@ export function selectionLinkLabel(editor: HTMLElement): string | null {
  *  URL they pasted. Square brackets in the label are escaped so the link
  *  survives markdown parsing downstream. */
 export function markdownLinkFor(label: string, url: string): string {
-  return `[${label.replace(/([[\]])/g, '\\$1')}](${url})`
+  // Backslashes are escapes in markdown link labels too; escaping only the
+  // brackets lets a user-supplied backslash change how the following label
+  // character is parsed.
+  const escapedLabel = label.replace(/[\\[\]]/g, '\\$&')
+
+  return `[${escapedLabel}](${url})`
 }
 
 /** A plain space finishing a typed link commits it as a chip (followed by

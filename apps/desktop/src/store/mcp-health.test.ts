@@ -92,6 +92,9 @@ afterEach(() => {
   mocks.setMcpServerEnabled.mockClear()
 })
 
+type McpHealthModule = Awaited<ReturnType<typeof importMcpHealth>>
+const importMcpHealth = () => import('./mcp-health')
+
 describe('shouldNotify', () => {
   const DAY = 24 * 60 * 60 * 1000
   const now = 1_000_000
@@ -305,6 +308,44 @@ it('fails closed when the active owner has no connection identity', async () => 
   expect(mocks.getHermesConfigRecord).not.toHaveBeenCalled()
   expect(mocks.testMcpServer).not.toHaveBeenCalled()
   expect(mocks.notify).not.toHaveBeenCalled()
+})
+
+it('honors a persisted snooze in a fresh module session, then re-notifies after it expires', async () => {
+  const servers = { mcp_servers: { linear: { url: 'https://mcp.linear.app/mcp', auth: 'oauth' } } }
+  const key = 'hermes:mcp-health-snooze-until:local::default::linear'
+  let clock = 1_700_000_000_000
+  const until = clock + 24 * 60 * 60 * 1000
+  const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock)
+  let freshSession: McpHealthModule | undefined
+
+  try {
+    window.localStorage.setItem(key, String(until))
+    mocks.getHermesConfigRecord.mockResolvedValue(servers)
+    mocks.testMcpServer.mockResolvedValue({ ok: false, error: 'OAuth: authorization required', tools: [] })
+
+    // A fresh import drops in-memory transition state, as a renderer restart does.
+    vi.resetModules()
+    const reloadedClient = await import('@/api/client')
+    reloadedClient.setApiRequestConnection(null)
+    reloadedClient.setApiRequestLocalMode(true)
+    reloadedClient.setApiRequestProfile('default')
+    freshSession = await importMcpHealth()
+    freshSession.startMcpHealthChecker()
+    mocks.gatewayState.set('open')
+    await flush()
+    await flush()
+    expect(mocks.notify).not.toHaveBeenCalled()
+
+    clock = until + 1
+    mocks.gatewayState.set('closed')
+    mocks.gatewayState.set('open')
+    await flush()
+    await flush()
+    expect(mocks.notify).toHaveBeenCalledTimes(1)
+  } finally {
+    freshSession?.stopMcpHealthChecker()
+    nowSpy.mockRestore()
+  }
 })
 
 it('coalesces reconnects during a sweep into one fresh follow-up sweep', async () => {

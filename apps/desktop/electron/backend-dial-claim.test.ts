@@ -5,7 +5,14 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 
 import { BackendDialClaims, runForegroundRetryingDialClaim } from './backend-dial-claim'
-import { parseBackendScopeKey } from './connection-registry'
+import { backendScopeKey, parseBackendScopeKey } from './connection-registry'
+import { resolveDesktopConnectionRequest } from './desktop-profile'
+import {
+  BackgroundSlotRetryDeferredError,
+  isBackgroundCapacitySkip,
+  isBackgroundSlotRetryDeferred,
+  LocalBackendBackgroundCapacityError
+} from './pool-spawn-coordinator'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
@@ -106,33 +113,35 @@ describe('BackendDialClaims (#90812)', () => {
     expect(claims.inFlight('default')).toBe(false)
   })
 
-  it('retries a foreground click after it joined a rejected speculative pre-warm', async () => {
-    const claims = new BackendDialClaims()
-    const capacitySkip = new Error('no background slot is currently free')
-    let rejectPrewarm!: (error: Error) => void
+  it.each([new LocalBackendBackgroundCapacityError('research'), new BackgroundSlotRetryDeferredError('research')])(
+    'retries a foreground click after it joined a rejected speculative pre-warm (%s)',
+    async capacitySkip => {
+      const claims = new BackendDialClaims()
+      let rejectPrewarm!: (error: Error) => void
 
-    const prewarm = claims.run(
-      'local::research',
-      () =>
-        new Promise<never>((_resolve, reject) => {
-          rejectPrewarm = reject
-        })
-    )
-    const foregroundDial = vi.fn(async () => 'foreground-connected')
-    const click = runForegroundRetryingDialClaim(
-      claims,
-      'local::research',
-      'foreground',
-      foregroundDial,
-      error => error === capacitySkip
-    )
+      const prewarm = claims.run(
+        'local::research',
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectPrewarm = reject
+          })
+      )
+      const foregroundDial = vi.fn(async () => 'foreground-connected')
+      const click = runForegroundRetryingDialClaim(
+        claims,
+        'local::research',
+        'foreground',
+        foregroundDial,
+        error => isBackgroundCapacitySkip(error) || isBackgroundSlotRetryDeferred(error)
+      )
 
-    rejectPrewarm(capacitySkip)
+      rejectPrewarm(capacitySkip)
 
-    await expect(prewarm).rejects.toBe(capacitySkip)
-    await expect(click).resolves.toBe('foreground-connected')
-    expect(foregroundDial).toHaveBeenCalledTimes(1)
-  })
+      await expect(prewarm).rejects.toBe(capacitySkip)
+      await expect(click).resolves.toBe('foreground-connected')
+      expect(foregroundDial).toHaveBeenCalledTimes(1)
+    }
+  )
 })
 
 describe('parseBackendScopeKey (#90812/#93910)', () => {
@@ -151,26 +160,28 @@ describe('parseBackendScopeKey (#90812/#93910)', () => {
 })
 
 describe('main.ts wiring for #90812', () => {
-  it('routes the profile-scoped dial IPC through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection', ")
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1200)
+  it.each([null, 'office-ssh'])(
+    'coalesces resolved window routes without absorbing a same-named source (%s)',
+    async connectionId => {
+      const claims = new BackendDialClaims()
+      const source = { connectionId, profile: 'work', registryScoped: connectionId !== null }
+      const route = resolveDesktopConnectionRequest(undefined, source, 'default')
+      const key = backendScopeKey(route.connectionId, route.profile)
+      const dial = vi.fn(async () => ({ baseUrl: 'http://localhost:53150' }))
+      const other = vi.fn(async () => ({ baseUrl: 'http://localhost:53151' }))
 
-    expect(body).toContain('runForegroundRetryingDialClaim(')
-    expect(body).toContain('backendDialClaims,')
-    expect(body).toContain('ensureBackend(profile, { spawnPriority, speculative })')
-  })
+      const [first, second, separate] = await Promise.all([
+        claims.run(key, dial),
+        claims.run(key, dial),
+        claims.run(backendScopeKey('another-source', route.profile), other)
+      ])
 
-  it('routes the registry-scoped dial IPC through the claim keyed by backendScopeKey(connectionId, profile)', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection:for', ")
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1_200)
-
-    expect(body).toContain('const scopeKey = backendScopeKey(id, profile)')
-    expect(body).toContain('runForegroundRetryingDialClaim(')
-    expect(body).toContain('backendDialClaims,')
-    expect(body).toContain("ensureRegistryBackend(id, profile, '', { spawnPriority, speculative: speculative === true })")
-  })
+      expect(first).toBe(second)
+      expect(first).not.toBe(separate)
+      expect(dial).toHaveBeenCalledTimes(1)
+      expect(other).toHaveBeenCalledTimes(1)
+    }
+  )
 
   // The four IPC/probe surfaces below call ensureRegistryBackend()/ensureBackend()
   // directly, bypassing backendDialClaims entirely — so a renderer's guarded
@@ -203,7 +214,9 @@ describe('main.ts wiring for #90812', () => {
   it('routes the roster-enumeration probe through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf('async function enumerateRegistryAgentSources')
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 3_700)
+    // The ssh branch grew (it now carries the install id learned by the
+    // inventory probe) — keep the scan window comfortably past the dial.
+    const body = mainSource.slice(handlerStart, handlerStart + 4_500)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
     expect(body).toContain('ensureRegistryBackend(connection.id, null)')
@@ -225,9 +238,9 @@ describe('main.ts wiring for #90812', () => {
   it('routes every registry-scoped REST dispatch (hermes:api) through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
+    const body = mainSource.slice(handlerStart, handlerStart + 1_000)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile)')
-    expect(body).toContain('ensureRegistryBackend(registryConnectionId, routeProfile)')
+    expect(body).toContain("ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })")
   })
 })

@@ -10,6 +10,8 @@ has already succeeded by then, so the ZIP cannot fix the actual failure.
 
 from __future__ import annotations
 
+import argparse
+import shutil
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -87,6 +89,49 @@ def test_windows_git_failure_still_zips(monkeypatch):
     assert update_cmd._should_zip_fallback_on_update_error(exc) is True
 
 
+def test_no_zip_fallback_flag_survives_post_swap_handoff():
+    from hermes_cli.subcommands.update import build_update_parser
+
+    parser = argparse.ArgumentParser()
+    build_update_parser(parser.add_subparsers(), cmd_update=lambda _args: None)
+    assert parser.parse_args(["update"]).no_zip_fallback is False
+    args = parser.parse_args(["update", "--no-zip-fallback", "--branch", "main"])
+    child = parser.parse_args(["update", *update_cmd._post_swap_argv_tail(args)])
+    assert child.no_zip_fallback is True
+    assert child.branch == "main"
+
+
+def test_git_error_with_no_zip_fallback_exits_without_archive(monkeypatch):
+    monkeypatch.setattr(hermes_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
+    exc = _cpe(["git", "pull"], returncode=1)
+    with patch.object(update_cmd, "_update_via_zip") as archive, patch.object(
+        update_cmd, "_finalize_receipt"
+    ) as finalize:
+        with pytest.raises(SystemExit) as failure:
+            update_cmd._handle_update_called_process_error(
+                exc, SimpleNamespace(no_zip_fallback=True), False, False
+            )
+    assert failure.value.code == 1
+    archive.assert_not_called()
+    assert finalize.call_args.args[0] == "failed"
+
+
+def test_direct_zip_entry_refuses_before_configuration_or_download(monkeypatch, capsys):
+    from hermes_cli import update_cmd_zip
+
+    with patch.object(update_cmd, "_resolve_update_options") as resolve, patch.object(
+        update_cmd_zip, "_download_and_swap_zip"
+    ) as download, patch.object(update_cmd, "_finalize_receipt") as finalize:
+        with pytest.raises(SystemExit) as failure:
+            update_cmd_zip._update_via_zip(SimpleNamespace(no_zip_fallback=True))
+    assert failure.value.code == 1
+    resolve.assert_not_called()
+    download.assert_not_called()
+    assert finalize.call_args.args[0] == "failed"
+    assert "--no-zip-fallback" in capsys.readouterr().out
+
+
 def test_posix_git_failure_does_not_zip(monkeypatch):
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)
     monkeypatch.setattr(main_install_repair, "_is_windows", lambda: False)
@@ -116,6 +161,8 @@ def _porcelain_run(stdout: str, returncode: int = 0):
         joined = " ".join(str(c) for c in cmd)
         if "status" in joined and "--porcelain" in joined:
             return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
+        if "ls-tree" in joined:  # tracked root entries = what the ZIP ships
+            return subprocess.CompletedProcess(cmd, 0, stdout="hermes_cli\nscratch\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     return fake_run
@@ -276,7 +323,7 @@ def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
     ignored user files.
     """
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / ".gitignore").write_text("*.local\nvenv/\n")
+    (tmp_path / ".gitignore").write_text("*.local\nvenv/\n.venv/\n", encoding="utf-8")
     subprocess.run(
         ["git", "-C", str(tmp_path), "add", ".gitignore"], check=True
     )
@@ -290,15 +337,25 @@ def test_zip_overlay_flag_is_valid_against_real_git(tmp_path):
     )
     # Clean tree: guard must pass (flag valid, no false refusal).
     assert update_cmd._zip_overlay_block_reason(tmp_path) is None
-    # Ignored user file: guard must block.
-    (tmp_path / "data.local").write_text("x")
-    reason = update_cmd._zip_overlay_block_reason(tmp_path)
+    # Ignored user file under a shipped (tracked) dir: the swap would delete it, guard must block.
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "data.local").write_text("x", encoding="utf-8")
+    reason = update_cmd._zip_overlay_block_reason(tmp_path, shipped={"pkg"})
     assert reason is not None
     # Ignored preserved entry: still no refusal.
-    (tmp_path / "data.local").unlink()
+    shutil.rmtree(tmp_path / "pkg")
     (tmp_path / "venv").mkdir()
-    (tmp_path / "venv" / "lib.py").write_text("x")
+    (tmp_path / "venv" / "lib.py").write_text("x", encoding="utf-8")
     assert update_cmd._zip_overlay_block_reason(tmp_path) is None
+    # uv-default ``.venv`` is a supported layout (#112958): the ignored dir is the live runtime,
+    # not user data the overlay would destroy — refusing here made ZIP fallback impossible.
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "lib.py").write_text("x", encoding="utf-8")
+    status = subprocess.run(
+        ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=all", "--ignored=matching"],
+        capture_output=True, text=True,
+    ).stdout
+    assert update_cmd._zip_overlay_block_reason(tmp_path) is None, status
 
 
 def test_zip_overlay_requests_ignored_files_from_git(tmp_path, monkeypatch):

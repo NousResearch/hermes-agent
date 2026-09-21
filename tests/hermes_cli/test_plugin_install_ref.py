@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -349,6 +349,30 @@ def test_metadata_write_failure_rolls_back_removal(monkeypatch, tmp_path):
     assert list(target.parent.glob(".demo.remove-*")) == []
 
 
+def test_metadata_write_failure_restores_replaced_git_tree(monkeypatch, tmp_path):
+    from hermes_cli import plugins_cmd as pc
+
+    repo, old_sha, new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target, _, _ = pc._install_plugin_core(repo.as_uri(), force=False, ref=old_sha)
+    before = _metadata(home)
+    write_metadata = pc._write_install_metadata
+
+    def fail_new_metadata(metadata):
+        if metadata["demo"]["revision"] == new_sha:
+            raise OSError("disk full")
+        write_metadata(metadata)
+
+    monkeypatch.setattr(pc, "_write_install_metadata", fail_new_metadata)
+    with pytest.raises(OSError, match="disk full"):
+        pc._install_plugin_core(repo.as_uri(), force=True, ref=new_sha)
+
+    assert _git(target, "rev-parse", "HEAD") == old_sha
+    assert _metadata(home) == before
+    assert not any(path.is_dir() for path in target.parent.glob(".install-*"))
+
+
 def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_path):
     from hermes_cli.plugins_cmd import _install_plugin_core
 
@@ -358,9 +382,61 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
     target, _manifest, _name = _install_plugin_core(
         repo.as_uri(), force=False, ref=old_sha
     )
-    shutil.rmtree(target)
+    # TemporaryDirectory also clears read-only Git objects on Windows.
+    with tempfile.TemporaryDirectory(dir=tmp_path) as removed:
+        target.rename(Path(removed) / "removed-plugin")
 
     target, _manifest, _name = _install_plugin_core(repo.as_uri(), force=False)
 
     assert _git(target, "rev-parse", "HEAD") == old_sha
     assert _metadata(home)["demo"]["pinned"] is True
+
+
+def test_annotated_tag_pin_installs_at_its_commit(monkeypatch, tmp_path):
+    """A pin recorded from an annotated tag — the TAG object's sha, which is 40
+    hex but not a commit — must install at the commit that tag points to.
+
+    Catalog entries publish pins this way whenever the author runs
+    `git rev-parse <tag>`; git detaches at the tag's commit, so the guard has
+    to peel before comparing or the entry is uninstallable.
+    """
+    from hermes_cli.plugins_cmd import _install_plugin_core
+
+    repo, old_sha, _new_sha = _plugin_repo(tmp_path)
+    _git(repo, "tag", "-a", "v1.0.2", old_sha, "-m", "v1.0.2")
+    tag_object_sha = _git(repo, "rev-parse", "v1.0.2")
+
+    # The premise: the tag's own sha names the tag object, not the commit.
+    assert tag_object_sha != old_sha
+    assert _git(repo, "cat-file", "-t", tag_object_sha) == "tag"
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    target, _manifest, _name = _install_plugin_core(
+        repo.as_uri(), force=False, ref=tag_object_sha
+    )
+
+    assert _git(target, "rev-parse", "HEAD") == old_sha
+    assert (target / "marker.txt").read_text() == "old"
+    # The durable record is the commit, not the tag object: `plugins update`
+    # and the drift guard both compare against it.
+    assert _metadata(home)["demo"]["revision"] == old_sha
+
+
+def test_checkout_that_lands_on_another_commit_is_still_rejected(monkeypatch, tmp_path):
+    """Peeling must not weaken the guard: an annotated tag pin whose checkout
+    ends somewhere else is still a mismatch."""
+    from hermes_cli.plugins_cmd import PluginOperationError, _checkout_exact_revision
+
+    repo, old_sha, new_sha = _plugin_repo(tmp_path)
+    _git(repo, "tag", "-a", "v1.0.2", old_sha, "-m", "v1.0.2")
+    tag_object_sha = _git(repo, "rev-parse", "v1.0.2")
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", repo.as_uri(), str(clone)], check=True)
+    monkeypatch.setattr(
+        "hermes_cli.plugins_cmd._git_head_revision", lambda _repo, _git: new_sha
+    )
+
+    with pytest.raises(PluginOperationError, match="does not match requested"):
+        _checkout_exact_revision(clone, "git", tag_object_sha)

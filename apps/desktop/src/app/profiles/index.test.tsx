@@ -44,18 +44,26 @@ vi.mock('@/store/gateway', () => ({
   retireLocalProfileGateways: vi.fn()
 }))
 
-const { $activeGatewayProfile: activeGateway, $profileColors } = vi.hoisted(() => {
+const {
+  $activeGatewayProfile: activeGateway,
+  $profileColors,
+  $showAllProfiles
+} = vi.hoisted(() => {
   const { atom } = require('nanostores') as typeof Nanostores
 
   return {
     $activeGatewayProfile: atom<string>('default'),
-    $profileColors: atom<Record<string, string>>({})
+    $profileColors: atom<Record<string, string>>({}),
+    $showAllProfiles: atom<boolean>(false)
   }
 })
 
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: activeGateway,
   $profileColors,
+  // `session-states` -> `preview` -> `layout` reaches this mock now that the
+  // right rail is scoped per profile; layout.ts derives its grouping from it.
+  $showAllProfiles,
   normalizeProfileKey: (name: null | string | undefined) => (name ?? '').trim() || 'default',
   profileLabel: (profile: { display_name?: string; name: string }) =>
     (profile.display_name ?? '').trim() || profile.name,

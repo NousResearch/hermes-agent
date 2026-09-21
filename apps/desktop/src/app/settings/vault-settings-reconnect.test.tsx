@@ -9,8 +9,12 @@ const { requestGateway } = vi.hoisted(() => ({ requestGateway: vi.fn() }))
 
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
-  requestGatewayForProfile: (_profile: string, method: string, params?: Record<string, unknown>) =>
-    requestGateway(method, params ?? {})
+  requestGatewayForAgent: (
+    _connectionId: null | string,
+    _profile: string,
+    method: string,
+    params?: Record<string, unknown>
+  ) => requestGateway(method, params ?? {})
 }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))

@@ -97,7 +97,7 @@ class SessionTitlesMixin:
                 return 0
             if title:
                 conflict = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id),
+                    "SELECT id, archived, hidden FROM sessions WHERE title = ? AND id != ?", (title, session_id),
                 ).fetchone()
                 if conflict:
                     conflict_id = conflict["id"]
@@ -105,6 +105,16 @@ class SessionTitlesMixin:
                     # user, so transfer it onto the tip (uniqueness + lineage kept).
                     if self._is_compression_ancestor(conn, ancestor_id=conflict_id, descendant_id=session_id):
                         conn.execute("UPDATE sessions SET title = NULL WHERE id = ?", (conflict_id,))
+                    # A deliberately archived hidden Bot Chat is a retired registry
+                    # entry, not a live identity. Retire its name in the same title
+                    # transaction so a replacement can become the sole canonical row;
+                    # the old session remains archived and otherwise untouched.
+                    elif (title == self.CANONICAL_BOT_CHAT_TITLE and bool(conflict["archived"])
+                          and bool(conflict["hidden"])):
+                        conn.execute(
+                            "UPDATE sessions SET title = NULL, title_source = NULL WHERE id = ?",
+                            (conflict_id,),
+                        )
                     else:
                         raise ValueError(f"Title '{title}' is already in use by session {conflict_id}")
             # CAS on the values just read (``IS`` is NULL-safe): a concurrent write between
@@ -166,6 +176,15 @@ class SessionTitlesMixin:
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest "title #N" continuation."""
         exact = self.get_session_by_title(title)
+        # Exception to the "#N continuation" preference: the canonical Bot Chat's identity
+        # IS its exact title (Bot Mode re-resolves it by name on every open, no id pointer).
+        # A "<title> #N" sibling — a Desktop branch or a client-minted numbered row — is NOT
+        # a Bot Mode session: it is visible, unmanaged, and the message_agent gate is off in
+        # it. Every DM transport (``hermes -p <bot> chat --in ~ -c "Bot Chat"``: message_agent,
+        # bot_relay, cron delivery) resolves through here, so letting the numbered row win
+        # silently routes teammates' messages into a chat whose bot cannot answer back.
+        if exact is not None and title == self.CANONICAL_BOT_CHAT_TITLE:
+            return exact["id"]
         # Escape LIKE wildcards so "%"/"_" in titles cannot false-match.
         numbered = self._read_all(
             "SELECT id, title, started_at FROM sessions "

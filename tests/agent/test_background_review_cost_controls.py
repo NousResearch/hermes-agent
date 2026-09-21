@@ -173,3 +173,26 @@ def test_enabled_false_disables_automatic_review():
     cfg = {"auxiliary": {"background_review": {"enabled": False}}}
     with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         assert br.load_background_review_settings()[0] is False
+
+
+def test_unresolvable_review_provider_falls_back_with_visible_warning(caplog):
+    """The fork silently ran on the main model with only a debug line (#116055): the fallback must
+    identify the affected setting at WARNING and reach the user-visible rail without echoing route data."""
+    import logging
+
+    agent = _FakeAgent()
+    emitted = []
+    agent._emit_warning = emitted.append
+    cfg = {"auxiliary": {"background_review": {"provider": "no-such-provider", "model": "review-model"}}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        with caplog.at_level(logging.WARNING, logger="agent.background_review"):
+            rt = br._resolve_review_runtime(agent)
+            br._resolve_review_runtime(agent)
+
+    assert rt["routed"] is False and rt["model"] == "gpt-5.5"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 2
+    assert all("auxiliary.background_review" in w and "AuthError" in w for w in warnings)
+    assert all("background reviews run on the main model" in w and "hermes doctor" in w for w in warnings)
+    assert all("no-such-provider" not in w and "review-model" not in w for w in warnings)
+    assert len(emitted) == 1 and emitted[0] == warnings[0]  # once per agent on the user rail

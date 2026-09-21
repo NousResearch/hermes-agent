@@ -22,9 +22,10 @@ import type { VaultData, VaultSource, VaultSourceName } from './vault-settings-d
 
 interface VaultSourcesProps {
   vault: VaultData
+  standalone?: boolean
 }
 
-export function VaultSources({ vault }: VaultSourcesProps) {
+export function VaultSources({ vault, standalone = false }: VaultSourcesProps) {
   const { t } = useI18n()
   const v = t.settings.vault
   const { externalSources, requestGateway, invalidateVault } = vault
@@ -77,8 +78,8 @@ export function VaultSources({ vault }: VaultSourcesProps) {
   return (
     <>
       {/* Password managers */}
-      <div className="mt-6">
-        <SectionHeading icon={KeyRound} title={v.sources.title} />
+      <div className={standalone ? undefined : 'mt-6'}>
+        <SectionHeading icon={KeyRound} page title={v.sources.title} />
       </div>
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
         {v.sources.blurb}

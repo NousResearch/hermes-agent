@@ -43,19 +43,22 @@ test('no report file → no notice', () => {
   assert.equal(pendingNotice(tmp(), tmp()), null)
 })
 
-test('report → one notice naming plugins, date and the CLI command', () => {
+test('report → one notice naming the plugins and the date, with no config keys or CLI commands', () => {
   const home = tmp()
   fs.writeFileSync(path.join(home, REPORT_FILE), JSON.stringify(REPORT))
   const n = pendingNotice(home, tmp())
   assert.ok(n)
-  assert.equal(n.title, 'Plugins need an update')
-  assert.match(n.message, /2 plugins import module paths that stop working on 2026-09-14/)
+  assert.equal(n.title, 'Some plugins need an update')
+  assert.match(n.message, /stop working on 2026-09-14: alpha, beta\./)
   assert.match(
     n.detail,
     /• alpha — 1 import \(e\.g\. tools\.web_tools\.prefers_gateway → tools\.tool_backend_helpers\.prefers_gateway\)/
   )
   assert.match(n.detail, /• beta — 2 imports/)
-  assert.match(n.detail, /hermes plugins compat/)
+
+  for (const text of [n.title, n.message, n.detail]) {
+    assert.doesNotMatch(text, /config\.yaml|hermes plugins compat|allow_deprecated_imports|module path/)
+  }
 })
 
 test('dismissal is remembered for the same report and forgotten for a different one', () => {
@@ -84,8 +87,9 @@ test('dismissal is remembered for the same report and forgotten for a different 
   fs.writeFileSync(path.join(home, REPORT_FILE), JSON.stringify(disabled))
   const third = pendingNotice(home, userData)
   assert.ok(third)
-  assert.equal(third.title, 'Some plugins were not loaded')
-  assert.match(third.detail, /allow_deprecated_imports/)
+  assert.equal(third.title, 'Some plugins were turned off')
+  assert.match(third.message, /were turned off: alpha, beta\. Hermes works normally without them\./)
+  assert.doesNotMatch(third.detail, /config\.yaml|hermes plugins compat|allow_deprecated_imports/)
   assert.notEqual(reportKey(disabled as any), reportKey(REPORT as any))
 })
 

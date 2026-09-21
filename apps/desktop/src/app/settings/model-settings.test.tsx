@@ -286,18 +286,21 @@ describe('ModelSettings', () => {
     )
   })
 
-  it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
+  it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {
+    // The cached record is a default-expanded snapshot; a CLI pin made after it
+    // loaded is not in it. Echoing the whole record back would reset that
+    // auxiliary slot to auto/'' (#95460) — only the edited key may be sent.
+    getHermesConfigRecord.mockResolvedValue({
+      agent: { reasoning_effort: 'medium', service_tier: 'normal' },
+      auxiliary: { curator: { provider: 'auto', model: '', reasoning_effort: 'high' } }
+    })
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
     const fastSwitch = await screen.findByRole('switch')
     fireEvent.click(fastSwitch)
 
-    await waitFor(() =>
-      expect(saveHermesConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ agent: expect.objectContaining({ service_tier: 'fast' }) })
-      )
-    )
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { service_tier: 'fast' } }))
   })
 
   it('hides the reasoning/speed defaults when the main model reports no capabilities', async () => {
@@ -323,6 +326,10 @@ describe('ModelSettings', () => {
     await renderModelSettings()
 
     expect(await screen.findByText('Vision')).toBeTruthy()
+    // #97297 — the three canonical slots the backend serves must have rows too.
+    expect(screen.getByText('Triage specifier')).toBeTruthy()
+    expect(screen.getByText('Kanban decomposer')).toBeTruthy()
+    expect(screen.getByText('Profile describer')).toBeTruthy()
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
   })
 
@@ -669,6 +676,13 @@ describe('ModelSettings MoA preset editor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('labels the aggregator row as the acting model billed for the run', async () => {
+    await openReferenceEditor()
+
+    // The aggregator row is the slot that pays for the whole tool loop (#112359).
+    expect(screen.getByText('acting model · billed for the run')).toBeTruthy()
   })
 })
 

@@ -291,6 +291,7 @@ class TestPairingEndpoints:
         from hermes_constants import get_hermes_home
 
         (get_hermes_home() / "profiles" / "work").mkdir(parents=True, exist_ok=True)
+        (get_hermes_home() / "profiles" / "work" / "config.yaml").write_text("{}\n")  # identity marker
         PairingStore().generate_code("telegram", "global-1", "GlobalGuy")
         PairingStore(profile="work").generate_code("telegram", "work-1", "WorkGal")
 

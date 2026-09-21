@@ -468,7 +468,7 @@ class TestCrossSessionApprovalIsolation:
     a concurrent gateway session (e.g. a second Discord thread) clobbered
     the value, and a tool worker thread whose approval contextvar was unset
     fell back to ``os.environ`` and read the *wrong* session key — routing
-    the "Command Approval Required" prompt to the wrong thread.
+    the approval prompt to the wrong thread.
 
     The fix removes that ``os.environ`` write; routing is driven solely by
     the ``_approval_session_key`` contextvar. These tests assert that a

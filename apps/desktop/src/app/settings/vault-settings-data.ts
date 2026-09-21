@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo } from 'react'
 
 import { useI18n } from '@/i18n'
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
 
@@ -31,7 +31,7 @@ export interface VaultItem {
   has_otp?: boolean
 }
 
-export function useVaultData(owner: string, scopeProfile: string) {
+export function useVaultData(owner: string, scopeProfile: string, connectionId: null | string) {
   const { t } = useI18n()
   const v = t.settings.vault
   const gatewayState = useStore($gatewayState)
@@ -39,8 +39,10 @@ export function useVaultData(owner: string, scopeProfile: string) {
 
   const requestGateway = useCallback(
     <T>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForProfile<T>(scopeProfile, method, params),
-    [scopeProfile]
+      requestGatewayForAgent<T>(connectionId, scopeProfile, method, params, undefined, undefined, {
+        spawnPriority: 'foreground'
+      }),
+    [connectionId, scopeProfile]
   )
 
   const VAULT_QUERY_KEY = useMemo(() => ['vault-items', owner] as const, [owner])

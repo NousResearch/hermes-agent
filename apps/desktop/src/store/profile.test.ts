@@ -16,6 +16,7 @@ const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
   $gateway,
+  activeGatewayConnectionId: () => null,
   // Activation now verifies the socket's route before publishing the profile.
   activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
@@ -50,6 +51,7 @@ const {
 } = await import('./profile')
 
 const { $poolLimits } = await import('@/store/pool-limits')
+const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -200,6 +202,27 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     prewarmProfileBackend('warm-active')
 
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  // #89756: SSH sources are connect-on-demand — a hover-warm on an SSH row
+  // dialed the tunnel and spawned an isolated remote backend per bot.
+  it('never dials an SSH registry source; a same-box Remote gateway still warms', () => {
+    openGatewayForAgent.mockClear()
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'shell',
+      secureTokenStorage: true,
+      connections: [
+        { id: 'shell', kind: 'ssh', label: 'Shell', host: 'box', tokenSet: false, tokenPreview: '' },
+        { id: 'gateway', kind: 'remote', label: 'Gateway', url: 'http://box:8642', tokenSet: true, tokenPreview: '…' }
+      ]
+    })
+
+    prewarmProfileBackend('dax', 'shell')
+    prewarmProfileBackend('dax', 'gateway')
+
+    expect(openGatewayForAgent.mock.calls).toEqual([['gateway', 'dax', { speculative: true }]])
     expect(openGatewayForProfile).not.toHaveBeenCalled()
   })
 

@@ -21,7 +21,7 @@ Make a verified AI presenter video from script + image.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `video`, `presenter`, `avatar`, `lipsync`, `tts`, `captions`, `creative` |
-| Related skills | [`hyperframes`](/docs/user-guide/skills/optional/creative/creative-hyperframes), [`kanban-video-orchestrator`](/docs/user-guide/skills/optional/creative/creative-kanban-video-orchestrator), [`comfyui`](/docs/user-guide/skills/optional/creative/creative-comfyui) |
+| Related skills | [`hyperframes`](../../optional/creative/creative-hyperframes.md), [`kanban-video-orchestrator`](../../optional/creative/creative-kanban-video-orchestrator.md), [`comfyui`](../../optional/creative/creative-comfyui.md) |
 
 ## Reference: full SKILL.md
 
@@ -29,134 +29,153 @@ Make a verified AI presenter video from script + image.
 The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-# AI Presenter Video
+# AI Presenter Video Skill
 
-Turn a topic (or finished script) plus ONE authorized adult presenter image
-into a complete, publish-ready presenter-led video: locked narration, avatar
-generation with lip-sync QA, captions, deterministic editing, loudness-normalized
-master/share encodes, and machine + visual acceptance reports.
+This skill turns a script and one authorized adult presenter image into a
+presenter-led video with deterministic editing and acceptance evidence. It can
+resume or repair existing jobs, but it never bypasses image rights, adult
+status, upload, voice-cloning, or paid-generation consent.
 
-Use this skill for new presenter videos AND for continuing, revising,
-captioning, lip-sync-repairing, or re-exporting an existing presenter-video
-job. The workflow is provider-neutral: pick generation capabilities from what
-is actually available in the session (FAL video/image models via
-`image_generate` and the video-gen plugin, TTS via `text_to_speech`, ASR via
-the whisper/STT tooling, ffmpeg for everything deterministic).
+## When to Use
 
-> Ported from cclank/lanshu-create-ai-presenter-video (MIT). Upstream body
-> kept substantively verbatim in `references/`; Hermes adaptations live in
-> this hub file. Scripts are deterministic (no network, no credentials).
+Use it to create, continue, revise, caption, repair lip sync, or re-export a
+presenter-video job. The workflow is provider-neutral: choose only generation
+capabilities actually available in the session, and preserve accepted work
+rather than regenerating completed stages.
 
-## Hermes adaptations (read first)
+## Prerequisites
 
-- **Skill dir resolution** — upstream hardcoded its own agent's skills path.
-  In Hermes the loader expands `${HERMES_SKILL_DIR}` to this skill's installed
-  directory, so every command below uses that token directly:
+- Linux or macOS with `python3`, `ffmpeg`, and `ffprobe`. Final delivery also
+  requires Bash, `jq`, and `awk`.
+- One presenter image whose rights and adult status the user has confirmed.
+- Optional narration through `text_to_speech`, word-timestamp ASR through the
+  configured STT tooling or `faster-whisper`, and presenter generation through
+  configured video tooling or an authorized avatar/lip-sync endpoint.
+- Remote avatar or TTS generation can be billable. Before the first paid call,
+  state the uploaded assets, requested seconds, known cost, pilot size, and
+  retry ceiling, then obtain explicit approval. Never upload the presenter
+  image until `input.remote_upload_approved` is true in `job.json`.
 
-  ```bash
-  SKILL_DIR="${HERMES_SKILL_DIR}"
-  ```
+The human author and upstream source remain cclank's
+`lanshu-create-ai-presenter-video` (MIT). The reference files preserve the
+substantive upstream guidance; the deterministic local scripts use no network
+or credentials.
 
-  Shell variables do not persist between tool calls — re-paste the assignment
-  (or the expanded path) in each terminal call that uses it.
-- **Capability mapping** — where the references say "a voice generation
-  capability", use `text_to_speech` (OpenAI/Edge/ElevenLabs per user config);
-  "presenter/avatar generation" → FAL image-to-video families (Kling, Wan,
-  MiniMax H3 etc.) through the configured video tooling, or an avatar/lipsync
-  endpoint the user has access to; "word-timestamp ASR" → whisper via the STT
-  tooling or `faster-whisper` in a venv; "deterministic compositor" → ffmpeg
-  filtergraphs, or the `hyperframes` skill when installed (the editing
-  reference has a HyperFrames section that maps directly onto it).
-- **Visual QA** — do the "normal-speed visual review" steps with
-  `vision_analyze` on the generated contact sheet plus sampled frames
-  (identity, mouth timing, hands, blinking, continuity). Numeric checks come
-  from the scripts' ffprobe output.
-- **Paid-generation consent** — remote avatar/TTS generation is billable.
-  Follow the upstream operating rules: before the first paid call state the
-  uploaded assets, requested seconds, known cost, pilot size, and retry
-  ceiling, and get the user's explicit go-ahead. Never upload the presenter
-  image to a remote provider before `remote_upload_approved` is true in
-  `job.json`.
-- **Consent flags live under `input`** — `rights_confirmed`,
-  `adult_presenter_confirmed`, `remote_upload_approved`, and
-  `voice_clone_approved` sit inside the `input` object of `job.json` (init
-  flags set them; hand-editing must target `input.*`, not the job root).
-  `manual_input_review.*` sits at the root. `preflight.py` distinguishes
-  `errors` (block everything) from `remote_blockers` (block only remote
-  generation) — local script/audio work may proceed while remote is blocked.
+## How to Run
 
-## Workflow
+Hermes expands `${HERMES_SKILL_DIR}` to the installed skill directory. Set it
+again in each `terminal` call because shell variables do not persist between
+tool calls:
 
-1. **Start or resume a job.** New job:
+```bash
+SKILL_DIR="${HERMES_SKILL_DIR}"
+```
 
-   ```bash
-   python3 "$SKILL_DIR/scripts/init_job.py" \
-     --job-dir ~/Videos/my-presenter-video \
-     --presenter-image /path/to/presenter.png \
-     --topic "explain context engineering in one minute" \
-     --duration 60 --aspect 9:16 \
-     --rights-confirmed --adult-presenter-confirmed
-   ```
+Start a new job with:
 
-   Use `--script` for an existing script file; other flags: `--voice-sample`,
-   `--supporting-media`, `--width`, `--height`, `--fps`, `--watermark`,
-   `--cta`. For an existing job, read `job.json` + QA reports and resume from
-   the earliest unfinished state — never regenerate accepted work.
+```bash
+python3 "$SKILL_DIR/scripts/init_job.py" \
+  --job-dir ~/Videos/my-presenter-video \
+  --presenter-image /path/to/presenter.png \
+  --topic "explain context engineering in one minute" \
+  --duration 60 --aspect 9:16 \
+  --rights-confirmed --adult-presenter-confirmed
+```
 
-2. **Manual input review.** Actually look at the presenter image
-   (`vision_analyze`) and listen to any voice sample; record findings by
-   setting the `manual_input_review` booleans in `job.json`, e.g.:
+Use `--script` for an existing script file. Other flags include
+`--voice-sample`, `--supporting-media`, `--width`, `--height`, `--fps`,
+`--watermark`, and `--cta`. For an existing job, read `job.json` and its QA
+reports, then resume from the earliest unfinished state.
 
-   ```bash
-   python3 - <<'PY'
-   import json
-   p = "~/Videos/my-presenter-video/job.json"  # expand ~ or use an absolute path
-   import os; p = os.path.expanduser(p)
-   j = json.load(open(p))
-   j["manual_input_review"].update(image_viewed=True, single_clear_face=True,
-                                   image_has_no_unwanted_text=True)
-   json.dump(j, open(p, "w"), indent=2)
-   PY
-   ```
+## Quick Reference
 
-   Then gate:
+- Voice generation maps to `text_to_speech`; presenter generation maps to the
+  configured video tooling or an authorized avatar endpoint; word-timestamp
+  ASR maps to configured STT tooling or `faster-whisper`.
+- Deterministic composition uses `ffmpeg` filtergraphs, or the `hyperframes`
+  skill when installed.
+- Visual QA uses `vision_analyze` on the contact sheet and sampled frames for
+  identity, mouth timing, hands, blinking, and continuity. Numeric checks come
+  from the scripts' `ffprobe` output.
+- Consent flags `rights_confirmed`, `adult_presenter_confirmed`,
+  `remote_upload_approved`, and `voice_clone_approved` live under the `input`
+  object. `manual_input_review.*` remains at the job root.
+- Defaults are 9:16, 1080×1920, 30 fps, and 45–75 seconds for topic-derived
+  videos. Use a stock voice when no authorized sample exists; use a hook,
+  two to four beats, and a close; add no music or CTA unless requested.
+- Read [references/generation.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/ai-presenter-video/references/generation.md) for intake, voice,
+  provider selection, presenter prompts, and paid generation;
+  [references/editing.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/ai-presenter-video/references/editing.md) for timeline, captions,
+  HyperFrames, and exports; and
+  [references/qa-recovery.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/ai-presenter-video/references/qa-recovery.md) for acceptance and
+  recovery paths.
 
-   ```bash
-   python3 "$SKILL_DIR/scripts/preflight.py" ~/Videos/my-presenter-video/job.json
-   ```
+## Procedure
 
-   Proceed only when `ok: true`; do remote generation only when
-   `remote_ready: true`. Note: preflight also updates `job.json` in place
-   (records the report path) — re-read it after running rather than editing
-   a stale copy.
+### 1. Review the inputs
 
-3. **Lock content and audio** — read `references/generation.md`. Script →
-   full narration via `text_to_speech` → ASR-verify the narration against the
-   script → record real durations. The locked audio is the master clock for
-   everything downstream.
+Actually inspect the presenter image with `vision_analyze` and listen to any
+voice sample. Record the findings by updating the `manual_input_review`
+booleans in `job.json`:
 
-4. **Plan and generate the presenter** — read `references/generation.md`.
-   Short low-cost pilot first; full run only after the pilot passes identity
-   and mouth-timing review.
+```bash
+python3 - <<'PY'
+import json
+import os
+p = os.path.expanduser("~/Videos/my-presenter-video/job.json")
+j = json.load(open(p))
+j["manual_input_review"].update(image_viewed=True, single_clear_face=True,
+                                image_has_no_unwanted_text=True)
+json.dump(j, open(p, "w"), indent=2)
+PY
+```
 
-5. **Edit** — read `references/editing.md`. Deterministic timeline driven by
-   the locked audio; captions and keyword callouts only after audio and media
-   are final.
+### 2. Run the gate
 
-6. **Verify and deliver** — read `references/qa-recovery.md`, render, then:
+```bash
+python3 "$SKILL_DIR/scripts/preflight.py" ~/Videos/my-presenter-video/job.json
+```
 
-   ```bash
-   bash "$SKILL_DIR/scripts/finalize_delivery.sh" \
-     ~/Videos/my-presenter-video/renders/rendered.mp4 \
-     ~/Videos/my-presenter-video/outputs my-video
-   ```
+Proceed locally only when `ok: true`, and perform remote generation only when
+`remote_ready: true`. `preflight.py` distinguishes `errors`, which block all
+work, from `remote_blockers`, which block only remote generation. It also
+updates `job.json` in place with the report path, so re-read the file afterward
+instead of editing a stale copy.
 
-   The finalizer preserves aspect ratio, runs two-pass loudness normalization
-   (program ≈ −16 LUFS), produces master + share encodes, decode-verifies
-   both, writes a delivery report JSON, and emits a nine-frame contact sheet.
-   Inspect the contact sheet with `vision_analyze` before claiming completion.
+### 3. Lock content and audio
 
-## Operating rules (non-negotiable)
+Read [references/generation.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/ai-presenter-video/references/generation.md). Generate the full
+narration with `text_to_speech`, ASR-verify it against the script, and record
+real durations. Locked audio is the master clock for every later stage.
+
+### 4. Plan and generate the presenter
+
+Follow [references/generation.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/ai-presenter-video/references/generation.md). Generate a short,
+low-cost pilot first; begin the full run only after the pilot passes identity
+and mouth-timing review.
+
+### 5. Edit
+
+Follow [references/editing.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/ai-presenter-video/references/editing.md). Drive the deterministic
+timeline from locked audio, and add captions and keyword callouts only after
+audio and media are final.
+
+### 6. Finalize delivery
+
+Read [references/qa-recovery.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/ai-presenter-video/references/qa-recovery.md), render, then run:
+
+```bash
+bash "$SKILL_DIR/scripts/finalize_delivery.sh" \
+  ~/Videos/my-presenter-video/renders/rendered.mp4 \
+  ~/Videos/my-presenter-video/outputs my-video
+```
+
+The finalizer preserves aspect ratio, runs two-pass loudness normalization
+(program approximately −16 LUFS), produces master and share encodes,
+decode-verifies both, writes a delivery report JSON, and emits a nine-frame
+contact sheet.
+
+### Operating rules
 
 - Confirm image rights, adult status, remote-upload approval, and
   voice-cloning authorization before the relevant remote action.
@@ -171,21 +190,6 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
 - Stop after three rejected paid candidates and summarize the failure mode.
 - Do not claim completion until the final files fully decode and the contact
   sheet or full playback has been reviewed.
-
-## Defaults for minimal input
-
-9:16, 1080×1920, 30fps; topic-derived videos target 45–75s; stock voice when
-no authorized sample; presenter-led layout with hook → 2–4 beats → close;
-no music/CTA unless requested; language inferred from the request.
-
-## Reference routing
-
-- `references/generation.md` — intake, content, voice, capability selection,
-  presenter prompts, paid generation, provider changes.
-- `references/editing.md` — timeline contract, openings/closes, captions,
-  keyword-callout presets, HyperFrames composition, exports.
-- `references/qa-recovery.md` — technical acceptance, visual acceptance, and
-  recovery for lip-sync/identity/hands/exposure/freeze/caption/audio faults.
 
 ## Pitfalls
 
@@ -203,9 +207,13 @@ no music/CTA unless requested; language inferred from the request.
 
 ## Verification
 
-Validated hands-on (Aug 2026): `init_job.py` → `job.json` with correct state
-machine; `preflight.py` correctly blocked on unreviewed inputs, flipped to
-`ok: true` after review booleans, and kept `remote_ready: false` until
-`input.remote_upload_approved`; `finalize_delivery.sh` on a synthetic 5s
-1080×1920 render produced decode-verified master (631kbit/s) + share encodes,
-delivery-report JSON, and a 9-frame contact sheet, exit 0.
+Inspect the final contact sheet with `vision_analyze` before claiming
+completion. Confirm the master and share files fully decode, compare captions
+and lip sync at normal speed, and retain the delivery report.
+
+Hands-on validation from August 2026 covered `init_job.py` producing the
+expected `job.json` state machine; `preflight.py` blocking unreviewed input,
+becoming `ok: true` after manual review, and keeping `remote_ready: false`
+until `input.remote_upload_approved`; and `finalize_delivery.sh` producing a
+decode-verified master and share encode, delivery report, and nine-frame
+contact sheet from a synthetic five-second 1080×1920 render with exit 0.

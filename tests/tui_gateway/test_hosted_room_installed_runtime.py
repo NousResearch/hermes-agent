@@ -21,6 +21,7 @@ from hermes_state import SessionDB
 from tui_gateway import server
 from tui_gateway.hosted_room_service import HostedRoomService
 from tui_gateway.turn_marker import read_turn_marker
+from tui_gateway.user_messages import turn_error_text
 
 
 WAIT = 15
@@ -362,7 +363,7 @@ def test_installed_terminal_receipt_and_observer_replay(installed_runtime, monke
         assert len(receipts) == 1 and marker is None and "_hosted_room_task" not in h.session
         expected = {"message_id": f"reply:{identity.task_id}:{generation}", "text": ANSWER if outcome == "normal" else ""}
         if outcome == "returned-error":
-            expected["text"] = f"Error: {RETURNED_ERROR}"
+            expected["text"] = turn_error_text(RETURNED_ERROR, {"layer": "provider", "provider": "test"})
         errors = {"returned-error": RETURNED_ERROR, "exception": RAISED_ERROR, "build-error": BUILD_ERROR}
         if outcome == "blocked":
             # The error event is the exact parser refusal exposed by the installed route;

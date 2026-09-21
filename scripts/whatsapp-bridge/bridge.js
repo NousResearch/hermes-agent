@@ -7,9 +7,9 @@
  *
  * Endpoints (matches gateway/platforms/whatsapp.py expectations):
  *   GET  /messages       - Long-poll for new incoming messages
- *   POST /send           - Send a message { chatId, message, replyTo? }
+ *   POST /send           - Send a message { chatId, message, replyTo?, mentions? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
- *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
+ *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName?, mentions? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
@@ -21,6 +21,7 @@
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
@@ -30,10 +31,12 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { resolveAllowedMediaPath } from './media_paths.js';
 import {
+  addMentions,
   buildPollPayload,
   createReconnectScheduler,
   createVersionResolver,
@@ -46,6 +49,7 @@ import {
   inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
+  normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
@@ -97,6 +101,20 @@ const DOCUMENT_CACHE_DIR = process.env.HERMES_DOCUMENT_CACHE_DIR
   || path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = process.env.HERMES_AUDIO_CACHE_DIR
   || path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
+const VIDEO_CACHE_DIR = process.env.HERMES_VIDEO_CACHE_DIR
+  || path.join(process.env.HOME || '~', '.hermes', 'video_cache');
+const BRIDGE_MEDIA_ROOTS = [IMAGE_CACHE_DIR, DOCUMENT_CACHE_DIR, AUDIO_CACHE_DIR, VIDEO_CACHE_DIR]
+  .map(root => path.resolve(root));
+const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
+const MEDIA_RATE_WINDOW_MS = 60 * 1000;
+const MEDIA_RATE_LIMIT = 30;
+const rateLimitSendMedia = rateLimit({
+  windowMs: MEDIA_RATE_WINDOW_MS,
+  max: MEDIA_RATE_LIMIT,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Media send rate limit exceeded' },
+});
 
 // Self-hash of this script file.  Reported in /health so the Python gateway
 // can detect a running bridge that predates the current bridge.js and
@@ -114,7 +132,11 @@ const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
+const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+// Group authorization is by group JID, not by every participant's JID.  The
+// Python adapter still applies group policy and mention rules after intake.
+const GROUP_ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_GROUP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '☤ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -203,11 +225,6 @@ function rememberSentMessage(sent, payload) {
 
 function trackSentMessageId(sent) {
   rememberSentId(sent?.key?.id);
-}
-
-function normalizeWhatsAppId(value) {
-  if (!value) return '';
-  return String(value).replace(':', '@');
 }
 
 function redactWhatsAppId(value) {
@@ -528,8 +545,14 @@ async function startSocket() {
 
       const chatId = msg.key.remoteJid;
       const senderId = msg.key.participant || chatId;
+      // Baileys v7 carries the other form of the sender here (group: key.participantAlt,
+      // DM: key.remoteJidAlt). A LID sender's phone twin makes a phone allowlist match with no
+      // lid-mapping file yet (#63415, #72529) and is the identity Python sees, so first
+      // contacts key the same session they will once the mapping exists.
+      const senderAltId = normalizeWhatsAppId(msg.key.participantAlt || msg.key.remoteJidAlt || '');
+      const resolvedSenderId = senderAltId.endsWith('@s.whatsapp.net') ? senderAltId : senderId;
       const isGroup = chatId.endsWith('@g.us');
-      const senderNumber = senderId.replace(/@.*/, '');
+      const senderNumber = resolvedSenderId.replace(/@.*/, '');
       emitDebugEvent({
         stage: 'upsert',
         type,
@@ -630,13 +653,23 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        const intakeAllowed = isGroup
+          ? matchesInboundWhatsAppGroup({
+              chatId,
+              groupPolicy: WHATSAPP_GROUP_POLICY,
+              groupAllowedUsers: GROUP_ALLOWED_USERS,
+              sessionDir: SESSION_DIR,
+            })
+          : WHATSAPP_DM_POLICY === 'pairing'
+            || matchesAllowedSender(senderId, senderAltId, ALLOWED_USERS, SESSION_DIR);
+        if (!intakeAllowed) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
-              reason: 'allowlist_mismatch',
+              reason: isGroup ? 'group_policy_rejected' : 'allowlist_mismatch',
               chatId,
               senderId,
+              senderAltId,
             }));
           } catch {}
           continue;
@@ -706,7 +739,7 @@ async function startSocket() {
       const event = await extractBridgeEvent({
         msg,
         chatId,
-        senderId,
+        senderId: resolvedSenderId,
         senderNumber,
         botIds,
         isGroup,
@@ -820,7 +853,7 @@ app.post('/send', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, message, replyTo } = req.body;
+  const { chatId, message, replyTo, mentions } = req.body;
   if (!chatId || !message) {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
@@ -832,6 +865,7 @@ app.post('/send', async (req, res) => {
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
         chatId,
         replyTo: i === 0 ? replyTo : undefined,
+        mentions: i === 0 ? mentions : undefined,
         messageStore,
       });
       const sent = await sendWithTimeout(chatId, payload, options);
@@ -888,23 +922,24 @@ app.post('/edit', async (req, res) => {
 });
 
 // Send media (image, video, document) natively
-app.post('/send-media', async (req, res) => {
+app.post('/send-media', rateLimitSendMedia, async (req, res) => {
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, filePath, mediaType, caption, fileName } = req.body;
+  const { chatId, filePath, mediaType, caption, fileName, mentions } = req.body;
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
 
-  try {
-    if (!existsSync(filePath)) {
-      return res.status(404).json({ error: `File not found: ${filePath}` });
-    }
+  const mediaPath = resolveAllowedMediaPath(filePath, BRIDGE_MEDIA_ROOTS, MAX_MEDIA_BYTES);
+  if (!mediaPath) {
+    return res.status(400).json({ error: 'filePath must be a regular file inside a Hermes media cache' });
+  }
 
-    const buffer = readFileSync(filePath);
-    const ext = filePath.toLowerCase().split('.').pop();
+  try {
+    const buffer = readFileSync(mediaPath);
+    const ext = path.extname(mediaPath).slice(1).toLowerCase();
     const type = mediaType || inferMediaType(ext);
     let msgPayload;
 
@@ -920,7 +955,7 @@ app.post('/send-media', async (req, res) => {
             tmpGifMp4 = path.join(tmpdir(), `hermes_gif_${randomBytes(6).toString('hex')}.mp4`);
             execFileSync(
               'ffmpeg',
-              ['-y', '-i', filePath, '-movflags', 'faststart', '-pix_fmt', 'yuv420p', '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', tmpGifMp4],
+              ['-y', '-i', mediaPath, '-movflags', 'faststart', '-pix_fmt', 'yuv420p', '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', tmpGifMp4],
               { timeout: 30000, stdio: 'pipe' }
             );
             msgPayload = {
@@ -931,16 +966,16 @@ app.post('/send-media', async (req, res) => {
             };
           } catch (gifErr) {
             console.warn('[bridge] gif conversion failed, sending as image/gif:', gifErr.message);
-            msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+            msgPayload = mediaPayloadForFile({ buffer, filePath: mediaPath, mediaType: type, caption, fileName });
           } finally {
             try { if (tmpGifMp4 && existsSync(tmpGifMp4)) unlinkSync(tmpGifMp4); } catch (_) {}
           }
         } else {
-          msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+          msgPayload = mediaPayloadForFile({ buffer, filePath: mediaPath, mediaType: type, caption, fileName });
         }
         break;
       case 'video':
-        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+        msgPayload = mediaPayloadForFile({ buffer, filePath: mediaPath, mediaType: type, caption, fileName });
         break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
@@ -955,7 +990,7 @@ app.post('/send-media', async (req, res) => {
           try {
             execFileSync(
               'ffmpeg',
-              ['-y', '-i', filePath, '-ar', '48000', '-ac', '1', '-c:a', 'libopus', tmpPath],
+              ['-y', '-i', mediaPath, '-ar', '48000', '-ac', '1', '-c:a', 'libopus', tmpPath],
               { timeout: 30000, stdio: 'pipe' }
             );
             audioBuffer = readFileSync(tmpPath);
@@ -973,9 +1008,11 @@ app.post('/send-media', async (req, res) => {
       }
       case 'document':
       default:
-        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: 'document', caption, fileName });
+        msgPayload = mediaPayloadForFile({ buffer, filePath: mediaPath, mediaType: 'document', caption, fileName });
         break;
     }
+
+    msgPayload = addMentions(msgPayload, mentions);
 
     const sent = await sendWithTimeout(chatId, msgPayload);
     trackSentMessageId(sent);
@@ -1106,6 +1143,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    capabilities: { outboundMentions: true },
   });
 });
 

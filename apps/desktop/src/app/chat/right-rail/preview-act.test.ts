@@ -1,3 +1,5 @@
+import { types } from 'node:util'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $rightRailActiveTabId } from '@/store/layout'
@@ -100,10 +102,157 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     expect(injected).toContain('0 <= 0')
   })
 
+  it('awaits page-owned thenables for inventories and settled actions before crossing Electron IPC', async () => {
+    // Zone.js replaces Promise with a non-native thenable. Electron awaits
+    // native V8 promises only; otherwise IPC delivers the object's state,
+    // losing its prototype and then() instead of delivering the result.
+    class PagePromise<T> {
+      private pending: Promise<T>
+
+      constructor(executor: ConstructorParameters<typeof Promise<T>>[0]) {
+        this.pending = new Promise(executor)
+      }
+
+      static resolve<T>(value: T) {
+        return new PagePromise<T>(resolve => resolve(value))
+      }
+
+      then(onFulfilled: (value: T) => unknown, onRejected?: (reason: unknown) => unknown) {
+        return new PagePromise((resolve, reject) => {
+          this.pending.then(onFulfilled, onRejected).then(resolve, reject)
+        })
+      }
+    }
+
+    document.body.innerHTML = '<button id="save">Save</button>'
+    const clicked = vi.fn()
+    document.getElementById('save')!.addEventListener('click', clicked)
+
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 40,
+      top: 0,
+      width: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    })
+
+    withRunner(async code => {
+      const raw = new Function('Promise', 'return ' + code)(PagePromise)
+
+      return types.isPromise(raw) ? await raw : JSON.parse(JSON.stringify(raw))
+    })
+
+    try {
+      const inventory = await actOnActivePreview({ kind: 'elements' })
+      expect(inventory.success).toBe(true)
+      const save = inventory.elements!.find(element => element.label === 'Save')!
+      expect(save).toBeDefined()
+      expect(await actOnActivePreview({ kind: 'click', ref: save.ref })).toMatchObject({ success: true })
+      expect(clicked).toHaveBeenCalledOnce()
+      expect(await actOnActivePreview({ kind: 'click', ref: 'missing-ref' })).toMatchObject({ success: false })
+    } finally {
+      rect.mockRestore()
+      document.body.replaceChildren()
+      delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+    }
+  })
+
   it('reports a page that answers with nothing', async () => {
     withRunner(async () => '')
 
     expect((await actOnActivePreview({ kind: 'click', ref: '@e1' })).error).toContain('did not answer')
+  })
+
+  it('keeps adversarial action arguments as data across all five script interpolation sites', async () => {
+    const attack = '"\'); injected(); // \\ ` ${injected()} </script><script>injected()</script>\r\n\t\0\u2028\u2029'
+    const injected = vi.fn()
+    const actions: unknown[] = []
+    const labels: unknown[] = []
+    const scripts: string[] = []
+    // Execute the complete generated source; intercept only the page engine's
+    // results so every builder can reach its action and annotation arguments.
+    const guest = {
+      innerHeight: 768,
+      innerWidth: 1024,
+      get __hermesAct() {
+        return (_doc: Document, _holder: unknown, action: unknown) => {
+          actions.push(action)
+
+          return { acted: 'looking at target', elements: [], point: { x: 40, y: 20 }, success: true }
+        }
+      },
+      set __hermesAct(_engine: unknown) {},
+      get __hermesWatch_fn() {
+        return (_doc: Document, _holder: unknown, stage: string, label: unknown) => {
+          if (stage === 'pin') {
+            labels.push(label)
+          }
+        }
+      },
+      set __hermesWatch_fn(_watch: unknown) {}
+    }
+
+    withRunner(async code => {
+      scripts.push(code)
+
+      return new Function('window', 'injected', 'return ' + code)(guest, injected)
+    })
+
+    const target = { ref: attack, selector: attack }
+    for (const action of [
+      { kind: 'type', ...target, text: attack },
+      { kind: 'pin', ...target, text: attack },
+      { kind: 'unpin', ...target }
+    ]) {
+      expect(await actOnActivePreview(action)).toMatchObject({ success: true })
+    }
+
+    cleanups.push(registerPreviewInput($rightRailActiveTabId.get()!, { focus: vi.fn(), send: vi.fn() }))
+    expect(await actOnActivePreview({ kind: 'hover', ...target })).toMatchObject({ success: true })
+
+    expect(actions).toContainEqual({ kind: 'type', ...target, text: attack })
+    expect(actions.filter(action => (action as { kind: string }).kind === 'locate')).toEqual([
+      { kind: 'locate', ...target },
+      { kind: 'locate', ...target },
+      { focus: false, kind: 'locate', ...target },
+      { focus: false, kind: 'locate', ...target }
+    ])
+    expect(labels).toEqual([attack])
+    expect(injected).not.toHaveBeenCalled()
+    for (const code of scripts) {
+      // The serialized payload must also stay safe if transported as script
+      // text: no HTML closing tag or raw JavaScript line separator from data.
+      expect(code).not.toContain('</script>')
+      expect(code).not.toContain('\u2028')
+      expect(code).not.toContain('\u2029')
+    }
+  })
+
+  it('types adversarial text literally through the real injected page engine', async () => {
+    const text = '"}); injected(); // \\ ` ${injected()} </script><script>injected()</script>\n\u2028\u2029'
+    const injected = vi.fn()
+    const field = document.createElement('textarea')
+    field.id = 'entry'
+    field.setAttribute('aria-label', 'Entry')
+    document.body.append(field)
+    const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 40, height: 40, left: 0, right: 40, top: 0, width: 40, x: 0, y: 0, toJSON: () => ({})
+    })
+    withRunner(async code => new Function('injected', 'return ' + code)(injected))
+
+    try {
+      expect(await actOnActivePreview({ kind: 'type', selector: '#entry', text })).toMatchObject({ success: true })
+      expect(field.value).toBe(text)
+      expect(injected).not.toHaveBeenCalled()
+    } finally {
+      rect.mockRestore()
+      document.body.replaceChildren()
+      delete (window as unknown as { __hermesActHolder?: unknown }).__hermesActHolder
+    }
   })
 
   /** A pane that answers the locate trip with a fixed on-screen point, and the

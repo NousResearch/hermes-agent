@@ -1,0 +1,23 @@
+diff --git a/tests-js/scripts/mock-server.ts b/tests-js/scripts/mock-server.ts
+index 6dffd2cf0f388..09c6de07d81b2 100644
+--- a/tests-js/scripts/mock-server.ts
++++ b/tests-js/scripts/mock-server.ts
+@@ -503,3 +503,18 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
++          const dmMatch = userText.match(/E2E_DM\(([^)]+)\)\[([\s\S]*)\]/)
++          const lastUserIndex = messages.lastIndexOf(lastUserMsg)
++          if (dmMatch && !messages.slice(lastUserIndex + 1).some(m => m?.role === 'tool')) {
++            const turn: ScriptedTurn = {
++              text: '',
++              toolCalls: [{ name: 'message_agent', args: { target: dmMatch[1], message: dmMatch[2] } }],
++            }
++            if (stream) {
++              streamScriptedTurn(res, model, turn)
++            } else {
++              nonStreamingScriptedTurn(res, model, turn)
++            }
++            return
++          }
++
+           const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
+           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
+           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')

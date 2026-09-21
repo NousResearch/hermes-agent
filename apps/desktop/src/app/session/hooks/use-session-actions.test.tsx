@@ -16,13 +16,13 @@ import {
   getSession,
   type ProfileScope,
   type SessionInfo,
-  type SessionResumeResponse,
+  type SessionResumeResult,
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForAgent } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
 import {
   $activeGatewayProfile,
@@ -893,8 +893,14 @@ describe('createBackendSessionForSend profile routing', () => {
       'source-a',
       'default',
       'session.create',
-      expect.objectContaining({ profile: 'backend-default', source: 'desktop' })
+      expect.objectContaining({ profile: 'backend-default', source: 'desktop' }),
+      undefined,
+      undefined,
+      // #105104 / #105390: first send on a fresh chat is a user gesture; the
+      // create dial must not queue behind background roster hydration.
+      { spawnPriority: 'foreground' }
     )
+    expect(retainGatewayForAgent).toHaveBeenCalledWith('source-a', 'default', { spawnPriority: 'foreground' })
     expect(ambientRequest).not.toHaveBeenCalledWith('session.create', expect.anything())
   })
 
@@ -1146,16 +1152,26 @@ describe('resumeSession failure recovery', () => {
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
+        // The channel re-delivers `open_requests` to the request handler BEFORE
+        // the caller sees the result; that handler parks the card. Mirror that
+        // ordering here (no channel in this harness).
+        setClarifyRequest({
+          choices: ['safe', 'fast'],
+          multiSelect: false,
+          question: 'Which path?',
+          receivedAt: Date.now(),
+          requestId: 'req-resumed',
+          sessionId: 'runtime-1'
+        })
+
         return {
           info: {},
           message_count: 2,
           messages: [],
           messages_omitted: true,
-          pending_clarify: {
-            choices: ['safe', 'fast'],
-            question: 'Which path?',
-            request_id: 'req-resumed'
-          },
+          open_requests: [
+            { id: 'req-resumed', method: 'clarify', params: { choices: ['safe', 'fast'], question: 'Which path?' } }
+          ],
           resumed: 'stored-1',
           running: true,
           session_id: 'runtime-1',
@@ -1206,21 +1222,34 @@ describe('resumeSession failure recovery', () => {
       session_id: 'stored-1'
     } as never)
 
+    const questions = [
+      { choices: ['Blue', 'Red'], qid: 'q0', question: 'Color?' },
+      { choices: ['Small', 'Large'], qid: 'q1', question: 'Size?' }
+    ]
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
+        // Request handler parks the batch card (with the server-locked answer)
+        // from the re-delivered open request before the result lands.
+        setClarifyRequest({
+          choices: null,
+          lockedAnswers: { q0: 'Blue' },
+          multiSelect: false,
+          question: '',
+          questions: questions.map(q => ({ ...q, multiSelect: false })),
+          receivedAt: Date.now(),
+          requestId: 'req-batch-resumed',
+          sessionId: 'runtime-1'
+        })
+
         return {
           info: {},
           message_count: 2,
           messages: [],
           messages_omitted: true,
-          pending_clarify: {
-            answers: { q0: 'Blue' },
-            questions: [
-              { choices: ['Blue', 'Red'], qid: 'q0', question: 'Color?' },
-              { choices: ['Small', 'Large'], qid: 'q1', question: 'Size?' }
-            ],
-            request_id: 'req-batch-resumed'
-          },
+          open_requests: [
+            { id: 'req-batch-resumed', method: 'clarify', params: { answers: { q0: 'Blue' }, questions } }
+          ],
           resumed: 'stored-1',
           running: true,
           session_id: 'runtime-1',
@@ -2528,7 +2557,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     'caches a cold display read only while its target is unchanged (invalidated=%s)',
     async invalidated => {
       const persistedA = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
-      const resumedA = deferred<SessionResumeResponse>()
+      const resumedA = deferred<SessionResumeResult>()
       const owner = { connectionId: 'remote-background', profile: 'work' }
 
       const rowA = storedSession({
@@ -2630,7 +2659,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       const storedLookup = deferred<SessionInfo>()
       const gatewayReady = deferred<void>()
       const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
-      const resumed = deferred<SessionResumeResponse>()
+      const resumed = deferred<SessionResumeResult>()
 
       const cachedMessages = [
         {
@@ -2980,7 +3009,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       session_id: 'stored-A'
     })
 
-    const deferredResume = deferred<SessionResumeResponse>()
+    const deferredResume = deferred<SessionResumeResult>()
 
     const requestGatewayMock = vi.fn((method: string, _params?: Record<string, unknown>) => {
       if (method === 'session.resume') {
@@ -3129,16 +3158,23 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.activate') {
+        setClarifyRequest({
+          choices: ['safe', 'fast'],
+          multiSelect: false,
+          question: 'Which path?',
+          receivedAt: Date.now(),
+          requestId: 'req-warm',
+          sessionId: 'rt-A'
+        })
+
         return {
           info: {},
           message_count: 2,
           messages: [],
           messages_omitted: true,
-          pending_clarify: {
-            choices: ['safe', 'fast'],
-            question: 'Which path?',
-            request_id: 'req-warm'
-          },
+          open_requests: [
+            { id: 'req-warm', method: 'clarify', params: { choices: ['safe', 'fast'], question: 'Which path?' } }
+          ],
           resumed: 'stored-A',
           running: true,
           session_id: 'rt-A',
@@ -3293,7 +3329,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       current: new Map([['rt-A', clientState('stored-A')]])
     }
 
-    const activated = deferred<SessionResumeResponse>()
+    const activated = deferred<SessionResumeResult>()
 
     const requestGateway = vi.fn((method: string) =>
       method === 'session.activate' ? activated.promise : Promise.resolve({})
@@ -4502,10 +4538,66 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).not.toHaveProperty('cwd')
   })
 
+  it('omits the manual ambient composer selection from a Bot-workspace tile so the bot profile defaults apply', async () => {
+    setCurrentModel('ambient-model')
+    setCurrentProvider('ambient-provider')
+    setCurrentModelSource('manual')
+    setCurrentReasoningEffort('high')
+    setCurrentFastMode(true)
+
+    let createParams: Record<string, unknown> | undefined
+
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
+      if (method === 'session.create') {
+        createParams = params as Record<string, unknown>
+
+        return {
+          info: { cwd: '', model: 'profile-default-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-bot-tile'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const route = { connectionId: 'local', mode: 'local' as const, profile: 'writer', targetProfile: 'writer' }
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', {
+          listed: false,
+          route,
+          workspaceScope: { ownerRoute: route, workspaceMode: 'bots', workspaceOwnerKey: 'bot:local::writer' }
+        })
+      })
+    } finally {
+      setCurrentModelSource('')
+      setCurrentModel('')
+      setCurrentProvider('')
+      setCurrentReasoningEffort('')
+      setCurrentFastMode(false)
+      // The hoisted agent-route mock keeps its call log across tests (restoreAllMocks only
+      // restores spies); the next test asserts it was never called.
+      vi.mocked(requestGatewayForAgent).mockReset()
+    }
+
+    expect(createParams).toMatchObject({ hidden: true, profile: 'writer' })
+    expect(createParams).not.toHaveProperty('model')
+    expect(createParams).not.toHaveProperty('provider')
+    expect(createParams).not.toHaveProperty('reasoning_effort')
+    expect(createParams).not.toHaveProperty('fast')
+  })
+
   it('keeps an unlisted named local legacy-profile tile owned by its bare profile', async () => {
     const storedSessionId = 'stored-unlisted-omar'
-    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
     setConnection({ mode: 'local' } as never)
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create') {
@@ -4551,10 +4643,10 @@ describe('openNewSessionTile workspace target', () => {
 
   it('records the draft profile owner when tab-strip create omits profile', async () => {
     const storedSessionId = 'stored-unlisted-draft-omar'
+    setConnection({ mode: 'local' } as never)
     $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
     $newChatProfile.set('omar')
     $activeGatewayProfile.set('default')
-    setConnection({ mode: 'local' } as never)
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create') {
@@ -4707,10 +4799,15 @@ describe('selectSidebarItem', () => {
     await waitFor(() => expect(handle).not.toBeNull())
 
     act(() => {
-      handle!.selectSidebarItem({ icon: (() => null) as never, id: 'skills', label: 'Capabilities', route: '/skills' })
+      handle!.selectSidebarItem({
+        icon: (() => null) as never,
+        id: 'skills',
+        label: 'Capabilities',
+        route: '/capabilities'
+      })
     })
 
-    expect(navigate).toHaveBeenCalledWith('/skills', undefined)
+    expect(navigate).toHaveBeenCalledWith('/capabilities', undefined)
     expect(noteActiveTreeGroup).toHaveBeenCalledWith(null)
     expect(revealTreePane).toHaveBeenCalledWith('workspace')
   })

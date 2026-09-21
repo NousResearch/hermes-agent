@@ -30,6 +30,7 @@ import {
   clearAllSessionStates,
   closeAllOpenSessionTiles,
   focusedSessionNeedsRoute,
+  focusedSessionWorkspaceScope,
   focusOpenSession,
   focusWorkspaceOwnerSessionTile,
   foregroundSessionScopes,
@@ -339,6 +340,30 @@ describe('SessionTile workspace scope', () => {
     expect(focusOpenSession('bot-chat', scope)).toBe('tile')
   })
 
+  it('splits a Bot chat loaded in MAIN instead of silently no-oping the drop', () => {
+    const scope = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:connection-a::alpha' }
+
+    $selectedStoredSessionId.set('bot-chat')
+    // A real open records the bot scope on the MAIN chat (which has no tile
+    // to carry it). The drag handler then commits the drop with NO explicit
+    // scope — the tab it drags is the workspace pane itself.
+    setSessionTileWorkspaceScope('bot-chat', scope)
+    openSessionTile('bot-chat', 'right', 'workspace', undefined)
+
+    // The minted tile registers its pane (watchSessionTiles) and the drop
+    // hint's reveal adopts it — here, the tree that adoption produces.
+    $layoutTree.set(group(['workspace', tilePane('bot-chat')], { id: 'workspace-group' }))
+
+    expect(focusOpenSession('bot-chat', scope)).toBe('tile')
+    expect($sessionTiles.get()).toEqual([
+      expect.objectContaining({
+        storedSessionId: 'bot-chat',
+        workspaceMode: 'bots',
+        workspaceOwnerKey: 'bot:connection-a::alpha'
+      })
+    ])
+  })
+
   it('fronts the existing tab when compaction rotated the tip id — never a duplicate', () => {
     // The tile was opened when seg-2 was the tip; the conversation has since
     // rotated to seg-3 (projected row carries the full chain). Opening the
@@ -354,6 +379,20 @@ describe('SessionTile workspace scope', () => {
     openSessionTile('seg-3')
     expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['seg-2'])
     setSessions([])
+  })
+
+  it('reports the workspace scope of the focused Bot session tab', () => {
+    const scope = {
+      ownerRoute: { connectionId: 'connection-a', profile: 'default' },
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'connection-a::default',
+      workspaceTabTitle: 'Bot Chat'
+    }
+
+    openSessionTile('bot-chat', 'center', undefined, undefined, scope)
+    $layoutTree.set(group(['workspace', tilePane('bot-chat')], { active: tilePane('bot-chat'), id: 'main' }))
+
+    expect(focusedSessionWorkspaceScope()).toEqual(scope)
   })
 
   it('keeps Bot tabs while a profile publication swaps the Sessions bucket', () => {
@@ -1353,6 +1392,19 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
     setSessions([{ connection_id: 'source-b', id: 'stored-shared', profile: 'default' } as never])
 
     expect(knownOwnerForSession('stored-shared')).toEqual({ connectionId: 'source-b', profile: 'default' })
+  })
+
+  // Two connections both exposing `default`: the row only names the profile,
+  // and a bare profile is resolved by the profile door against the PRIMARY
+  // connection — another machine for a session that runs on a non-primary one.
+  // The inbound event proved the exact owner, so it must outrank the
+  // connection-blind row profile (this is what keeps the 2nd prompt of an
+  // ordinary session from answering `4001 session not found`).
+  it('prefers an event-proven connection over a bare row profile when two connections share the profile name', () => {
+    recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-local' })
+    setSessions([{ id: 'rt-local', profile: 'default' } as never])
+
+    expect(knownOwnerForSession('rt-local')).toEqual({ connectionId: 'local', profile: 'default' })
   })
 
   it('returns undefined (ambient) when no owner is known, and for null ids', () => {

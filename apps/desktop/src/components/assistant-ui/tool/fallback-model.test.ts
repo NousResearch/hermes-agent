@@ -27,12 +27,9 @@ afterEach(() => {
 })
 
 describe('buildToolView image handling', () => {
-  // vision_analyze reports the input image as a local path; an <img> pointed at
-  // a bare path resolves against the renderer origin and 404s, so we render the
-  // tool codicon instead of a broken image.
-  it('drops bare filesystem paths', () => {
-    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('')
-    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('')
+  it('keeps local image paths for the activity renderer to resolve', () => {
+    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('/Users/me/shot.png')
+    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('/tmp/out.jpg')
   })
 
   it('keeps fetchable data URLs', () => {
@@ -114,6 +111,61 @@ describe('buildToolView error confidence', () => {
     for (const [overrides, status] of cases) {
       expect(buildToolView(part(overrides), '').status, JSON.stringify(overrides)).toBe(status)
     }
+  })
+})
+
+describe('buildToolView envelope errors', () => {
+  it('shows the event error when the result carries no explanation', () => {
+    const view = buildToolView(
+      part({
+        isError: true,
+        result: 'partial output',
+        toolName: 'terminal',
+        toolResultMetadata: { error: 'killed by signal 9' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('error')
+    expect(view.subtitle).toBe('killed by signal 9')
+  })
+
+  it('keeps an envelope-only read miss on the notice tier', () => {
+    const view = buildToolView(
+      part({
+        isError: true,
+        result: undefined,
+        completedAt: 5,
+        toolName: 'read_file',
+        toolResultMetadata: { error: 'File not found: /repo/missing.ts' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('notice')
+  })
+})
+
+describe('buildToolView calls sealed without a result', () => {
+  it('warns that a lost result is unavailable', () => {
+    const view = buildToolView(part({ completedAt: 5, result: undefined, toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('warning')
+    expect(view.title).toBe('Result unavailable')
+  })
+
+  it('shows a call the user interrupted as a neutral notice', () => {
+    const view = buildToolView(part({ completedAt: 5, interrupted: true, result: undefined, toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('notice')
+    expect(view.title).toBe('Interrupted')
+  })
+
+  it('shows the real result when one arrived after the interruption', () => {
+    const view = buildToolView(part({ completedAt: 5, interrupted: true, result: 'ok', toolName: 'terminal' }), '')
+
+    expect(view.status).toBe('success')
+    expect(view.title).not.toBe('Interrupted')
   })
 })
 

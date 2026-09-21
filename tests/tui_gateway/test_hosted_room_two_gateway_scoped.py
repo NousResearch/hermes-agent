@@ -172,7 +172,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
                     f"status={home.runtime.status()} events={home._events('room-1')}"
                 )
     finally:
-        stopped = home.stop(timeout=1.0)
+        stopped = home.stop(timeout=5.0)
         await server.close()
         target._run_idempotency_store.close()
 

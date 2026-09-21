@@ -66,6 +66,27 @@ const NOTHING_OPEN = 'No live page is open in the in-app browser — open one wi
 const NAVIGATED =
   'The page stopped answering right after — it is probably navigating. Call elements to see where you landed.'
 
+/** Serialize agent/page data for insertion into the JavaScript source sent to a guest page.
+ *
+ * `JSON.stringify` is sufficient for a direct IPC value, but these values are embedded in a
+ * source string. Escaping HTML-significant characters and JavaScript line separators keeps an
+ * attacker-controlled selector, ref, or label from terminating a surrounding script literal if
+ * a runner transports that source through an HTML/script boundary. */
+function serializeInjectedData(value: unknown): string {
+  const json = JSON.stringify(value)
+
+  if (json === undefined) {
+    throw new TypeError('Preview action data must be JSON-serializable')
+  }
+
+  return json
+    .replace(/</g, '\\u003C')
+    .replace(/>/g, '\\u003E')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
+
 /** A fingerprint of the overlay's source, so the guest page can tell that the
  *  code it is running has changed underneath it.
  *
@@ -139,7 +160,7 @@ function buildLocateScript(action: PreviewActAction, focus: boolean): string {
 
   return `(function () {
 ${preamble()}
-  var locate = ${JSON.stringify(locate)};
+  var locate = ${serializeInjectedData(locate)};
   var found = act(locate);
   if (!found.success) { return Promise.resolve(JSON.stringify(found)); }
   watch('aim');
@@ -179,9 +200,9 @@ function buildPinScript(action: PreviewActAction, label: string): string {
 
   return `(function () {
 ${preamble()}
-  var found = act(${JSON.stringify(locate)});
+  var found = act(${serializeInjectedData(locate)});
   if (!found.success) { return JSON.stringify(found); }
-  watch('pin', ${JSON.stringify(label)});
+  watch('pin', ${serializeInjectedData(label)});
   return JSON.stringify({ acted: 'pinned ' + String(found.acted || 'it').replace(/^looking at /, ''), success: true });
 })()`
 }
@@ -221,7 +242,7 @@ function buildUnpinScript(action: PreviewActAction): string {
 ${preamble()}
 ${
   one
-    ? `  var found = act(${JSON.stringify(locate)});
+    ? `  var found = act(${serializeInjectedData(locate)});
   if (!found.success) { return JSON.stringify(found); }
   var gone = 'unpinned ' + String(found.acted || 'it').replace(/^looking at /, '');`
     : `  holder.aimed = null;
@@ -265,7 +286,7 @@ ${preamble()}
 function buildScriptedScript(action: PreviewActAction, settleMs: number): string {
   return `(function () {
 ${preamble()}
-  var result = act(${JSON.stringify(action)});
+  var result = act(${serializeInjectedData(action)});
   ${action.kind === 'elements' ? "if (result.success) { watch('strobe'); }" : ''}
   if (!result.success || ${settleMs} <= 0) { return Promise.resolve(JSON.stringify(result)); }
   return wait(${settleMs}).then(function () {
@@ -293,8 +314,11 @@ ${preamble()}
 type Trip = { error: string; kind: 'failed' } | { kind: 'answered'; result: PreviewActResult } | { kind: 'silent' }
 
 async function runJson(run: PreviewScriptRunner, code: string): Promise<Trip> {
+  // Pages such as Trendyol replace Promise with ZoneAwarePromise. Electron
+  // awaits native promises only, otherwise IPC clones the thenable's state.
+  // An async function adopts it into a native promise without changing the page.
   const raw = await Promise.race([
-    run(code).catch((error: unknown) => new Error(String(error))),
+    run(`(async () => (${code}))()`).catch((error: unknown) => new Error(String(error))),
     new Promise<undefined>(resolve => setTimeout(resolve, ACT_TIMEOUT_MS))
   ])
 

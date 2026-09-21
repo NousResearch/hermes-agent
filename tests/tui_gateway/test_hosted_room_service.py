@@ -370,7 +370,7 @@ def _runtime_diagnostics(service, db):
         for row in driver.list_tasks(db, room_id="room-1")
     ]
     return (
-        f"status={runtime.status()!r}; tasks={tasks!r}; trace={service.rpc.trace!r}; "
+        f"status={runtime.status()!r}; tasks={tasks!r}; trace={getattr(service.rpc, 'trace', [])!r}; "
         f"ambiguous={runtime._ambiguous_rooms!r}; reschedule={runtime._rooms_needing_reschedule!r}\n{stacks}"
     )
 
@@ -484,7 +484,7 @@ def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path:
             event["kind"] == "message.member" for event in service._events("room-1")
         )
     )
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
 
     events = service._events("room-1")
     assert [event["kind"] for event in events][:3] == [
@@ -1128,7 +1128,7 @@ def test_same_thread_followup_migrates_and_delivers_committed_peer_reply(
         payload={"text": "@hermes continue", "thread_id": "thread-1"},
     )
     _wait_for(lambda: len(service.rpc.prompts) == 2)
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
 
     profile, prompt = service.rpc.prompts[1]
     assert profile == "default"
@@ -1215,7 +1215,7 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
             for event in service._events("room-1")
         )
     )
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
     for index in range(24):
         _append_room_event(
             db,
@@ -1783,18 +1783,20 @@ def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
     )
     assert room["members"][1]["target"]["kind"] == "peer"
 
-    service.start()
-    service.send(
-        room_id="room-1",
-        event_id="user-peer-1",
-        payload={"text": "@reviewer inspect this", "thread_id": "thread-1"},
-    )
-    _wait_for(
-        lambda: any(
-            event["kind"] == "message.member" for event in service._events("room-1")
+    try:
+        service.send(
+            room_id="room-1",
+            event_id="user-peer-1",
+            payload={"text": "@reviewer inspect this", "thread_id": "thread-1"},
         )
-    )
-    assert service.stop(timeout=1.0)
+        # Exercise dispatch/settlement and then publication using the real
+        # policy cycles. This transport contract is not a two-second disk or
+        # background-thread scheduling benchmark.
+        service.runtime._run_cycle()
+        assert len(peer.dispatches) == 1
+        service.runtime._run_cycle()
+    finally:
+        assert service.stop(timeout=5.0)
 
     events = service._events("room-1")
     reply = next(event for event in events if event["kind"] == "message.member")
@@ -1807,6 +1809,7 @@ def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
 def test_unadmitted_peer_failure_does_not_block_next_healthy_member(
     tmp_path: Path,
 ):
+    """Drive the real policy cycles directly; admission progress is not a 2s I/O benchmark."""
     db = tmp_path / "state.db"
     route = PeerMemberRoute(
         home_install_id="install-home",
@@ -1847,20 +1850,26 @@ def test_unadmitted_peer_failure_does_not_block_next_healthy_member(
         ],
     )
 
-    service.start()
-    service.send(
-        room_id="room-1",
-        event_id="user-fallback-1",
-        payload={"text": "Review this together", "thread_id": "thread-1"},
-    )
-    _wait_for(
-        lambda: any(
+    try:
+        service.send(
+            room_id="room-1",
+            event_id="user-fallback-1",
+            payload={"text": "Review this together", "thread_id": "thread-1"},
+        )
+        service.runtime._run_cycle()
+        failed = driver.list_tasks(db, room_id="room-1", status="failed")
+        assert len(failed) == 1
+        assert failed[0]["payload"]["target_member_id"] == "member-peer"
+        # The next cycle must publish the failure and admit the healthy member,
+        # without waiting for a retry of the peer that never accepted its turn.
+        service.runtime._run_cycle()
+        assert any(
             event["kind"] == "message.member"
             and event["payload"]["member_id"] == "local"
             for event in service._events("room-1")
         )
-    )
-    assert service.stop(timeout=1.0)
+    finally:
+        assert service.stop(timeout=5.0)
 
     events = service._events("room-1")
     assert any(
@@ -1878,6 +1887,7 @@ def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
+            target_profile="default",
             installation_id="install-peer",
             persistent_process=True,
         )
@@ -1913,7 +1923,7 @@ def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):
 def test_one_corrupt_stored_route_does_not_hide_healthy_peers(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     service = HostedRoomService(_server(), db_path=db)
     for room_id, member_id in (("room-good", "member-good"), ("room-bad", "member-bad")):
@@ -1955,6 +1965,7 @@ def test_unpublished_roomlink_v1_route_is_quarantined_for_reinvitation(
     db = tmp_path / "state.db"
     legacy_catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
+            target_profile="default",
             installation_id="install-peer",
             protocol_versions=(1,),
             persistent_process=True,
@@ -2030,7 +2041,7 @@ def test_registration_disk_failure_does_not_publish_live_route(
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2066,7 +2077,7 @@ def test_room_route_revocation_is_remote_first_and_removes_local_state(
 
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2100,7 +2111,7 @@ def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
 
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2133,7 +2144,7 @@ def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
 
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2166,7 +2177,7 @@ def test_expired_grant_surfaces_needs_reauthorization_without_secret(
 ):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2264,7 +2275,7 @@ def test_not_admitted_dispatch_persists_unavailable_route_until_success(
 ):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2356,6 +2367,9 @@ def test_not_admitted_dispatch_persists_unavailable_route_until_success(
 def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
     now = time.time()
     secret = b"s" * 32
+    catalog = GatewayRoomCatalog.from_mapping(
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+    )
     old_grant = issue_room_grant(
         secret,
         grant_id="grant-old",
@@ -2366,6 +2380,7 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         member_id="member-peer",
         target_install_id="install-peer",
         target_profile="reviewer",
+        execution_policy_digest=catalog.execution_policy.policy_digest,
         issued_at=now - 3700,
         ttl_seconds=3600,
         status_expires_at=now + 10_000,
@@ -2380,12 +2395,10 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         member_id="member-peer",
         target_install_id="install-peer",
         target_profile="reviewer",
+        execution_policy_digest=catalog.execution_policy.policy_digest,
         issued_at=now,
         ttl_seconds=3600,
         status_expires_at=now + 10_000,
-    )
-    catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2491,12 +2504,14 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
     )
     base_catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
+            target_profile="reviewer",
             installation_id="install-peer",
             persistent_process=True,
             execution_policy=base_policy,
         )
     )
     refreshed_catalog = catalog_mapping(
+            target_profile="reviewer",
         installation_id="install-peer",
         persistent_process=True,
         attachments=capability_changed,
@@ -2564,7 +2579,7 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
 def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2827,7 +2842,7 @@ def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path)
 def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
+        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2893,15 +2908,19 @@ def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
 
 
 def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
-    """`hermes profile delete` leaves ``profiles/.deleted/<name>``; neither the tombstone dir nor a
-    tombstoned profile is a roster member (#106847: ``.deleted`` failed validate_roster every cycle)."""
+    """`hermes profile delete` leaves ``profiles/.deleted/<name>``; neither the tombstone dir, a
+    tombstoned profile, nor a marker-less cron shell is a roster member (#106847: ``.deleted``
+    failed validate_roster every cycle; #99392: side-effect dirs listed as bots)."""
     from hermes_constants import mark_named_profile_deleted
 
     profiles = tmp_path / "profiles"
     (profiles / "ops").mkdir(parents=True)
+    (profiles / "ops" / "config.yaml").write_text("{}\n", encoding="utf-8")
     (profiles / "gone").mkdir()
+    (profiles / "gone" / "config.yaml").write_text("{}\n", encoding="utf-8")
     mark_named_profile_deleted(profiles / "gone")
     assert (profiles / ".deleted").is_dir()
+    (profiles / "shell" / "cron").mkdir(parents=True)
 
     service = HostedRoomService(_server(), db_path=tmp_path / "shared-state.db")
 

@@ -25,8 +25,8 @@ def _workflow(name: str) -> dict:
     return yaml.safe_load(
         (_REPO / ".github/workflows" / name).read_text(encoding="utf-8")
     )
-def test_fork_python_suite_uses_public_runner_without_obsolete_sharding():
-    """Fork CI stays on a public runner with bounded concurrency and no stale shard watchdog."""
+def test_fork_python_suite_uses_public_runners_with_shared_assignment(tmp_path):
+    """Each required runner consumes its own immutable file list without dropping paths."""
     workflow = _workflow("tests.yml")
     job = workflow["jobs"]["test"]
     steps = job["steps"]
@@ -34,10 +34,34 @@ def test_fork_python_suite_uses_public_runner_without_obsolete_sharding():
 
     assert job["runs-on"] == "ubuntu-latest"
     assert int(job["timeout-minutes"]) == 60
-    assert "strategy" not in job
-    assert run_tests["run"].strip().endswith("scripts/run_tests.sh")
+    assert job["strategy"]["fail-fast"] is False
+    indexes = job["strategy"]["matrix"]["slice"]
+    assert indexes == list(range(1, len(indexes) + 1))
+    prepare = workflow["jobs"][job["needs"]]
+    assert prepare["runs-on"] == "ubuntu-latest"
+    generate = next(step for step in prepare["steps"] if "--generate-slices" in step.get("run", ""))
+    assert f"--generate-slices {len(indexes)}" in generate["run"]
+    upload = next(step for step in prepare["steps"] if "actions/upload-artifact@" in step.get("uses", ""))
+    download = next(step for step in steps if "actions/download-artifact@" in step.get("uses", ""))
+    assert upload["with"]["name"] == download["with"]["name"]
+    assert run_tests["run"].strip().endswith("scripts/run_tests.sh --files-from test-slice-files.txt")
     assert "timebox_process.py" not in run_tests["run"]
     assert str(run_tests["env"]["HERMES_TEST_WORKERS"]) == "4"
+
+    materialize = next(step for step in steps if "SLICE_INDEX" in step.get("env", {}))
+    source = materialize["run"].split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    slices = [{"index": i, "files": f"tests/part_{i}.py:tests/space {i}.py"} for i in indexes]
+    (tmp_path / "test-slices.json").write_text(json.dumps({"slice": slices}), encoding="utf-8")
+    observed = []
+    for i in indexes:
+        subprocess.run(
+            [sys.executable, "-c", source], cwd=tmp_path,
+            env={**os.environ, "SLICE_INDEX": str(i)}, check=True, timeout=30,
+        )
+        observed.extend((tmp_path / "test-slice-files.txt").read_text(encoding="utf-8").splitlines())
+    expected = [path for item in slices for path in item["files"].split(":")]
+    assert observed == expected
+    assert len(observed) == len(set(observed))
 
 
 @pytest.mark.parametrize(

@@ -268,6 +268,34 @@ def test_hosted_room_shutdown_does_not_block_event_loop(monkeypatch):
     asyncio.run(exercise_shutdown())
 
 
+def test_lifespan_shutdown_joins_statedb_reconcile_worker(monkeypatch):
+    """The eager state.db reconcile runs off the startup path but never outlives
+    the lifespan: shutdown joins it, so its sqlite connection is only ever closed
+    by the thread stepping it (a daemon copy left running had its connection
+    closed cross-thread by teardown and segfaulted the interpreter)."""
+    from fastapi.testclient import TestClient
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    def slow_reconcile():
+        started.set()
+        time.sleep(SLOW_SECONDS)
+        finished.set()
+
+    monkeypatch.setattr(web_server_mod, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(web_server_mod, "_eager_reconcile_own_session_db", slow_reconcile)
+
+    before = time.perf_counter()
+    with TestClient(web_server_mod.app, raise_server_exceptions=False):
+        assert started.wait(timeout=1.0)
+        # Off the startup path: the socket is up long before the worker is done.
+        assert time.perf_counter() - before < SLOW_SECONDS * 0.8
+
+    assert finished.is_set(), "lifespan shutdown returned before the reconcile worker finished"
+    assert not any(t.name == "statedb-eager-reconcile" for t in threading.enumerate())
+
+
 # ---------------------------------------------------------------------------
 # Test 2 — get_status run_in_executor keeps event loop free for other requests
 # ---------------------------------------------------------------------------

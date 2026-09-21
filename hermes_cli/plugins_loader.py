@@ -219,13 +219,9 @@ class PluginLoaderMixin:
             )
 
     def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
-        """Warn about missing declared pip dependencies with an install hint — NEVER auto-install.
-
-        See #64165.
-        python_dependencies is a declaration seam ONLY: Hermes validates and prints the requirements with an
-        install hint but NEVER auto-installs them. The isolation design (constraints installs vs. vendored
-        dirs vs. conflict-detection-and-refusal) is an explicitly deferred follow-up — see the round-2
-        review on #64165 and #15220.
+        """Warn about declared pip dependencies missing at load time. Installing happens at
+        ``hermes plugins install``/``enable`` and after ``hermes update`` (``hermes_cli.plugin_python_deps``)
+        under core constraints; the loader itself never installs — import time is not a consent point.
         """
         deps = manifest.python_dependencies
         if not deps:
@@ -235,9 +231,9 @@ class PluginLoaderMixin:
         if missing:
             logger.warning(
                 "Plugin %s declares Python dependencies that are not "
-                "installed: %s. Hermes does not install plugin dependencies "
-                "automatically; install them yourself, e.g.: pip install %s",
-                key, ", ".join(missing), " ".join(f"'{m}'" for m in missing),
+                "installed: %s. Run `hermes plugins enable %s` to install them, "
+                "or install them yourself: pip install %s",
+                key, ", ".join(missing), key, " ".join(f"'{m}'" for m in missing),
             )
         else:
             logger.debug("Plugin %s python_dependencies satisfied: %s", key, ", ".join(deps))

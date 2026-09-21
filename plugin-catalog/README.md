@@ -16,10 +16,13 @@ meaningful:
 2. **Exact SHA pins are mandatory.** Every entry pins a full 40-character
    commit SHA. Branches, tags, and short SHAs are rejected by the loader.
    Installs clone the repository and check out exactly that commit.
-3. **Pin maturity.** The pinned release should be **at least 2 weeks old**
-   at pin time, mirroring the supply-chain policy used for `optional-mcps/`
-   and pyproject dependencies. This gives the community time to notice a
-   compromised release before Hermes ships a pointer to it.
+3. **No self-updating code.** A listed plugin must not fetch and replace
+   its own files (in-app "check for updates", signed release downloaders,
+   remote `plugin.js` loaders). The exact SHA pin *is* the trust model; a
+   self-updater lets an installed copy move to a commit nobody reviewed.
+   Updates reach users only through a SHA-bump PR here plus
+   `hermes plugins update <name>`. Keep the updater in the standalone
+   distribution if you want one; strip it from the catalog build.
 4. **SHA bumps are new PRs.** Updating an entry's pin is a new PR whose diff
    (old SHA → new SHA) is re-reviewed like any other change — reviewers are
    expected to look at the upstream commit range being adopted.
@@ -36,6 +39,21 @@ meaningful:
    (tools, hooks, middleware, env vars) must match what the plugin actually
    registers at the pinned commit. Validation fails the entry otherwise —
    undeclared capability creep is treated as a security issue.
+7. **The install scanner runs at admission.** `hermes plugins validate` includes
+   the `security scan` check: `dangerous` fails the entry; `caution` findings
+   appear as warnings in the CI log and the reviewer reads them before merging.
+   In exchange, installs at the pinned SHA accept `caution` without a prompt
+   (`dangerous` still blocks). Review the warnings; do not merge past them.
+8. **Desktop plugins stay inside the SDK surface.** A `desktop/plugin.js` runs
+   in the Desktop renderer with the app's full authority (the loader isolates
+   errors, not capabilities), so a listed one may only use the plugin SDK:
+   no prototype patching (`X.prototype.y =`, `Object.defineProperty(...prototype`),
+   no `eval`/`new Function`, no `import()` of anything but `@hermes/plugin-sdk`
+   / `react` (app bundle chunks, blob or http URLs included), no script-tag
+   injection, no reaching into the app's internal stores. `hermes plugins
+   validate` refuses these at admission (`desktop surface` check); a plugin
+   that needs a capability the SDK lacks asks for an SDK hook instead of
+   patching around it.
 
 ## Entry schema
 
@@ -47,8 +65,15 @@ subdir: ""                  # optional path within the repo
 description: One-line description.
 maintainer: OwnerName
 tier: official              # official | community (default community)
+category: memory            # desktop | memory | platform | web | tools | voice | automation | models | general
+                            # (default desktop) — the shelf the entry sits on at /docs/plugins
 requires_hermes: ">=0.19"   # optional
 docs_url: ""                # optional
+version: "1.4.0"            # optional human label for the sha (quote it); shown as "1.4.0 @ abcd1234"
+image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
+                            # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
+screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /docs/plugins/<name>
+readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 capabilities:
   provides_tools: []
@@ -57,6 +82,23 @@ capabilities:
   requires_env: []
 ```
 
+`version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
+used to pick what installs. The sha stays the release; bump `version` in the
+same PR that bumps `sha` so the label on the card matches the code. Images must
+live on `raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com`
+so the Desktop catalog and the docs site never fetch from third-party hosts;
+pin the raw URL to the entry's commit and the picture is as immutable as the
+code.
+
+Every entry gets a page at `https://hermes-agent.nousresearch.com/docs/plugins/<name>`
+and every maintainer a page at `/docs/plugins/by/<maintainer>`, both generated
+from these files at docs build time. `screenshots:` fills the page's gallery;
+the build fetches the README (from `subdir` if set, else the repo root) **at the
+pinned sha** — GitHub and GitLab repos, on by default, `readme: false` opts out — and renders it
+through an allowlist (raw HTML dropped, links and images resolved against the
+pinned tree). The page therefore shows the README the reviewer read, and it
+changes only when a reviewed re-pin lands.
+
 ## removed.yaml — the blocklist
 
 When an entry is pulled from the catalog for security or policy reasons, it
@@ -64,3 +106,16 @@ is recorded in `removed.yaml` with a reason and date. The installer refuses
 to install anything matching a removed entry's name or repo URL, so a
 malicious plugin cannot be re-installed from a stale identifier after
 removal. Removals, like additions, land via reviewed PRs.
+
+Delisting is different from removal: an entry that is merely unmaintained, superseded, or
+squatting a name it is not affiliated with is deleted from the catalog (plain file removal,
+users who already installed it are unaffected) and is welcome back under a distinct name.
+
+## Names
+
+The catalog key and the manifest `name:` are what users search, install, and — for memory
+providers — put in `memory.provider`. A `memory` / `exclusive` entry must not reuse the name of
+another provider or of a well-known upstream project it is not affiliated with: two providers
+registering the same `register_memory_provider` name make `memory.provider` ambiguous
+(whichever loads last wins). Reviewers check the registered provider name, not just the file
+name, and the affiliated project gets the bare key.

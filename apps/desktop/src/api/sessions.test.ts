@@ -11,8 +11,14 @@ vi.mock('./client', () => ({
 
 const client = await import('./client')
 
-const { deleteSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
-  await import('./sessions')
+const {
+  deleteSession,
+  getSession,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote,
+  listSidebarSessions
+} = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
@@ -82,6 +88,21 @@ describe('deleteSession profile scoping', () => {
       connectionId: 'local',
       profile: 'tommy'
     })
+  })
+})
+
+describe('getSession dial priority', () => {
+  it('does not dial an explicitly scoped session read foreground', async () => {
+    // The scope helper tags every explicit scope foreground (#111651); the
+    // cross-profile probe loop in resolveStoredSession would otherwise cold-start
+    // every other profile on the reserved slot during a boot-time resume.
+    hermesApi.mockResolvedValue({ id: 'sess-5' } as never)
+    vi.mocked(client.capabilityScoped).mockReturnValue({ priority: 'foreground', profile: 'tommy' })
+
+    await getSession('sess-5', { connectionId: 'local', profile: 'tommy' })
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({ profile: 'tommy', connectionId: 'local' })
+    expect(hermesApi.mock.calls[0][0]).not.toHaveProperty('priority')
   })
 })
 

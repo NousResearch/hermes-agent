@@ -206,3 +206,58 @@ async def test_non_sse_content_type_does_not_reset_body_budget(httpx_mod):
     async with httpx_mod.AsyncClient(transport=transport) as client:
         with pytest.raises(httpx_mod.ReadError, match="HTTP response exceeds 64 bytes"):
             await client.get("http://mcp.test/rpc")
+
+
+def _sse_client(chunks, limit=64):
+    class _Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for c in chunks:
+                yield c
+
+    async def handler(request):
+        return httpx.Response(
+            200, stream=_Stream(),
+            headers={"content-type": "text/event-stream"},
+        )
+    return _client_for(handler, limit=limit)
+
+
+_EVENT1 = b"data: " + b"a" * 40
+_EVENT2 = b"data: " + b"b" * 40
+# SSE allows CR, LF or CRLF line terminators (mixed too), so a blank line -- the event boundary --
+# is any terminator pair. Every shape, cut at every seam between two chunks.
+_SPLIT_BOUNDARY_CASES = [
+    pytest.param([_EVENT1 + sep[:cut], sep[cut:] + _EVENT2 + sep], id=f"{sep!r}@{cut}")
+    for sep in (b"\n\n", b"\r\r", b"\n\r", b"\r\n\r\n", b"\r\n\n", b"\r\n\r", b"\n\r\n", b"\r\r\n")
+    for cut in range(1, len(sep))
+] + [
+    # A CRLF CRLF boundary dribbled across three chunks.
+    pytest.param([_EVENT1 + b"\r", b"\n\r", b"\n" + _EVENT2 + b"\r\n\r\n"], id="three-way"),
+    # Two completed events in ONE chunk are two budgets, not one lumped charge.
+    pytest.param([_EVENT1 + b"\n\n" + _EVENT2 + b"\n\n"], id="two-events-one-chunk"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunks", _SPLIT_BOUNDARY_CASES)
+async def test_sse_boundary_split_across_chunks_still_resets(chunks):
+    # Each event is under the cap while the two together exceed it: the per-event counter must
+    # reset at every completed boundary regardless of where the network chunked the bytes.
+    # Otherwise the finished event's bytes are charged to the next one and the cap trips early.
+    async with _sse_client(chunks) as client:
+        async with client.stream("GET", "http://mcp.test/sse") as resp:
+            async for _ in resp.aiter_bytes():
+                pass
+
+
+@pytest.mark.asyncio
+async def test_sse_crlf_split_across_chunks_inside_event_is_not_a_boundary():
+    # A lone CRLF ends a line, not the event, even with the \r and \n straddling the chunk seam:
+    # the carry must not turn a mid-event line ending into a boundary, or a multi-line event over
+    # the cap would evade it.
+    chunks = [_EVENT1 + b"\r", b"\n" + _EVENT2 + b"\r\n\r\n"]
+    async with _sse_client(chunks) as client:
+        with pytest.raises(httpx.ReadError, match=r"SSE event exceeds"):
+            async with client.stream("GET", "http://mcp.test/sse") as resp:
+                async for _ in resp.aiter_bytes():
+                    pass

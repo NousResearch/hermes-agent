@@ -67,6 +67,16 @@ def test_set_hidden_unknown_id_still_errors(db):
     assert envelope.get("error"), envelope
 
 
+def test_set_hidden_stored_id_does_not_log_a_rejection(db, caplog):
+    """The stored-id tier is this method's design, not a stale-runtime-id rejection: a fulfilled hide must
+    not emit the "session-scoped RPC rejected … not in memory" warning that diagnoses vanished messages."""
+    _seed(db, "stored-chat")
+    with caplog.at_level("WARNING", logger=srv.logger.name):
+        envelope = _call("session.set_hidden", {"session_id": "stored-chat", "hidden": True})
+    assert "error" not in envelope, envelope
+    assert not [r for r in caplog.records if "session-scoped RPC rejected" in r.getMessage()]
+
+
 def test_session_list_include_hidden(db):
     _seed(db, "plain-chat")
     _seed(db, "bot-chat")
@@ -131,3 +141,16 @@ def test_first_hosted_room_persist_is_pinned_but_ordinary_session_is_not(
 
     assert db.get_session("room-first-prompt")["pinned"] == 1
     assert db.get_session("plain-first-prompt")["pinned"] == 0
+
+
+@pytest.mark.parametrize("source", ["oneshot", "kanban", "tool"])
+def test_session_list_hides_internal_sources(db, source):
+    """Finite one-shot runs (`hermes -z`, `chat -q`) and other non-conversation rows never reach the
+    human picker; interactive rows stay (#112550)."""
+    _seed(db, "plain-chat")
+    db.create_session("internal-run", source=source)
+    db._conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", ("internal-run",))
+    db._conn.commit()
+
+    rows = _call("session.list", {})["result"]["sessions"]
+    assert {s["id"] for s in rows} == {"plain-chat"}

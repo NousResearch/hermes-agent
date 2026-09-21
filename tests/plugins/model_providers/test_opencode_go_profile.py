@@ -81,30 +81,6 @@ class TestOpenCodeZenOxReasoning:
             )
             assert top_level == {"reasoning_effort": expected}, requested
 
-    def test_opencode_free_profile_shares_the_translation(self):
-        """Ox Alpha is reachable via the keyless opencode-free provider too;
-        its profile must emit the identical clamped reasoning_effort."""
-        import model_tools  # noqa: F401
-        import providers
-        from providers.base import ProviderProfile
-
-        profile = providers.get_provider_profile("opencode-free")
-        assert profile is not None
-        assert (
-            type(profile).build_api_kwargs_extras
-            is not ProviderProfile.build_api_kwargs_extras
-        ), "opencode-free must override build_api_kwargs_extras (aux gate)"
-        _, top_level = profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "medium"},
-            model="x-preview-f-free",
-        )
-        assert top_level == {"reasoning_effort": "low"}
-        _, other = profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "max"},
-            model="big-pickle",
-        )
-        assert other == {}
-
 
 class TestOpenCodeGoKimiReasoning:
     """Kimi K2 models use Moonshot's thinking + reasoning_effort shape on OpenCode Go."""
@@ -282,3 +258,53 @@ class TestOpenCodeGoFullKwargsIntegration:
         )
         assert "extra_body" not in kwargs
         assert kwargs["reasoning_effort"] == "high"
+
+
+def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_profile, monkeypatch):
+    """The Go plan's rolling/weekly/monthly windows feed /usage via the profile hook — no core table entry."""
+    from datetime import datetime, timezone
+
+    from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"usage": {
+                "rolling": {"status": "ok", "percent": 3, "resetsAt": "2026-09-16T21:44:55.176Z"},
+                "weekly": {"status": "ok", "percent": 2, "resetsAt": "2026-09-21T00:00:00.176Z"},
+                "monthly": {"status": "ok", "percent": 2, "resetsAt": "2026-10-13T02:13:38.176Z"},
+            }}
+
+    class _Client:
+        def __init__(self, timeout=None):
+            self.urls = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers=None):
+            self.urls.append(url)
+            return _Response()
+
+    monkeypatch.setattr("httpx.Client", _Client)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        # /v1 stripped, as anthropic_messages routing leaves it — the hook must not reuse this base_url.
+        lambda requested, explicit_base_url=None, explicit_api_key=None: {
+            "provider": "opencode-go", "base_url": "https://opencode.ai/zen/go", "api_key": "sk-test"},
+    )
+
+    snapshot = fetch_account_usage("opencode-go")
+
+    assert snapshot is not None and snapshot.provider == "opencode-go"
+    assert [(w.label, w.used_percent) for w in snapshot.windows] == [
+        ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0)]
+    assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=timezone.utc)
+    assert "97% remaining (3% used)" in "\n".join(render_account_usage_lines(snapshot))

@@ -1,5 +1,6 @@
 """Tests for hermes_cli configuration management."""
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -226,7 +227,7 @@ class TestLoadConfigParseFailure:
             assert after["approvals"]["deny"] == ["curl*evil.com*"]
             # Warning says we kept the previous config, not defaults
             err = capsys.readouterr().err
-            assert "previously loaded config" in err
+            assert "settings it loaded before the edit" in err
 
 
 
@@ -294,7 +295,7 @@ class TestSaveAndLoadRoundtrip:
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
-                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                with pytest.raises(RuntimeError, match="this change was not saved"):
                     save_config({"model": "test/replacement"})
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -327,7 +328,7 @@ class TestSaveAndLoadRoundtrip:
         config_path.write_text(original, encoding="utf-8")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(RuntimeError, match="not valid YAML"):
+            with pytest.raises(RuntimeError, match="formatting error"):
                 set_config_value("model.default", "gpt-4o")
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -343,7 +344,7 @@ class TestSaveAndLoadRoundtrip:
         (tmp_path / ".env").write_text("TERMINAL_TIMEOUT=30\n", encoding="utf-8")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(RuntimeError, match="not valid YAML"):
+            with pytest.raises(RuntimeError, match="formatting error"):
                 unset_config_value("terminal.timeout")
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -399,7 +400,7 @@ class TestSaveAndLoadRoundtrip:
         original = "broken: [unterminated\n"
         config_path.write_text(original, encoding="utf-8")
 
-        with pytest.raises(RuntimeError, match="not valid YAML"):
+        with pytest.raises(RuntimeError, match="formatting error"):
             atomic_config_write(config_path, {"model": {"provider": "openai"}})
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -1402,7 +1403,63 @@ class TestEnvWriteDenylist:
         with pytest.raises(ValueError, match="denylist"):
             save_env_value(protected_key, "1")
 
+    @pytest.mark.parametrize(
+        "protected_key",
+        [
+            # git exec helpers / redirection (same mechanism as GIT_SSH_COMMAND)
+            "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_KEY_17",
+            "GIT_CONFIG_VALUE_17",
+            "GIT_SSH", "GIT_ASKPASS", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+            "GIT_PAGER", "GIT_EXTERNAL_DIFF", "GIT_PROXY_COMMAND",
+            "GIT_TEMPLATE_DIR", "GIT_DIR",
+            # credential-prompt exec helpers
+            "SSH_ASKPASS", "SUDO_ASKPASS",
+            # loader families beyond the named members
+            "LD_PROFILE", "DYLD_PRINT_LIBRARIES",
+            # shell init / interactive hooks
+            "BASH_ENV", "ENV", "ZDOTDIR", "PROMPT_COMMAND", "VIMINIT", "EXINIT",
+            # invoked-command injection
+            "MANPAGER",
+            # interpreter / toolchain injection
+            "PERL5OPT", "PERL5LIB", "PERLLIB", "RUBYOPT", "RUBYLIB",
+            "PYTHONBREAKPOINT", "PYTHONCASEOK", "CLASSPATH",
+            "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+            "GOFLAGS", "RUSTFLAGS",
+        ],
+    )
+    def test_exec_influence_keys_are_not_writable(self, protected_key):
+        """Every member of the subprocess-execution class is refused, including the
+        unbounded GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pairs and loader prefixes."""
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value(protected_key, "1")
+
         assert protected_key not in load_env()
+
+    @pytest.mark.parametrize(
+        "allowed_key",
+        [
+            # Non-exec git env names a user may legitimately persist.
+            "GIT_COMMITTER_NAME", "GIT_AUTHOR_NAME", "GIT_TERMINAL_PROMPT",
+            "GIT_EDITOR_WIDE",  # near-miss: not the real GIT_EDITOR
+            # POSIX case: lowercase exec names are different, inert variables.
+            "git_config_parameters", "ld_preload",
+        ],
+    )
+    def test_non_exec_near_misses_still_writable(self, allowed_key):
+        save_env_value(allowed_key, "test-value-123")
+        env = load_env()
+        assert env[allowed_key] == "test-value-123"
+
+    @pytest.mark.parametrize("protected_key", ["Ld_Preload", "Git_Config_Parameters"])
+    def test_windows_policy_denies_mixed_case_exec_names(self, protected_key, monkeypatch):
+        """Windows env names are case-insensitive, so the writer must refuse the mixed-case
+        spelling of a denied exec-influence name too."""
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setattr(config_mod, "_IS_WINDOWS", True)
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value(protected_key, "1")
 
     def test_preexisting_optional_mcps_override_still_loads(self, tmp_path):
         """The writer gate must not migrate or ignore operator-owned .env state."""
@@ -1908,7 +1965,7 @@ class TestConfigCommandFailClosedSurface:
 
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
-        assert "not valid YAML" in err
+        assert "formatting error" in err and "`hermes config edit`" in err
         assert config_path.read_text(encoding="utf-8") == original
 
     def test_config_command_unset_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
@@ -1923,7 +1980,7 @@ class TestConfigCommandFailClosedSurface:
                 config_command(self._args(config_command="unset", key="model.default"))
 
         assert excinfo.value.code == 1
-        assert "not valid YAML" in capsys.readouterr().err
+        assert "formatting error" in capsys.readouterr().err
         assert config_path.read_text(encoding="utf-8") == original
 
 
@@ -1932,6 +1989,111 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
     from hermes_cli.config import _validate_config_key
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
+    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is True
+    assert DEFAULT_CONFIG["gateway"]["auto_multiplex_migration"] is True
+    assert "auto_migrate" not in DEFAULT_CONFIG["gateway"]
     assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
     assert _validate_config_key("gateway.profile_routes") == (True, None)
+    assert _validate_config_key("gateway.auto_multiplex_migration") == (True, None)
+    known, suggestion = _validate_config_key("gateway.auto_migrate")
+    assert known is False
+    assert suggestion == "gateway.auto_multiplex_migration"
+
+
+def test_empty_dict_default_sections_are_open_containers():
+    """``compression.model_thresholds.<model>`` / ``terminal.docker_env.<VAR>`` are free-form
+    mappings declared as ``{}`` in DEFAULT_CONFIG: their user-chosen keys must not be refused as
+    typos, while a real typo under a populated sibling section still gets a suggestion."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["compression"]["model_thresholds"] == {}
+    assert DEFAULT_CONFIG["terminal"]["docker_env"] == {}
+    assert _validate_config_key("compression.model_thresholds.gpt-5") == (True, None)
+    assert _validate_config_key("terminal.docker_env.FOO") == (True, None)
+    assert _validate_config_key("lsp.servers.python.command") == (True, None)
+    assert _validate_config_key("auxiliary.vision.extra_body.reasoning") == (True, None)
+    known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")
+    assert known is False
+    assert suggestion == "compression.model_thresholds"
+
+
+def test_lsp_root_policy_keys_are_recognized_and_off_by_default():
+    """``lsp.warmup_timeout`` / ``broken_retry_seconds`` / ``exclude_roots`` (#116446) must be settable via
+    ``hermes config set`` and must default to today's behaviour (no grace, lifetime broken set, no exclusion)."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["lsp"]["warmup_timeout"] == 0.0
+    assert DEFAULT_CONFIG["lsp"]["broken_retry_seconds"] == 0.0
+    assert DEFAULT_CONFIG["lsp"]["exclude_roots"] == []
+    for key in ("lsp.warmup_timeout", "lsp.broken_retry_seconds", "lsp.exclude_roots"):
+        assert _validate_config_key(key) == (True, None)
+
+
+class TestSaveConfigExplicitPathAuthority:
+    """#113301: the explicit-path evidence that keeps user-set defaults through the strip pass
+    must come from the fail-closed read, not from a second cached read that can yield ``{}``."""
+
+    def test_save_config_on_intact_file_preserves_explicit_defaults(self, tmp_path):
+        # The intact case: an explicit user-set key survives even when its value equals the
+        # schema default, because the raw read supplies the preserve set (#113301's 32→32 row).
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model:\n  provider: test/p\nskills:\n  write_approval: true\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["model"] = "test/other"
+            save_config(config)
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["model"] == "test/other"
+        assert saved["skills"]["write_approval"] is True
+
+    def test_save_survives_cached_raw_read_returning_empty(self, tmp_path):
+        # Real schema sections, each pinned to its (scalar) default value, so the file survives
+        # only if save_config still sees them as explicitly set. ``agent`` is skipped because
+        # canonicalisation rewrites its max_turns shape and would mask the collapse signal.
+        # Only sections whose first value is a scalar: a nested dict/list default would be
+        # stripped element-wise and blur the per-section survival check.
+        sections = {k: v for k, v in DEFAULT_CONFIG.items() if isinstance(v, dict) and v and k != "agent"}
+        chosen = {}
+        for k, v in sections.items():
+            ik, iv = next(iter(v.items()))
+            if not isinstance(iv, (dict, list)):
+                chosen[k] = {ik: iv}
+        assert len(chosen) >= 10, sorted(chosen)  # modest floor: a schema reorder must not fail this
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(chosen), encoding="utf-8")
+
+        with (patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}),
+              patch("hermes_cli.config.read_raw_config", return_value={})):
+            save_config(load_config())
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert set(chosen) <= set(saved), sorted(set(chosen) - set(saved))
+
+
+class TestCompatibleProvidersMalformedLegacyKey:
+    """A non-list ``custom_providers`` must not wipe the merged view (#114605)."""
+
+    def test_string_custom_providers_keeps_providers_view_and_warns(self, caplog):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {
+            "custom_providers": "- name: broken",
+            "providers": {"exl3": {"api": "http://127.0.0.1:8290/v1", "default_model": "m"}},
+        }
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["exl3"]
+        assert any("custom_providers is a str" in r.getMessage() for r in caplog.records)
+
+    def test_list_custom_providers_is_silent(self, caplog):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [{"name": "legacy", "base_url": "http://h/v1"}], "providers": {}}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["legacy"]
+        assert not [r for r in caplog.records if "custom_providers is a" in r.getMessage()]

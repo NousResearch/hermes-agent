@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ModelOptionsResponse } from '@hermes/shared'
+import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
@@ -57,6 +57,8 @@ export const ModelMenuCloseContext = createContext<() => void>(() => {})
  *  `effort` is '' for "inherit the default" and 'none' for thinking off. */
 export interface ModelChoice {
   effort: string
+  /** Level the route actually sends for `effort` (`session.info.reasoning_effort_wire`); '' = unknown. */
+  effortWire?: string
   fast: boolean
   model: string
   provider: string
@@ -149,7 +151,7 @@ export function ModelCatalogMenu({
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, profile, request, sessionId })
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId })
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -491,7 +493,7 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Managed local model loading into memory right now:
@@ -515,8 +517,11 @@ export function ModelCatalogMenu({
                     )
 
                     const meta = [
+                      tag || null,
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort || defaultEffort) : null
+                      (caps?.reasoning ?? true)
+                        ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
+                        : null
                     ]
                       .filter(Boolean)
                       .join(' ')
@@ -573,9 +578,10 @@ export function ModelCatalogMenu({
                           ) : null}
                         </DropdownMenuSubTrigger>
                         <ModelEditSubmenu
-                          canDisableReasoning={caps?.can_disable_reasoning}
+                          canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
                           defaultEffort={defaultEffort}
                           effort={effEffort}
+                          effortWire={isCurrent ? current.effortWire : undefined}
                           fastControl={fastControl}
                           isActive={isCurrent}
                           model={family.id}

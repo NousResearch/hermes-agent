@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  findHalfInstalledGetWindowsDir,
   installGetWindowsNativeBinding,
   stageGetWindows,
   stageGetWindowsInto,
@@ -24,11 +25,11 @@ const { join } = path
 /** Write a fake .node file with the given platform's magic bytes. */
 function makeFakeNode(filePath, platform) {
   const headers = {
-    linux:   Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x00, 0x00, 0x00]), // ELF
+    linux: Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x00, 0x00, 0x00]), // ELF
     // On x64/arm64 Darwin, Mach-O binaries are stored little-endian on disk
     // (MH_CIGAM_64 = cffaedfe). This is the form node-pty's prebuilds ship in.
-    darwin:  Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00, 0x00, 0x00, 0x00]), // Mach-O 64-bit LE (CIGAM_64)
-    win32:   Buffer.from([0x4d, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),  // MZ (PE)
+    darwin: Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0x00, 0x00, 0x00, 0x00]), // Mach-O 64-bit LE (CIGAM_64)
+    win32: Buffer.from([0x4d, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]) // MZ (PE)
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, headers[platform] ?? headers.linux)
@@ -51,7 +52,7 @@ function makeFakeUnixTerminal(srcRoot) {
   fs.writeFileSync(
     join(srcRoot, 'lib', 'unixTerminal.js'),
     [
-      "exports.resolveHelper = function (helperPath) {",
+      'exports.resolveHelper = function (helperPath) {',
       "  helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
       "  helperPath = helperPath.replace('node_modules.asar', 'node_modules.asar.unpacked');",
       '  return helperPath;',
@@ -324,10 +325,7 @@ test.skipIf(process.platform === 'win32')(
       )
 
       assert.equal(stagedUnixTerminal.resolveHelper(unpackedHelper), unpackedHelper)
-      assert.equal(
-        stagedUnixTerminal.resolveHelper(nodeModulesUnpackedHelper),
-        nodeModulesUnpackedHelper
-      )
+      assert.equal(stagedUnixTerminal.resolveHelper(nodeModulesUnpackedHelper), nodeModulesUnpackedHelper)
       assert.equal(
         fs.statSync(join(destRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper')).mode & 0o777,
         0o755
@@ -338,6 +336,52 @@ test.skipIf(process.platform === 'win32')(
     }
   }
 )
+
+// ─── non-ASCII path regression tests ───────────────────────────────
+//
+// Node 24's native fs.cpSync/fs.rmSync mishandle non-ASCII Windows paths
+// (accented user-profile dirs): recursive copies fail or crash, overwrite
+// copies fail with a bogus errno-0 unlink error, and rmSync silently
+// deletes nothing. Staging therefore uses libuv-backed primitives only.
+// This test stages into an accented src/dest tree — twice, so the
+// restage exercises the delete-then-recopy path — to keep it that way.
+
+test('non-ASCII paths: staging into an accented tree works and restages cleanly', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const accented = join(tmp, 'áccentéd ünïcødé-pŕöfílé')
+    const srcRoot = join(accented, 'node-pty')
+    const destRoot = join(accented, 'dest')
+
+    makeFakeNodePty(srcRoot, {
+      prebuildPlatform: process.platform,
+      prebuildArch: process.arch
+    })
+    // Windows prebuilds ship a nested conpty/ payload — cover the
+    // recursive-directory branch on every platform.
+    const conptyDir = join(srcRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'conpty')
+    fs.mkdirSync(conptyDir, { recursive: true })
+    fs.writeFileSync(join(conptyDir, 'conpty.dll'), 'fake dll')
+    fs.writeFileSync(join(conptyDir, 'OpenConsole.exe'), 'fake exe')
+
+    for (let pass = 1; pass <= 2; pass++) {
+      stageNodePtyInto(srcRoot, destRoot, { platform: process.platform, arch: process.arch })
+
+      const stagedPrebuild = join(destRoot, 'prebuilds', `${process.platform}-${process.arch}`)
+      assert.equal(existsSync(join(destRoot, 'package.json')), true, `pass ${pass}: package.json staged`)
+      assert.equal(existsSync(join(destRoot, 'lib', 'index.js')), true, `pass ${pass}: lib staged`)
+      assert.equal(existsSync(join(stagedPrebuild, 'pty.node')), true, `pass ${pass}: prebuild staged`)
+      assert.equal(existsSync(join(stagedPrebuild, 'conpty', 'conpty.dll')), true, `pass ${pass}: conpty dir staged`)
+      assert.equal(
+        existsSync(join(stagedPrebuild, 'conpty', 'OpenConsole.exe')),
+        true,
+        `pass ${pass}: conpty exe staged`
+      )
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
 
 test('validation rejects a staged binary with the wrong platform magic', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
@@ -352,10 +396,7 @@ test('validation rejects a staged binary with the wrong platform magic', () => {
     // Overwrite the prebuild .node with the WRONG platform magic.
     makeFakeNode(join(srcRoot, 'prebuilds', 'linux-x64', 'pty.node'), 'darwin')
 
-    assert.throws(
-      () => stageNodePtyInto(srcRoot, destRoot, { platform: 'linux', arch: 'x64' }),
-      /platform mismatch/i
-    )
+    assert.throws(() => stageNodePtyInto(srcRoot, destRoot, { platform: 'linux', arch: 'x64' }), /platform mismatch/i)
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
@@ -420,21 +461,31 @@ test('win32 staging rejects a binding dir that claims win32 but holds a foreign 
   }
 })
 
-test('win32-x64 staging fails when only foreign bindings exist', () => {
+test('win32-x64 staging degrades to the fail-soft JS surface when only foreign bindings exist', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = msg => warnings.push(String(msg))
   try {
     const srcRoot = join(tmp, 'get-windows')
     const destRoot = join(tmp, 'dest')
 
+    // Half-extracted install (#90829): the package resolves, but lib/binding
+    // holds only the darwin dir the tarball bundles and the installer is a no-op.
     makeFakeGetWindows(srcRoot, {
       bindings: [{ dir: 'napi-9-darwin-unknown-arm64', platform: 'darwin' }]
     })
 
-    assert.throws(
-      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' }),
-      /no win32-x64 prebuilt binding/
+    assert.equal(
+      stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64', install: () => {} }),
+      destRoot
     )
+    assert.ok(existsSync(join(destRoot, 'lib', 'windows.js')))
+    assert.ok(!existsSync(join(destRoot, 'lib', 'binding')))
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /native installer produced no win32-x64 binding/)
   } finally {
+    console.warn = origWarn
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
@@ -474,45 +525,36 @@ test('win32 staging self-heals through the native installer when the binding is 
     let calls = 0
     const install = () => {
       calls += 1
-      makeFakeNode(
-        join(srcRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'),
-        'win32'
-      )
+      makeFakeNode(join(srcRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'), 'win32')
     }
 
     stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64', install })
 
     assert.equal(calls, 1)
-    assert.ok(
-      existsSync(join(destRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node'))
-    )
+    assert.ok(existsSync(join(destRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node')))
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
 
-test('win32 staging rejects a successful installer that produces no binding', () => {
+test('darwin staging degrades (not staged) when the helper binary is missing', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = msg => warnings.push(String(msg))
   try {
     const srcRoot = join(tmp, 'get-windows')
     const destRoot = join(tmp, 'dest')
 
-    makeFakeGetWindows(srcRoot, { bindings: [] })
+    makeFakeGetWindows(srcRoot)
+    fs.rmSync(join(srcRoot, 'main'))
 
-    assert.throws(
-      () =>
-        stageGetWindowsInto(srcRoot, destRoot, {
-          platform: 'win32',
-          arch: 'x64',
-          install: () => {}
-        }),
-      (error) => {
-        assert.match(error.message, /installer completed without producing a win32-x64 binding/)
-        assert.doesNotMatch(error.message, /npm rebuild/)
-        return true
-      }
-    )
+    assert.equal(stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' }), undefined)
+    assert.ok(!existsSync(destRoot), 'a helper-less module must not ship half-staged')
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /missing its macOS helper binary/)
   } finally {
+    console.warn = origWarn
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
@@ -521,14 +563,7 @@ test('get-windows native install invokes node-pre-gyp directly from the package 
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
     const srcRoot = join(tmp, 'get-windows')
-    const installer = join(
-      srcRoot,
-      'node_modules',
-      '@mapbox',
-      'node-pre-gyp',
-      'bin',
-      'node-pre-gyp'
-    )
+    const installer = join(srcRoot, 'node_modules', '@mapbox', 'node-pre-gyp', 'bin', 'node-pre-gyp')
     fs.mkdirSync(path.dirname(installer), { recursive: true })
     fs.writeFileSync(
       join(srcRoot, 'node_modules', '@mapbox', 'node-pre-gyp', 'package.json'),
@@ -575,10 +610,7 @@ test('staging refuses a get-windows version the lib/windows.js rewrite was not v
 
     makeFakeGetWindows(srcRoot, { version: '9.4.0' })
 
-    assert.throws(
-      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' }),
-      /verified against 9\.3\.0/
-    )
+    assert.throws(() => stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' }), /verified against 9\.3\.0/)
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
@@ -605,11 +637,11 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 
 // ─── stageGetWindows (optionalDependency gate) ──────────────────────
 //
-// get-windows is an optionalDependency: on Linux its node-pre-gyp install
-// script fails because no prebuilt exists. Windows ARM64 has the same package
-// state: its prebuilt URL returns 404 and npm may omit the optional dependency.
-// Staging skips those unsupported targets, but supported native targets remain
-// a hard failure when the package is missing.
+// get-windows is an optionalDependency: npm omits it when its install script
+// fails (no prebuilt for Linux / Windows ARM64) and a Windows in-place update
+// can leave it half-extracted when a running Desktop holds files open
+// (#90829). Either way only read_window_below is lost, so staging degrades
+// with a warning on every platform instead of failing the whole build.
 
 test.runIf(process.platform !== 'win32')('darwin staging preserves executable mode on a POSIX filesystem', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
@@ -624,27 +656,65 @@ test.runIf(process.platform !== 'win32')('darwin staging preserves executable mo
   }
 })
 
-test('linux staging skips when get-windows is absent (optional dep skipped by npm)', () => {
-  assert.equal(stageGetWindows({ platform: 'linux', resolveRoot: () => null }), undefined)
-})
-
-test('darwin staging fails when get-windows is absent', () => {
-  assert.throws(
-    () => stageGetWindows({ platform: 'darwin', arch: 'arm64', resolveRoot: () => null }),
-    /get-windows is not installed/
+test('staging degrades (never throws) when get-windows is absent on every platform', () => {
+  const warnings = []
+  const origWarn = console.warn
+  console.warn = msg => warnings.push(String(msg))
+  try {
+    for (const [platform, arch] of [
+      ['linux', 'x64'],
+      ['darwin', 'arm64'],
+      ['win32', 'arm64'],
+      ['win32', 'x64']
+    ]) {
+      assert.equal(
+        stageGetWindows({ platform, arch, resolveRoot: () => null, findHalfInstalledDir: () => null }),
+        undefined,
+        `${platform}-${arch} must degrade`
+      )
+    }
+  } finally {
+    console.warn = origWarn
+  }
+  assert.equal(warnings.length, 4)
+  assert.ok(warnings.every(w => w.includes('read_window_below will be unavailable')))
+  assert.ok(
+    warnings.every(w => !w.includes('half-extracted')),
+    'no repair hint without a stale dir'
   )
 })
 
-test('win32-arm64 staging skips when get-windows is absent after its optional install fails', () => {
-  assert.equal(
-    stageGetWindows({ platform: 'win32', arch: 'arm64', resolveRoot: () => null }),
-    undefined
-  )
-})
+test('a half-installed get-windows dir is found and named in a repair hint', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'half-installed-'))
+  try {
+    // Reporter's state: node_modules/get-windows exists (binding extracted) but
+    // package.json never was, so require.resolve fails while the dir is there.
+    const app = join(tmp, 'apps', 'desktop')
+    const stale = join(tmp, 'node_modules', 'get-windows', 'lib', 'binding')
+    fs.mkdirSync(app, { recursive: true })
+    fs.mkdirSync(stale, { recursive: true })
+    assert.equal(findHalfInstalledGetWindowsDir(app), join(tmp, 'node_modules', 'get-windows'))
 
-test('win32-x64 staging fails when get-windows is absent', () => {
-  assert.throws(
-    () => stageGetWindows({ platform: 'win32', arch: 'x64', resolveRoot: () => null }),
-    /get-windows is not installed/
-  )
+    const warnings = []
+    const origWarn = console.warn
+    console.warn = msg => warnings.push(String(msg))
+    try {
+      stageGetWindows({
+        platform: 'win32',
+        arch: 'x64',
+        resolveRoot: () => null,
+        findHalfInstalledDir: () => findHalfInstalledGetWindowsDir(app)
+      })
+    } finally {
+      console.warn = origWarn
+    }
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /hermes desktop --force-build/)
+    assert.ok(warnings[0].includes(join(tmp, 'node_modules', 'get-windows')))
+
+    fs.rmSync(join(tmp, 'node_modules'), { recursive: true, force: true })
+    assert.equal(findHalfInstalledGetWindowsDir(app), null)
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
 })

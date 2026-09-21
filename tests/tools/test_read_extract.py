@@ -13,6 +13,7 @@ Run with:  python -m pytest tests/tools/test_read_extract.py -v
 import base64
 import json
 import os
+import shlex
 import tempfile
 import unittest
 import zipfile
@@ -443,7 +444,8 @@ class TestNotebookExtraction(unittest.TestCase):
         ])
         text = extract_document_text(p)
         self.assertIn("output chars truncated", text)
-        self.assertIn("— full output: jq -r '.cells[1].outputs' nb_big.ipynb]", text)
+        command = text.split("full output: ", 1)[1].splitlines()[0].removesuffix("]")
+        self.assertEqual(shlex.split(command), ["jq", "-r", ".cells[1].outputs", p])
         self.assertLess(len(text), _MAX_OUTPUT_CHARS + 2000)
 
     def test_oversized_outputs_truncated_v3_jq_hint(self):
@@ -455,14 +457,12 @@ class TestNotebookExtraction(unittest.TestCase):
              "outputs": [{"output_type": "stream",
                           "text": "x" * (_MAX_OUTPUT_CHARS + 5000)}]},
         ]}], "nbformat": 3}
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             json.dump(nb, fh)
         text = extract_document_text(p)
         self.assertIn("output chars truncated", text)
-        self.assertIn(
-            "— full output: jq -r '.worksheets[0].cells[1].outputs' nb_v3_big.ipynb]",
-            text,
-        )
+        command = text.split("full output: ", 1)[1].splitlines()[0].removesuffix("]")
+        self.assertEqual(shlex.split(command), ["jq", "-r", ".worksheets[0].cells[1].outputs", p])
 
     def test_legacy_v3_pyout_flat_fields(self):
         p = os.path.join(self.tmp, "nb_v3.ipynb")
@@ -470,7 +470,7 @@ class TestNotebookExtraction(unittest.TestCase):
             {"cell_type": "code", "source": "1+1",
              "outputs": [{"output_type": "pyout", "text": ["2"]}]},
         ]}], "nbformat": 3}
-        with open(p, "w") as fh:
+        with open(p, "w", encoding="utf-8") as fh:
             json.dump(nb, fh)
         text = extract_document_text(p)
         self.assertIn("Output (cell 1)", text)
@@ -905,3 +905,33 @@ class TestPdfCoverageNote(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSqliteExtraction(unittest.TestCase):
+    def test_sqlite_reads_as_schema_overview_and_non_sqlite_db_is_refused(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as d:
+            db = os.path.join(d, "shop.db")
+            con = sqlite3.connect(db)
+            con.executescript(
+                "CREATE TABLE users(id INTEGER PRIMARY KEY, name TEXT, blob BLOB);"
+                "CREATE INDEX ix_name ON users(name);"
+                "INSERT INTO users VALUES(1,'ann|pipe',x'0011'),(2,'bob',NULL);")
+            con.commit()
+            con.close()
+
+            result = json.loads(read_file_tool(db))
+            content = result["content"]
+            self.assertTrue(result.get("extracted_document"))
+            self.assertIn("## users  (2 rows)", content)
+            self.assertIn("CREATE TABLE users", content)
+            self.assertIn("<blob 2 bytes>", content)  # blobs never enter context raw
+            self.assertIn("ann\\|pipe", content)  # table cell escaping keeps the markdown table intact
+            self.assertIn("index ix_name", content)
+
+            fake = os.path.join(d, "notdb.db")
+            with open(fake, "wb") as fh:
+                fh.write(b"hello, not a database")
+            refused = json.loads(read_file_tool(fake))
+            self.assertIn("not a SQLite database", refused["error"])

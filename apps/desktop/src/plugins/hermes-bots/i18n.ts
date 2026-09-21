@@ -202,6 +202,7 @@ type BotsMessages = {
     slashCommandsUnsupported: string
     attachHint: string
     newThread: string
+    react: string
     reply: string
     replyInThread: string
     replyInThreadPlaceholder: string
@@ -466,6 +467,7 @@ const en: BotsMessages = {
       'Slash commands are not supported in group chats. Open an individual bot chat to use them.',
     attachHint: 'Attach files — every responding bot sees them',
     newThread: 'New Thread',
+    react: 'React',
     reply: 'Reply',
     replyInThread: 'Reply in thread',
     replyInThreadPlaceholder: 'Reply in thread…',
@@ -721,6 +723,7 @@ const ja: BotsMessages = {
       'グループチャットではスラッシュコマンドを使用できません。個別のボットチャットを開いて使用してください。',
     attachHint: 'ファイルを添付 — 応答するすべてのボットが見ます',
     newThread: '新しいスレッド',
+    react: 'リアクション',
     reply: '返信',
     replyInThread: 'スレッドで返信',
     replyInThreadPlaceholder: 'スレッドで返信…',
@@ -971,6 +974,7 @@ const zh: BotsMessages = {
     slashCommandsUnsupported: '群聊不支持斜杠命令。请打开单个机器人的聊天来使用。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
     newThread: '新帖子',
+    react: '回应',
     reply: '回复',
     replyInThread: '在帖子中回复',
     replyInThreadPlaceholder: '在帖子中回复…',
@@ -1221,6 +1225,7 @@ const zhHant: BotsMessages = {
     slashCommandsUnsupported: '群組聊天不支援斜線命令。請開啟個別機器人的聊天來使用。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
     newThread: '新討論串',
+    react: '回應',
     reply: '回覆',
     replyInThread: '在討論串中回覆',
     replyInThreadPlaceholder: '在討論串中回覆…',

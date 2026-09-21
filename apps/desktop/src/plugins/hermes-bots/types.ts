@@ -167,12 +167,24 @@ export interface GroupMessageAuthor {
   gateway?: string
 }
 
+/** One emoji reaction on a room message: one per person per message, tapback
+ *  style (see group-reactions.ts for the toggle + the cap). */
+export interface GroupReaction {
+  /** Epoch seconds — newest wins when the per-message cap trims. */
+  at: number
+  /** Reactor: a member's profile name, or `user` for the human. */
+  by: string
+  emoji: string
+}
+
 export interface GroupMessage {
   /** Milliseconds. */
   at: number
   from: GroupMessageAuthor
   id?: string
   images?: Attachment[]
+  /** Emoji reactions, oldest first — one per person (group-reactions.ts). */
+  reactions?: GroupReaction[]
   text: string
   /** Messages predating threading carry the sentinel thread `'legacy'`. */
   thread?: string

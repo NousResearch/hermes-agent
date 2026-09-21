@@ -23,11 +23,8 @@ as a no-op compatibility alias for existing installation commands.
 > longer activate exporters. Without the new variable, Hermes does not run
 > Relay plugin discovery, configuration layering, middleware, or exporters.
 
-Hermes requires NeMo Relay 0.9 or later within the 0.9 release line. That
-line provides the provider-codec and canonical tool-result contracts Hermes
-uses for managed provider and tool calls, and the owned plugin-host API
-(`plugin.initialize` returning an activation, `plugin.validate`) that Hermes
-builds its process-wide plugin lifecycle on.
+On supported platforms, Hermes requires NeMo Relay 0.9 for managed provider
+and tool calls.
 
 ## Runtime Dependency and Data Boundary
 
@@ -36,18 +33,6 @@ bounded `>=0.9,<0.10` dependency range. The published package is built from
 the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
 Unsupported platforms use the explicit no-op runtime described above rather
 than downloading a different implementation.
-
-Native and worker plugins that register tool execution intercepts must target
-Relay 0.9's `ToolExecutionContext` callback and declare a compatibility range
-beginning at 0.9. Existing native plugins that do not use that callback remain
-supported through Relay's frozen ABI v4, v3, and v2 compatibility.
-
-Hermes passes the selected file to Relay as the explicit plugin configuration.
-Relay reads it in place of the ambient user `plugins.toml`, but the
-operator-managed system file (`/etc/nemo-relay/plugins.toml`, or the
-`%ProgramData%` equivalent) still layers above it, so a system-wide exporter,
-policy, or dynamic plugin applies to Hermes too. For duplicate dynamic plugin
-IDs, the system declaration wins.
 
 When Relay managed execution is active, the provider request and response pass
 through that native module in the Hermes process so configured interceptors can
@@ -73,17 +58,13 @@ This choice is read from the profile's own `config.yaml`. A machine-managed
 configuration overlay cannot enable or disable shared metrics on the profile's
 behalf.
 
-Relay plugin activation is owned by the native runtime and remains explicitly
-opt-in. Set `HERMES_NEMO_RELAY_PLUGINS_TOML` to a selected `plugins.toml` to
-activate configured middleware, exporters, or dynamic plugins. When the
-variable is unset, Hermes does not invoke Relay's plugin initializer, so Relay
-does not perform plugin configuration discovery or layering. When it is set
-and the selected file loads successfully, Relay uses it instead of the ambient
-user `plugins.toml`, then layers the operator-managed system file above it.
-Repository-local `.nemo-relay/plugins.toml` files are ignored. Dynamic
-`[[plugins.dynamic]]` records are resolved from both the selected and system
-files. If the selected file cannot be loaded, Hermes reports the error and does
-not invoke Relay initialization or fall back to ambient discovery.
+Relay plugin activation remains explicitly opt-in. Set
+`HERMES_NEMO_RELAY_PLUGINS_TOML` to select a `plugins.toml`. When set, Relay
+uses that file instead of the user configuration and applies the machine-wide
+system configuration at higher precedence. Repository-local configuration is
+ignored. If the selected file cannot be loaded, Hermes reports the error and
+continues without Relay plugins rather than falling back to another
+configuration.
 
 ## Session-Span Segmentation for Continuous Sessions
 

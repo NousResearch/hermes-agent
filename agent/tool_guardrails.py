@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
+from agent.tool_dispatch_helpers import _append_subdir_hint_to_multimodal, _is_multimodal_tool_result
 from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
 
@@ -434,7 +435,7 @@ class ToolCallGuardrailController:
         return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
 
     def observe_call(
-        self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
+        self, tool_name: str, args: Mapping[str, Any] | None, result: str | Mapping[str, Any] | None,
         *, tool_call_id: str = "", failed: bool = False,
     ) -> IdenticalCallObservation:
         """Track consecutive identical calls; return notice + dedupe stub info.
@@ -445,16 +446,19 @@ class ToolCallGuardrailController:
         semantics survive; pollers are NOT exempt here since an unchanged poll is where it saves most.
         """
         is_plain_str = isinstance(result, str)
+        # A multimodal envelope (e.g. vision_analyze's image dict) fingerprints just like a
+        # string result; only a result with no stable shape to hash (None, or an opaque object) doesn't.
+        fingerprintable = is_plain_str or _is_multimodal_tool_result(result)
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
-        result_hash = _result_hash(result) if is_plain_str else ""
+        result_hash = _result_hash(result) if fingerprintable else ""
 
-        if is_plain_str and (signature, result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
+        if fingerprintable and (signature, result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
             self._identical_streak_count += 1
         else:
-            # New streak; non-string (multimodal) results never form one.
-            self._identical_streak_sig = signature if is_plain_str else None
+            # New streak; results with no stable fingerprint never form one.
+            self._identical_streak_sig = signature if fingerprintable else None
             self._identical_streak_result_hash = result_hash
-            self._identical_streak_count = 1 if is_plain_str else 0
+            self._identical_streak_count = 1 if fingerprintable else 0
             self._identical_streak_first_call_id = tool_call_id or ""
         count = self._identical_streak_count
 
@@ -469,11 +473,11 @@ class ToolCallGuardrailController:
 
         # Batch-cycle detection (oh-my-pi#10521): a repeating multi-call cycle resets the
         # consecutive streak on every alternation, so check the call history for a period-p lap.
-        if is_plain_str:
+        if fingerprintable:
             self._call_history.append((signature, result_hash, is_stall_guard_repeatable(tool_name)))
         else:
             self._call_history.clear()
-        if notice is None and is_plain_str:
+        if notice is None and fingerprintable:
             cycle = self._detect_identical_cycle()
             if cycle is not None:
                 period, laps = cycle
@@ -564,12 +568,16 @@ def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     return json.dumps({"error": decision.message, "guardrail": decision.to_metadata()}, ensure_ascii=False)
 
 
-def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> str:
-    """Append runtime guidance to the current tool result content."""
+def append_toolguard_guidance(result: str | Mapping[str, Any], decision: ToolGuardrailDecision) -> str | Mapping[str, Any]:
+    """Append runtime guidance to the current tool result content (text part, for a multimodal envelope)."""
     if decision.action not in {"warn", "halt"} or not decision.message:
         return result
     label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
-    return (result or "") + f"\n\n[{label}: {decision.code}; count={decision.count}; {decision.message}]"
+    guidance = f"\n\n[{label}: {decision.code}; count={decision.count}; {decision.message}]"
+    if _is_multimodal_tool_result(result):
+        _append_subdir_hint_to_multimodal(result, guidance)
+        return result
+    return (result or "") + guidance
 
 
 def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
@@ -600,9 +608,14 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
 
 
-def _result_hash(result: str | None) -> str:
-    parsed = safe_json_loads(result or "")
-    return _sha256(_canonical_json(parsed) if parsed is not None else (result or ""))
+def _result_hash(result: str | Mapping[str, Any] | None) -> str:
+    if isinstance(result, str) or result is None:
+        parsed = safe_json_loads(result or "")
+        return _sha256(_canonical_json(parsed) if parsed is not None else (result or ""))
+    # Multimodal envelope (or any other mapping): hash the structure directly, no JSON string
+    # to parse. The image data URL inside ``content`` is deterministic base64, so a byte-identical
+    # repeat of the same image still fingerprints identically.
+    return _sha256(_canonical_json(result))
 
 
 _BOOL_WORDS = {w: True for w in ("1", "true", "yes", "on", "enabled")} | {w: False for w in ("0", "false", "no", "off", "disabled")}

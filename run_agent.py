@@ -1270,14 +1270,18 @@ class AIAgent(
 
     def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,
                                       failed: bool, tool_call_id: str = "") -> str:
+        from agent.tool_dispatch_helpers import _append_subdir_hint_to_multimodal, _is_multimodal_tool_result
+
         decision = self._tool_guardrails.after_call(tool_name, function_args, function_result, failed=failed)
         # Identical-call stall guards observe the RAW result (before the per-call loop suffix) and are applied
-        # at result construction so tool results stay append-only / cache-safe.
+        # at result construction so tool results stay append-only / cache-safe. A multimodal envelope
+        # (e.g. vision_analyze's image dict) fingerprints just like a string result; anything else doesn't.
+        is_fingerprintable_result = isinstance(function_result, str) or _is_multimodal_tool_result(function_result)
         stall_notice = result_stub = None
         if self._stall_guards_enabled():
             try:
                 observation = self._tool_guardrails.observe_call(
-                    tool_name, function_args, function_result if isinstance(function_result, str) else None,
+                    tool_name, function_args, function_result if is_fingerprintable_result else None,
                     tool_call_id=tool_call_id, failed=failed,
                 )
                 stall_notice, result_stub = observation.notice, observation.stub
@@ -1298,7 +1302,10 @@ class AIAgent(
                 function_result = append_toolguard_guidance(function_result, streak_halt)
                 self._set_tool_guardrail_halt(streak_halt)
         if stall_notice:
-            function_result = (function_result or "") + "\n\n" + stall_notice
+            if _is_multimodal_tool_result(function_result):
+                _append_subdir_hint_to_multimodal(function_result, "\n\n" + stall_notice)
+            else:
+                function_result = (function_result or "") + "\n\n" + stall_notice
         return function_result
 
     def _stall_guards_enabled(self) -> bool:

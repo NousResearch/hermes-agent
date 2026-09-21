@@ -6,9 +6,22 @@ from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
+    ToolGuardrailDecision,
+    append_toolguard_guidance,
     canonical_tool_args,
     classify_tool_failure,
 )
+
+
+def _vision_envelope(image: str) -> dict:
+    return {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": "Image loaded into your context."},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
+        ],
+        "text_summary": "Image attached natively for the main model.",
+    }
 
 
 def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposing_raw_args():
@@ -242,6 +255,66 @@ def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_poller
     for i in range(6):
         hard.observe_call("terminal", {"command": "date"}, f"t{i}", failed=False)
     assert hard.halt_decision is None
+
+
+def test_identical_multimodal_call_streak_halts_like_string_results():
+    # #117997: vision_analyze (and any other multimodal-envelope tool) returns a dict, not a
+    # string. Before the fix, observe_call() reset the streak AND cleared _call_history for any
+    # non-string result, so identical_call_streak_halt could never fire for it no matter how
+    # many times the same image was reloaded.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=5)
+    )
+    args = {"image_url": "/x/d1.png", "question": "read"}
+    envelope = _vision_envelope("same-bytes")
+    for i in range(1, 5):
+        controller.observe_call("vision_analyze", args, envelope, failed=False)
+        assert controller.halt_decision is None, f"halted early at {i}"
+
+    controller.observe_call("vision_analyze", args, envelope, failed=False)
+    halt = controller.halt_decision
+    assert halt is not None and halt.should_halt
+    assert halt.code == "identical_call_streak_halt"
+    assert halt.tool_name == "vision_analyze" and halt.count == 5
+
+
+def test_identical_multimodal_cycle_halts_like_string_results():
+    # The issue's own repro: a model cycling through the same 4 images over and over. A
+    # per-call streak never forms (the signature/args change every call), but the repeating
+    # cycle must still be caught the same way a string-result cycle already is.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    envelopes = {i: _vision_envelope(f"bytes-{i}") for i in range(1, 5)}
+    for call in range(410):
+        image = call % 4 + 1
+        args = {"image_url": f"/x/d{image}.png", "question": "read"}
+        controller.observe_call("vision_analyze", args, envelopes[image], failed=False)
+        if controller.halt_decision is not None:
+            break
+
+    halt = controller.halt_decision
+    assert halt is not None and halt.should_halt
+    assert halt.code == "identical_cycle_halt"
+    assert call < 409, "should halt well before the incident's 410 calls"
+
+
+def test_append_toolguard_guidance_lands_in_the_multimodal_text_part():
+    # Expected Behavior (B in the issue is out of scope; this is A's second half): the
+    # halt/warning text must be visible to the model, so it goes into the envelope's text part
+    # rather than silently vanishing when naive string concatenation can't apply to a dict.
+    envelope = _vision_envelope("same-bytes")
+    decision = ToolGuardrailDecision(
+        action="halt", code="identical_call_streak_halt", tool_name="vision_analyze",
+        count=5, message="stop reloading the same image",
+    )
+
+    result = append_toolguard_guidance(envelope, decision)
+
+    assert result is envelope
+    assert "identical_call_streak_halt" in result["content"][0]["text"]
+    assert "stop reloading the same image" in result["content"][0]["text"]
+    assert "identical_call_streak_halt" in result["text_summary"]
 
 
 

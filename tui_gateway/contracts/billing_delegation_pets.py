@@ -1,5 +1,6 @@
 """Contracts: billing / subscription / usage envelopes, delegation controls, handoff, message
-reactions, pet generation and ``project.facts`` (handlers in ``tui_gateway/methods_session.py``).
+reactions, pet generation (``tui_gateway/methods_session_pet.py``) and ``project.facts`` (handlers in
+``tui_gateway/methods_session.py``).
 
 Billing routes are FAIL-OPEN: a logged-out / unreachable portal answers an ``ok`` result whose
 ``error`` carries the typed code (``_serialize_billing_error``) — never a JSON-RPC error — so the

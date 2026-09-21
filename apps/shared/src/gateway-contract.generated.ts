@@ -4186,7 +4186,7 @@ export interface PetChangedPayload {
   spritesheetRevision?: string | null
   [key: string]: unknown
 }
-/** ``methods_session`` pet.generate: token-only init frame, then one per draft. */
+/** ``methods_session_pet`` pet.generate: token-only init frame, then one per draft. */
 export interface PetGenerateProgressPayload {
   token: string
   count: number
@@ -4194,7 +4194,7 @@ export interface PetGenerateProgressPayload {
   dataUri?: string | null
   [key: string]: unknown
 }
-/** ``methods_session`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form. */
+/** ``methods_session_pet`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form. */
 export interface PetHatchProgressPayload {
   event: string
   detail?: string | null

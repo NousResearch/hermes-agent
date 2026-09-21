@@ -51,6 +51,7 @@ class ExactFixAncestryRunner:
         base_branch: str,
         *,
         expected_repository: str,
+        require_head_ancestor: bool = True,
     ) -> None:
         head_sha = _full_sha(head_sha, "head_sha")
         fix_sha = _full_sha(fix_sha, "fix_sha")
@@ -69,7 +70,7 @@ class ExactFixAncestryRunner:
             f"refs/heads/{base_branch}:refs/remotes/origin/{base_branch}",
         )
         remote_base = f"refs/remotes/origin/{base_branch}"
-        if not self._is_ancestor(head_sha, fix_sha):
+        if require_head_ancestor and not self._is_ancestor(head_sha, fix_sha):
             raise SupersededFeedbackError(
                 "fix commit is not a descendant of the exact pull request head"
             )
@@ -149,6 +150,7 @@ class SupersededFeedbackController:
         repository_path: Path,
         test_evidence: str,
         git_environment: Mapping[str, str] | None = None,
+        allow_merged: bool = False,
     ) -> SupersededFeedbackResult:
         head_sha = _full_sha(head_sha, "head_sha")
         fix_sha = _full_sha(fix_sha, "fix_sha")
@@ -172,11 +174,12 @@ class SupersededFeedbackController:
             )
 
         initial = self.github.get_pull_request(repository, pr_number)
-        actual_base = self._require_exact_open_pull(
+        actual_base = self._require_exact_pull(
             initial,
             repository=repository,
             pr_number=pr_number,
             head_sha=head_sha,
+            allow_merged=allow_merged,
         )
         self._require_exact_review_comment(repository, pr_number, comment_id)
         initial_thread = self.github.get_review_thread_for_comment(
@@ -198,6 +201,7 @@ class SupersededFeedbackController:
             fix_sha,
             merge_policy.base_branch,
             expected_repository=repository,
+            require_head_ancestor=not allow_merged,
         )
 
         marker = _receipt_marker(
@@ -211,11 +215,12 @@ class SupersededFeedbackController:
         # Last canonical PR read before any write. The actual stacked base is
         # identity too, even though containment is proved against stable.
         current = self.github.get_pull_request(repository, pr_number)
-        current_base = self._require_exact_open_pull(
+        current_base = self._require_exact_pull(
             current,
             repository=repository,
             pr_number=pr_number,
             head_sha=head_sha,
+            allow_merged=allow_merged,
         )
         if current_base != actual_base:
             raise SupersededFeedbackError("pull request base changed")
@@ -266,11 +271,12 @@ class SupersededFeedbackController:
         if not closed_thread.is_resolved:
             raise SupersededFeedbackError("review thread resolution was not confirmed")
         final = self.github.get_pull_request(repository, pr_number)
-        final_base = self._require_exact_open_pull(
+        final_base = self._require_exact_pull(
             final,
             repository=repository,
             pr_number=pr_number,
             head_sha=head_sha,
+            allow_merged=allow_merged,
         )
         if final_base != actual_base:
             raise SupersededFeedbackError("pull request base changed after resolution")
@@ -286,13 +292,14 @@ class SupersededFeedbackController:
             True,
         )
 
-    def _require_exact_open_pull(
+    def _require_exact_pull(
         self,
         pull: PullRequest,
         *,
         repository: str,
         pr_number: int,
         head_sha: str,
+        allow_merged: bool = False,
     ) -> str:
         if pull.base_repository != repository or pull.number != pr_number:
             raise SupersededFeedbackError("pull request repository or number changed")
@@ -307,8 +314,11 @@ class SupersededFeedbackController:
             raise SupersededFeedbackError(
                 f"pull request is outside configured ownership: {admission.reason}"
             )
-        if pull.state != "OPEN":
-            raise SupersededFeedbackError("pull request is not open")
+        allowed_states = {"OPEN"}
+        if allow_merged:
+            allowed_states.add("MERGED")
+        if pull.state not in allowed_states:
+            raise SupersededFeedbackError("pull request is not open or merged")
         return actual_base
 
     def _require_exact_review_comment(

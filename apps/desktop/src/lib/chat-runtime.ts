@@ -17,6 +17,77 @@ const THINKING_STATUS_PREFIX_RE =
 const EMPTY_THINKING_PLACEHOLDER_RE =
   /\b(?:current rewritten thinking|next thinking to process|provide the thinking content|don't see any .*thinking)\b/i
 
+/**
+ * Some providers/gateway combinations serialize the question tool as a
+ * literal assistant message instead of emitting the structured `clarify`
+ * event.  Keep that compatibility case at the text ingress boundary so the
+ * user never sees the internal `cli` envelope as JSON.  This is deliberately
+ * narrow: arbitrary JSON assistant output must remain untouched.
+ */
+function formatLegacyCliQuestions(value: string): string | null {
+  if (!value.trimStart().startsWith('{')) {
+    return null
+  }
+
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return null
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null
+  }
+
+  const envelope = parsed as Record<string, unknown>
+
+  if (envelope.name !== 'cli' || !envelope.args || typeof envelope.args !== 'object') {
+    return null
+  }
+
+  const args = envelope.args as Record<string, unknown>
+  const rawArguments = args.arguments
+
+  if (!rawArguments || typeof rawArguments !== 'object' || Array.isArray(rawArguments)) {
+    return null
+  }
+
+  const questions = (rawArguments as Record<string, unknown>).questions
+
+  if (!Array.isArray(questions)) {
+    return null
+  }
+
+  const formatted = questions.flatMap((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return []
+    }
+
+    const question = (entry as Record<string, unknown>).question
+
+    if (typeof question !== 'string' || !question.trim()) {
+      return []
+    }
+
+    const choices = (entry as Record<string, unknown>).choices
+    const lines = [`${index + 1}. ${question.trim()}`]
+
+    if (Array.isArray(choices)) {
+      lines.push(
+        ...choices
+          .filter((choice): choice is string => typeof choice === 'string' && Boolean(choice.trim()))
+          .map(choice => `   - ${choice.trim()}`)
+      )
+    }
+
+    return lines
+  })
+
+  return formatted.length > 0 ? `I need a little more information before I continue:\n\n${formatted.join('\n')}` : null
+}
+
 export function createClientSessionState(
   storedSessionId: string | null = null,
   messages: ChatMessage[] = []
@@ -59,7 +130,7 @@ export const NEW_SESSION_TITLE = 'New session'
 
 export function coerceGatewayText(value: unknown): string {
   if (typeof value === 'string') {
-    return value
+    return formatLegacyCliQuestions(value) ?? value
   }
 
   if (value === null || value === undefined) {

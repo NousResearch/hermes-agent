@@ -119,10 +119,31 @@ class TestTencentTokenhubModelCatalog:
         assert "tencent-tokenhub" in _PROVIDER_MODELS
         assert len(_PROVIDER_MODELS["tencent-tokenhub"]) >= 1
 
-
     def test_default_model(self):
         from hermes_cli.models import get_default_model_for_provider
         assert get_default_model_for_provider("tencent-tokenhub") == "hy4-preview"
+
+
+class TestTencentTokenplanCatalog:
+    """TokenPlan is a separate catalog from TokenHub: alongside the Hy series it
+    carries Tencent's curated third-party models, so the static fallback for the
+    picker must not be the Hy-only TokenHub list."""
+
+    def test_tokenplan_superset_of_tokenhub(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        hub = _PROVIDER_MODELS["tencent-tokenhub"]
+        plan = _PROVIDER_MODELS["tencent-tokenplan"]
+        assert set(hub) <= set(plan)
+
+    def test_tokenplan_carries_curated_third_party_models(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        plan = _PROVIDER_MODELS["tencent-tokenplan"]
+        for model in ("tc-code-latest", "deepseek-v4-pro-202606", "minimax-m3", "glm-5.3", "kimi-k3"):
+            assert model in plan, f"{model} missing from the TokenPlan catalog"
+
+    def test_tokenhub_stays_hy_only(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert _PROVIDER_MODELS["tencent-tokenhub"] == ["hy4-preview", "hy3", "hy3-preview"]
 
 
 # =============================================================================

@@ -137,6 +137,15 @@ _OPENAI_CHAT_MODELS = [
 ]
 _MINIMAX_MODELS = ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"]
 _TENCENT_MODELS = ["hy4-preview", "hy3", "hy3-preview"]
+# Token Plan (api.lkeap.cloud.tencent.com/plan) is a separate catalog from TokenHub: alongside
+# the Hy series it carries Tencent's curated third-party models. This list is a discovery
+# floor for the picker — a live /models refresh still leads when it succeeds.
+_TENCENT_TOKENPLAN_MODELS = [
+    "hy4-preview", "hy3", "hy3-preview",
+    "tc-code-latest", "deepseek-v4-flash-202605", "deepseek-v4-pro-202606",
+    "minimax-m2.7", "minimax-m3", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3", "glm-5.3-flash",
+    "kimi-k2.7-code", "kimi-k3",
+]
 # Alibaba DashScope Coding platform (coding-intl): Qwen + third-party (GLM, Kimi, MiniMax, DeepSeek).
 # Classic DashScope keys should override DASHSCOPE_BASE_URL to
 # https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat) or /apps/anthropic.
@@ -213,7 +222,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": ["deepseek-flash", "deepseek-v4-pro"],
     "xiaomi": ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"],
     "tencent-tokenhub": list(_TENCENT_MODELS),
-    "tencent-tokenplan": list(_TENCENT_MODELS),
+    "tencent-tokenplan": list(_TENCENT_TOKENPLAN_MODELS),
     "arcee": ["trinity-large-thinking", "trinity-large-preview", "trinity-mini"],
     "gmi": [
         "zai-org/GLM-5.1-FP8", "deepseek-ai/DeepSeek-V3.2", "moonshotai/Kimi-K2.5",
@@ -319,7 +328,11 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
     ("xiaomi", "Xiaomi MiMo", "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
     ("tencent-tokenhub", "Tencent TokenHub", "Tencent TokenHub (Hy4 preview via tokenhub.tencentmaas.com)"),
-    ("tencent-tokenplan", "Tencent TokenPlan", "Tencent TokenPlan (Hy4 preview via api.lkeap.cloud.tencent.com, Anthropic Messages)"),
+    (
+        "tencent-tokenplan",
+        "Tencent TokenPlan",
+        "Tencent TokenPlan (Hy + curated models via api.lkeap.cloud.tencent.com, Anthropic Messages)",
+    ),
     ("nvidia", "NVIDIA NIM", "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ("copilot", "GitHub Copilot", "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ("copilot-acp", "GitHub Copilot ACP", "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),

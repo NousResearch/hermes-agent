@@ -19,7 +19,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
-from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
+from agent.prompt_builder import steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
@@ -550,57 +550,21 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
     return pruned, repairs
 
 
-def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
-    """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
-
-    repairs = 0
-    merged: List[Dict] = []
-    for msg in messages:
-        prev = merged[-1] if merged and isinstance(merged[-1], dict) else None
-        if (
-            prev is not None and prev.get("role") == "user"
-            and isinstance(msg, dict) and msg.get("role") == "user"
-            # A summary carrier followed by a new user row is a deliberate durable shape after
-            # retry/rewind; never mutate the persisted carrier (sanitizers merge copies later).
-            and split_user_originated_turn(prev)[0] is None
-            # A /steer row that ended the previous run is already persisted; merging the next
-            # prompt into it would rewrite it in place and re-break replay parity.
-            and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list) content alone.
-            and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
-        ):
-            prev_content, new_content = prev.get("content", ""), msg.get("content", "")
-            merged_content = (
-                (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
-            )
-            had_api_sidecar = "api_content" in prev
-            prev["content"] = merged_content
-            # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
-            drop_stale_api_content(prev)
-            # Pop the persist marker only when the durable row actually changed: a merge that
-            # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
-            if merged_content != prev_content or had_api_sidecar:
-                prev.pop(_DB_PERSISTED_MARKER, None)
-            repairs += 1
-            continue
-        merged.append(msg)
-    return merged, repairs
-
-
+# Adjacent user messages are canonical source boundaries, not malformed history — each queued
+# turn keeps its own row for attribution. They are merged only on the per-request wire copy by
+# ``drop_thinking_only_and_merge_users`` for strict providers.
 _SEQUENCE_REPAIR_PASSES = (
     _merge_consecutive_assistants, _drop_stray_tool_results, _prune_unanswered_tool_calls,
-    _merge_consecutive_users,
 )
 
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
-    """Collapse malformed role-alternation left in the live history; returns repair count.
-    Providers require strict alternation after the system message (violations: silent empty
-    responses or 400s); this is the pre-call belt for host-fed, resumed or replayed histories.
-    Passes in order: merge consecutive assistant turns (BEFORE orphan detection so the merged
-    tool_call-id union is known); drop stray tool results; prune unanswered tool_calls; merge
-    consecutive user turns. A user turn directly after an assistant turn is valid and left alone.
+    """Collapse malformed assistant/tool structure left in the live history; returns repair count.
+    This is the pre-call belt for host-fed, resumed or replayed histories. Passes in order:
+    merge consecutive assistant turns (BEFORE orphan detection so the merged tool_call-id union
+    is known); drop stray tool results; prune unanswered tool_calls. Adjacent user turns are
+    canonical source boundaries and are deliberately preserved; provider role alternation is
+    repaired on the per-request ``api_messages`` copy by ``drop_thinking_only_and_merge_users``.
     """
     if not messages:
         return 0
@@ -1055,17 +1019,36 @@ def try_recover_primary_transport(
         return False
 
 
+# Explicit semantic boundary retained between two user turns merged for provider alternation.
+# The marker exists only in transient wire content — never canonical history or SessionDB — so
+# the provider sees where one (possibly queued) user turn ended and the next began while each
+# canonical row keeps its own source identity for attribution (hindsight, persistence, display).
+_WIRE_USER_BOUNDARY_TEXT = "[Next user message]"
+
+
 def _merge_user_content(prev_content: Any, cur_content: Any) -> Any:
     """Merged content for two adjacent user messages (``_UNMERGEABLE`` for unknown shapes):
-    string+string joins with a blank line; list sides append as separate blocks."""
+    sides join around an explicit ``[Next user message]`` boundary marker; list sides append
+    as separate blocks with the boundary inserted as its own text block."""
+    boundary_block = {"type": "text", "text": _WIRE_USER_BOUNDARY_TEXT}
     if isinstance(prev_content, str) and isinstance(cur_content, str):
-        return prev_content + ("\n\n" if prev_content and cur_content else "") + cur_content
+        return "\n\n".join(
+            part for part in (prev_content, _WIRE_USER_BOUNDARY_TEXT, cur_content) if part
+        )
     if isinstance(prev_content, list) and isinstance(cur_content, list):
-        return list(prev_content) + list(cur_content)
+        return list(prev_content) + [dict(boundary_block)] + list(cur_content)
     if isinstance(prev_content, list) and isinstance(cur_content, str):
-        return list(prev_content) + ([{"type": "text", "text": cur_content}] if cur_content else [])
+        blocks = list(prev_content) + [dict(boundary_block)]
+        if cur_content:
+            blocks.append({"type": "text", "text": cur_content})
+        return blocks
     if isinstance(prev_content, str) and isinstance(cur_content, list):
-        return ([{"type": "text", "text": prev_content}] if prev_content else []) + list(cur_content)
+        blocks: List[Dict[str, Any]] = []
+        if prev_content:
+            blocks.append({"type": "text", "text": prev_content})
+        blocks.append(dict(boundary_block))
+        blocks.extend(cur_content)
+        return blocks
     return _UNMERGEABLE
 
 
@@ -1078,7 +1061,9 @@ def drop_thinking_only_and_merge_users(
 ) -> List[Dict[str, Any]]:
     """Drop thinking-only assistant turns and merge adjacent user messages left behind, on the
     per-call ``api_messages`` copy only (``agent.messages`` is never mutated). Drop-and-merge
-    (not stub text) keeps history honest and preserves role alternation.
+    (not stub text) keeps history honest and preserves role alternation. Adjacent user rows are
+    merged through ``_merge_user_content``, which retains an explicit ``[Next user message]``
+    boundary marker in the transient wire content; canonical source boundaries stay distinct.
 
     ``drop_nudge_marker`` (#67321): user rows equal to the marker — the synthetic Codex
     continuation nudge — are dropped too once the turn has crossed to a non-Codex provider;
@@ -2674,6 +2659,24 @@ def repair_empty_non_final_messages(messages: List[Dict[str, Any]]) -> List[Dict
     return messages
 
 
+# Transcript-only source/ordering metadata. Persisted for dedup and ordering but not Chat
+# Completions message fields; stripped whenever a canonical message is copied for the wire.
+_API_SOURCE_METADATA_KEYS = (
+    "timestamp",
+    "message_id",
+    "platform_message_id",
+    "_source_message_id",
+)
+
+
+def copy_message_for_api(message: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy one canonical message without transcript-only source metadata."""
+    api_message = message.copy()
+    for key in _API_SOURCE_METADATA_KEYS:
+        api_message.pop(key, None)
+    return api_message
+
+
 def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
     """Classify orphaned tool-call / tool-result pairs; single source of truth for GLOBAL orphan
     detection. Returns ``(surviving_call_ids, result_call_ids, orphaned_results, missing_tool_calls)``;
@@ -3541,7 +3544,7 @@ __all__ = [
     "drop_thinking_only_and_merge_users", "restore_primary_runtime", "extract_reasoning",
     "dump_api_request_debug", "prompt_caching_disabled_from_config", "blank_cache_policy_stub",
     "plan_cache_sections_for_destination", "anthropic_prompt_cache_policy", "create_openai_client",
-    "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages",
+    "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages", "copy_message_for_api",
     "looks_like_codex_intermediate_ack", "copy_reasoning_content_for_api", "cleanup_dead_connections",
     "extract_api_error_context", "apply_pending_steer_to_tool_results", "_iter_pool_sockets",
     "force_close_tcp_sockets",

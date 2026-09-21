@@ -1218,6 +1218,17 @@ def build_api_messages(
         _api_content = api_msg.pop("api_content", None)
         for key in ("display_kind", "display_metadata", "_row_id"):
             api_msg.pop(key, None)
+        # Source ordering/deduplication metadata belongs to the canonical
+        # transcript and SessionDB, never to a provider request. Strip it at
+        # this common API-copy boundary so native Anthropic/Codex paths do not
+        # depend on transport-specific unknown-field filtering.
+        for metadata_key in (
+            "timestamp",
+            "message_id",
+            "platform_message_id",
+            "_source_message_id",
+        ):
+            api_msg.pop(metadata_key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.

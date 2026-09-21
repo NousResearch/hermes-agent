@@ -408,10 +408,11 @@ class MicroCompactionMixin:
         cc = _cc()
         return f"{cc.SUMMARY_PREFIX}\n\n{cc.HISTORICAL_TASK_HEADING}\n{summary_text.strip()}\n\n{cc._SUMMARY_END_MARKER}"
 
-    def _merge_adjacent_user_turns(self, result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Merge consecutive plain-text real user turns left by a supersede. Same ``\\n\\n`` join as
-        ``repair_message_sequence`` pass 2, done here so the marker and cursor are never collateral
-        damage of the downstream repair. Lists untouched."""
+    @staticmethod
+    def _merge_adjacent_user_turns(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge consecutive plain-text real user turns left by a supersede, with a plain ``\\n\\n``
+        join, done here so the marker and cursor are never collateral damage of any downstream
+        repair. Deliberately durable (no wire boundary marker); lists untouched."""
         from agent.turn_context import drop_stale_api_content
 
         def _plain_user(m: Any) -> bool:

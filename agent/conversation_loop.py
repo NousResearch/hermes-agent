@@ -1645,8 +1645,8 @@ def _close_durable_failed_turn(agent, result: Any) -> None:
 
     The terminal-failure paths (content-policy refusal, ``_Trunc.end_turn``, retry exhaustion,
     interrupt before any assistant text) persist the accepted user row and return without
-    reaching ``finalize_turn``; the next prompt then appends a second user row and
-    ``repair_message_sequence`` merges the failed request into the new one. The gateway
+    reaching ``finalize_turn``; the next prompt then appends a second user row, leaving the
+    failed ask in the durable transcript forever as if the user had asked it. The gateway
     compensates with ``_hmwa_close_failed_turn``; CLI, TUI/Desktop and ACP hosts hand
     ``result["messages"]`` straight back as history, so the seam is here.
 

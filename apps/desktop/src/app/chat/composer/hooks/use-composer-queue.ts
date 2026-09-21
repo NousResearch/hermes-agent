@@ -224,8 +224,10 @@ export function useComposerQueue({
             ...(entry.displayText ? { displayText: entry.displayText } : {}),
             ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
             fromQueue: true,
+            messageId: entry.id,
             sessionId: drainRuntimeSessionId,
-            storedSessionId: drainQueueSessionKey
+            storedSessionId: drainQueueSessionKey,
+            submittedAt: entry.queuedAt
           })
         )
 

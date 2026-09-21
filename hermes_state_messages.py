@@ -253,7 +253,8 @@ class SessionMessagesMixin:
         message_timestamp: float, *, keep_reasoning: bool) -> tuple:
         """Bind values for ``_INSERT_MESSAGE_SQL`` from one message dict (*tool_calls* already parsed;
         *keep_reasoning* False NULLs every reasoning column). ``platform_message_id`` falls back to
-        ``message_id`` (yuanbao's message-dict convention)."""
+        ``message_id`` (yuanbao's message-dict convention), then to ``_source_message_id`` (the
+        canonical source identity queued prompts carry)."""
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None  # noqa: E731
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None  # noqa: E731
         encoded_content = self._encode_content(msg.get("content"))
@@ -272,7 +273,7 @@ class SessionMessagesMixin:
             _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
             *(self._reasoning_json_text(_reasoning(k))
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
-            msg.get("platform_message_id") or msg.get("message_id"),
+            msg.get("platform_message_id") or msg.get("message_id") or msg.get("_source_message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))

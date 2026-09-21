@@ -181,9 +181,12 @@ def prepare_iteration(
 
     messages = [msg for msg in messages if not _is_scaffold_ghost(msg)]
 
-    # Repair malformed role alternation (tool→user / user→user tails): providers
-    # return empty content on them and the empty-retry loop spins. The _with_cursor
-    # variant also recomputes the SessionDB flush cursor after compaction.
+    # Repair malformed assistant/tool structure in canonical history (split
+    # assistant turns, orphaned tool results). Adjacent user source messages are
+    # canonical boundaries and stay distinct; strict-provider user alternation is
+    # repaired later on the per-request copy by drop_thinking_only_and_merge_users.
+    # The _with_cursor variant also recomputes the SessionDB flush cursor after
+    # compaction.
     from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
     repaired_seq = repair_message_sequence_with_cursor(agent, messages)
     if repaired_seq > 0:

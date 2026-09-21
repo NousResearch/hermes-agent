@@ -245,6 +245,11 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         # Durable row identity (_rows_to_conversation); reactions etc. address persisted messages by it.
         if m.get("_row_id") is not None:
             msg["row_id"] = m["_row_id"]
+        # Source identity of the turn that owned this prompt (queued submissions stay
+        # attributable after reorder/replay). Display-only, like ``timestamp``/``row_id``.
+        source_message_id = m.get("message_id") or m.get("_source_message_id") or m.get("platform_message_id")
+        if source_message_id is not None:
+            msg["message_id"] = source_message_id
         # A user turn shows its skill invocation, never the expanded body (rewind re-sends by ordinal).
         invocation = _skill_scaffold_projection(content_text) if role == "user" else ""
         if invocation:
@@ -285,6 +290,7 @@ def _inflight_text(value: Any) -> str:
 def _start_inflight_turn(
     session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None,
+    submitted_at: float | None = None, message_id: str | None = None,
 ) -> None:
     now = time.time()
     turn = {
@@ -295,6 +301,10 @@ def _start_inflight_turn(
         turn["display_kind"] = display_kind
     if isinstance(display_metadata, dict):
         turn["display_metadata"] = dict(display_metadata)
+    if submitted_at is not None:
+        turn["submitted_at"] = submitted_at
+    if message_id is not None:
+        turn["message_id"] = message_id
     session["inflight_turn"] = turn
 
 

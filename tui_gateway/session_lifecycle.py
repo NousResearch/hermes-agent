@@ -718,6 +718,9 @@ def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> Non
     # See #83716.
     if transport is not _detached_ws_transport:
         _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
+    # A queued prompt pinned to the socket that just died follows the resume home: it streams
+    # back to the live client when drained. Live pins keep their per-item FIFO routing.
+    _rebind_queued_source_transports(session, transport, migrate_dead=True)
 
 
 def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:

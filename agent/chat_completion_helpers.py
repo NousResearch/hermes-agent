@@ -2147,9 +2147,12 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # MoA: agent.model is the virtual preset; use the real aggregator so Gemini keeps thought_signature.
         agg_slot = getattr(getattr(agent, "client", None), "last_aggregator_slot", None)
         sanitize_model = (agg_slot or {}).get("model") or sanitize_model
+    # Shared copy policy: transcript-only source metadata (timestamp, message_id,
+    # platform_message_id, _source_message_id) never reaches a provider request.
+    from agent.agent_runtime_helpers import copy_message_for_api
     api_messages = []
     for msg in messages:
-        api_msg = msg.copy()
+        api_msg = copy_message_for_api(msg)
         agent._copy_reasoning_content_for_api(msg, api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
             api_msg.pop(key, None)

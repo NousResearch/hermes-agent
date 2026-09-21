@@ -910,7 +910,6 @@ class SessionSchemaMixin:
         finally:
             cursor.execute("PRAGMA foreign_keys=ON")
 
-
     def _heal_polluted_gateway_delegate_markers(self, cursor: sqlite3.Cursor) -> None:
         """Strip ``_delegate_from`` from gateway main rows (``session_key`` set).
 

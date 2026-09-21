@@ -158,3 +158,131 @@ def test_startup_heal_strips_polluted_gateway_row(tmp_path):
         assert sid in _listed_ids(healed)
     finally:
         healed.close()
+
+
+def test_insert_does_not_mutate_caller_model_config(db):
+    """Strip must copy; callers may reuse the same dict for a child spawn."""
+    sid = "gw_insert_no_mutate"
+    caller_cfg = {
+        "_delegate_from": PARENT,
+        "_reset_from": PARENT,
+    }
+    db.create_session(
+        sid,
+        "telegram",
+        user_id="410541755",
+        session_key=SK + ":nomutate",
+        chat_id="410541755",
+        chat_type="dm",
+        model_config=caller_cfg,
+    )
+    assert caller_cfg.get("_delegate_from") == PARENT
+    assert "_delegate_from" not in _mc(db.get_session(sid))
+
+
+def test_insert_empty_session_key_keeps_delegate_from(db):
+    """Empty string is not a gateway key (same as heal: session_key != '')."""
+    sid = "empty_key_keep"
+    db.create_session(
+        sid,
+        "delegate",
+        parent_session_id=PARENT,
+        session_key="",
+        model_config={"_delegate_from": PARENT},
+    )
+    assert _mc(db.get_session(sid)).get("_delegate_from") == PARENT
+
+
+def test_merge_sole_delegate_from_becomes_null(db):
+    """Stripping the only key must store NULL, not '{}'."""
+    sid = "gw_merge_empty"
+    db.create_session(
+        sid,
+        "telegram",
+        user_id="410541755",
+        session_key=SK + ":merge_empty",
+        chat_id="410541755",
+        chat_type="dm",
+    )
+    db.patch_session_model_config(sid, {"_delegate_from": PARENT})
+    raw = db.get_session(sid).get("model_config")
+    assert raw is None or raw == {} or raw == "{}"
+    assert "_delegate_from" not in _mc(db.get_session(sid))
+
+
+def test_merge_missing_row_is_noop(db):
+    """patch on a missing id must not raise (on_missing=skip)."""
+    db.patch_session_model_config("no_such_session", {"_delegate_from": PARENT})
+    assert db.get_session("no_such_session") is None
+
+
+def test_startup_heal_sole_marker_becomes_null(tmp_path):
+    """Heal must store NULL when json_remove leaves only '{}'."""
+    db_path = tmp_path / "heal_null.db"
+    store = SessionDB(db_path=db_path)
+    store.create_session(PARENT, "cli")
+    sid = "gw_heal_null"
+    store.create_session(
+        sid,
+        "telegram",
+        user_id="410541755",
+        session_key=SK + ":heal_null",
+        chat_id="410541755",
+        chat_type="dm",
+    )
+    with store._lock:
+        store._conn.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = ?",
+            (json.dumps({"_delegate_from": PARENT}), sid),
+        )
+        store._conn.commit()
+    store.close()
+
+    healed = SessionDB(db_path=db_path)
+    try:
+        row = healed.get_session(sid)
+        raw = row.get("model_config")
+        assert raw is None or raw == {} or raw == "{}"
+        assert "_delegate_from" not in _mc(row)
+    finally:
+        healed.close()
+
+
+def test_startup_heal_leaves_child_without_session_key(tmp_path):
+    """Heal must not strip _delegate_from from delegate children."""
+    db_path = tmp_path / "heal_child.db"
+    store = SessionDB(db_path=db_path)
+    store.create_session(PARENT, "cli")
+    sid = "delegate_child_heal_keep"
+    store.create_session(
+        sid,
+        "delegate",
+        parent_session_id=PARENT,
+        model_config={"_delegate_from": PARENT},
+    )
+    # Also plant a polluted gateway row so the heal UPDATE actually runs
+    # (probe returns a hit) rather than short-circuiting before children
+    # could be touched by a buggy WHERE clause.
+    gw = "gw_heal_sibling"
+    store.create_session(
+        gw,
+        "telegram",
+        user_id="410541755",
+        session_key=SK + ":heal_sibling",
+        chat_id="410541755",
+        chat_type="dm",
+    )
+    with store._lock:
+        store._conn.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = ?",
+            (json.dumps({"_delegate_from": PARENT, "_reset_from": PARENT}), gw),
+        )
+        store._conn.commit()
+    store.close()
+
+    healed = SessionDB(db_path=db_path)
+    try:
+        assert _mc(healed.get_session(sid)).get("_delegate_from") == PARENT
+        assert "_delegate_from" not in _mc(healed.get_session(gw))
+    finally:
+        healed.close()

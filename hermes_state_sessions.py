@@ -335,8 +335,14 @@ class SessionSessionsMixin:
             profile_name = self._own_profile_name()
         # Invariant: a gateway main session (session_key set) must never carry
         # _delegate_from — that marker hides the row from every picker while
-        # the gateway keeps routing into it (#109073).
-        if model_config and session_key and "_delegate_from" in model_config:
+        # the gateway keeps routing into it (#109073). Empty string is treated
+        # like NULL (same predicate as the startup heal).
+        if (
+            model_config
+            and session_key is not None
+            and session_key != ""
+            and "_delegate_from" in model_config
+        ):
             model_config = {k: v for k, v in model_config.items() if k != "_delegate_from"}  # type: ignore[assignment]
             logger.warning(
                 "Stripped _delegate_from from gateway session %s (session_key=%r) at insert",
@@ -749,13 +755,11 @@ class SessionSessionsMixin:
                 config[key] = value
         # Invariant: gateway rows (session_key set) must never carry _delegate_from
         # (#109073) — a polluted marker makes the main chat vanish from every
-        # picker while the gateway keeps routing into it.
+        # picker while the gateway keeps routing into it. Empty string matches
+        # the heal predicate (session_key IS NOT NULL AND session_key != '').
         if "_delegate_from" in config:
-            try:
-                sk = row[1] if len(row) > 1 else None
-            except Exception:
-                sk = None
-            if sk:
+            sk = row["session_key"]
+            if sk is not None and sk != "":
                 config.pop("_delegate_from", None)
                 logger.warning(
                     "Stripped _delegate_from from gateway session %s (session_key=%r) at merge",

@@ -82,33 +82,89 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
     https_request = _sanitize
 
 
-def _resolved_https_context() -> ssl.SSLContext | None:
-    """Return the explicit CA context for Hermes-owned urllib openers."""
+# Loading a CA bundle parses every certificate in it (certifi is ~230 KB / ~119 certs, ~4 ms), and
+# this runs for EVERY Hermes-owned request: no opener is ever installed globally, so the branch in
+# _secure_opener_from_installed_policy that builds one is taken every time. The result depends only
+# on which bundle files get read, so it is memoised on their (path, mtime, size) — resolving that
+# is a stat, not a parse, so an edited, rotated or reconfigured bundle is still picked up on the
+# next request.
+#
+# The context is SHARED, never handed out for mutation: callers that need different TLS settings
+# pass their own ``ssl_context`` (see _secure_opener_from_installed_policy), and the only in-tree
+# mutator (``hermes_cli.models``) builds its own context. Reusing one context across connections is
+# the same thing requests/httpx do — ``agent.ssl_verify._context_for_ca_bundle`` already shares one
+# per bundle for the httpx clients; this is the urllib half of it. No lock: a race costs one
+# duplicate parse, and either context is equally valid.
+_HTTPS_CONTEXT_CACHE: tuple[tuple, ssl.SSLContext | None] | None = None
+
+
+def _ca_bundle_candidates() -> tuple[str, ...]:
+    """Bundles to try in order; empty keeps the stdlib default.
+
+    Resolving the candidates and loading them are split so the memo below can key on the files that
+    are actually going to be read — one precedence rule, not one for the loader and a second for the
+    cache key that could drift away from it.
+    """
+    candidates: list[str] = []
     ca_bundle = next((value for name in _CA_BUNDLE_ENV_VARS if (value := os.getenv(name, "").strip())), "")
     if ca_bundle:
         ca_path = Path(ca_bundle).expanduser()
         if ca_path.is_file():
-            try:
-                return ssl.create_default_context(cafile=str(ca_path))
-            except (OSError, ssl.SSLError) as exc:
-                logger.warning(
-                    "CA bundle could not be loaded from %s: %s — falling back to default certificates",
-                    ca_bundle, exc,
-                )
+            candidates.append(str(ca_path))
         else:
             logger.warning("CA bundle path does not exist: %s — falling back to default certificates", ca_bundle)
 
-    if sys.platform != "darwin":
-        return None
-    try:
-        import certifi
+    # Python on macOS has no usable system root store, so certifi stays the last resort even when a
+    # configured bundle was found but turns out to be unloadable.
+    if sys.platform == "darwin":
+        try:
+            import certifi
 
-        return ssl.create_default_context(cafile=certifi.where())
-    except (ImportError, OSError, ssl.SSLError) as exc:
-        logger.warning(
-            "Could not load certifi for urllib HTTPS verification: %s — falling back to default certificates", exc
-        )
-        return None
+            candidates.append(certifi.where())
+        except ImportError as exc:
+            logger.warning(
+                "Could not load certifi for urllib HTTPS verification: %s — falling back to default certificates",
+                exc,
+            )
+    return tuple(candidates)
+
+
+def _bundle_signature(path: str) -> tuple:
+    """``(path, mtime_ns, size)`` so an edited or rotated bundle invalidates the memo."""
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return (path, None, None)
+    return (path, stat.st_mtime_ns, stat.st_size)
+
+
+def _resolved_https_context() -> ssl.SSLContext | None:
+    """Return the shared explicit-CA context for Hermes-owned urllib openers.
+
+    Memoised on the resolved bundle's signature; the returned context is shared and must not be
+    mutated by callers.
+    """
+    global _HTTPS_CONTEXT_CACHE
+
+    candidates = _ca_bundle_candidates()
+    key = tuple(_bundle_signature(path) for path in candidates)
+    cached = _HTTPS_CONTEXT_CACHE
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    context = _build_https_context(candidates)
+    _HTTPS_CONTEXT_CACHE = (key, context)
+    return context
+
+
+def _build_https_context(candidates: tuple[str, ...]) -> ssl.SSLContext | None:
+    for path in candidates:
+        try:
+            return ssl.create_default_context(cafile=path)
+        except (OSError, ssl.SSLError) as exc:
+            logger.warning(
+                "CA bundle could not be loaded from %s: %s — falling back to default certificates", path, exc
+            )
+    return None
 
 
 def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None):

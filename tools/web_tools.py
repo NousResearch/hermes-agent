@@ -379,8 +379,15 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
 
         results = []
         if safe_urls:
-            backend = _get_extract_backend()
+            # Ensure web plugins are loaded BEFORE resolving the backend, so
+            # user-installed providers (e.g. trafilatura) are registered in the
+            # web_search_registry by the time _get_extract_backend() probes
+            # _is_backend_available(). Without this, backend resolution falls
+            # through to the legacy fallback (ddgs) because the user plugin
+            # hasn't registered yet.
             _ensure_web_plugins_loaded()
+
+            backend = _get_extract_backend()
             provider, error_json = _resolve_extract_provider(backend)
             if error_json is not None:
                 return error_json

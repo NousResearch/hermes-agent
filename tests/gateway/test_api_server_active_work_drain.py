@@ -211,13 +211,13 @@ class TestDrainWaitsForApiWork:
 
         runner, _adapter = make_restart_runner()
         runner._running_agents = {"session-1": MagicMock()}
-        sched._running_job_ids.add("job-1")
+        sched._running_job_ids.add(sched._inflight_key("job-1"))
         runner.adapters = {Platform.API_SERVER: _make_api_adapter(queued_ids=["run-1"])}
 
         async def finish_all():
             await asyncio.sleep(0.12)
             runner._running_agents.clear()
-            sched._running_job_ids.discard("job-1")
+            sched._running_job_ids.discard(sched._inflight_key("job-1"))
             runner.adapters[Platform.API_SERVER]._active_run_tasks.clear()
 
         task = asyncio.create_task(finish_all())
@@ -225,7 +225,7 @@ class TestDrainWaitsForApiWork:
             _snapshot, timed_out = await runner._drain_active_agents(2.0)
         finally:
             await task
-            sched._running_job_ids.discard("job-1")
+            sched._running_job_ids.discard(sched._inflight_key("job-1"))
 
         assert timed_out is False
 

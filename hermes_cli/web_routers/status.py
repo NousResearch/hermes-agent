@@ -118,6 +118,23 @@ async def get_health():
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
+@router.get("/api/host/identity")
+async def get_host_identity(request: Request):
+    """Prove to an attaching `hermes serve`/`dashboard` WHO owns this port.
+
+    The host rendezvous record names a (pid, port) owner, but a record cannot say whether that
+    owner still holds the port: a graceful-shutdown window or an unrelated listener that
+    inherited the port both look identical on disk. The attaching side dials this endpoint with
+    the owner's 0600 token and attaches only when pid+role match. ``servesSpa`` is false for
+    headless ``serve``, so a `hermes dashboard` user is never routed to a backend with no UI.
+    """
+    _require_token(request)
+    # ``role`` is the host ROLE this process owns (gateway/host_rendezvous.ROLE_SERVE), not the
+    # launch mode: `hermes serve` and `hermes dashboard` are one host role that differ in SPA.
+    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(), "role": "serve",
+            "servesSpa": bool(getattr(app.state, "serves_spa", False))}
+
+
 @router.get("/api/health/idle")
 async def get_health_idle(request: Request):
     """Token-gated diagnostic snapshot; never a retirement permit. None means cannot prove idle."""

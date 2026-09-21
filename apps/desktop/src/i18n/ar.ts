@@ -2234,6 +2234,8 @@ export const ar = defineLocale({
     }
   },
   statusStack: {
+    hideStack: 'إخفاء لوحة الحالة',
+    showStack: 'إظهار لوحة الحالة',
     agents: 'الوكلاء',
     background: count => `${count} في الخلفية`,
     goalActive: 'الهدف نشط',

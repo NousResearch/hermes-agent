@@ -154,6 +154,8 @@ fill/shadow), `ghost`, `floating` (a control loose from any surface — opaque
 popover fill + `shadow-md`, hover lifts the glyph only), `link`, `text`
 (boxless quiet inline — "Cancel", "Clear"), `textStrong` (bold underlined
 inline affordance — "Change", "Open logs").
+`grip` is the quiet, fill-free drawer handle; pair it with size `grip` for a
+48×16 hit area around a small horizontal ridge.
 
 **Sizes:** `default`, `xs`, `sm`, `lg`, `inline` (flush, zero box — for buttons
 that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
@@ -346,6 +348,10 @@ so glass and message-bubble transparency do not reveal scrolling text.
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain
   visible at the bottom of the stack, below the queue and all status groups.
+  A centered ridge on the composer's top edge hides/reveals the entire stack,
+  including the git row, with a short downward/upward drawer slide. Its choice
+  persists per conversation and owner, not globally. Hidden sections stay
+  mounted but inert so their disclosure choices survive; reduced motion is instant.
 - Popping out a composer makes it the window's only visible composer. It keeps
   its viewport placement while hover or keyboard focus selects a chat pane;
   moving back into the editor retains that recipient. Drafts, attachments and

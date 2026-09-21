@@ -3175,6 +3175,8 @@ export const en: Translations = {
   },
 
   statusStack: {
+    hideStack: 'Hide status stack',
+    showStack: 'Show status stack',
     agents: 'Agents',
     background: count => `${count} Background`,
     goalActive: 'Goal active',

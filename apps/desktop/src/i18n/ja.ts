@@ -2604,6 +2604,8 @@ export const ja = defineLocale({
   },
 
   statusStack: {
+    hideStack: 'ステータススタックを隠す',
+    showStack: 'ステータススタックを表示',
     agents: 'エージェント',
     background: count => `バックグラウンド ${count} 件`,
     goalActive: '目標進行中',

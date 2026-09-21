@@ -3315,6 +3315,8 @@ export const zh = defineLocale({
   },
 
   statusStack: {
+    hideStack: '隐藏状态面板',
+    showStack: '显示状态面板',
     agents: '代理',
     background: count => `${count} 个后台任务`,
     goalActive: '目标进行中',

@@ -2589,6 +2589,8 @@ export const zhHant = defineLocale({
   },
 
   statusStack: {
+    hideStack: '隱藏狀態面板',
+    showStack: '顯示狀態面板',
     agents: '代理',
     background: count => `${count} 個背景任務`,
     goalActive: '目標進行中',

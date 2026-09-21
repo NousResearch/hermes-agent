@@ -10,6 +10,7 @@ repo with per-project ``refs/hermes/<hash16>``, ``indexes/<hash16>``, ``projects
 with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE so nothing leaks into the user's project.
 """
 
+import contextlib
 import hashlib
 import itertools
 import json
@@ -1046,11 +1047,45 @@ def _sweep(entries, result: Dict[str, int], delete) -> None:
             delete(item, reason)
 
 
+def _rmtree_make_writable(func, path, exc):
+    """onexc/onerror handler: make path writable on permissionerror and retry."""
+    if isinstance(exc, tuple):
+        exc = exc[1]
+    if not isinstance(exc, PermissionError):
+        raise exc
+    for target in (path, os.path.dirname(path)):
+        if target:
+            with contextlib.suppress(OSError):
+                os.chmod(target, os.stat(target).st_mode | stat_mod.S_IWUSR)
+    func(path)
+
+
+def _safe_rmtree(target: Path) -> None:
+    """rmtree with permission error handling for windows read-only git objects and transient locks."""
+    attempts = 3
+    last_exc: Optional[OSError] = None
+    for attempt in range(attempts):
+        try:
+            try:
+                shutil.rmtree(target, onexc=_rmtree_make_writable)
+            except TypeError:
+                shutil.rmtree(target, onerror=_rmtree_make_writable)
+            return
+        except OSError as exc:
+            last_exc = exc
+            if not target.exists():
+                return
+            if attempt < attempts - 1:
+                time.sleep(0.05 * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+
+
 def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str, label) -> None:
     """rmtree ``child``, crediting bytes + ``result[key]``; failures count as ``errors`` when tracked."""
     try:
         size = _dir_size_bytes(child)
-        shutil.rmtree(child)
+        _safe_rmtree(child)
         result["bytes_freed"] += size
         result[key] += 1
     except OSError as exc:
@@ -1271,7 +1306,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        _safe_rmtree(base)
         out.update(bytes_freed=size, deleted=True)
     except OSError as exc:
         logger.warning("Could not clear checkpoint base %s: %s", base, exc)

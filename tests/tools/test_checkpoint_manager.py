@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import stat as stat_mod
 import subprocess
 import time
 import pytest
@@ -26,6 +27,7 @@ from tools.checkpoint_manager import (
     store_status,
     clear_all,
     clear_legacy,
+    _safe_rmtree,
 )
 
 
@@ -1238,6 +1240,84 @@ class TestClearFunctions:
         assert not legacy.exists()
         # Store preserved
         assert (base / "store" / "HEAD").exists()
+
+    def test_clear_all_removes_readonly_git_objects(self, tmp_path, monkeypatch, work_dir):
+        # ensure clear_all wipes trees even when git objects or dirs are marked read-only
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        m = CheckpointManager(enabled=True)
+        m.ensure_checkpoint(str(work_dir), "initial")
+        assert base.exists()
+
+        obj_dir = base / "store" / "objects"
+        for root, dirs, files in os.walk(obj_dir):
+            for f in files:
+                os.chmod(os.path.join(root, f), stat_mod.S_IREAD)
+            for d in dirs:
+                os.chmod(os.path.join(root, d), stat_mod.S_IREAD | stat_mod.S_IEXEC)
+
+        result = clear_all()
+        assert result["deleted"] is True
+        assert not base.exists()
+
+    def test_clear_all_handles_windows_readonly_permission_error(self, tmp_path, monkeypatch):
+        # test that permissionerror on read-only file triggers chmod +w and retries unlink
+        base = tmp_path / "checkpoints"
+        base.mkdir()
+        sub = base / "store" / "objects" / "0f"
+        sub.mkdir(parents=True)
+        obj = sub / "ro_file"
+        obj.write_bytes(b"blob data")
+        obj.chmod(stat_mod.S_IREAD)
+
+        real_unlink = os.unlink
+
+        def fake_unlink(p, *args, **kwargs):
+            st = os.stat(p, dir_fd=kwargs.get("dir_fd"))
+            if not (st.st_mode & stat_mod.S_IWUSR):
+                raise PermissionError(13, f"access is denied: {p}")
+            return real_unlink(p, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", fake_unlink)
+        result = clear_all(checkpoint_base=base)
+        assert result["deleted"] is True
+        assert not base.exists()
+
+    def test_clear_legacy_removes_readonly_archives(self, tmp_path, monkeypatch):
+        # legacy archive cleanup handles read-only files cleanly
+        base = tmp_path / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        legacy = base / "legacy-20200101-000000"
+        legacy.mkdir(parents=True)
+        f = legacy / "ro_file"
+        f.write_text("old archive")
+        f.chmod(stat_mod.S_IREAD)
+        legacy.chmod(stat_mod.S_IREAD | stat_mod.S_IEXEC)
+
+        result = clear_legacy()
+        assert result["deleted"] == 1
+        assert not legacy.exists()
+
+    def test_safe_rmtree_retries_transient_error(self, tmp_path, monkeypatch):
+        # test that safe_rmtree retries transient locks before succeeding
+        target = tmp_path / "transient_dir"
+        target.mkdir()
+        (target / "file.txt").write_text("hello")
+
+        attempts = 0
+        real_rmtree = shutil.rmtree
+
+        def flake_rmtree(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError(16, "resource busy")
+            return real_rmtree(*args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", flake_rmtree)
+        _safe_rmtree(target)
+        assert attempts >= 2
+        assert not target.exists()
 
 
 # =========================================================================

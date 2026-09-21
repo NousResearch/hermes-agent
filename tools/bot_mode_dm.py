@@ -408,11 +408,38 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
+def _refused_not_owned(stderr_text: str) -> bool:
+    """True when a failed turn's stderr is the CLI's SESSION_NOT_OWNED lease refusal
+    (the target's Bot Chat is held live elsewhere; the turn never ran). A code wins over
+    prose, including unknown codes from newer CLIs; only older CLIs without a marker need
+    the historical wording fallback."""
+    reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
+                   for line in stderr_text.splitlines()
+                   if line.startswith("hermes-refusal-reason: ")), None)
+    return (reason == "SESSION_NOT_OWNED" if reason is not None
+           else "already has a live owner" in stderr_text)
+
+
+# Bounded retry budget for a target whose Bot Chat lease is held by another surface
+# (SESSION_NOT_OWNED): rather than surfacing target_busy on the very first bounce, back off
+# and re-poll for the lease to free up — most contention is one live agent turn finishing,
+# seconds to a couple minutes, not a stuck session. Mirrors _LIVE_WAIT_SECONDS (the analogous
+# bound for the Desktop live-owner mailbox path) so both transports give a busy target the same
+# grace window. This delivery already runs in a spawned background process
+# (terminal_tool background=True/notify_on_complete=True) — the sender got its "sent" ack and
+# moved on, so blocking here costs nothing on the sending side. See #93091, #100523.
+_BUSY_RETRY_BUDGET_SECONDS = _LIVE_WAIT_SECONDS
+_BUSY_RETRY_INTERVAL_SECONDS = 15
+
+
 def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
-    """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
-    the transport's streams and returns its exit code. Transient failures re-run the
-    same session; a context_overflow re-run lets the retried turn's pre-API compaction
-    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
+    """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry, plus a bounded
+    busy-lease backoff); re-emits the transport's streams and returns its exit code. Transient
+    failures re-run the same session; a context_overflow re-run lets the retried turn's pre-API
+    compaction compact the transcript first (no fresh session is ever minted). Auth/quota/config
+    never retry. A SESSION_NOT_OWNED refusal means the turn never started at all (the lease
+    acquire happens before the agent turn runs), so there is no unanswered-turn row to resume —
+    each busy-retry is a plain fresh attempt, not RESUME_UNANSWERED_TURN_ENV."""
 
     def _turn(turn_env=env):
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
@@ -427,22 +454,18 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
         # user row, so the retried process is told to resume it (RESUME_UNANSWERED_TURN_ENV).
         if retry_action(classify_agent_error(turn_failure_text(proc.stdout, proc.stderr))) != RETRY_NONE:
             proc = _turn(retry_turn_env(env))
-    stderr_text = proc.stderr or ""
-    reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
-                   for line in stderr_text.splitlines()
-                   if line.startswith("hermes-refusal-reason: ")), None)
-    # A code wins over prose, including unknown codes from newer CLIs.
-    # Only older CLIs without a marker need the historical wording fallback.
-    refused_not_owned = (reason == "SESSION_NOT_OWNED" if reason is not None
-                         else "already has a live owner" in stderr_text)
-    if proc.returncode != 0 and refused_not_owned:
-        # The target's Bot Chat is held live by another surface (Desktop); the turn
-        # never ran — tell the sender plainly instead of leaking a raw lease error.
-        # See #100523.
+    deadline = time.monotonic() + _BUSY_RETRY_BUDGET_SECONDS
+    while proc.returncode != 0 and _refused_not_owned(proc.stderr or "") and time.monotonic() < deadline:
+        time.sleep(min(_BUSY_RETRY_INTERVAL_SECONDS, max(0, deadline - time.monotonic())))
+        proc = _turn()
+    if proc.returncode != 0 and _refused_not_owned(proc.stderr or ""):
+        # The target's Bot Chat is STILL held live by another surface after the retry budget —
+        # tell the sender plainly instead of leaking a raw lease error. See #100523.
         who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
         print(json.dumps({
-            "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
-                     "surface right now, so your message was NOT delivered. Try again later.",
+            "error": f"Delivery failed: @{who}'s Bot Chat stayed open on another surface for "
+                     f"over {int(_BUSY_RETRY_BUDGET_SECONDS)}s, so your message was NOT delivered. "
+                     "Try again later.",
             "reason": "target_busy",
         }))
         return 1

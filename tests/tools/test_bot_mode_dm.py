@@ -721,9 +721,13 @@ def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
     assert not dm_file.exists()
 
 
-def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
+def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys, monkeypatch):
     """#100523: the CLI's single-owner lease refusal is a delivery FAILURE the
-    sender can read, not a raw exit-1 with the payload silently gone."""
+    sender can read, not a raw exit-1 with the payload silently gone — but only
+    after the busy-retry budget (#93091 bounce fix) is exhausted, so shrink it
+    to keep the test fast."""
+    monkeypatch.setattr(bot_mode_dm, "_BUSY_RETRY_BUDGET_SECONDS", 0.05)
+    monkeypatch.setattr(bot_mode_dm, "_BUSY_RETRY_INTERVAL_SECONDS", 0.01)
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hi", encoding="utf-8")
     child = tmp_path / "owned.py"
@@ -742,6 +746,37 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason"] == "target_busy"
     assert "NOT delivered" in payload["error"]
+
+
+def test_local_turn_retries_a_busy_lease_and_delivers_once_it_frees(tmp_path, capsys, monkeypatch):
+    """#93091: SESSION_NOT_OWNED must not surface target_busy on the first bounce — the
+    target's own turn can finish and free the lease within the retry budget, in which case
+    the message still delivers instead of vanishing."""
+    monkeypatch.setattr(bot_mode_dm, "_BUSY_RETRY_BUDGET_SECONDS", 5)
+    monkeypatch.setattr(bot_mode_dm, "_BUSY_RETRY_INTERVAL_SECONDS", 0.01)
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hi", encoding="utf-8")
+    attempts_file = tmp_path / "attempts.txt"
+    child = tmp_path / "flaky_owner.py"
+    child.write_text(
+        "import pathlib, sys\n"
+        "counter = pathlib.Path(sys.argv[1])\n"
+        "n = len(counter.read_text()) if counter.exists() else 0\n"
+        "counter.write_text('x' * (n + 1))\n"
+        "if n < 2:\n"
+        "    print('Session abc already has a live owner (desktop, pid 1).', file=sys.stderr)\n"
+        "    raise SystemExit(1)\n"
+        "print('delivered')\n",
+        encoding="utf-8",
+    )
+
+    returncode = bot_mode_dm._run_local_turn(
+        [sys.executable, str(child), str(attempts_file), "-p", "ops"], str(dm_file)
+    )
+
+    assert returncode == 0
+    assert capsys.readouterr().out.strip() == "delivered"
+    assert len(attempts_file.read_text()) == 3  # first attempt + 2 busy-retries before it freed
 
 
 def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):

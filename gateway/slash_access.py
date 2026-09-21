@@ -123,7 +123,17 @@ def policy_for_source(gateway_config: Any, source: Any) -> SlashAccessPolicy:
     # ungated allow-everything scope; keep the historical group scope on a tie.
     dm_policy = policy_from_extra(extra, "dm")
     group_policy = policy_from_extra(extra, "group")
-    return dm_policy if dm_policy.enabled and not group_policy.enabled else group_policy
+    if dm_policy.enabled and group_policy.enabled:
+        # Both scopes gated: the source could be either scope, so grant only what BOTH grant.
+        # Picking one policy wholesale would let a scope-specific admin (or command list) act
+        # across the scope boundary the operator drew.
+        return SlashAccessPolicy(
+            enabled=True,
+            admin_user_ids=dm_policy.admin_user_ids & group_policy.admin_user_ids,
+            user_allowed_commands=dm_policy.user_allowed_commands
+            & group_policy.user_allowed_commands,
+        )
+    return dm_policy if dm_policy.enabled else group_policy
 
 
 __all__ = ["SlashAccessPolicy", "policy_from_extra", "policy_for_source"]

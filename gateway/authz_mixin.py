@@ -467,6 +467,22 @@ class GatewayAuthorizationMixin:
         forwards unpaired DMs for the handshake (already denied by the pairing-store check).
         Anything else → default-deny.
         """
+        # A blank/unknown chat_type could be either scope: only admit when BOTH scope readings
+        # admit (a gated axis's verdict applies; an ungated axis grants nothing extra), mirroring
+        # slash_access.policy_for_source's intersection rule for the same ambiguity.
+        if not str(getattr(source, "chat_type", "") or "").strip():
+            verdicts = (
+                self._own_policy_authorizes_scope(source, user_id, True, adapter_profile),
+                self._own_policy_authorizes_scope(source, user_id, False, adapter_profile),
+            )
+            if any(v is False for v in verdicts):
+                return False
+            if all(v is True for v in verdicts):
+                return True
+            return None
+        return self._own_policy_authorizes_scope(source, user_id, is_group, adapter_profile)
+
+    def _own_policy_authorizes_scope(self, source, user_id, is_group, adapter_profile) -> Optional[bool]:
         if is_group and self._adapter_group_has_sender_allowlist(source.platform, source.chat_id, profile=adapter_profile):
             return True
         if self._adapter_policy(source.platform, "group" if is_group else "dm", adapter_profile) != "allowlist":
@@ -488,25 +504,34 @@ class GatewayAuthorizationMixin:
         if adapter is None:
             return False
         extra = _adapter_config_extra(adapter)
-        adapter_allow = extra.get("group_allow_from" if is_group else "allow_from")
-        if not adapter_allow:
-            # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
-            # under multiplex only the default profile's list reaches the env (first-writer-wins
-            # bridge), so read the live adapter's.
-            entry = _registry_entry(source.platform)
-            if entry and entry.allowed_users_env:
-                # Buzz) carry the same operator-configured allowlist in
-                # ``PlatformConfig.extra.allowed_users``. An absent/empty entry changes nothing here — the
-                # default-deny below still applies. See #82871, #98738.
-                adapter_allow = extra.get("allowed_users")
-        if not adapter_allow:
-            return False
-        allowed = _coerce_allow_set(adapter_allow)
-        normalize = getattr(adapter, "normalize_user_id", None)
-        if callable(normalize):
-            # Ids and entries may spell the same principal differently (Buzz hex vs npub).
-            allowed = {normalize(entry) or entry for entry in allowed}
-        return _allows(allowed, user_id)
+
+        def _scope_allows(group: bool) -> bool:
+            adapter_allow = extra.get("group_allow_from" if group else "allow_from")
+            if not adapter_allow:
+                # Plugin platforms (Buzz, DingTalk) spell their env allowlist as ``extra.allowed_users``;
+                # under multiplex only the default profile's list reaches the env (first-writer-wins
+                # bridge), so read the live adapter's.
+                entry = _registry_entry(source.platform)
+                if entry and entry.allowed_users_env:
+                    # Buzz) carry the same operator-configured allowlist in
+                    # ``PlatformConfig.extra.allowed_users``. An absent/empty entry changes nothing here — the
+                    # default-deny below still applies. See #82871, #98738.
+                    adapter_allow = extra.get("allowed_users")
+            if not adapter_allow:
+                return False
+            allowed = _coerce_allow_set(adapter_allow)
+            normalize = getattr(adapter, "normalize_user_id", None)
+            if callable(normalize):
+                # Ids and entries may spell the same principal differently (Buzz hex vs npub).
+                allowed = {normalize(entry) or entry for entry in allowed}
+            return _allows(allowed, user_id)
+
+        # A blank/unknown chat_type could be either scope: admit only when BOTH scope readings
+        # do, so the DM list cannot admit an ambiguous group message (and vice versa) —
+        # mirrors slash_access.policy_for_source's intersection rule.
+        if not str(getattr(source, "chat_type", "") or "").strip():
+            return _scope_allows(True) and _scope_allows(False)
+        return _scope_allows(is_group)
 
     def _adapter_resolved_allowlist_ids(self, source) -> set[str]:
         """IDs an adapter resolved from username-shaped allowlist entries at connect time (Discord).
@@ -635,8 +660,9 @@ class GatewayAuthorizationMixin:
             return True
 
         adapter_profile = self._adapter_profile_for_source(source)
-        is_group = source.chat_type in _GROUP_CHAT_TYPES
-        is_group_or_forum = source.chat_type in _GROUP_FORUM_TYPES
+        chat_type_norm = str(source.chat_type or "").strip().lower()
+        is_group = chat_type_norm in _GROUP_CHAT_TYPES
+        is_group_or_forum = chat_type_norm in _GROUP_FORUM_TYPES
         if self._chat_scoped_grant(source, adapter_profile, is_group, allow_adapter_delegation):
             return True
         user_id = source.user_id

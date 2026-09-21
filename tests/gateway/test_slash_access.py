@@ -135,9 +135,8 @@ class TestPolicyForSource:
         # DM-only gated: blank used to fall into the ungated group scope (#116282).
         ({"allow_admin_from": ["111"]}, "", "111", True),
         ({"allow_admin_from": ["111"]}, None, "111", True),
-        # Mirror image and tie keep the historical group scope; ungated stays ungated.
+        # Mirror image keeps the gated scope; ungated stays ungated.
         ({"group_allow_admin_from": ["222"]}, "", "222", True),
-        ({"allow_admin_from": ["111"], "group_allow_admin_from": ["222"]}, None, "222", True),
         ({}, "", None, False),
     ],
 )
@@ -152,3 +151,27 @@ def test_blank_chat_type_resolves_to_the_gated_scope(extra, chat_type, admin, ga
     assert p.can_run("999", "stop") is (not gated)
     if admin is not None:
         assert p.is_admin(admin) is True
+
+
+def test_blank_chat_type_both_scopes_gated_grants_only_the_intersection():
+    """Both scopes gated + ambiguous source: a scope-specific admin or command list must not
+    cross the scope boundary — the ambiguous source could be either scope."""
+    extra = {
+        "allow_admin_from": ["111", "dual"],
+        "user_allowed_commands": ["dm-only", "shared"],
+        "group_allow_admin_from": ["222", "dual"],
+        "group_user_allowed_commands": ["group-only", "shared"],
+    }
+    cfg = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, extra=extra)})
+    src = SessionSource(platform=Platform.DISCORD, chat_id="A", chat_type=None, user_id="999")
+    p = policy_for_source(cfg, src)
+    assert p.enabled is True
+    # Scope-specific admins lose admin on an ambiguous source; dual admins keep it.
+    assert p.is_admin("111") is False
+    assert p.is_admin("222") is False
+    assert p.is_admin("dual") is True
+    # Command access intersects too, beside the always-allowed floor.
+    assert p.can_run("999", "dm-only") is False
+    assert p.can_run("999", "group-only") is False
+    assert p.can_run("999", "shared") is True
+    assert p.can_run("999", "help") is True

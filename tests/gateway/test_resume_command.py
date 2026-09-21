@@ -996,3 +996,37 @@ class TestSameMatrixRoomThreadScoping:
         caller = self._msrc(thread_id="thread-a")
         victim_origin = self._msrc(thread_id="thread-b")
         assert runner._same_matrix_room(caller, victim_origin) is False
+
+
+class TestResumeCallerAdminAmbiguousScope:
+    """Ambiguous chat_type + both scopes gated: a scope-specific admin must not pass the
+    admin check end-to-end (cross-origin /resume and /goal gate add ride this)."""
+
+    def _runner_with_both_scopes_gated(self):
+        from gateway.config import PlatformConfig
+        runner = _make_runner()
+        runner.config = SimpleNamespace(platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, extra={
+                "allow_admin_from": ["dm-admin", "dual-admin"],
+                "group_allow_admin_from": ["group-admin", "dual-admin"],
+            }),
+        })
+        return runner
+
+    def test_ambiguous_source_group_only_admin_is_not_admin(self):
+        runner = self._runner_with_both_scopes_gated()
+        src = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-chat",
+                            chat_type=None, user_id="group-admin")
+        assert runner._resume_caller_is_admin(src) is False
+
+    def test_ambiguous_source_dm_only_admin_is_not_admin(self):
+        runner = self._runner_with_both_scopes_gated()
+        src = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-chat",
+                            chat_type=None, user_id="dm-admin")
+        assert runner._resume_caller_is_admin(src) is False
+
+    def test_ambiguous_source_dual_scope_admin_stays_admin(self):
+        runner = self._runner_with_both_scopes_gated()
+        src = SessionSource(platform=Platform.TELEGRAM, chat_id="dm-chat",
+                            chat_type=None, user_id="dual-admin")
+        assert runner._resume_caller_is_admin(src) is True

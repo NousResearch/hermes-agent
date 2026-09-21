@@ -504,6 +504,7 @@ class CLIChatTurnMixin:
             self._transfer_session_yolo(self.session_id, self.agent.session_id)
             self.session_id = self.agent.session_id
             self._write_terminal_breadcrumb()
+            self._claim_active_session("cli")
             self._pending_title = None
 
     def _chat_render_turn(self, turn, agent_thread, interrupt_msg):

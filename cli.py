@@ -886,9 +886,22 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
 
     def _claim_active_session(self, surface: str = "cli", *, stderr: bool = False) -> bool:
-        """Claim a global active-session slot for this CLI process."""
-        if self._active_session_lease is not None:
-            return True
+        """Claim a global active-session slot for this CLI process, re-anchoring it when
+        ``self.session_id`` has moved (``/new``, and every auto-compression rotation, which
+        continues the run in a CHILD session).
+
+        Without the re-anchor the lease keeps the id captured when it was first claimed: the
+        session we LEFT stays fenced against every other surface for the life of the process —
+        "open in another Hermes window" naming a window that moved on — while the session we are
+        actually writing holds no slot. Registry identity is ``(pid, live_session_id)``, so a
+        re-claim does not replace the old row; it has to be released first. Same class as
+        ``_transfer_session_yolo``: state keyed by session id must follow the reassignment.
+        """
+        lease = self._active_session_lease
+        if lease is not None:
+            if str(getattr(lease, "session_id", "")) == str(self.session_id):
+                return True
+            self._release_active_session()
         try:
             from hermes_cli.active_sessions import format_refusal_stderr, try_acquire_active_session
 

@@ -171,6 +171,7 @@ Open the printed link in your browser — it opens directly in the Teams client.
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
 | `TEAMS_REQUIRE_MENTION` | Set `true` to answer only @mentions / replies to the bot in channels and group chats (default: `false`; for apps with RSC message-read consent) |
+| `TEAMS_REACTIONS` | Set `false` to disable processing-status emoji reactions (👀 while working, ✅/❌ on complete). Default: enabled. Agent `send_message` react/unreact is always available. |
 
 ### config.yaml
 
@@ -185,12 +186,26 @@ platforms:
       client_secret: "your-secret"
       tenant_id: "your-tenant-id"
       port: 3978
+      reactions: true        # processing-status 👀/✅/❌; send_message react is always on
     require_mention: false   # true once the app has RSC message-read consent
 ```
 
 ---
 
 ## Features
+
+### Reactions
+
+Teams bots can add and remove emoji reactions through the Bot Framework connector (`PUT/DELETE …/activities/{id}/reactions/{type}`), which the bundled `microsoft-teams-apps` SDK exposes as `api.reactions.add` / `delete`. Hermes uses that for:
+
+- **Processing status** (default on; set `TEAMS_REACTIONS=false` or `extra.reactions: false` to disable): 👀 while the agent works, then ✅ on success or ❌ on failure (mapped to Teams reaction ids `1f440_eyes`, `2705_whiteheavycheckmark`, `angry`).
+- **Agent-facing** `send_message` `action="react"` / `"unreact"`: not gated by `TEAMS_REACTIONS`. Unicode (👍 ❤️ 👀 ✅) and Teams ids (`like`, `heart`, `1f440_eyes`, …) both work.
+
+Inbound `messageReaction` activities are forwarded to gateway reaction hooks (`reaction:added` / `reaction:removed`) so plugins see them. The bot ignores its own reactions.
+
+### Streaming (not yet)
+
+Teams can update an in-flight activity (Bot Framework `conversations.activities.update`), but Hermes does **not** stream replies on Teams yet. Progressive edits would need the gateway's draft-stream contract; that is a follow-up, not part of reactions.
 
 ### Interactive Approval Cards
 

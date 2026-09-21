@@ -64,6 +64,10 @@ def _ensure_teams_mock():
             self._card_action_handler = func
             return func
 
+        def on_message_reaction(self, func):
+            self._message_reaction_handler = func
+            return func
+
         async def initialize(self):
             pass
 
@@ -1236,3 +1240,146 @@ class TestTeamsRequireMention:
         adapter = self._make_adapter(**extra)
         assert adapter._require_mention is expected
         assert adapter._extra.get("require_mention") == yaml_value  # extras stay readable on the instance
+
+
+# ---------------------------------------------------------------------------
+# Tests: reactions
+# ---------------------------------------------------------------------------
+
+
+class TestTeamsReactionMapping:
+    def test_unicode_and_alias_map_to_connector_types(self):
+        f = _teams_mod._to_teams_reaction_type
+        assert f("👍") == "like"
+        assert f("heart") == "heart"
+        assert f("👀") == "1f440_eyes"
+        assert f("✅") == "2705_whiteheavycheckmark"
+        assert f("❌") == "angry"
+        assert f("like") == "like"
+        assert f("2705_whiteheavycheckmark") == "2705_whiteheavycheckmark"
+        assert f("") is None
+        assert f("not an emoji !!!") is None
+
+    def test_reaction_type_to_emoji(self):
+        assert _teams_mod._reaction_to_emoji("like") == "👍"
+        assert _teams_mod._reaction_to_emoji("1f440_eyes") == "👀"
+        assert _teams_mod._reaction_to_emoji("custom_id") == "custom_id"
+
+
+class TestTeamsReactions:
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter._app.api.reactions.add = AsyncMock()
+        adapter._app.api.reactions.delete = AsyncMock()
+        return adapter
+
+    @pytest.mark.anyio
+    async def test_add_reaction_maps_thumbs_up_to_like(self):
+        adapter = self._make_adapter()
+        result = await adapter.add_reaction("19:abc@thread.v2", "👍", message_id="act-1")
+        assert result["success"] is True
+        assert result["reaction"] == "like"
+        adapter._app.api.reactions.add.assert_awaited_once_with(
+            "19:abc@thread.v2", "act-1", "like")
+
+    @pytest.mark.anyio
+    async def test_add_reaction_defaults_to_last_inbound(self):
+        adapter = self._make_adapter()
+        adapter._last_inbound_by_chat["19:abc@thread.v2"] = "last-in"
+        result = await adapter.add_reaction("19:abc@thread.v2", "❤️")
+        assert result["success"] is True
+        assert result["message_id"] == "last-in"
+        adapter._app.api.reactions.add.assert_awaited_once_with(
+            "19:abc@thread.v2", "last-in", "heart")
+
+    @pytest.mark.anyio
+    async def test_add_reaction_without_target_errors(self):
+        adapter = self._make_adapter()
+        result = await adapter.add_reaction("19:abc@thread.v2", "like")
+        assert result["success"] is False
+        assert "message_id" in result["error"]
+        adapter._app.api.reactions.add.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_remove_reaction_uses_last_bot_set_type(self):
+        adapter = self._make_adapter()
+        await adapter.add_reaction("19:abc@thread.v2", "like", message_id="act-1")
+        result = await adapter.remove_reaction("19:abc@thread.v2", message_id="act-1")
+        assert result["success"] is True
+        adapter._app.api.reactions.delete.assert_awaited_once_with(
+            "19:abc@thread.v2", "act-1", "like")
+
+    @pytest.mark.anyio
+    async def test_processing_start_adds_eyes_when_enabled(self):
+        adapter = self._make_adapter()
+        event = MagicMock()
+        event.source.chat_id = "19:abc@thread.v2"
+        event.message_id = "act-1"
+        await adapter.on_processing_start(event)
+        adapter._app.api.reactions.add.assert_awaited_once_with(
+            "19:abc@thread.v2", "act-1", "1f440_eyes")
+
+    @pytest.mark.anyio
+    async def test_processing_start_skipped_when_reactions_disabled(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_REACTIONS", "false")
+        adapter = self._make_adapter()
+        event = MagicMock()
+        event.source.chat_id = "19:abc@thread.v2"
+        event.message_id = "act-1"
+        await adapter.on_processing_start(event)
+        adapter._app.api.reactions.add.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_inbound_reaction_forwards_to_handler(self):
+        adapter = self._make_adapter()
+        adapter._reaction_handler = AsyncMock()
+        activity = MagicMock()
+        activity.from_ = MagicMock(id="29:user", aad_object_id="aad-1", name="Ada")
+        activity.recipient = MagicMock(id="28:bot-id")
+        activity.conversation = MagicMock(
+            id="19:abc@thread.v2", conversation_type="personal",
+            name="Chat", tenant_id="tenant")
+        activity.reply_to_id = "orig-msg"
+        activity.id = "reaction-act"
+        activity.reactions_added = [SimpleNamespace(type="like")]
+        activity.reactions_removed = []
+        ctx = MagicMock()
+        ctx.activity = activity
+        await adapter._on_message_reaction(ctx)
+        adapter._reaction_handler.assert_awaited_once()
+        payload = adapter._reaction_handler.await_args[0][0]
+        assert payload["platform"] == "teams"
+        assert payload["event_name"] == "reaction:added"
+        assert payload["reaction"] == "👍"
+        assert payload["channel_id"] == "19:abc@thread.v2"
+        assert payload["message_ts"] == "orig-msg"
+
+    @pytest.mark.anyio
+    async def test_inbound_self_reaction_is_ignored(self):
+        adapter = self._make_adapter()
+        adapter._reaction_handler = AsyncMock()
+        activity = MagicMock()
+        activity.from_ = MagicMock(id="28:bot-id", aad_object_id=None, name="Hermes")
+        activity.recipient = MagicMock(id="28:bot-id")
+        activity.conversation = MagicMock(id="19:abc@thread.v2", conversation_type="personal")
+        activity.reply_to_id = "orig-msg"
+        activity.reactions_added = [SimpleNamespace(type="like")]
+        activity.reactions_removed = []
+        ctx = MagicMock()
+        ctx.activity = activity
+        await adapter._on_message_reaction(ctx)
+        adapter._reaction_handler.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_react_falls_back_to_rest_when_sdk_client_missing(self):
+        adapter = self._make_adapter()
+        adapter._app.api = None
+        adapter._react_via_rest = AsyncMock()
+        ok = await adapter._add_reaction("19:abc@thread.v2", "act-1", "👍")
+        assert ok is True
+        adapter._react_via_rest.assert_awaited_once_with(
+            "19:abc@thread.v2", "act-1", "like", remove=False)

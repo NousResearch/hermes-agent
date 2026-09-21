@@ -728,6 +728,10 @@ _STATUS_TO_FAILOVER_REASON = {
     403: FailoverReason.auth,
 }
 _USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
+# A 429 with a reset horizon ≥ this threshold is treated as "quota window
+# exhausted" (not a transient burst) → rotate immediately if the pool has
+# alternatives, instead of sleeping through the wait (#117933).
+_LONG_HORIZON_ROTATE_THRESHOLD_SECONDS = 60.0
 _USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
 
 
@@ -853,6 +857,23 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
         usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
         )
+    # Long-horizon 429 (#117933): a reset horizon ≥ the threshold means the
+    # account's quota window is exhausted, not a momentary burst. If the pool
+    # has alternatives, rotate on the first 429 instead of sleeping through
+    # the wait (the same path usage_limit_reached already takes).
+    if error_context and not usage_limit_reached:
+        horizon = error_context.get("retry_after") or 0
+        reset_at = error_context.get("reset_at")
+        if reset_at and not horizon:
+            try:
+                horizon = max(0.0, float(reset_at) - time.time())
+            except (ValueError, TypeError):
+                pass
+        if (
+            horizon >= _LONG_HORIZON_ROTATE_THRESHOLD_SECONDS
+            and len(list(pool.entries())) > 1
+        ):
+            usage_limit_reached = True
     if not has_retried_429 and not usage_limit_reached:
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)

@@ -931,6 +931,12 @@ class GatewayAdapterLifecycleMixin:
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
             publish_runtime_status(served_profiles=served)
+            # The host record is what a second `gateway run` reads to decide attach-vs-start; keep
+            # its served set in step with the live one (it is republished, never re-claimed).
+            from gateway.host_rendezvous import ROLE_GATEWAY, owns_host_lock, publish_record
+            if owns_host_lock(ROLE_GATEWAY):
+                from hermes_constants import get_hermes_home
+                publish_record(ROLE_GATEWAY, profiles=tuple(served), home=str(get_hermes_home()))
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises

@@ -175,6 +175,33 @@ def test_force_starts_without_consulting_the_owner(tmp_path, monkeypatch, owner_
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False, force=True)) is None
 
 
+def test_standalone_gateway_skips_the_host_attach_gate(tmp_path, monkeypatch, owner_pid):
+    """A named standalone unit must not park behind a multiplex host record.
+
+    ``gateway.multiplex_profiles`` can settle false when a fleet still has
+    per-profile units.  In that mode each unit owns only its own runtime lock;
+    treating a different profile as the host singleton made systemd exit 78.
+    """
+    owner_home = tmp_path / "root"
+    ours = owner_home / "profiles" / "agent-ops"
+    _publish(owner_pid, owner_home, ("default", "other"))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["default", "other"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: ours)
+
+    assert asyncio.run(
+        gateway_run._host_attach_or_none(replace=False, multiplex=False)
+    ) is None
+
+
+def test_standalone_gateway_does_not_claim_the_host_role(tmp_path, monkeypatch):
+    """Standalone gateways keep their per-home lock but never publish a host owner."""
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+
+    gateway_run._claim_host_gateway_role(multiplex=False)
+
+    assert hr.read_record(hr.ROLE_GATEWAY) is None
+
+
 def test_the_claim_time_record_publishes_no_served_set(tmp_path, monkeypatch):
     """Claim time is too early to know the served set; publishing a guess strands other profiles."""
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))

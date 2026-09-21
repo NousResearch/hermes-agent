@@ -5262,7 +5262,7 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
     return shutdown_signal_handler
 
 
-def _start_gateway_claim_pid_file() -> bool:
+def _start_gateway_claim_pid_file(*, multiplex: bool = True) -> bool:
     """Claim the runtime lock + PID file (O_EXCL winner is the authoritative gateway). False = lost."""
     import atexit
     from gateway.status import (
@@ -5284,17 +5284,19 @@ def _start_gateway_claim_pid_file() -> bool:
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
-    _claim_host_gateway_role()
+    _claim_host_gateway_role(multiplex=multiplex)
     return True
 
 
-def _claim_host_gateway_role() -> None:
-    """Take the HOST-wide gateway lock alongside the per-home one and publish the record.
+def _claim_host_gateway_role(*, multiplex: bool = True) -> None:
+    """Claim the HOST-wide gateway role only for a settled multiplex gateway.
 
-    Observe-only in this step: the per-home lock above still decides whether this process runs,
-    so a host with two gateways (the shape the multiplex-only ruling forbids) starts as it always
-    did and says so in the log. Flipping this into a refusal is a separate, reviewable change.
+    A standalone fleet deliberately runs one gateway per profile.  Its per-home runtime lock still
+    prevents duplicate instances for that profile, but publishing any of those processes as the
+    host singleton makes the next unit hit the multiplex attach/refuse gate and exit 78.
     """
+    if not multiplex:
+        return
     from gateway import host_rendezvous as hr
 
     try:
@@ -5347,7 +5349,7 @@ def _refresh_host_gateway_record(runner) -> None:
         logger.debug("host gateway record refresh failed", exc_info=True)
 
 
-async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[bool]:
+async def _host_attach_or_none(replace: bool, force: bool = False, *, multiplex: bool = True) -> Optional[bool]:
     """Attach / rescan / refuse against the ONE host gateway; ``None`` = start normally.
 
     Returns ``True`` when this invocation is satisfied by the running host process (exit 0, nothing
@@ -5361,6 +5363,10 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
     """
     if force:
         logger.warning("--force: starting a gateway without asking the host owner.")
+        return None
+    if not multiplex:
+        # The host rendezvous represents a multiplexed gateway.  A settled standalone fleet uses
+        # the per-home PID/runtime locks below and must never be parked behind another profile.
         return None
 
     from gateway.host_attach import ATTACH, REFUSE, REPLACE_HOST, decide
@@ -5597,9 +5603,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
 
+    # Settle an unset multiplex request before consulting the host rendezvous.  The preflight can
+    # intentionally keep a legacy per-profile fleet standalone; those gateways must retain their
+    # per-home lifecycle rather than being refused by a named profile that started first.
+    if config is None:
+        config = load_gateway_config_for_runner()
+    multiplex = bool(getattr(config, "multiplex_profiles", False))
+
     # Multiplex-only: the ONE host gateway decides first. Attach to it, make it serve this profile,
     # replace it (--replace) or refuse — before anything below binds a port or claims a PID file.
-    _host_decision = await _host_attach_or_none(replace, force)
+    _host_decision = await _host_attach_or_none(replace, force, multiplex=multiplex)
     if _host_decision is not None:
         return _host_decision
 
@@ -5669,7 +5682,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     _planned_stop_watcher_thread.start()
 
     # PID file BEFORE adapters: of two concurrent `run --replace`, only the O_EXCL winner opens sockets.
-    if not _start_gateway_claim_pid_file():
+    if not _start_gateway_claim_pid_file(multiplex=multiplex):
         return False
 
     # Right after the PID claim (which makes us authoritative); non-fatal — consumers fall back to scan.

@@ -729,6 +729,26 @@ def test_daemon_startup_with_pending_restart_marker_has_empty_stderr(
     assert capsys.readouterr().err == ""
 
 
+def test_startup_warning_classification_failure_does_not_abort_cli(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["hermes", "chat"])
+    monkeypatch.setattr(hermes_main, "_set_process_title", lambda: None)
+    monkeypatch.setattr(hermes_main, "_warn_if_unsupervised_pid1", lambda: None)
+    monkeypatch.setattr(hermes_main, "_advertise_agent_env", lambda: None)
+    monkeypatch.setattr(hermes_main, "_cleanup_quarantined_exes", lambda: None)
+    monkeypatch.setattr(
+        hermes_main, "_sweep_stale_bytecode_if_checkout_changed", lambda: None
+    )
+    monkeypatch.setattr(hermes_main, "_recover_from_interrupted_install", lambda: None)
+    monkeypatch.setattr(
+        hermes_main,
+        "_startup_should_warn_pending_fleet_restart",
+        lambda: (_ for _ in ()).throw(ImportError("partial update")),
+    )
+    monkeypatch.setattr(hermes_main, "_try_termux_fast_tui_launch", lambda: True)
+
+    hermes_main.main()
+
+
 # ── Self-heal: marker left behind by a supervisor-level restart (#105417 / #111272) ──
 #
 # `systemctl --user restart hermes-gateway` never runs this module's clear path, and an update

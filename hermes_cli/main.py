@@ -3481,13 +3481,13 @@ def main():
             _recover_from_interrupted_install()
         except Exception:
             pass
-        if _startup_should_warn_pending_fleet_restart():
-            try:
+        try:
+            if _startup_should_warn_pending_fleet_restart():
                 from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
 
                 _warn_pending_fleet_restart_on_startup()
-            except Exception:
-                pass
+        except Exception:
+            pass
 
     if _try_termux_fast_tui_launch():
         return

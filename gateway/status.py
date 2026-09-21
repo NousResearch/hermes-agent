@@ -359,10 +359,11 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
             filtered.append(token)
     for i, token in enumerate(filtered):
         if token == "gateway":
-            # The gateway parser accepts parent flags before the optional
-            # lifecycle verb.  With no verb, `hermes gateway` defaults to run.
+            # The gateway parser accepts --accept-hooks before the optional
+            # lifecycle verb. With no verb, `hermes gateway` defaults to run;
+            # unknown/help flags must not be mistaken for a live gateway.
             return next(
-                (part for part in filtered[i + 1:] if not part.startswith("-")),
+                (part for part in filtered[i + 1:] if part != "--accept-hooks"),
                 "run",
             )
     return None

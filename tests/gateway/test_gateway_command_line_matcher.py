@@ -44,6 +44,9 @@ ACCEPT = [
 
 REJECT = [
     "python -m tui_gateway",                              # unrelated module
+    "hermes gateway --help",                              # interactive help, not a runtime
+    "hermes gateway --accept-hooks --help",
+    "hermes gateway --unknown-option",                    # argparse rejects it
     "python -m hermes_cli.main gateway status",           # other subcommand
     "python -m hermes_cli.main gateway restart",
     "python -m hermes_cli.main gateway stop",

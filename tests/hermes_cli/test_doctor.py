@@ -1913,7 +1913,8 @@ class TestDoctorKanbanSettingForms:
     flag these raw-file forms (warn-only — never mutate the Finding) without touching keys outside the
     closed setting enums. Nine behaviour invariants; no source-shape assertions, no wording pinning
     beyond the three behaviour-marking phrases ("silently ignored", "falls back to the default",
-    ``bool("false") is True``). Mirrors TestDoctorLegacyCustomProvidersResidue's direct drift-step +
+    ``bool("false") is True``) plus the gateway-raw max_spawn consequences (tick TypeError / no
+    worker ever spawns). Mirrors TestDoctorLegacyCustomProvidersResidue's direct drift-step +
     redirect_stdout."""
 
     INT_KEYS = ("max_in_progress", "max_in_progress_per_profile", "max_spawn",
@@ -1950,14 +1951,24 @@ class TestDoctorKanbanSettingForms:
         assert raw == snapshot and findings == again
 
     def test_uncoercible_int_forms_say_silently_ignored(self):
-        # int(mapping/list/non-numeric-string) raises and every int consumer swallows it into the default.
+        # int(mapping/list/non-numeric-string) raises and the parsed int consumers swallow it into
+        # the default. max_spawn is the exception: the gateway dispatcher reads it raw, so the
+        # finding names the tick TypeError instead of a silent fallback.
         for key in self.INT_KEYS:
+            if key == "max_spawn":
+                continue
             for value in ({"coder": 1}, [1, 2], "", "soon"):
                 findings = doctor_config.collect_kanban_config_findings({"kanban": {key: value}})
                 assert len(findings) == 1, f"kanban.{key} = {value!r} must produce exactly 1 finding"
                 key_path, warn_text, detail = findings[0]
                 assert key_path == f"kanban.{key}" and key_path in warn_text
                 assert "silently ignored" in detail, f"kanban.{key} = {value!r}: {detail!r}"
+        for value in ({"coder": 1}, [1, 2], "", "soon"):
+            findings = doctor_config.collect_kanban_config_findings({"kanban": {"max_spawn": value}})
+            assert len(findings) == 1, f"max_spawn = {value!r} must produce exactly 1 finding"
+            _key_path, _warn_text, detail = findings[0]
+            assert "TypeError in the running-count comparison" in detail, f"{value!r}: {detail!r}"
+            assert "silently ignored" not in detail
 
     def test_infinite_float_says_overflow_not_silent_fallback(self):
         # YAML `.inf` parses to float('inf') and int() raises OverflowError — which the gateway consumer
@@ -1985,14 +1996,24 @@ class TestDoctorKanbanSettingForms:
 
     def test_below_floor_int_forms_fall_back_to_the_default(self):
         # _positive_int(minimum=1) consumers: 0/negative/int(False) parse but violate the >= 1 floor —
-        # a fallback to the default, not a silent ignore.
+        # a fallback to the default, not a silent ignore. max_spawn is gateway-raw: the below-floor
+        # value is not fallen back — it makes the running-count comparison always true and stalls
+        # every spawn.
         for key in self.INT_KEYS[:-1]:
+            if key == "max_spawn":
+                continue
             for value in (0, -2, False):
                 findings = doctor_config.collect_kanban_config_findings({"kanban": {key: value}})
                 assert len(findings) == 1, f"kanban.{key} = {value!r} must produce exactly 1 finding"
                 _key_path, _warn_text, detail = findings[0]
                 assert "falls back to the default" in detail, f"kanban.{key} = {value!r}: {detail!r}"
                 assert "silently ignored" not in detail
+        for value in (0, -2, False):
+            findings = doctor_config.collect_kanban_config_findings({"kanban": {"max_spawn": value}})
+            assert len(findings) == 1, f"max_spawn = {value!r} must produce exactly 1 finding"
+            _key_path, _warn_text, detail = findings[0]
+            assert "no worker ever spawns" in detail, f"{value!r}: {detail!r}"
+            assert "falls back to the default" not in detail
         # worker_log_backup_count is read with minimum=0: 0 is a legal "rotate but keep no backups"
         # form (int(False) == 0 too), so only a negative count violates its floor.
         backup = "worker_log_backup_count"

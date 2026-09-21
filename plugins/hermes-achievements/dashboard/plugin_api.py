@@ -873,7 +873,12 @@ async def session_badges(session_id: str):
 
 @router.post("/rescan")
 async def rescan():
-    return {"ok": True, **evaluate_all(force=True)}
+    data = evaluate_all(force=True)
+    status = _scan_status_payload()
+    scan_meta = {**(data.get("scan_meta") or {}), "status": status}
+    if status.get("state") == "failed":
+        return {**data, "ok": False, "error": status.get("last_error"), "scan_meta": scan_meta}
+    return {"ok": True, **data, "scan_meta": scan_meta}
 
 
 @router.post("/reset-state")

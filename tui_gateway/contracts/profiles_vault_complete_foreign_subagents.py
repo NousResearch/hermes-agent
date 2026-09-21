@@ -158,6 +158,7 @@ class ProfileRow(Result):
     worker_session: ProfileWorkerSession | None = None
     canonical_session: ProfileCanonicalSession | None = None
     ui_meta_revisions: dict[str, int] = Field(default_factory=dict)
+    previous_names: list[str] = Field(default_factory=list)
     ui_meta: dict[str, JsonValue] | None = None
     has_avatar: bool = False
 

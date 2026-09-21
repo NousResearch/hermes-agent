@@ -249,7 +249,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   const [newMoaPresetName, setNewMoaPresetName] = useState('')
   // agent.* defaults round-trip through the shared config cache (read → write
   // back the whole record), so a save here shows in the MCP/model surfaces.
-  const { data: config } = useHermesConfigRecord(scopeProfile)
+  const { data: config, writeScope } = useHermesConfigRecord(scopeProfile)
   const setConfig = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
@@ -592,13 +592,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       setConfig(next)
 
       try {
-        await saveHermesConfig(setNested({}, key, value), scopeProfile)
+        await saveHermesConfig(setNested({}, key, value), writeScope ?? scopeProfile)
+
       } catch (err) {
         setConfig(prev)
         notifyError(err, m.defaultsFailed)
       }
     },
-    [config, m.defaultsFailed, scopeProfile, setConfig]
+    [config, m.defaultsFailed, scopeProfile, setConfig, writeScope]
   )
 
   // Paste an API key for the selected `api_key` provider, persist it, then

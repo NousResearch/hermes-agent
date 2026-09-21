@@ -116,9 +116,23 @@ class TestValidateFrontmatter:
         err = _validate_frontmatter("# Just a heading\nSome content.\n")
         assert err == "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
 
-    def test_invalid_yaml(self):
+    def test_create_rejects_invalid_yaml(self):
         content = "---\n: invalid: yaml: {{{\n---\n\nBody.\n"
-        assert "YAML frontmatter parse error" in _validate_frontmatter(content)
+        assert "YAML frontmatter parse error" in _validate_frontmatter(content, new_skill=True)
+
+    def test_existing_skill_accepts_loader_compatible_frontmatter(self):
+        content = (
+            "---\n"
+            "name: demo\n"
+            "description: Use when testing: keep legacy skills maintainable.\n"
+            "---\n"
+            "# Demo\n"
+        )
+
+        frontmatter, _ = parse_frontmatter(content)
+
+        assert frontmatter["description"] == "Use when testing: keep legacy skills maintainable."
+        assert _validate_frontmatter(content) is None
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +267,28 @@ class TestPatchSkill:
         assert result["success"] is True
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "Do the new thing." in content
+
+    def test_patch_loader_compatible_legacy_frontmatter(self, tmp_path):
+        content = (
+            "---\n"
+            "name: demo\n"
+            "description: Use when testing: keep legacy skills maintainable.\n"
+            "---\n\n"
+            "# Demo\n\n"
+            "Old body.\n"
+        )
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
+
+        with _skill_dir(tmp_path):
+            result = _patch_skill("demo", "Old body.", "New body.")
+
+        assert result["success"] is True
+        updated = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        frontmatter, body = parse_frontmatter(updated)
+        assert frontmatter["description"] == "Use when testing: keep legacy skills maintainable."
+        assert "New body." in body
 
 
     def test_patch_ambiguous_match_rejected(self, tmp_path):

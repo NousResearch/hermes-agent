@@ -732,6 +732,13 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Absolute epoch seconds at which a ``scheduled`` card becomes due. The
+    # dispatcher tick wakes it (``kanban_due.wake_due_cards``) -- no external
+    # cron is involved. NULL = parked with no wake time.
+    due_at: Optional[int] = None
+    # VALID_DUE_WINDOW_POLICIES; NULL reads as "defer". Decides whether a due
+    # time landing inside a reserved execution band defers the wake or not.
+    due_window_policy: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -761,11 +768,12 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "due_at",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
     "model_override", "provider_override", "reasoning_effort", "goal_max_turns", "block_kind",
+    "due_window_policy",
 )
 
 
@@ -966,7 +974,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Absolute epoch seconds at which a ``scheduled`` card becomes DUE. Set by
+    -- ``schedule_task(due_at=...)`` / ``hermes kanban schedule --due``. The
+    -- dispatcher tick wakes every due card itself (``kanban_due.wake_due_cards``)
+    -- so a time-gated card needs no external cron. NULL = parked with no wake
+    -- time (a wait on an unknown moment, woken by a human/unblock).
+    due_at               INTEGER,
+    -- One of VALID_DUE_WINDOW_POLICIES; NULL reads as 'defer'. Decides what the
+    -- waker does when the due time falls inside a reserved execution band:
+    -- 'defer' holds the wake until the band closes, 'ambient' wakes anyway.
+    due_window_policy    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1063,6 +1081,14 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Board-level key/value bookkeeping that is not a task (the due-card waker's
+-- last-tick heartbeat; see kanban_db.record_due_waker_tick). One row per key,
+-- upserted in place -- never a log.
+CREATE TABLE IF NOT EXISTS kanban_meta (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
@@ -3641,9 +3667,16 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection, task_id: str, *, extra_event: Optional[dict] = None,
+) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first.
+
+    ``extra_event`` merges into the ``unblocked`` event payload, so a caller that
+    unblocked the card for a reason of its own (the due-card waker, say) leaves
+    that reason on the board's event stream without a second event.
+    """
     now = int(time.time())
     with write_txn(conn):
         resume_status = (
@@ -3666,22 +3699,25 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # resetting them is the amnesia that let cron-unblock <-> re-block loop
         # unbounded; only complete_task clears them. ``consecutive_failures``
         # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
-        # is a fresh start for the retry budget.
+        # is a fresh start for the retry budget. The due columns are cleared
+        # because the card is no longer time-gated: leaving a stale ``due_at``
+        # behind would re-wake (or falsely alarm about) a card already running.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "due_at = NULL, due_window_policy = NULL "
             "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False
-        _append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
+        payload = (
+            {"status": new_status, "resume_status": resume_status}
+            if new_status != "ready" or resume_status != "ready"
+            else None
         )
+        if extra_event:
+            payload = {**(payload or {}), **extra_event}
+        _append_event(conn, task_id, "unblocked", payload)
         return True
 
 
@@ -3949,22 +3985,163 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
     return True
 
 
+# --- Time-gated cards (due_at) ---
+#
+# ``due_at`` is what makes a parked card self-waking: the dispatcher tick calls
+# ``kanban_due.wake_due_cards`` and unblocks every card whose due time has
+# passed, so a time-gated card does not need an external cron to come back.
+class _UnsetType:
+    """Sentinel for ``schedule_task(due_at=...)``.
+
+    Omitting ``due_at`` (the default, ``UNSET``) leaves whatever due time the
+    card already has. Passing ``None`` explicitly CLEARS it -- re-parking a card
+    by hand means "no wake time". Collapsing the two would make every legacy
+    ``schedule_task`` call silently drop a card's due time.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET = _UnsetType()
+
+# What the waker does when a due time lands inside a reserved execution band.
+# ``defer`` holds the wake to the end of the band (a wake hands the card to the
+# spawn pass in the same tick, so it would start work inside the band);
+# ``ambient`` wakes anyway, for a wake that is a lightweight check.
+VALID_DUE_WINDOW_POLICIES = ("defer", "ambient")
+DEFAULT_DUE_WINDOW_POLICY = "defer"
+
+
+def list_due_tasks(
+    conn: sqlite3.Connection, *, now: int, limit: int = 200, status: str = "scheduled",
+) -> list[Task]:
+    """``scheduled`` cards whose ``due_at`` has passed, oldest due first.
+
+    The read side of the waker: ``due_at IS NOT NULL`` keeps a card parked
+    without a wake time (a wait on an unknown moment) out of the result, so this
+    never becomes a second, implicit unblock path for human-parked cards.
+    """
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE status = ? AND due_at IS NOT NULL AND due_at <= ? "
+        "ORDER BY due_at ASC LIMIT ?",
+        (status, int(now), int(limit)),
+    ).fetchall()
+    return [Task.from_row(r) for r in rows]
+
+
+# --- Board-level key/value bookkeeping (``kanban_meta``) ---
+#
+# ``due_waker_last_tick`` is the waker's heartbeat: the overdue diagnostic reads
+# it to tell "the card's wake time passed and the tick that would wake it did
+# not happen" (gateway dispatcher down) apart from "the tick ran and the waker
+# refused" -- the two need different fixes.
+META_DUE_WAKER_LAST_TICK = "due_waker_last_tick"
+# Heartbeat write throttle: the dispatcher ticks every ~60 s and a heartbeat per
+# tick is a WAL write for nothing. 30 s keeps "has it ticked lately?" sharp while
+# halving the write rate.
+_META_TICK_THROTTLE_SECONDS = 30
+
+
+def set_meta(conn: sqlite3.Connection, key: str, value: Optional[str]) -> None:
+    """Upsert one board-level key. The CALLER owns the transaction."""
+    conn.execute(
+        "INSERT OR REPLACE INTO kanban_meta (key, value, updated_at) VALUES (?, ?, ?)",
+        (key, value, int(time.time())),
+    )
+
+
+def get_meta(conn: sqlite3.Connection, key: str) -> Optional[str]:
+    row = conn.execute("SELECT value FROM kanban_meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row is not None else None
+
+
+def get_meta_int(conn: sqlite3.Connection, key: str, default=None):
+    """``get_meta`` as an int; a missing or unparsable value reads as ``default``."""
+    raw = get_meta(conn, key)
+    try:
+        return int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def record_due_waker_tick(conn: sqlite3.Connection, *, now: Optional[int] = None) -> None:
+    """Note that the due-card waker ran (throttled; see ``_META_TICK_THROTTLE_SECONDS``).
+
+    A missing heartbeat is how the board tells that nothing is ticking at all:
+    a parked card with a due time and no heartbeat is not a card about to wake.
+    """
+    ts = int(now if now is not None else time.time())
+    prev = get_meta_int(conn, META_DUE_WAKER_LAST_TICK)
+    if prev is not None and 0 <= ts - prev < _META_TICK_THROTTLE_SECONDS:
+        return
+    with write_txn(conn):
+        set_meta(conn, META_DUE_WAKER_LAST_TICK, str(ts))
+
+
 def schedule_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    due_at: Any = UNSET, window_policy: Optional[str] = None,
 ) -> bool:
     """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
-    until ``unblock_task`` re-gates it."""
+    until ``unblock_task`` re-gates it.
+
+    ``due_at`` (epoch seconds) makes the card self-waking: the dispatcher tick
+    unblocks it on the first pass after that time via
+    ``kanban_due.wake_due_cards``, so nothing external has to run. Omit it to
+    leave an existing due time alone; pass ``None`` to clear it.
+
+    ``window_policy`` decides what the waker does when the due time falls inside
+    a reserved execution band -- ``"defer"`` (the default once ``due_at`` is set)
+    holds the wake until the band closes, ``"ambient"`` wakes anyway for a wake
+    that is a lightweight check and must tick around the clock.
+
+    Re-parking an already-``scheduled`` card is allowed, and is how a deferral
+    moves the same card forward; that path synthesizes no run (the card was
+    never claimed in the first place).
+    """
+    if window_policy is not None and window_policy not in VALID_DUE_WINDOW_POLICIES:
+        raise ValueError(
+            f"window_policy must be one of {sorted(VALID_DUE_WINDOW_POLICIES)}"
+        )
     with write_txn(conn):
-        params: list[Any] = [task_id]
-        sql = """
+        row = conn.execute(
+            "SELECT status, due_at FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        was_scheduled = row is not None and row["status"] == "scheduled"
+        # A band policy with nothing to apply it to is dead state no wake will
+        # ever read: refuse it instead of writing an inert column.
+        if (window_policy is not None and due_at is UNSET
+                and (row is None or row["due_at"] is None)):
+            raise ValueError(
+                "window_policy needs a due time: pass due_at as well "
+                "(CLI: --due ... --window-policy ...)"
+            )
+        sets = [
+            "status = 'scheduled'", "claim_lock = NULL", "claim_expires = NULL",
+            "worker_pid = NULL",
+        ]
+        set_params: list[Any] = []
+        if due_at is not UNSET:
+            sets.append("due_at = ?")
+            set_params.append(None if due_at is None else int(due_at))
+            if due_at is None:
+                sets.append("due_window_policy = NULL")
+            else:
+                sets.append("due_window_policy = ?")
+                set_params.append(window_policy or DEFAULT_DUE_WINDOW_POLICY)
+        elif window_policy is not None:
+            sets.append("due_window_policy = ?")
+            set_params.append(window_policy)
+        params: list[Any] = [*set_params, task_id]
+        sql = f"""
             UPDATE tasks
-               SET status       = 'scheduled',
-                   claim_lock   = NULL,
-                   claim_expires= NULL,
-                   worker_pid   = NULL
+               SET {', '.join(sets)}
              WHERE id = ?
-               AND status IN ('todo', 'ready', 'running', 'blocked')
+               AND status IN ('todo', 'ready', 'running', 'blocked', 'scheduled')
         """
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
@@ -3972,9 +4149,19 @@ def schedule_task(
         if conn.execute(sql, params).rowcount != 1:
             return False
         run_id = _end_or_synthesize_run(
-            conn, task_id, outcome="scheduled", status="scheduled", summary=reason, synthesize=bool(reason),
+            conn, task_id, outcome="scheduled", status="scheduled", summary=reason,
+            synthesize=bool(reason) and not was_scheduled,
         )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        payload: dict = {"reason": reason}
+        if due_at is not UNSET or window_policy is not None:
+            # Re-read rather than echo the arguments: the event has to say what
+            # the card is now waiting on, including an inherited due time.
+            final = conn.execute(
+                "SELECT due_at, due_window_policy FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            payload["due_at"] = final["due_at"] if final is not None else None
+            payload["window_policy"] = final["due_window_policy"] if final is not None else None
+        _append_event(conn, task_id, "scheduled", payload, run_id=run_id)
         return True
 
 

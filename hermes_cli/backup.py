@@ -104,8 +104,11 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
 _SQLITE_SIDECAR_SUFFIXES = (".db-wal", ".db-shm", ".db-journal")
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", *_SQLITE_SIDECAR_SUFFIXES)
 
-# File names to skip (runtime state that's meaningless on another machine)
-_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
+# File names to skip (runtime state that's meaningless on another machine).
+# ``interrupted_turns.json`` is the desktop/TUI in-flight turn marker: written at
+# turn start and unlinked when the last entry drops. A restore does not want it,
+# and a mid-archive unlink must not fail a complete backup (#118062).
+_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", "interrupted_turns.json"}
 
 # The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
 # — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;
@@ -122,10 +125,11 @@ _EXCLUDED_PREFIXES = (
 # Files ``hermes import`` must never overwrite, matched by basename so root and named profiles are
 # both covered. They hold runtime state namespaced to the SOURCE machine: ``gateway_state.json``
 # drives the container-boot reconciler (a foreign value leaves the gateway stuck "starting" and
-# disconnected from the Nous portal); PID/lock/registry files reference source PIDs. Mirrors
+# disconnected from the Nous portal); PID/lock/registry files reference source PIDs;
+# ``interrupted_turns.json`` would auto-continue a source-machine turn. Mirrors
 # ``container_boot._STALE_RUNTIME_FILES``; import filters too because older backups predate the
 # backup-side exclusions.
-_IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json"}
+_IMPORT_SKIP_NAMES = {"gateway_state.json", "gateway.pid", "cron.pid", "gateway.lock", "processes.json", "interrupted_turns.json"}
 
 # zipfile.open() drops Unix mode bits on extract; restore tightens these to 0600.
 # vault.key / vault.json.enc: the local credential vault (agent/vault_store.py)

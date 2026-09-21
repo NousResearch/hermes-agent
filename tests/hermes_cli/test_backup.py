@@ -206,6 +206,15 @@ class TestShouldExclude:
         # Other .bak files are user data and stay.
         assert not _should_exclude(Path("config.yaml.bak"))
 
+    def test_excludes_desktop_interrupted_turn_marker(self):
+        """The TUI/desktop in-flight turn marker is runtime-only: it is unlinked
+        when the last turn ends, and a restore must not replay it. Basename
+        match covers the default home and a named profile home."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("desktop/interrupted_turns.json"))
+        assert _should_exclude(Path("profiles/coder/desktop/interrupted_turns.json"))
+        assert not _should_exclude(Path("desktop/notes.json"))
+
 
 # ---------------------------------------------------------------------------
 # _iter_backup_files tests
@@ -626,6 +635,46 @@ class TestImport:
         assert not (hermes_home / "cron.pid").exists()
         assert not (hermes_home / "gateway.lock").exists()
 
+    def test_import_skips_interrupted_turn_marker(self, tmp_path, monkeypatch):
+        """Older archives may still ship the TUI/desktop in-flight marker.
+        Import must not write it: a restore must not auto-continue a source
+        turn, and a live marker on this machine must not be overwritten."""
+        hermes_home = tmp_path / ".hermes"
+        desktop = hermes_home / "desktop"
+        desktop.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        live_marker = (
+            '{"this-machine":{"attempts":0,"prompt":"keep me",'
+            '"started_at":1,"auto_continue":true}}'
+        )
+        (desktop / "interrupted_turns.json").write_text(live_marker)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            "desktop/interrupted_turns.json": (
+                '{"s":{"attempts":0,"prompt":"replay me",'
+                '"started_at":1,"auto_continue":true}}'
+            ),
+            "desktop/notes.json": '{"ok": true}',
+            "profiles/coder/desktop/interrupted_turns.json": (
+                '{"p":{"attempts":0,"prompt":"replay profile",'
+                '"started_at":1,"auto_continue":true}}'
+            ),
+        })
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        assert (desktop / "interrupted_turns.json").read_text() == live_marker
+        assert (desktop / "notes.json").read_text() == '{"ok": true}'
+        assert (hermes_home / "config.yaml").read_text() == "model: test\n"
+        assert not (
+            hermes_home / "profiles" / "coder" / "desktop" / "interrupted_turns.json"
+        ).exists()
+
 
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
@@ -788,6 +837,33 @@ class TestBackupEdgeCases:
         assert exc.value.code == 1
         unreadable.chmod(0o600)
         assert run_backup(Namespace(output=str(tmp_path / "out4.zip"))) is True
+
+    def test_vanishing_turn_marker_does_not_fail_backup(self, tmp_path, monkeypatch):
+        """A turn finishing between scan and zip-write unlinks the marker.
+        That file is runtime-only, so the archive is still complete (#118062)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        marker = hermes_home / "desktop" / "interrupted_turns.json"
+        marker.parent.mkdir()
+        marker.write_text('{"s":{"attempts":0,"prompt":"x","started_at":1,"auto_continue":true}}')
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        import hermes_cli.backup as backup_mod
+        real_write = backup_mod._write_zip_entries
+
+        def _unlink_marker_then_write(*args, **kwargs):
+            marker.unlink(missing_ok=True)
+            return real_write(*args, **kwargs)
+
+        monkeypatch.setattr(backup_mod, "_write_zip_entries", _unlink_marker_then_write)
+        out_zip = tmp_path / "out.zip"
+        assert backup_mod.run_backup(Namespace(output=str(out_zip))) is True
+        with zipfile.ZipFile(out_zip) as zf:
+            names = zf.namelist()
+        assert "config.yaml" in names
+        assert not any(Path(n).name == "interrupted_turns.json" for n in names)
 
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
         """Backup handles empty hermes home (no files to back up)."""

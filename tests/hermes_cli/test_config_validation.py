@@ -123,15 +123,22 @@ class TestVoiceSubmitModeValidation:
 
 
 class TestCodeExecutionValidation:
-    def test_negative_max_tool_calls_is_rejected(self):
+    def test_negative_max_tool_calls_is_valid(self):
         issues = validate_config_structure(
             {"code_execution": {"max_tool_calls": -1}}
+        )
+
+        assert not any("code_execution.max_tool_calls" in issue.message for issue in issues)
+
+    def test_non_integer_max_tool_calls_is_rejected(self):
+        issues = validate_config_structure(
+            {"code_execution": {"max_tool_calls": "unlimited"}}
         )
 
         assert any(
             issue.severity == "error"
             and "code_execution.max_tool_calls" in issue.message
-            and "zero" in issue.hint
+            and "integer" in issue.message
             for issue in issues
         )
 

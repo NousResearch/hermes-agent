@@ -221,6 +221,14 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.exception("ACP agent crashed")
         sys.exit(1)
+    finally:
+        # stdio has closed: no client can reach these sessions again in this process,
+        # so stamp every open row ended instead of leaving it in the ended_at IS NULL
+        # set that `sessions prune`/`archive` skip by construction.
+        try:
+            agent.session_manager.end_all_sessions()
+        except Exception:
+            logger.debug("ACP end-of-life session stamping failed", exc_info=True)
 
 
 if __name__ == "__main__":

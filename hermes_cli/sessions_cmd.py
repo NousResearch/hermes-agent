@@ -670,6 +670,14 @@ def _cmd_prune_or_archive(db, args, action):
         print(f"Note: {skipped_open} open session{'' if skipped_open == 1 else 's'} also match these filters but "
               "will be skipped because prune only deletes ended sessions. Use `hermes sessions delete <id>` "
               "to remove one explicitly.")
+    if not prune:
+        open_matches = db.count_open_prune_matches(**filters)
+        if open_matches:
+            print(
+                f"Note: {open_matches} open session{'' if open_matches == 1 else 's'} match these filters "
+                "but are not ended; archive only touches ended sessions. Sessions that never received an "
+                "end stamp (some non-CLI sources) stay outside this sweep until they are ended."
+            )
     if not candidates:
         print(f"No sessions match ({describe_filters(filters)}).")
         return

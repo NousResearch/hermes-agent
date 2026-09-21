@@ -273,6 +273,50 @@ class SessionManager:
         if state is not None:
             self._persist(state)
 
+    def end_all_sessions(self, end_reason: str = "acp_shutdown") -> None:
+        """Stamp every open session row this process created; called when the stdio
+        client has disconnected, so the rows leave the ``ended_at IS NULL`` set that
+        ``sessions prune``/``archive`` skip by construction. Each end is stamped with
+        the session's own agent handle when it owns one, so a compression-rotated
+        head keeps its lineage boundary. The next ``session/load`` for the same id
+        reopens the row (``reopen_session`` in ``_restore``), so ending here never
+        loses a conversation the editor reconnects to."""
+        with self._lock:
+            states = list(self._sessions.values())
+        ended = 0
+        for state in states:
+            db = self._get_db()
+            if db is None:
+                return
+            # The agent's session_id is the compression-rotated head; fall back to the
+            # ACP handle when it is absent or not a real string (test factories).
+            agent_session_id = getattr(getattr(state, "agent", None), "session_id", "")
+            target = agent_session_id if isinstance(agent_session_id, str) and agent_session_id else state.session_id
+            try:
+                row = db.get_session(target)
+            except Exception:
+                logger.debug(
+                    "Could not look up ACP session %s for end stamp",
+                    target,
+                    exc_info=True,
+                )
+                continue
+            if row is None:
+                continue
+            if row.get("ended_at") is not None:
+                continue
+            try:
+                db.end_session(target, end_reason)
+                ended += 1
+            except Exception:
+                logger.debug(
+                    "Failed to end ACP session %s on shutdown",
+                    target,
+                    exc_info=True,
+                )
+        if ended:
+            logger.info("Ended %d open ACP session(s) on shutdown (%s)", ended, end_reason)
+
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,

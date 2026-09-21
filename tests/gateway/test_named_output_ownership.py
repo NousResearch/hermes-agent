@@ -20,6 +20,10 @@ def test_named_output_refuses_foreign_database_binding(tmp_path, monkeypatch, ow
 
     if ownership == "served-named":
         home = tmp_path / "profiles" / "reviewer"
+        # This negative control has no owner-transport consent. Actual named
+        # admission and consent are exercised by test_named_output_owner_rpc.
+        monkeypatch.setattr("gateway.session_managed_worker.managed_policy", lambda *_: None)
+        monkeypatch.setattr(session_hosted_output, "_is_owner_transport_admission", lambda *_: False)
     else:
         home = tmp_path / "reviewer-owner"
         monkeypatch.setattr("gateway.session_managed_worker.managed_policy", lambda *_: None)

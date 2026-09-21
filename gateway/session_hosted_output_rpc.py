@@ -37,9 +37,8 @@ RIGHTS = (
     "hosted.output.discard",
 )
 OUTPUT_OPERATIONS = frozenset({"output_export", "output_ack", "output_discard"})
-# Deliberately false until the parent completes one combined owner-RPC review.
-# Positive probes enable the completed lifecycle only with a test-local patch.
-OWNER_OUTPUT_LIFECYCLE_READY = False
+# Admission still requires exact same-gateway owners and target-local consent.
+OWNER_OUTPUT_LIFECYCLE_READY = True
 CHUNK_BYTES = 360 * 1024
 MAX_ITEM_BYTES = 15_000_000
 _MAX_SAFE_INTEGER = 9007199254740991
@@ -173,6 +172,11 @@ def _provider(service, conn=None) -> RoomArtifactOutbox:
 
 def source_output_admission(service, selector, task, generation, *, owner, target_home):
     """Capture source facts before target NEW; this grants no target right."""
+    registry = getattr(service.authority.runner, "session_authorities", None)
+    if (registry is None
+            or registry.for_home(service.authority.profile_id) is not service.authority
+            or registry.for_home(target_home) is None):
+        return None
     try:
         identity = task if isinstance(task, TaskIdentity) else TaskIdentity(**task)
         generation = _positive(generation, reason="permission_denied")
@@ -238,7 +242,6 @@ def capture_owner_output_context(authority, binding, attested, peer_subject):
     if not isinstance(peer_subject, str) or not peer_subject or not isinstance(candidate, dict):
         return None
     try:
-        _provider(service)
         registry = authority.runner.session_authorities
         source = registry.for_home(candidate["source_home"])
         if (
@@ -251,8 +254,12 @@ def capture_owner_output_context(authority, binding, attested, peer_subject):
             or candidate["source_owner_epoch"] != source.epoch
             or candidate["source_instance_id"] != source.instance_id
         ):
-            return None
-    except (AttributeError, KeyError, RuntimeStoreError):
+            raise RuntimeStoreError("permission_denied")
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise RuntimeStoreError("permission_denied") from exc
+    try:
+        _provider(service)
+    except (AttributeError, RuntimeStoreError):
         return None
     return OwnerOutputContext(
         authority=authority,

@@ -603,6 +603,7 @@ class WakeWordDetector:
                                         dtype="int16", blocksize=cap.frame_length)
             cap.stream.start()
         except Exception as e:
+            cap.close()
             logger.error("wake word: failed to open microphone: %s", e)
             raise
         return cap
@@ -639,6 +640,26 @@ class WakeWordDetector:
             self._callback_inflight.set()
             threading.Thread(target=self._dispatch_wake, daemon=True, name="wake-word-callback").start()
 
+    def _recover_capture(self, frame_length: int, retries) -> Optional[_Capture]:
+        """Retry only an already-started local capture, keeping its owner and engine."""
+        if self.external_audio:
+            return None
+        for delay in retries:
+            logger.warning("wake word: reopening microphone in %.1fs", delay)
+            if self._stop.wait(delay):
+                return None
+            try:
+                cap = self._open_capture(frame_length)
+            except Exception as e:
+                logger.warning("wake word: microphone reopen failed: %s", e)
+                continue
+            with suppress(Exception):
+                self.engine.reset()
+            self.audio_silent, self._silent_frames = False, 0
+            return cap
+        logger.warning("wake word: microphone recovery exhausted; toggle wake word to retry")
+        return None
+
     def _run(self, ready: threading.Event, startup_errors: list[BaseException]) -> None:
         frame_length = self.engine.frame_length
         try:
@@ -655,6 +676,9 @@ class WakeWordDetector:
                     frame_length, SAMPLE_RATE, self.external_audio)
         ready.set()
         failed = False
+        # Bound the whole arm, not just consecutive open failures: a device can
+        # reopen successfully and fail its very next read forever.
+        retries = iter((0.5, 1.0, 2.0))
         silent_alert_frames = max(1, int(_SILENCE_ALERT_SECONDS * SAMPLE_RATE / max(1, frame_length)))
         try:
             while not self._stop.is_set():
@@ -662,6 +686,12 @@ class WakeWordDetector:
                     data = cap.read(self._stop)
                 except Exception as e:
                     logger.warning("wake word: stream read error: %s", e)
+                    cap.close()
+                    cap = None
+                    if not self._stop.is_set():
+                        cap = self._recover_capture(frame_length, retries)
+                    if cap is not None:
+                        continue
                     failed = not self._stop.is_set()
                     break
                 if data is None:  # no client frames yet — counts as silence for status
@@ -677,7 +707,8 @@ class WakeWordDetector:
                 except Exception as e:
                     logger.debug("wake word: engine error: %s", e)
         finally:
-            cap.close()
+            if cap is not None:
+                cap.close()
             logger.info("wake word: stream closed")
             if failed and self.on_failure is not None:
                 self.on_failure(self)

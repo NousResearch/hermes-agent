@@ -6,6 +6,7 @@ A dispatch-local idempotency key permits one execute retry; connections are neve
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import Any, Callable, Optional, Protocol, Sequence
 
@@ -13,17 +14,19 @@ import requests
 from pydantic import ValidationError
 
 from tools.connectors.gateway import wire
+from tools.connectors.gateway.config import session_platform
 from tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     ToolGatewayError,
     parse_gateway_error,
 )
+
 from tools.connectors.gateway.merge import PlannedCall
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ConnectorClient", "Transport"]
+__all__ = ["ConnectorClient", "Transport", "return_to_args"]
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 EXECUTE_TIMEOUT_SECONDS = 60.0
@@ -100,41 +103,73 @@ class ConnectorClient:
         return wire.ConnectorSchemasResponse.model_validate(payload).model_dump()
 
     def connections(
-        self, connectors: Sequence[str], *, reinitiate: bool = False
+        self, connectors: Sequence[str], *, reinitiate: bool = False,
+        return_to: Optional[str] = None, op: Optional[str] = None,
     ) -> dict[str, Any]:
         """Never retry: the gateway cannot deduplicate authorization starts."""
         body = wire.ConnectorConnectionsRequest(
-            connectors=list(connectors), reinitiate=reinitiate
-        ).model_dump(by_alias=True)
+            connectors=list(connectors), reinitiate=reinitiate, return_to=return_to, op=op,
+        ).model_dump(by_alias=True, exclude_none=True)
         payload = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
         return wire.ConnectorConnectionsResponse.model_validate(payload).model_dump()
 
-    def list_connectors(self) -> list[dict[str, Any]]:
+    def list_connectors(self, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
+        """Every page of the session's toolkit list, each typed whole. ``timeout`` applies per page: the
+        watcher bounds it by the operation's remaining deadline so a stalled page cannot hold the
+        operation open."""
         items: list[dict[str, Any]] = []
         cursor: Optional[str] = None
         for _ in range(20):
             path = f"{wire.CONNECTORS_PATH}?limit=50"
             if cursor:
                 path += f"&cursor={cursor}"
-            payload = self._request("GET", path, None)
-            if not isinstance(payload, dict) or "error" in payload:
-                raise ToolGatewayError("invalid connector list page", code="INVALID_RESPONSE")
-            page = payload.get("items")
-            if not isinstance(page, list) or any(not isinstance(entry, dict) for entry in page):
-                raise ToolGatewayError("invalid connector list items", code="INVALID_RESPONSE")
-            try:
-                items.extend(wire.ConnectorListItem.model_validate(entry).model_dump(by_alias=True) for entry in page)
-            except ValidationError as exc:
-                raise ToolGatewayError(f"invalid connector list item: {exc.errors()[0].get('msg')}",
-                                       code="INVALID_RESPONSE") from exc
-            cursor = payload.get("nextCursor")
+            page = self._parse(wire.ConnectorListResponse, self._request("GET", path, None, timeout=timeout),
+                               "connector list page")
+            items.extend(item.model_dump(by_alias=True) for item in page.items)
+            cursor = page.next_cursor
             if not cursor:
                 return items
-            if not isinstance(cursor, str):
-                raise ToolGatewayError("invalid connector list cursor", code="INVALID_RESPONSE")
         raise ToolGatewayError("connector list pagination incomplete", code="INVALID_RESPONSE")
 
-    def execute(self, planned: Sequence[PlannedCall]) -> list[dict[str, Any]]:
+    def list_accounts(
+        self, *, connector: Optional[str] = None, status: Optional[Sequence[str]] = None
+    ) -> list[dict[str, Any]]:
+        query = []
+        if connector:
+            query.append(f"connector={connector}")
+        if status:
+            query.append(f"status={','.join(status)}")
+        path = wire.CONNECTOR_ACCOUNTS_PATH + (f"?{'&'.join(query)}" if query else "")
+        page = self._parse(wire.ConnectorAccountsResponse, self._request("GET", path, None), "connector accounts")
+        return [row.model_dump(by_alias=True) for row in page.accounts]
+
+    def account_status(
+        self, connection_id: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    ) -> Optional[dict[str, Any]]:
+        """One account's row; ``None`` when the gateway no longer knows it. A 429 raises ``RateLimited``.
+        ``timeout`` is the watcher's remaining deadline, so a stalled read cannot outlive its operation."""
+        try:
+            payload = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None, timeout=timeout)
+        except GatewayUnavailable as exc:
+            if exc.code == "connection_not_found":
+                return None
+            raise
+        return self._parse(wire.ConnectorAccount, payload, "connector account").model_dump(by_alias=True)
+
+    @staticmethod
+    def _parse(model: Any, payload: Any, what: str) -> Any:
+        if not isinstance(payload, dict) or "error" in payload:
+            raise ToolGatewayError(f"invalid {what}", code="INVALID_RESPONSE")
+        try:
+            return model.model_validate(payload)
+        except ValidationError as exc:
+            first = exc.errors()[0]
+            raise ToolGatewayError(f"invalid {what}: {'.'.join(str(p) for p in first.get('loc', ()))}: {first.get('msg')}",
+                                   code="INVALID_RESPONSE") from exc
+
+    def execute(
+        self, planned: Sequence[PlannedCall], *, return_to: Optional[str] = None, op: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         """Return gateway results in request order; merge owns length mismatches."""
         body = wire.ConnectorExecuteRequest(
             tools=[
@@ -142,8 +177,9 @@ class ConnectorClient:
                     connector=plan.connector, tool=plan.tool, arguments=plan.arguments
                 )
                 for plan in planned
-            ]
-        ).model_dump(by_alias=True)
+            ],
+            return_to=return_to, op=op,
+        ).model_dump(by_alias=True, exclude_none=True)
         # Keep the key dispatch-local so its retry reuses it without a shared store.
         idempotency_key = str(uuid.uuid4())
         payload = self._post(
@@ -214,7 +250,7 @@ class ConnectorClient:
             if 200 <= status < 300:
                 return response.json()
 
-            error = parse_gateway_error(status, _safe_json(response))
+            error = parse_gateway_error(status, _safe_json(response), getattr(response, "headers", None))
             if error.retryable and attempt < retries:
                 last_error = error
                 logger.debug(
@@ -230,6 +266,19 @@ class ConnectorClient:
         raise last_error
 
 
+def return_to_args(*, op: Optional[str] = None) -> dict[str, Any]:
+    """The ``returnTo`` / ``op`` arguments a connect or execute call carries so the vendor's done page
+    can send the browser back to the app that asked for the connection.
+
+    Only the desktop registers a URL scheme for that return, so every other surface sends neither
+    field and keeps the vendor's own done page. The dev build registers ``hermes-dev://`` instead, and
+    announces itself to its backend with ``HERMES_DESKTOP_DEV_SERVER``."""
+    if session_platform() != "desktop":
+        return {}
+    target = "hermes-desktop-dev" if os.environ.get("HERMES_DESKTOP_DEV_SERVER") else "hermes-desktop"
+    return {"return_to": target, "op": op} if op else {"return_to": target}
+
+
 def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:
     error = None
     if result.error is not None:
@@ -238,6 +287,8 @@ def _result_dict(result: wire.ConnectorExecuteResult) -> dict[str, Any]:
             error["connector"] = result.error.connector
         if result.error.connect_url:
             error["connect_url"] = result.error.connect_url
+        if result.error.connection_id:
+            error["connection_id"] = result.error.connection_id
         if result.error.hint:
             error["hint"] = result.error.hint
     return {"data": result.data, "error": error}

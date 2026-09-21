@@ -54,7 +54,10 @@ const { refreshProjectTree } = await import('@/store/projects')
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
 
-function transcript(answer: string, sessionId = ACTIVE_STORED_ID): Awaited<ReturnType<typeof getLatestSessionMessages>> {
+function transcript(
+  answer: string,
+  sessionId = ACTIVE_STORED_ID
+): Awaited<ReturnType<typeof getLatestSessionMessages>> {
   return {
     messages: [
       { content: 'question', role: 'user', timestamp: 1 },
@@ -640,6 +643,57 @@ describe('active transcript refresh', () => {
 })
 
 describe('reconcileActiveTranscript', () => {
+  // A drop mid-send on a flaky link leaves the optimistic `user-*` row as the
+  // only copy of the message: the server never acked it, so server truth does
+  // not contain it. A background refresh landing in that window replaced the
+  // transcript outright and the message vanished, forcing the user to retype.
+  it('keeps an un-acked optimistic user row when the refresh lands mid-send', async () => {
+    const fixture = makeRefresh()
+    const optimisticId = 'user-1758100000000-ab12cd'
+
+    fixture.state.messages = [
+      { id: optimisticId, parts: [{ text: 'the message I just sent', type: 'text' }], role: 'user' }
+    ]
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('an older answer') as never)
+
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+
+    expect(messages.map(message => message.id)).toContain(optimisticId)
+  })
+
+  it('keeps one failed assistant bubble when refresh rebuilds the same tail turn under a new id', async () => {
+    const fixture = makeRefresh()
+    fixture.state.messages = [
+      {
+        id: 'optimistic-user',
+        parts: [{ text: 'question', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'connection lost after completion',
+        errorSurface: { code: 'transport_lost', layer: 'streaming', retryable: true },
+        id: 'assistant-live-before-refresh',
+        parts: [{ text: 'answer', type: 'text' }],
+        role: 'assistant'
+      }
+    ]
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('answer') as never)
+
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+    const assistants = messages.filter(message => message.role === 'assistant')
+
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0]).toMatchObject({
+      error: 'connection lost after completion',
+      errorSurface: { code: 'transport_lost', layer: 'streaming', retryable: true },
+      pending: false
+    })
+  })
+
   it('resolves and hydrates a messaging session from the messaging sessions store', async () => {
     setSessionOwnerHint(ACTIVE_STORED_ID, {
       connectionId: 'stale-messaging-owner',

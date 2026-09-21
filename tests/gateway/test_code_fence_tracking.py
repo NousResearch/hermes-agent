@@ -134,6 +134,40 @@ class TestTruncateMessageCarryLang:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  C2. truncate_message — a fence with no newline must not blow the budget
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestTruncateMessageFenceInfoStringLength:
+    """A fence whose line never ends makes the whole remainder the "language tag".
+
+    Reopening every continuation chunk with that tag pushed the chunk past the
+    platform limit, and the API rejects an over-length message outright: on Discord
+    (2000) the first chunk arrives and every later one comes back 400 Invalid Form
+    Body / BASE_TYPE_MAX_LENGTH, so the reply is silently half-delivered.
+    """
+
+    # Minified JSON right after the fence, no newline anywhere — the realistic shape.
+    NO_NEWLINE = '```json{"k":"' + "v" * 4000 + '"}'
+
+    @pytest.mark.parametrize("max_length", [2000, 3000, 4096, 8000])
+    def test_no_chunk_exceeds_max_length(self, max_length):
+        for i, chunk in enumerate(BasePlatformAdapter.truncate_message(self.NO_NEWLINE, max_length)):
+            assert len(chunk) <= max_length, (
+                f"chunk {i} is {len(chunk)} chars, over the {max_length} limit")
+
+    def test_bare_fences_with_no_newline(self):
+        """Degenerate but cheap to guard: backticks only, no newline, no space."""
+        for chunk in BasePlatformAdapter.truncate_message("```" * 1000, 2000):
+            assert len(chunk) <= 2000
+
+    def test_real_language_tag_still_carried(self):
+        """The cap must not disturb an ordinary tag — see TestTruncateMessageCarryLang."""
+        body = "\n".join(f"// line{i}" for i in range(50))
+        chunks = BasePlatformAdapter.truncate_message(f"```python\n{body}\n```\nend", 120)
+        assert chunks[1].lstrip().startswith("```python")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  D. truncate_message — THE GAP: last chunk does not auto-close
 # ═══════════════════════════════════════════════════════════════════════════
 

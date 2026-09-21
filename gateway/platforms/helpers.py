@@ -411,13 +411,21 @@ def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
     return out
 
 
+# A fence info string is a short language hint ("python", "json"). CommonMark ends it at
+# the first whitespace OR the end of the line, so a fence with no newline after it makes
+# the whole remaining text the "tag". truncate_message reopens the fence with that tag on
+# every continuation chunk, and a tag longer than the budget produces a chunk past the
+# platform's limit — which the API then rejects outright.
+_MAX_FENCE_LANG = 32
+
+
 def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> "tuple[bool, str]":
     """Walk ``text`` line by line toggling on ``` lines; return the final (in_code, lang)."""
     for line in text.split("\n"):
         stripped = line.strip()
         if stripped.startswith("```"):
             tag = stripped[3:].split()
-            in_code, lang = (False, "") if in_code else (True, tag[0] if tag else "")
+            in_code, lang = (False, "") if in_code else (True, tag[0][:_MAX_FENCE_LANG] if tag else "")
     return in_code, lang
 
 

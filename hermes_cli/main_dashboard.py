@@ -758,6 +758,7 @@ def _host_backend_attachment():
     this port" proved nothing about WHO answers (a foreign service, or a recycled PID's new
     owner). The record carries ``(pid, createTime)`` so liveness is proved against the same
     incarnation, and its token fingerprint must still match the 0600 token file the owner wrote.
+    The record only nominates a CANDIDATE; :func:`_attach_to_host_backend` makes it prove itself.
     """
     try:
         from gateway import host_rendezvous as hr
@@ -770,14 +771,60 @@ def _host_backend_attachment():
         return None
 
 
+def _explicit_endpoint_flags(argv=None) -> set:
+    """Which of ``--host``/``--port`` the operator actually typed.
+
+    argparse defaults are indistinguishable from a typed value in ``args``, and the difference is
+    load-bearing: an unset ``--port`` may attach to whatever port the host owner bound, but a
+    typed ``--port 8899`` or ``--host 0.0.0.0`` (LAN access) must never be silently answered with
+    a loopback attach on some other port.
+    """
+    typed = set()
+    for token in (sys.argv[1:] if argv is None else argv):
+        name = str(token).split("=", 1)[0]
+        if name in ("--host", "--port"):
+            typed.add(name[2:])
+    return typed
+
+
+def _endpoint_conflict(args, record, typed: set) -> str:
+    """Why an explicitly requested endpoint cannot be served by ``record`` ('' when it can)."""
+    if "port" in typed:
+        wanted_port = getattr(args, "port", None)
+        # ``--port 0`` is "any free port", not a demand for a specific one.
+        if isinstance(wanted_port, int) and wanted_port > 0 and wanted_port != record.port:
+            return f"--port {wanted_port} (the host owner is on port {record.port})"
+    if "host" in typed:
+        wanted_host = str(getattr(args, "host", "") or "")
+        owner_host = record.host or "127.0.0.1"
+        loopback = {"127.0.0.1", "localhost", "::1"}
+        wildcard = {"0.0.0.0", "::", "*"}
+        # A wildcard owner already answers on loopback; anything else must match exactly.
+        reachable = wanted_host == owner_host or (owner_host in wildcard and wanted_host in loopback)
+        if not reachable:
+            return f"--host {wanted_host} (the host owner is bound to {owner_host})"
+    return ""
+
+
 def _attach_to_host_backend(args, headless_backend: bool) -> None:
     """Multiplex-only: a second `hermes serve`/`dashboard` attaches to the host backend.
 
     Exactly ONE backend runs per host and multiplexes every profile, so a second invocation —
     for ANY profile, the default included — reports the live one and exits 0 instead of binding
     a second port. ``--isolated`` opts out (Desktop's SSH backend proves ownership with it) and
-    Desktop pool backends (HERMES_DESKTOP=1) keep their own lifecycle. Returns normally when no
-    live record exists, leaving the re-exec fallback below to run.
+    Desktop pool backends (HERMES_DESKTOP=1) keep their own lifecycle.
+
+    Exit 0 means "the host backend answered and serves what you asked for", and nothing else:
+
+    * the owner must ANSWER on its recorded port and identify itself (a record alone cannot see a
+      graceful-shutdown window or a foreign listener that inherited the port) — a supervisor or
+      `hermes update` relaunch landing in that window would otherwise exit 0 with NOTHING
+      listening, reporting success for a dead service;
+    * an explicitly typed ``--port``/``--host`` the owner cannot serve is a non-zero REFUSAL
+      naming the owner, never a silent redirect;
+    * a `hermes dashboard` user is never handed a headless backend's URL (no SPA behind it).
+
+    Returns normally — leaving the caller to BIND — when no owner answers.
     """
     if getattr(args, "isolated", False) or os.environ.get("HERMES_DESKTOP") == "1":
         return
@@ -785,13 +832,35 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     if record is None:
         return
 
+    from gateway import host_rendezvous as hr
+
+    identity = hr.probe_owner(record)
+    if identity is None:
+        # Unprovable liveness (no psutil), a closed port, a foreign listener: all mean "no owner
+        # answered". Fall through to the bind — never exit 0 on an attach that did not happen.
+        return
+
+    typed = _explicit_endpoint_flags()
+    conflict = _endpoint_conflict(args, record, typed)
+    if conflict:
+        print(f"Refusing to start: this host is already served by {hr.describe(record)}.")
+        print(f"  You asked for {conflict}.")
+        print("  Stop that backend, or drop the flag to use the running one.")
+        sys.exit(1)
+
+    if not headless_backend and not identity.get("servesSpa"):
+        print(f"Refusing to start: this host is already served by {hr.describe(record)}, "
+              "which is a headless `hermes serve` backend with no dashboard UI.")
+        print("  Stop it and run `hermes dashboard`, or use --isolated for a dedicated server.")
+        sys.exit(1)
+
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
     except Exception:
         profile = "default"
     wanted = getattr(args, "open_profile", "") or profile
-    url = f"http://{record.host or '127.0.0.1'}:{record.port}/?profile={wanted}"
+    url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
 
     kind = "backend" if headless_backend else "dashboard"
     print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")

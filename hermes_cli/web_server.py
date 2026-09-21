@@ -1257,6 +1257,9 @@ def _on_server_started(
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
+    # Published by /api/host/identity: an attaching `hermes dashboard` must never be routed to a
+    # headless backend (a URL with no UI behind it).
+    app.state.serves_spa = not headless
 
     # Positive process identity in the machine spawn ledger (+ Windows
     # kill-on-close job). Registered AFTER the bind so the entry carries the
@@ -1278,11 +1281,15 @@ def _on_server_started(
     # after the bind so the record carries the real port, and beside — not instead of — the
     # spawn-ledger entry above, which Desktop's attach ladder reads.
     def _publish_host_record() -> None:
-        import atexit
-
         from gateway import host_rendezvous as hr
 
-        if not hr.acquire_host_lock(hr.ROLE_SERVE):
+        outcome, error = hr.claim_host_lock(hr.ROLE_SERVE)
+        if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
+            _log.warning(
+                "Host backend lock could not be opened (%s); this backend is not discoverable. "
+                "This is NOT another backend holding it.", error)
+            return
+        if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
             owner = hr.read_record(hr.ROLE_SERVE)
             _log.warning(
                 "Another backend already owns this host (%s); this one bound anyway "
@@ -1299,8 +1306,8 @@ def _on_server_started(
             # authenticate even when the backend is gated and `GET /` withholds it.
             token=_SESSION_TOKEN,
         )
-        atexit.register(hr.clear_record, hr.ROLE_SERVE)
-        atexit.register(hr.release_host_lock, hr.ROLE_SERVE)
+        # SIGTERM included: it is the normal stop, and it does not run atexit here.
+        hr.cleanup_on_exit(hr.ROLE_SERVE)
 
     _best_effort("host rendezvous publish", _publish_host_record)
 

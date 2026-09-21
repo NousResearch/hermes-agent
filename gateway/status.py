@@ -317,7 +317,10 @@ def _get_lock_dir() -> Path:
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
-    state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    # XDG spec: a relative $XDG_STATE_HOME is INVALID and must be ignored. Honouring one made the
+    # lock dir CWD-relative, so two serves started from different directories shared no singleton.
+    state_home_env = os.getenv("XDG_STATE_HOME") or ""
+    state_home = Path(state_home_env) if os.path.isabs(state_home_env) else Path.home() / ".local" / "state"
     return state_home / "hermes" / _LOCKS_DIRNAME
 
 

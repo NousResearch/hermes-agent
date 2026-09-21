@@ -5181,14 +5181,19 @@ def _claim_host_gateway_role() -> None:
     so a host with two gateways (the shape the multiplex-only ruling forbids) starts as it always
     did and says so in the log. Flipping this into a refusal is a separate, reviewable change.
     """
-    import atexit
     from gateway import host_rendezvous as hr
 
     try:
-        if hr.acquire_host_lock(hr.ROLE_GATEWAY):
+        outcome, error = hr.claim_host_lock(hr.ROLE_GATEWAY)
+        if outcome is hr.HostLockOutcome.ACQUIRED:
             hr.publish_record(hr.ROLE_GATEWAY, profiles=hr.served_profiles())
-            atexit.register(hr.clear_record, hr.ROLE_GATEWAY)
-            atexit.register(hr.release_host_lock, hr.ROLE_GATEWAY)
+            # SIGTERM (systemd stop, docker stop, the update relaunch) does not run atexit.
+            hr.cleanup_on_exit(hr.ROLE_GATEWAY)
+            return
+        if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
+            logger.warning(
+                "Host gateway lock could not be opened (%s); this gateway is not discoverable. "
+                "No second gateway is implied — the lock directory itself is unusable.", error)
             return
         owner = hr.read_record(hr.ROLE_GATEWAY)
         logger.warning(

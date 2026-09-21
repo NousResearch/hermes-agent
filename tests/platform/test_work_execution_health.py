@@ -455,3 +455,171 @@ def test_no_standalone_dispatcher_races_the_gateways():
     assert "kanban daemon" not in body, (
         "the deployment runs a standalone dispatcher as well as the gateway-embedded one"
     )
+
+
+# ---------------------------------------------------------------------------
+# The assignee has to be a materialized profile
+#
+# Third deployment where NOVA reported success for work nothing could run, and
+# the quietest of the three. `_dispatch_lane_task` asks
+# `hermes_cli.profiles.profile_exists(assignee)`; a name with no profile
+# directory goes to `skipped_nonspawnable`, which the dispatcher documents as
+# "expected steady-state on multi-lane setups, NOT operator-actionable". So it
+# logs nothing — and `has_spawnable_ready` returns False for the same reason,
+# which resets `bad_ticks` and suppresses the "kanban dispatcher stuck" warning
+# that is supposed to be the backstop. A dispatcher holding its lock, ticking
+# every 60s, is indistinguishable from a healthy idle one.
+#
+# NOVA submits by assignee NAME, straight from the bundle spec. Nothing on the
+# submit path requires that `nova apply` ever materialized that agent.
+# ---------------------------------------------------------------------------
+
+
+def _tick(home):
+    """One real dispatcher tick through the gateway's own boot. Returns (spawned, result)."""
+    from gateway.kanban_watchers import GatewayKanbanWatchersMixin
+    from gateway.kanban_watchers_dispatcher import (
+        _KanbanDispatcher, _resolve_dispatcher_settings,
+    )
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    class _Gateway(GatewayKanbanWatchersMixin):
+        _running = True
+
+    boot = _Gateway()._kanban_dispatcher_boot()
+    assert boot is not None
+    _load_config, _kb, kanban_cfg = boot
+    dispatcher = _KanbanDispatcher(_kb, _resolve_dispatcher_settings(kanban_cfg, _kb))
+
+    spawned: list[str] = []
+    original = kbd._default_spawn
+    kbd._default_spawn = lambda t, w, *, board=None: (spawned.append(t.id), 424242)[1]
+    try:
+        results = dispatcher.tick_once()
+    finally:
+        kbd._default_spawn = original
+    return spawned, results, dispatcher
+
+
+def test_an_unmaterialized_assignee_is_skipped_silently_and_never_claimed(
+    deployment, monkeypatch,
+):
+    """The exact deployed failure, reproduced.
+
+    An agent NOVA declared but never materialized has no profile directory, so the
+    dispatcher refuses it — with no log line, and with the stuck-detector disarmed.
+    """
+    import shutil
+
+    _, runtime, _ = deployment
+    home = runtime.paths.home
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8"
+    )
+    submit(deployment)
+
+    shutil.rmtree(home / "profiles")
+
+    spawned, results, dispatcher = _tick(home)
+    assert not spawned, "a task with no profile behind it must never be claimed"
+    skipped = [task for _slug, r in results for task in r.skipped_nonspawnable]
+    assert skipped, (
+        "the tasks were neither spawned nor recorded as nonspawnable — the skip has "
+        "moved somewhere this test no longer describes"
+    )
+    assert not dispatcher.ready_nonempty(), (
+        "ready_nonempty is what arms the 'kanban dispatcher stuck' warning; this "
+        "asserts the silence is real, so the fix is never judged by that warning"
+    )
+
+
+def test_a_materialized_assignee_is_claimed(deployment):
+    """The other half: with the profile present, the same tick claims. This is the pair
+    that makes the test above a diagnosis rather than a description of a broken board."""
+    import sqlite3
+
+    _, runtime, _ = deployment
+    home = runtime.paths.home
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8"
+    )
+    submit(deployment)
+
+    assert (home / "profiles").is_dir(), "apply_bundle should have materialized profiles"
+    spawned, results, _ = _tick(home)
+    assert spawned, f"nothing claimed with profiles present; {results}"
+
+    connection = sqlite3.connect(home / "kanban.db")
+    try:
+        rows = connection.execute(
+            "SELECT status, worker_pid FROM tasks WHERE id IN "
+            f"({','.join('?' * len(spawned))})", spawned,
+        ).fetchall()
+    finally:
+        connection.close()
+    assert all(status == "running" and pid for status, pid in rows)
+
+
+def test_nova_apply_materializes_every_declared_agent_as_a_profile(tmp_path, monkeypatch):
+    """The link between the two: `nova apply` is what makes an assignee dispatchable.
+
+    Asserted through `hermes_cli.profiles.profile_exists` — the dispatcher's own
+    predicate — rather than by looking for directories, so a change to what counts as a
+    profile fails here instead of on a customer's board.
+    """
+    from hermes_cli.profiles import profile_exists
+    from nova.apply import apply_bundle
+    from nova.audit import AuditLog
+    from nova.runtime.hermes import HermesRuntime
+    from nova.spec import load_bundle
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("NOVA_HOME", str(home))
+
+    bundle = load_bundle(EXAMPLE_BUNDLE)
+    for agent in bundle.agents:
+        assert not profile_exists(agent.id), "the fixture home must start empty"
+
+    apply_bundle(
+        bundle, HermesRuntime(home=home, tenant_id=bundle.tenant_id),
+        audit=AuditLog(home / "audit.jsonl", tenant_id=bundle.tenant_id),
+    )
+    for agent in bundle.agents:
+        if not agent.enabled:
+            continue
+        assert profile_exists(agent.id), (
+            f"agent {agent.id!r} is declared and enabled but has no profile after apply, "
+            "so the dispatcher would silently refuse every task assigned to it"
+        )
+
+
+def test_nova_apply_does_not_clobber_the_operators_gateway_config(tmp_path, monkeypatch):
+    """Running `nova apply` on a live deployment must not undo the very setting that
+    turns the dispatcher on — otherwise the fix for this outage would cause the last one."""
+    from nova.apply import apply_bundle
+    from nova.audit import AuditLog
+    from nova.runtime.hermes import HermesRuntime
+    from nova.spec import load_bundle
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("NOVA_HOME", str(home))
+    config = home / "config.yaml"
+    operator_written = "kanban:\n  dispatch_in_gateway: true\n  review_dispatch: true\n"
+    config.write_text(operator_written, encoding="utf-8")
+
+    bundle = load_bundle(EXAMPLE_BUNDLE)
+    apply_bundle(
+        bundle, HermesRuntime(home=home, tenant_id=bundle.tenant_id),
+        audit=AuditLog(home / "audit.jsonl", tenant_id=bundle.tenant_id),
+    )
+    import yaml
+
+    kanban = (yaml.safe_load(config.read_text(encoding="utf-8")) or {}).get("kanban") or {}
+    assert kanban.get("dispatch_in_gateway") is True, (
+        "nova apply removed kanban.dispatch_in_gateway from the home config; applying to "
+        "fix a stalled board would turn the dispatcher off"
+    )

@@ -56,6 +56,77 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# Size of the pool that runs agent TURN bodies, and of the separate pool for best-effort session
+# HOUSEKEEPING (finalize hooks, agent cleanup). They are separate because housekeeping callers
+# ABANDON their worker on timeout — see _run_housekeeping_in_executor. Both are ops-tunable.
+_EXECUTOR_MAX_WORKERS_DEFAULT = 10
+_HOUSEKEEPING_EXECUTOR_MAX_WORKERS_DEFAULT = 4
+# Log PHASE=executor_wait when a submitted work item sat queued this long before its first
+# instruction. Well above scheduling jitter, well below a budget a human would notice.
+_EXECUTOR_WAIT_WARN_SECS_DEFAULT = 5.0
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    """Return a positive int from ``name``, falling back to ``default``."""
+    raw = os.getenv(name, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r", name, raw)
+        else:
+            if value > 0:
+                return value
+            logger.warning("Ignoring non-positive %s=%r", name, raw)
+    return default
+
+
+def _executor_max_workers() -> int:
+    """Return the size of the turn-body executor."""
+    return _env_positive_int(
+        "HERMES_GATEWAY_EXECUTOR_MAX_WORKERS", _EXECUTOR_MAX_WORKERS_DEFAULT)
+
+
+def _housekeeping_executor_max_workers() -> int:
+    """Return the size of the best-effort housekeeping executor."""
+    return _env_positive_int(
+        "HERMES_GATEWAY_HOUSEKEEPING_MAX_WORKERS",
+        _HOUSEKEEPING_EXECUTOR_MAX_WORKERS_DEFAULT)
+
+
+def _get_or_create_pool(
+    owner: Any, attr: str, prefix: str, max_workers: int
+) -> concurrent.futures.ThreadPoolExecutor:
+    """Get-or-create one of the gateway-owned pools under the owner's shared lock.
+
+    A module-level function, not a method: ``_get_executor`` is called unbound against
+    lightweight test doubles (``GatewayRunner._get_executor(fake)``), so it must not depend on
+    any sibling method those doubles do not implement.
+    """
+    lock = getattr(owner, "_executor_lock", None)
+    if lock is None:
+        lock = threading.Lock()
+        owner._executor_lock = lock
+    with lock:
+        if getattr(owner, "_executor_closing", False):
+            raise RuntimeError("Gateway is shutting down; executor unavailable")
+        executor = getattr(owner, attr, None)
+        if executor is None or getattr(executor, "_shutdown", False):
+            executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix=prefix)
+            setattr(owner, attr, executor)
+        return executor
+
+
+def _executor_wait_warn_secs() -> float:
+    """Return the queue-latency threshold that triggers a PHASE=executor_wait log."""
+    raw = os.getenv("HERMES_GATEWAY_EXECUTOR_WAIT_WARN", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            logger.warning("Ignoring invalid HERMES_GATEWAY_EXECUTOR_WAIT_WARN=%r", raw)
+    return _EXECUTOR_WAIT_WARN_SECS_DEFAULT
 # End reasons meaning the USER deliberately closed this thread. Shared by _classify_completion_target and
 # _resolve_async_delegation_session so they never disagree (else a "delivered" reason is acked, then lost).
 _USER_BOUNDARY_END_REASONS = ("session_reset", "user_exit", "session_switch", "new_session")
@@ -3570,6 +3641,10 @@ class GatewayRunner(
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        # Best-effort session housekeeping runs on its OWN pool: those callers abandon their
+        # worker on timeout, and an abandoned worker holds its slot until its blocking call
+        # returns — on a shared pool that starves turn bodies. See _run_housekeeping_in_executor.
+        self._housekeeping_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect the pool.
         self._executor_closing = False
         # ALL per-session state lives here (gateway/session_state.py); use _session_state / _peek_session_state.
@@ -4275,25 +4350,65 @@ class GatewayRunner(
 
     async def _run_in_executor_with_context(self, func, *args):
         """Run blocking work in the thread pool while preserving session contextvars."""
+        return await self._submit_with_context(self._get_executor(), "turn", func, *args)
+
+    async def _run_housekeeping_in_executor(self, label, func, *args):
+        """Run best-effort session housekeeping off the TURN pool.
+
+        Callers of this helper bound their await with ``asyncio.wait_for`` and, on timeout, log
+        "the worker thread is left to finish on its own" and proceed. That bounds the AWAIT but
+        NOT the OCCUPANCY: a ``concurrent.futures`` work item that has already begun executing is
+        not cancellable, so an abandoned worker keeps its pool slot until its blocking call
+        returns. On a shared pool, N abandonments retire N turn slots for ANY N — the failure is
+        scale-invariant, so raising ``max_workers`` does not fix it. Housekeeping therefore gets
+        its own bounded pool; exhausting that one delays only more housekeeping, which is
+        best-effort by construction.
+        """
+        return await self._submit_with_context(
+            self._get_housekeeping_executor(), label, func, *args
+        )
+
+    async def _submit_with_context(self, executor, pool, func, *args):
+        """Submit to ``executor`` preserving contextvars, logging excessive queue latency.
+
+        Queue latency on these pools is otherwise invisible: nothing between "inbound message"
+        and the turn body names the wait, so a saturated pool looks like a hung agent.
+        """
         loop = asyncio.get_running_loop()
         ctx = copy_context()
-        return await loop.run_in_executor(self._get_executor(), ctx.run, func, *args)
+        submitted_at = time.monotonic()
+        warn_after = _executor_wait_warn_secs()
+
+        def _timed(*call_args):
+            waited = time.monotonic() - submitted_at
+            if waited >= warn_after:
+                try:
+                    max_workers = getattr(executor, "_max_workers", -1)
+                    inflight = len(getattr(executor, "_threads", ()) or ())
+                    queued = executor._work_queue.qsize()
+                except Exception:
+                    max_workers = inflight = queued = -1
+                logger.warning(
+                    "PHASE=executor_wait pool=%s key=%s waited=%.1f inflight=%s queued=%s "
+                    "max_workers=%s",
+                    pool, getattr(func, "__name__", type(func).__name__), waited,
+                    inflight, queued, max_workers,
+                )
+            return ctx.run(func, *call_args)
+
+        return await loop.run_in_executor(executor, _timed, *args)
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""
-        lock = getattr(self, "_executor_lock", None)
-        if lock is None:
-            lock = threading.Lock()
-            self._executor_lock = lock
-        with lock:
-            if getattr(self, "_executor_closing", False):
-                raise RuntimeError("Gateway is shutting down; executor unavailable")
-            executor = getattr(self, "_executor", None)
-            if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=10, thread_name_prefix="hermes-gateway")
-                self._executor = executor
-            return executor
+        return _get_or_create_pool(
+            self, "_executor", "hermes-gateway", _executor_max_workers())
+
+    def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the gateway-owned executor for best-effort session housekeeping."""
+        # Prefix stays under "hermes-gateway" so existing thread-name scans keep matching.
+        return _get_or_create_pool(
+            self, "_housekeeping_executor", "hermes-gateway-hk",
+            _housekeeping_executor_max_workers())
 
     def _shutdown_executor(self, drain_timeout: float = 0.0) -> int:
         """Stop the gateway-owned executor; returns the number of worker threads still running.
@@ -4307,6 +4422,16 @@ class GatewayRunner(
             self._executor_closing = True
             executor = getattr(self, "_executor", None)
             self._executor = None
+            housekeeping = getattr(self, "_housekeeping_executor", None)
+            self._housekeeping_executor = None
+        # Housekeeping is best-effort and nothing awaits it by now, so it gets no drain budget —
+        # but it MUST be stopped: its workers are non-daemon and concurrent.futures' atexit hook
+        # would otherwise join them and strand the process "down but not exited".
+        if housekeeping is not None:
+            try:
+                housekeeping.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                housekeeping.shutdown(wait=False)
         if executor is None:
             return 0
         try:

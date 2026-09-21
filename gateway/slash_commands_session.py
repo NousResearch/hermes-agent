@@ -127,7 +127,8 @@ class GatewaySessionCommandsMixin:
             return
         try:
             await asyncio.wait_for(
-                self._run_in_executor_with_context(self._cleanup_agent_resources, _old_agent),
+                self._run_housekeeping_in_executor(
+                    "cleanup", self._cleanup_agent_resources, _old_agent),
                 timeout=_RESET_CLEANUP_TIMEOUT_S)
         except asyncio.TimeoutError:
             logger.warning(

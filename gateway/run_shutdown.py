@@ -1221,7 +1221,8 @@ class GatewayShutdownMixin:
 
         try:
             await asyncio.wait_for(
-                self._run_in_executor_with_context(self._run_release_in_profile_scope, _call, (), session_key),
+                self._run_housekeeping_in_executor(
+                    "finalize", self._run_release_in_profile_scope, _call, (), session_key),
                 timeout=self._FINALIZE_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
@@ -1251,8 +1252,9 @@ class GatewayShutdownMixin:
         ctx_label = f" ({context})" if context else ""
         try:
             await asyncio.wait_for(
-                self._run_in_executor_with_context(
-                    self._run_release_in_profile_scope, self._cleanup_agent_resources, (agent,), session_key,
+                self._run_housekeeping_in_executor(
+                    "cleanup", self._run_release_in_profile_scope,
+                    self._cleanup_agent_resources, (agent,), session_key,
                 ),
                 timeout=self._CLEANUP_TIMEOUT_S,
             )

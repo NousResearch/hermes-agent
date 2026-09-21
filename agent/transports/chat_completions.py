@@ -284,8 +284,40 @@ def _has_replayable_thought_signature(extra_content: Any) -> bool:
     candidate = extra_content.get("thought_signature")
     google = extra_content.get("google")
     if candidate is None and isinstance(google, dict):
-        candidate = google.get("thought_signature")
+        candidate = google.get("thought_signature") or google.get("thoughtSignature")
+    elif candidate is None and isinstance(google, str):
+        candidate = google
     return isinstance(candidate, str) and bool(candidate.strip())
+
+
+def _tool_call_has_signature(tc: Any) -> bool:
+    """Whether a tool call carries a replayable Gemini thought_signature."""
+    if not isinstance(tc, dict):
+        return False
+    extra = tc.get("extra_content")
+    if not isinstance(extra, dict):
+        return False
+    sig = None
+    google = extra.get("google") or extra.get("thought_signature")
+    if isinstance(google, dict):
+        sig = google.get("thought_signature") or google.get("thoughtSignature")
+    elif isinstance(google, str) and google:
+        sig = google
+    return bool(isinstance(sig, str) and sig.strip())
+
+
+def _sentinel_extra_content(extra: Any) -> dict | None:
+    """Build an extra_content payload with skip_thought_signature_validator.
+    Returns None if extra is non-dict or google payload is non-dict to preserve unknown formats."""
+    if not isinstance(extra, dict):
+        return None
+    google = extra.get("google", {})
+    if not isinstance(google, dict):
+        return None
+    return {
+        **extra,
+        "google": {**google, "thought_signature": "skip_thought_signature_validator"},
+    }
 
 
 def _attr_or_model_extra(obj: Any, name: str) -> Any:
@@ -420,9 +452,7 @@ def _sanitize_message(
             if not isinstance(tc, dict):
                 continue
             keys = [k for k in _STRIP_TC_KEYS if k in tc]
-            if "extra_content" in tc and (
-                strip_extra_content or not _has_replayable_thought_signature(tc["extra_content"])
-            ):
+            if strip_extra_content and "extra_content" in tc:
                 keys.append("extra_content")
             if keys:
                 if copied_tool_calls is None:
@@ -438,31 +468,17 @@ def _sanitize_message(
         # targets accepted by _model_consumes_thought_signature.
         if not strip_extra_content:
             for tc_idx, tc in enumerate(tool_calls):
-                if not isinstance(tc, dict):
+                if not isinstance(tc, dict) or _tool_call_has_signature(tc):
                     continue
                 extra = tc.get("extra_content", {})
-                # Unknown provider payloads must survive replay unchanged.
-                if not isinstance(extra, dict):
-                    continue
-                sig = None
-                google = extra.get("google") or extra.get("thought_signature")
-                if isinstance(google, dict):
-                    sig = google.get("thought_signature") or google.get("thoughtSignature")
-                elif isinstance(google, str) and google:
-                    sig = google
-                if sig:
-                    continue
-                google = extra.get("google", {})
-                if not isinstance(google, dict):
+                sentinel = _sentinel_extra_content(extra)
+                if sentinel is None:
                     continue
                 if copied_tool_calls is None:
                     copied_tool_calls = list(tool_calls)
                 if copied_tool_calls[tc_idx] is tc:
                     copied_tool_calls[tc_idx] = dict(tc)
-                copied_tool_calls[tc_idx]["extra_content"] = {
-                    **extra,
-                    "google": {**google, "thought_signature": "skip_thought_signature_validator"},
-                }
+                copied_tool_calls[tc_idx]["extra_content"] = sentinel
         if copied_tool_calls is not None:
             out_msg["tool_calls"] = copied_tool_calls
     return out_msg if strip_keys or copied_tool_calls is not None else None

@@ -187,24 +187,37 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery,
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(message)
             # Per-profile turn lock serializes with any other delivery turn into this profile and
-            # covers only the turn window. Worst-case hold is lock wait (bot_mode.turn_wait_seconds,
-            # default 120s) + the 600s turn timeout, doubled on one retry — callers tolerate ~1320s.
-            # Worst-case handler hold is lock wait (bot_mode.turn_wait_seconds, default 120s) + the 600s
-            # turn timeout below — doubled when the retry policy grants one bounded re-run — so clients
-            # calling bot_relay.deliver must tolerate ~1320s before assuming failure. See #93091.
-            with acquire_turn_lock(root, resolved):
-                proc = _run(resolved, tmp, turn_env)
-                if proc.returncode != 0:
-                    # Retry policy: transient classes re-run the SAME session once; context_overflow
-                    # too — the retried turn's pre-API compaction pass compacts the over-threshold
-                    # transcript first (no fresh session is minted). Auth/quota/config never retry.
-                    # See #93091.
-                    from tools.bot_failure_reasons import (
-                        RETRY_NONE, classify_agent_error, retry_action)
-                    if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
-                        # The failed attempt already persisted the DM; the re-run resumes that row.
-                        from tools.bot_relay import retry_turn_env
-                        proc = _run(resolved, tmp, retry_turn_env(turn_env))
+            # covers the turn window only: the hold is ended as soon as the child reports its turn
+            # over (``turn_report_env`` + ``watch_turn_end``), never across the child's one-shot
+            # exit linger. Worst-case hold is lock wait (bot_mode.turn_wait_seconds, default 120s)
+            # + the 600s turn timeout, doubled on one retry — callers tolerate ~1320s.
+            # Worst-case handler hold is that same sum — so clients calling bot_relay.deliver must
+            # tolerate ~1320s before assuming failure. See #93091.
+            from tools.bot_relay import turn_report_env, turn_report_path, watch_turn_end
+            report_path = turn_report_path(tmp)
+            with acquire_turn_lock(root, resolved) as lock:
+                turn_env = {**turn_env, **turn_report_env(tmp)}
+                stop_watching = watch_turn_end(lock, report_path, label=f"relay deliver to {resolved}")
+                try:
+                    proc = _run(resolved, tmp, turn_env)
+                    if proc.returncode != 0:
+                        # Retry policy: transient classes re-run the SAME session once; context_overflow
+                        # too — the retried turn's pre-API compaction pass compacts the over-threshold
+                        # transcript first (no fresh session is minted). Auth/quota/config never retry.
+                        # A failed attempt's report must not end the hold: the re-run runs under it.
+                        # See #93091.
+                        from tools.bot_failure_reasons import (
+                            RETRY_NONE, classify_agent_error, retry_action)
+                        if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
+                            # The failed attempt already persisted the DM; the re-run resumes that row.
+                            from tools.bot_relay import retry_turn_env
+                            proc = _run(resolved, tmp, retry_turn_env(turn_env))
+                finally:
+                    # The watcher must not outlive the turn it guards (or keep polling a report
+                    # this handler is about to delete); the block's own exit owns the hold too.
+                    stop_watching.set()
+                    with contextlib.suppress(OSError):
+                        os.unlink(report_path)
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)

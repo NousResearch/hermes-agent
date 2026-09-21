@@ -155,9 +155,17 @@ class HostedRoomService:
                 "This Group Chat is managed by another gateway.")
         return gateway_id, epoch
 
-    def _turn_lock(self, profile: str) -> contextlib.AbstractContextManager[Path]:
-        from tools.bot_relay import acquire_turn_lock
-        return acquire_turn_lock(self.root, profile)
+    def _turn_lock(self, profile: str) -> contextlib.AbstractContextManager[Any]:
+        """The profile's cross-process turn lock for one hosted-room turn.
+
+        Room turns legitimately run far longer than a delivery turn (the room's own
+        ``turn_timeout_seconds``), so the lock records THAT budget: a waiter's ``target_busy``
+        refusal must not call a live room turn wedged. See #93091.
+        """
+        from tools.bot_relay import TURN_LOCK_STALE_MARGIN_SECONDS, acquire_turn_lock
+        return acquire_turn_lock(
+            self.root, profile,
+            wedged_after_seconds=_hosted_room_turn_timeout_seconds() + TURN_LOCK_STALE_MARGIN_SECONDS)
 
     def start(self) -> None:
         self.runtime.start()

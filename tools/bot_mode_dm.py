@@ -394,6 +394,15 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     ``tools.bot_relay``'s cross-process lock. Peer transports (stdin mode) are locked
     on the remote gateway by its own deliver path.
 
+    Yields ``(handle, release)`` where every element may be None/None for a transport with no
+    local lock. ``release`` ends the hold with the CHILD's TURN (``tools.bot_relay.watch_turn_end``
+    over the child's ``HERMES_QUIET_TURN_REPORT_FILE`` report): the quiet one-shot child keeps
+    running after its turn for the exit linger that protects its own nested deliver replies
+    (#113608), and holding the lock across that linger meant (a) a profile reported ``target_busy``
+    with no turn running and (b) a child waiting on a return delivery to the peer — which needs
+    the PEER's session idle — could hold this lock while the peer's child held the peer's, until
+    both lingers expired (the 2026-09-20 mutual wedge).
+
     See #93091.
     """
     # Match the CLI element by basename: argv[0] may be an absolute venv path
@@ -401,32 +410,75 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     # Split on both separators so the shape matches regardless of which platform built the argv. See #93590.
     cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
     if stdin_file or len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
-        return contextlib.nullcontext()
+        return contextlib.nullcontext((None, None))
     from tools.bot_mode_probe import _hermes_root
     from tools.bot_relay import acquire_turn_lock
 
-    return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
+    return _turn_lock_with_release(acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2]))
+
+
+@contextlib.contextmanager
+def _turn_lock_with_release(lock: Any):
+    """``acquire_turn_lock`` as ``(handle, release)``, releasing on exit either way.
+
+    ``release`` only ever releases early (idempotent); the ``with`` block's own exit still owns
+    the hold for the child's whole life, so a transport whose child writes no turn report (an
+    older ``hermes``, a stub) keeps exactly today's semantics.
+    """
+    from tools.bot_relay import watch_turn_end
+
+    with lock as handle:
+        watchers: list[threading.Event] = []
+
+        def release(report_path: Path) -> None:
+            """Release the hold as soon as ``report_path`` shows the child's turn finished."""
+            watchers.append(watch_turn_end(handle, Path(report_path), label="local delivery"))
+
+        try:
+            yield handle, release
+        finally:
+            for stop in watchers:
+                stop.set()
 
 
 def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
     """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
     the transport's streams and returns its exit code. Transient failures re-run the
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
-    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
+    compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry.
+
+    The turn is bounded by ``TURN_ATTEMPT_TIMEOUT_SECONDS`` — the same per-attempt ceiling the
+    relay lane passes to ``subprocess.run``. Without it a wedged turn held the profile's cross-process
+    turn lock for as long as the process lived, so every later delivery to that profile ended in a
+    ``target_busy`` refusal. The lock's own hold is ended with the TURN by
+    ``tools.bot_relay.watch_turn_end``, which the runner starts before this call.
+    """
+    from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
 
     def _turn(turn_env=env):
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, env=turn_env)
+                              capture_output=True, text=True, env=turn_env,
+                              timeout=TURN_ATTEMPT_TIMEOUT_SECONDS)
 
-    proc = _turn()
-    if proc.returncode != 0:
-        from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action, turn_failure_text
-        from tools.bot_relay import retry_turn_env
+    try:
+        proc = _turn()
+        if proc.returncode != 0:
+            from tools.bot_failure_reasons import RETRY_NONE, classify_agent_error, retry_action, turn_failure_text
+            from tools.bot_relay import retry_turn_env
 
-        # The re-run replays the same session and payload; the failed attempt already persisted the
-        # user row, so the retried process is told to resume it (RESUME_UNANSWERED_TURN_ENV).
-        if retry_action(classify_agent_error(turn_failure_text(proc.stdout, proc.stderr))) != RETRY_NONE:
-            proc = _turn(retry_turn_env(env))
+            # The re-run replays the same session and payload; the failed attempt already persisted the
+            # user row, so the retried process is told to resume it (RESUME_UNANSWERED_TURN_ENV).
+            if retry_action(classify_agent_error(turn_failure_text(proc.stdout, proc.stderr))) != RETRY_NONE:
+                proc = _turn(retry_turn_env(env))
+    except subprocess.TimeoutExpired:
+        # The ceiling, not a retryable failure: the attempt already spent the full turn budget, so a
+        # re-run would double the hold AND exceed TURN_LOCK_MAX_HOLD_SECONDS. Same typed reason the
+        # relay lane returns for its own timeout (tools/bot_failure_reasons.DELIVERY_TIMEOUT).
+        from tools.bot_failure_reasons import DELIVERY_TIMEOUT
+
+        print(json.dumps({"error": f"delivery turn timed out after {TURN_ATTEMPT_TIMEOUT_SECONDS}s",
+                          "reason": DELIVERY_TIMEOUT}))
+        return 1
     stderr_text = proc.stderr or ""
     reason = next((line.removeprefix("hermes-refusal-reason: ").strip()
                    for line in stderr_text.splitlines()
@@ -559,12 +611,23 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
             if record is not None:
                 return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
     try:
-        from tools.bot_relay import delivery_env
+        from tools.bot_relay import delivery_env, turn_report_env, turn_report_path
 
         env = delivery_env(author, profile_home if not stdin_file else None)
-        with _delivery_lock(argv, stdin_file=stdin_file):
+        with _delivery_lock(argv, stdin_file=stdin_file) as (_lock_handle, release_at_turn_end):
             if not stdin_file:
-                return _run_local_turn(argv, dm_file, env=env)
+                # The child reports its turn outcome; the hold ends with the TURN. This runner
+                # waits for the child's whole life (its one-shot exit linger protects nested
+                # deliver replies), which is not the part the lock exists to serialize.
+                report_path = turn_report_path(dm_file)
+                env = {**env, **turn_report_env(dm_file)}
+                if release_at_turn_end is not None:
+                    release_at_turn_end(report_path)
+                try:
+                    return _run_local_turn(argv, dm_file, env=env)
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(report_path)
             # Keep the file open until the transport exits; cleanup occurs
             # after subprocess.run returns, not merely after stdin reaches EOF.
             with open(dm_file, "r", encoding="utf-8") as stream:

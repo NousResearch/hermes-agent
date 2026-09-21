@@ -21,6 +21,7 @@ import re
 import shlex
 import shutil
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -613,16 +614,20 @@ class TurnBusyError(RuntimeError):
     """A delivery turn is already running for the target profile (``waited_seconds`` ≈ time queued).
 
     ``reason`` is 'target_busy' — extends the #93091 item-1 structured refusal enum. ``waited_seconds`` is
-    roughly how long the caller queued behind the current turn before giving up.
+    roughly how long the caller queued behind the current turn before giving up. ``holder`` is the
+    advisory record the holder left in the lock file; when it shows a hold past
+    :data:`TURN_LOCK_MAX_HOLD_SECONDS` the message says so (a wedged holder, not a busy one).
     """
 
     reason = "target_busy"
 
-    def __init__(self, profile: str, waited_seconds: float):
+    def __init__(self, profile: str, waited_seconds: float, *, holder: Optional[Mapping[str, Any]] = None):
         self.profile, self.waited_seconds = profile, waited_seconds
+        self.holder = dict(holder or {})
         super().__init__(f"target_busy: another delivery turn is already running for profile '{profile}' — "
                          f"queued behind it for ~{int(round(waited_seconds))}s without it finishing. "
-                         "The message was NOT delivered; retry shortly.")
+                         f"The message was NOT delivered; retry shortly."
+                         + _holder_detail(self.holder, waited_seconds))
 
 
 def turn_wait_seconds() -> float:
@@ -637,24 +642,140 @@ def turn_lock_path(root: Path | str, profile: str) -> Path:
     return relay_root(root) / LOCKS_DIR / f"{safe}.lock"
 
 
+# Worst-case hold of a HEALTHY delivery turn: the per-attempt ceiling, doubled by the
+# policy-gated re-run. A hold past ``TURN_LOCK_WEDGED_AFTER_SECONDS`` is a wedged delivery, not a
+# long turn, and is named as such in the waiter's refusal and in a gateway WARNING. There is
+# deliberately no forced break of a live holder: releasing another process's flock would license
+# the exact concurrent turn this lock exists to prevent (double injection). A CRASHED holder
+# cannot wedge anything — the kernel drops its flock — so the only breakable case was already
+# covered; the residual is fixed at the holder, by ending the hold with the turn
+# (``watch_turn_end``) and by bounding the transport wait (``TURN_ATTEMPT_TIMEOUT_SECONDS``).
+TURN_LOCK_MAX_HOLD_SECONDS = float(TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS)
+# Slack before the label flips: a turn that runs its own budget out to the last second is slow,
+# not wedged. Lanes whose turns legitimately run longer (hosted-room turns) declare their own
+# budget on ``acquire_turn_lock``, so they are never mislabelled.
+TURN_LOCK_STALE_MARGIN_SECONDS = 300.0
+TURN_LOCK_WEDGED_AFTER_SECONDS = TURN_LOCK_MAX_HOLD_SECONDS + TURN_LOCK_STALE_MARGIN_SECONDS
+# Advisory holder record: who holds the lock, since when, and on which budget. Exclusivity is the
+# flock's; the record only feeds the refusal text and the wedged-holder WARNING.
+_HOLDER_RECORD_BYTES = 512
+
+
+def _write_holder_record(fd: int, profile: str, wedged_after: float) -> None:
+    """Best-effort ``{pid, profile, acquired_at, wedged_after}`` into the lock file's first bytes.
+
+    Written AFTER the flock is taken, so a reader that can see the record is looking at the
+    current holder; never raises (a filesystem that refuses the write must not fail a turn).
+    """
+    record = {"pid": os.getpid(), "profile": str(profile or ""), "acquired_at": time.time(),
+              "wedged_after": float(wedged_after)}
+    with contextlib.suppress(OSError, ValueError):
+        payload = json.dumps(record, separators=(",", ":")).encode("utf-8")[:_HOLDER_RECORD_BYTES]
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        os.write(fd, payload)
+
+
+def _read_holder_record(fd: int) -> dict:
+    """The holder record as an open reader fd sees it; ``{}`` when unreadable or malformed."""
+    try:
+        raw = os.pread(fd, _HOLDER_RECORD_BYTES, 0)
+        record = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def _holder_detail(record: dict, waited_seconds: float) -> str:
+    """Human clause naming a suspicious holder; empty when the record proves nothing.
+
+    Past the holder's own wedged threshold the holder is reported as wedged (and logged) — the
+    one signal an operator had to reconstruct from ``lsof`` and process trees by hand.
+    """
+    def _as_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    # A record that cannot be parsed proves nothing: never call a live holder wedged on a
+    # missing or unreadable stamp (an older build's record, a torn write).
+    acquired_at = _as_float(record.get("acquired_at"))
+    if acquired_at is None:
+        return ""
+    age = max(0.0, time.time() - acquired_at)
+    wedged_after = _as_float(record.get("wedged_after")) or TURN_LOCK_WEDGED_AFTER_SECONDS
+    if age <= wedged_after:
+        return ""
+    pid = record.get("pid") or "?"
+    logger.warning(
+        "bot turn lock for profile '%s' has been held by pid %s for %.0fs — past the %.0fs ceiling "
+        "of a legitimate delivery turn; that holder is wedged, not busy (waited %.0fs)",
+        record.get("profile") or "?", pid, age, wedged_after, waited_seconds)
+    return (f" The holder (pid {pid}) has held it for ~{int(age)}s — past the "
+            f"~{int(wedged_after)}s budget of a legitimate turn, so it is wedged rather than busy.")
+
+
+class TurnLockHandle:
+    """The acquired per-profile turn lock.
+
+    ``release()`` drops the flock before the enclosing block ends, from any thread and any
+    number of times: the delivery lanes use it to stop covering a child's post-turn one-shot
+    linger (``hermes_cli.quiet_single_query``), which is NOT part of the turn. Holding the lock
+    across that linger made a profile report ``target_busy`` while no turn was running, and —
+    when the lingering child is itself waiting on a return delivery to the peer (whose session
+    must go idle) — let two profiles wedge each other's lanes for as long as both lingers ran.
+    """
+
+    __slots__ = ("path", "profile", "_fd", "_fcntl", "_gate", "_released")
+
+    def __init__(self, path: Path, profile: str, fd: int, fcntl_mod: Any) -> None:
+        self.path, self.profile = path, profile
+        self._fd, self._fcntl = fd, fcntl_mod
+        self._gate, self._released = threading.Lock(), False
+
+    @property
+    def released(self) -> bool:
+        return self._released
+
+    def release(self) -> None:
+        """Release the flock early (idempotent, thread-safe)."""
+        with self._gate:
+            if self._released:
+                return
+            self._released = True
+        if self._fcntl is not None:
+            with contextlib.suppress(OSError):  # kernel releases on close anyway
+                self._fcntl.flock(self._fd, self._fcntl.LOCK_UN)
+
+
 @contextlib.contextmanager
-def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | None = None) -> Iterator[Path]:
+def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | None = None, *,
+                      wedged_after_seconds: float | None = None) -> Iterator[TurnLockHandle]:
     """Hold ``profile``'s cross-process turn lock for the ``with`` body: non-blocking
     flock probe + short-sleep retry up to the budget (``bot_mode.turn_wait_seconds``
     unless ``timeout_seconds``); raises :class:`TurnBusyError` when exhausted. No
-    ordering among waiters, but every waiter is bounded. Without ``fcntl`` (Windows)
-    the lock is a no-op — those installs never had this race path."""
+    ordering among waiters, but every waiter is bounded. Yields the
+    :class:`TurnLockHandle` so a holder can end the hold with its turn
+    (:func:`watch_turn_end`). ``wedged_after_seconds`` is the holder's own budget for
+    "legitimate turn" (defaults to :data:`TURN_LOCK_WEDGED_AFTER_SECONDS`); it is recorded
+    in the lock file and, past it, a waiter's refusal says the holder is WEDGED rather than
+    busy. Lanes whose turns legitimately run longer than a delivery turn must declare it.
+    Without ``fcntl`` (Windows) the lock is a no-op — those installs never had this race path."""
     try:
         import fcntl
     except ImportError:  # pragma: no cover — Windows
         logger.debug("bot turn lock disabled: fcntl unavailable on this platform")
-        yield turn_lock_path(root, profile)
+        yield TurnLockHandle(turn_lock_path(root, profile), str(profile or ""), -1, None)
         return
 
     budget = turn_wait_seconds() if timeout_seconds is None else max(0.0, float(timeout_seconds))
+    wedged_after = (TURN_LOCK_WEDGED_AFTER_SECONDS if wedged_after_seconds is None
+                    else max(float(wedged_after_seconds), 0.0))
     path = turn_lock_path(root, profile)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    handle = TurnLockHandle(path, str(profile or ""), fd, fcntl)
     try:
         start = time.monotonic()
         deadline = start + budget
@@ -665,12 +786,74 @@ def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | N
             except OSError:
                 now = time.monotonic()
                 if now >= deadline:
-                    raise TurnBusyError(profile, now - start)
+                    raise TurnBusyError(profile, now - start, holder=_read_holder_record(fd))
                 time.sleep(min(0.1, max(0.005, deadline - now)))
+        _write_holder_record(fd, str(profile or ""), wedged_after)
         try:
-            yield path
+            yield handle
         finally:
-            with contextlib.suppress(OSError):  # kernel releases on close anyway
-                fcntl.flock(fd, fcntl.LOCK_UN)
+            handle.release()
     finally:
         os.close(fd)
+
+
+def turn_report_path(work_path: "Path | str") -> Path:
+    """Where a delivery child records its turn outcome — the same ``<work>.turn.json``
+    ``cron/scheduler_delivery`` uses, and ``hermes_cli.quiet_single_query``'s
+    ``HERMES_QUIET_TURN_REPORT_FILE``. Mirrored here so both delivery lanes agree on the path
+    without importing the CLI at module scope."""
+    return Path(f"{work_path}.turn.json")
+
+
+def turn_report_env(work_path: "Path | str") -> dict[str, str]:
+    """Child-env entry that makes a delivery child write its turn report at
+    :func:`turn_report_path` (popped by the child before its turn, so the turn's own
+    subprocesses never inherit it)."""
+    from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV
+
+    return {TURN_REPORT_FILE_ENV: str(turn_report_path(work_path))}
+
+
+def turn_completed(report_path: "Path | str") -> bool:
+    """True when the child's turn report shows a COMPLETED turn.
+
+    A failed turn's report must not end the hold: the retry policy re-runs that same session
+    once, and the re-run has to stay under the lock (``tests/tools/test_bot_retry_policy.py``).
+    """
+    try:
+        record = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(record, dict):
+        return False
+    try:
+        return int(record.get("exit_code") or 0) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def watch_turn_end(handle: TurnLockHandle, report_path: "Path | str", *,
+                   poll_seconds: float = 0.25, label: str = "") -> threading.Event:
+    """Release ``handle`` as soon as its delivery child's TURN ends; returns the stop Event.
+
+    A quiet one-shot delivery child (``hermes … -Q``) writes its turn report the moment the turn
+    ends and then keeps running for the one-shot exit linger that protects its own nested
+    ``notify_on_complete`` replies (#113608) — the lingering child, not the turn, is what made a
+    profile look busy. The lock serializes TURNS, so the hold ends with the turn.
+
+    Callers must still hold the lock for the child's *life* when no report ever appears (an
+    older/other transport): the watcher only ever releases early, never acquires.
+    """
+    stop = threading.Event()
+
+    def _await_turn_end() -> None:
+        while not stop.wait(max(0.01, float(poll_seconds))):
+            if turn_completed(report_path):
+                logger.info("bot turn lock for profile '%s' released at turn end%s",
+                            handle.profile, f" ({label})" if label else "")
+                handle.release()
+                return
+
+    threading.Thread(target=_await_turn_end, name=f"bot-turn-end-{handle.profile}",
+                     daemon=True).start()
+    return stop

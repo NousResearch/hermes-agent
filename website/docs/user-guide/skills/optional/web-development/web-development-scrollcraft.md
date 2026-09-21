@@ -19,7 +19,7 @@ Premium scroll-driven landing pages; scroll = timeline.
 | Version | `1.0.0` |
 | Author | nateherkai (upstream scroll-craft), ported by Hermes Agent |
 | License | MIT |
-| Platforms | linux, macos, windows |
+| Platforms | linux, macos |
 | Tags | `web-development`, `landing-page`, `scrollytelling`, `animation`, `design`, `frontend` |
 
 ## Reference: full SKILL.md
@@ -28,26 +28,24 @@ Premium scroll-driven landing pages; scroll = timeline.
 The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-# scrollcraft
+# Scrollcraft Skill
 
-Scroll is the only input every visitor already knows. This skill treats it as a
-timeline: the wheel is a scrubber, the page is a film with real text on top,
-and each section behaves differently enough that the visitor keeps going.
+Scrollcraft treats the wheel as a timeline and produces a real HTML experience
+with varied scroll devices, a deliberate feeling curve, and visual proof. It
+does not turn one generic flythrough into an entire page or replace the user's
+journey and art-direction decisions.
 
-**What you produce:** an interview brief, a page grammar, a customer-journey
-map, a feeling curve with one engineered peak, a scroll score, one signature
-move, assets, one real HTML page on a token-driven design floor, and a strip of
-screenshots proving it holds up at every scroll position.
+## When to Use
 
-Use for: "scrollytelling", "scroll animation site", "a site where scrolling
+Use for "scrollytelling", "scroll animation site", "a site where scrolling
 plays a video", "Apple-style landing page", "3D scroll world", "make my brand a
 scroll experience", "this looks like a template", or any request for a site
 that should feel like an experience rather than a document.
 
-## What this is not
-
-It is not "generate a flythrough and drop text on it." That produces one device
-applied to a whole page, recognisable at a glance. Four spine rules:
+The deliverable includes an interview brief, page grammar, customer journey,
+feeling curve with one engineered peak, scroll score, signature move, assets,
+one token-driven HTML page, and screenshots across the scroll timeline. Keep
+four spine rules:
 
 1. **Variety is the product.** At least four device families, never the same
    device twice in a row. Read [references/devices.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/devices.md).
@@ -58,7 +56,57 @@ applied to a whole page, recognisable at a glance. Four spine rules:
 4. **A different world is not a different page.** Structure is a separate axis;
    decide it deliberately. Read [references/uniqueness.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/uniqueness.md).
 
-## Step 0: The interview
+## Prerequisites
+
+- Linux or macOS with Node.js 18 or newer, Bash, and a full ffmpeg build. The
+  required encode and background-server commands are POSIX shell workflows, so
+  this skill does not advertise native Windows support.
+- Playwright Core plus Chrome for the scripted screenshot pass. The lighter
+  Hermes alternative is `browser_exec` when available.
+- User-supplied footage or photos, or an available `image_generate` capability.
+- Optional kie.ai generation requires `KIE_AI_API_KEY` and paid credit. Before
+  the first paid call, tell the user what will be generated or uploaded, the
+  expected cost and retry ceiling, and obtain explicit approval.
+
+## How to Run
+
+Run preflight before the interview; it catches stripped ffmpeg builds that
+otherwise report missing filters as syntax errors:
+
+```bash
+node <skill>/scripts/doctor.mjs
+node <skill>/scripts/workspace.mjs --ensure
+```
+
+Workspace resolution order is `SCROLLCRAFT_HOME`, the nearest
+`.scrollcraft.json` (`{ "workspace": "..." }`) walking up from the current
+directory, then `<project root>/scrollcraft`. Builds live at
+`<workspace>/builds/<name>/`; the fingerprint registry is
+`<workspace>/FINGERPRINTS.md`, seeded from
+[templates/FINGERPRINTS.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/templates/FINGERPRINTS.md).
+
+Copy `engine/scrollcraft.js` and `engine/scrollcraft.css` into the build folder.
+Never edit the shared engine per project. Theme with tokens and put bespoke
+behavior in the page, driven by `--sc-p` and custom `data-sc-*` attributes.
+
+## Quick Reference
+
+| Stage | Required output | Primary reference |
+|---|---|---|
+| Interview | Eight verbatim answers and constraints | This file, Step 0 |
+| Journey | Four to seven beats | `references/worlds.md` |
+| Grammar | Grammar, feeling curve, score, fingerprint gate | `references/uniqueness.md` |
+| Assets | Approved and inspected stills or clips | `references/assets.md` |
+| Build | Semantic HTML plus token theme | `references/template.html` |
+| Verify | Scroll harness, contact sheets, feel diff | `references/verify.md` |
+
+Device patterns are in [references/devices.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/devices.md); visual
+taste guidance is in [references/taste.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/taste.md); continuous
+world guidance is in [references/worldflight.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/worldflight.md).
+
+## Procedure
+
+### Step 0: Interview
 
 **Always ask the user in chat before building anything.** Real questions, asked
 and answered in the conversation, written down — not a brief inferred from the
@@ -81,37 +129,15 @@ brand name. Eight questions in one pass:
 8. **What assets do they already have?** Footage, photos, product shots, brand
    kit. "Nothing" is fine and means a fully generated world.
 
-Write the answers verbatim into `<workspace>/builds/<name>/BRIEF.md` (use
-write_file) before any act planning. BRIEF.md must contain the eight answers,
+Write the answers verbatim into `<workspace>/builds/<name>/BRIEF.md` with
+`write_file` before any act planning. BRIEF.md must contain the eight answers,
 the feeling curve (one line per act: emotion, then cause), the peak (as the
 sentence a visitor would say to a friend), the completed "It's the site where
 ___" sentence, and any authored silence. If the user is genuinely unreachable
 in a fully autonomous run, self-author BRIEF.md, mark it
 `Self-authored, not interviewed`, and say so in the report.
 
-## Bootstrap
-
-Run the preflight rather than checking by hand (it catches a stripped ffmpeg
-that reports missing filters as syntax errors):
-
-```bash
-node <skill>/scripts/doctor.mjs
-node <skill>/scripts/workspace.mjs --ensure   # prints workspace, seeds registry
-```
-
-Workspace resolution order: `SCROLLCRAFT_HOME` env var; nearest
-`.scrollcraft.json` (`{ "workspace": "..." }`) walking up from cwd;
-`<project root>/scrollcraft`. Builds live at `<workspace>/builds/<name>/`, the
-fingerprint registry at `<workspace>/FINGERPRINTS.md` (seeded from
-[templates/FINGERPRINTS.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/templates/FINGERPRINTS.md), starts empty — the gate
-stops you repeating *yourself*).
-
-Copy `engine/scrollcraft.js` and `engine/scrollcraft.css` into the build
-folder. **Never edit the engine per-project.** Theme with tokens; write your
-own markup. Bespoke behaviour is bespoke JS in the page, driven off `--sc-p`
-and your own `data-sc-*` attributes.
-
-## Step 1: The brief, journey first
+### Step 1: Brief and journey
 
 Ask the subject open, in plain prose. Then ask only what Step 0 did not cover:
 what is this and who is it for; the one sentence the page installs; the one
@@ -121,7 +147,7 @@ direction from [references/worlds.md](https://github.com/NousResearch/hermes-age
 feels. Beats are the spine; a section serving no beat is cut. Confirm the
 journey with the user before generating assets — assets are the expensive part.
 
-## Step 2: Grammar, gate, then score
+### Step 2: Grammar, gate, then score
 
 Full detail in [references/uniqueness.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/uniqueness.md).
 
@@ -143,7 +169,7 @@ twice in a row; at most two `scrub` acts; no two adjacent acts with the same
 feeling; one peak with the largest span; total page length 8–14
 viewport-heights.
 
-## Step 3: Assets
+### Step 3: Assets
 
 Full pipeline, prompt scaffolds and model notes: [references/assets.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/assets.md).
 
@@ -153,13 +179,14 @@ Full pipeline, prompt scaffolds and model notes: [references/assets.md](https://
   Grade and encode them.
 - **The `image_generate` tool** for stills: one style preamble reused verbatim
   in every prompt is what makes six images look like one shoot. Inspect every
-  asset (vision_analyze) before use; rerolling beats shipping a bad frame.
+  asset with `vision_analyze` before use; rerolling beats shipping a bad frame.
 
 **Optional upstream path — kie.ai** (vendored verbatim as
 [scripts/kie.mjs](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/scripts/kie.mjs)): photoreal stills and camera-move clips.
 Requires the `KIE_AI_API_KEY` environment variable (export it in your shell;
 there is no bundled env file in this port). Check balance with
-`node <skill>/scripts/kie.mjs probe`; a still costs cents, a 5s clip more.
+`node <skill>/scripts/kie.mjs probe`; a still costs cents, a 5s clip more. Do
+not probe, upload, or generate until the user has approved that paid action.
 
 ```bash
 node <skill>/scripts/kie.mjs still "<style preamble>\n\n<scene>" out/01-hero.png --ar 16:9
@@ -172,7 +199,7 @@ bash  <skill>/scripts/encode.sh out/01.mp4 assets/01-m.mp4 mobile
 seeking walks from the previous keyframe; a normal web encode scrubs like mud.
 It also strips audio.
 
-## Step 4: Build the page
+### Step 4: Build the page
 
 Write real HTML — real `<h1>`, real `<p>`, real reading order. The engine reads
 `data-sc-*` attributes off your markup and drives it; it never generates DOM.
@@ -191,33 +218,13 @@ markup. Theme by overriding tokens, six values and two fonts:
 }
 ```
 
-## Step 5: Verify by scrolling it
+### Step 5: Verify by scrolling
 
-Not optional. Every scroll position is a different frame; failures live between
-the two you looked at. Full procedure: [references/verify.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/verify.md).
+Do not ship from a few hand-picked frames. Run the complete harness described
+under Verification, inspect the contact sheet, and compare the observed feeling
+curve with the brief.
 
-```bash
-cd <build project> && npm i playwright-core     # once
-node <skill>/scripts/serve.mjs --root . --port 4500 &
-node <skill>/scripts/shoot.mjs --url http://localhost:4500 --out lab/shots
-node <skill>/scripts/shoot.mjs --url http://localhost:4500 --out lab/mobile --width 390 --height 844
-node <skill>/scripts/shoot.mjs --url http://localhost:4500 --out lab/reduced --reduced-motion
-```
-
-The harness walks each act at six positions, waits for scrub video to settle,
-reports dead scroll, cues that never reach full opacity, and composited
-contrast; it writes a contact sheet. Then read `sheet.png` yourself
-(vision_analyze) — the harness proves a clip advances, not that the page means
-anything. Run the feel check ([references/feel.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/feel.md) §6):
-scroll cold, one word per act, diff against BRIEF.md. Where they disagree the
-page is wrong, not the brief.
-
-A green run does not cover a real phone (video decoder, autoplay policy, Low
-Power Mode). On any reported mobile defect, deploy
-[references/device-diag.html](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/device-diag.html) beside the site on
-the first round and let the device answer.
-
-## Hard rules (ship-blockers)
+### Ship blockers
 
 No clay diorama default; no "scroll to explore" cues or animated mouse icons;
 no `01 / 06` section counters; at most one eyebrow per three sections; no
@@ -231,7 +238,7 @@ animating width/height/top/left (`transform`/`opacity`; `clip-path` for
 wipes); no gradient text or neon glow; no audio on scrub clips; never ship
 without Step 5.
 
-## Output
+### Output
 
 The build folder including BRIEF.md, then a short report: grammar and why the
 other seven lost, signature move, fingerprint gate result per row, journey,
@@ -255,3 +262,30 @@ build's row to `<workspace>/FINGERPRINTS.md`.
   `--help`/source if drifted.
 - The upstream repo ships worked examples and a change log that are not
   vendored in this port; see the upstream repository if you want them.
+
+## Verification
+
+Every scroll position is a different frame; failures live between the two you
+looked at. Follow [references/verify.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/verify.md):
+
+```bash
+cd <build project> && npm i playwright-core
+node <skill>/scripts/serve.mjs --root . --port 4500 &
+node <skill>/scripts/shoot.mjs --url http://127.0.0.1:4500 --out lab/shots
+node <skill>/scripts/shoot.mjs --url http://127.0.0.1:4500 --out lab/mobile --width 390 --height 844
+node <skill>/scripts/shoot.mjs --url http://127.0.0.1:4500 --out lab/reduced --reduced-motion
+```
+
+The harness walks each act at six positions, waits for scrub video to settle,
+reports dead scroll, cues that never reach full opacity, and composited
+contrast, then writes a contact sheet. Inspect `sheet.png` with
+`vision_analyze`; the harness can prove a clip advances but cannot judge whether
+the page means anything. Run the feel check from
+[references/feel.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/feel.md) section 6: scroll cold, record one word
+per act, and diff those words against BRIEF.md. Where they disagree, the page
+is wrong, not the brief.
+
+A green harness does not cover a real phone's decoder, autoplay policy, or Low
+Power Mode. On a reported mobile defect, deploy
+[references/device-diag.html](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/web-development/scrollcraft/references/device-diag.html) beside the site on
+the first round and let the device answer.

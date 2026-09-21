@@ -956,6 +956,11 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
         result = await scoped_to_thread(
             body.profile or profile, lambda: remove_provider_env_credential(body.key)
         )
+        if not result.get("ok"):
+            raise HTTPException(
+                status_code=409,
+                detail="Credential is managed and cannot be changed",
+            )
         if not result.get("found"):
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
         return result

@@ -345,6 +345,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.save_key")
+@_profile_scoped
 @_catch(5034)
 def _(rid, params: dict) -> dict:
     """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
@@ -370,7 +371,9 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4006, "credential is managed and cannot be changed")
     # The launch profile's boot record may still say "nothing configured"; the gated picker's
     # own chat waits on setup.status, so the fresh key must move the record (+ setup.ready).
-    if not params.get("profile"):
+    session = _sessions.get(str(params.get("session_id") or ""))
+    profile_home = session.get("profile_home") if isinstance(session, dict) else None
+    if not profile_home or Path(profile_home).resolve() == Path(_hermes_home).resolve():
         from hermes_cli.free_tier_bootstrap import reconcile_record
         reconcile_record()
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
@@ -384,6 +387,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.disconnect")
+@_profile_scoped
 @_catch(5035)
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
@@ -394,7 +398,14 @@ def _(rid, params: dict) -> dict:
     pconfig = PROVIDER_REGISTRY.get(slug)
     # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
     env_vars = (pconfig.api_key_env_vars if pconfig else None) or ()
-    cleared_env = any([remove_provider_env_credential(ev).get("found") for ev in env_vars])
+    from hermes_cli import managed_scope
+    from hermes_cli.config import is_managed
+    if is_managed() or any(managed_scope.is_env_managed(ev) for ev in env_vars):
+        return _err(rid, 4006, "credential is managed and cannot be changed")
+    results = [remove_provider_env_credential(ev) for ev in env_vars]
+    if any(not result.get("ok") for result in results):
+        return _err(rid, 4006, "credential is managed and cannot be changed")
+    cleared_env = any(result.get("found") for result in results)
     cleared_auth = clear_provider_auth(slug)  # full disconnect: OAuth grants go too
     if not cleared_env and not cleared_auth:
         return _err(rid, 4005, f"no credentials found for {slug}")

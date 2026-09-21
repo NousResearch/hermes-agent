@@ -58,6 +58,11 @@ else:
         _F_OFD_SETLK = getattr(
             fcntl, "F_OFD_SETLK", {"linux": 37, "darwin": 90}.get(sys.platform.rstrip("0123456789")))
         _F_RDLCK, _F_UNLCK, _SEEK_SET = fcntl.F_RDLCK, fcntl.F_UNLCK, os.SEEK_SET
+        # The constants alone do not make the guard usable: _ofd_lock() calls fcntl.fcntl(), so a
+        # module that has the constants but no callable would pass supported() and then raise
+        # from the first hold(). Probe the whole capability here, not just the symbols.
+        if not callable(getattr(fcntl, "fcntl", None)):
+            raise ImportError("fcntl module has no fcntl() callable")
     except (ImportError, AttributeError):
         fcntl = None  # type: ignore[assignment]
         _F_OFD_SETLK = None

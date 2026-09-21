@@ -11,6 +11,7 @@ level, so the ``AttributeError`` killed every importer — ``hermes serve`` (Des
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import types
 
@@ -39,18 +40,39 @@ def _windows_fcntl_lookalike() -> types.ModuleType:
     return stub
 
 
+def _constants_only_fcntl() -> types.ModuleType:
+    """The other partial shape: every lock constant present, no ``fcntl()`` callable. Passing the
+    constant checks alone would report ``supported()`` and then raise from the first hold()."""
+    stub = types.ModuleType("fcntl")
+    stub.F_OFD_SETLK = 37
+    stub.F_RDLCK = 0
+    stub.F_UNLCK = 2
+    return stub
+
+
 @pytest.mark.parametrize(
     "stub",
-    [pytest.param(None, id="absent"), pytest.param(_windows_fcntl_lookalike(), id="partial")],
+    [
+        pytest.param(None, id="absent"),
+        pytest.param(_windows_fcntl_lookalike(), id="partial"),
+        pytest.param(_constants_only_fcntl(), id="constants-only"),
+    ],
 )
-def test_guard_degrades_to_a_no_op_instead_of_killing_every_importer(monkeypatch, stub):
+def test_guard_degrades_to_a_no_op_instead_of_killing_every_importer(monkeypatch, tmp_path, stub):
     guard = _reimport_with_fcntl(monkeypatch, stub)
 
-    # The contract the crash violated: the module imports, reports itself unavailable, and
-    # hold() hands back an empty guard so callers take the ordinary unguarded path.
-    assert guard.supported() is False
-    assert guard.hold("state.db") == {}
-    guard.release({})
+    # An open descriptor on the file is what makes hold() reach fcntl.fcntl(); without one the
+    # constants-only shape would pass on a vacuous loop.
+    db = tmp_path / "state.db"
+    fd = os.open(db, os.O_RDWR | os.O_CREAT)
+    try:
+        # The contract the crash violated: the module imports, reports itself unavailable, and
+        # hold() hands back an empty guard so callers take the ordinary unguarded path.
+        assert guard.supported() is False
+        assert guard.hold(db) == {}
+        guard.release({})
+    finally:
+        os.close(fd)
 
 
 def test_a_usable_fcntl_still_arms_the_guard(monkeypatch):

@@ -539,6 +539,10 @@ Hermes: **one row per plugin**, with two switch columns.
   package's desktop half. Restart the gateway to unload the plugin's code.
   Repo-bundled and pip-installed (entrypoint) plugins have no trash button:
   the first cannot be removed, the second goes with its Python package.
+  A standalone desktop plugin (a folder you dropped into
+  `~/.hermes/desktop-plugins/` with no agent package) gets the same trash
+  button; confirming deletes that folder on this computer and unloads the
+  plugin immediately, no gateway involved.
 
 Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
 picker installs reviewed entries at their pinned commit into the selected

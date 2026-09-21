@@ -26,6 +26,13 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
 
+const uninstallDiskPlugin = vi.fn(async (_id: string) => ({ ok: true }))
+
+vi.mock('@/contrib/runtime-loader', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  uninstallDiskPlugin: (id: string) => uninstallDiskPlugin(id)
+}))
+
 describe('PluginsTab', () => {
   beforeEach(() => {
     $pluginRecords.set({})
@@ -421,6 +428,39 @@ describe('PluginsTab catalog UX', () => {
       )
     )
     await waitFor(() => expect(screen.queryByText('demo-weather')).toBeNull())
+  })
+
+  it('uninstalls a standalone desktop plugin through Electron only after the confirm dialog is accepted', async () => {
+    $pluginRecords.set({
+      clock: { id: 'clock', name: 'Clock', kind: 'disk', status: 'loaded', file: '/h/desktop-plugins/clock/plugin.js' }
+    })
+    uninstallDiskPlugin.mockClear()
+
+    render(<PluginsTab profile={null} />)
+
+    screen.getByRole('button', { name: 'Uninstall: Clock' }).click()
+
+    await waitFor(() => expect($confirmRequest.get()?.title).toBe('Uninstall Clock?'))
+    expect(uninstallDiskPlugin).not.toHaveBeenCalled()
+
+    settleConfirm(true)
+
+    await waitFor(() => expect(uninstallDiskPlugin).toHaveBeenCalledWith('clock'))
+    // Nothing goes over the gateway: this half lives in this app, not the profile.
+    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
+  })
+
+  it('offers no desktop Uninstall for a bundled plugin or a unified package half', () => {
+    $pluginRecords.set({
+      bots: { id: 'bots', name: 'Bot Mode', kind: 'bundled', status: 'loaded' },
+      media: { id: 'media', name: 'Media Studio', kind: 'disk', status: 'loaded', packageName: 'hermes-media-studio' }
+    })
+
+    render(<PluginsTab profile={null} />)
+
+    expect(screen.getByText('Bot Mode')).toBeTruthy()
+    expect(screen.getByText('Media Studio')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Uninstall:/ })).toBeNull()
   })
 
   it('offers no Uninstall for a pip-installed (entrypoint) agent plugin', () => {

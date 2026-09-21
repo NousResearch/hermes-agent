@@ -15,7 +15,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
-import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
+import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
 import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -225,7 +225,8 @@ function PackageRow({
   busy,
   onAgentToggle,
   onAgentUpdate,
-  onAgentRemove
+  onAgentRemove,
+  onDesktopRemove
 }: {
   pkg: PluginPackage
   scope: null | string
@@ -234,6 +235,7 @@ function PackageRow({
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
   onAgentRemove: (row: AgentPluginRow) => void
+  onDesktopRemove: (record: PluginRecord) => void
 }) {
   const { t } = useI18n()
   const p = t.skills.plugins
@@ -247,6 +249,10 @@ function PackageRow({
   // was cloned there) can be uninstalled here: bundled plugins are refused by
   // the backend and entrypoint (pip-installed) ones go with their package.
   const agentRemovable = agent?.source === 'user' || agent?.source === 'git'
+  // A STANDALONE desktop plugin (a folder in <HERMES_HOME>/desktop-plugins with
+  // no agent package behind it) is deleted by Electron. A unified package's
+  // desktop half is not offered here: uninstalling the agent half prunes it.
+  const desktopRemovable = desktop?.kind === 'disk' && !desktop.packageName && !agent
   // Electron's desktop-half reconcile only walks THIS machine's homes, so a
   // package installed on a remote backend can never materialize here (#114079).
   const remoteBackend = useStore($connection)?.mode === 'remote'
@@ -291,9 +297,10 @@ function PackageRow({
           )}
         </span>
         {/* Same fixed-slot treatment for Uninstall: present on every row so the
-            halves line up, populated only when the agent half is a user install. */}
+            halves line up, populated when the agent half is a user install or
+            the row is a standalone desktop plugin. */}
         <span className="flex size-7 shrink-0 items-center justify-center">
-          {agent && agentRemovable && (
+          {agent && agentRemovable ? (
             <Tip label={p.uninstallTip(pkg.name, scopeLabel)}>
               <Button
                 aria-label={`${p.uninstall}: ${pkg.name}`}
@@ -306,7 +313,19 @@ function PackageRow({
                 <Trash2 className="size-3.5" />
               </Button>
             </Tip>
-          )}
+          ) : desktop && desktopRemovable ? (
+            <Tip label={p.uninstallDesktopTip(pkg.name)}>
+              <Button
+                aria-label={`${p.uninstall}: ${pkg.name}`}
+                className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
+                onClick={() => onDesktopRemove(desktop)}
+                size="icon"
+                variant="ghost"
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            </Tip>
+          ) : null}
         </span>
       </div>
 
@@ -621,6 +640,26 @@ export const PluginsTab = memo(function PluginsTab({
                     if (applied) {
                       notify({ kind: 'success', message: p.updated(row.name) })
                       void rescanAll(requestGateway, scope)
+                    }
+                  })
+                }}
+                onDesktopRemove={record => {
+                  void confirm({
+                    confirmLabel: p.uninstall,
+                    description: p.uninstallDesktopConfirmBody(record.name),
+                    destructive: true,
+                    title: p.uninstallConfirmTitle(record.name)
+                  }).then(async ok => {
+                    if (!ok) {
+                      return
+                    }
+
+                    const result = await uninstallDiskPlugin(record.id)
+
+                    if (result.ok) {
+                      notify({ kind: 'success', message: p.uninstalledDesktop(record.name) })
+                    } else {
+                      notifyError(result.error, p.uninstallFailed(record.name))
                     }
                   })
                 }}

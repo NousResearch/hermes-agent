@@ -1596,6 +1596,9 @@ export interface Translations {
       uninstallConfirmBody: (name: string, profile: string) => string
       uninstallFailed: (name: string) => string
       uninstalled: (name: string) => string
+      uninstallDesktopTip: (name: string) => string
+      uninstallDesktopConfirmBody: (name: string) => string
+      uninstalledDesktop: (name: string) => string
       deepLinkErrorTitle: string
       deepLinkCatalogInvalidName: string
       deepLinkCatalogUnknown: (name: string) => string

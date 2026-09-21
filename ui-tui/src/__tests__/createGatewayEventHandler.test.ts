@@ -1740,6 +1740,7 @@ describe('createGatewayEventHandler', () => {
   it('renders a failed turn from error_surface instead of the raw provider JSON', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
+
     const raw =
       'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
 

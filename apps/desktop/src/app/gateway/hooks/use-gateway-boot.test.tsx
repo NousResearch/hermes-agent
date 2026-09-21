@@ -705,7 +705,7 @@ describe('shared host backend event provenance', () => {
     })
   }
 
-  it("stamps a shared-primary profile-B event with B, not with the boot-time profile", async () => {
+  it('stamps a shared-primary profile-B event with B, not with the boot-time profile', async () => {
     const desktop = fakeDesktop()
 
     desktop.getConnection.mockResolvedValue(sharedPrimaryConn)

@@ -934,6 +934,12 @@ export default function SkillsDashboard() {
             aria-modal={mobileFiltersActive && sidebarOpen ? true : undefined}
             aria-labelledby="skills-directory-filters-title"
             className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}
+            onKeyDown={(e) => {
+              // While the drawer is open it is a dialog, so keys must not fall
+              // through to the page handlers — notably "/", which would open
+              // DocSearch on top of it and pull focus out.
+              if (mobileFiltersActive && sidebarOpen) e.stopPropagation();
+            }}
           >
             <div className={styles.sidebarHeader}>
               <h2 id="skills-directory-filters-title" className={styles.sidebarTitle}>Categories</h2>

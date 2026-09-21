@@ -115,3 +115,68 @@ def test_silent_for_unrelated_dir_named_profiles(topology, tmp_path, monkeypatch
     fired, _ = _run()
 
     assert fired is False
+
+
+class _Resp:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b"not json", id="non-json"),
+        pytest.param(b"\xff\xfe\x00corrupt", id="non-utf8"),
+    ],
+)
+def test_post_enroll_non_json_200_raises_runtime_error(monkeypatch, body):
+    """A 200 with a non-JSON or non-UTF-8 body must surface as the documented
+    RuntimeError, not a raw JSONDecodeError/UnicodeDecodeError."""
+    import urllib.request
+    from hermes_cli.gateway_enroll import _post_enroll
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp(body))
+
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        _post_enroll(
+            connector_base_url="https://connector.example",
+            access_token="tok",
+            enrollment_token="et",
+            gateway_id="gw-1",
+        )
+
+
+def test_post_enroll_read_failure_raises_runtime_error(monkeypatch):
+    """A mid-body socket reset on the enroll POST is a transport failure ->
+    RuntimeError, not a bare OSError traceback."""
+    import urllib.request
+    from hermes_cli.gateway_enroll import _post_enroll
+
+    class _ResetResp:
+        def read(self):
+            raise ConnectionResetError("reset")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc) -> bool:
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _ResetResp())
+
+    with pytest.raises(RuntimeError, match="transport failure"):
+        _post_enroll(
+            connector_base_url="https://connector.example",
+            access_token="tok",
+            enrollment_token="et",
+            gateway_id="gw-1",
+        )

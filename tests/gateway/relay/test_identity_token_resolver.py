@@ -255,3 +255,45 @@ def test_ambient_via_config_yaml(monkeypatch):
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     assert relay._resolve_relay_identity_token() == _FAKE_JWT
+
+
+def test_client_credentials_non_json_200_raises_runtime_error(monkeypatch):
+    """A 200 with a non-JSON body must surface as RuntimeError, matching the
+    resolver's documented failure contract."""
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", "https://idp.test/token")
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_ID", "c")
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_SECRET", "s")
+
+    def fake_urlopen(req, timeout=None):
+        return io.BytesIO(b"<html>error</html>")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        relay._resolve_relay_identity_token()
+
+
+def test_ambient_non_utf8_body_raises_runtime_error(monkeypatch):
+    """A non-UTF-8 ambient token body must surface as RuntimeError too."""
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", "https://proxy.local/access-token")
+
+    def fake_urlopen(req, timeout=None):
+        return io.BytesIO(b"\xff\xfe\x00corrupt")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError, match="non-UTF-8"):
+        relay._resolve_relay_identity_token()
+
+
+def test_client_credentials_bad_url_raises_runtime_error(monkeypatch):
+    """urlopen-level failures (malformed URL, socket reset) are transport
+    failures -> RuntimeError, matching the resolver's contract."""
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_TOKEN_URL", "https://idp.test/token")
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_ID", "c")
+    monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_SECRET", "s")
+
+    def fake_urlopen(req, timeout=None):
+        raise ValueError("unknown url type: badurl")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    with pytest.raises(RuntimeError, match="request failed"):
+        relay._resolve_relay_identity_token()

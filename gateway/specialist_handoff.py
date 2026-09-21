@@ -59,6 +59,7 @@ class HandoffResult:
     reason: str = ""
     candidate_request_id: Optional[str] = None
     candidate_status: Optional[str] = None
+    assignee: Optional[str] = None
 
 
 def _idempotency_key(source: HandoffSource) -> Optional[str]:
@@ -236,14 +237,16 @@ def create_specialist_handoff(
         try:
             if key:
                 row = conn.execute(
-                    "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
+                    "SELECT id, assignee FROM tasks WHERE idempotency_key = ? AND status != 'archived' ORDER BY created_at DESC LIMIT 1",
                     (key,),
                 ).fetchone()
                 if row is not None:
                     # Resolve the source-message idempotency before reopening a
                     # terminal candidate; otherwise the task keeps the old
                     # candidate in its body while the new ledger row is orphaned.
-                    return HandoffResult(True, task_id=row["id"], created=False)
+                    return HandoffResult(
+                        True, task_id=row["id"], created=False, assignee=row["assignee"]
+                    )
             with kb.write_txn(conn):
                 candidate_result = None
                 if signature is not None and type(registry) is CapabilityRegistry:
@@ -322,6 +325,7 @@ def create_specialist_handoff(
                 created=True,
                 candidate_request_id=candidate_result.request_id if candidate_result else None,
                 candidate_status=candidate_result.status if candidate_result else None,
+                assignee=effective_decision.profile,
             )
         finally:
             conn.close()

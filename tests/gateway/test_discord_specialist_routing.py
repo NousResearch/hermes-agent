@@ -123,3 +123,69 @@ def test_general_route_preserves_normal_chat_path(monkeypatch):
 
     assert asyncio.run(adapter._maybe_route_specialist_event(_event("Hello"))) is False
     adapter.send.assert_not_awaited()
+
+
+def test_route_omitted_from_configured_capabilities_cannot_handoff(monkeypatch):
+    from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
+
+    adapter = _adapter(monkeypatch)
+    adapter._classify_specialist_event = AsyncMock(
+        return_value=SpecialistRouteDecision(
+            kind=RouteKind.SPECIALIST,
+            profile="task-orchestrator",
+            confidence=0.95,
+            reason="broad work",
+            title="Plan the task",
+        )
+    )
+
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is False
+    adapter.send.assert_not_awaited()
+
+
+def test_empty_configured_capabilities_disable_handoffs(monkeypatch):
+    from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
+
+    adapter = _adapter(monkeypatch)
+    adapter.config.extra["specialist_routing"]["capabilities"] = {}
+    adapter._classify_specialist_event = AsyncMock(
+        return_value=SpecialistRouteDecision(
+            kind=RouteKind.SPECIALIST,
+            profile="burndown-patch-steward",
+            confidence=0.95,
+            reason="bounded patch",
+            title="Patch the issue",
+        )
+    )
+
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is False
+    adapter.send.assert_not_awaited()
+
+
+def test_handoff_acknowledges_the_effective_assignee(monkeypatch):
+    from gateway.specialist_handoff import HandoffResult
+    from gateway.specialist_routing import RouteKind, SpecialistRouteDecision
+    import gateway.specialist_handoff as specialist_handoff
+
+    adapter = _adapter(monkeypatch)
+    adapter._classify_specialist_event = AsyncMock(
+        return_value=SpecialistRouteDecision(
+            kind=RouteKind.SPECIALIST,
+            profile="burndown-patch-steward",
+            confidence=0.95,
+            reason="bounded patch",
+            title="Patch the issue",
+        )
+    )
+    monkeypatch.setattr(
+        specialist_handoff,
+        "create_specialist_handoff",
+        lambda **_kwargs: HandoffResult(
+            True, task_id="task-42", created=True, assignee="acceptance-gate-verifier"
+        ),
+    )
+
+    assert asyncio.run(adapter._maybe_route_specialist_event(_event())) is True
+    content = adapter.send.await_args.kwargs["content"]
+    assert "`acceptance-gate-verifier`" in content
+    assert "task orchestrator" not in content

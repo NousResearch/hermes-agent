@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
+from urllib.parse import quote
 
 from hermes_cli.dashboard_auth.base import Session
 
 
 def canonical_dashboard_subject(*, provider: str, user_id: str) -> str:
-    """Serialize one provider/user tuple without delimiter ambiguity."""
+    """Encode one provider/user tuple reversibly without delimiter ambiguity."""
     normalized_provider = provider.strip()
     normalized_user_id = user_id.strip()
     if not normalized_provider or not normalized_user_id:
         raise ValueError("provider and user_id must be non-empty strings")
-    return json.dumps(
-        {"provider": normalized_provider, "user_id": normalized_user_id},
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    return f"dashboard:{quote(normalized_provider, safe='')}:{quote(normalized_user_id, safe='')}"
 
 
 def dashboard_session_subject(session: Session | None, *, auth_required: bool) -> str | None:

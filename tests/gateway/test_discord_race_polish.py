@@ -200,3 +200,28 @@ async def test_auto_join_leaves_when_configured_user_leaves_room():
     await adapter._auto_join_voice_for_member(member, before, after)
 
     adapter.leave_voice_channel.assert_awaited_once_with(42)
+
+
+@pytest.mark.asyncio
+async def test_auto_join_stays_connected_while_another_configured_user_remains():
+    adapter = _make_adapter()
+    adapter._voice_auto_join_channel_id = 111
+    adapter._voice_auto_join_user_ids = {"158441542070173697", "second-user"}
+    adapter.leave_voice_channel = AsyncMock()
+
+    configured_channel = MagicMock()
+    configured_channel.id = 111
+    departing = MagicMock()
+    departing.id = 158441542070173697
+    remaining = MagicMock()
+    remaining.id = "second-user"
+    configured_channel.members = [departing, remaining]
+    other_channel = MagicMock()
+    other_channel.id = 222
+    departing.guild.id = 42
+
+    await adapter._auto_join_voice_for_member(
+        departing, MagicMock(channel=configured_channel), MagicMock(channel=other_channel)
+    )
+
+    adapter.leave_voice_channel.assert_not_awaited()

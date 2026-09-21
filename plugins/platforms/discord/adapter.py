@@ -5385,13 +5385,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception:
             logger.warning("[Discord] specialist routing handoff failed", exc_info=True)
             return False
-        if not result.ok or not result.task_id:
+        if not result.ok or not result.task_id or not result.assignee:
             logger.warning("[Discord] specialist routing handoff rejected: %s", result.reason)
             return False
         await self.send(
             event.source.chat_id,
             content=(
-                f"Planning `{result.task_id}` with the task orchestrator. "
+                f"Planning `{result.task_id}` with `{result.assignee}`. "
                 "I’ll post the worker plan and progress here."
             ),
             reply_to=event.message_id,

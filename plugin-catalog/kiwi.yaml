@@ -1,6 +1,6 @@
 name: kiwi
 repo: https://github.com/harrylabsj/hermes-plugin-kiwi
-sha: 627518b8d2e30b88ad2fe1f57381088ae67663af
+sha: 007ab2c10d99b74f45ee7924672827561efb36c2
 description: 'Source suppliers and negotiate purchases through the Kiwi Buyer MCP server — an
   open-source A2A commerce runtime (pinned @harrylabsj/kiwi@0.8.0 over npx stdio), with the
   kiwi-buyer sourcing workflow skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/);
@@ -9,7 +9,7 @@ maintainer: harrylabsj
 tier: community
 category: tools
 docs_url: https://github.com/harrylabsj/hermes-plugin-kiwi
-version: "1.0.0"
+version: "1.1.0"
 platforms: []
 capabilities:
   provides_tools: []

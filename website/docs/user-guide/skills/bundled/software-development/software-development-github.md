@@ -15,13 +15,13 @@ GitHub via gh CLI: PRs, issues, reviews, repos, auth.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\github` |
+| Path | `skills/software-development/github` |
 | Version | `2.0.0` |
 | Author | Ben Barclay (benbarclay), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `github`, `gh`, `git`, `pull-requests`, `issues`, `code-review`, `repos`, `auth`, `ci` |
-| Related skills | [`codebase-inspection`](/docs/user-guide/skills/bundled/software-development/software-development-codebase-inspection), [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) |
+| Related skills | [`codebase-inspection`](../../bundled/software-development/software-development-codebase-inspection.md), [`requesting-code-review`](../../bundled/software-development/software-development-requesting-code-review.md) |
 
 ## Reference: full SKILL.md
 
@@ -45,6 +45,7 @@ starting that workflow, the body below only routes.
 | Create, triage, label, assign, close issues | `references/issues.md` |
 | Branch, commit, open PR, watch CI, merge | `references/pr-workflow.md` |
 | Carry an ISSUE to a verified PR (full delivery loop) | `references/issue-to-pr.md` |
+| Audit the upstream Hermes issue/PR landscape first | `optional-skills/software-development/hermes-upstream-audit/SKILL.md` |
 | Review someone's PR: diffs, inline comments, verdict | `references/code-review.md` |
 | Clone/create/fork repos, remotes, releases | `references/repo-management.md` |
 

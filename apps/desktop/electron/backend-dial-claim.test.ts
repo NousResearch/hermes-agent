@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { BackendDialClaims } from './backend-dial-claim'
-import { runBackendDial } from './backend-dial-routing'
-import { parseBackendScopeKey } from './connection-registry'
+import { backendScopeKey, parseBackendScopeKey } from './connection-registry'
 
 describe('BackendDialClaims (#90812)', () => {
   it('coalesces two concurrent dials for the same (connectionId, profile) onto ONE backend spawn', async () => {
@@ -116,39 +115,14 @@ describe('parseBackendScopeKey (#90812/#93910)', () => {
   })
 })
 
-describe('backend dial routing (#90812)', () => {
-  it('uses the composite registry scope for a registry backend', async () => {
-    const claims = new BackendDialClaims()
-    const dial = vi.fn(async () => 'registry')
-    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
-      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
-
-    await expect(runBackendDial({ claims, scopeKey }, 'office-ssh', 'work', dial)).resolves.toBe('registry')
-    expect(scopeKey).toHaveBeenCalledWith('office-ssh', 'work')
-    expect(dial).toHaveBeenCalledTimes(1)
-  })
-
-  it('uses the local profile scope for a local backend', async () => {
-    const claims = new BackendDialClaims()
-    const dial = vi.fn(async () => 'local')
-    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
-      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
-
-    await expect(runBackendDial({ claims, scopeKey }, null, 'default', dial)).resolves.toBe('local')
-    expect(scopeKey).toHaveBeenCalledWith(null, 'default')
-    expect(dial).toHaveBeenCalledTimes(1)
-  })
-
-  it('preserves an explicit pooled key when the parsed route would normalize it', async () => {
-    const claims = new BackendDialClaims()
-    const dial = vi.fn(async () => 'forced-local')
-    const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
-      `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
-
-    await expect(
-      runBackendDial({ claims, scopeKey }, 'local', 'work', dial, 'conn:local::work')
-    ).resolves.toBe('forced-local')
-    expect(scopeKey).not.toHaveBeenCalled()
-    expect(dial).toHaveBeenCalledTimes(1)
+describe('backend scope keys (#90812)', () => {
+  it('keeps local scopes profile-only and disambiguates each remote connection', () => {
+    expect(backendScopeKey(null, 'work')).toBe('work')
+    expect(backendScopeKey('local', 'work')).toBe('work')
+    expect(backendScopeKey('office-ssh', 'work')).toBe('conn:office-ssh::work')
+    expect(parseBackendScopeKey(backendScopeKey('office-ssh', 'work'))).toEqual({
+      connectionId: 'office-ssh',
+      profile: 'work'
+    })
   })
 })

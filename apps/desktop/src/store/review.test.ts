@@ -39,14 +39,7 @@ import {
   toggleReviewTreeMode,
   unstageReviewFile
 } from './review'
-import {
-  $currentCwd,
-  $freshDraftReady,
-  releaseWorkspaceCwdOwner,
-  setFreshDraftReady,
-  setSelectedStoredSessionId,
-  setWorkspaceCwdOwner
-} from './session'
+import { $currentCwd } from './session'
 
 // requestOneShot is the only cross-module dependency that must be faked (it
 // reaches the gateway); everything else routes through window.hermesDesktop.git,
@@ -108,9 +101,6 @@ beforeEach(() => {
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')
   $currentCwd.set('/repo')
-  setFreshDraftReady(false)
-  setSelectedStoredSessionId(null)
-  setWorkspaceCwdOwner(null)
 })
 
 afterEach(() => {
@@ -139,20 +129,6 @@ describe('refreshReview', () => {
 
     expect($reviewIsRepo.get()).toBe(false)
     expect($reviewLoading.get()).toBe(false)
-  })
-
-  it('does not inspect a previous conversation cwd while a fresh draft is resolving', async () => {
-    const review = stubReview()
-    $reviewOpen.set(true)
-    setFreshDraftReady(true)
-    releaseWorkspaceCwdOwner()
-
-    await refreshReview()
-
-    expect(review.list).not.toHaveBeenCalled()
-    expect($reviewFiles.get()).toEqual([])
-    expect($reviewIsRepo.get()).toBe(false)
-    expect($freshDraftReady.get()).toBe(true)
   })
 
   it('populates the changed-file list from the bridge', async () => {

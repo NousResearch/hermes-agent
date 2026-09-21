@@ -49,14 +49,14 @@ class OnePasswordLoginBackend(LoginBackend):
 
     def _env(self, session_token: Optional[str]) -> Dict[str, str]:
         from agent.secret_scope import get_secret
-        env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_CONNECT_")}
+        env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_")}
         # Connect credentials outrank OP_SERVICE_ACCOUNT_TOKEN inside op, so they must come from the
         # profile's own secret scope like the service token does — never from the launch environment.
-        for k in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN"):
+        for k in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN", "OP_LOAD_DESKTOP_APP_SETTINGS"):
             if v := get_secret(k, ""):
                 env[k] = v
         env["NO_COLOR"] = "1"
-        account = str(self.cfg.get("account") or "")
+        account = str(self.cfg.get("account") or get_secret("OP_ACCOUNT", "") or "")
         if account:
             env["OP_ACCOUNT"] = account
         if self._service_token:
@@ -105,14 +105,15 @@ class OnePasswordLoginBackend(LoginBackend):
         out: List[VaultItemMeta] = []
         for item in raw if isinstance(raw, list) else []:
             urls = [str(u["href"]) for u in item.get("urls") or [] if isinstance(u, dict) and u.get("href")]
-            origin = _first_origin(urls)
-            if not origin:
+            origins = _all_origins(urls)
+            if not origins:
                 continue
             username = str(item.get("additional_information") or "").strip() or None
             out.append(VaultItemMeta(
-                id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origin),
-                origin=origin, created_at=str(item.get("created_at") or ""),
-                identifier_type="username" if username else None, identifier=username))
+                id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origins[0]),
+                origin=origins[0], created_at=str(item.get("created_at") or ""),
+                identifier_type="username" if username else None, identifier=username,
+                allowed_origins=_web_origins(origins)))
         return out
 
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
@@ -131,10 +132,26 @@ class OnePasswordLoginBackend(LoginBackend):
         return code if code.isdigit() else None
 
 
-def _first_origin(urls: List[str]) -> Optional[str]:
+def _web_origins(origins: List[str]) -> tuple:
+    """Fill targets are browser pages, so app URIs (``androidapp://`` etc.) never
+    widen the fill set; an item whose only URI is an app URI keeps its single
+    (unfillable-from-a-page) origin exactly as before."""
+    web = tuple(o for o in origins if o.startswith(("http://", "https://")))
+    return web or (origins[0],)
+
+
+def _all_origins(urls: List[str]) -> List[str]:
+    """Every normalized origin saved on the item, deduped, order preserved.
+
+    A 1Password Login item can carry several websites; each of them is a place the
+    user told 1Password the credential belongs, so all of them are valid fill targets.
+    """
+    out: List[str] = []
     for u in urls:
         try:
-            return normalize_origin(u)
+            origin = normalize_origin(u)
         except Exception:
             continue
-    return None
+        if origin not in out:
+            out.append(origin)
+    return out

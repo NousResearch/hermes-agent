@@ -54,6 +54,9 @@ class _LimitAgent:
     def _emit_status(self, *_args, **_kwargs):
         pass
 
+    def _emit_diagnostic_status(self, *_args, **_kwargs):
+        pass
+
     def _safe_print(self, *_args, **_kwargs):
         pass
 
@@ -466,3 +469,52 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     )
 
     record.assert_not_called()
+
+
+@pytest.mark.parametrize("scope", ["child", "non-owner"])
+def test_budget_exhausted_child_does_not_record_parent_kanban_timeout(monkeypatch, scope):
+    """An in-process delegate_task child (or cron run) inherits ``HERMES_KANBAN_TASK`` from
+    the dispatcher worker; exhausting ITS budget must not record ``timed_out`` against the
+    parent's task or release the parent's claim (#112817)."""
+    from agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent()
+
+    ctx = delegated_child_context if scope == "child" else non_dispatcher_owned_context
+    with ctx():
+        finalize_turn(
+            agent,
+            final_response=None,
+            api_call_count=60,
+            interrupted=True,
+            failed=False,
+            messages=[{"role": "user", "content": "task"}],
+            conversation_history=[],
+            effective_task_id="task",
+            turn_id="turn",
+            user_message="task",
+            original_user_message="task",
+            _should_review_memory=False,
+            _turn_exit_reason="interrupted_by_user",
+        )
+
+    record.assert_not_called()
+
+
+def test_finalize_turn_starts_the_title_upgrade_the_prologue_held_back():
+    """#117296: the turn prologue leaves a same-endpoint title upgrade unstarted on the agent; the finalizer
+    is the only place that may start it, and only once the model request is done."""
+    import threading
+
+    ran = threading.Event()
+    agent = _LimitAgent()
+    agent._deferred_title_upgrade = threading.Thread(target=ran.set, daemon=True)
+    _finalize(agent, final_response="done", exit_reason="text_response(1)", api_call_count=1)
+    assert ran.wait(timeout=5), "deferred title upgrade never started"
+    assert agent._deferred_title_upgrade is None

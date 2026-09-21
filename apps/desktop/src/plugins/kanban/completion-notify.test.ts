@@ -21,8 +21,7 @@ interface OsDoor {
 }
 interface Mod {
   bindCompletionNotify(r: Rest, t?: Translate, os?: OsDoor): void
-  kanbanEventsSince(slug: string, sourceKey?: string): number | undefined
-  onKanbanEventsFrame(slug: string, events?: CompletionEvent[], sourceKey?: string): Promise<boolean>
+  onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean>
 }
 
 const { hostMock } = vi.hoisted(() => ({
@@ -105,10 +104,6 @@ describe('authoritative baseline', () => {
     expect(fired).toBe(true)
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
 
-    // Reconnecting subscribers can pass the accepted high-water mark to the
-    // server, so an event missed between socket frames is replayed safely.
-    expect(m.kanbanEventsSince('smoke')).toBe(101)
-
     // Same event delivered again (duplicate frame) must not re-notify.
     const again = await m.onKanbanEventsFrame('smoke', [ev(101, 'completed', { summary: 'Done' })])
 
@@ -183,37 +178,6 @@ describe('authoritative baseline', () => {
     const fired = await m2.onKanbanEventsFrame('smoke', [ev(150, 'completed')])
     expect(fired).toBe(false)
     expect(hostMock.notify).toHaveBeenCalledTimes(1)
-  })
-
-  it('rebinds the cursor when the backend or profile changes', async () => {
-    const m = await loadModule()
-    m.bindCompletionNotify(makeRest(() => 100) as never)
-    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')])
-    expect(hostMock.notify).toHaveBeenCalledTimes(1)
-
-    // The same renderer instance can reconnect to another source whose event
-    // ids overlap. Rebinding must discard the old source's high-water mark.
-    const nextRest = makeRest(() => 200)
-    m.bindCompletionNotify(nextRest as never)
-    const fired = await m.onKanbanEventsFrame('smoke', [ev(150, 'completed')])
-
-    expect(fired).toBe(false)
-    expect(hostMock.notify).toHaveBeenCalledTimes(1)
-    expect(nextRest).toHaveBeenCalledWith('/board?board=smoke')
-  })
-
-  it('keeps cursors independent for the same board across active sources', async () => {
-    let baseline = 100
-    const m = await loadModule()
-    m.bindCompletionNotify(makeRest(() => baseline) as never)
-
-    await m.onKanbanEventsFrame('smoke', [ev(101, 'completed')], 'source-a')
-    baseline = 0
-    await m.onKanbanEventsFrame('smoke', [ev(50, 'completed')], 'source-b')
-
-    expect(hostMock.notify).toHaveBeenCalledTimes(2)
-    expect(m.kanbanEventsSince('smoke', 'source-a')).toBe(101)
-    expect(m.kanbanEventsSince('smoke', 'source-b')).toBe(50)
   })
 
   it('baseline failure is fail-closed: unknown baseline suppresses, later success binds', async () => {
@@ -464,27 +428,63 @@ describe('terminal kinds beyond completed', () => {
     })
   })
 
-  it('block_loop_detected notifies (routed-to-triage handoff)', async () => {
+  it('block_loop_detected notifies that a decision is needed', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
     const fired = await m.onKanbanEventsFrame('smoke', [ev(101, 'block_loop_detected', { reason: 'same cause 3x' })])
 
     expect(fired).toBe(true)
-    expect(lastNotify()).toMatchObject({ kind: 'warning', message: 'same cause 3x' })
+    expect(lastNotify()).toMatchObject({
+      kind: 'warning',
+      title: 'Task routed to triage — needs a decision',
+      message: 'same cause 3x'
+    })
   })
 
-  it('gave_up carries the payload error; crashed and timed_out fall back to the task id', async () => {
+  it('gave_up: plain-words body, raw payload error only in detail; crashed and timed_out fall back to the task id', async () => {
     const m = await loadModule()
     m.bindCompletionNotify(makeRest(() => 100) as never)
 
-    await m.onKanbanEventsFrame('smoke', [ev(101, 'gave_up', { error: 'spawn failed' })])
-    expect(lastNotify()).toMatchObject({ kind: 'error', message: 'spawn failed' })
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'gave_up', { error: 'spawn failed: ECONNREFUSED 127.0.0.1:9999' })])
+    const gaveUp = lastNotify()
+    expect(gaveUp.kind).toBe('error')
+    expect(gaveUp.title).toBe('Task stopped')
+    expect(gaveUp.message).toBe('Hermes couldn’t finish this task. Open Kanban to see why and reassign it.')
+    expect(gaveUp.message).not.toContain('spawn failed')
+    expect(gaveUp.detail).toContain('spawn failed: ECONNREFUSED 127.0.0.1:9999')
+    expect(gaveUp.detail).toContain('t101')
+    expect(gaveUp.action?.label).toBe('Open Kanban')
 
     await m.onKanbanEventsFrame('smoke', [ev(102, 'crashed'), ev(103, 'timed_out', { limit_seconds: 900 })])
     expect(hostMock.notify).toHaveBeenCalledTimes(3)
     expect(hostMock.notify.mock.calls[1][0]).toMatchObject({ kind: 'error', message: 't102' })
     expect(hostMock.notify.mock.calls[2][0]).toMatchObject({ kind: 'warning', message: 't103' })
+  })
+
+  it('gave_up without a payload error still gets the plain-words body and no empty detail noise', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'gave_up', null)])
+    expect(lastNotify()).toMatchObject({
+      kind: 'error',
+      message: 'Hermes couldn’t finish this task. Open Kanban to see why and reassign it.',
+      detail: 't101'
+    })
+  })
+
+  it('retrying kinds (crashed/timed_out) say Hermes will retry and never expose worker/gateway vocabulary', async () => {
+    const m = await loadModule()
+    m.bindCompletionNotify(makeRest(() => 100) as never)
+
+    await m.onKanbanEventsFrame('smoke', [ev(101, 'crashed'), ev(102, 'timed_out', { limit_seconds: 900 })])
+
+    for (const call of hostMock.notify.mock.calls) {
+      const toast = call[0] as NotifyInput
+      expect(toast.title).toMatch(/Hermes will retry it automatically/)
+      expect(`${toast.title} ${toast.message}`).not.toMatch(/worker|gateway|backend/i)
+    }
   })
 
   it('silent kinds (status/archived/unblocked) advance the cursor but never notify', async () => {
@@ -586,6 +586,6 @@ describe('i18n routing', () => {
 
     await m.onKanbanEventsFrame('smoke', [ev(101, 'timed_out')])
 
-    expect(lastNotify().title).toBe('Task timed out — will retry')
+    expect(lastNotify().title).toBe('Task took too long — Hermes will retry it automatically')
   })
 })

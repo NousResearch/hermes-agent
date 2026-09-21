@@ -578,6 +578,14 @@ export function composerPlainText(node: Node): string {
 }
 
 export function placeCaretEnd(element: HTMLElement) {
+  // A repaint can land on an editor React has already unmounted (the chat
+  // bar toggles with the thread's loading gate). Selecting into a detached
+  // node throws `addRange(): The given range isn't in document` from inside
+  // the commit phase, and React re-renders in a loop on it (#117285).
+  if (!element.isConnected) {
+    return
+  }
+
   const range = document.createRange()
   const selection = window.getSelection()
 
@@ -675,9 +683,9 @@ export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
     return null
   }
 
-  const range = walk(editor)
+  const range = editor.isConnected ? walk(editor) : null
 
-  if (range) {
+  if (range?.startContainer.isConnected) {
     selection.removeAllRanges()
     selection.addRange(range)
 

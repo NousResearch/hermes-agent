@@ -15,7 +15,6 @@
 //      stays where it is (it runs in that profile's gateway); the desktop half
 //      is COPIED out as `<root>/<name>/` with a `.hermes-package.json` marker
 //      so the UI can pair it back to the agent row and re-copy on update.
-import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -28,10 +27,8 @@ export interface DesktopHalfMarker {
   package: string
   /** Where the half was copied from — refreshed whenever that source changes. */
   source: string
-  /** Revision of every file in the source `desktop/` tree at copy time. */
-  sourceRevision?: string
-  /** Legacy marker field; retained so older materialized copies remain readable. */
-  sourceMtimeMs?: number
+  /** mtimeMs of the source `plugin.js` at copy time; a newer source re-copies. */
+  sourceMtimeMs: number
   /** Where the PACKAGE came from, so "Install here" can install its agent half
    *  into another profile: the catalog sidecar's repo/sha, else the git remote. */
   repo?: string
@@ -149,36 +146,6 @@ async function readMarker(dir: string): Promise<DesktopHalfMarker | null> {
   }
 }
 
-async function desktopTreeRevision(dir: string): Promise<string> {
-  const hash = crypto.createHash('sha256')
-
-  async function visit(current: string, relative: string): Promise<void> {
-    let entries: fs.Dirent[]
-
-    try {
-      entries = await fs.promises.readdir(current, { withFileTypes: true })
-    } catch {
-      return
-    }
-
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      const childRelative = relative ? `${relative}/${entry.name}` : entry.name
-      const child = path.join(current, entry.name)
-
-      if (entry.isDirectory()) {
-        await visit(child, childRelative)
-      } else if (entry.isFile()) {
-        hash.update(childRelative)
-        hash.update(await fs.promises.readFile(child))
-      }
-    }
-  }
-
-  await visit(dir, '')
-
-  return hash.digest('hex')
-}
-
 /** Copy one unified package's `desktop/` half into the app root as
  *  `<appRoot>/<packageName>/`, stamping the marker. Skips when the root copy is
  *  already current for this source; replaces it when the source is newer. A
@@ -197,7 +164,11 @@ export async function materializeDesktopHalf(
 
   try {
     stat = await fs.promises.stat(entry)
-  } catch {
+  } catch (error) {
+    if (!isMissing(error)) {
+      console.warn(`[desktop-plugins] cannot read ${packageName}: ${String(error)}`)
+    }
+
     return null
   }
 
@@ -205,40 +176,91 @@ export async function materializeDesktopHalf(
     return null
   }
 
-  const sourceRevision = await desktopTreeRevision(sourceDir)
-
   const target = path.join(appRoot, packageName)
   const existing = await readMarker(target)
 
   if (fs.existsSync(target)) {
     if (!existing) {
-      return null
+      // A real standalone install has its entry point. A marker-less folder
+      // without one is an interrupted unified-package copy: the old copy
+      // wrote the marker last, so leaving it here would block every retry.
+      if (fs.existsSync(path.join(target, 'plugin.js'))) {
+        return null
+      }
     }
 
-    if (existing.source === sourceDir && (
-      existing.sourceRevision === sourceRevision ||
-      (!existing.sourceRevision && existing.sourceMtimeMs !== undefined && existing.sourceMtimeMs >= stat.mtimeMs)
-    )) {
+    if (existing && existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
       return null
     }
-
-    await fs.promises.rm(target, { force: true, recursive: true })
   }
-
-  await fs.promises.mkdir(appRoot, { recursive: true })
-  await fs.promises.cp(sourceDir, target, { force: true, recursive: true })
 
   const marker: DesktopHalfMarker = {
     package: packageName,
     source: sourceDir,
-    sourceRevision,
     sourceMtimeMs: stat.mtimeMs,
     ...(await packageOrigin(packageDir))
   }
 
-  await fs.promises.writeFile(path.join(target, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
+  await publishDesktopTree(sourceDir, target, staged =>
+    fs.promises.writeFile(path.join(staged, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
+  )
 
   return target
+}
+
+/** Copy `sourceDir` to `target` through a staging sibling (`<parent>/.<name>.staging-*`)
+ *  and rename the finished tree into place. `finalize` runs on the staged tree
+ *  before publication, so a marker is never missing from a published folder.
+ *  Directory replacement is not atomic on every platform Electron supports, but
+ *  the complete copy exists before the old one is removed, so a failure leaves
+ *  either the old folder or none — never a partial, marker-less one that a
+ *  later pass would mistake for a manual install (#112450). */
+export async function publishDesktopTree(
+  sourceDir: string,
+  target: string,
+  finalize?: (staged: string) => Promise<void>
+): Promise<void> {
+  const parent = path.dirname(target)
+  const name = path.basename(target)
+
+  await fs.promises.mkdir(parent, { recursive: true })
+  const stagingRoot = await fs.promises.mkdtemp(path.join(parent, `.${name}.staging-`))
+  const staged = path.join(stagingRoot, name)
+
+  try {
+    await fs.promises.cp(sourceDir, staged, { force: true, recursive: true })
+    await finalize?.(staged)
+    // rename() refuses to replace a non-empty directory, so the old copy goes first.
+    await fs.promises.rm(target, { force: true, recursive: true })
+    await fs.promises.rename(staged, target)
+  } finally {
+    await fs.promises.rm(stagingRoot, { force: true, recursive: true })
+  }
+}
+
+function isMissing(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/** `true` only when the package's `desktop/plugin.js` is genuinely gone. A
+ *  source the app is not ALLOWED to stat (Windows ACL EPERM, a mode-000 folder)
+ *  is not an uninstall — pruning its root copy would silently drop the pane. */
+async function sourceGone(name: string, entry: string): Promise<boolean> {
+  try {
+    await fs.promises.stat(entry)
+
+    return false
+  } catch (error) {
+    if (isMissing(error)) {
+      return true
+    }
+
+    console.warn(`[desktop-plugins] keeping desktop half of unreadable package ${name}: ${String(error)}`)
+
+    return false
+  }
 }
 
 /** Walk every local home's `plugins/` root and materialize each package's
@@ -257,7 +279,18 @@ export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot:
         continue
       }
 
-      const result = await materializeDesktopHalf(path.join(pluginsRoot, name), appRoot, name)
+      let result: null | string
+
+      try {
+        result = await materializeDesktopHalf(path.join(pluginsRoot, name), appRoot, name)
+      } catch (error) {
+        // One package the app cannot read (Windows ACL EPERM on lstat/copy, a
+        // mode-000 folder) must not reject the whole reconcile — the root would
+        // never resolve and EVERY desktop plugin would silently stop loading.
+        console.warn(`[desktop-plugins] skipping unreadable package ${name}: ${String(error)}`)
+
+        continue
+      }
 
       if (result || fs.existsSync(path.join(pluginsRoot, name, 'desktop', 'plugin.js'))) {
         seen.add(name)
@@ -273,7 +306,7 @@ export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot:
     const dir = path.join(appRoot, name)
     const marker = await readMarker(dir)
 
-    if (marker && !fs.existsSync(path.join(marker.source, 'plugin.js'))) {
+    if (marker && (await sourceGone(name, path.join(marker.source, 'plugin.js')))) {
       await fs.promises.rm(dir, { force: true, recursive: true })
       touched.push(dir)
     }

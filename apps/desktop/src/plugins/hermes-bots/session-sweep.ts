@@ -1,18 +1,19 @@
 /**
- * The always-hidden reconciliation paths for Bot Mode sessions.
+ * The always-hidden reconciliation sweep: everything that walks Bot Mode's
+ * own sessions on load and on each reconnect and pushes them back to hidden.
  *
- * Known group-session ids and profile-wide Bot Chat title reconciliation both
- * run on load/reconnect to ensure canonical Bot Chat rows from older versions
- * or bot-to-bot/CLI flows are always hidden in the Sessions sidebar.
+ * Durable-visibility plumbing, not a surface. It reads the room store and the
+ * roster cache and renders nothing, so the plugin's lifecycle can start the
+ * scheduler without pulling a view in.
  */
 
 import { host } from '@hermes/plugin-sdk'
 
 import { PROFILE_SESSION_LIST_LIMIT } from './canonical-chat'
-import { cachedUnionRoster } from './data'
-import { $groupChats } from './group-chat'
-import { groupMemberKey } from './group-membership'
-import { backendTargetProfile, botConnectionRoute } from './routing'
+import { $lastRoster } from './data'
+import { $groupChats, updateGroupChat } from './group-chat'
+import { groupMemberKey, groupSessionMemberKey } from './group-membership'
+import { backendTargetProfile, botConnectionRoute, requestForBot } from './routing'
 import type { GroupMember, RosterRow } from './types'
 
 /** The slice of the plugin context the scheduler needs to park its timer. */
@@ -20,9 +21,17 @@ interface HideSweepContext {
   onDispose?: (fn: () => void) => void
 }
 
-/** Repair only Bot Mode session ids already known from group-room state.
- *  This is safe on load/reconnect because it performs no profile listing and
- *  therefore cannot fan out across an idle profile fleet. */
+/** One-time reconciliation: Bot Mode sessions are always hidden, but rooms
+ *  and Bot Chats created before this policy (or while the old pref was off)
+ *  left visible rows behind. On every plugin load, sweep the session ids we
+ *  own by id (each group room's member sessions) through the source
+ *  primary's REST PATCH /api/sessions/{id} (a 404 prunes the seat), then
+ *  run the TITLE-based ownership sweep for
+ *  everything else — canonical Bot Chats are identified by name (the
+ *  registry row titled "Bot Chat"), so the title sweep is what hides them;
+ *  no stored-id pointer is consulted. Idempotent (the DB setter is a no-op
+ *  on already-hidden rows) and feature-detected: older Desktop hosts defer
+ *  reconciliation rather than activating an absent profile backend. */
 export function startHideSweepScheduler(ctx: HideSweepContext) {
   let timer: ReturnType<typeof setTimeout> | null = null
   let inflight: Promise<unknown> | null = null
@@ -43,10 +52,7 @@ export function startHideSweepScheduler(ctx: HideSweepContext) {
     }
 
     inflight = Promise.resolve()
-      .then(() => Promise.all([
-        hideOwnedBotSessions(),
-        reconcileAllBotProfileSessions(),
-      ]))
+      .then(() => hideOwnedBotSessions())
       .catch(() => undefined)
       .finally(() => {
         inflight = null
@@ -97,34 +103,20 @@ export function startHideSweepScheduler(ctx: HideSweepContext) {
   schedule()
 }
 
-/** Run profile-wide Bot Chat title reconciliation for every cached roster
- *  bot on load/reconnect. This hides canonical Bot Chat rows that the plugin
- *  never recorded (bot-to-bot/CLI flows, older Desktop versions) so that no
- *  plumbing session remains visible in the Sessions sidebar without the user
- *  manually opening that bot first. */
-function reconcileAllBotProfileSessions() {
-  const roster = cachedUnionRoster()
-  const bots = Array.isArray(roster?.profiles) ? roster.profiles : []
-
-  if (!bots.length) {
-    return Promise.resolve()
-  }
-
-  return Promise.all(bots.map(bot => reconcileBotProfileSessions(bot).catch(() => undefined)))
-}
-
 /** One (owner, session id) pair the sweep will hide, plus the key it dedupes
  *  on when the same member session is seated in several rooms. */
 interface RoomSessionEntry {
   dedupe: string
+  group: string
   id: string
+  key: string
   owner: RosterRow
 }
 
 function hideOwnedBotSessions() {
   // `.filter(Boolean)` doesn't narrow away the nulls the map returns, so the
   // element type is restated here rather than at every read below.
-  const roomEntries = Object.values($groupChats.get()).flatMap(room =>
+  const roomEntries = Object.entries($groupChats.get()).flatMap(([group, room]) =>
     Object.entries(room?.sessions || {})
       .map(([key, id]) => {
         if (!id || id === true) {
@@ -132,25 +124,28 @@ function hideOwnedBotSessions() {
         }
 
         const persisted = room?.sessionOwners?.[key]
-        const derived = (room?.members || []).find((member: GroupMember) => groupMemberKey(member) === key)
+        // Sessions are keyed per thread (`thread:<id>::<memberKey>`); the
+        // owner lookup is a MEMBER question, so derive from the member half.
+        const memberKey = groupSessionMemberKey(key)
+        const derived = (room?.members || []).find((member: GroupMember) => groupMemberKey(member) === memberKey)
 
         // Bare keys are legacy local rooms. A source-qualified key without its
         // immutable owner is unsafe: never let it fall through ambient routing.
         const owner =
           persisted ||
           derived ||
-          (!key.includes('::')
+          (!memberKey.includes('::')
             ? {
-                name: key
+                name: memberKey
               }
             : null)
 
-        if (key.includes('::')) {
+        if (memberKey.includes('::')) {
           const route = owner?.route
           const sourceMarked = owner?.sourceScoped || owner?.remoteSource
           const routeKey = route?.connectionId && route?.profile ? `${route.connectionId}::${route.profile}` : ''
 
-          if (!sourceMarked || !route?.targetProfile || routeKey !== key) {
+          if (!sourceMarked || !route?.targetProfile || routeKey !== memberKey) {
             return null
           }
         }
@@ -159,7 +154,9 @@ function hideOwnedBotSessions() {
           ? {
               owner,
               id,
-              dedupe: `${key}\u0000${id}`
+              dedupe: `${key}\u0000${id}`,
+              group,
+              key
             }
           : null
       })
@@ -169,9 +166,54 @@ function hideOwnedBotSessions() {
   // The same member session can appear in several rooms (and legacy rooms can
   // share ids) — hide each (owner, id) pair exactly once.
   const rooms = [...new Map(roomEntries.map(entry => [entry.dedupe, entry])).values()]
-  const known = Promise.all(rooms.map(({ owner, id }) => hidePersistedBotSession(owner, id).catch(() => undefined)))
 
-  return known
+  const known = Promise.all(
+    rooms.map(entry =>
+      hidePersistedBotSession(entry.owner, entry.id).catch(error => {
+        if (isMissingPersistedSessionError(error)) {
+          pruneMissingRoomSession(entry)
+        }
+      })
+    )
+  )
+
+  return Promise.all([known, sweepBotProfileSessions().catch(() => undefined)])
+}
+
+/** A 404 from the persisted-session endpoint is an authoritative absence.
+ *  Other errors can be transient (or come from older Desktop hosts), so they
+ *  intentionally leave the room reference intact for a later reconciliation. */
+function isMissingPersistedSessionError(error: unknown) {
+  const message = typeof error === 'string' ? error : (error as { message?: unknown })?.message
+
+  return typeof message === 'string' && /\b404\b/.test(message) && /session not found/i.test(message)
+}
+
+/** Remove only the exact rejected room seat. A replacement written while the
+ *  REST request was in flight must survive, and an unrelated transport error
+ *  must not erase a session reference. */
+function pruneMissingRoomSession({ group, id, key }: RoomSessionEntry) {
+  if (!$groupChats.get()[group]) {
+    return
+  }
+
+  updateGroupChat(group, room => {
+    if (room.sessions?.[key] !== id) {
+      return room
+    }
+
+    const sessions = { ...room.sessions }
+    const sessionOwners = { ...room.sessionOwners }
+
+    delete sessions[key]
+    delete sessionOwners[key]
+
+    return {
+      ...room,
+      sessionOwners,
+      sessions
+    }
+  })
 }
 
 /** Reconcile durable visibility through the source's primary REST backend.
@@ -233,7 +275,12 @@ function isBotModeSweepCandidate(row: SweepSessionRow | null | undefined, nowSec
   )
 }
 
-/** Ownership-based reconciliation: the id-based sweep above only covers sessions the
+/** `profiles.list` as Bot Mode reads it. */
+interface ProfilesListResult {
+  profiles?: RosterRow[]
+}
+
+/** Ownership-based sweep: the id-based sweep above only covers sessions the
  *  plugin recorded ($botMeta canonical chats, $groupChats member sids), but
  *  Bot Mode sessions are ALSO minted outside the plugin — bot-to-bot CLI
  *  handoffs ("Agent Inbox" / extra "Bot Chat" rows born visible in a bot's
@@ -249,35 +296,57 @@ function isBotModeSweepCandidate(row: SweepSessionRow | null | undefined, nowSec
  *  naturally idempotent.
  *  Reads and writes go through the owning source's primary REST backend, which
  *  opens persisted state directly and never starts an inactive profile backend.
- *  It runs for one explicitly opened bot only. Feature-detected and
- *  best-effort: older Desktop hosts defer the repair. */
-export async function reconcileBotProfileSessions(bot: RosterRow, nowSeconds = Date.now() / 1000) {
+ *  Feature-detected + fire-and-forget: older Desktop hosts defer the sweep. */
+async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
   if (typeof host.listPersistedSessions !== 'function' || typeof host.setPersistedSessionHidden !== 'function') {
     return
   }
 
-  const name = String(bot?.name || '').trim()
+  const cached = $lastRoster.get()
+  let roster: RosterRow[] | null = Array.isArray(cached) && cached.length ? cached : null
 
-  if (!name) {
-    return
+  if (!roster) {
+    // Plugin load can run before the Bots pane hydrates $lastRoster — fall
+    // back to the active gateway's own profile list (local bots; remote
+    // sources get covered by the next sweep once the roster cache exists).
+    try {
+      const activeBot = {
+        name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
+      }
+
+      const res = (await requestForBot(activeBot, 'profiles.list', {})) as ProfilesListResult
+      roster = Array.isArray(res?.profiles) ? res.profiles : []
+    } catch {
+      return
+    }
   }
 
-  try {
-    const route = botConnectionRoute(bot)
-    const profile = backendTargetProfile(route, name)
+  await Promise.all(
+    roster.map(async (bot: RosterRow) => {
+      const name = String(bot?.name || '').trim()
 
-    const res = await host.listPersistedSessions(route, {
-      profile,
-      limit: PROFILE_SESSION_LIST_LIMIT
+      if (!name) {
+        return
+      }
+
+      try {
+        const route = botConnectionRoute(bot)
+        const profile = backendTargetProfile(route, name)
+
+        const res = await host.listPersistedSessions(route, {
+          profile,
+          limit: PROFILE_SESSION_LIST_LIMIT
+        })
+
+        const rows = Array.isArray(res?.sessions) ? res.sessions : []
+        await Promise.all(
+          rows
+            .filter(row => isBotModeSweepCandidate(row, nowSeconds))
+            .map(row => Promise.resolve(hidePersistedBotSession(bot, row.id, profile)).catch(() => undefined))
+        )
+      } catch {
+        /* older gateway / unreachable source — leave this profile alone */
+      }
     })
-
-    const rows = Array.isArray(res?.sessions) ? res.sessions : []
-    await Promise.all(
-      rows
-        .filter(row => isBotModeSweepCandidate(row, nowSeconds))
-        .map(row => Promise.resolve(hidePersistedBotSession(bot, row.id, profile)).catch(() => undefined))
-    )
-  } catch {
-    /* older gateway / unreachable source — leave this profile alone */
-  }
+  )
 }

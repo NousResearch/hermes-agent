@@ -22,18 +22,24 @@ def live_default_gateway_pid() -> Optional[int]:
     from gateway.status import get_running_pid
     default_root = get_default_hermes_root()
     try:
-        pid = get_running_pid(
-            default_root / "gateway.pid", cleanup_stale=False, expected_home=default_root)
+        # An explicit PID path scopes identity validation to its parent home.
+        # ``get_running_pid`` derives that expected home from the path itself.
+        pid = get_running_pid(default_root / "gateway.pid", cleanup_stale=False)
         if pid is not None:
             return pid
         # Pre-multiplex Hermes versions wrote only gateway.pid and had no lock file. Keep
         # the historical probe during upgrade; current records use the strict path above.
-        from gateway.status import _pid_exists, _pid_from_record, _read_pid_record
+        from gateway.status import (
+            _live_pid_from_record, _pid_from_record, _read_pid_record,
+            _record_matches_live_gateway_pid,
+        )
         if (default_root / "gateway.lock").exists():
             return None
         record = _read_pid_record(default_root / "gateway.pid")
         pid = _pid_from_record(record) if record else None
-        return pid if pid and _pid_exists(pid) else None
+        if pid is None or _live_pid_from_record(record) != pid:
+            return None
+        return pid if _record_matches_live_gateway_pid(record, pid, expected_home=default_root) else None
     except Exception:
         logger.debug("default gateway identity probe failed", exc_info=True)
         return None
@@ -55,6 +61,27 @@ def recorded_served_profiles(default_root: Optional[Path] = None) -> Optional[li
 def multiplexer_served_secondaries() -> list[str]:
     """Named profiles the live default multiplexer serves (excludes ``default``); empty when none."""
     return [p for p in (recorded_served_profiles() or []) if p and p != "default"]
+
+
+def served_profile_unserved_platforms(profile: str) -> dict[str, str]:
+    """``{platform: reason}`` for a served profile's platforms the multiplexer deliberately does not run
+    (WhatsApp/Relay are shared ingress owned by the default; ``gateway.run_adapters`` stamps
+    ``<profile>:<platform>`` as ``disabled`` with ``error_code=multiplex_shared_ingress``)."""
+    from hermes_constants import get_default_hermes_root
+    from gateway.status import read_runtime_status
+    if not profile or live_default_gateway_pid() is None:
+        return {}
+    runtime = read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
+    platforms = runtime.get("platforms")
+    if not isinstance(platforms, dict):
+        return {}
+    prefix = f"{profile}:"
+    return {
+        key[len(prefix):]: str(entry.get("error_message") or "not served under multiplex")
+        for key, entry in platforms.items()
+        if isinstance(key, str) and key.startswith(prefix) and isinstance(entry, dict)
+        and entry.get("error_code") == "multiplex_shared_ingress"
+    }
 
 
 def served_profile_ingress_urls(profile: Optional[str] = None) -> dict[str, dict[str, str]]:

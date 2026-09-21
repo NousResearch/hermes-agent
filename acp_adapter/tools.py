@@ -10,6 +10,8 @@ from typing import Any, Callable, Dict, List, Optional
 import acp
 from acp.schema import ToolCallLocation, ToolCallProgress, ToolCallStart, ToolKind
 
+from agent.display import build_tool_preview
+
 logger = logging.getLogger(__name__)
 
 # Hermes tool name -> ACP ToolKind (anything unlisted is "other").
@@ -82,11 +84,6 @@ def _arg(args: Optional[Args], *keys: str, default: str = "") -> str:
 def _first(data: Args, *keys: str, default: Any = "") -> Any:
     """First truthy ``data[key]`` in ``keys`` order, else ``default``."""
     return next((data[k] for k in keys if data.get(k)), default)
-
-
-def _clip(text: str, limit: int) -> str:
-    """Hard-truncate to ``limit`` chars with a trailing ellipsis."""
-    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _fmt(value: Any, template: str, fallback: str) -> str:
@@ -193,6 +190,10 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
 # --- tool-call titles -------------------------------------------------------
 
 
+def _clip(text: str, max_len: int) -> str:
+    return text if len(text) <= max_len else text[: max_len - 3] + "..."
+
+
 def _title_web_extract(args: Args) -> str:
     urls = args.get("urls", [])
     if not urls:
@@ -212,8 +213,9 @@ def _title_delegate(args: Args) -> str:
 
 
 def _title_execute_code(args: Args) -> str:
-    first_line = next((line.strip() for line in _arg(args, "code").splitlines() if line.strip()), "")
-    return _fmt(_clip(first_line, 70), "python: {}", "python code")
+    from agent.display import build_tool_preview
+    preview = build_tool_preview("execute_code", args, max_len=0)
+    return f"python: {_clip(preview, 80)}" if preview else "python code"
 
 
 def _title_skill_manage(args: Args) -> str:
@@ -224,7 +226,10 @@ def _title_skill_manage(args: Args) -> str:
 
 _TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
     "terminal": lambda a: f"terminal: {_clip(a.get('command', ''), 80)}",
-    "read_file": lambda a: f"read: {a.get('path', '?')}",
+    "read_file": lambda a: (
+        f"read: {a.get('path', '?')}"
+        + (f" L{a['offset']}" if isinstance(a.get('offset'), int) and a.get('offset', 0) > 0 else "")
+    ),
     "write_file": lambda a: f"write: {a.get('path', '?')}",
     "patch": lambda a: f"patch ({a.get('mode', 'replace')}): {a.get('path', '?')}",
     "search_files": lambda a: f"search: {a.get('pattern', '?')}",
@@ -240,7 +245,7 @@ _TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
     "execute_code": _title_execute_code,
     "todo": lambda a: f"todo ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo",
     "todo_list": lambda a: f"todo_list ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo_list",
-    "skill_view": lambda a: f"skill view ({_arg(a, 'name', default='?')}{_fmt(_arg(a, 'file_path'), '/{}', '')})",
+    "skill_view": lambda a: f"skill view ({_arg(a, 'name', default='?')}{_fmt(_arg(a, 'file_path'), ' → {}', '')})",
     "skills_list": lambda a: _fmt(_arg(a, "category"), "skills list ({})", "skills list"),
     "skill_manage": _title_skill_manage,
     "browser_navigate": lambda a: f"navigate: {a.get('url', '?')}",
@@ -884,9 +889,11 @@ def _build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edi
 
 def build_tool_complete(
     tool_call_id: str, tool_name: str, result: Optional[str] = None, function_args: Optional[Args] = None,
-    snapshot: Any = None,
+    snapshot: Any = None, is_error: bool = False,
 ) -> ToolCallProgress:
-    """Create a ToolCallUpdate (progress) event for a completed tool call."""
+    """Create a ToolCallUpdate (progress) event for a completed tool call.
+
+    ``is_error`` is the executor's own verdict; the result-text heuristic stays as fallback."""
     if tool_name == "web_extract":  # errors only; success stays compact via the title
         error_text = _format_web_extract_result(tool_name, result, function_args)
         content = [_text(error_text)] if error_text else None
@@ -895,8 +902,20 @@ def build_tool_complete(
     structured = isinstance(_json_loads_maybe(result), (dict, list))
     return acp.update_tool_call(
         tool_call_id, kind=get_tool_kind(tool_name),
-        status="failed" if _tool_result_failed(result, tool_name) else "completed", content=content,
+        status="failed" if is_error or _tool_result_failed(result, tool_name) else "completed", content=content,
         raw_output=None if tool_name in _POLISHED_TOOLS or structured else result,
+    )
+
+
+def build_tool_abandoned(tool_call_id: str, tool_name: str) -> ToolCallProgress:
+    """Create a ToolCallUpdate for a call that ended without ever reporting a result.
+
+    A blocked or permission-denied call projects no ``tool.completed``, so the
+    turn ends with its bubble still spinning; ``failed`` is the honest terminal
+    state — the tool did not produce a result."""
+    return acp.update_tool_call(
+        tool_call_id, kind=get_tool_kind(tool_name), status="failed",
+        content=[_text("This tool call ended without a result (blocked, denied, or interrupted).")],
     )
 
 

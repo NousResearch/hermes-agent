@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import time
 from typing import Dict, Optional
 from hermes_cli.auth_constants import httpx
 
 logger = logging.getLogger("hermes_cli.auth")
+_zai_probe_failed_until: Dict[str, float] = {}
+_ZAI_FAILED_PROBE_TTL_SECONDS = 300.0
 
 # "sk-kimi-" keys only work on api.kimi.com/coding; legacy moonshot keys use the old default.
 # NO /v1 suffix: the anthropic SDK appends "/v1/messages" itself ("/coding/v1" would 404).
@@ -109,6 +112,9 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
         return default_url
 
     key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    failed_until = _zai_probe_failed_until.get(key_hash, 0.0)
+    if failed_until > time.monotonic():
+        return default_url
     state = _load_provider_state(_load_auth_store(), "zai") or {}
     cached = state.get("detected_endpoint")
     if isinstance(cached, dict) and cached.get("base_url") and cached.get("key_hash", "") == key_hash:
@@ -118,8 +124,10 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     # Probe — may take up to ~8s per endpoint.
     detected = detect_zai_endpoint(api_key)
     if not (detected and detected.get("base_url")):
+        _zai_probe_failed_until[key_hash] = time.monotonic() + _ZAI_FAILED_PROBE_TTL_SECONDS
         logger.debug("Z.AI: probe failed, falling back to default %s", default_url)
         return default_url
+    _zai_probe_failed_until.pop(key_hash, None)
 
     detected_endpoint = {
         "base_url": detected["base_url"], "endpoint_id": detected.get("id", ""),

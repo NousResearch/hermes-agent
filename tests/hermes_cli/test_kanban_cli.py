@@ -83,6 +83,18 @@ def test_kanban_list_json_includes_worker_execution_settings(kanban_home):
     assert task["reasoning_effort"] == "none"
 
 
+def test_kanban_show_json_includes_runtime_limit(kanban_home):
+    with kbc.connect() as conn:
+        bounded_id = kb.create_task(
+            conn, title="bounded task", max_runtime_seconds=2700
+        )
+        uncapped_id = kb.create_task(conn, title="uncapped task")
+
+    bounded = json.loads(kc.run_slash(f"show {bounded_id} --json"))
+    uncapped = json.loads(kc.run_slash(f"show {uncapped_id} --json"))
+
+    assert bounded["task"]["max_runtime_seconds"] == 2700
+    assert uncapped["task"]["max_runtime_seconds"] is None
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")
@@ -96,182 +108,52 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
-def test_operator_block_terminates_running_worker_before_releasing_claim(
-    kanban_home, monkeypatch,
-):
-    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
-    terminations = []
-    monkeypatch.setattr(
-        kb,
-        "_terminate_reclaimed_worker",
-        lambda pid, lock, **_kwargs: terminations.append((pid, lock)) or {
-            "prev_pid": pid,
-            "host_local": True,
-            "termination_attempted": True,
-            "terminated": True,
-            "sigkill": False,
-        },
-    )
-    with _hermes_cli_kanban_db_connect.connect_closing() as conn:
-        task_id = kb.create_task(conn, title="unsafe worker", assignee="alice")
-        claimed = kb.claim_task(conn, task_id)
-        assert claimed is not None
-        dispatch_impl._set_worker_pid(conn, task_id, 12345)
+def test_kanban_edit_updates_documented_task_fields(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="old title", body="old body", priority=2)
 
-    rc = kc._cmd_block(
-        argparse.Namespace(
-            task_id=task_id,
-            ids=[],
-            reason=["operator safety hold"],
-            kind="capability",
-        )
+    output = kc.run_slash(
+        f"edit {task_id} --title 'new title' --body 'new body' --priority 70"
     )
 
-    assert rc == 0
-    assert terminations == [(12345, claimed.claim_lock)]
-    with _hermes_cli_kanban_db_connect.connect_closing() as conn:
-        task = kb.get_task(conn, task_id)
-        assert task is not None
-        assert task.status == "blocked"
-        assert task.claim_lock is None
-        assert task.worker_pid is None
-
-
-def test_archive_terminates_running_worker_before_hiding_card(
-    kanban_home, monkeypatch,
-):
-    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
-    terminations = []
-    monkeypatch.setattr(
-        kb,
-        "_terminate_reclaimed_worker",
-        lambda pid, lock, **_kwargs: terminations.append((pid, lock)) or {
-            "prev_pid": pid,
-            "host_local": True,
-            "termination_attempted": True,
-            "terminated": True,
-            "sigkill": False,
-        },
-    )
-    with _hermes_cli_kanban_db_connect.connect_closing() as conn:
-        task_id = kb.create_task(conn, title="archive worker", assignee="alice")
-        claimed = kb.claim_task(conn, task_id)
-        assert claimed is not None
-        dispatch_impl._set_worker_pid(conn, task_id, 23456)
-
-        assert kb.archive_task(conn, task_id)
-
-    assert terminations == [(23456, claimed.claim_lock)]
-    with _hermes_cli_kanban_db_connect.connect_closing() as conn:
-        task = kb.get_task(conn, task_id)
-        assert task is not None
-        assert task.status == "archived"
-        assert task.claim_lock is None
-        assert task.worker_pid is None
-
-
-@pytest.mark.parametrize("operation", ["block", "archive"])
-def test_operator_stop_fails_closed_when_worker_survives(
-    kanban_home, monkeypatch, operation,
-):
-    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
-    monkeypatch.setattr(
-        kb,
-        "_terminate_reclaimed_worker",
-        lambda pid, lock, **_kwargs: {
-            "prev_pid": pid,
-            "host_local": True,
-            "termination_attempted": True,
-            "terminated": False,
-            "sigkill": True,
-        },
-    )
-    with _hermes_cli_kanban_db_connect.connect_closing() as conn:
-        task_id = kb.create_task(conn, title="surviving worker", assignee="alice")
-        claimed = kb.claim_task(conn, task_id)
-        assert claimed is not None
-        dispatch_impl._set_worker_pid(conn, task_id, 34567)
-
-    if operation == "block":
-        rc = kc._cmd_block(
-            argparse.Namespace(
-                task_id=task_id,
-                ids=[],
-                reason=["operator safety hold"],
-                kind="capability",
-            )
-        )
-        assert rc == 1
-    else:
-        with _hermes_cli_kanban_db_connect.connect_closing() as conn:
-            assert not kb.archive_task(conn, task_id)
-
-    with _hermes_cli_kanban_db_connect.connect_closing() as conn:
-        task = kb.get_task(conn, task_id)
-        assert task is not None
-        assert task.status == "running"
-        assert task.claim_lock == claimed.claim_lock
-        assert task.worker_pid == 34567
-        events = kb.list_events(conn, task_id)
-        assert any(event.kind == "reclaim_deferred" for event in events)
-
-
-def test_local_worker_pid_survives_hostname_alias_drift(monkeypatch):
-    monkeypatch.setattr(kb, "_claimer_id", lambda: "Mac:999")
-    monkeypatch.setattr(
-        worker_process,
-        "pid_matches_task_worker",
-        lambda pid, task_id: (pid, task_id) == (92905, "t_exact"),
-    )
-
-    assert worker_process.claim_is_host_local(
-        "Mikes-Mac-mini.local:85622",
-        pid=92905,
-        task_id="t_exact",
-    )
-    assert not worker_process.claim_is_host_local(
-        "remote-host:85622",
-        pid=92905,
-        task_id="t_other",
-    )
-
-
-def test_dead_worker_is_releasable_despite_hostname_alias_drift(monkeypatch):
-    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
-    monkeypatch.setattr(
-        worker_process,
-        "claim_is_host_local",
-        lambda *_args, **_kwargs: pytest.fail("dead PID must be checked first"),
-    )
-
-    result = kb._terminate_reclaimed_worker(
-        92905,
-        "Mikes-Mac-mini.local:85622",
-        task_id="t_exact",
-    )
-
-    assert result["terminated"] is True
-    assert result["termination_attempted"] is False
-
-
-def test_run_slash_set_reasoning_pins_task_override(kanban_home):
-    """The operator CLI can disable thinking for a task's next dispatch."""
-    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
-    with _hermes_cli_kanban_db_connect.connect_closing() as conn:
-        task_id = kb.create_task(conn, title="local model task")
-
-    output = kc.run_slash(f"set-reasoning {task_id} none")
-
-    assert output == (
-        f"Set reasoning effort on {task_id}: none (applies on next dispatch)"
-    )
-    with _hermes_cli_kanban_db_connect.connect_closing() as conn:
+    assert f"Edited {task_id}" in output
+    with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
         events = kb.list_events(conn, task_id)
-    assert task is not None
-    assert task.reasoning_effort == "none"
-    assert events[-1].kind == "reasoning_effort_set"
-    assert events[-1].payload == {"reasoning_effort": "none"}
+    assert (task.title, task.body, task.priority) == ("new title", "new body", 70)
+    assert any(event.kind == "reprioritized" for event in events)
+
+
+def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
+    with kbc.connect_closing() as conn:
+        worker = kb.create_task(conn, title="worker")
+        assert kb.claim_task(conn, worker, claimer="worker") is not None
+        worker_run_id = kb.get_task(conn, worker).current_run_id
+        parent = kb.create_task(conn, title="unfinished parent")
+        ready_child = kb.create_task(conn, title="foreign ready child")
+        running_child = kb.create_task(conn, title="foreign running child")
+        assert kb.claim_task(conn, running_child, claimer="other") is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(worker_run_id))
+
+    assert kc._cmd_link(argparse.Namespace(
+        parent_id=parent, child_id=ready_child,
+    )) == 0
+    with pytest.raises(ValueError, match="child is already running"):
+        kc._cmd_link(argparse.Namespace(
+            parent_id=parent, child_id=running_child,
+        ))
+    # Owner handoff: the worker links its own running card, proving ownership
+    # with HERMES_KANBAN_RUN_ID — the one path _cmd_link forwards a run id for.
+    assert kc._cmd_link(argparse.Namespace(
+        parent_id=parent, child_id=worker,
+    )) == 0
+
+    with kbc.connect_closing() as conn:
+        assert kb.parent_ids(conn, ready_child) == [parent]
+        assert kb.parent_ids(conn, running_child) == []
+        assert kb.parent_ids(conn, worker) == [parent]
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):

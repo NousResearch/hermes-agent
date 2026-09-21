@@ -418,9 +418,9 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                     "turn so memory and DB stay aligned: %s",
                     sid, ordinal, exc, exc_info=True)
                 return _err(rid, 5008, f"failed to persist history truncation: {exc}"), {}
-            # Survivors were re-inserted as NEW rows: surface the fresh ids so the client
-            # rebinds its cached rowIds (else a second rewind refuses with 4018).  None
-            # entries: the client must drop its cached id for that turn.
+            # Surface the survivors' live ids so the client rebinds its cached rowIds
+            # (a strict-prefix cut keeps them unchanged since #82956; a divergent
+            # rewrite mints new rows).  None entries: the client must drop that turn's id.
             if requested_rebind_ids is None:
                 fields["survivor_user_row_ids"] = [
                     _message_row_id(truncated[i]) for i in _history_user_indices(truncated)]
@@ -438,18 +438,30 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     return None, fields
 
 
-def _persist_session_row_for_submit(rid, session):
+def _storage_error_data(failure, raw) -> dict:
+    """Machine-readable error data: ``code`` lets a GUI pick a "Run doctor" / "Retry" action."""
+    from hermes_state_user_copy import storage_failure_details
+    return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
+
+
+def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
-    here); the error reply is the only user-visible signal (desktop maps it to a toast)."""
+    here), then the message itself (#111868: a freeze during the first build must leave a
+    resumable transcript); the error reply is the only user-visible signal (desktop maps it to a toast)."""
+    from hermes_state_user_copy import describe_storage_failure
+    from tui_gateway.server import _db_error
     try:
         if _ensure_session_db_row(session) is False:
+            failure = describe_storage_failure(_db_error)
             return _err(
                 rid, 5072,
                 "session storage unavailable: "
                 f"{_db_error or 'state.db could not be opened'} — the message "
-                "was not saved; repair state.db and try again")
+                "was not saved; repair state.db with `hermes doctor --fix` and try again",
+                data={"code": "storage_unavailable", "cause": "encoding", "details": _db_error or ""})
         _bind_conversation_worktree_on_submit(session)
         _persist_branch_seed(session)
+        _persist_submit_user_row(session, text, display_kind)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         with session["history_lock"]:
@@ -465,7 +477,9 @@ def _persist_session_row_for_submit(rid, session):
     return None
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None):
+def _run_after_agent_ready(
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -494,7 +508,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
                 else "Session no longer running before the agent was ready")})
             return
     _run_prompt_submit(
-        rid, sid, session, text, display_kind=display_kind,
+        rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
         terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
 
@@ -503,11 +517,13 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
-    with session["history_lock"]:
+    with _session_turn_admission(session) as admitted:
+        if not admitted:
+            return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
@@ -527,7 +543,7 @@ def _lock_in_submit_turn(
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
-        _start_inflight_turn(session, text)
+        _start_inflight_turn(session, text, display_kind=display_kind)
     return None, fields
 
 
@@ -560,7 +576,7 @@ def _validate_truncation_before_materializing(rid, sid, session, params):
 
 def _admit_prompt_submit(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids,
-    hosted_task, internal_hosted_submit, transport, *, reattach=False, client_surface=""):
+    hosted_task, internal_hosted_submit, transport, *, reattach=False, client_surface="", display_kind=None):
     """Serialize admission, validation, materialization, and turn claim per session."""
     raw_turn_author = params.get("_turn_author")
     turn_author = None
@@ -600,10 +616,10 @@ def _admit_prompt_submit(
                     rid, sid, session, params)) is not None:
                 return err, None
         err, survivor_fields = _lock_in_submit_turn(
-            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
+            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
         if err is not None:
             return err, None
-        if (err := _persist_session_row_for_submit(rid, session)) is not None:
+        if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
             return err, None
         # Record the surface only after this request owns the turn. A rejected busy
         # request must not overwrite the surface used by the in-flight turn.
@@ -626,6 +642,12 @@ def _(rid, params: dict) -> dict:
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
+    title_preview = params.get("title_preview")
+    display_metadata = (
+        {"title_preview": title_preview[:1000]}
+        if isinstance(title_preview, str) and title_preview.strip()
+        else None
+    )
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.get("interrupted"):
@@ -635,6 +657,13 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    raw_turn_author = params.get("_turn_author")
+    turn_author = None
+    if raw_turn_author is not None:
+        from tools.bot_relay import DeliveryAuthor
+        if not isinstance(raw_turn_author, DeliveryAuthor):
+            return _err(rid, 4124, "turn author may only be supplied by the in-process relay")
+        turn_author = dict(raw_turn_author.author)
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -651,9 +680,41 @@ def _(rid, params: dict) -> dict:
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # Re-bind to the current transport inside serialized admission: streaming must stay on the
-    # active websocket even if a disconnect/fallback moved the session to stdio.
-    t = current_transport()
+    # Re-bind to the current transport: streaming must stay on the active websocket even
+    # if a disconnect/fallback moved the session to stdio. Through _rebind_live_transport so a
+    # socket that already closed cannot cancel the orphan reap without coming back (#116464).
+    with _session_resume_lock:
+        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+            return refusal
+        if (t := current_transport()) is not None:
+            _rebind_live_transport(sid, session, t)
+    # Claim the turn against a possibly-running session (busy/queued reply, else fall
+    # through once ``running`` is observed False).  The provider interrupt happens after
+    # history_lock is released (a non-interruptible tool may hold it); if the old turn
+    # finished between the two acquisitions, retry the claim rather than strand this
+    # prompt in a queue whose drain already ran.
+    while True:
+        with session["history_lock"]:
+            if not session.get("running"):
+                break
+            if internal_hosted_submit:
+                return _err(rid, 4091, "hosted room member session is busy")
+            busy_transport = t or session.get("transport")
+        if has_truncation:
+            # A rewind/edit/restore/regenerate must land as a truncation, never as a
+            # steered correction or a plain follow-up queued to run after the live
+            # turn — either would silently drop the history cut the user asked for.
+            # Signal busy so the caller's own interrupt-then-retry loop (already
+            # built for exactly this race — see desktop's `runRewindSubmit`) waits
+            # for `running` to clear and resubmits with the truncation intact.
+            return _err(rid, 4009, "session busy")
+        busy_response = _handle_busy_submit(
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            client_surface=(params.get("surface") if params.get("surface") in {"hud", "voice-live"} else ""),
+            voice_live_context=(str(params.get("voice_context") or "")
+                                if params.get("surface") == "voice-live" else ""))
+        if busy_response is not None:
+            return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
@@ -665,13 +726,14 @@ def _(rid, params: dict) -> dict:
             params.get("surface")
             if params.get("surface") in {"hud", "voice-live"}
             else ""
-        ))
+        ),
+        display_kind=display_kind)
     if err is not None:
         return err
     turn_author = session.pop("_accepted_turn_author", None)
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -692,7 +754,7 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
@@ -976,24 +1038,17 @@ def _spawn_side_agent(
 
     def run():
         session_tokens = _set_session_context(task_id, cwd=(cwd or _session_cwd(session)))
-        # Bug #50233: ephemeral agent threads don't inherit the session's HERMES_HOME override (the
-        # ContextVar set on the session-create thread doesn't propagate here), so a background turn under a
-        # non-default profile would run against the wrong home. Re-bind the override for the duration of
-        # this turn, exactly as the normal prompt turn does, and restore it afterward.
-        # Bug #50233: ephemeral preview-restart agent threads don't inherit the session's HERMES_HOME
-        # override (the ContextVar set on the session-create thread doesn't propagate here). Re-bind it for
-        # the duration of the turn, mirroring the normal prompt turn, then restore it. NOTE: we deliberately
-        # do NOT close this agent through task-wide process cleanup — the whole point of preview.restart is
-        # to leave a background server running under this task_id, and AIAgent.close() would kill every
-        # process for the task_id and tear down the very server the restart just started.
-        profile_home = session.get("profile_home")
-        home_token = set_hermes_home_override(profile_home) if profile_home else None
+        # Bug #50233: ephemeral agent threads don't inherit the session's ContextVar scopes (set on the
+        # session-create thread), so a side turn under a non-default profile ran against the wrong home.
+        # Bind the profile's home + secrets + terminal policy for the whole body, exactly as a prompt turn
+        # does: home alone left terminal_tool on the launch process's ambient TERMINAL_* (a docker
+        # secondary's background/btw/preview agent ran local). NOTE: we deliberately do NOT close this
+        # agent through task-wide process cleanup — the whole point of preview.restart is to leave a
+        # background server running under this task_id, and AIAgent.close() would kill every process for
+        # the task_id and tear down the very server the restart just started.
         try:
-            try:
+            with _session_profile_runtime_scope(session):
                 text = body()
-            finally:
-                if home_token is not None:
-                    reset_hermes_home_override(home_token)
             _emit(event, parent, {"task_id": task_id, **extra, "text": text})
         except Exception as e:
             _emit(event, parent, {"task_id": task_id, **extra, "text": f"error: {e}"})
@@ -1002,7 +1057,8 @@ def _spawn_side_agent(
                 cleanup()
             _clear_session_context(session_tokens)
 
-    threading.Thread(target=run, daemon=True).start()
+    if _start_session_work(run, name=f"side-agent-{task_id}") is None:
+        return _err(rid, 5035, "backend is retiring; reconnect to continue")
     return _ok(rid, {"task_id": task_id})
 
 
@@ -1025,8 +1081,10 @@ def _(rid, params: dict) -> dict:
 
     def body():
         from run_agent import AIAgent
-        result = AIAgent(**_background_agent_kwargs(session["agent"], task_id)).run_conversation(
-            user_message=text, task_id=task_id)
+        kwargs = _background_agent_kwargs(session["agent"], task_id)
+        with _side_agent_session_db(kwargs.get("session_db")) as session_db:
+            result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
+                user_message=text, task_id=task_id)
         return _final_response_text(result)
 
     return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
@@ -1043,7 +1101,7 @@ def _(rid, params: dict) -> dict:
     snapshot = list(getattr(agent, "_session_messages", None) or session.get("history") or [])
     main_runtime = {
         k: getattr(agent, k, None)
-        for k in ("model", "provider", "base_url", "api_key", "api_mode")}
+        for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
 
     def body():
         from agent.side_question import answer_side_question
@@ -1136,16 +1194,31 @@ def _(rid, params: dict) -> dict:
         cwd=preview_cwd, cleanup=cleanup)
 
 
-# ── late-answer RPCs for tool-driven UI cards ───────────────────────────────
-# allow_expired=True everywhere: a tool's bounded wait can expire (its _pending entry
-# popped) while the card is still visible; a late answer must not surface the raw 4009.
+# ── batch clarify locks ─────────────────────────────────────────────────────
+# A batch ``clarify`` server request is answered one question at a time: each lock is a normal RPC
+# (update-in-place, editable until every qid is locked); the LAST lock resolves the request itself.
+# A cancel-all is the plain response frame with no ``answers``.
 
 
-@method("clarify.respond")
+@method("clarify.lock")
 def _(rid, params: dict) -> dict:
-    if proxied := _respond_compute_host_clarify(rid, params):
+    request_id = str(params.get("request_id") or "")
+    question_id = str(params.get("question_id") or "")
+    if not request_id or not question_id:
+        return _err(rid, 4002, "request_id and question_id required")
+    answer = params.get("answer", "")
+    answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
-    return _respond(rid, params, "answer", allow_expired=True)
+    from tui_gateway import server_requests
+    try:
+        remaining = server_requests.lock_answer(request_id, question_id, answer)
+    except ValueError as e:
+        return _err(rid, 4002, str(e))
+    if remaining is None:
+        # The wait already ended (timeout / cancel) while the card was still visible: not an error.
+        return _ok(rid, {"status": "expired"})
+    return _ok(rid, {"status": "ok", "remaining": remaining})
 
 
 _LATE_RESPOND_KEYS = {

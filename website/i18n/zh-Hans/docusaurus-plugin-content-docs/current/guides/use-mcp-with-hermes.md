@@ -485,6 +485,6 @@ enabled: false
 
 ## 相关文档
 
-- [MCP（模型上下文协议）](/user-guide/features/mcp)
-- [FAQ](/reference/faq)
-- [斜杠命令](/reference/slash-commands)
+- [MCP（模型上下文协议）](../user-guide/features/mcp.md)
+- [FAQ](../reference/faq.md)
+- [斜杠命令](../reference/slash-commands.md)

@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_hub import _guarded_http_stream
 from tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json,
@@ -297,8 +298,12 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         gathered (browse's cold-start fallback renders one page); ``0`` walks
         to exhaustion (offline index builder). Only a COMPLETE walk (cursor
         exhausted or page cap) is written to the shared ``clawhub_catalog_v1``
-        cache — a walk cut by ``max_items`` or the wall-clock budget would
-        poison it with a partial slice.
+        cache — a walk cut by ``max_items``, the wall-clock budget, or a
+        failed page fetch would poison it with a partial slice.
+
+        ``_get_json`` returns ``None`` on timeout/non-200. That is a hole in the
+        walk, not catalog exhaustion: the same cursor is retried a few times
+        before the walk gives up (partial, uncached).
         """
         cache_key = "clawhub_catalog_v1"
         cached = _cached_metas(cache_key)
@@ -313,12 +318,22 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         # (max_items=0) must walk everything or it trips the deploy health floor.
         deadline = time.monotonic() + self.CATALOG_WALK_BUDGET_SECONDS if max_items > 0 else None
         partial = False
+        fetch_failures = 0
         for _ in range(750):
             if deadline is not None and time.monotonic() > deadline:
                 partial = True
                 break
             params: Dict[str, Any] = {"limit": 200, "cursor": cursor} if cursor else {"limit": 200}
             data = self._get_json(f"{self.BASE_URL}/skills", timeout=30, params=params)
+            if data is None:
+                fetch_failures += 1
+                if fetch_failures >= self.CATALOG_PAGE_RETRIES:
+                    partial = True
+                    break
+                # Interactive browse stays inside its 12 s budget; the index builder backs off.
+                time.sleep(0.5 if deadline is not None else min(2 ** fetch_failures, 8))
+                continue
+            fetch_failures = 0
             items = data.get("items", []) if isinstance(data, dict) else []
             if not isinstance(items, list) or not items:
                 break
@@ -377,10 +392,9 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                         return None
                     return self._owner_from_payload(self._coerce_skill_payload(raw))
                 if resp.status_code == 429:
-                    try:
-                        delay = float(resp.headers.get("Retry-After") or delay)
-                    except (TypeError, ValueError):
-                        pass
+                    retry_after = parse_retry_after_seconds(resp.headers)
+                    if retry_after is not None:
+                        delay = retry_after
                     reason = "HTTP 429"
                 elif 500 <= resp.status_code < 600:
                     reason = f"HTTP {resp.status_code}"
@@ -491,11 +505,8 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
                     if resp is None:
                         return files
                     if resp.status_code == 429:
-                        try:
-                            retry_after = int(resp.headers.get("retry-after", "5"))
-                        except (ValueError, TypeError):
-                            retry_after = 5
-                        retry_after = max(0, min(retry_after, 15))  # Cap wait time
+                        parsed = parse_retry_after_seconds(resp.headers)
+                        retry_after = min(int(5 if parsed is None else parsed), 15)  # Cap wait time
                         logger.debug(
                             "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
                             slug, retry_after, attempt + 1, max_retries,

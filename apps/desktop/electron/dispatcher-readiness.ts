@@ -62,9 +62,11 @@ export async function ensureKanbanDispatcherReady(
     // Treat it the same as an explicit { status: "disabled" } response —
     // Desktop startup must not fail because an optional plugin is turned off.
     const detail = error instanceof Error ? error.message : String(error)
+
     if (/^404[^\d]/.test(detail)) {
       return { status: 'disabled', ready: false, gateway_pid: null, message: detail }
     }
+
     throw new DispatcherReadinessError(`dispatcher readiness could not be verified: ${detail}`)
   }
 
@@ -106,6 +108,7 @@ export async function ensureKanbanDispatcherReady(
         const detail = error instanceof Error ? error.message : String(error)
         throw new DispatcherReadinessError(`dispatcher readiness could not be verified after gateway start: ${detail}`)
       }
+
       continue
     }
 
@@ -133,5 +136,6 @@ export async function runDispatcherReadinessGate(
   advancePhase: AdvancePhase
 ): Promise<DispatcherReadiness> {
   await advancePhase('backend.dispatcher', 'Verifying Kanban dispatcher readiness', 92)
+
   return ensureKanbanDispatcherReady(baseUrl, token, fetchJson)
 }

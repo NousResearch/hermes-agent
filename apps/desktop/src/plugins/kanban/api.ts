@@ -20,11 +20,7 @@ import {
 } from '@hermes/plugin-sdk'
 
 // Native completion notification.
-import {
-  bindCompletionNotify,
-  type CompletionEvent,
-  onKanbanEventsFrame
-} from './completion-notify'
+import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
 import type {
   BoardExportResult,
   BoardImportResult,
@@ -116,7 +112,7 @@ function activeSourceKey(): string {
   return `${host.state.connectionId.get() ?? 'local'}::${host.state.profile.get() || 'default'}`
 }
 
-function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => void): void {
+function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => void, sourceKey: string): void {
   const events = (data as { events?: CompletionEvent[] })?.events
 
   if (!events?.length) {
@@ -142,7 +138,7 @@ function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => 
 
   // Completion notification (after invalidation so notify failure
   // never interferes with cache invalidation).
-  void onKanbanEventsFrame(slug, events, activeSourceKey()).catch(() => undefined)
+  void onKanbanEventsFrame(slug, events, sourceKey).catch(() => undefined)
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -179,6 +175,7 @@ export function bindApi(
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
+  let socketGeneration = 0
   let close: (() => void) | null = null
   let boardRefreshTimer: null | ReturnType<typeof setTimeout> = null
 
@@ -197,21 +194,31 @@ export function bindApi(
   const open = (slug: string) => {
     close?.()
 
-    // Do not put a cursor in the socket URL: pluginSocket may reconnect the
-    // same URL after the active source/profile changes. The notification
-    // module keys its cursor by the source and board, then baselines through
-    // the current REST door, so a new source cannot inherit old ids.
+    if (boardRefreshTimer !== null) {
+      clearTimeout(boardRefreshTimer)
+      boardRefreshTimer = null
+    }
+
+    const sourceKey = activeSourceKey()
+    const generation = ++socketGeneration
     const path = slug ? `/events?board=${encodeURIComponent(slug)}` : '/events'
 
-    close = socket(path, data =>
-      onEventsFrame(slug, data, scheduleBoardRefresh)
-    )
+    close = socket(path, data => {
+      // A closed socket can still deliver queued frames. They belong to its
+      // original source and must not update the current cache or cursor.
+      if (generation === socketGeneration && sourceKey === activeSourceKey()) {
+        onEventsFrame(slug, data, scheduleBoardRefresh, sourceKey)
+      }
+    })
   }
 
   open($boardSlug.get())
   unsubs.push($boardSlug.listen(open))
+  unsubs.push(host.state.connectionId.listen(() => open($boardSlug.get())))
+  unsubs.push(host.state.profile.listen(() => open($boardSlug.get())))
 
   return () => {
+    socketGeneration += 1
     unsubs.forEach(unsub => unsub())
     close?.()
 
@@ -219,7 +226,6 @@ export function bindApi(
       clearTimeout(boardRefreshTimer)
       boardRefreshTimer = null
     }
-
     rest = null
     os = null
   }

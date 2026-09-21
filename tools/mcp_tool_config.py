@@ -22,14 +22,14 @@ _mcp_stderr_log_lock = threading.Lock()
 def _get_mcp_stderr_log() -> Any:
     """Shared append-mode handle for MCP subprocess stderr, opened once per process. Must expose a
     real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
     home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
         fh = _mcp_stderr_log_fh.get(home_key)
-        if fh is None:
+        if fh is None or fh.closed:
             try:
                 log_dir = get_hermes_home() / "logs"
-                log_dir.mkdir(parents=True, exist_ok=True)
+                mkdir_under_hermes_home(log_dir)
                 # Line-buffered so output lands promptly; errors="replace" tolerates garbled binary.
                 fh = open(log_dir / "mcp-stderr.log", "a", encoding="utf-8", errors="replace", buffering=1)
                 fh.fileno()  # confirm a real fd before committing
@@ -41,6 +41,21 @@ def _get_mcp_stderr_log() -> Any:
                     fh = sys.stderr
             _mcp_stderr_log_fh[home_key] = fh
         return fh
+
+
+def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
+    """Release cached parent handles after the selected MCP transports have stopped."""
+    with _mcp_stderr_log_lock:
+        keys = list(_mcp_stderr_log_fh) if scope is None else [scope]
+        for key in keys:
+            fh = _mcp_stderr_log_fh.pop(key, None)
+            # The last-resort fallback is borrowed, not owned by MCP.
+            if fh is None or fh is sys.stderr or fh is sys.__stderr__:
+                continue
+            try:
+                fh.close()
+            except OSError:
+                logger.warning("Could not close MCP stderr log for %s", key, exc_info=True)
 
 
 def _write_stderr_log_header(server_name: str) -> None:
@@ -151,39 +166,64 @@ def _build_safe_env(user_env: Optional[dict], *, external_env: Optional[dict] = 
 
 
 def _which_with_config_pathext(command: str, path_arg, env: dict):
-    """``shutil.which`` retried under the config env's PATHEXT (Windows only; ``which`` uses the PARENT's)."""
+    """Resolve *command* under the config env's PATHEXT (Windows only; ``shutil.which`` uses the PARENT's).
+
+    The extension walk mirrors ``which`` itself (existing-suffix short-circuit, configured
+    extensions in order) but reads nothing from and writes nothing to ``os.environ``: swapping
+    the parent's PATHEXT around a ``which`` call would publish this server's per-profile value
+    to every other thread for the duration, and a ``finally``-restore cannot undo that window."""
     cfg_pathext = next((v for k, v in env.items() if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()), None)
     if not cfg_pathext or cfg_pathext == os.environ.get("PATHEXT"):
         return None
-    saved = os.environ.get("PATHEXT")
-    try:
-        os.environ["PATHEXT"] = cfg_pathext
-        return shutil.which(command, path=path_arg)
-    finally:
-        if saved is None:
-            os.environ.pop("PATHEXT", None)
-        else:
-            os.environ["PATHEXT"] = saved
+    # PATHEXT is Windows-defined: ";"-separated even when resolved off-Windows
+    exts = [ext for ext in cfg_pathext.split(";") if ext]
+    candidates = [command + ext for ext in exts]
+    if not candidates or any(command.lower().endswith(ext.lower()) for ext in exts):
+        candidates = [command]
+    directories = str(path_arg or "").split(os.pathsep)
+    if sys.platform == "win32" and os.curdir not in directories:
+        directories.insert(0, os.curdir)  # Windows resolves from the cwd first
+    for raw in directories:
+        directory = raw or os.curdir  # POSIX: an empty PATH component means the cwd
+        if not os.path.isdir(directory):
+            continue
+        for candidate in candidates:
+            resolved = os.path.join(directory, candidate)
+            if os.path.isfile(resolved) and os.access(resolved, os.F_OK | os.X_OK):
+                return resolved
+    return None
 
 
-def _node_fallback(command: str) -> str:
-    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists."""
+def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
+    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists.
+
+    The managed tree comes from ``iter_hermes_node_dirs`` (Windows unpacks into ``<home>\\node``, POSIX into
+    ``<home>/node/bin``) under the active profile's ``get_hermes_home()``; on Windows the real files are
+    ``npx.cmd``/``node.exe`` (``windows`` injectable, as for ``_npx_bin_candidates``)."""
+    from hermes_constants import get_hermes_home, iter_hermes_node_dirs
     home = os.path.expanduser("~")
-    hermes_home = os.path.expanduser(os.getenv("HERMES_HOME", os.path.join(home, ".hermes")))
     # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel Homebrew),
     # needed when a hand-authored env.PATH omits it — npx's shebang re-execs /usr/bin/env node.
-    candidates = (os.path.join(hermes_home, "node", "bin", command), os.path.join(home, ".local", "bin", command),
-                  os.path.join(os.sep, "usr", "local", "bin", command))
+    directories = [*map(str, iter_hermes_node_dirs(get_hermes_home())), os.path.join(home, ".local", "bin"),
+                   os.path.join(os.sep, "usr", "local", "bin")]
+    candidates = (c for d in directories for c in _npx_bin_candidates(d, command, windows=windows))
     return next((c for c in candidates if os.path.isfile(c) and os.access(c, os.X_OK)), command)
 
 
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
-    """Resolve a stdio command against the exact subprocess env (bare ``npx``/``npm``/``node`` under a filtered PATH)."""
+    """Resolve a stdio command against the exact subprocess env (bare ``npx``/``npm``/``node`` under a filtered PATH).
+
+    A ``PATH`` lookup only runs when the child env actually carries one: ``shutil.which`` with
+    ``path=None`` silently falls back to the PARENT's ``os.environ["PATH"]``, letting a command
+    "resolve" against an env the child will never be spawned with. An absent child PATH is a
+    miss; an explicitly empty one keeps its cwd-only meaning (same distinction the child's
+    ``execvp`` will see). Bare ``npx``/``npm``/``node`` still fall through to the explicit
+    well-known Node directories, everything else stays as-written for an honest spawn failure."""
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
     if os.sep not in resolved_command:
         path_arg = resolved_env.get("PATH")
-        which_hit = shutil.which(resolved_command, path=path_arg)
+        which_hit = shutil.which(resolved_command, path=path_arg) if path_arg is not None else None
         if which_hit is None and sys.platform == "win32" and resolved_env:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
         if which_hit:

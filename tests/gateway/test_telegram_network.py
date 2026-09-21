@@ -177,6 +177,34 @@ class TestFallbackTransport:
         assert records[0].levelno == logging.WARNING
         assert "149.154.167.221" in records[0].getMessage()
 
+    @pytest.mark.asyncio
+    async def test_empty_failure_is_diagnostic_and_later_success_logs_recovery(
+        self, monkeypatch, caplog
+    ):
+        import logging
+
+        calls = []
+        behavior = {
+            "149.154.167.220": httpx.ConnectTimeout(""),
+            "api.telegram.org": httpx.ConnectTimeout(""),
+        }
+        monkeypatch.setattr(
+            tnet.httpx,
+            "AsyncHTTPTransport",
+            _fake_transport_factory(calls, behavior),
+        )
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.telegram_network"):
+            with pytest.raises(httpx.ConnectTimeout):
+                await transport.handle_async_request(_telegram_request())
+            behavior["149.154.167.220"] = "ok"
+            await transport.handle_async_request(_telegram_request())
+
+        rendered = " | ".join(record.getMessage() for record in caplog.records)
+        assert "failed: ConnectTimeout('')" in rendered
+        assert "transport recovered via 149.154.167.220" in rendered
+
 
     @pytest.mark.asyncio
     async def test_sticky_ip_tried_first_but_falls_through_if_stale(self, monkeypatch):

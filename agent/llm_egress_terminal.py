@@ -308,6 +308,7 @@ def _scratch_read_file_tool_call_ids(value: Any) -> frozenset[str]:
                     path = parsed.get("path") if isinstance(parsed, Mapping) else None
                 except (TypeError, ValueError, json.JSONDecodeError):
                     path = None
+                # no-tmp: ok — explicitly checking for /tmp/ paths in tool arguments
                 if isinstance(path, str) and path.startswith(("/tmp/", "/private/tmp/")) and isinstance(call_id, str):
                     recognized.update(tool_result_id_variants(call_id))
             for child in item.values():

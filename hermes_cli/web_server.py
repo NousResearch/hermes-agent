@@ -54,7 +54,7 @@ except ImportError:
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
-            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn'"
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
@@ -103,8 +103,13 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
                 _check_gateway_running, _served_by_running_multiplexer, profiles_to_serve)
 
             # Same served set as the multiplexer: default + every live profile under profiles/.
-            profile_homes = list(profiles_to_serve(multiplex=True))
-            if profile_homes:
+            # The ticker re-enumerates this callable every cycle. Passing a
+            # startup snapshot leaves deleted profiles in the scheduler until
+            # restart, which both writes their removed stores and keeps stale
+            # profiles alive in Desktop's background work.
+            profile_homes = lambda: list(profiles_to_serve(multiplex=True))
+            initial_profile_homes = profile_homes()
+            if initial_profile_homes:
                 # Even one profile needs the per-tick gateway gate; otherwise
                 # Desktop races its dedicated gateway for the same cron store.
                 start_kwargs["profile_homes"] = profile_homes
@@ -117,11 +122,11 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
                     or (name != "default" and _served_by_running_multiplexer(name)))
                 from hermes_logging import enable_profile_log_routing
 
-                enable_profile_log_routing(profile_homes)
+                enable_profile_log_routing(initial_profile_homes)
                 _log.info(
                     "Desktop cron scheduler will tick %d profile(s): %s",
-                    len(profile_homes),
-                    [name for name, _home in profile_homes],
+                    len(initial_profile_homes),
+                    [name for name, _home in initial_profile_homes],
                 )
         except Exception:
             # Fail open to the single-store ticker so the active profile keeps firing.
@@ -161,13 +166,18 @@ async def _lifespan(app: "FastAPI"):
     # Bring state.db schema current BEFORE the first session-list poll
     # (#79531/#80037): a store left behind by `hermes update` otherwise 500s
     # every poll while the read-probe heal loses to sibling lock contention.
-    # Daemon thread so a locked store never delays the socket (Desktop
-    # ready-probe times out at 10s, GH-73083).
-    threading.Thread(
+    # Off-thread so a locked store never delays the socket (Desktop
+    # ready-probe times out at 10s, GH-73083). NOT a daemon, and joined at
+    # shutdown: its sqlite connection must be closed by the thread that is
+    # stepping it. A daemon copy that outlived the lifespan had its
+    # connection closed from the main thread mid-probe (pytest's leaked-DB
+    # sweep) and segfaulted the interpreter. The worker is time-bounded by
+    # SessionDB's lock patience, so the join cannot hang shutdown.
+    eager_reconcile_thread = threading.Thread(
         target=_eager_reconcile_own_session_db,
-        daemon=True,
         name="statedb-eager-reconcile",
-    ).start()
+    )
+    eager_reconcile_thread.start()
 
     # Import hermes_cli.gateway *before* the yield: on Windows + 3.11 the
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and
@@ -284,6 +294,7 @@ async def _lifespan(app: "FastAPI"):
             pass
         if os.getenv("HERMES_DESKTOP") == "1":
             _terminate_desktop_managed_gateway()
+        eager_reconcile_thread.join()
 
 
 def _app_state_default(app: "FastAPI", name: str, factory):
@@ -1442,6 +1453,9 @@ def start_server(
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
+    # launcher's preselected profile instead of silently running in the launch scope (#73085).
+    app.state.initial_profile = str(initial_profile or "")
 
     config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
 
@@ -1621,7 +1635,6 @@ _PLUGIN_COMPAT_LAZY = {
     'apply_whatsapp_onboarding': ('hermes_cli.web_routers.messaging', 'apply_whatsapp_onboarding'),
     'approve_pairing': ('hermes_cli.web_routers.ops', 'approve_pairing'),
     'auth_mcp_server': ('hermes_cli.web_routers.mcp', 'auth_mcp_server'),
-    'build_cron_model_impact': ('hermes_cli.config', 'build_cron_model_impact'),
     'bulk_delete_sessions_endpoint': ('hermes_cli.web_routers.sessions', 'bulk_delete_sessions_endpoint'),
     'cancel_oauth_session': ('hermes_cli.web_routers.oauth', 'cancel_oauth_session'),
     'cancel_telegram_onboarding': ('hermes_cli.web_routers.messaging', 'cancel_telegram_onboarding'),
@@ -1810,7 +1823,6 @@ _PLUGIN_COMPAT_LAZY = {
     'replace_mcp_servers': ('hermes_cli.web_routers.mcp', 'replace_mcp_servers'),
     'rescan_dashboard_plugins': ('hermes_cli.web_routers.dashboard_ui', 'rescan_dashboard_plugins'),
     'reset_memory': ('hermes_cli.web_routers.ops', 'reset_memory'),
-    'resolve_cron_model_drift_defaults': ('hermes_cli.config', 'resolve_cron_model_drift_defaults'),
     'resolve_gateway_liveness': ('gateway.status', 'resolve_gateway_liveness'),
     'restart_gateway': ('hermes_cli.web_routers.actions', 'restart_gateway'),
     'resume_cron_job': ('hermes_cli.web_routers.cron', 'resume_cron_job'),

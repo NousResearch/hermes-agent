@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 POLL_LIMIT = 100
 POLL_ERROR_BACKOFF_SECONDS = 5
+POLL_INTERVAL_SECONDS = 1  # conservative default; no documented Rubika rate limit to tune against yet
 
 
 def _token(extra: Optional[dict]) -> str:
@@ -76,6 +77,7 @@ class RubikaAdapter(BasePlatformAdapter):
             next_offset = result.get("next_offset_id")
             if next_offset:
                 self._offset_id = next_offset
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
     def _is_user_allowed(self, sender_id: str) -> bool:
         if not self._allowed_users or "*" in self._allowed_users:

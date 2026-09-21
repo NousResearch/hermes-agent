@@ -3466,30 +3466,54 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
     @classmethod
     def _sample_summary_input(cls, content: str) -> str:
-        """Cap summarizer input by EVEN SAMPLING across the whole region (lean mode).
-        The single request also produces the session log, so coverage must be uniform: head+tail
-        truncation would hide the entire middle from it."""
+        """Sample complete serialized records while retaining the character bound."""
         if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
             return content
-        n = max(2, cls._SAMPLED_INPUT_SLICES)
+
+        records = content.split("\n\n")
+        separator = "\n\n"
         marker_template = "\n\n...[{elided:,} chars elided — recover via session_search]...\n\n"
-        marker_reserve = len(marker_template.format(elided=len(content))) * (n - 1)
-        budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_reserve, n)
-        slice_len = budget // n
-        stride = len(content) / n
+        marker_len = len(marker_template.format(elided=len(content)))
+        budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_len * (cls._SAMPLED_INPUT_SLICES - 1), 1)
+        target = max(1, budget // cls._SAMPLED_INPUT_SLICES)
+        starts = [round(i * len(records) / cls._SAMPLED_INPUT_SLICES) for i in range(cls._SAMPLED_INPUT_SLICES)]
+        selected: list[tuple[int, int]] = []
+        for index, start in enumerate(starts):
+            end = start
+            size = 0
+            while end < len(records) and (size == 0 or size + len(records[end]) + len(separator) <= target):
+                size += len(records[end]) + (len(separator) if end > start else 0)
+                end += 1
+            if index == len(starts) - 1:
+                start = max(0, len(records) - 1)
+                end = len(records)
+            selected.append((start, end))
+
         parts: list[str] = []
-        prev_end = 0
-        for i in range(n):
-            start = int(i * stride)
-            if i == n - 1:
-                # Last slice anchors to the END: newest turns carry the most state.
-                start = max(start, len(content) - slice_len)
-            end = min(start + slice_len, len(content))
-            if start > prev_end:
-                parts.append(marker_template.format(elided=start - prev_end))
-            parts.append(content[start:end])
-            prev_end = end
-        return "".join(parts)
+        cursor = 0
+        for start, end in selected:
+            if start > cursor:
+                parts.append(marker_template.format(elided=sum(map(len, records[cursor:start])) + len(separator) * (start - cursor)))
+            parts.append(separator.join(records[start:end]))
+            cursor = end
+        if cursor < len(records):
+            parts.append(marker_template.format(elided=sum(map(len, records[cursor:])) + len(separator) * (len(records) - cursor - 1)))
+        result = "".join(parts)
+        if len(result) <= cls._SUMMARY_INPUT_MAX_CHARS:
+            return result
+        # Marker width varies with the omitted count; trim only at record boundaries.
+        while len(result) > cls._SUMMARY_INPUT_MAX_CHARS and selected:
+            index = max(range(len(selected)), key=lambda i: selected[i][1] - selected[i][0])
+            start, end = selected[index]
+            if end - start > 1:
+                selected[index] = (start, end - 1)
+            else:
+                selected.pop(index)
+            parts = [separator.join(records[a:b]) for a, b in selected]
+            result = marker_template.format(
+                elided=max(0, len(content) - sum(len(p) for p in parts))
+            ).join(parts)
+        return result
 
     def _fallback_to_main_for_compression(
         self, e: Exception, reason: str, failed_model: Optional[str] = None

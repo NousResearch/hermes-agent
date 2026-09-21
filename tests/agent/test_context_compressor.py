@@ -3315,6 +3315,23 @@ class TestDoubleCompactionSummaryRole:
 
 class TestSummaryPromptBounding:
 
+    def test_lean_sampling_keeps_record_boundaries(self):
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        records = [f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(1200)]
+        sampled = ContextCompressor._sample_summary_input("\n\n".join(records))
+        assert len(sampled) <= cap
+        for record in sampled.split("\n\n"):
+            if record.startswith("["):
+                assert record.endswith("x" * 1200)
+
+    def test_lean_sampling_covers_multiple_regions(self):
+        records = [f"[USER]: record-{i:04d} " + ("x" * 40) for i in range(8000)]
+        sampled = ContextCompressor._sample_summary_input("\n\n".join(records))
+        assert "record-0000" in sampled
+        assert "record-4000" in sampled
+        assert "record-7999" in sampled
+
+
 
 
 

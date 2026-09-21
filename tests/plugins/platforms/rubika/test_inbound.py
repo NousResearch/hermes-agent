@@ -1,4 +1,4 @@
-from plugins.platforms.rubika.inbound import parse_update, ParsedMessage
+from plugins.platforms.rubika.inbound import parse_update, parse_inline_message, ParsedMessage
 
 
 def test_parse_update_text_message():
@@ -30,3 +30,17 @@ def test_parse_update_group_chat_type():
     parsed = parse_update(raw)
     assert parsed.is_group is True
     assert parsed.reply_to_message_id == "m0"
+
+
+def test_parse_inline_message_button_press():
+    raw = {
+        "chat_id": "c123", "message_id": "m5", "sender_id": "u1",
+        "aux_data": {"button_id": "confirm_yes"},
+    }
+    parsed = parse_inline_message(raw)
+    assert parsed.chat_id == "c123"
+    assert parsed.sender_id == "u1"
+    assert parsed.message_id == "m5"
+    assert parsed.text == "confirm_yes"
+    assert parsed.aux_data == {"button_id": "confirm_yes"}
+    assert parsed.is_group is False

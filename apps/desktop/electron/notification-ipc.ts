@@ -9,13 +9,18 @@ import type { HermesNotification } from './notification-types'
 interface NotificationHost {
   getMainWindow: () => BrowserWindow | null
   focusWindow: (window: BrowserWindow) => void
+  platform?: NodeJS.Platform
 }
 
-export function registerNativeNotifications({ getMainWindow, focusWindow }: NotificationHost): void {
+export function registerNativeNotifications({
+  getMainWindow,
+  focusWindow,
+  platform = process.platform
+}: NotificationHost): void {
   const dedupeIntervalMs = 1000
   const isDuplicateNotification = createEventDeduper(dedupeIntervalMs)
   const deliveries = new Map<string, Promise<boolean>>()
-  const linux = process.platform === 'linux' ? createLinuxNotifications() : undefined
+  const linux = platform === 'linux' ? createLinuxNotifications() : undefined
   const notifications = createNotificationRegistry({ releaseOnClose: Boolean(linux) })
 
   ipcMain.handle('hermes:notify', async (event, payload: HermesNotification) => {

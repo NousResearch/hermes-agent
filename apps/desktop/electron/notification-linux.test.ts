@@ -135,7 +135,7 @@ function setup(alreadyRunning = false) {
   const source = { isDestroyed: vi.fn(() => false), webContents: { send: vi.fn() } }
   host.fromWebContents.mockReturnValue(source)
   const focusWindow = vi.fn()
-  registerNativeNotifications({ getMainWindow: () => primary as unknown as BrowserWindow, focusWindow })
+  registerNativeNotifications({ getMainWindow: () => primary as unknown as BrowserWindow, focusWindow, platform: 'linux' })
 
   const notify = (payload: HermesNotification) =>
     Promise.resolve(
@@ -187,7 +187,7 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-it.skipIf(process.platform !== 'linux')(
+it(
   'bounds failed delivery without dropping older callbacks, and retries only on a later request',
   async () => {
     const unavailable = setup()
@@ -245,7 +245,7 @@ it.skipIf(process.platform !== 'linux')(
   }
 )
 
-it.skipIf(process.platform !== 'linux')(
+it(
   'releases naturally closed notifications while retaining other click targets',
   async () => {
     const h = setup(true)
@@ -270,7 +270,7 @@ it.skipIf(process.platform !== 'linux')(
   }
 )
 
-it.skipIf(process.platform !== 'linux')(
+it(
   'preserves activation, dedupe and source ownership while fencing daemon ID reuse',
   async () => {
     const race = setup(true)

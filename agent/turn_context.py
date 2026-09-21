@@ -503,6 +503,11 @@ def _refresh_mcp_tools_between_turns(agent: Any) -> None:
     call assembles ``tools=``. ``preserve_prefix`` keeps the tool array append-only so a
     flapping ``check_fn`` can't fork the cache."""
     try:
+        # An authorization that committed after its connection card closed: same import-cost gate,
+        # the module is loaded only in a process that ran a connection operation.
+        if "tools.connectors.mcp" in sys.modules:
+            from tools.connectors.mcp import adopt_late_connections
+            adopt_late_connections(agent)
         # Import-cost gate: MCP tools are only registered by code that already imported
         # ``tools.mcp_tool`` (~0.4s); not in sys.modules => nothing to do.
         if not getattr(agent, "_skip_mcp_refresh", False) and "tools.mcp_tool" in sys.modules:

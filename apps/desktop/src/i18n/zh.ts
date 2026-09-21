@@ -20,7 +20,6 @@ export const zh = defineLocale({
     notConnected: '未连接',
     timeout: '仍在等待授权。',
     refresh: '刷新状态',
-    statusError: '无法检查连接，请刷新重试。',
     connectError: '无法开始授权，请重试。',
     connectErrorFor: app => `无法为 ${app} 开始授权。`,
     unavailable: '此会话暂时无法使用连接器。',
@@ -28,7 +27,12 @@ export const zh = defineLocale({
     search: '查找应用',
     empty: '没有匹配的应用',
     disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
-    execution: '连接器工具'
+    execution: '连接器工具',
+    setup: server => `设置 ${server}`,
+    openInBrowser: '在浏览器中打开',
+    setupCancel: '取消',
+    authorizedToolsUnavailable: '已授权。工具不可用。',
+    required: '必填'
   },
 
   sessionImport: {
@@ -4230,7 +4234,6 @@ export const zh = defineLocale({
       authorized: server => `已授权 ${server}`,
       failed: server => `${server} 设置失败`,
       toolCount: count => `${count} 个工具`,
-      notInCatalog: server => `“${server}”不在 MCP 目录中`,
       envRequired: '请先填写所需凭据',
       sendFailed: '无法发送 MCP 设置响应',
       reloadFailed: '服务器已保存，但重新加载 MCP 工具失败 — 将在下个会话加载',

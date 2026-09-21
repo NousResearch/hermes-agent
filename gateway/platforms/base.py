@@ -3991,6 +3991,21 @@ class BasePlatformAdapter(ABC):
             merge_pending_message_event(self._pending_messages, session_key, event)
             event._gateway_accepted = True
             return
+        # --- Staging Queue intercept (Phase 1: Telegram lane) ---
+        # When HERMES_STAGING_QUEUE=1, persist to message_stage_queue instead of
+        # in-memory _pending_messages. Bypass commands and clarify still go inline.
+        if os.getenv("HERMES_STAGING_QUEUE", "").lower() in ("1", "true", "yes"):
+            try:
+                from gateway.stage_queue import enqueue_from_event
+                staged = await enqueue_from_event(self, event, session_key)
+                if staged:
+                    event._gateway_accepted = True
+                    return
+                # staging failed — fall through to default merge
+                logger.warning("[%s] Staging queue enqueue failed, falling back to _pending_messages",
+                               self.name)
+            except Exception as e:
+                logger.error("[%s] Staging queue error, falling back: %s", self.name, e)
         if self._is_queue_text_debounce_candidate(event):
             logger.debug("[%s] New text message while session %s is active — "
                          "debouncing follow-up (busy_text_mode=queue, window=%.2fs)", self.name,

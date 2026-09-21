@@ -7042,6 +7042,63 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             await self._set_reaction(chat_id, message_id, "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e")
 
+        # --- Staging Queue drain (Phase 1: Telegram lane) ---
+        if os.getenv("HERMES_STAGING_QUEUE", "").lower() in ("1", "true", "yes"):
+            try:
+                from gateway.stage_queue import (
+                    drain_next, mark_done, mark_dead, bump_attempt, mark_restaged,
+                    set_released_reaction, check_alarm, clear_reaction,
+                )
+                session_key = self._event_session_key(event)
+
+                alarm_msg = await check_alarm(session_key)
+                if alarm_msg:
+                    logger.warning("[stage-queue] %s", alarm_msg)
+                    # JC NO-PAGE LAW: alarm goes to bus (archie lane), never to JC directly
+
+                staged = await drain_next(session_key)
+                if staged:
+                    msg_id = staged["id"]
+                    try:
+                        reconstructed = self._reconstruct_staged_event(staged)
+                    except Exception as e:
+                        logger.error("[stage-queue] reconstruct failed id=%s: %s", msg_id, e)
+                        attempts = await bump_attempt(msg_id)
+                        if attempts >= 3:
+                            await mark_dead(msg_id, f"reconstruct failed: {e}")
+                        return
+
+                    await set_released_reaction(self, staged.get("chat_id", ""), staged.get("message_id", ""))
+
+                    if session_key not in self._active_sessions:
+                        accepted = self._start_session_processing(reconstructed, session_key)
+                        if not accepted:
+                            logger.warning("[stage-queue] session start rejected id=%s, re-staging", msg_id)
+                            await mark_restaged(msg_id)
+                    else:
+                        logger.warning("[stage-queue] session still active after completion, re-staging id=%s", msg_id)
+                        await mark_restaged(msg_id)
+            except Exception as e:
+                logger.error("[stage-queue] drain hook error: %s", e, exc_info=True)
+
+    def _reconstruct_staged_event(self, staged_row: dict) -> "MessageEvent":
+        """Reconstruct a MessageEvent from a staged queue row."""
+        from gateway.platforms.base import MessageSource, MessageEvent
+        event_data = staged_row.get("event", {})
+        source = MessageSource(
+            platform=event_data.get("source_platform", "telegram"),
+            chat_id=event_data.get("source_chat_id", staged_row.get("chat_id", "")),
+            chat_type=event_data.get("source_chat_type", "dm"),
+            user_id=event_data.get("source_user_id", staged_row.get("sender_id", "")),
+            user_name=event_data.get("source_user_name", staged_row.get("sender_name", "")),
+        )
+        return MessageEvent(
+            source=source,
+            text=event_data.get("text", ""),
+            message_id=staged_row.get("message_id", ""),
+            metadata=event_data.get("metadata"),
+        )
+
 
 # -- Plugin registration glue: register(ctx) plus the hook implementations (adapter factory, YAML→env/extra
 # config, setup wizard, standalone sender).

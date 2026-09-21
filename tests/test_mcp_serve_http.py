@@ -74,7 +74,19 @@ def test_wildcard_http_bind_requires_client_reachable_public_url(monkeypatch, ca
     assert "wildcard MCP HTTP binds require --public-url" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("path", ["mcp", "/m cp", "/mcp?x=1", "/mcp#part", "/mcp/{id}"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "mcp",
+        "/m cp",
+        "/mcp?x=1",
+        "/mcp#part",
+        "/mcp/{id}",
+        "/mcp%20x",
+        "/mcp%3Fx",
+        "/mcp%2Fchild",
+    ],
+)
 def test_http_rejects_unusable_route_path_before_starting_bridge(
     monkeypatch, capsys, path,
 ):

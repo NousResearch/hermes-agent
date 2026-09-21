@@ -767,7 +767,7 @@ def _valid_http_path(value: str) -> bool:
     return (
         value.startswith("/")
         and not any(character.isspace() for character in value)
-        and not any(character in value for character in "?#{}")
+        and not any(character in value for character in "%?#{}")
     )
 
 
@@ -793,7 +793,7 @@ def run_mcp_server(
     if not _valid_http_path(path):
         print(
             "Error: MCP HTTP path must be an absolute literal path without "
-            "whitespace, query, fragment, or route parameters",
+            "whitespace, percent escapes, query, fragment, or route parameters",
             file=sys.stderr,
         )
         sys.exit(2)

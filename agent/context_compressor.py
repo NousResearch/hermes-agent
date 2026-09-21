@@ -1478,6 +1478,43 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     return out if len(out) < len(args) else args
 
 
+# #83714 follow-up: the marker redesign made copies visibly wrong, but models still replay a
+# compressed leaf verbatim as a NEW tool call (observed live: an ipmitool power-cycle command
+# re-issued as its own 200-char stub — the apostrophe inside the marker accidentally balanced
+# the shell quoting and the head RAN against real hardware while the dropped 428 chars never
+# did). Detection keys on prefix + counts + the fixed first sentence, so a leaf that merely
+# QUOTES the prefix (grep pattern, test fixture, patching the compressor itself) never matches.
+_COMPRESSION_MARKER_COPY_RE = re.compile(
+    re.escape(_COMPRESSION_MARKER_PREFIX)
+    + r"\s*[\d,]+\s+of\s+[\d,]+\s+chars omitted here by Hermes's context compressor\."
+)
+
+
+def contains_compression_marker_copy(text: Any) -> bool:
+    """True when a string carries a FULL compression-marker instance — a verbatim or
+    near-verbatim copy of a compressed leaf, never legitimate fresh content."""
+    return isinstance(text, str) and _COMPRESSION_MARKER_COPY_RE.search(text) is not None
+
+
+def json_args_contain_compression_marker_copy(args: Any) -> bool:
+    """True when any string leaf of a tool-call arguments payload (JSON text or parsed
+    object) carries a copied compression marker. Parses first so wire-escaped forms
+    (``\\u27ea``) are seen as the characters they decode to; unparseable text is scanned
+    raw rather than waved through."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (ValueError, TypeError):
+            return contains_compression_marker_copy(args)
+    if isinstance(args, str):
+        return contains_compression_marker_copy(args)
+    if isinstance(args, dict):
+        return any(json_args_contain_compression_marker_copy(v) for v in args.values())
+    if isinstance(args, list):
+        return any(json_args_contain_compression_marker_copy(v) for v in args)
+    return False
+
+
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 

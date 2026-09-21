@@ -20,6 +20,18 @@ from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
 
+# Deliberately does NOT quote the marker text itself (#47967 anti-priming: an error message
+# containing the literal teaches the exact string to copy).
+_COMPRESSION_COPY_ERROR = (
+    "Error: this tool call was REFUSED without executing because its arguments contain a copy "
+    "of Hermes's context-compression placeholder — the marker that replaces truncated content "
+    "in replayed conversation history. What you copied is a short stub of the original content, "
+    "not the content itself: executing it would run only the head of the intended operation and "
+    "silently drop the rest. Do not re-issue this call from the truncated copy. Reconstruct the "
+    "FULL content from its primary source (re-read the file from disk, regenerate the script, or "
+    "rewrite the command in full) and issue a fresh call with complete, untruncated arguments."
+)
+
 
 @dataclass
 class ToolValidationVerdict:
@@ -212,4 +224,34 @@ def validate_tool_calls(
 
     # Reset retry counter on successful JSON validation
     agent._invalid_json_retries = 0
+
+    # #83714 imitation gate: args replaying a compression marker are a verbatim copy of a
+    # TRUNCATED history leaf — executing one runs the 200-char head of the intended operation
+    # and silently drops the rest (observed live against real hardware). Refuse the batch with
+    # recovery tool results BEFORE dispatch, so nothing executes and no progress bubble renders
+    # the copy to the user. Recovery results (not silent API retries): regenerating from the
+    # same replayed history would just reproduce the copy.
+    from agent.context_compressor import json_args_contain_compression_marker_copy
+
+    copied_calls = [
+        tc for tc in tool_calls
+        if json_args_contain_compression_marker_copy(tc.function.arguments)
+    ]
+    if copied_calls:
+        agent._buffer_vprint(
+            f"⚠️  Refusing {len(copied_calls)} tool call(s) carrying copied context-compression "
+            "markers — injecting recovery results"
+        )
+        append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
+        _copied_ids = {id(tc) for tc in copied_calls}
+        _append_tool_error_results(
+            messages, tool_calls,
+            lambda tc: (
+                _COMPRESSION_COPY_ERROR
+                if id(tc) in _copied_ids
+                else "Skipped: another tool call in this turn replayed truncated context. Please retry this tool call."
+            ),
+        )
+        return _verdict("continue")
+
     return _verdict("ok")

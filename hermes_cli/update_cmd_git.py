@@ -320,6 +320,16 @@ def _has_http_code(stderr: str, *codes: str) -> bool:
     return any(f"HTTP {code}" in stderr or f"returned error: {code}" in stderr for code in codes)
 
 
+def _is_local_git_permission_failure(stderr: str) -> bool:
+    """Return whether git failed while writing local repository state."""
+    lowered = stderr.lower()
+    return (
+        "insufficient permission for adding an object" in lowered
+        or ("permission denied" in lowered and "unable to append to '.git/" in lowered)
+        or ("permission denied" in lowered and "cannot update the ref" in lowered)
+    )
+
+
 # Ordered (predicate, diagnosis): curl reports HTTP errors as ``unable to access '<url>': ... error: 429``,
 # so rate-limit/outage checks must run BEFORE the generic "unable to access" check. An anonymous fetch
 # answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private
@@ -337,20 +347,36 @@ _FETCH_FAILURE_RULES = (
      " `git remote -v` points at a public repo."),
     (lambda s: "Authentication failed" in s,
      "✗ Authentication failed — check your git credentials or SSH key."),
+    (_is_local_git_permission_failure,
+     "✗ Local Hermes checkout is not writable — check repository ownership/permissions and retry."),
 )
 
 
 def _classify_fetch_failure(stderr: str) -> str:
-    """Map git-fetch stderr to a one-line diagnosis (caller also prints the raw first line)."""
+    """Map git-fetch stderr to a one-line diagnosis."""
     return next((message for matches, message in _FETCH_FAILURE_RULES if matches(stderr)), "✗ Failed to fetch updates from origin.")
 
 
+def _fetch_failure_detail_line(stderr: str) -> str:
+    """Return the stderr line that best explains a fetch failure."""
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    if _is_local_git_permission_failure(stderr):
+        for line in lines:
+            lowered = line.lower()
+            if "permission denied" in lowered or "insufficient permission" in lowered:
+                return line
+    return lines[0]
+
+
 def _print_fetch_failure(stderr: str) -> None:
-    """Print the classified diagnosis plus the first raw stderr line."""
+    """Print the classified diagnosis plus the most useful raw stderr line."""
     stderr = (stderr or "").strip()
     print(_classify_fetch_failure(stderr))
-    if stderr:
-        print(f"  {stderr.splitlines()[0]}")
+    detail = _fetch_failure_detail_line(stderr)
+    if detail:
+        print(f"  {detail}")
 
 
 def _probe_fork_bomb(argv: list) -> Optional[bool]:

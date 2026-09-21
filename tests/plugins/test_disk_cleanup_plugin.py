@@ -556,3 +556,36 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins
+
+
+class TestLongPathResilience:
+    """``post_tool_call`` promises best-effort/never-raises for ANY tool args.
+
+    A path component longer than the OS name limit (255 bytes on APFS/ext4)
+    makes ``Path.exists()`` raise ``OSError`` errno 63 (ENAMETOOLONG) — a
+    model echoing a truncated/echoed path into ``write_file`` args must not
+    crash the hook.
+    """
+
+    def test_post_tool_call_oversized_path_does_not_raise(self, _isolate_env):
+        pi = _load_plugin_init()
+        oversized = str(_isolate_env / ("x" * 300 + ".py"))
+        # Must not raise, despite Path.exists() raising ENAMETOOLONG on it.
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": oversized, "content": "x"},
+            result="OK",
+            task_id="t_long", session_id="s_long",
+        )
+        # Nothing tracked either — the file cannot exist.
+        assert "t_long" not in pi._recent_test_tracks
+
+    def test_terminal_oversized_path_in_output_does_not_raise(self, _isolate_env):
+        pi = _load_plugin_init()
+        pi._on_post_tool_call(
+            tool_name="terminal",
+            args={"command": "cat /tmp/x"},
+            result=str(_isolate_env / ("y" * 300)),
+            task_id="t_long2", session_id="s_long2",
+        )
+        assert "t_long2" not in pi._recent_test_tracks

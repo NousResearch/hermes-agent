@@ -1753,6 +1753,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return
             client = self._client
             if not self._running or client is None or self._disconnecting:
+                # The probe must never disappear silently (#118487): an exit here leaves the
+                # gateway alive with no watchdog, so say why before going away.
+                logger.info(
+                    "[%s] Discord liveness probe exiting (running=%s, client=%s, disconnecting=%s)",
+                    self.name, self._running, client is not None, self._disconnecting,
+                )
                 return
             try:
                 healthy, reason = self._read_websocket_health(client)
@@ -1761,6 +1767,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 healthy = False
                 reason = "health_check_error"
             if healthy:
+                if failures:
+                    # discord.py swaps in a fresh socket while resuming, so a transport-side
+                    # sample can read healthy again while events never resumed (#118487) —
+                    # logging the reset keeps that distinguishable from a dead probe task.
+                    logger.info(
+                        "[%s] Discord Gateway WebSocket healthy again after %d unhealthy sample(s)",
+                        self.name, failures,
+                    )
                 failures = 0
                 continue
             failures += 1
@@ -1768,13 +1782,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "[%s] Discord Gateway WebSocket unhealthy (%s, %d/%d)", self.name, reason, failures,
                 threshold,
             )
-            if failures < threshold:
+            # A closed transport (``socket_closed``) is a confirmed death, not a suspicion:
+            # the resume path replaces the socket, the next sample reads healthy, and this
+            # counter silently resets — while a resumed-but-deaf session stays event-starved
+            # until the multi-hour event-silence default elapses (#118487). Escalate the
+            # first ``socket_closed`` strike; soft signals (ack staleness, latency, silence)
+            # keep the confirmation threshold.
+            if failures < threshold and reason != "socket_closed":
                 continue
             # Mark recovery before closing: Bot.start()'s done callback must not overwrite this reason.
             self._disconnecting = True
             logger.error(
-                "[%s] Discord Gateway WebSocket remained unhealthy (%s); forcing reconnect",
-                self.name, reason,
+                "[%s] Discord Gateway WebSocket %s (%s, %d/%d); forcing reconnect",
+                self.name,
+                "transport closed" if reason == "socket_closed" else "remained unhealthy",
+                reason, failures, threshold,
             )
             self._set_fatal_error(
                 "discord_websocket_health_stale",

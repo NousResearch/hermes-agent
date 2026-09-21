@@ -16,18 +16,24 @@ logger = logging.getLogger("run_agent")
 class StatusOutputMixin:
     """Status/warning/notice emission and retry-chatter buffering (see module docstring)."""
 
-    def _safe_print(self, *args, **kwargs):
+    def _safe_print(self, *args, diagnostic: bool = False, **kwargs):
         """Print that swallows broken pipes / closed stdout (headless stdout can vanish mid-session);
         routes through ``self._print_fn`` so the CLI can inject an ANSI-aware renderer."""
+        if getattr(self, "_mute_notification_reply", False):
+            return
+        if diagnostic and not self._warning_presentation_enabled():
+            return
         try:
             (self._print_fn or print)(*args, **kwargs)
         except (OSError, ValueError):
             pass
 
-    def _vprint(self, *args, force: bool = False, **kwargs):
+    def _vprint(self, *args, force: bool = False, diagnostic: bool = False, **kwargs):
         """Verbose print — suppressed while tokens are streaming (allowed during tool execution) and after
         the main response; ``force=True`` bypasses both. ``suppress_status_output`` (``hermes chat -q``) wins."""
         if getattr(self, "suppress_status_output", False):
+            return
+        if diagnostic and not self._warning_presentation_enabled():
             return
         if force or not (getattr(self, "_mute_post_response", False) or (self._has_stream_consumers() and not self._executing_tools)):
             self._safe_print(*args, **kwargs)
@@ -66,11 +72,29 @@ class StatusOutputMixin:
 
     def _emit_status_kind(self, kind: str, message: str, *, origin: str) -> None:
         """Print to the CLI (``_vprint(force=True)``) and forward to ``status_callback(kind, message)``. Never raises."""
+        from gateway.warning_notifications import is_warning_status
         try:
-            self._vprint(f"{self.log_prefix}{message}", force=True)
+            if not is_warning_status(kind, message) or self._warning_presentation_enabled():
+                self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
             pass
         self._call_callback("status_callback", kind, message, origin=origin)
+
+    def _warning_presentation_enabled(self) -> bool:
+        from gateway.warning_notifications import warning_notifications_enabled
+        try:
+            return warning_notifications_enabled(
+                getattr(self, "_notification_platform", getattr(self, "platform", "cli")),
+                getattr(self, "_notification_config", None),
+            )
+        except Exception:
+            # A presentation preference must never turn a recoverable notice into a failed turn.
+            return True
+
+    def _emit_diagnostic_status(self, message: str) -> None:
+        """A diagnostic on the lifecycle rail, without changing legacy formatting."""
+        from gateway.warning_notifications import DiagnosticText
+        self._emit_status(DiagnosticText(message))
 
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message (CLI + gateway ``status_callback``)."""
@@ -132,6 +156,10 @@ class StatusOutputMixin:
         self._touch_activity(text)
         self._call_callback("thinking_callback", text, origin="_emit_wait_notice")
 
+    def _emit_diagnostic_wait(self, text: str) -> None:
+        from gateway.warning_notifications import DiagnosticText
+        self._emit_wait_notice(DiagnosticText(text))
+
     # ── Buffered retry/fallback status: shown only when every retry/fallback is exhausted, dropped on
     # success. Backend logs are unaffected (every site still logs). ──
 
@@ -148,6 +176,10 @@ class StatusOutputMixin:
 
     def _buffer_status(self, message: str) -> None:
         self._buffer_retry_message("status", message)
+
+    def _buffer_diagnostic_status(self, message: str) -> None:
+        from gateway.warning_notifications import DiagnosticText
+        self._buffer_status(DiagnosticText(message))
 
     def _buffer_vprint(self, message: str) -> None:
         self._buffer_retry_message("vprint", message)
@@ -169,7 +201,7 @@ class StatusOutputMixin:
         self._pending_fallback_notice = None
         for item in notice if isinstance(notice, list) else [notice]:
             try:
-                self._emit_status(str(item))
+                self._emit_diagnostic_status(item)
             except Exception:
                 # One surface failure must not hide later switches from the same chain.
                 continue
@@ -190,6 +222,7 @@ class StatusOutputMixin:
                 if kind in replay:
                     replay[kind](msg)
                 else:
-                    self._vprint(f"{self.log_prefix}{msg}", force=True)
+                    if self._warning_presentation_enabled():
+                        self._vprint(f"{self.log_prefix}{msg}", force=True)
             except Exception:
                 pass

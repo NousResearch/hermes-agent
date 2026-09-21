@@ -32,10 +32,16 @@ export interface AgentPluginRow {
   installed_sha?: string
   /** Current catalog pin for this entry (backend-computed). */
   catalog_sha?: string
+  /** Human label the catalog attaches to that pin ("1.4.0"); shown on the Update button when present. */
+  catalog_version?: string | null
   /** Installed SHA differs from the catalog pin — an update is available. */
   update_available?: boolean
   /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
   pinned_sha?: string
+  /** The package folder also ships `desktop/plugin.js` (unified agent+desktop package). */
+  has_desktop_half?: boolean
+  /** Absolute install dir on the backend (informational). */
+  install_dir?: string
 }
 
 /** A `--ref` pin is a full 40-hex commit SHA; branches and tags are refused server-side. */
@@ -266,6 +272,37 @@ export async function updateAgentPlugin(
     await loadAgentPlugins(request, profile)
 
     return !result.unchanged
+  } catch (e) {
+    notifyError(e, failMessage)
+
+    return false
+  } finally {
+    $agentPluginBusy.set(null)
+  }
+}
+
+/** Uninstall a user-installed agent plugin (backend `plugins.manage remove`;
+ *  deletes `<HERMES_HOME>/plugins/<name>` and its install metadata). Drops the
+ *  row locally on success — callers rescan so a unified package's desktop half
+ *  is pruned too. Returns whether the plugin was removed. */
+export async function removeAgentPlugin(
+  request: GatewayRequest,
+  name: string,
+  failMessage: string,
+  profile?: string | null
+): Promise<boolean> {
+  $agentPluginBusy.set(name)
+
+  try {
+    const result = await request<{ ok?: boolean }>('plugins.manage', withProfile({ action: 'remove', name }, profile))
+
+    if (!result?.ok) {
+      throw new Error(failMessage)
+    }
+
+    $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+
+    return true
   } catch (e) {
     notifyError(e, failMessage)
 

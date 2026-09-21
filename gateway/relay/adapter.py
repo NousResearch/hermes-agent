@@ -22,8 +22,9 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
@@ -94,6 +95,17 @@ def _event_ids(event) -> Tuple[Optional[str], Optional[str]]:
     return message_id, getattr(event.source, "chat_id", None)
 
 
+def _profile_from_session_key(session_key: str) -> Optional[str]:
+    """Named profile encoded in an ``agent:<ns>:...`` session key; None for the legacy ``agent:main``
+    namespace (single-profile gateway) so the wire frame stays byte-identical there."""
+    parts = (session_key or "").split(":")
+    if len(parts) < 2 or parts[0] != "agent" or not parts[1]:
+        return None
+    from gateway.session import profile_from_session_key_namespace
+    profile = profile_from_session_key_namespace(parts[1])
+    return None if profile == "default" else profile
+
+
 class RelayAdapter(BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
@@ -124,6 +136,10 @@ class RelayAdapter(BasePlatformAdapter):
         # platforms on one WS and a reply must egress through the platform the
         # inbound came from. Empty for a single-platform gateway (connector default).
         self._platform_by_chat: Dict[str, str] = {}
+        # chat_id -> Hermes profile the connector routed the inbound to (multiplex mode). Echoed
+        # on every outbound frame's metadata so the connector can stamp the SAME profile on the
+        # next passthrough_forward for that chat; empty on a single-profile gateway.
+        self._profile_by_chat: Dict[str, str] = {}
         # Chats the connector has refused (see the terminal-decline latch).
         # chat_id -> (thread_id, initial_name) of the auto-thread the CONNECTOR
         # created for our latest send; read by the semantic thread-rename lane.
@@ -211,6 +227,11 @@ class RelayAdapter(BasePlatformAdapter):
     def _chat_platform(self, chat_id: str) -> Optional[str]:
         """The chat's underlying platform as seen inbound, else the primary's."""
         return self._platform_by_chat.get(str(chat_id)) or self.descriptor.platform
+
+    def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
+        platform = (logical_platform or (metadata or {}).get("_relay_logical_platform")
+                    or self._chat_platform(chat_id))
+        return super().warning_notifications_enabled(platform)
 
     def _descriptor_for_chat(self, chat_id: str) -> CapabilityDescriptor:
         """The descriptor governing a specific chat. Platform caps genuinely differ
@@ -659,6 +680,30 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=f"{op} transport error: {e}")
 
+    @staticmethod
+    def _task_card_metadata(
+        reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        merged_meta = dict(metadata or {})
+        if reply_to and "thread_ts" not in merged_meta:
+            # Slack card streams are thread replies anchored on the trigger.
+            merged_meta["thread_ts"] = str(reply_to)
+        return merged_meta
+
+    def native_task_card_destination_supported(
+        self, chat_id: str, *, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Check the actual card-frame placement, not its per-turn card identity."""
+        if self._chat_platform(chat_id) != _SLACK:
+            return True
+        md = self._task_card_metadata(reply_to, metadata)
+        # Connector threadTs(): thread_id ?? thread_ts, and only strings thread.
+        thread = md.get("thread_id")
+        if thread is None:
+            thread = md.get("thread_ts")
+        return isinstance(thread, str)
+
     async def send_native_task_card_progress(
         self,
         chat_id: str,
@@ -678,10 +723,7 @@ class RelayAdapter(BasePlatformAdapter):
 
         See #85476.
         """
-        merged_meta = dict(metadata or {})
-        if reply_to and "thread_ts" not in merged_meta:
-            # Slack card streams are thread replies anchored on the trigger.
-            merged_meta["thread_ts"] = str(reply_to)
+        merged_meta = self._task_card_metadata(reply_to, metadata)
         result = await self._card_frame(
             chat_id, "task_card", reply_to, merged_meta, chunks=[dict(t) for t in tasks]
         )
@@ -1015,6 +1057,7 @@ class RelayAdapter(BasePlatformAdapter):
             for attr, cache in (
                 ("user_id", self._dm_user_by_chat), ("scope_id", self._scope_by_chat),
                 ("chat_type", self._chat_type_by_chat),
+                ("profile", self.__dict__.setdefault("_profile_by_chat", {})),
             ):
                 value = getattr(src, attr, None)
                 if value:
@@ -1032,7 +1075,11 @@ class RelayAdapter(BasePlatformAdapter):
         first and only falls back to user_id on a route miss, so carrying both never
         overrides routing-table resolution."""
         meta: Dict[str, Any] = dict(metadata or {})
-        for key, cache in (("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat)):
+        # ``getattr``: relay tests build bare adapters via ``__new__`` without ``__init__``.
+        for key, cache in (
+            ("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat),
+            ("profile", getattr(self, "_profile_by_chat", {})),
+        ):
             if not meta.get(key):
                 value = cache.get(str(chat_id))
                 if value:
@@ -1671,13 +1718,20 @@ class RelayAdapter(BasePlatformAdapter):
         # default routes it.
         prefix = kind.split(".", 1)[0] if kind and "." in kind else None
         follow_up_platform = prefix if prefix and self.fronts_platform(prefix) else None
+        follow_up_metadata = dict(metadata or {})
+        # The session key names the profile namespace the interaction ran under; carry it so the
+        # connector's next passthrough_forward for this interaction routes to the same profile.
+        if not follow_up_metadata.get("profile"):
+            profile = _profile_from_session_key(session_key)
+            if profile:
+                follow_up_metadata["profile"] = profile
         result = await self._transport.send_follow_up(
             {
                 "op": "follow_up",
                 "session_key": session_key,
                 "kind": kind,
                 "content": content,
-                "metadata": metadata or {},
+                "metadata": follow_up_metadata,
             },
             platform=follow_up_platform,
         )
@@ -1970,34 +2024,19 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    async def send_exec_approval(
-        self,
-        chat_id: str,
-        command: str,
-        session_key: str,
-        description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None,
-        allow_permanent: bool = True,
-        allow_session: bool = True,
-        smart_denied: bool = False,
-    ) -> SendResult:
-        """Native-button exec approval over the relay (same choice set as native; the
-        press resolves via tools.approval.resolve_gateway_approval). When the lane is
-        unavailable the send FAILS (success=False) so run.py's button→text fallback runs."""
-        options: list = [{"id": "once", "label": "Allow Once", "style": "primary"}]
-        if not smart_denied and allow_session:
-            options.append({"id": "session", "label": "Allow Session"})
-            if allow_permanent:
-                options.append({"id": "always", "label": "Always Allow"})
-        options.append({"id": "deny", "label": "Deny", "style": "danger"})
+    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n\n"
+    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+    _EA_CMD_BUDGET = 1500
 
-        cmd_preview = command if len(command) <= 1500 else command[:1500] + "..."
-        text = f"⚠️ **Command Approval Required**\n\n```\n{cmd_preview}\n```\nReason: {description}"
-        if smart_denied:
-            text += "\n\n**Smart DENY:** owner override applies to this one operation only."
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Native-button exec approval over the relay (the press resolves via
+        tools.approval.resolve_gateway_approval). When the lane is unavailable the send FAILS
+        (success=False) so run.py's button→text fallback runs."""
+        options = [{"id": choice, "label": label, **({"style": style} if style else {})}
+                   for label, choice, style in prompt.actions]
         result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": session_key}, chat_id, prompt_kind="approval",
-            text=text, options=options, metadata=metadata,
+            "exec_approval", {"session_key": prompt.session_key}, prompt.chat_id, prompt_kind="approval",
+            text=prompt.text, options=options, metadata=prompt.metadata,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
 

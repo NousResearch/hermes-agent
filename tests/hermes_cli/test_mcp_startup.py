@@ -21,11 +21,11 @@ def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
     try:
-        mcp_startup._mcp_discovery_started = False
-        mcp_startup._mcp_discovery_thread = None
+        mcp_startup._mcp_discovery_started = set()
+        mcp_startup._mcp_discovery_thread = {}
         yield
     finally:
-        thread = mcp_startup._mcp_discovery_thread
+        thread = mcp_startup._current_home_thread()
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
         mcp_startup._mcp_discovery_started = saved_started
@@ -96,8 +96,9 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         while calls["mcp"] == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert calls["mcp"] == 1
-        assert mcp_startup._mcp_discovery_thread is not None
-        assert mcp_startup._mcp_discovery_thread.is_alive()
+        thread = mcp_startup._current_home_thread()
+        assert thread is not None
+        assert thread.is_alive()
     finally:
         stop.set()
 
@@ -149,7 +150,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
 
     assert calls["background"] == 0
     assert calls["inline"] == 0
-    assert mcp_startup._mcp_discovery_thread is None
+    assert mcp_startup._current_home_thread() is None
 
 
 def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
@@ -229,11 +230,53 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
         logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
         thread_name="test-mcp-discovery",
     )
-    assert mcp_startup._mcp_discovery_thread is not None
-    mcp_startup._mcp_discovery_thread.join(timeout=1.0)
+    thread = mcp_startup._current_home_thread()
+    assert thread is not None
+    thread.join(timeout=1.0)
 
     assert state["during_discover"] is True
     assert state["active"] is False
+
+
+def test_background_mcp_discovery_propagates_profile_secret_scope(monkeypatch):
+    """A dashboard-profile discovery thread must retain that profile's secrets."""
+    from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
+
+    seen = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"url": "https://mcp.example.test/mcp"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: seen.append(dict(current_secret_scope() or {})),
+        ),
+    )
+
+    expected_scope = {"MCP_DEMO_TOKEN": "profile-only-secret"}
+    token = set_secret_scope(expected_scope)
+    try:
+        mcp_startup.start_background_mcp_discovery(
+            logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
+            thread_name="test-mcp-discovery",
+        )
+        thread = mcp_startup._current_home_thread()
+        assert thread is not None
+        thread.join(timeout=1.0)
+    finally:
+        reset_secret_scope(token)
+
+    assert seen == [expected_scope]
 
 
 def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
@@ -266,7 +309,7 @@ def _retry_logger():
     )
 
 
-def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
+def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict, status: str = "configured"):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
@@ -284,7 +327,7 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
         "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
-            get_mcp_status=lambda: [{"connected": connected}],
+            get_mcp_status=lambda: [{"name": "demo", "connected": connected, "status": status}],
         ),
     )
 
@@ -397,3 +440,29 @@ def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_se
     monkeypatch.setattr(main_mod, "_command_has_dedicated_mcp_startup", lambda args: True)
     main_mod._prepare_agent_startup(_agent_args(toolsets="terminal,code-mcp"))
     assert mcp_startup.get_mcp_server_filter() == ["terminal", "code-mcp"]
+
+
+@pytest.mark.parametrize(("status", "retried"), [("lazy", False), ("configured", True)])
+def test_lazy_only_discovery_counts_as_usable_at_both_startup_sites(monkeypatch, status, retried):
+    """A finished run whose servers are all ``lazy`` (registered from the schema cache, spawned
+    on first use) left them usable: no zero-connected warning, and the re-entry check must not
+    re-spawn discovery (#111717). Control: a run that left them merely ``configured`` still warns
+    and is still retried (#66981)."""
+    calls = {"mcp": 0}
+    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=status)
+    warnings: list = []
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None,
+                                   warning=lambda msg, *a, **_k: warnings.append(msg % a if a else msg))
+
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")  # first run
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+    mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")  # re-entry after it finished
+    thread = mcp_startup._current_home_thread()
+    if thread is not None:
+        thread.join(timeout=5.0)
+
+    assert calls["mcp"] == (2 if retried else 1)
+    assert any("zero connected" in w for w in warnings) is retried
+    assert any("retrying discovery thread" in w for w in warnings) is retried

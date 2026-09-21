@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.turn_author import TURN_AUTHOR_ENV
 from hermes_cli.subcommands import peer as peer_cmd
 
 
@@ -92,9 +93,11 @@ def test_dm_unknown_peer_and_missing_key(monkeypatch):
 class _FakePeer(BaseHTTPRequestHandler):
     sessions: list = []
     chats: list = []
+    chat_bodies: list = []
     runs: list = []
     run_idempotency_keys: list = []
     auth_seen: list = []
+    chat_reply_content: str = "reply from the other machine"
 
     def _json(self, payload, status=200):
         body = json.dumps(payload).encode()
@@ -144,12 +147,13 @@ class _FakePeer(BaseHTTPRequestHandler):
 
         if self.path.startswith("/api/sessions/") and self.path.endswith("/chat"):
             type(self).chats.append(body.get("message"))
+            type(self).chat_bodies.append(body)
             return self._json({
                 "object": "hermes.session.chat.completion",
                 "session_id": "bc_1",
                 "message": {
                     "role": "assistant",
-                    "content": "reply from the other machine",
+                    "content": type(self).chat_reply_content,
                 },
             })
 
@@ -176,9 +180,11 @@ class _FakePeer(BaseHTTPRequestHandler):
 def fake_peer_server():
     _FakePeer.sessions = []
     _FakePeer.chats = []
+    _FakePeer.chat_bodies = []
     _FakePeer.runs = []
     _FakePeer.run_idempotency_keys = []
     _FakePeer.auth_seen = []
+    _FakePeer.chat_reply_content = "reply from the other machine"
     server = HTTPServer(("127.0.0.1", 0), _FakePeer)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -212,6 +218,56 @@ def test_dm_creates_bot_chat_then_chats(monkeypatch, capsys, fake_peer_server):
     assert all(a == "Bearer secret-key-123456" for a in _FakePeer.auth_seen)
 
 
+def test_dm_hides_a_bare_silence_marker_from_the_sending_agent(monkeypatch, capsys, fake_peer_server):
+    """A successful bare NO_REPLY/[SILENT] marker is a delivery decision, not
+    a message — same rule as the gateway's live Bot Chat completion, the
+    Desktop bot_relay.deliver RPC and the one-shot local `hermes chat -Q`
+    transport (tools/bot_mode_dm.py::_run_local_turn). `hermes peer dm` is a
+    4th Bot Mode delivery door and, before this fix, printed the raw marker
+    to the sending agent as if it were a real reply."""
+    _FakePeer.chat_reply_content = "NO_REPLY"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="ping", json=False)
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "NO_REPLY" not in out
+    assert "(no reply)" in out
+
+
+def test_dm_json_output_hides_a_bare_silence_marker_too(monkeypatch, capsys, fake_peer_server):
+    _FakePeer.chat_reply_content = "[SILENT]"
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True)
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["reply"] == ""
+
+
+def test_dm_delivers_prose_that_only_mentions_the_marker_normally(monkeypatch, capsys, fake_peer_server):
+    """Prose that merely mentions NO_REPLY must still be delivered — only an
+    EXACT whole-response marker is silence."""
+    _FakePeer.chat_reply_content = "The status is NO_REPLY needed right now, all clear."
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="dm", target="spark", message="ping", json=False)
+    )
+
+    assert rc == 0
+    assert "The status is NO_REPLY needed right now, all clear." in capsys.readouterr().out
+
+
 def test_dm_reuses_existing_bot_chat(monkeypatch, capsys, fake_peer_server):
     _FakePeer.sessions = ["bc_existing"]
     monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
@@ -224,6 +280,45 @@ def test_dm_reuses_existing_bot_chat(monkeypatch, capsys, fake_peer_server):
     assert payload["reply"] == "reply from the other machine"
     # No new session was created — the existing canonical chat was reused.
     assert _FakePeer.sessions == ["bc_existing"]
+
+
+# ── per-turn author (HERMES_TURN_AUTHOR set by the message_agent runner) ─────
+
+
+AUTHOR = {"id": "bot:dixie", "name": "dixie", "is_bot": True}
+
+
+def _peer_spark(monkeypatch, url, author_env):
+    _FakePeer.sessions = ["bc_existing"]
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": url}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    if author_env is None:
+        monkeypatch.delenv(TURN_AUTHOR_ENV, raising=False)
+    else:
+        monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps(author_env))
+
+
+@pytest.mark.parametrize("author_env, expected_body", [
+    ({**AUTHOR, "x": 1}, {"message": "ping", "author": AUTHOR}),
+    (None, {"message": "ping"}),
+], ids=["author from env", "no env"])
+def test_dm_body_carries_author_only_from_env(monkeypatch, fake_peer_server, author_env, expected_body):
+    _peer_spark(monkeypatch, fake_peer_server, author_env)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
+
+    assert rc == 0
+    assert _FakePeer.chat_bodies == [expected_body]
+
+
+def test_run_body_carries_author_from_env(monkeypatch, capsys, fake_peer_server):
+    _peer_spark(monkeypatch, fake_peer_server, AUTHOR)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(
+        peer_action="run", target="spark", message="long task", idempotency_key="ticket-1", json=True))
+
+    assert rc == 0
+    assert _FakePeer.runs == [{"input": "long task", "session_id": "bc_existing", "author": AUTHOR}]
 
 
 # ── hidden canonical Bot Chat (issue #91583) ─────────────────────────────────

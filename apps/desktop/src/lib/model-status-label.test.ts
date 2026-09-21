@@ -1,24 +1,32 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  currentPickerSelection,
-  displayModelName,
-  formatModelStatusLabel,
-  modelDisplayParts
-} from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts, providerDisplayName } from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
+  it('uses the canonical provider label for xAI OAuth model picks', () => {
+    expect(providerDisplayName('xai-oauth')).toBe('xAI Grok')
+    expect(providerDisplayName('xai')).toBe('xAI')
+    expect(providerDisplayName('openai-codex')).toBe('ChatGPT or Codex Subscription')
+  })
   it('formats display names consistently', () => {
     expect(displayModelName('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8')
     expect(displayModelName('openai/gpt-5.5-fast')).toBe('GPT-5.5')
     expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
+    expect(displayModelName('deepseek/deepseek-flash')).toBe('DeepSeek V4.1 Flash')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
   })
 
-  it('strips trailing date-pin snapshots from the display name', () => {
-    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
-    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
+  it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {
+    expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4.5')
+    expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4.5')
+    expect(displayModelName('claude-fable-5-1')).toBe('Fable 5.1')
+  })
+
+  it('renders the Anthropic 1M-context route suffix as a tag, never raw brackets', () => {
+    expect(modelDisplayParts('claude-sonnet-5[1m]')).toEqual({ name: 'Sonnet 5', tag: '1M' })
+    expect(modelDisplayParts('claude-fable-5-1[1m]')).toEqual({ name: 'Fable 5.1', tag: '1M' })
+    expect(displayModelName('claude-opus-5[1m]')).not.toContain('[')
   })
 
   it('renders local GGUF ids as a clean name with a quant tag', () => {
@@ -41,26 +49,11 @@ describe('model-status-label', () => {
     expect(reasoningEffortLabel('')).toBe('')
   })
 
-  it('appends fast + effort session state to the status label', () => {
-    expect(formatModelStatusLabel('openai/gpt-5.5', { fastMode: true, reasoningEffort: 'high' })).toBe(
-      'GPT-5.5 · Fast High'
-    )
-  })
-
-  it('falls back to the profile default effort, then to medium', () => {
-    expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
-    expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
-    // No session-level effort → the configured profile default is advertised,
-    // not Hermes' built-in medium.
-    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high' })).toBe('GPT-5.5 · High')
-    // An explicit session effort still wins over the profile default.
-    expect(formatModelStatusLabel('openai/gpt-5.5', { defaultEffort: 'high', reasoningEffort: 'low' })).toBe(
-      'GPT-5.5 · Low'
-    )
-  })
-
-  it('returns just the placeholder name when there is no model', () => {
-    expect(formatModelStatusLabel('')).toBe('No model')
+  it('keeps the model pill to name + Fast; the effort lives on its own pill', () => {
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast')
+    expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
+    expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
+    expect(formatModelPillLabel('')).toBe('No model')
   })
 
   describe('currentPickerSelection', () => {

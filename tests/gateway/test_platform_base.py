@@ -1,7 +1,9 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import logging
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -706,6 +708,37 @@ class TestMediaDeliveryDefaultMode:
         assert [rel for rel in denied if BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
         assert [rel for rel in allowed if not BasePlatformAdapter.validate_media_delivery_path(str(hermes_dir / rel))] == []
 
+    def test_denylist_covers_every_profile_home_not_just_the_launch_home(self, tmp_path, monkeypatch):
+        """Multiplex: one process serves every ``<root>/profiles/*``. The credential denylist must
+        cover each profile's ``.env`` / ``auth.json`` / ``state.db`` / transcripts whether the emitting
+        turn is the launch (default) profile's or the secondary's own (HERMES_HOME override), while
+        the profile's cache artifacts and plain agent-written files stay deliverable."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        self._patch_roots(monkeypatch)
+        fake_home = tmp_path / "home"
+        hermes_root = fake_home / ".hermes"
+        profile_b = hermes_root / "profiles" / "beta"
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_root)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
+
+        denied = [".env", "auth.json", "state.db", "state.db-wal", "config.yaml",
+                  "sessions/20260101_abc.json", "mcp-tokens/server.json"]
+        allowed = ["cache/images/gen.png", "report.pdf"]
+        for rel in denied + allowed:
+            path = profile_b / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"SECRET=1\n")
+
+        for scope in (None, profile_b):  # default profile's turn, then beta's own turn
+            token = set_hermes_home_override(scope)
+            try:
+                assert [rel for rel in denied if BasePlatformAdapter.validate_media_delivery_path(str(profile_b / rel))] == []
+                assert [rel for rel in allowed if not BasePlatformAdapter.validate_media_delivery_path(str(profile_b / rel))] == []
+            finally:
+                reset_hermes_home_override(token)
+
     def test_strict_mode_envvar_restores_legacy_behavior(self, tmp_path, monkeypatch):
         """Setting HERMES_MEDIA_DELIVERY_STRICT=1 reactivates the older
         allowlist+recency logic. A stale file outside the allowlist is
@@ -1129,29 +1162,42 @@ class TestTruncateMessage:
 
 
 class TestGetHumanDelay:
+    """``human_delay`` is per-profile config (#116895): the adapter only consumes the range the
+    runner installed; the bounds are validated in ``GatewayRunner._human_delay_from_config``."""
 
+    @staticmethod
+    def _adapter_with(range_ms):
+        adapter = SimpleNamespace(_human_delay_range_ms=range_ms)
+        adapter._get_human_delay = lambda: BasePlatformAdapter._get_human_delay(adapter)
+        return adapter
 
-    def test_natural_mode_ignores_malformed_custom_env_vars(self):
-        env = {
-            "HERMES_HUMAN_DELAY_MODE": "natural",
-            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
-            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
-        }
-        with patch.dict(os.environ, env):
-            delay = BasePlatformAdapter._get_human_delay()
-            assert 0.8 <= delay <= 2.5
+    def test_off_and_installed_range_never_touch_process_env(self):
+        env = {"HERMES_HUMAN_DELAY_MODE": "custom", "HERMES_HUMAN_DELAY_MIN_MS": "10",
+               "HERMES_HUMAN_DELAY_MAX_MS": "20"}
+        with patch.dict(os.environ, env), patch(
+            "gateway.platforms.base.random.uniform", return_value=1.5
+        ) as uniform:
+            assert self._adapter_with(None)._get_human_delay() == 0.0
+            uniform.assert_not_called()
+            assert self._adapter_with((1000, 2000))._get_human_delay() == 1.5
+            uniform.assert_called_once_with(1.0, 2.0)
 
-
-    def test_custom_mode_tolerates_malformed_env_vars(self):
-        env = {
-            "HERMES_HUMAN_DELAY_MODE": "custom",
-            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
-            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
-        }
-        with patch.dict(os.environ, env):
-            # falls back to the custom-mode defaults instead of crashing
-            delay = BasePlatformAdapter._get_human_delay()
-            assert 0.8 <= delay <= 2.5
+    @pytest.mark.parametrize("cfg, expected, warned_key", [
+        ({"human_delay": {"mode": "off", "min_ms": -5}}, None, None),
+        ({"human_delay": {"mode": "natural", "min_ms": "oops", "max_ms": "bad"}}, (800, 2500), None),
+        ({"human_delay": {"mode": "custom", "min_ms": 1000, "max_ms": 2000}}, (1000, 2000), None),
+        ({"human_delay": {"mode": "custom", "min_ms": "oops", "max_ms": 1000}}, (800, 1000), "human_delay.min_ms"),
+        ({"human_delay": {"mode": "custom", "min_ms": -1, "max_ms": 1000}}, (800, 1000), "human_delay.min_ms"),
+        ({"human_delay": {"mode": "custom", "min_ms": 3000, "max_ms": 1000}}, (800, 2500), "human_delay.max_ms=1000"),
+    ])
+    def test_config_bounds_are_validated_with_a_warning_naming_the_key(self, cfg, expected, warned_key, caplog):
+        from gateway.run import GatewayRunner
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            assert GatewayRunner._human_delay_from_config(cfg) == expected
+        if warned_key is None:
+            assert "human_delay" not in caplog.text
+        else:
+            assert warned_key in caplog.text
 
 
 # ---------------------------------------------------------------------------

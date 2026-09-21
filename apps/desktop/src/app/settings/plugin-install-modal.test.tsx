@@ -27,7 +27,7 @@ import {
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
-import { PluginsTab } from '../skills/plugins-tab'
+import { PluginsTab } from '../capabilities/plugins/plugins-tab'
 
 import { PluginInstallModal } from './plugin-install-modal'
 
@@ -36,7 +36,7 @@ const installDesktopPlugin = vi.fn()
 
 const renderFlow = () =>
   render(
-    <MemoryRouter initialEntries={['/skills?tab=plugins']}>
+    <MemoryRouter initialEntries={['/capabilities?tab=plugins']}>
       <QueryClientProvider client={queryClient}>
         <PluginsTab profile={null} />
         <PluginInstallModal />
@@ -85,7 +85,15 @@ describe('Install from Git entry flow', () => {
             : 'Installs into the default backend (~/.hermes/plugins/)'
         )
       ).toBeTruthy()
-      expect(screen.getByText("Installs into this app's local desktop-plugins folder")).toBeTruthy()
+      // Local backend: the desktop half is copied out of the installed package
+      // (one source of truth). Remote backend: cloned separately, as before.
+      expect(
+        screen.getByText(
+          mode === 'remote'
+            ? "Installs into this app's local desktop-plugins folder"
+            : 'Loaded into this app from the package above — same for every profile'
+        )
+      ).toBeTruthy()
       expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
       expect(installDesktopPlugin).not.toHaveBeenCalled()
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))

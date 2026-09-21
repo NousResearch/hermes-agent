@@ -87,8 +87,11 @@ class TestFalCatalog:
             if "edit_endpoint" not in meta:
                 continue
             assert meta.get("edit_supports"), f"{mid} has edit_endpoint but no edit_supports"
-            assert "image_urls" in meta["edit_supports"], \
-                f"{mid} edit_supports must allow image_urls"
+            # Most edit endpoints take an `image_urls` list; entries with a
+            # singular image key (Kling Image v3) declare edit_image_param.
+            image_param = meta.get("edit_image_param") or "image_urls"
+            assert image_param in meta["edit_supports"], \
+                f"{mid} edit_supports must allow {image_param}"
             cap = meta.get("max_reference_images")
             assert isinstance(cap, int) and cap > 0, \
                 f"{mid} needs a positive max_reference_images"
@@ -165,6 +168,39 @@ class TestAugust2026Catalog:
             "bytedance/seedream/v5/lite/text-to-image", "hello", "landscape"
         )
         assert p["image_size"] == "landscape_16_9"
+
+
+class TestMetaMuseImage:
+    """Meta Muse Image (meta/muse-image/*) — Aug 2026 addition."""
+
+    MODEL = "meta/muse-image/text-to-image"
+
+    def test_in_catalog_with_edit_pair(self, image_tool):
+        meta = image_tool.FAL_MODELS[self.MODEL]
+        assert meta["size_style"] == "aspect_ratio"
+        assert meta["edit_endpoint"] == "meta/muse-image/edit"
+        # FAL schema: edit takes 1-10 reference image_urls.
+        assert meta["max_reference_images"] == 10
+
+    def test_text_payload_matches_vendor_schema(self, image_tool):
+        """Muse's schema exposes only prompt/aspect_ratio/num_images/
+        output_format/sync_mode — no seed, no resolution/quality knobs."""
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "landscape", seed=42)
+        assert p["aspect_ratio"] == "16:9"
+        assert p["num_images"] == 1
+        assert p["output_format"] == "png"
+        for absent in ("seed", "image_size", "resolution", "quality"):
+            assert absent not in p
+
+    def test_edit_payload_omits_aspect_ratio(self, image_tool):
+        """On edits Muse follows the input image's framing; we deliberately
+        keep aspect_ratio off the edit whitelist."""
+        p = image_tool._build_fal_edit_payload(
+            self.MODEL, "swap the sky", ["https://x/a.png"], "portrait"
+        )
+        assert p["image_urls"] == ["https://x/a.png"]
+        assert "aspect_ratio" not in p
+        assert "seed" not in p
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +466,13 @@ class TestExtractHttpStatus:
 class TestManagedGatewayErrorTranslation:
     """4xx from the Nous managed gateway should be translated to a user-actionable message."""
 
+    @pytest.fixture(autouse=True)
+    def _fal_client_stub(self, image_tool, monkeypatch):
+        # These tests drive a mocked managed client; the module-global loader
+        # must not demand the optional fal extra (a version-pinned metadata
+        # check under lazy installs) on the way there.
+        monkeypatch.setattr(image_tool, "fal_client", object())
+
     def test_4xx_translates_to_value_error_with_remediation(self, image_tool, monkeypatch):
         """403 from managed gateway → ValueError mentioning FAL_KEY + hermes tools."""
         from unittest.mock import MagicMock
@@ -535,14 +578,14 @@ class TestKreaModelNormalization:
 
 
 class TestManagedKreaRouting:
-    """`_maybe_route_managed_krea` only fires for Krea models in managed mode."""
+    """`_maybe_route_managed_model` only fires for Krea / Portal models in managed mode."""
 
     def test_no_route_when_model_not_krea(self, image_tool, monkeypatch):
         monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: None)
         monkeypatch.setattr(
             image_tool, "_read_configured_image_model", lambda: "fal-ai/flux-2/klein/9b"
         )
-        assert image_tool._maybe_route_managed_krea("p", "square") is None
+        assert image_tool._maybe_route_managed_model("p", "square") is None
 
 
     def test_routes_native_krea_model_to_krea_plugin_in_managed_mode(
@@ -580,13 +623,47 @@ class TestManagedKreaRouting:
             "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
         )
 
-        out = image_tool._maybe_route_managed_krea("a cat", "portrait")
+        out = image_tool._maybe_route_managed_model("a cat", "portrait")
         assert out is not None
         assert _json.loads(out)["success"] is True
         kwargs = fake_provider.generate.call_args.kwargs
         assert kwargs["model"] == "krea-2-large"
         assert kwargs["prompt"] == "a cat"
         assert kwargs["aspect_ratio"] == "portrait"
+
+
+class TestManagedPortalRouting:
+    """A Portal model under the managed selection reaches the Portal plugin — never FAL."""
+
+    def _fake_registry(self, monkeypatch, fake_provider):
+        monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: fake_provider)
+        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None)
+
+    def test_routes_portal_model_to_nous_plugin(self, image_tool, monkeypatch):
+        import json as _json
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "nous")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "openai/gpt-5.4-image-2")
+        fake_provider = MagicMock(display_name="Nous Portal")
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        self._fake_registry(monkeypatch, fake_provider)
+
+        out = image_tool._maybe_route_managed_model("a cat", "square")
+
+        assert _json.loads(out)["success"] is True
+        assert fake_provider.generate.call_args.kwargs["model"] == "openai/gpt-5.4-image-2"
+
+    def test_portal_model_without_plugin_errors_instead_of_billing_fal(self, image_tool, monkeypatch):
+        import json as _json
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "nous")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "openai/gpt-5.4-image-2")
+        self._fake_registry(monkeypatch, None)
+
+        out = image_tool._maybe_route_managed_model("a cat", "square")
+
+        assert out is not None and _json.loads(out)["success"] is False
 
 
 class TestFalKreaCatalog:

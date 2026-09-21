@@ -37,12 +37,13 @@ FACT_STORE_SCHEMA = {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "list"]},
-            "content": {"type": "string", "description": "Fact content (required for 'add')."},
+            "content": {"type": "string", "description": "Fact content (required for 'add'). A durable fact worth recalling — never a raw tool-call payload or a tool's raw output."},
             "query": {"type": "string", "description": "Search query (required for 'search')."},
             "entity": {"type": "string", "description": "Entity name for 'probe'/'related'."},
             "entities": {"type": "array", "items": {"type": "string"}, "description": "Entity names for 'reason'."},
             "fact_id": {"type": "integer", "description": "Fact ID for 'update'/'remove'."},
-            "category": {"type": "string", "enum": ["user_pref", "project", "tool", "general"]},
+            "category": {"type": "string", "enum": ["user_pref", "project", "tool", "general"],
+                         "description": "Fact category — required for 'add'. Classify deliberately: user_pref (about the user), project (decisions/context), tool (how something works), general."},
             "tags": {"type": "string", "description": "Comma-separated tags."},
             "trust_delta": {"type": "number", "description": "Trust adjustment for 'update'."},
             "min_trust": {"type": "number", "description": "Minimum trust filter (default: 0.3)."},
@@ -88,6 +89,31 @@ def _results(items: list, key: str = "results") -> str:
 
 def _limit(args: dict) -> int:
     return int(args.get("limit", 10))
+
+
+_FACT_CATEGORIES = ("user_pref", "project", "tool", "general")
+
+
+def _reject_non_fact(content: str) -> str | None:
+    """Why ``content`` is mechanically not a durable fact, else None.
+
+    Narrow on purpose: only the unambiguous case — the model re-storing the raw
+    JSON of a tool call it just made (``{"name": ..., "arguments": ...}``) — is
+    refused, so a fact written as prose (or as any other JSON) always stores.
+    Left unchecked, those payloads and self-narration fill the store and drown
+    the real facts in search/probe/reason results.
+    """
+    stripped = (content or "").strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(parsed, dict) and "name" in parsed and "arguments" in parsed:
+        return ("content looks like a raw tool-call payload (it has 'name'/'arguments' keys), "
+                "not a fact — store what the call was FOR, or a result worth remembering.")
+    return None
 
 
 def _tool_handler(actions: dict):
@@ -206,10 +232,27 @@ class HolographicMemoryProvider(MemoryProvider):
         """'probe' / 'related': single-entity retriever queries."""
         return _results(getattr(self._retriever, method)(a["entity"], category=a.get("category"), limit=_limit(a)))
 
+    def _add_fact(self, a: dict) -> str:
+        """'add': refuse payload-shaped content and require an explicit category.
+
+        ``category`` used to default silently to 'general', so a model that skipped
+        classification still got a successful store — and everything landed in the
+        same bucket. Both checks fail toward the tool's own contract instead.
+        """
+        reason = _reject_non_fact(str(a.get("content", "")))
+        if reason:
+            return tool_error(reason)
+        category = a.get("category")
+        if category not in _FACT_CATEGORIES:
+            return tool_error(
+                "category is required for 'add' and must be one of: " + ", ".join(_FACT_CATEGORIES)
+            )
+        return json.dumps({"fact_id": self._store.add_fact(
+            a["content"], category=category, tags=a.get("tags", "")), "status": "added"})
+
     _TOOL_HANDLERS = {
         "fact_store": _tool_handler({
-            "add": lambda self, a: json.dumps({"fact_id": self._store.add_fact(
-                a["content"], category=a.get("category", "general"), tags=a.get("tags", "")), "status": "added"}),
+            "add": lambda self, a: self._add_fact(a),
             "search": lambda self, a: _results(self._retriever.search(
                 a["query"], category=a.get("category"), min_trust=float(a.get("min_trust", self._min_trust)), limit=_limit(a))),
             "probe": lambda self, a: self._entity_query("probe", a),

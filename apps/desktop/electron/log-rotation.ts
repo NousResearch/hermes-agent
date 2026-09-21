@@ -18,6 +18,32 @@ export const LOG_DISCARD_BYTES = LOG_MAX_BYTES * 4
 
 export const logBackupPath = (base: string, n: number): string => `${base}.${n}`
 
+// A log another PROCESS owns (Chromium's --log-file) cannot be rotated: it
+// holds the descriptor open in append mode, so renaming the file just moves
+// the growth to the renamed inode and the cap silently stops applying. The
+// only reclamation that works from outside is truncating in place — an
+// O_APPEND writer resumes at offset 0 — so a long-lived noisy process is
+// bounded at ~cap plus one poll interval's output instead of the whole disk.
+export const ACTIVE_LOG_POLL_MS = 5 * 60 * 1000
+
+export interface ActiveLogIo {
+  /** Live size, or null when the file does not exist yet. */
+  size(file: string): number | null
+  truncate(file: string): void
+}
+
+export function reclaimActiveLogIfOversized(file: string, io: ActiveLogIo): boolean {
+  const size = io.size(file)
+
+  if (size === null || size < LOG_MAX_BYTES) {
+    return false
+  }
+
+  io.truncate(file)
+
+  return true
+}
+
 export type LogRotationOp = ['rm', string] | ['mv', string, string]
 
 // Pure planner: ordered fs ops to bound the live log at `base`. [] = nothing.

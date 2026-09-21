@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { LOG_DISCARD_BYTES, LOG_MAX_BYTES, logBackupPath, planLogRotation } from './log-rotation'
+import {
+  LOG_DISCARD_BYTES,
+  LOG_MAX_BYTES,
+  logBackupPath,
+  planLogRotation,
+  reclaimActiveLogIfOversized
+} from './log-rotation'
 
 // Regression for #100573 follow-up: the Chromium diagnostic log added for that
 // issue is opened with APPEND_TO_OLD_LOG_FILE, so it grows across launches the
@@ -32,4 +41,56 @@ test('a boot-loop log past the discard ceiling is reclaimed, not stranded in .1'
   // never reach, so every generation is deleted outright.
   assert.ok(ops.every(([op]) => op === 'rm'))
   assert.ok(ops.some(([, src]) => src === base))
+})
+
+test('a log a live process keeps appending to is reclaimed in place, not renamed', () => {
+  const truncated: string[] = []
+  const io = { size: () => LOG_MAX_BYTES, truncate: (f: string) => truncated.push(f) }
+
+  // Chromium holds --log-file open in append mode for the life of the shell:
+  // renaming it would leave the writer on the renamed inode and the cap would
+  // silently stop applying, so the only reclamation is truncating in place.
+  assert.equal(reclaimActiveLogIfOversized('/logs/desktop-chromium.log', io), true)
+  assert.deepEqual(truncated, ['/logs/desktop-chromium.log'])
+})
+
+test('an under-cap or absent active log is left alone', () => {
+  const touched: string[] = []
+  const truncate = (f: string) => touched.push(f)
+
+  assert.equal(
+    reclaimActiveLogIfOversized('/logs/x.log', { size: () => LOG_MAX_BYTES - 1, truncate }),
+    false
+  )
+  assert.equal(reclaimActiveLogIfOversized('/logs/x.log', { size: () => null, truncate }), false)
+  assert.deepEqual(touched, [])
+})
+
+test('truncation really frees the file, and an append-mode writer restarts at 0', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-log-bound-'))
+  const file = path.join(dir, 'desktop-chromium.log')
+
+  try {
+    // Stand in for Chromium: an O_APPEND handle held across the reclaim.
+    const handle = fs.openSync(file, 'a')
+
+    try {
+      fs.ftruncateSync(handle, LOG_MAX_BYTES + 1) // Grow without writing GBs.
+
+      assert.equal(
+        reclaimActiveLogIfOversized(file, {
+          size: f => fs.statSync(f).size,
+          truncate: f => fs.truncateSync(f, 0)
+        }),
+        true
+      )
+
+      fs.writeSync(handle, 'FATAL:after\n')
+      assert.equal(fs.readFileSync(file, 'utf8'), 'FATAL:after\n')
+    } finally {
+      fs.closeSync(handle)
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })

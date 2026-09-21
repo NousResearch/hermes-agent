@@ -2581,6 +2581,7 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
             return _format_duration(await asyncio.to_thread(_ogg_duration))
         except Exception:
             pass
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -2591,6 +2592,11 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
             return _format_duration(float(stdout.decode().strip()))
     except Exception:
         pass
+    finally:
+        if proc is not None and proc.returncode is None:
+            # wait_for() only cancels communicate(): a hung ffprobe would keep running under the gateway.
+            from agent.deadline import kill_process_tree
+            await asyncio.to_thread(kill_process_tree, proc.pid)
 
     return None
 

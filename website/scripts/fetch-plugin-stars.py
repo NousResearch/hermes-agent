@@ -14,9 +14,9 @@ artifact. Docs deploys run with ``--reuse-only`` and NEVER touch the API: they t
 scheduled artifact when given one, else the live site's copy (one CDN GET), else whatever is
 on disk, else an empty map (the page then ranks alphabetically).
 
-The probe itself is ONE GraphQL request for every catalog repo (aliased ``repository``
-fields), not one REST call per repo. Any failure (rate limit, network, bad token) keeps the
-previous counts instead of regressing them to zero.
+The probe starts with one GraphQL request for every catalog repo (aliased ``repository``
+fields), then uses REST only for unresolved repos. Any failure (rate limit, network, bad
+token) keeps the previous counts instead of regressing them to zero.
 """
 
 from __future__ import annotations
@@ -42,6 +42,10 @@ _GITHUB_REPO_RE = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+?)(?:\.g
 
 def _log(msg: str) -> None:
     print(f"[fetch-plugin-stars] {msg}", file=sys.stderr)
+
+
+def _warning(msg: str) -> None:
+    print(f"::warning::{msg}", file=sys.stderr)
 
 
 def github_slug(repo_url: str) -> str | None:
@@ -111,29 +115,45 @@ def stars_query(slugs: list[str]) -> str:
     return "query {\n" + fields + "\n}"
 
 
-def probe_stars(slugs: list[str], previous: dict[str, int], token: str | None) -> dict[str, int]:
-    """One GraphQL request for all repos; on failure keep every previous count (never regress to 0)."""
+def probe_stars(
+    slugs: list[str], previous: dict[str, int], token: str | None,
+) -> tuple[dict[str, int], bool]:
+    """Fetch every slug, preserving cached counts for repos that remain unresolved."""
     if not slugs:
-        return {}
+        return {}, True
     if not token:
         _log("no GITHUB_TOKEN; keeping previous counts without probing")
-        return {s: previous[s] for s in slugs if s in previous}
+        return {s: previous[s] for s in slugs if s in previous}, False
+
+    fresh: dict[str, int] = {}
     try:
         payload = _graphql(stars_query(slugs), token)
     except (urllib.error.URLError, OSError, ValueError) as e:
-        _log(f"GraphQL probe failed ({e}); keeping previous counts")
-        return {s: previous[s] for s in slugs if s in previous}
-    data = payload.get("data") or {}
-    for err in payload.get("errors") or []:
-        _log(f"GraphQL: {err.get('message')}")  # e.g. a renamed/deleted repo; its previous count is kept
-    stars: dict[str, int] = {}
-    for i, slug in enumerate(slugs):
-        node = data.get(f"r{i}")
-        if isinstance(node, dict) and isinstance(node.get("stargazerCount"), int):
-            stars[slug] = node["stargazerCount"]
-        elif slug in previous:
-            stars[slug] = previous[slug]
-    return stars
+        _log(f"GraphQL probe failed ({e}); falling back to REST")
+    else:
+        data = payload.get("data") or {}
+        for err in payload.get("errors") or []:
+            _log(f"GraphQL: {err.get('message')}")
+        for i, slug in enumerate(slugs):
+            node = data.get(f"r{i}")
+            if isinstance(node, dict) and isinstance(node.get("stargazerCount"), int):
+                fresh[slug] = node["stargazerCount"]
+
+    headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}"}
+    for slug in (slug for slug in slugs if slug not in fresh):
+        try:
+            payload = _http_json(f"https://api.github.com/repos/{slug}", headers)
+            count = payload.get("stargazers_count")
+            if isinstance(count, int):
+                fresh[slug] = count
+            else:
+                _log(f"REST fallback returned no star count for {slug}")
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            _log(f"REST fallback failed for {slug} ({e})")
+
+    stars = {slug: previous[slug] for slug in slugs if slug in previous}
+    stars.update(fresh)
+    return stars, len(fresh) == len(slugs)
 
 
 def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output: Path = DEFAULT_OUTPUT,
@@ -150,12 +170,17 @@ def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output: Path = DEFAULT_OUTPUT,
 
     slugs = catalog_slugs(catalog_dir)
     prev_stars = {k: int(v) for k, v in (previous.get("stars") or {}).items() if isinstance(v, (int, float))}
-    stars = probe_stars(slugs, prev_stars, token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
-    probed = stars != prev_stars or not previous
-    fetched_at = datetime.now(timezone.utc).isoformat() if probed or stars else str(previous.get("fetched_at") or "")
+    stars, probe_succeeded = probe_stars(
+        slugs, prev_stars, token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
+    fetched_at = (datetime.now(timezone.utc).isoformat() if probe_succeeded
+                  else previous.get("fetched_at"))
+    if not probe_succeeded:
+        missing = [slug for slug in slugs if slug not in stars]
+        if missing:
+            _warning("Plugin star probe incomplete; missing cached counts for: " + ", ".join(missing))
     output.write_text(json.dumps({"fetched_at": fetched_at, "stars": stars}, separators=(",", ":")),
                       encoding="utf-8")
-    print(f"Probed {len(slugs)} repos in one GraphQL request, wrote {len(stars)} star counts to {output}")
+    print(f"Probed {len(slugs)} repos, wrote {len(stars)} star counts to {output}")
     return 0
 
 

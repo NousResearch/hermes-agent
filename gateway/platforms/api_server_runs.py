@@ -827,6 +827,7 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     run without an in-process agent is not interruptible here.
     """
     from tools.bot_live_delivery import await_delivery_async
+    from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
 
     run_id = run.run_id
     delivery_id = record["delivery_id"]
@@ -843,9 +844,16 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
     try:
         self._set_run_status(run_id, "running", delivery_id=delivery_id)
         record = await await_delivery_async(
-            home, delivery_id, None, should_stop=lambda: run_id in self._stopping_run_ids) or record
+            home, delivery_id, _LIVE_WAIT_SECONDS, should_stop=lambda: run_id in self._stopping_run_ids) or record
         if record["status"] in ("queued", "claimed"):
-            _finish("cancelled", completed=False, partial=False, interrupted=True)
+            if run_id in self._stopping_run_ids:
+                _finish("cancelled", completed=False, partial=False, interrupted=True)
+            else:
+                _finish(
+                    "failed", completed=False, partial=False, interrupted=False,
+                    error=(f"Timed out after {_LIVE_WAIT_SECONDS:g} seconds waiting for the live Bot Chat "
+                           "owner to finish this peer run."),
+                    reason="bot_chat_delivery_timeout")
             return
         if record["status"] == "settled":
             _finish("completed", completed=True, partial=False, interrupted=False,

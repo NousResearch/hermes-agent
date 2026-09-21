@@ -132,6 +132,9 @@ _SPENT_ROTATION_LOCK = threading.Lock()
 # Fingerprints of Claude Code refresh tokens the endpoint rejected terminally: the WARNING fires once per token
 # per process and later attempts skip the POST (a re-login rotates the token, so a new one is tried normally).
 _DEAD_REFRESH_TOKEN_FINGERPRINTS: set = set()
+# Fingerprints of Keychain refresh tokens whose ACCESS token the rescue in _resolve_claude_code_token_from_credentials
+# has already announced borrowing: the WARNING fires once per Keychain pair per process, repeats log at DEBUG.
+_RESCUE_WARNED_KEYCHAIN_FINGERPRINTS: set = set()
 _SPENT_ROTATION_FINGERPRINTS: "OrderedDict[str, None]" = OrderedDict()
 _SPENT_ROTATION_MAX_TRACKED = 64
 _SPENT_ROTATION_SIDECAR_COMMENT = (
@@ -349,7 +352,8 @@ def _read_claude_code_credentials_from_file() -> Optional[Dict[str, Any]]:
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     """Read refreshable Claude Code OAuth credentials (Keychain and/or file). When both exist: prefer the only
     non-expired one (Claude Code 2.1.x refreshes one source but not the other), else the later ``expiresAt`` so a
-    refresh uses the freshest refreshToken. ~/.claude.json primaryApiKey is deliberately excluded.
+    refresh uses the freshest refreshToken. If the two hold DIFFERENT refresh tokens the file (Hermes's own
+    lineage) wins regardless of expiry. ~/.claude.json primaryApiKey is deliberately excluded.
 
     This is the only reader of the borrowed login, so ``auth.adopt_external_logins: false`` is enforced here:
     every resolver, pool seed/sync and 401 refresher then sees "no Claude Code login" and never touches the file."""
@@ -360,6 +364,16 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
     file_creds = _read_claude_code_credentials_from_file()
     if not (kc_creds and file_creds):
         return kc_creds or file_creds
+    # Diverged families: Anthropic refresh tokens are single-use. Claude Code (macOS) reads/writes only the
+    # Keychain; Hermes commits its rotations to the JSON file (and, since upstream #98334, mirrors them into the
+    # Keychain only when the Keychain still held the pair just spent). Once the two hold different refresh tokens
+    # the file is Hermes's own lineage and wins even when expired (it is refreshed with the FILE's refresh
+    # token). Preferring the fresher Keychain pair here would spend Claude Code's single-use refresh token and
+    # force a `/login` at its next expiry, every time. Identical refresh tokens mean one family (Claude Code
+    # wrote both at login) and fall through to the expiry rules.
+    kc_refresh, file_refresh = kc_creds.get("refreshToken") or "", file_creds.get("refreshToken") or ""
+    if file_refresh and kc_refresh and file_refresh != kc_refresh:
+        return file_creds
     kc_valid, file_valid = is_claude_code_token_valid(kc_creds), is_claude_code_token_valid(file_creds)
     if kc_valid != file_valid:
         return kc_creds if kc_valid else file_creds
@@ -620,9 +634,34 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
         return creds["accessToken"]
     logger.debug("Claude Code credentials expired — attempting refresh")
     refreshed = _refresh_oauth_token(creds)
-    if not refreshed:
-        logger.debug("Token refresh failed — run 'hermes auth add anthropic' to give Hermes its own login")
-    return refreshed or None
+    if refreshed:
+        return refreshed
+    # Rescue: Hermes's own file lineage is dead (refresh failed) but Claude Code's Keychain pair is a different,
+    # still-valid family. Borrow its ACCESS token only, never its refresh token (the crossover that
+    # read_claude_code_credentials exists to prevent). Nothing rewrites the file here, so this state lasts until
+    # the user runs 'hermes auth add anthropic' (Hermes gets its own login), Claude Code re-logs in (a new
+    # Keychain pair, announced once more), or the Keychain access token expires (resolution then returns None).
+    if creds.get("source") == "claude_code_credentials_file":
+        kc_creds = _read_claude_code_credentials_from_keychain()
+        if (
+            kc_creds
+            and kc_creds.get("accessToken")
+            and (kc_creds.get("refreshToken") or "") != (creds.get("refreshToken") or "")
+            and is_claude_code_token_valid(kc_creds)
+        ):
+            message = (
+                "Claude Code file credentials could not be refreshed; using the still-valid macOS Keychain "
+                "access token instead (run 'hermes auth add anthropic' to give Hermes its own login)"
+            )
+            fingerprint = hashlib.sha256((kc_creds.get("refreshToken") or "").encode("utf-8")).hexdigest()[:32]
+            if fingerprint in _RESCUE_WARNED_KEYCHAIN_FINGERPRINTS:
+                logger.debug(message)  # already announced for this Keychain pair; keep the dead-grant warn-once quiet
+            else:
+                _RESCUE_WARNED_KEYCHAIN_FINGERPRINTS.add(fingerprint)
+                logger.warning(message)
+            return kc_creds["accessToken"]
+    logger.debug("Token refresh failed — run 'hermes auth add anthropic' to give Hermes its own login")
+    return None
 
 
 def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:

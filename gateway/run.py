@@ -4304,8 +4304,8 @@ class GatewayRunner(
         return await loop.run_in_executor(
             self._get_housekeeping_executor(), copy_context().run, func, *args)
 
-    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
-        """Return the gateway-owned executor for blocking agent work."""
+    def _get_or_create_pool(self, attr: str, max_workers: int, prefix: str) -> concurrent.futures.ThreadPoolExecutor:
+        """Return (creating under ``_executor_lock``) the pool at ``attr``; one lock + closing flag fences both."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
             lock = threading.Lock()
@@ -4313,28 +4313,30 @@ class GatewayRunner(
         with lock:
             if getattr(self, "_executor_closing", False):
                 raise RuntimeError("Gateway is shutting down; executor unavailable")
-            executor = getattr(self, "_executor", None)
+            executor = getattr(self, attr, None)
             if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=10, thread_name_prefix="hermes-gateway")
-                self._executor = executor
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=prefix)
+                setattr(self, attr, executor)
             return executor
+
+    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the gateway-owned executor for blocking agent work."""
+        return GatewayRunner._get_or_create_pool(self, "_executor", 10, "hermes-gateway")
 
     def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for best-effort session housekeeping."""
-        lock = getattr(self, "_executor_lock", None)
-        if lock is None:
-            lock = threading.Lock()
-            self._executor_lock = lock
-        with lock:
-            if getattr(self, "_executor_closing", False):
-                raise RuntimeError("Gateway is shutting down; executor unavailable")
-            executor = getattr(self, "_housekeeping_executor", None)
-            if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=_HOUSEKEEPING_MAX_WORKERS, thread_name_prefix="hermes-gateway-hk")
-                self._housekeeping_executor = executor
-            return executor
+        return GatewayRunner._get_or_create_pool(self, "_housekeeping_executor", _HOUSEKEEPING_MAX_WORKERS, "hermes-gateway-hk")
+
+    @staticmethod
+    def _stop_pool(executor) -> list:
+        """Shut ``executor`` down without waiting; return its threads to join (`_threads` absent on test doubles)."""
+        if executor is None:
+            return []
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            executor.shutdown(wait=False)
+        return list(getattr(executor, "_threads", None) or ())
 
     def _shutdown_executor(self, drain_timeout: float = 0.0) -> int:
         """Stop the gateway-owned pools; returns the number of worker threads still running.
@@ -4354,16 +4356,8 @@ class GatewayRunner(
         # Housekeeping workers run SessionDB writes too (session finalize, agent cleanup), so a wedged
         # one is exactly the mid-write worker the #101093 skip-close heuristic exists for. Both pools
         # are therefore joined under the SAME drain deadline and both contribute to the live count.
-        workers: list = []
-        for pool in (executor, housekeeping):
-            if pool is None:
-                continue
-            try:
-                pool.shutdown(wait=False, cancel_futures=True)
-            except TypeError:
-                pool.shutdown(wait=False)
-            # shutdown() has no timeout, so join workers directly; `_threads` is absent on test doubles (no wait).
-            workers.extend(getattr(pool, "_threads", None) or ())
+        # Class-qualified: run_shutdown and tests invoke these unbound on a duck-typed `self`.
+        workers = GatewayRunner._stop_pool(executor) + GatewayRunner._stop_pool(housekeeping)
         deadline = time.monotonic() + max(float(drain_timeout or 0.0), 0.0)
         for worker in workers:
             remaining = deadline - time.monotonic()

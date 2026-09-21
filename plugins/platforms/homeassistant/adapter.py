@@ -7,7 +7,6 @@ import asyncio
 import errno
 import json
 import logging
-import os
 import sys
 import time
 import uuid
@@ -21,6 +20,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     aiohttp = None  # type: ignore[assignment]
 
+from gateway.restart import is_supervised_gateway_launch
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -70,12 +70,12 @@ _TRIGGERED = ("cleared", "triggered")  # binary_sensor wording, indexed by ``sta
 def _connect_error_detail(exc: BaseException) -> str:
     """Annotate macOS Local Network Privacy denials so launchd HA failures are actionable (#71206).
 
-    Only a launchd-supervised gateway on macOS (``HERMES_SUPERVISED_CHILD`` is set by the generated plist)
-    can be denied this way; the same errno elsewhere is a genuinely unreachable host.
+    Only a supervised (launchd) gateway on macOS can be denied this way; the same errno from a
+    Terminal-run gateway or on another OS is a genuinely unreachable host.
     """
     text = str(exc)
     os_error = getattr(exc, "os_error", None) or exc.__cause__ or exc
-    if (sys.platform == "darwin" and os.environ.get("HERMES_SUPERVISED_CHILD")
+    if (sys.platform == "darwin" and is_supervised_gateway_launch()
             and getattr(os_error, "errno", None) == errno.EHOSTUNREACH):
         return (
             f"{text} — macOS Local Network Privacy is blocking this launchd gateway from the LAN. "

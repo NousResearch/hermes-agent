@@ -321,22 +321,25 @@ class TestWsUrlConstruction:
 
 
 class TestLocalNetworkConnectHint:
-    @pytest.mark.macos_only
-    def test_ehostunreach_under_launchd_names_the_remedy(self, monkeypatch):
-        """Only the launchd-supervised gateway can be denied by Local Network Privacy; the same errno from a
-        Terminal-run gateway is a genuinely unreachable host and must not be blamed on macOS (#71206)."""
+    def test_ehostunreach_outside_launchd_is_a_plain_unreachable_host(self, monkeypatch):
+        """The same errno from a Terminal-run gateway (or another OS) must not be blamed on macOS."""
         from plugins.platforms.homeassistant.adapter import _connect_error_detail
 
-        err = OSError(errno.EHOSTUNREACH, "No route to host")
         monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
+        monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
+        err = OSError(errno.EHOSTUNREACH, "No route to host")
         assert _connect_error_detail(err) == str(err)
+        assert _connect_error_detail(RuntimeError("auth failed")) == "auth failed"
+
+    @pytest.mark.macos_only
+    def test_ehostunreach_under_launchd_names_the_remedy(self, monkeypatch):
+        """Only the launchd-supervised gateway can be denied by Local Network Privacy (#71206)."""
+        from plugins.platforms.homeassistant.adapter import _connect_error_detail
 
         monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
+        err = OSError(errno.EHOSTUNREACH, "No route to host")
         detail = _connect_error_detail(err)
         assert detail.startswith(str(err))
         assert "Local Network" in detail
         assert "hermes gateway install" in detail
         assert "71206" in detail
-        # Unrelated failures stay untouched.
-        assert _connect_error_detail(RuntimeError("auth failed")) == "auth failed"
-

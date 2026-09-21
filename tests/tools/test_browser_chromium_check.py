@@ -38,6 +38,17 @@ class TestChromiumSearchRoots:
 
 
 class TestChromiumInstalled:
+    def test_true_for_agent_browser_managed_chrome(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+        monkeypatch.setattr(os.path, "expanduser", lambda _path: str(tmp_path))
+        monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
+        browser_store = tmp_path / ".agent-browser" / "browsers"
+        (browser_store / "chrome-test-build").mkdir(parents=True)
+
+        assert bt_install._chromium_installed() is True
+
+
     def test_true_when_plain_chromium_on_path(self, monkeypatch):
         monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
         monkeypatch.setattr(

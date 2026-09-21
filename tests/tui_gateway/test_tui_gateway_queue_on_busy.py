@@ -804,3 +804,61 @@ def test_drain_continues_with_later_queued_prompt_after_dispatch_failure(monkeyp
     assert session["queued_prompt"] is None
     assert session.get("queued_prompts") is None
 
+
+
+# ── bare stop phrase while busy → hard interrupt, never redirect/queue ─────
+
+def _stop_session(calls):
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: calls.append(("redirect", text)) or True,
+    )
+    return _session(agent=agent, running=True, session_key="k")
+
+
+def test_busy_bare_stop_phrase_hard_interrupts_instead_of_redirect(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    calls = []
+    monkeypatch.setattr(server, "_interrupt_session_turn", lambda sid, session, **k: calls.append(("interrupt", sid)))
+    monkeypatch.setattr(server, "_retire_turn_marker", lambda *a, **k: None)
+    session = _stop_session(calls)
+
+    for phrase in ("stop", "Stop!", "stop.", "please stop"):
+        calls.clear()
+        resp = server._handle_busy_submit("r1", "sid", session, phrase, "ws-1")
+        assert resp["result"]["status"] == "interrupted"
+        assert calls == [("interrupt", "sid")]
+        assert session.get("queued_prompt") is None
+
+
+def test_busy_stop_inside_sentence_still_redirects(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    calls = []
+    monkeypatch.setattr(server, "_interrupt_session_turn", lambda *a, **k: calls.append("interrupt"))
+    session = _stop_session(calls)
+
+    resp = server._handle_busy_submit("r1", "sid", session, "stop the server after tests", "ws-1")
+
+    assert resp["result"]["status"] == "redirected"
+    assert calls == [("redirect", "stop the server after tests")]
+
+
+def test_queue_drain_stop_text_is_queued_not_interrupt(monkeypatch):
+    calls = []
+    monkeypatch.setattr(server, "_interrupt_session_turn", lambda *a, **k: calls.append("interrupt"))
+    session = _stop_session(calls)
+
+    resp = server._handle_busy_submit("r1", "sid", session, "stop", "ws-1", queued=True)
+
+    assert resp["result"]["status"] == "queued"
+    assert "interrupt" not in calls
+
+
+def test_busy_stop_phrases_config_override(monkeypatch):
+    from tools import voice_mode_transcript as vmt
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"display": {"busy_stop_phrases": ["para"]}})
+    assert vmt.is_busy_stop_phrase("Para!")
+    assert not vmt.is_busy_stop_phrase("stop")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"display": {"busy_stop_phrases": []}})
+    assert not vmt.is_busy_stop_phrase("stop")

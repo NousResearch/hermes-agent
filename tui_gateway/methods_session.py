@@ -2077,6 +2077,9 @@ def _(rid, params: dict) -> dict:
             if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
                 return _ok(rid, {"status": "not_interrupted", "interrupted": False})
     sid = str(params.get("session_id") or "")
+    _rt = session.get("_run_thread")
+    logger.info("session.interrupt sid=%s running=%s run_thread_alive=%s compute_host=%s", sid,
+                bool(session.get("running")), _rt is not None and _rt.is_alive(), _session_uses_compute_host(session))
     if _session_uses_compute_host(session):
         try:
             _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
@@ -2103,6 +2106,8 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
         accepted = getattr(session["agent"], verb)(text)
     except Exception as exc:
         return _err(rid, 5000, f"{verb} failed: {exc}")
+    logger.info("session.%s accepted=%s running=%s chars=%d", verb, bool(accepted), bool(session.get("running")),
+                len(text))
     if accepted:
         with session["history_lock"]:
             _record_inflight_correction(session, text)

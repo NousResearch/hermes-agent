@@ -17,6 +17,9 @@ import { composerPlainText } from '../rich-editor'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
+// Whole-message stop words (mirrors the backend's display.busy_stop_phrases default); "stop the server" never matches.
+const BUSY_STOP_WORD_RE = /^(?:please\s+)?(?:stop|cancel|abort|halt)(?:\s+(?:it|please))?[\s.,!?;:"']*$/i
+
 interface UseComposerSubmitArgs {
   activeQueueSessionKey: string | null
   activeQueueSessionKeyRef: RefObject<string | null>
@@ -261,7 +264,20 @@ export function useComposerSubmit({
       if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
         triggerHaptic('submit')
         clearDraft()
+
+        // /stop: run the Stop button's optimistic cleanup first so the UI reacts instantly; the slash handler then
+        // still runs for background-process cleanup and output.
+        if (text.trim().toLowerCase() === '/stop') {
+          void Promise.resolve(onCancel())
+        }
+
         dispatchSubmit(text)
+      } else if (!attachments.length && BUSY_STOP_WORD_RE.test(text.trim())) {
+        // A bare "stop" is an explicit stop, not a correction: redirecting only restarts the model stream with it
+        // as advice, which the model can ignore. Same as the Stop button (also while parked on a prompt).
+        triggerHaptic('cancel')
+        clearDraft()
+        void Promise.resolve(onCancel())
       } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if

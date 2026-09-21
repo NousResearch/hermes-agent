@@ -260,6 +260,16 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         if image_paths:
             session["attached_images"] = []  # claim now so a later paste isn't consumed when the turn yields
     plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
+    # A bare "stop"/"cancel" is an explicit stop, not advice: redirect only restarts the stream with it as a correction
+    # and the model can ignore it. Acts like ``/stop`` (hard interrupt, queue cleared); never queued.
+    if plain_text and not queued:
+        from tools.voice_mode_transcript import is_busy_stop_phrase
+        if is_busy_stop_phrase(plain_text):
+            _interrupt_session_turn(sid, session)
+            with session["history_lock"]:
+                active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
+            _retire_turn_marker(session, active_marker_key)
+            return _ok(rid, {"status": "interrupted", "stop_phrase": True})
     # Text-only corrections steer/redirect in place when supported; media payloads and older agents fall through to
     # the proven interrupt + queue path.
     if plain_text and agent is not None:

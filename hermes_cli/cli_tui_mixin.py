@@ -1571,6 +1571,15 @@ class CLITuiMixin:
         multimodal follow-ups, or a turn that finished in the race). queue → next turn.
         """
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
+        if text and not images:
+            from tools.voice_mode_transcript import is_busy_stop_phrase
+            if is_busy_stop_phrase(text):  # explicit stop, same as /stop / Ctrl-C — never a redirect or queued
+                try:
+                    self.agent.interrupt()
+                except Exception:
+                    pass
+                _cprint(f"  {_DIM}Stopped.{_RST}")
+                return
         _effective_mode = self.busy_input_mode
         redirected = False
         if _effective_mode == "steer":

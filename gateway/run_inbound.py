@@ -682,6 +682,13 @@ class GatewayInboundMixin:
         if _handled:
             return _result
 
+        # A bare "stop"/"cancel" is an explicit stop, not a steer/redirect/queue candidate: route to /stop, ahead of
+        # every mode branch and demotion (subagents, compression) so it is always an escape hatch.
+        if self._hm_text_only(event) and event.text:
+            from tools.voice_mode_transcript import is_busy_stop_phrase
+            if is_busy_stop_phrase(event.text):
+                return await self._handle_stop_command(event)
+
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None

@@ -64,6 +64,30 @@ def is_voice_stop_phrase(transcript: str, stop_phrases: Optional[tuple] = None) 
     return bool(cleaned) and cleaned in (_load_voice_stop_phrases() if stop_phrases is None else stop_phrases)
 
 
+DEFAULT_BUSY_STOP_PHRASES = ("stop", "cancel", "abort", "halt", "stop it", "please stop", "stop please")
+
+
+def _load_busy_stop_phrases() -> tuple:
+    """Configured ``display.busy_stop_phrases`` (default :data:`DEFAULT_BUSY_STOP_PHRASES`); an empty list
+    disables. Separate from ``voice.stop_phrases`` so disabling one feature doesn't disable the other."""
+    with suppress(Exception):
+        from hermes_cli.config import load_config
+        display_cfg = load_config().get("display", {})
+        raw = display_cfg.get("busy_stop_phrases", DEFAULT_BUSY_STOP_PHRASES) if isinstance(display_cfg, dict) \
+            else DEFAULT_BUSY_STOP_PHRASES
+        if isinstance(raw, str):
+            raw = [raw]
+        if isinstance(raw, (list, tuple)):
+            return tuple(str(p).strip().lower() for p in raw if isinstance(p, (str, int, float)) and str(p).strip())
+    return DEFAULT_BUSY_STOP_PHRASES
+
+
+def is_busy_stop_phrase(text: str) -> bool:
+    """True when a mid-turn typed message is EXACTLY a stop phrase (same strict whole-message match as the voice
+    path), so it hard-interrupts like ``/stop`` instead of being steered to the model as advice."""
+    return is_voice_stop_phrase(text, _load_busy_stop_phrases())
+
+
 # Similarity ratio (difflib.SequenceMatcher) above which a playback-phase barge transcript
 # is treated as a self-capture of Hermes' own TTS: the full-duplex listener has no echo
 # cancellation, so speaker bleed can be transcribed near-verbatim (TTS -> STT -> TTS loop).

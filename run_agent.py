@@ -1337,6 +1337,7 @@ class AIAgent(
                         execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._executing_tools = False
+        self._note_repeated_tool_batch(tool_calls, messages)
         # getattr: test stubs built without _set_defaults drive this method too
         if getattr(self, "_trim_after_tool_batch", False):
             # Only on normal completion: every executor frame that held a >=1 MB raw result has
@@ -1346,6 +1347,29 @@ class AIAgent(
             self._trim_after_tool_batch = False
             from hermes_cli.mem_trim import trim_memory
             trim_memory(reason="large tool result")
+
+    _REPEATED_TOOL_BATCH_LIMIT = 3
+
+    def _note_repeated_tool_batch(self, tool_calls, messages: list) -> None:
+        """Loop guard: when the model emits the identical tool batch (same names + arguments)
+        ``_REPEATED_TOOL_BATCH_LIMIT`` times in a row, append a hint to the last tool result so it stops
+        retrying (e.g. six ``process_manage kill`` calls on an already-exited process). Never raises."""
+        try:
+            sig = tuple((getattr(tc.function, "name", ""), getattr(tc.function, "arguments", "")) for tc in tool_calls)
+            if sig and sig == getattr(self, "_last_tool_batch_sig", None):
+                self._repeated_tool_batch_count = getattr(self, "_repeated_tool_batch_count", 1) + 1
+            else:
+                self._last_tool_batch_sig, self._repeated_tool_batch_count = sig, 1
+            if self._repeated_tool_batch_count < self._REPEATED_TOOL_BATCH_LIMIT:
+                return
+            note = (f"\n\n[Loop guard: you have issued this identical tool call {self._repeated_tool_batch_count} "
+                    "times in a row with no change. Do not repeat it. Change approach, or stop and tell the user.]")
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "tool" and isinstance(msg.get("content"), str):
+                    msg["content"] += note
+                    break
+        except Exception:
+            logger.debug("repeated-tool-batch guard failed", exc_info=True)
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""

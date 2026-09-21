@@ -1213,6 +1213,15 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Once api_max_retries AND the fallback chain are spent on a transient outage
+  # (5xx, overloaded/529, connect/read timeouts) and nothing has been delivered
+  # yet, Hermes waits and retries this many more cycles (jittered 15/30/60/60/60s;
+  # a provider Retry-After wins, up to 120s) showing "Provider temporarily
+  # unavailable — retrying automatically in Ns (cycle k/5); press Esc to stop"
+  # instead of ending the turn. Auth/format/billing/policy errors never enter.
+  # Set 0 to disable (default 5).
+  # auto_recovery_cycles: 5
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. Off by default (false). Set true to force it on
   # everywhere, or "auto" for the surface-aware mode: on for interactive
@@ -1383,6 +1392,7 @@ platform_toolsets:
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
+#       drop_pending_on_cold_boot: true # Drop Telegram's queued updates on a cold boot (default). Set false on hosts that power off, so messages sent while offline are delivered on the next start; watcher reconnects always preserve them
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
@@ -2065,6 +2075,23 @@ telemetry:
     enabled: false
     send: false
     # endpoint: https://telemetry.nousresearch.com/v1/telemetry
+
+
+# =============================================================================
+# Login Policy (credentials themselves live in auth.json / .env)
+# =============================================================================
+auth:
+  # Borrow and refresh the Codex CLI (~/.codex/auth.json) and Claude Code logins when Hermes has
+  # no usable login of its own. Their refresh tokens are single-use, so two programs on one login
+  # can log each other out; set false to make Hermes use only its own logins.
+  adopt_external_logins: true
+  # How `hermes auth add openai-codex` / `hermes model` sign in to OpenAI Codex.
+  #   device_code (default) — open a URL and enter a code.
+  #   browser — authorization-code + PKCE on http://localhost:1455/auth/callback (the redirect
+  #             OpenAI registered for the Codex client) for organizations that disable the
+  #             device-code grant; falls back to device code when that port is busy.
+  # `hermes auth add openai-codex --browser` opts in for a single login without changing this.
+  codex_login_flow: device_code
 
 
 # =============================================================================

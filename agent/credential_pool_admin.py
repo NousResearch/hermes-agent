@@ -54,12 +54,18 @@ class CredentialPoolAdminMixin:
             return len(stale)
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:
+        from agent.credential_pool import persist_pool_entries
+
         with self._lock:
             if index < 1 or index > len(self._entries):
                 return None
             removed = self._entries.pop(index - 1)
             self._entries = [replace(e, priority=p) for p, e in enumerate(self._entries)]
-            self._persist(removed_ids=[removed.id])
+            persist_pool_entries(
+                self.provider,
+                [entry.to_dict() for entry in self._entries],
+                removed_ids=[removed.id],
+            )
             if self._current_id == removed.id:
                 self._current_id = None
             return removed
@@ -108,10 +114,21 @@ class CredentialPoolAdminMixin:
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        from agent.credential_pool import _next_priority
+        from agent.credential_pool import _next_priority, write_credential_pool
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
-            self._persist()
+            borrowed_ids = getattr(self, "_borrowed_root_ids", None)
+            if borrowed_ids:
+                # ``hermes -p <profile> auth add <single-use provider>``: the
+                # profile claims its OWN credential. Persist only profile-owned
+                # rows — copying the borrowed root grant alongside would fork
+                # its single-use refresh token (#100339). Once the profile owns
+                # rows, the root fallback for this provider is shadowed.
+                self._entries = [e for e in self._entries if e.id not in borrowed_ids]
+                write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
+                self._borrowed_root_ids = set()
+            else:
+                self._persist()
             return entry

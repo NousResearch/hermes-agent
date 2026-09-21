@@ -132,6 +132,38 @@ os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 #: even with this block removed.
 HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
 
+# ── Host-rendezvous isolation ───────────────────────────────────────────────
+# ``gateway/host_rendezvous.py`` publishes ONE record per role per OS USER, in
+# ``$HERMES_GATEWAY_LOCK_DIR`` else ``$XDG_STATE_HOME/hermes/gateway-locks`` —
+# deliberately outside HERMES_HOME, because the host singleton spans profiles.
+# Under the per-file parallel runner that directory is shared by ~40 pytest
+# subprocesses: one test that boots a real gateway publishes a record, and every
+# other file's lifecycle code then correctly attaches to a gateway that has
+# nothing to do with it. Give each pytest PROCESS its own rendezvous dir.
+#
+# A caller-supplied value always wins (both here and in the per-test fixture
+# below) — otherwise the documented override is a silent no-op.
+HOST_LOCK_DIR_AT_CONFTEST_IMPORT = os.environ.get("HERMES_GATEWAY_LOCK_DIR", "")
+if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
+    # Deterministic per-PID name, not mkdtemp: the parallel runner SIGKILLs a worker on timeout,
+    # which never runs atexit, so a random dir per run leaked one directory per killed worker.
+    # A fixed name is reused by the next process with that PID, and dead siblings are swept here.
+    _LOCK_DIR_PREFIX = "hermes-test-gateway-locks-"
+    _LOCK_DIR_ROOT = Path(tempfile.gettempdir())
+    for _stale in _LOCK_DIR_ROOT.glob(f"{_LOCK_DIR_PREFIX}*"):
+        try:
+            _stale_pid = int(_stale.name[len(_LOCK_DIR_PREFIX):])
+        except ValueError:
+            continue
+        try:
+            os.kill(_stale_pid, 0)
+        except OSError:
+            shutil.rmtree(_stale, ignore_errors=True)
+    _SESSION_LOCK_DIR = str(_LOCK_DIR_ROOT / f"{_LOCK_DIR_PREFIX}{os.getpid()}")
+    shutil.rmtree(_SESSION_LOCK_DIR, ignore_errors=True)
+    os.environ["HERMES_GATEWAY_LOCK_DIR"] = _SESSION_LOCK_DIR
+    atexit.register(shutil.rmtree, _SESSION_LOCK_DIR, True)
+
 
 # ── Per-file process isolation ──────────────────────────────────────────────
 # Tests run via ``scripts/run_tests_parallel.py``, which spawns a fresh
@@ -511,6 +543,16 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # Per-TEST host-rendezvous dir (see the session-level block at the top): the
+    # host gateway/serve record is shared per OS user by design, so without this
+    # one test's published owner makes the next test's lifecycle code attach to it.
+    # HOME is deliberately NOT redirected above, so an unpinned run would read and
+    # write the developer's live ~/.local/state/hermes/gateway-locks.
+    # Skipped when the caller supplied the variable, so an explicit override still
+    # works (tests of the resolution rule itself rely on that).
+    if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
     # hermes_state's live-DB guard stays armed in them even when the test
@@ -705,8 +747,21 @@ def _close_leaked_session_dbs():
     on those ``close()`` releases a refcount rather than closing, so a sweep
     would silently retire a shared generation that a wider-scoped fixture
     still holds. The registry owns that lifecycle (``close_all()``).
+
+    Before the sweep, the auto-title upgrade threads a turn spawned are joined
+    (bounded): they hold the turn's SessionDB and write to it (and print to
+    ``sys.stdout``) after the turn returns, so left running they race this
+    close (``_reopen_after_close_locked`` on a daemon thread), the next test's
+    capture, and interpreter finalization — the ``Fatal Python error`` /
+    SIGSEGV shape of #113186, seen from ``tests/gateway/test_timestamp_sidecar_replay.py``.
     """
     yield
+    # sys.modules lookup, not import: a file that never touched title_generator spawned
+    # nothing. Tests that swap in a stub module (tui_gateway golden transcript) have no
+    # real threads either, so a stub without the helper is the same "nothing to join" case.
+    wait = getattr(sys.modules.get("agent.title_generator"), "wait_for_title_upgrades", None)
+    if wait is not None:
+        wait()
     try:
         from hermes_state_guard import _test_instance_registry as registry
     except Exception:

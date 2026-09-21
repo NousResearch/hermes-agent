@@ -286,6 +286,10 @@ export interface SubscriptionOverlayState {
   stepUpRetry?: null | SubscriptionStepUpRetry
 }
 
+export interface ConnectionOverlayState {
+  opId: string
+}
+
 export interface OverlayState {
   agents: boolean
   agentsInitialHistoryIndex: number
@@ -296,6 +300,7 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   /** KENSEI CUSTOM: Control Room overlay (Ctrl+P). */
   controlRoom: boolean
+  connection: ConnectionOverlayState | null
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
   /** Modal widget app — owns input, blocks the composer. */

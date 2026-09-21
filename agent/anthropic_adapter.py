@@ -6,7 +6,9 @@ credentials}.py``; import them from there."""
 
 import logging
 import math
+import os
 import re
+import shutil
 import subprocess
 from collections.abc import Iterable
 from contextlib import suppress
@@ -219,10 +221,44 @@ _OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
 
+# Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS
+# LaunchAgents) inherit the bare ``/usr/bin:/bin:/usr/sbin:/sbin``, which carries none of these,
+# so a PATH-only lookup finds nothing there even with the CLI installed — detection then returns
+# the stale fallback and Anthropic 400s with "Claude Code X does not support this model".
+# These are additive: on Windows none resolve to a file and detection falls back to the PATH
+# lookup (which handles PATHEXT), leaving current behaviour there unchanged.
+_CLAUDE_CODE_PREFIXES = (
+    "~/.local/bin", "~/.claude/local", "~/bin", "~/.npm-global/bin", "~/.bun/bin",
+    "~/.volta/bin", "/opt/homebrew/bin", "/usr/local/bin",
+)
+
+
+_CLAUDE_CODE_NAMES = ("claude", "claude-code")
+
+
+def _claude_code_candidates() -> List[str]:
+    """Executable paths to try, deduped and filtered to files that exist.
+
+    Two passes: every PATH hit first (what the user's shell would run), then the
+    well-known install prefixes. A single nested loop would probe a stale prefix
+    ``claude`` before a current PATH ``claude-code``.
+    """
+    seen: Dict[str, None] = {}
+    for name in _CLAUDE_CODE_NAMES:
+        hit = shutil.which(name)
+        if hit:
+            seen.setdefault(hit)
+    for prefix in _CLAUDE_CODE_PREFIXES:
+        for name in _CLAUDE_CODE_NAMES:
+            path = os.path.join(os.path.expanduser(prefix), name)
+            if os.path.isfile(path):
+                seen.setdefault(path)
+    return list(seen)
+
 
 def _detect_claude_code_version() -> str:
     """Installed Claude Code version (``claude --version``), else the static fallback."""
-    for cmd in ("claude", "claude-code"):
+    for cmd in _claude_code_candidates():
         with suppress(Exception):
             result = subprocess.run(
                 [cmd, "--version"],
@@ -339,7 +375,17 @@ def _build_anthropic_client_with_bearer_hook(
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
-    headers = _beta_header(_common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta))
+    betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
+    from agent.anthropic_credentials import anthropic_route_is_oauth
+    if anthropic_route_is_oauth(base_url, token_provider):
+        # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
+        # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
+        # static "oauth" style in build_anthropic_client.
+        headers = _beta_header(betas + _OAUTH_ONLY_BETAS)
+        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
+        headers["x-app"] = "cli"
+    else:
+        headers = _beta_header(betas)
     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 

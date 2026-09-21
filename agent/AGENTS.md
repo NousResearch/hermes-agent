@@ -39,7 +39,8 @@ Each phase of an iteration is its own sibling, so a change to (say) overflow han
 ~600-line file: `turn_preflight*`, `turn_iteration_prep`, `turn_request_assembly`/`turn_api_request`,
 `turn_api_call`, `turn_api_error`, `turn_response_intake`/`turn_response_check`,
 `turn_empty_response`, `turn_tool_round`/`turn_tool_validation`, `turn_overflow`,
-`turn_truncation`, `turn_context_compaction`, `turn_recovery`, `turn_retry_state`,
+`turn_truncation`, `turn_context_compaction`, `turn_recovery`, `turn_recovery_autorecover`
+(post-exhaustion wait-and-retry ladder), `turn_retry_state`,
 `turn_stop_gates`, `turn_liveness`, `turn_usage`, `turn_final_response`, `turn_finalizer`,
 `turn_summary`. Find the phase with `grep -rn "def X" agent/turn_*.py`.
 

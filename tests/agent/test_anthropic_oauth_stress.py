@@ -98,6 +98,7 @@ def _process_claude_code_refresh_worker(
 
     # Keep this worker hermetic: each profile has its own auth store, while
     # both workers deliberately point at the same Claude credential source.
+    auth_mod._global_auth_file_path = lambda: None
     anthropic_mod.claude_code_credentials_path = lambda: shared_path
     anthropic_mod.read_claude_code_credentials = read_shared_credentials
     anthropic_mod._write_claude_code_credentials = write_shared_credentials

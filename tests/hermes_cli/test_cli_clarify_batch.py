@@ -252,6 +252,53 @@ class TestClarifyBatchPanel:
         thread.join(timeout=2)
         assert result["value"] == "a"
 
+        # The connection modal uses the same agent-thread queue handoff. Connect sends the
+        # approved target and env directly to the backend, while rendering masks secrets.
+        cli._connection_state = None
+        cli._capture_modal_input_snapshot = MagicMock()
+        cli._restore_modal_input_snapshot = MagicMock()
+        cli._ring_bell = MagicMock()
+        cli.session_id = "session"
+        operation = MagicMock(op_id="op")
+        payload = {
+            "op_id": "op",
+            "targets": [{
+                "name": "asana",
+                "state": "pending",
+                "instructions": "Use an Asana app.",
+                "required_env": [
+                    {"name": "CLIENT_ID", "prompt": "Client ID", "required": True, "default": "default-id"},
+                    {"name": "CLIENT_SECRET", "prompt": "Client secret", "required": True, "secret": True},
+                ],
+            }],
+        }
+        connection_result = {}
+        with patch.object(cli, "_connection_operation", return_value=operation), patch(
+            "tools.connectors.mcp.apply_answer"
+        ) as apply_answer:
+            connection_thread = threading.Thread(
+                target=lambda: connection_result.setdefault("value", cli._connection_callback(payload)), daemon=True
+            )
+            connection_thread.start()
+            deadline = time.time() + 2
+            while cli._connection_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            state = cli._connection_state
+            state["drafts"]["asana"]["CLIENT_SECRET"] = "never-render-this"
+            assert "never-render-this" not in "\n".join(cli._connection_render_lines())
+            assert "Client secret*: Set" in cli._connection_render_lines()
+            cli._connection_answer(approve=True)
+            connection_thread.join(timeout=2)
+
+        sent = json.loads(apply_answer.call_args.args[1])
+        assert sent == {"targets": [{
+            "name": "asana",
+            "status": "approved",
+            "env": {"CLIENT_ID": "default-id", "CLIENT_SECRET": "never-render-this"},
+        }]}
+        assert connection_result["value"] == "approved"
+        cli._connection_close()
+
 
 class TestClarifyBatchNavigation:
     """Shift-Tab, answer restore on re-visit, and Other edit-prefill."""

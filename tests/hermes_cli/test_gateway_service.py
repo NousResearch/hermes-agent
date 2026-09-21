@@ -2,6 +2,8 @@
 
 import os
 import plistlib
+import re
+import shlex
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +23,19 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     resolve_systemd_timeout_stop_sec,
 )
+
+
+def _osascript_exec_argv(program_args: list[str]) -> list[str]:
+    """The argv a launchd ``ProgramArguments`` of ``/usr/bin/osascript -e <script>`` hands to ``exec`` —
+    undoing the AppleScript string escaping, then POSIX shell quoting, the way osascript and /bin/sh will."""
+    assert program_args[:2] == ["/usr/bin/osascript", "-e"] and len(program_args) == 3, program_args
+    script = program_args[2]
+    prefix, suffix = 'do shell script "', '"'
+    assert script.startswith(prefix) and script.endswith(suffix), script
+    shell = re.sub(r"\\(.)", r"\1", script[len(prefix):-len(suffix)])
+    exec_, *argv = shlex.split(shell)
+    assert exec_ == "exec", shell
+    return argv
 
 
 class TestUserSystemdPrivateSocketPreflight:
@@ -331,6 +346,21 @@ class TestGeneratedSystemdUnits:
         # would otherwise let the process stay stopped instead of being relaunched.
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
+
+    def test_user_unit_carries_ld_library_path_escaped_for_systemd(self, monkeypatch, tmp_path):
+        """#14613: glibc reads LD_LIBRARY_PATH only at process start, so the unit file is the
+        only place it can reach CUDA-backed tools; quotes/backslashes must survive systemd quoting."""
+        # The absent-env branch falls back to the installed unit: keep the host's real one out.
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: tmp_path / "hermes-gateway.service")
+        monkeypatch.setenv("LD_LIBRARY_PATH", '/opt/cu"da/lib64:/opt/back\\slash/lib')
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cu\\"da/lib64:/opt/back\\\\slash/lib"' in unit
+
+        monkeypatch.setenv("LD_LIBRARY_PATH", "")
+        assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
+        monkeypatch.delenv("LD_LIBRARY_PATH")
+        assert "LD_LIBRARY_PATH" not in gateway_cli.generate_systemd_unit(system=False)
 
     def test_unit_stop_budget_beats_drain_only_formula_with_real_loaders(
         self, monkeypatch
@@ -1426,6 +1456,36 @@ class TestSystemUnitHermesHome:
         assert "Wants=user@1001.service" in unit_section
         assert "user@" not in user_unit
 
+    def test_installed_unit_keeps_ld_library_path_when_the_shell_lacks_it(self, monkeypatch, tmp_path):
+        """The unit is regenerated and compared on every start/restart/status; a later shell without
+        the export (ssh, cron, sudo) must see the installed unit as current, not "repair" the line away."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/cuda/lib64:/opt/pct%dir/lib")
+        unit_path.write_text(gateway_cli.generate_systemd_unit(system=False), encoding="utf-8")
+        assert 'Environment="LD_LIBRARY_PATH=/opt/cuda/lib64:/opt/pct%%dir/lib"' in unit_path.read_text()
+
+        monkeypatch.delenv("LD_LIBRARY_PATH")
+
+        assert gateway_cli.systemd_unit_is_current(system=False)
+        assert 'LD_LIBRARY_PATH=/opt/cuda/lib64:/opt/pct%%dir/lib' in gateway_cli.generate_systemd_unit(system=False)
+
+    def test_system_unit_remaps_caller_home_ld_library_path_components(self, monkeypatch):
+        """#14613: under sudo the caller's /root/... library dirs are unreadable to the target
+        user, so each colon-separated component is remapped like the PATH entries are."""
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice", 1001),
+        )
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
+        monkeypatch.setenv("LD_LIBRARY_PATH", "/root/cuda/lib:/opt/cuda/lib64")
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'Environment="LD_LIBRARY_PATH=/home/alice/cuda/lib:/opt/cuda/lib64"' in unit
+
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
@@ -1799,7 +1859,9 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
 
-        assert program_args == [
+        # The job is launched through osascript so macOS Local Network Privacy attributes the
+        # gateway's sockets to a platform binary (#71206); the real command is the exec'd child.
+        assert _osascript_exec_argv(program_args) == [
             "/usr/bin/python3",
             "-m",
             "hermes_cli.stderr_timestamp",
@@ -1814,7 +1876,28 @@ class TestProfileArg:
             "gateway",
             "run",
             "--external-supervisor",
+            ">>",
+            str(profile_dir / "logs" / "gateway.log"),
+            "2>>",
+            str(profile_dir / "logs" / "gateway.error.log"),
         ]
+
+    def test_launchd_osascript_wrapper_round_trips_shell_hostile_paths(self, tmp_path, monkeypatch):
+        """A home with spaces, quotes and a backslash survives shlex + AppleScript + plist quoting."""
+        profile_dir = tmp_path / 'my "odd" dir \\ here' / ".hermes"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(profile_dir / "bin dir" / "python"))
+
+        program_args = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))["ProgramArguments"]
+        argv = _osascript_exec_argv(program_args)
+
+        assert argv[0] == str(profile_dir / "bin dir" / "python")
+        assert argv[-3:] == [str(profile_dir / "logs" / "gateway.log"), "2>>", str(profile_dir / "logs" / "gateway.error.log")]
+        # The wrapper's own ps line must never be taken for the gateway (stop/status would signal osascript).
+        assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -2529,9 +2612,9 @@ class TestServiceTakeoverGovernance:
         plist = gateway_cli.generate_launchd_plist()
         # The whole bug class: no --replace anywhere in the supervised argv.
         assert "--replace" not in plist
-        # It still runs the plain gateway command under KeepAlive.
-        assert "<string>gateway</string>" in plist
-        assert "<string>run</string>" in plist
+        # It still runs the plain gateway command under KeepAlive (inside the osascript wrapper).
+        argv = _osascript_exec_argv(plistlib.loads(plist.encode("utf-8"))["ProgramArguments"])
+        assert argv[argv.index("gateway") + 1] == "run"
         assert "<key>KeepAlive</key>" in plist
         assert "<true/>" in plist
 

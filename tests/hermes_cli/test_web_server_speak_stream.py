@@ -93,6 +93,26 @@ def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
     assert streamer.requests == ["Hello there."]
 
 
+def test_short_cjk_opener_is_synthesized_alone_with_configured_min_len(stream_client, monkeypatch):
+    """speak_stream_ws cuts with the requesting profile's tts.streaming.min_len (#96927): a 7-char
+    CJK opener gets its own provider request instead of riding behind the second sentence."""
+    streamer = _FakeStreamer([b"\x00\x00"])
+    _patch_provider(monkeypatch, streamer)
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {"streaming": {"min_len": 6}})
+
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": "记得，叫团团. 然后我们再说第二句话，这一句要长一些才行. ", "done": True}))
+        # The start frame is deferred until the first PCM chunk (rate learned from the endpoint).
+        assert conn.receive_json()["type"] == "start"
+        while True:
+            message = conn.receive()
+            if message.get("bytes") is None:
+                assert json.loads(message["text"]) == {"type": "end"}
+                break
+
+    assert streamer.requests[0] == "记得，叫团团.", streamer.requests
+
+
 
 
 

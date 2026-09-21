@@ -31,7 +31,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
-import { closeAllOpenSessionTiles } from '@/store/session-states'
+import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -343,6 +343,21 @@ export function TreeGroup({
   const paneLifecycle = lifecycleRef.current.entries
   const keptPanes = shown.filter(id => paneLifecycle[id] && paneLifecycle[id].lifecycle !== 'parked')
 
+  // A parked session pane releases its transcript from the warm cache
+  // (#77311): publish which tiles are parked so use-session-state-cache stops
+  // treating them as referenced. Cleared on unmount so a zone that goes away
+  // never leaves a tile marked parked.
+  const parkedSessionKey = shown
+    .filter(id => id.startsWith('session-tile:') && paneLifecycle[id]?.lifecycle === 'parked')
+    .map(id => id.slice('session-tile:'.length))
+    .join('\n')
+
+  useEffect(() => {
+    setZoneParkedTiles(node.id, parkedSessionKey ? parkedSessionKey.split('\n') : [])
+
+    return () => setZoneParkedTiles(node.id, [])
+  }, [node.id, parkedSessionKey])
+
   // HIDE ≠ CLOSE for stateful guests: a minimized zone keeps only its
   // keep-alive panes mounted (the embedded Browser's <webview> would otherwise
   // be destroyed and rebuilt on restore — fresh document, lost automation
@@ -425,6 +440,9 @@ export function TreeGroup({
 
   // A pane's own live label when it has one, else its registered string.
   const tabLabel = (paneId: string) => paneChrome(paneFor(paneId)).tabTitle?.() ?? paneFor(paneId)?.title ?? paneId
+  // String twin of `tabLabel` for the drag ghost / edit veil: resolved at
+  // drag start, so a locale-following pane reads its LOADED-locale label.
+  const tabText = (paneId: string) => paneChrome(paneFor(paneId)).tabTitleText?.() ?? paneFor(paneId)?.title ?? paneId
 
   // Collapse/restore a tool panel (or plain minimize elsewhere) — the header
   // chevron, routed so ⌃`/the titlebar toggle stay truthful. The strip itself
@@ -561,7 +579,7 @@ export function TreeGroup({
                       event,
                       node.minimized ? () => restoreTreePane(activeId) : undefined,
                       undefined,
-                      active?.title ?? activeId
+                      tabText(activeId)
                     )
                   }
                 }}
@@ -589,7 +607,7 @@ export function TreeGroup({
                   const isActive = paneId === activeId && !node.minimized
                   const chrome = paneChrome(paneFor(paneId))
                   const closeable = closeableTab(paneId)
-                  const title = paneFor(paneId)?.title ?? paneId
+                  const title = tabText(paneId)
                   const isSelected = tabSelection?.groupId === node.id && tabSelection.ids.has(paneId)
 
                   const tab = (
@@ -822,7 +840,7 @@ export function TreeGroup({
             // barely-tinted wash; the light blur reads as "edit mode" the same
             // way the zone editor's backdrop does.
             className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
-            onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, active?.title ?? activeId)}
+            onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
             style={{
               top: topEdge ? TITLEBAR_HEIGHT + (tabsBelowControls && headerVisible ? 28 : 0) : headerVisible ? 28 : 0,
               background:
@@ -832,7 +850,7 @@ export function TreeGroup({
           >
             <span className="flex max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-md border border-(--ui-stroke-secondary) bg-popover px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--ui-text-secondary)">
               <Codicon className="shrink-0" name="gripper" size="0.8125rem" />
-              <span className="min-w-0 truncate">{active?.title ?? activeId}</span>
+              <span className="min-w-0 truncate">{tabText(activeId)}</span>
             </span>
           </div>
         </ZoneMenu>

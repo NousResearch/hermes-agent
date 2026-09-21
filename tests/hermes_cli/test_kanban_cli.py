@@ -59,6 +59,20 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_kanban_show_json_includes_runtime_limit(kanban_home):
+    with kbc.connect() as conn:
+        bounded_id = kb.create_task(
+            conn, title="bounded task", max_runtime_seconds=2700
+        )
+        uncapped_id = kb.create_task(conn, title="uncapped task")
+
+    bounded = json.loads(kc.run_slash(f"show {bounded_id} --json"))
+    uncapped = json.loads(kc.run_slash(f"show {uncapped_id} --json"))
+
+    assert bounded["task"]["max_runtime_seconds"] == 2700
+    assert uncapped["task"]["max_runtime_seconds"] is None
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")
@@ -70,6 +84,22 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert f"Task {child_id}: child task" in output
     assert f"parents:   {parent_id}" in output
     assert "Cannot operate on a closed database" not in output
+
+
+def test_kanban_edit_updates_documented_task_fields(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="old title", body="old body", priority=2)
+
+    output = kc.run_slash(
+        f"edit {task_id} --title 'new title' --body 'new body' --priority 70"
+    )
+
+    assert f"Edited {task_id}" in output
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    assert (task.title, task.body, task.priority) == ("new title", "new body", 70)
+    assert any(event.kind == "reprioritized" for event in events)
 
 
 def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):

@@ -11,7 +11,12 @@ import {
   pinLegacyNewChatProfile
 } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/projects'
-import { isPeerInstanceWindow, isProfilePinnedWindow, windowConnectionOverride, windowProfileOverride } from '@/store/windows'
+import {
+  isPeerInstanceWindow,
+  isProfilePinnedWindow,
+  windowConnectionOverride,
+  windowProfileOverride
+} from '@/store/windows'
 
 /** Only generic New Session actions consult this preference. Explicit profile,
  * agent, project and existing-session actions keep their captured owner. */

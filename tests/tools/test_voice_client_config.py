@@ -152,6 +152,7 @@ def test_elevenlabs_tts_direct_carries_voice_and_model(voice_home, monkeypatch):
         "tts": {
             "provider": "elevenlabs",
             "elevenlabs": {"voice_id": "voice123", "model_id": "eleven_turbo_v2"},
+            "streaming": {"min_len": 6},
         },
     })
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el_key")
@@ -161,6 +162,8 @@ def test_elevenlabs_tts_direct_carries_voice_and_model(voice_home, monkeypatch):
     assert tts["voice"] == "voice123"
     assert tts["model"] == "eleven_turbo_v2"
     assert "elevenlabs.io" in tts["base_url"]
+    # Desktop client-direct playback cuts sentences with tts.streaming.min_len too (#96927).
+    assert tts["min_len"] == 6
 
 
 def test_command_provider_relays(voice_home, monkeypatch):

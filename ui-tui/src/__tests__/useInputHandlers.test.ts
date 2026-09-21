@@ -4,6 +4,7 @@ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/ov
 import { rememberServerRequest, resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import {
   applyVoiceRecordResponse,
+  composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   handleTodoToggleHotkey,
@@ -50,6 +51,15 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
 
   it('does NOT fall through for unrelated state (no scroll keys held)', () => {
     expect(shouldFallThroughForScroll(baseKey)).toBe(false)
+  })
+})
+
+describe('composerHasDraft — Ctrl+D exits only from an empty composer (#116443)', () => {
+  it('is false for an empty composer and true for text, multi-line buffer or attachments', () => {
+    expect(composerHasDraft({ input: '', inputBuf: [], tokens: [] })).toBe(false)
+    expect(composerHasDraft({ input: 'hi', inputBuf: [], tokens: [] })).toBe(true)
+    expect(composerHasDraft({ input: '', inputBuf: ['line 1'], tokens: [] })).toBe(true)
+    expect(composerHasDraft({ input: '', inputBuf: [], tokens: [{ kind: 'image' }] })).toBe(true)
   })
 })
 

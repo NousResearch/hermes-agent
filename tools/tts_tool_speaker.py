@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import itertools
+import json
 import logging
 import os
 import platform
@@ -73,6 +74,29 @@ def _drain_chunks(chunk_queue: "queue.Queue[Optional[bytes]]") -> List[bytes]:
     return list(iter(chunk_queue.get, None))
 
 
+def _first_written_artifact(raw: object, requested: str) -> str:
+    """The audio path the TTS tool actually wrote, falling back to the requested one.
+
+    ``text_to_speech_tool`` reports its artifacts (``file_path``/``file_paths``) in a JSON
+    envelope, and they often land beside — not at — the requested path: a command provider's
+    declared ``format`` rewrites the suffix, and voice-compatible delivery ffmpeg-converts to
+    ``.ogg``. Gating playback on the requested path alone drops every such sentence silently,
+    so prefer the first reported artifact that actually exists and is non-empty."""
+    candidates: List[str] = []
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        if isinstance(payload, dict):
+            reported = payload.get("file_paths") or ([payload["file_path"]] if payload.get("file_path") else [])
+            if isinstance(reported, list):
+                candidates = [p for p in reported if isinstance(p, str)]
+    except (ValueError, TypeError):
+        pass
+    for path in candidates:
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return path
+    return requested
+
+
 class _SyncSentencePipeline:
     """Overlap per-sentence synthesis with playback for non-streaming providers.
 
@@ -106,8 +130,11 @@ class _SyncSentencePipeline:
         try:
             fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
-            _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
-            return tmp_path
+            raw = _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
+            written = _first_written_artifact(raw, tmp_path)
+            if os.path.abspath(written) != os.path.abspath(tmp_path):
+                _unlink_quietly(tmp_path)  # provider wrote elsewhere: the placeholder is empty
+            return written
         except Exception as exc:
             logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
             _unlink_quietly(tmp_path)
@@ -328,7 +355,7 @@ def stream_tts_to_speaker(
                 stream_max_len = origin._resolve_max_text_length(
                     provider or origin._get_provider(tts_config), tts_config)
             playback = _StreamerPlayback(streamer, stop_event)
-        chunker = SentenceChunker()
+        chunker = SentenceChunker.from_config(tts_config)
         spoken_sentences: list[str] = []  # skip duplicate/near-duplicate sentences (LLM repetition)
 
         def _speak_sentence(sentence: str) -> None:

@@ -34,7 +34,8 @@ class RelayChatAccumulator:
     def __init__(self) -> None:
         self._content: list[str] = []
         self._reasoning: list[str] = []
-        self._reasoning_details: list[Any] = []
+        self._refusal: list[str] = []  # OpenAI ``delta.refusal`` — a refusal is content, not an empty stream
+        self._reasoning_details: list[Any] = []  # opaque provider records (signed blocks); order preserved verbatim
         self._tool_calls = _ToolCallAccumulator()
         self._model = self._usage = self._finish_reason = None
         self._role = "assistant"
@@ -63,6 +64,9 @@ class RelayChatAccumulator:
         if reasoning:
             self._reasoning.append(separate_glued_reasoning_blocks(
                 self._reasoning[-1] if self._reasoning else "", reasoning))
+        refusal = delta.get("refusal")
+        if isinstance(refusal, str) and refusal:
+            self._refusal.append(refusal)
         for tc_delta in delta.get("tool_calls") or []:
             self._tool_calls.feed(_tool_call_delta_view(tc_delta))
 
@@ -70,6 +74,7 @@ class RelayChatAccumulator:
         acc = self._tool_calls.materialize()
         message = {"role": self._role, "content": "".join(self._content) or None,
             "reasoning_content": "".join(self._reasoning) or None,
+            "refusal": "".join(self._refusal) or None,
             "reasoning_details": self._reasoning_details or None,
             "tool_calls": [acc[i] for i in sorted(acc)] or None}
         # "stop" also covers Nous Portal ``lastOne`` usage frames, which carry no finish_reason.

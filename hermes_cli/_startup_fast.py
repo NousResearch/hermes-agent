@@ -53,12 +53,26 @@ def normalize_hermes_home_env() -> None:
         os.environ["HERMES_HOME"] = expanded
 
 
+def _realpath_or_self(path: str) -> str:
+    """``os.path.realpath`` that survives a deleted cwd.
+
+    A relative ``sys.path`` entry is resolved through ``os.getcwd()``, which raises
+    ``FileNotFoundError`` once the directory the process started in has been removed
+    (a cron delivery child spawned from a reaped scratch workspace, #102941); the CLI
+    then dies before it can parse argv.
+    """
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+
 def ensure_project_root_on_path() -> None:
     """Put the project root at sys.path[0], deduping realpath-equivalents."""
     project_root = project_root_str()
-    normalized_root = os.path.normcase(os.path.realpath(project_root))
+    normalized_root = os.path.normcase(_realpath_or_self(project_root))
     sys.path[:] = [entry for entry in sys.path
-                   if not entry or os.path.normcase(os.path.realpath(entry)) != normalized_root]
+                   if not entry or os.path.normcase(_realpath_or_self(entry)) != normalized_root]
     sys.path.insert(0, project_root)
 
 

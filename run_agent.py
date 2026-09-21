@@ -671,6 +671,13 @@ class AIAgent(
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
         if normalized_provider in ("nous", "custom") or is_actual_route(provider):
             return False
+        # ACP facades expose the OpenAI-compatible chat.completions shape regardless of model
+        # family and have no ``responses`` attribute, so neither primary routing nor GPT-5
+        # fallback activation may upgrade them. Keyed on the profile's auth_type: every
+        # external-process provider, not one vendor's names.
+        from hermes_cli.runtime_provider_backends import _is_external_process_provider
+        if _is_external_process_provider(normalized_provider):
+            return False
         if normalized_provider == "copilot":
             try:
                 from hermes_cli.models import _should_use_copilot_responses_api
@@ -1321,19 +1328,29 @@ class AIAgent(
         self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
         try:
             if len(tool_calls) <= 1:
-                return self._execute_tool_calls_sequential(*args)
-
-            from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-            active_env = get_active_env(effective_task_id)
-            exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
-            segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
-            if len(segments) == 1:
-                run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
-                return run(*args)
-            from agent.tool_executor import execute_tool_calls_segmented
-            return execute_tool_calls_segmented(self, *args, segments=segments)
+                self._execute_tool_calls_sequential(*args)
+            else:
+                from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+                active_env = get_active_env(effective_task_id)
+                exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
+                segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
+                if len(segments) == 1:
+                    run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
+                    run(*args)
+                else:
+                    from agent.tool_executor import execute_tool_calls_segmented
+                    execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._executing_tools = False
+        # getattr: test stubs built without _set_defaults drive this method too
+        if getattr(self, "_trim_after_tool_batch", False):
+            # Only on normal completion: every executor frame that held a >=1 MB raw result has
+            # unwound and just the spilled preview lives in ``messages``. An in-flight exception
+            # would pin those frames via its traceback, so that path leaves the flag for the
+            # next completed batch (agent/tool_executor.py, #70684).
+            self._trim_after_tool_batch = False
+            from hermes_cli.mem_trim import trim_memory
+            trim_memory(reason="large tool result")
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""

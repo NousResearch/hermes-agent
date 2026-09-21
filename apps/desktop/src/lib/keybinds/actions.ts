@@ -213,7 +213,9 @@ export interface KeybindContribution {
 // React consumers pass their `useContributions(KEYBINDS_AREA)` snapshot in:
 // with React Compiler enabled, an independently-called `contributedKeybinds()`
 // can stay memoized across a late registration the subscription DID deliver.
-export function contributedKeybinds(contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)): KeybindContribution[] {
+export function contributedKeybinds(
+  contributions: readonly Contribution[] = registry.getArea(KEYBINDS_AREA)
+): KeybindContribution[] {
   return contributions
     .map(c => c.data as KeybindContribution)
     .filter(k => Boolean(k?.id && k.label) && typeof k?.run === 'function' && !ACTION_BY_ID.has(k.id))

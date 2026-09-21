@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 from agent.sdk_transform_bypass import bypass_sdk_request_transform
+from agent.stream_diag import buffer_connect_exhausted_notice
 from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
@@ -459,10 +460,52 @@ def _codex_developer_instructions(agent) -> str:
     return developer_instructions
 
 
-def _ensure_codex_session(agent) -> None:
+# Durable codex thread binding: ``sessions.model_config.codex_thread_id`` (hermes_state), written after the
+# turn's projected rows were committed, read by the next AIAgent built for the same Hermes session so an
+# API-server restart (or the per-request agents of /api/sessions/{id}/chat) resumes the model-side thread
+# instead of starting an empty one while Hermes' own transcript continues (#100531).
+_CODEX_THREAD_ID_KEY = "codex_thread_id"
+_CODEX_THREAD_RESUME_NOTICE = "Codex thread could not be resumed; starting a new one."
+
+
+def _stored_codex_thread_id(agent) -> str | None:
+    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    if db is None or not session_id:
+        return None
+    thread_id = db.get_session_model_config_value(session_id, _CODEX_THREAD_ID_KEY)
+    return thread_id if isinstance(thread_id, str) and thread_id else None
+
+
+def _store_codex_thread_id(agent, thread_id: str | None) -> None:
+    """Merge (``None`` clears) the binding into the session row; a failed write only logs — the turn is done."""
+    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
+    if db is None or not session_id:
+        return
+    _call_guarded(db.patch_session_model_config, "codex thread id could not be stored on the session row",
+                  args=(session_id, {_CODEX_THREAD_ID_KEY: thread_id}))
+
+
+def _start_codex_thread(agent) -> str:
+    """``ensure_started`` with the fail-closed resume policy: a stored thread that codex cannot hand back
+    (unknown id, rollout locked by a killed app-server, different thread) is dropped from the session row,
+    the user is told once on the status rail, and a fresh thread starts on the same client."""
+    from agent.transports.codex_app_server_session import CodexThreadResumeError
+    try:
+        return agent._codex_session.ensure_started()
+    except CodexThreadResumeError as exc:
+        logger.warning("%s; starting a new codex thread (session=%s)", exc.message, getattr(agent, "session_id", None))
+        _store_codex_thread_id(agent, None)
+        agent._emit_diagnostic_status(_CODEX_THREAD_RESUME_NOTICE)
+        return agent._codex_session.ensure_started()
+
+
+def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
-    or a prompt mirror mutate the agent in place) is retired first so the new thread carries the current one."""
+    or a prompt mirror mutate the agent in place) is retired first so the new thread carries the current one.
+    Only the FIRST session of an AIAgent resumes the stored codex thread: a retired/recreated one keeps
+    today's fresh-thread behaviour and overwrites the binding once its turn is committed. ``messages`` is the
+    turn's transcript (current user row last); a thread started from scratch is seeded with the prior turns."""
     developer_instructions = _codex_developer_instructions(agent)
     if getattr(agent, "_codex_session", None) is not None:
         # Only a session whose recorded composition differs is stale; one attached without a record is kept.
@@ -470,6 +513,7 @@ def _ensure_codex_session(agent) -> None:
         if recorded is None or recorded == developer_instructions:
             return
         _close_codex_session(agent)
+    resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
@@ -494,26 +538,40 @@ def _ensure_codex_session(agent) -> None:
     # narrower item/started-only bridge from #38835.
     # Hermes owns the prompt: the same composition the standard loop sends as its system message
     # (cached per-session prompt + ephemeral additions such as channel overrides) rides along ONCE per
-    # thread as developerInstructions. A retired/recreated session re-sends the current composition;
-    # conversation history is still not projected into the codex thread (#74712, #26035).
+    # thread as developerInstructions. A retired/recreated session re-sends the current composition.
+    # A thread started from scratch (no resumable codex thread) also receives the session's prior turns
+    # once, so a /model switch into codex or a retired thread does not start blind (#74712, #26035).
+    # The recorded composition stays the bare prompt: the seed must not make the next turn retire the thread.
     agent._codex_session_prompt = developer_instructions
+    from agent.codex_runtime_history_seed import render_history_seed
+    history_seed = render_history_seed(messages) or None
+    # A named custom provider (``providers.<name>``) maps onto codex's own ``[model_providers.<name>]``
+    # table: send the stable id plus the active model and let codex resolve base_url/env_key itself, so
+    # Hermes' credential never enters the JSON-RPC payload (#75186). openai/openai-codex keep codex's defaults.
+    model_provider = None
+    if str(getattr(agent, "provider", "") or "").strip().lower() == "custom":
+        from hermes_cli.runtime_provider_custom import codex_model_provider_id
+        model_provider = codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         codex_bin=get_configured_codex_binary(load_config()),
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
+        model=getattr(agent, "model", None) if model_provider else None, model_provider=model_provider,
+        resume_thread_id=resume_thread_id, history_seed=history_seed,
     )
 
 
-def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> None:
-    """Splice the projected messages into ``messages`` and flush them to the session DB.
+def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> bool:
+    """Splice the projected messages into ``messages`` and flush them to the session DB; True when the
+    rows are durable in the session DB (the codex thread binding may then be published).
 
     Bypasses conversation_loop's per-step _persist_session(); the flush dedups via _DB_PERSISTED_MARKER so
     only the new codex rows are written. The agent stays the sole persister (agent_persisted=True): a
     gateway re-write would re-INSERT the user turn."""
     if not turn.projected_messages:
-        return
+        return False
     from agent.message_metadata import append_message
     projected_messages = turn.projected_messages
     # Turn-start persistence owns the accepted input. Codex's leading user item
@@ -526,7 +584,7 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
     for projected_message in projected_messages:
         append_message(messages, projected_message)
     if getattr(agent, "_session_db", None) is None:
-        return
+        return False
     flush_ok = False
     try:
         flush_ok = agent._flush_messages_to_session_db(messages)
@@ -536,6 +594,7 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
         # Output already streamed and agent_persisted cannot flip to False: surface the gap loudly.
         logger.warning("codex app-server turn was delivered but could NOT be persisted to the session DB "
                        "(session=%s) — this turn will be missing after restart/resume", getattr(agent, "session_id", None))
+    return flush_ok is True
 
 
 def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_user_message: Any,
@@ -573,8 +632,9 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
-    _ensure_codex_session(agent)
+    _ensure_codex_session(agent, messages)
     try:
+        _start_codex_thread(agent)
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
@@ -589,7 +649,10 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
-    _persist_projected_messages(agent, turn, messages)
+    # The binding is published only once the transcript it belongs to is durable, and never for a
+    # retired thread (the next agent would only resume into the same wedge).
+    if _persist_projected_messages(agent, turn, messages) and not getattr(turn, "should_retire", False):
+        _store_codex_thread_id(agent, turn.thread_id)
     usage_result = _finish_codex_turn(
         agent, turn, messages, original_user_message=original_user_message, should_review_memory=should_review_memory,
     )
@@ -1032,6 +1095,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                        "exception_chain=%s model=%s attempt=%s", "unknown" if request_body_bytes is None else request_body_bytes,
                        str(writer_token["value"] is not None).lower(), exception_chain, getattr(agent, "model", "unknown"),
                        f"{attempt + 1}/{max_stream_retries + 1}")
+        if writer_token["value"] is None:
+            # No stream ever opened: the user gets one line naming host/attempts/size (#97548).
+            buffer_connect_exhausted_notice(
+                agent, exc, attempts=attempt + 1,
+                base_url=getattr(active_client, "base_url", None) or getattr(agent, "base_url", ""))
 
     def _codex_stream_created(_raw_stream: Any) -> None:
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.

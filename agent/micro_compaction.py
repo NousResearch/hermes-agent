@@ -395,8 +395,7 @@ class MicroCompactionMixin:
         cc = _cc()
         return f"{cc.SUMMARY_PREFIX}\n\n{cc.HISTORICAL_TASK_HEADING}\n{summary_text.strip()}\n\n{cc._SUMMARY_END_MARKER}"
 
-    @staticmethod
-    def _merge_adjacent_user_turns(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_adjacent_user_turns(self, result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge consecutive plain-text real user turns left by a supersede. Same ``\\n\\n`` join as
         ``repair_message_sequence`` pass 2, done here so the marker and cursor are never collateral
         damage of the downstream repair. Lists untouched."""
@@ -414,6 +413,12 @@ class MicroCompactionMixin:
             if _plain_user(msg) and _plain_user(prev):
                 prev["content"] = "\n\n".join(c for c in (prev["content"], msg["content"]) if c)
                 drop_stale_api_content(prev)  # merged content invalidates the api_content sidecar
+                # The merge rewrites a live dict that may carry _db_persisted: pop the stamp
+                # and flag the finalizer to invalidate the bounded flush-scan cursor, or the
+                # merged text is identity-skipped and never reaches state.db. Same contract
+                # as the defrag rewrite site above.
+                prev.pop(_cc()._DB_PERSISTED_MARKER, None)
+                self._flush_scan_cursor_invalidated = True
             else:
                 merged.append(msg)
         return merged

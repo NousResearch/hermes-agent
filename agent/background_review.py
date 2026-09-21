@@ -256,8 +256,27 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
             "args": list(rp.get("args") or []), "routed": True,
         }
     except Exception as e:
-        logger.debug("background-review aux routing failed (%s); using main model", e)
+        _warn_review_routing_fallback(agent, task_provider, task_model, e)
         return parent
+
+
+def _warn_review_routing_fallback(agent: Any, task_provider: str, task_model: str, error: Exception) -> None:
+    """The configured review route could not be resolved, so the fork runs on the main model. That
+    was a debug-level line nobody saw (#116055): the misrouted model never ran and nothing said so.
+    User-visible notice once per agent (same rail as the reasoning_effort notice); log every time."""
+    message = (
+        f"⚠ auxiliary.background_review.provider='{task_provider}' (model '{task_model}') could not be "
+        f"resolved: {str(error).splitlines()[0]} — background reviews run on the main model "
+        f"{agent.provider}/{agent.model} instead. Run 'hermes doctor' to check auxiliary routing."
+    )
+    logger.warning("%s", message)
+    if getattr(agent, "_warned_bg_review_routing", False):
+        return
+    agent._warned_bg_review_routing = True
+    emit = getattr(agent, "_emit_warning", None)
+    if callable(emit):
+        with suppress(Exception):
+            emit(message)
 
 
 def _parent_can_emit_tool_calls(agent: Any) -> bool:

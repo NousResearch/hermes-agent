@@ -357,7 +357,12 @@ export function upsertToolPart(
 
   if (index === -1) {
     next.push(base)
-  } else if (phase === 'running' && prev?.type === 'tool-call' && prev.completedAt !== undefined && prev.result === undefined) {
+  } else if (
+    phase === 'running' &&
+    prev?.type === 'tool-call' &&
+    prev.completedAt !== undefined &&
+    prev.result === undefined
+  ) {
     // A settle-time seal (interim boundary, mid-turn user message, lost
     // completion) closed this call without a result. A running event for the
     // same id says the tool is still executing, so the row goes live again
@@ -810,7 +815,7 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       result: parseStoredToolResult(content),
       isError: false
     } as ChatMessagePart
-    messages[i] = { ...message, parts }
+    messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
 
     return true
   }

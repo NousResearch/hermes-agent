@@ -74,7 +74,7 @@ def test_catalog_rejects_undeclared_key_before_any_write_or_install(
     monkeypatch.setattr(
         mcp_catalog,
         "install_entry",
-        lambda entry, enable=True: installs.append(entry.name),
+        lambda entry, enable=True, preloaded_env=None: installs.append(entry.name),
     )
 
     response = client.post(
@@ -122,7 +122,7 @@ def test_catalog_cannot_declare_reserved_control_key(
     monkeypatch.setattr(
         mcp_catalog,
         "install_entry",
-        lambda entry, enable=True: installs.append(entry.name),
+        lambda entry, enable=True, preloaded_env=None: installs.append(entry.name),
     )
 
     response = client.post(
@@ -145,25 +145,93 @@ def test_catalog_accepts_declared_credential(
     catalog_env: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    import hermes_cli.mcp_config as mcp_config
+    from agent.secret_scope import get_secret
+    from tools.connectors.mcp import _CatalogBackend
+
+    probes: list[str] = []
+
+    def probe(name, cfg, **_kwargs):
+        # The credential is in scope for the probe, and nothing is saved before it answers.
+        assert get_secret("DEMO_API_KEY") == "valid-demo-value"
+        assert not (catalog_env / ".env").exists()
+        assert "demo" not in mcp_config._get_mcp_servers()
+        probes.append(name)
+        return [("demo_tool", "")]
+
+    monkeypatch.setattr(mcp_config, "_probe_single_server", probe)
+
+    assert _CatalogBackend().install(
+        "demo", {"DEMO_API_KEY": "valid-demo-value"}
+    ) == ["demo_tool"]
+    assert probes == ["demo"]
+    assert "demo" in mcp_config._get_mcp_servers()
+    assert "DEMO_API_KEY=valid-demo-value" in (
+        catalog_env / ".env"
+    ).read_text(encoding="utf-8")
+
+
+def test_catalog_non_secret_env_never_lands_in_env_file(
+    client: TestClient,
+    catalog_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Non-secret declared env vars (e.g. a base URL) are not written to .env:
+    install_entry inlines them into the server config instead."""
     import hermes_cli.mcp_catalog as mcp_catalog
 
-    installs: list[str] = []
+    catalog_root = Path(os.environ["HERMES_OPTIONAL_MCPS"])
+    manifest_path = catalog_root / "demo" / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["auth"]["env"].append(
+        {
+            "name": "DEMO_BASE_URL",
+            "prompt": "Demo base URL",
+            "secret": False,
+        }
+    )
+    # The transport references the non-secret var; install_entry inlines it.
+    # (HTTP transport so the var lands in the server url.)
+    manifest["transport"] = {"type": "http", "url": "${DEMO_BASE_URL}"}
+    manifest["auth"]["type"] = "api_key"
+    manifest["auth"]["env"] = [
+        {"name": "MCP_DEMO_API_KEY", "prompt": "Demo API key", "secret": True},
+        {"name": "DEMO_BASE_URL", "prompt": "Demo base URL", "secret": False},
+    ]
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    # The real install_entry probes the server after writing config; avoid
+    # launching a nonexistent binary in tests.
     monkeypatch.setattr(
         mcp_catalog,
-        "install_entry",
-        lambda entry, enable=True: installs.append(entry.name),
+        "_probe_tools",
+        lambda name: None,
     )
 
     response = client.post(
         "/api/mcp/catalog/install",
         headers=HEADERS,
-        json={"name": "demo", "env": {"DEMO_API_KEY": "valid-demo-value"}},
+        json={
+            "name": "demo",
+            "env": {
+                "MCP_DEMO_API_KEY": "valid-demo-value",
+                "DEMO_BASE_URL": "https://demo.example.test",
+            },
+        },
     )
 
     assert response.status_code == 200
-    assert installs == ["demo"]
-    assert "DEMO_API_KEY=valid-demo-value" in (
-        catalog_env / ".env"
+    env_text = (catalog_env / ".env").read_text(encoding="utf-8")
+    assert "MCP_DEMO_API_KEY=valid-demo-value" in env_text
+    assert "DEMO_BASE_URL" not in env_text
+    assert "https://demo.example.test" not in env_text
+    # The non-secret is inlined into config.yaml (server config carries the
+    # literal; the raw file never stores it and never keeps a ${VAR} ref).
+    from hermes_cli.config import load_config
+
+    server = load_config()["mcp_servers"]["demo"]
+    assert server["url"] == "https://demo.example.test"
+    assert "${DEMO_BASE_URL}" not in (
+        catalog_env / "config.yaml"
     ).read_text(encoding="utf-8")
 
 
@@ -255,3 +323,34 @@ def test_preexisting_copilot_controls_remain_usable(
 
     assert _resolve_command() == "/opt/operator/copilot"
     assert _resolve_args() == ["--acp", "--stdio", "--operator-mode"]
+
+
+def test_connection_card_install_keeps_env_file_secrets_only(
+    client: TestClient,
+    catalog_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The connector-card backend (Desktop/TUI/CLI setup card) makes the same secrets-only split
+    as the terminal install: a declared non-secret lands in the server block, never in .env."""
+    import hermes_cli.mcp_config as mcp_config
+    from tools.connectors.mcp import _CatalogBackend
+
+    catalog_root = Path(os.environ["HERMES_OPTIONAL_MCPS"])
+    manifest_path = catalog_root / "demo" / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["transport"]["env"] = {"DEMO_BASE_URL": "${DEMO_BASE_URL}"}
+    manifest["auth"]["env"] = [
+        {"name": "DEMO_API_KEY", "prompt": "Demo API key", "secret": True},
+        {"name": "DEMO_BASE_URL", "prompt": "Demo base URL", "secret": False},
+    ]
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    monkeypatch.setattr(mcp_config, "_probe_single_server", lambda name, cfg, **_k: [("demo_tool", "")])
+
+    _CatalogBackend().install(
+        "demo", {"DEMO_API_KEY": "valid-demo-value", "DEMO_BASE_URL": "https://demo.example.test"}
+    )
+
+    env_text = (catalog_env / ".env").read_text(encoding="utf-8")
+    assert "DEMO_API_KEY=valid-demo-value" in env_text
+    assert "DEMO_BASE_URL" not in env_text and "https://demo.example.test" not in env_text
+    assert mcp_config._get_mcp_servers()["demo"]["env"]["DEMO_BASE_URL"] == "https://demo.example.test"

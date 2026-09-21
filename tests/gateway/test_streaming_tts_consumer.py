@@ -463,6 +463,19 @@ class TestStreamerFormatAndLooping:
             tts_streaming.resolve_streaming_provider = original_resolve
             loop.close()
 
+    def test_chunker_min_len_comes_from_tts_streaming_config(self):
+        """The gateway consumer honours tts.streaming.min_len (#96927) instead of the class default."""
+        import tools.tts_streaming as tts_streaming
+        original_resolve = tts_streaming.resolve_streaming_provider
+        tts_streaming.resolve_streaming_provider = lambda *_args, **_kwargs: None
+        loop = asyncio.new_event_loop()
+        try:
+            consumer = StreamingTTSConsumer(FakeVoiceAdapter(), "chat1", {"streaming": {"min_len": 6}}, loop)
+            assert consumer._chunker.min_len == 6
+        finally:
+            tts_streaming.resolve_streaming_provider = original_resolve
+            loop.close()
+
 
 class TestGatewayIntegrationSeam:
     """The actual adapter seam is per-turn, not chat-only."""

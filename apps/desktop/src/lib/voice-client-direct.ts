@@ -1,4 +1,4 @@
-import { profileScoped } from '@/api/client'
+import { type OwnerScope, ownerScoped } from '@/api/client'
 import { getApiRequestConnection, getApiRequestProfile, hermesApi } from '@/hermes'
 
 /**
@@ -40,6 +40,8 @@ export interface DirectTtsConfig {
   model: null | string
   voice: null | string
   speed: null | number
+  /** tts.streaming.min_len — shortest first sentence (chars) cut on its own; absent on older backends. */
+  min_len?: null | number
   /** Optional tts.openai fields the server forwards verbatim (lang_code, consent_attestation). */
   extra_body?: Record<string, unknown>
 }
@@ -68,8 +70,10 @@ const STT_REQUEST_TIMEOUT_MS = 60_000
 let cached: { key: string; at: number; config: VoiceClientConfig } | null = null
 let inflight: { key: string; promise: Promise<null | VoiceClientConfig> } | null = null
 
-function scopeKey(): string {
-  return `${getApiRequestConnection() ?? 'local'}::${getApiRequestProfile() ?? 'default'}`
+// `owner` is the speaking session's (connection, profile) — a Bot chat runs
+// on its own profile, on its own gateway; missing halves → the active scope.
+function scopeKey(owner?: OwnerScope): string {
+  return `${owner?.connectionId || getApiRequestConnection() || 'local'}::${owner?.profile || getApiRequestProfile() || 'default'}`
 }
 
 /** Drop cached credentials (used by tests; scope changes rotate the key). */
@@ -78,8 +82,8 @@ export function clearVoiceClientConfigCache(): void {
   inflight = null
 }
 
-export async function fetchVoiceClientConfig(): Promise<null | VoiceClientConfig> {
-  const key = scopeKey()
+export async function fetchVoiceClientConfig(owner?: OwnerScope): Promise<null | VoiceClientConfig> {
+  const key = scopeKey(owner)
 
   if (cached && cached.key === key && Date.now() - cached.at < CONFIG_TTL_MS) {
     return cached.config
@@ -95,7 +99,7 @@ export async function fetchVoiceClientConfig(): Promise<null | VoiceClientConfig
       // profile — the same routing every relay audio call uses, so the
       // config comes from the backend the user is actually talking to.
       const response = await hermesApi<{ ok: boolean } & VoiceClientConfig>({
-        ...profileScoped(),
+        ...ownerScoped(owner),
         path: '/api/audio/voice-config'
       })
 
@@ -314,8 +318,8 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
 // ---------------------------------------------------------------------------
 
 /** Resolve the profile's TTS config when it is client-callable, else null. */
-export async function directTtsConfig(): Promise<DirectTtsConfig | null> {
-  const config = await fetchVoiceClientConfig()
+export async function directTtsConfig(owner?: OwnerScope): Promise<DirectTtsConfig | null> {
+  const config = await fetchVoiceClientConfig(owner)
 
   return config?.tts && config.tts.mode === 'direct' ? config.tts : null
 }
@@ -384,7 +388,14 @@ export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: s
 const SENTENCE_BOUNDARY_RE = /[.!?…。！？]+["'”’)\]]*\s+/g
 const MIN_SENTENCE_CHARS = 24
 
-export function cutSentences(buffer: string, flush: boolean): { sentences: string[]; rest: string } {
+export function cutSentences(
+  buffer: string,
+  flush: boolean,
+  minSentenceChars?: null | number
+): { sentences: string[]; rest: string } {
+  // tts.streaming.min_len when the backend sends it (a 5–7 char CJK opener is a
+  // whole clause); the historical 24 for older backends without the key.
+  const minChars = minSentenceChars ?? MIN_SENTENCE_CHARS
   const sentences: string[] = []
   let rest = buffer
   let start = 0
@@ -399,7 +410,7 @@ export function cutSentences(buffer: string, flush: boolean): { sentences: strin
 
     // Too-short fragments ("e.g. ", "1. ") stay buffered so we don't fire a
     // provider call per abbreviation — unless a later boundary extends them.
-    if (candidate.length >= MIN_SENTENCE_CHARS) {
+    if (candidate.length >= minChars) {
       sentences.push(candidate)
       start = end
     }

@@ -1,0 +1,31 @@
+name: browserclaw
+repo: https://github.com/GoldenLoaf24h/browserclaw
+sha: 4436397402e38e22e68157e61b9573934d6d1129
+subdir: "plugins/browserclaw"
+description: "Ultra-fast dual-brain Chrome browser automation with 1-based DOM indexing, visual fallbacks, Jev micro-loop, and local MCP bridge."
+maintainer: GoldenLoaf24h
+tier: community
+category: web
+requires_hermes: ">=0.19"
+docs_url: "https://github.com/GoldenLoaf24h/browserclaw#readme"
+version: "3.0.0"
+capabilities:
+  provides_tools:
+    - browserclaw_act_toward_goal
+    - browserclaw_navigate
+    - browserclaw_read_dom
+    - browserclaw_interact_index
+    - browserclaw_fill_index
+    - browserclaw_batch_actions
+    - browserclaw_screenshot
+    - browserclaw_smart_scroll
+    - browserclaw_inspect_media
+    - browserclaw_grep
+    - browserclaw_get_markdown
+    - browserclaw_switch_tab
+    - browserclaw_close_tabs
+    - browserclaw_get_windows_and_tabs
+    - browserclaw_tool_docs
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

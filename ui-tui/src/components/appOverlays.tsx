@@ -11,6 +11,7 @@ import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { AskUserQuestionsTool } from './askUserQuestionsTool.js'
 import { BillingOverlay } from './billingOverlay.js'
+import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
@@ -121,6 +122,14 @@ export function PromptZone({
     return (
       <PromptCell cols={cols} id="subscription">
         <SubscriptionOverlay onClose={onClose} onPatch={onPatch} overlay={current} t={theme} />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.connection) {
+    return (
+      <PromptCell cols={cols} id="connection">
+        <ConnectionSetupOverlay cols={cols} t={theme} />
       </PromptCell>
     )
   }

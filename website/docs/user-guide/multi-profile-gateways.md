@@ -64,14 +64,35 @@ automatically on crash and on user login.
 ## Alternative: one gateway for all profiles (multiplexing)
 
 The model above runs **one process per profile**. The alternative is a
-**single multiplexing gateway**: the default profile's gateway becomes the sole
-inbound process and serves messages for *every* profile on the box.
+**single multiplexing gateway**: one gateway process — whichever profile
+launched it — becomes the sole inbound process and serves messages for *every*
+profile on the box.
+
+Because there is only ever one of them, the lifecycle verbs target that process
+rather than "this profile's gateway":
+
+- `hermes -p <name> gateway run` while it is live **attaches** instead of
+  starting a second process: it prints the host gateway's PID and served set and
+  exits 0. If `<name>` is not served yet, it asks the host gateway to re-scan
+  `profiles/` and attaches once the answer includes it; it refuses (non-zero)
+  only when the host gateway cannot be made to serve it.
+- `hermes gateway start --all` / `restart --all` mean *the one host
+  multiplexer*. They never sweep every gateway process on the box; a profile
+  that still runs its own gateway is reported, never killed, with the
+  `hermes gateway migrate --multiplex` one-liner.
+- `hermes gateway run --replace` takes the host role over, whichever profile
+  launched the running process; `hermes gateway run --force` starts a separate
+  gateway without asking the host process at all (the escape hatch when it is
+  wedged or answering wrongly).
+- Under a service supervisor the attach exits 75, not 0 — systemd, s6 and
+  launchd all restart a 75 after a short delay, so the unit keeps retrying and
+  takes over by itself the moment the host process goes away.
 
 Multiplexing is **on by default** (`gateway.multiplex_profiles` defaults to
 `true`), with one safety rule: an *unset* flag is a request the default gateway
 settles at boot, never a verdict. Each start it runs the same preflight as
 [`hermes gateway migrate --multiplex`](#migrating-from-per-profile-gateways) and
-multiplexes only when the fold would have been safe — the default profile, two
+multiplexes only when the fold would have been safe — two
 or more profiles, no secondary still running its own gateway (live process or
 installed service), no duplicate bot credential, no port-binding platform
 without a `/p/<profile>/` ingress, and a host the migration understands (not an
@@ -107,8 +128,8 @@ ability to restart one profile without touching the others).
 ### Pinning the flag
 
 With the flag unset, the default gateway decides at each boot (above). To pin
-it, set it on the **default profile** (it owns the multiplexer) and restart its
-gateway — `true` forces multiplexing even where the boot preflight would have
+it, set it on the profile whose gateway runs as the host process (usually the
+**default profile**) and restart its gateway — `true` forces multiplexing even where the boot preflight would have
 held back, `false` opts out durably:
 
 ```bash
@@ -355,7 +376,9 @@ parent conversation.
 
 There is a single process-level PID and lock (the multiplexer, under the default home). `hermes status` on the default profile reports the multiplexer and lists the profiles it serves (`Serves: coder, research`). `hermes -p coder status` and `hermes -p coder gateway status` report "running via the default-profile multiplexer" instead of "stopped". The dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as coder's running gateway, with coder's own adapters as its platforms. The single `gateway_state.json` lives under the default home: secondary adapters appear there as `<profile>:<platform>` entries beside `served_profiles`; no per-profile gateway status file is written.
 
-`hermes -p coder cron status` prints `Scheduler host: default-profile multiplexer`, then checks coder's own ticker heartbeat and last successful tick. A missing or stale heartbeat produces a warning rather than an unconditional running verdict; the restart hint targets `hermes --profile default gateway restart`. `cron list` and `cron create` also warn when a served profile has no fresh heartbeat. `cron status` adds tick-failure details that those lightweight checks do not read.
+`hermes -p coder cron status` names the single host gateway and the profiles it serves — `Scheduler host: the host gateway (PID 4211) serving profiles default, coder` — then checks coder's own ticker heartbeat and last successful tick. A missing or stale heartbeat produces a warning rather than an unconditional running verdict. `cron list` and `cron create` also warn when a served profile has no fresh heartbeat. `cron status` adds tick-failure details that those lightweight checks do not read.
+
+When no gateway owns the host role, `cron status` tells you to start the **one** host gateway (`hermes --profile default gateway install` / `gateway run`) and to make sure it serves this profile. Installing a per-profile service is shown only under `LEGACY (pre-multiplex topology, not recommended)`: it would start a second gateway process on the host. `hermes doctor` follows the same rule — under s6 it reports `Host gateway: the host gateway (PID 4211) serving profiles default, coder` instead of a per-profile slot count, flags any still-supervised per-profile slot as LEGACY, and checks the host systemd unit's linger even when you run doctor from a served profile. The `state.db` holder lines name the shared host process too, so "3 process(es) holding the DB open" says which gateway and which profiles stopping it would affect.
 
 #### What does **not** change
 
@@ -372,7 +395,10 @@ route *and* credentials, including mTLS `client_cert`/`client_key`) share one
 connection, and an owner's `/reload-mcp`
 re-registers the sharing profiles' tools without them reloading. `auth: oauth`
 servers are never shared across profiles: each profile holds its own token under
-its own `mcp-tokens/` and opens its own connection. Trust policy stays per
+its own `mcp-tokens/` and opens its own connection. Startup connects profiles one
+after another and, within a profile, at most `mcp.discovery_concurrency` servers at
+once (default 4, `0` = unlimited), so a fleet of profiles with many stdio servers
+no longer spawns every helper process in the same instant. Trust policy stays per
 profile: a `trust: untrusted` profile sharing a `trust: full` profile's
 connection is still asked before every write-capable call, and
 `supports_parallel_tool_calls` applies only to the profile that set it. Terminal settings
@@ -444,7 +470,6 @@ profile and never shares with the default or any sibling:
 | Concern | Resolved from | Behaviour when the profile lacks it |
 |---|---|---|
 | Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
-| Provider logins and the credential pool (`auth.json`: OAuth tokens, `hermes auth add` keys) | The profile's own `auth.json` | "Not connected to any AI provider" with the `hermes -p <name> model` hint — never the default profile's login, and a refresh never writes to the root store |
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
 | HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
 | Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
@@ -460,6 +485,7 @@ profile and never shares with the default or any sibling:
 | Sandbox credential-file mounts (`terminal.credential_files`), `security.redact_secrets`, `browser.*` engine/headed flags, `lsp.*`, auxiliary-provider health marks, `logs/mcp-stderr.log` | The profile's own `config.yaml` / `.env` | Documented default — never the launch profile's cached value |
 | Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, Copilot context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), Camofox VNC address, computer-use aux-vision routing, skill-sync push, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
 | Session-search knobs (`sessions.cjk_fts`, `sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
+| RoomLink capability catalog and the signed execution policy it advertises to a remote Bot (`approvals.mode`, `agent.max_turns`, `platform_toolsets.api_server`) | The served profile named by the request (`/p/<profile>/v1/room-members/...`, the RPC `profile` param); `target_profile` is **required** on every catalog — there is no `HERMES_PROFILE` fallback | Invitation/capabilities fail with the offending `target_profile` named; a profile that does not exist is refused, never resolved from the launch profile's config |
 | Platform proxies (`TELEGRAM_PROXY`, `DISCORD_PROXY`, `HTTPS_PROXY`, …) | The profile's own `.env` | Direct connection — never the default profile's proxy |
 | MCP discovery in the Desktop/dashboard backend | Once per served profile home | A profile selected after another has already built an agent still discovers its own `mcp_servers` |
 | Settings changed from a Desktop / TUI session (`/busy`, `/verbose`, `/approval`, `/cwd`, theme and display toggles) | The `config.yaml` of the profile that owns the session, even when the RPC carries only the session id | The session's own profile is written; the launch profile's `config.yaml` and its `TERMINAL_CWD` are never touched |

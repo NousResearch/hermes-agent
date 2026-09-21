@@ -1,8 +1,12 @@
+import { isPreviewableTarget, toolPreviewOutcome } from '@/components/assistant-ui/tool/fallback-model'
 import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
+import { toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { todoSnapshotFromGatewayPayload } from '@/lib/todo-events'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
+import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
+import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
@@ -75,7 +79,31 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'tool.complete') {
     if (sessionId) {
       flushQueuedDeltas(sessionId)
+
+      const state = $sessionStates.get()[sessionId]
+      // Read before the upsert seals the part: only a completion that resolves
+      // a still-pending call is a fresh production; a duplicate or replayed
+      // completion may never re-offer a dismissed target.
+      const pendingProduction = !event.replayed && Boolean(toolCallOwnerMessageId(state?.messages ?? [], payload))
+
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
+
+      if (!sessionInterrupted(sessionId) && payload?.name && payload.result !== undefined && event.seq !== undefined) {
+        const { previewTarget, status } = toolPreviewOutcome({
+          type: 'tool-call',
+          toolName: payload.name,
+          args: payload.args ?? {},
+          result: payload.result,
+          toolResultMetadata: payload,
+          completedAt: occurredAt
+        })
+
+        if (status === 'success' && previewTarget && isPreviewableTarget(previewTarget)) {
+          const record = pendingProduction ? reofferPreviewArtifact : recordPreviewArtifact
+          record(sessionId, previewTarget, state?.cwd ?? '', storedSessionIdForRuntimeId(sessionId) ?? sessionId)
+        }
+      }
+
       // Onboarding's first build paces its check-ins off real work done
       // (no-op in every other session).
       reportFirstBuildToolComplete(sessionId)

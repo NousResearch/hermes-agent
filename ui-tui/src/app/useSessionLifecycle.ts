@@ -18,6 +18,7 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
+import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { AgentMode, ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
@@ -58,12 +59,14 @@ export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg
   const user = String(inflight?.user ?? '').trim()
 
   return user
-    ? toTranscriptMessages([{
-        role: 'user',
-        text: user,
-        ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
-        ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
-      }])
+    ? toTranscriptMessages([
+        {
+          role: 'user',
+          text: user,
+          ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
+          ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
+        }
+      ])
     : []
 }
 
@@ -356,7 +359,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        return gw.request<SessionResumeResult & { info: SessionInfo }>('session.resume', { cols: colsRef.current, session_id: id })
+  return gw.request<SessionResumeResult & { info: SessionInfo }>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
             const r = asRpcResult<SessionResumeResult & { info: SessionInfo }>(raw)
 
@@ -388,6 +391,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)
+
+            if (r.pending_connection) {
+              applyConnectionRequest(r.pending_connection)
+            } else {
+              clearConnectionOperation()
+            }
+
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 

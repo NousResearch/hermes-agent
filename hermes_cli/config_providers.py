@@ -392,6 +392,25 @@ def _entries_for_route(
             yield entry
 
 
+def get_custom_provider_api_mode(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Canonical ``api_mode`` of the first custom entry serving *base_url*, or ``""``.
+
+    Route identity is the URL, not the host: a Codex proxy on ``127.0.0.1`` declares its wire
+    protocol here and nowhere else, so metadata lookups keyed on the transport read it from the
+    entry instead of guessing from the hostname (#116191).
+    """
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        for field in ("api_mode", "transport"):
+            value = entry.get(field)
+            if isinstance(value, str) and value.strip():
+                return _canonical_api_mode(value)
+    return ""
+
+
 def _route_model_cfg(entry: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
     """Return ``entry.models[model]`` when both are mappings, else None."""
     models = entry.get("models")
@@ -519,12 +538,14 @@ def get_custom_provider_context_length(
     Before this helper existed, the lookup was duplicated in ``run_agent.py``'s startup path only; every
     other path (notably ``/model`` switch) fell back to the 128K default. See #15779.
     """
-    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
     if not model or not base_url:
         return None
     if custom_providers is None:
         try:
-            custom_providers = get_compatible_custom_providers(config)
+            # Step 0c now runs for every route with a base_url; the read-only loader skips the
+            # per-call deepcopy load_config() pays (same pattern as get_custom_provider_model_capability).
+            custom_providers = get_compatible_custom_providers(load_config_readonly() if config is None else config)
         except Exception:
             if config is None:
                 return None

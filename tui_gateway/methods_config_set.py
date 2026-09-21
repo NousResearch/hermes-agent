@@ -414,9 +414,9 @@ def _set_cwd(rid, params, key, value, session):
     if not os.path.isdir(cwd):
         return _err(rid, 4002, f"working directory does not exist: {raw}")
     _write_config_key("terminal.cwd", cwd)
-    # ``TERMINAL_CWD`` is the LAUNCH process's; a profile-bound session persists its cwd through its
-    # own config.yaml (written above under the session scope) and must not leak it into other profiles.
-    if not (isinstance(session, dict) and session.get("profile_home")):
+    # ``TERMINAL_CWD`` belongs to the launch process. Keep launch-profile updates live, but never
+    # publish an explicit or session-bound secondary profile's cwd into that process-wide carrier.
+    if Path(get_hermes_home()).resolve() == Path(_hermes_home).resolve():
         os.environ["TERMINAL_CWD"] = cwd
     return _kv(rid, "terminal.cwd", cwd, cwd=cwd, branch=git_probe.branch(cwd))
 

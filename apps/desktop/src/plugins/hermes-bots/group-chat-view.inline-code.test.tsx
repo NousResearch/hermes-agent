@@ -33,6 +33,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     cn: (...values: unknown[]) => values.filter(Boolean).join(' '),
     Codicon: () => null,
     CopyButton: () => null,
+    Switch: () => null,
     ConfirmDialog: () => null,
     Dialog: () => null,
     DialogContent: () => null,
@@ -75,7 +76,9 @@ it('themes inline code in room message bodies with the chat inline-code tokens',
   const { $groupChats } = await import('./group-chat')
   const { GroupChatWorkspace } = await import('./group-chat-view')
 
-  const log = [{ id: 'm1', thread: 'a', from: { kind: 'member' as const, name: 'builder' }, text: 'discover_models', at: 1 }]
+  const log = [
+    { id: 'm1', thread: 'a', from: { kind: 'member' as const, name: 'builder' }, text: 'discover_models', at: 1 }
+  ]
   $groupChats.set({ Room: { log, watermarks: {}, sessions: {} } })
 
   const { getByTestId } = render(<GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />)

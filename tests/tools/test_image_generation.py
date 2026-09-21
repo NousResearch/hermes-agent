@@ -563,6 +563,42 @@ class TestManagedGatewayErrorTranslation:
         with pytest.raises(ConnectionError):
             image_tool._submit_fal_request("fal-ai/flux-2-pro", {"prompt": "x"})
 
+    @staticmethod
+    def _rate_limited(retry_after):
+        return _MockHttpxError(429, "Too Many Requests", payload={"error": {
+            "code": "RATE_LIMIT_EXCEEDED", "message": "Rate limit exceeded.", "retryAfter": retry_after}})
+
+    def test_short_429_is_retried_once_under_a_fresh_idempotency_key(self, image_tool, monkeypatch):
+        """A gateway 429 with a short retryAfter is waited out and resubmitted once (new key)."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: MagicMock())
+        mock_managed_client = MagicMock()
+        mock_managed_client.submit.side_effect = [self._rate_limited(1), "handle"]
+        monkeypatch.setattr(image_tool, "_get_managed_fal_client", lambda gw: mock_managed_client)
+
+        assert image_tool._submit_fal_request("fal-ai/gpt-image-2", {"prompt": "x"}) == "handle"
+
+        keys = [call.kwargs["headers"]["x-idempotency-key"] for call in mock_managed_client.submit.call_args_list]
+        assert len(keys) == 2 and keys[0] != keys[1]
+
+    def test_long_429_is_reported_as_a_rate_limit_not_a_missing_model(self, image_tool, monkeypatch):
+        """A 429 beyond the retry cap names the rate limit; agents must not be told to switch models."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: MagicMock())
+        mock_managed_client = MagicMock()
+        mock_managed_client.submit.side_effect = self._rate_limited(120)
+        monkeypatch.setattr(image_tool, "_get_managed_fal_client", lambda gw: mock_managed_client)
+
+        with pytest.raises(ValueError) as exc_info:
+            image_tool._submit_fal_request("fal-ai/gpt-image-2", {"prompt": "x"})
+
+        msg = str(exc_info.value)
+        assert "rate-limited" in msg and "retry after 120s" in msg
+        assert "may not yet be enabled" not in msg
+        assert mock_managed_client.submit.call_count == 1
+
 
 class TestKreaModelNormalization:
     """Native ``krea-2-*`` detection for managed Krea routing."""

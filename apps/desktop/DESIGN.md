@@ -154,6 +154,8 @@ fill/shadow), `ghost`, `floating` (a control loose from any surface — opaque
 popover fill + `shadow-md`, hover lifts the glyph only), `link`, `text`
 (boxless quiet inline — "Cancel", "Clear"), `textStrong` (bold underlined
 inline affordance — "Change", "Open logs").
+`grip` is the quiet, fill-free drawer handle; pair it with size `grip` for a
+48×16 hit area around a small horizontal ridge.
 
 **Sizes:** `default`, `xs`, `sm`, `lg`, `inline` (flush, zero box — for buttons
 that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
@@ -247,6 +249,17 @@ blurred backdrop.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
   `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
   shell.
+- **Settings subpages:** `OverlayNav` keeps navigation and disclosure separate:
+  labels navigate; the shared `DisclosureCaret` button opens a branch without
+  changing the page. Active paths reveal automatically, inactive paths stay
+  folded unless manually opened. General comes first wherever present; parent
+  labels and parent URLs open the first ordered subpage, never an overview or
+  the last visited child. Explicit child links retain their destination;
+  every parent and child uses the same Settings breadcrumb, without a duplicate
+  icon-and-title heading. Page-level `SectionHeading page` retains actions and
+  counts under breadcrumb-owned chrome; embedded callers keep their headings.
+  Narrow windows keep every destination available in the shared navigation dropdown.
+  Search and saved field links resolve to the owning child before highlighting.
 - **Rows:** `ListRow` (settings `primitives.tsx`) for label/description/action
   rows. Flat, flush-left; no per-row indentation that fights flush headers.
 - **No dividers between rows** unless the list genuinely needs them; prefer
@@ -335,6 +348,10 @@ so glass and message-bubble transparency do not reveal scrolling text.
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain
   visible at the bottom of the stack, below the queue and all status groups.
+  A centered ridge on the composer's top edge hides/reveals the entire stack,
+  including the git row, with a short downward/upward drawer slide. Its choice
+  persists per conversation and owner, not globally. Hidden sections stay
+  mounted but inert so their disclosure choices survive; reduced motion is instant.
 - Popping out a composer makes it the window's only visible composer. It keeps
   its viewport placement while hover or keyboard focus selects a chat pane;
   moving back into the editor retains that recipient. Drafts, attachments and
@@ -357,7 +374,8 @@ so glass and message-bubble transparency do not reveal scrolling text.
 - `status-stack.css` owns the shared columns and `0.25rem` nesting step. Rows
   own their padding and full-width hover fill. `StatusControlRow` uses the same
   columns for goal/loop/heartbeat details; `StatusPendingIcon` supplies the
-  dashed marker for tasks and criteria. The first row has `0.5rem` top inset.
+  dashed marker for tasks and criteria. The first row keeps its normal padding;
+  the stack adds no extra top inset.
 - Keep the rounded status card stationary, with the bounded scroll viewport
   inside it. The outer scroll boundary uses `overscroll-behavior-y: contain`;
   nested rosters and transcripts use `auto` so wheel input can hand off at an

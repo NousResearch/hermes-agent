@@ -600,8 +600,8 @@ class GatewayBusySessionMixin:
             and getattr(running_agent, "_supports_active_turn_redirect", False) is True
             and hasattr(running_agent, "redirect")
         ):
-            redirected = self._try_agent_verb(
-                running_agent, "redirect", (event.text or "").strip(), session_key, event=event
+            redirected = self._redirect_active_turn(
+                running_agent, (event.text or "").strip(), session_key, event
             )
         return self._BusySteerOutcome(
             effective_mode=effective_mode, demoted_for_subagents=demoted_for_subagents,
@@ -625,6 +625,29 @@ class GatewayBusySessionMixin:
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return False
+
+    def _redirect_active_turn(self, running_agent, text: str, session_key: str, event: MessageEvent) -> bool:
+        """``redirect()`` the running turn onto *event* and re-anchor its delivery to that message.
+
+        The turn's reply anchor and ledger identity were bound to the message that OPENED it, and
+        the final send is bracketed against that event; after a successful redirect the answer is
+        to *event*, so the reply must quote it (#115001). Both redirect entry points (busy
+        interrupt mode and the priority path) go through here.
+        """
+        if not self._try_agent_verb(running_agent, "redirect", text, session_key, event=event):
+            return False
+        turn = self._session_state(session_key).turn
+        if turn.agent is not running_agent:
+            return True  # a newer turn already owns the slot; never re-anchor it
+        anchor = self._reply_anchor_for_event(event)
+        inbound_id = str(event.message_id) if event.message_id else None
+        if turn.event is not None and turn.event is not event:
+            turn.event.reply_anchor_override = anchor
+            turn.event.ledger_message_id = inbound_id
+        if turn.ctx is not None:
+            turn.ctx.event_message_id = anchor
+            turn.ctx.inbound_message_id = inbound_id
+        return True
 
     async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""

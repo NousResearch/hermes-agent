@@ -8,7 +8,7 @@ import subprocess
 from typing import Callable, Iterable
 
 from tools.environments.base_session_env import _SHELL_ENV_NAME_RE
-from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST, _is_hermes_internal_secret
+from tools.environments.local_env_policy import _is_hermes_internal_secret, _is_provider_env_blocklisted
 
 
 def load_hermes_env_vars() -> dict[str, str]:
@@ -44,7 +44,8 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     except Exception:
         pass
     implicit_forward = {k for k in passthrough_keys if not _is_hermes_internal_secret(k)}
-    forward_keys = set(explicit_forward) | (implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
+    forward_keys = set(explicit_forward) | {
+        k for k in implicit_forward if not _is_provider_env_blocklisted(k)}
     hermes_env = hermes_env_loader() if forward_keys else {}
     exec_env: dict[str, str] = {}
     unset_names: set[str] = set()

@@ -7,6 +7,7 @@ the chunked-streamer playback path, and the universal per-sentence sync fallback
 """
 
 import os
+import json
 import queue
 import sys
 import tempfile
@@ -564,6 +565,43 @@ def test_hybrid_first_sentence_streamed_individually(monkeypatch):
     assert len(stream_calls) == 1, (
         f"single sentence should trigger 1 stream() call, got {stream_calls}"
     )
+    assert done.is_set()
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",
+)
+def test_speaker_honours_tts_streaming_min_len_for_short_cjk_opener(monkeypatch):
+    """The CLI/TUI speaker cuts with the profile's tts.streaming.min_len (#96927): a 7-char CJK
+    opener is streamed on its own instead of riding behind the second sentence."""
+    from tools import tts_tool
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    stream_calls: list[str] = []
+
+    class _Tracking(ts.StreamingTTSProvider):
+        sample_rate = 24000
+
+        @staticmethod
+        def available():
+            return True
+
+        def stream(self, text):
+            stream_calls.append(text)
+            yield b"\x00\x00" * 10
+
+    sd, _out = _sd_mock()
+    q = _drain_queue(["记得，叫团团. ", "然后我们再说第二句话，这一句要长一些才行. "])
+    stop, done = threading.Event(), threading.Event()
+
+    with patch("tools.tts_streaming.resolve_streaming_provider",
+               return_value=_Tracking({}, {})), \
+         patch.object(tts_tool, "_load_tts_config", return_value={"streaming": {"min_len": 6}}), \
+         patch.object(tts_tool, "_import_sounddevice", return_value=sd):
+        stream_tts_to_speaker(q, stop, done)
+
+    assert stream_calls[0] == "记得，叫团团.", stream_calls
     assert done.is_set()
 
 
@@ -1156,3 +1194,66 @@ def test_speaker_output_stream_opens_at_rate_learned_from_first_chunk(monkeypatc
     assert done.is_set()
     assert [c.kwargs["samplerate"] for c in sd.OutputStream.call_args_list] == [44100]
     assert out.write.call_count == 2
+
+
+def test_sync_pipeline_plays_the_artifact_the_tool_reported(monkeypatch, tmp_path):
+    """A provider whose artifact lands off the requested path (command ``format`` suffix
+    rewrite, or voice-compatible ffmpeg conversion) must still play: follow the reported
+    ``file_path``/``file_paths`` instead of gating on the requested path (#115029)."""
+    from tools import tts_tool
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    ogg = tmp_path / "sentence.ogg"
+    ogg.write_bytes(b"x" * 32)
+
+    def fake_synth(text, output_path):
+        # The requested .mp3 stays a zero-byte mkstemp file; only the reported artifact is real.
+        ogg_str = str(ogg)
+        return json.dumps({
+            "success": True,
+            "file_path": ogg_str,
+            "file_paths": [ogg_str],
+        })
+
+    played = []
+    fake_vm = MagicMock()
+    fake_vm.play_audio_file.side_effect = played.append
+    monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_synth)
+    monkeypatch.setitem(sys.modules, "tools.voice_mode", fake_vm)
+
+    q = _drain_queue(["Hello there. "])
+    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
+        stream_tts_to_speaker(q, threading.Event(), threading.Event())
+    assert played == [str(ogg)], (
+        "sentence dropped: playback ignored the reported artifact"
+    )
+
+
+def test_sync_pipeline_falls_back_to_requested_path_when_reported_missing(monkeypatch):
+    """A tool envelope that reports nothing usable (None, non-JSON, missing files) keeps the
+    legacy behavior: play the requested path when the tool wrote it there."""
+    from tools import tts_tool
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    def fake_synth(text, output_path):
+        with open(output_path, "wb") as fh:
+            fh.write(b"x" * 100)
+        return json.dumps({"success": False, "error": "shape without paths"})
+
+    played = []
+    fake_vm = MagicMock()
+
+    def _record(path):
+        played.append((path, os.path.getsize(path)))
+
+    fake_vm.play_audio_file.side_effect = _record
+    monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_synth)
+    monkeypatch.setitem(sys.modules, "tools.voice_mode", fake_vm)
+
+    q = _drain_queue(["Hello there. "])
+    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
+        stream_tts_to_speaker(q, threading.Event(), threading.Event())
+    # The temp file is unlinked after playback, so capture its size at play time.
+    assert len(played) == 1 and played[0][1] > 0, (
+        "requested-path fallback no longer plays"
+    )

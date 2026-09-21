@@ -268,6 +268,7 @@ def _cmd_list(db, args):
     limit = args.limit
     sessions = db.list_sessions_rich(
         source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+        archived_only=getattr(args, "archived", False),
     )
     truncated = limit > 0 and len(sessions) > limit
     sessions = sessions[:limit] if truncated else sessions

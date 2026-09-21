@@ -47,7 +47,12 @@ from agent.message_sanitization import (
     sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
-from agent.repetition_guard import is_repetition_dominated
+from agent.repetition_guard import (
+    ReasoningLoopGuard,
+    THINKING_LOOP_TRUNCATED,
+    is_repetition_dominated,
+    sanitize_degenerate_reasoning,
+)
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -1552,6 +1557,9 @@ def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
             reasoning_text = "\n\n".join(b.strip() for b in think_blocks if b.strip()) or None
     if reasoning_text and agent.verbose_logging:
         logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
+    # A thinking channel that degenerated into a char-run loop must not reach display OR
+    # storage: the reasoning_content echo replays stored bytes and re-seeds the loop.
+    reasoning_text = sanitize_degenerate_reasoning(reasoning_text) if reasoning_text else reasoning_text
     # When streaming is active the reasoning was already displayed during the
     # stream (structured deltas or <think> tag extraction); fire only for
     # non-streaming modes (gateway, batch, quiet). Anything not shown during
@@ -1638,6 +1646,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
             raw_reasoning_content = model_extra["reasoning_content"]
     if raw_reasoning_content is not None:
+        raw_reasoning_content = sanitize_degenerate_reasoning(raw_reasoning_content)
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():
         # DeepSeek v4 / Kimi thinking modes 400 on a replayed tool-call message without
@@ -3065,6 +3074,8 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        reasoning_guard = ReasoningLoopGuard()
+        reasoning_loop_cut = False
         # OpenAI structured refusal (``delta.refusal``): the explanation streams here and
         # ``delta.content`` stays empty, so an un-accumulated refusal looks like an empty
         # stream and burns the empty-response retries (the non-streaming fix is #46013).
@@ -3147,8 +3158,32 @@ class _StreamingCall(StreamingWaitMonitor):
                 # Summary-part models omit the separator between markdown blocks; re-insert it.
                 reasoning_text = separate_glued_reasoning_blocks(
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
-                reasoning_parts.append(reasoning_text)
-                self._emit_reasoning(reasoning_text)
+                if reasoning_guard.tripped or reasoning_guard.feed(reasoning_text):
+                    if not reasoning_loop_cut:
+                        # Thinking degenerated into a char-run loop. Keep the clean prefix and
+                        # cut the looped tail: the live display, storage, and (critically) the
+                        # reasoning_content echo must stop replaying it — echoed loop bytes
+                        # re-seed the loop on the next request (#112764 family). The stream
+                        # keeps being consumed; content/tool calls are unaffected.
+                        reasoning_loop_cut = True
+                        _cut = max(0, reasoning_guard.trip_index)
+                        _kept, _left = [], _cut
+                        for _part in reasoning_parts:
+                            if _left <= 0:
+                                break
+                            _kept.append(_part[:_left] if _left < len(_part) else _part)
+                            _left = max(0, _left - len(_part))
+                        if _left > 0:
+                            _kept.append(reasoning_text[:_left])
+                        reasoning_parts[:] = _kept
+                        reasoning_parts.append(THINKING_LOOP_TRUNCATED)
+                        self._emit_reasoning("\n\n" + THINKING_LOOP_TRUNCATED)
+                        logger.warning(
+                            "reasoning stream degenerated into a repetition loop; truncated at "
+                            "%d chars (model=%s).", _cut, self.api_kwargs.get("model", "unknown"))
+                else:
+                    reasoning_parts.append(reasoning_text)
+                    self._emit_reasoning(reasoning_text)
             # Structured reasoning_details deltas carry the provider's replay data; the
             # non-streaming path already keeps them, so dropping them here lost
             # reasoning continuity on nearly every turn. Pydantic parks unknown fields

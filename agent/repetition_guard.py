@@ -9,8 +9,11 @@ conservative: only LONG verbatim repeats (60+ chars) covering a majority of the 
 
 from __future__ import annotations
 
+import logging
 import math
 from collections import Counter
+
+logger = logging.getLogger(__name__)
 
 # Below this length the check doesn't run: short truncations trivially
 # contain repeated tokens and are legitimately continued.
@@ -154,3 +157,82 @@ def _line_repetition_dominated(text: str, n: int) -> bool:
     """True when a single normalized line covers half the fragment via repeats."""
     counts = Counter(norm for norm in (line.strip() for line in text.splitlines()) if norm)
     return any(c >= _MIN_REPEAT_COUNT and c * len(line) >= n * _DOMINANCE_RATIO for line, c in counts.items())
+
+
+# ---- thinking-channel loop guard ----------------------------------------------------------
+# The checks above watch the VISIBLE reply on truncation/interrupt paths. A thinking channel
+# can degenerate on its own while the visible reply stays fine: one char (usually a quoting
+# bracket) grows run over run — 「「「「「「実行」」」」」」「「「「「「「「「「やる」」... — with no exact
+# long-window repeat, so ``is_repetition_dominated`` misses it (17 of 21 messages in one real
+# incident corpus). The looped bytes must be cut BEFORE storage: a DeepSeek-style
+# ``reasoning_content`` echo replays them into the next request and re-seeds the loop
+# (#112764 family). Thresholds calibrated against a real-world corpus of ~175k
+# reasoning messages: 「」『』 runs >= 12 and runs of >= 160 identical non-formatting chars
+# never fired on any message without a degenerate segment.
+THINKING_LOOP_TRUNCATED = "[thinking truncated: repetition loop detected]"
+
+_BRACKET_RUN_CHARS = frozenset("「」『』")
+_BRACKET_RUN_MIN = 12
+_RUN_MIN = 160
+_RUN_EXCLUDED = frozenset("-=*_|+#~` \t\r\n")
+
+
+class ReasoningLoopGuard:
+    """Incremental degeneration detector for a streamed reasoning channel.
+
+    Feed each reasoning delta in order (stop once ``tripped`` is True). ``trip_index`` is
+    the offset — in the concatenation of everything fed — where the degenerate run starts;
+    callers cut accumulators there so display, storage and reasoning echo all stop replaying
+    the loop. O(chars), no rescans.
+    """
+
+    __slots__ = ("tripped", "trip_index", "_seen", "_run_char", "_run_len", "_run_start")
+
+    def __init__(self) -> None:
+        self.tripped = False
+        self.trip_index = -1
+        self._seen = 0
+        self._run_char = ""
+        self._run_len = 0
+        self._run_start = 0
+
+    def feed(self, text: str) -> bool:
+        if self.tripped or not isinstance(text, str) or not text:
+            return self.tripped
+        run_char, run_len, run_start = self._run_char, self._run_len, self._run_start
+        i = self._seen
+        for ch in text:
+            if ch == run_char:
+                run_len += 1
+            else:
+                run_char, run_len, run_start = ch, 1, i
+            i += 1
+            if ch in _BRACKET_RUN_CHARS and run_len >= _BRACKET_RUN_MIN:
+                self._trip(run_start, ch, run_len)
+                return True
+            if run_len >= _RUN_MIN and ch not in _RUN_EXCLUDED and not ch.isspace():
+                self._trip(run_start, ch, run_len)
+                return True
+        self._seen = i
+        self._run_char, self._run_len, self._run_start = run_char, run_len, run_start
+        return self.tripped
+
+    def _trip(self, at: int, ch: str, length: int) -> None:
+        self.tripped = True
+        self.trip_index = at
+        logger.debug("reasoning loop guard tripped: %r x%d at offset %d", ch, length, at)
+
+
+def sanitize_degenerate_reasoning(text, *, marker: str = THINKING_LOOP_TRUNCATED):
+    """Full-text pass for non-streaming intakes / storage boundaries.
+
+    Returns ``text`` unchanged (same object) unless a degenerate shape is found; then the
+    degenerate tail is dropped and ``marker`` appended. Fail-open for non-strings.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    guard = ReasoningLoopGuard()
+    if not guard.feed(text):
+        return text
+    prefix = text[: max(0, guard.trip_index)].rstrip()
+    return f"{prefix}\n\n{marker}" if prefix else marker

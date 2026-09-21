@@ -9742,23 +9742,51 @@ function isHermesProcess(pid) {
     return false
   }
 
-  // On macOS / Linux, check the command line to avoid PID recycling false positives.
-  try {
-    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
-
-    return cmdline.includes('hermes')
-  } catch {
-    // /proc not available (macOS) — fall back to ps. Use -o args= to inspect
-    // the full command line, not just the process name.  -o comm= would return
-    // "python3" for any Python process, creating false positives.
+  // Windows has no /proc. Query the full process command line via CIM.
+  if (IS_WINDOWS) {
     try {
-      const { execSync } = require('child_process')
-      const out = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 2000 })
+      const out = execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`
+        ],
+        hiddenWindowsChildOptions({
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 5000
+        })
+      )
 
-      return out.includes('hermes')
+      return out.toLowerCase().includes('hermes')
     } catch {
       return false
     }
+  }
+
+  // Linux: /proc exposes the full argv without spawning another process.
+  if (process.platform === 'linux') {
+    try {
+      const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+
+      return cmdline.includes('hermes')
+    } catch {
+      return false
+    }
+  }
+
+  // macOS / other POSIX systems: fall back to ps.
+  try {
+    const out = execFileSync('ps', ['-p', String(pid), '-o', 'args='], {
+      encoding: 'utf8',
+      timeout: 2000
+    })
+
+    return out.includes('hermes')
+  } catch {
+    return false
   }
 }
 

@@ -327,4 +327,48 @@ describe('disband', () => {
     expect('Build' in room.chat.$groupChats.get()).toBe(false)
     expect('Build' in durable(room)).toBe(false)
   })
+
+  it('stops a room that is mid-turn when it is disbanded', async () => {
+    const room = await loadRoom()
+    const { $groupActivity } = await import('./group-activity')
+
+    room.chat.$groupChats.set({
+      Busy: {
+        epoch: 2,
+        log: [{ at: 5, from: { kind: 'user', name: 'You' }, id: 'b1', text: 'keep going', thread: 't-live' }],
+        running: true,
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+
+    await room.view.disbandGroupChat('Busy', [{ name: 'builder' }] as RosterRow[])
+
+    // The room keeps its backend session by design ("intentionally KEPT"),
+    // but the turn already in flight must not grind on: disband reuses the
+    // Stop primitive, whose observable trace is a 'stopped' activity entry
+    // minted before the tombstone lands.
+    const stopped = $groupActivity.get().Busy?.events || []
+    expect(stopped.some(e => e.kind === 'stopped')).toBe(true)
+    // Retirement still completes: the runtime tombstone that a mid-turn
+    // disband keeps for the drive to notice is flagged, holds no log, and
+    // never persists — nothing durable survives the room.
+    expect(room.chat.$groupChats.get().Busy?.tombstone).toBe(true)
+    expect(room.chat.$groupChats.get().Busy?.log).toEqual([])
+    expect(room.chat.$groupChats.get().Busy?.epoch).toBe(3)
+    expect('Busy' in durable(room)).toBe(false)
+  })
+
+  it('leaves an idle room alone — no stop, no tombstone', async () => {
+    const room = await loadRoom()
+    const { $groupActivity } = await import('./group-activity')
+
+    room.chat.$groupChats.set({
+      Idle: { log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'i1', text: 'hi' }], watermarks: {} }
+    } as unknown as Record<string, GroupChat>)
+
+    await room.view.disbandGroupChat('Idle', [])
+
+    expect($groupActivity.get().Idle).toBeUndefined()
+    expect(room.chat.$groupChats.get().Idle).toBeUndefined()
+  })
 })

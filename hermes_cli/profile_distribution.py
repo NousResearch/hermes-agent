@@ -11,6 +11,7 @@ import operator
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -243,6 +244,28 @@ def _git_clone(url: str, dest: Path) -> None:
         raise DistributionError(f"git clone failed: {(result.stderr or '').strip()}")
 
 
+def _rmtree_make_writable(func, path, exc_info) -> None:
+    """Retry a failed tree removal after clearing Windows read-only attributes."""
+    exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+    if not isinstance(exc, PermissionError):
+        raise exc
+    for target in (path, os.path.dirname(path)):
+        if target:
+            try:
+                os.chmod(target, os.stat(target).st_mode | stat.S_IWUSR)
+            except OSError:
+                pass
+    func(path)
+
+
+def _remove_git_metadata(path: Path) -> None:
+    """Remove cloned Git metadata completely, including read-only objects on Windows."""
+    try:
+        shutil.rmtree(path, onexc=_rmtree_make_writable)
+    except TypeError:  # Python 3.11 uses the legacy ``onerror`` callback name.
+        shutil.rmtree(path, onerror=_rmtree_make_writable)
+
+
 def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
     """Resolve *source* to ``(staged_dir, provenance)``: git URLs are shallow-cloned into
     *workdir* (``.git`` removed); a local directory is used in place."""
@@ -250,7 +273,7 @@ def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
     if _looks_like_git_url(src_str):
         staged, provenance = workdir / "clone", src_str
         _git_clone(src_str, staged)
-        shutil.rmtree(staged / ".git", ignore_errors=True)
+        _remove_git_metadata(staged / ".git")
         missing = (
             f"No {MANIFEST_FILENAME} at the root of {src_str!r}. "
             "This repository is not a Hermes profile distribution."

@@ -76,7 +76,7 @@ it('requires explicit opt-in and native readiness, with permission recovery and 
 })
 
 it('rereads after an unconfirmed write and keeps failed reads recoverable', async () => {
-  const { api } = bridge()
+  const { api, emit } = bridge()
   api.getSettings.mockRejectedValueOnce(new Error('IPC unavailable'))
   render(<HudModifierSettings />)
   expect(await screen.findByText(common.loadFailed)).toBeTruthy()
@@ -88,4 +88,16 @@ it('rereads after an unconfirmed write and keeps failed reads recoverable', asyn
   await act(async () => fireEvent.click(screen.getByRole('button', { name: common.retry })))
   expect(api.setEnabled).toHaveBeenCalledOnce()
   expect(screen.getByText(copy.unavailable)).toBeTruthy()
+
+  for (const [reason, message] of [
+    ['missing-helper', copy.missingHelper],
+    ['unsupported-session', copy.unsupportedSession]
+  ] as const) {
+    await act(async () => emit({ enabled: true, state: 'unavailable', reason }))
+    expect(screen.getByText(message)).toBeTruthy()
+    expect(screen.queryByText(copy.unavailable)).toBeNull()
+  }
+
+  await act(async () => emit({ enabled: true, state: 'ready' }))
+  expect(screen.queryByRole('alert')).toBeNull()
 })

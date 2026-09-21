@@ -3,7 +3,7 @@ repo: https://github.com/topoteretes/cognee-integrations
 subdir: integrations/hermes-agent
 sha: f9355258435836d67fa4233e4098ad9a85568e8d
 version: "1.2.2"
-description: Knowledge-graph memory for Hermes — recall, remember, forget, and code search, backed by a local cognee server or Cognee Cloud.
+description: "Knowledge-graph memory for Hermes — recall, remember, forget, and code search, backed by a local cognee server or Cognee Cloud. Disclosure — default local mode starts a detached cognee server (uvicorn on 127.0.0.1:8011) plus a session-close watcher per session; turns, memory writes and indexed source go to that server and on to your configured LLM provider (OpenAI by default) or to Cognee Cloud / COGNEE_BASE_URL in remote mode; the store lives in ~/.cognee (outside HERMES_HOME, shared across profiles); cognee sends anonymous usage telemetry unless TELEMETRY_DISABLED=1."
 maintainer: topoteretes
 tier: community
 category: memory

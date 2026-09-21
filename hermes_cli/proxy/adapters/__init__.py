@@ -4,10 +4,15 @@ from typing import Dict, Type
 
 from hermes_cli.proxy.adapters.base import UpstreamAdapter
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
+from hermes_cli.proxy.adapters.openai_codex import OpenAICodexAdapter
 from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 
 # Keyed by the ``hermes proxy start --provider <name>`` value.
-ADAPTERS: Dict[str, Type[UpstreamAdapter]] = {"nous": NousPortalAdapter, "xai": XAIGrokAdapter}
+ADAPTERS: Dict[str, Type[UpstreamAdapter]] = {
+    "nous": NousPortalAdapter,
+    "openai-codex": OpenAICodexAdapter,
+    "xai": XAIGrokAdapter,
+}
 
 
 def get_adapter(name: str) -> UpstreamAdapter:

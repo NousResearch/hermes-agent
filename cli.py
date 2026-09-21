@@ -968,6 +968,30 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         except Exception:
             pass  # never block startup
 
+    def _show_pending_memory_notice(self):
+        """One-line startup notice when staged memory writes are waiting for review.
+
+        An unattended background review stages ``replace``/``remove`` proposals instead of
+        applying them (#105921). The staging message names ``/memory pending``, but it scrolls
+        past with the turn that produced it and nothing reports the queue afterwards, so batches
+        accumulate unseen — one install reached 53 records over 10 days (#117894). The count is
+        already tracked; this is the read side.
+        """
+        try:
+            from tools import write_approval as wa
+
+            count = wa.pending_count(wa.MEMORY)
+            if not count:
+                return
+            noun = "write" if count == 1 else "writes"
+            from gateway.warning_notifications import render_notification
+            render_notification(
+                lambda: self._console_print(
+                    f"[yellow]⚠ {count} memory {noun} staged for review — see /memory pending[/yellow]"),
+                platform="cli")
+        except Exception:
+            logger.debug("pending memory notice failed", exc_info=True)
+
     def _show_browser_backend_notice(self):
         """Once-per-24h hint when the default Browser Use backend silently fell back to built-in tools."""
         try:

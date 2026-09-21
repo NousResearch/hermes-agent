@@ -241,6 +241,7 @@ class CLITuiRuntimeMixin:
         self.show_banner()
         self._show_security_advisories()
         self._show_browser_backend_notice()
+        self._show_pending_memory_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
         # a chat that spins ~30s and fails with a provider-specific error. TTY only. A

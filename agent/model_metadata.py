@@ -1275,6 +1275,10 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     if ("output limit" in error_lower or "output tokens" in error_lower or "output token" in error_lower) and "context" not in error_lower:
         return None
     patterns = (
+        # llama.cpp quotes the window parenthesized ("the request exceeds the available
+        # context size (32768 tokens), try increasing it"); the generic patterns below
+        # expect a bare number after the phrase and would skip it.
+        r'context\s+(?:length|size|window)\s*\(\s*(\d{4,})\s*tokens?\s*\)',
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',

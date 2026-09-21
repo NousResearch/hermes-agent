@@ -1716,6 +1716,27 @@ class TestParseContextLimitFromError:
         # Parsed limit not below current window → no recalibration.
         assert get_context_length_from_provider_error(msg, 32768) is None
 
+    @pytest.mark.parametrize("msg,expected", [
+        # llama.cpp quotes the window parenthesized ("...exceeds the available
+        # context size (32768 tokens)"); the generic "context size N" patterns
+        # expect a bare number, so overflow recovery fell through to None and
+        # kept compressing toward the stale window.
+        ("the request exceeds the available context size (32768 tokens), "
+         "try increasing it", 32768),
+        ("exceeds the available context size (8192 tokens)", 8192),
+        ("Context length (131072 tokens) exceeded", 131072),
+    ])
+    def test_llama_cpp_parenthesized_context_size(self, msg, expected):
+        assert parse_context_limit_from_error(msg) == expected
+
+    def test_llama_cpp_context_size_recalibrates_window(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        msg = ("the request exceeds the available context size (32768 tokens), "
+               "try increasing it")
+        assert get_context_length_from_provider_error(msg, 131072) == 32768
+        assert get_context_length_from_provider_error(msg, 32768) is None
+
     def test_get_context_length_from_vllm_max_model_len_error(self):
         from agent.model_metadata import get_context_length_from_provider_error
 

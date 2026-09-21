@@ -43,7 +43,7 @@ def _validate_fields(value: Any, path: str) -> dict[str, Any]:
         return {}
     if not isinstance(value, Mapping):
         raise ScopePolicyValidationError(f"{path} must be a mapping")
-    unknown = sorted(set(value) - set(_POLICY_FIELDS))
+    unknown = sorted(set(value) - set(_POLICY_FIELDS), key=str)
     if unknown:
         raise ScopePolicyValidationError(f"{path} contains unknown field(s): {', '.join(map(str, unknown))}")
     result: dict[str, Any] = {}
@@ -74,7 +74,7 @@ def validate_scope_policies(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, Mapping):
         raise ScopePolicyValidationError("scope_policies must be a mapping")
     allowed = {"version", "platform", "guilds"}
-    unknown = sorted(set(raw) - allowed)
+    unknown = sorted(set(raw) - allowed, key=str)
     if unknown:
         raise ScopePolicyValidationError(f"scope_policies contains unknown key(s): {', '.join(map(str, unknown))}")
     version = raw.get("version", 1)
@@ -83,10 +83,10 @@ def validate_scope_policies(raw: Any) -> dict[str, Any] | None:
     platform = raw.get("platform", {})
     if not isinstance(platform, Mapping):
         raise ScopePolicyValidationError("scope_policies.platform must be a mapping")
-    platform_unknown = sorted(set(platform) - {"defaults"})
+    platform_unknown = sorted(set(platform) - {"defaults"}, key=str)
     if platform_unknown:
         raise ScopePolicyValidationError(f"scope_policies.platform contains unknown key(s): {', '.join(map(str, platform_unknown))}")
-    out: dict[str, Any] = {"version": 1, "platform": _validate_fields(platform.get("defaults"), "scope_policies.platform.defaults"), "guilds": {}}
+    out: dict[str, Any] = {"version": 1, "platform": {"defaults": _validate_fields(platform.get("defaults"), "scope_policies.platform.defaults")}, "guilds": {}}
     guilds = raw.get("guilds", {})
     if not isinstance(guilds, Mapping):
         raise ScopePolicyValidationError("scope_policies.guilds must be a mapping")
@@ -95,7 +95,7 @@ def validate_scope_policies(raw: Any) -> dict[str, Any] | None:
         entry = guilds[guild_key]
         if not isinstance(entry, Mapping):
             raise ScopePolicyValidationError(f"scope_policies.guilds.{guild_id} must be a mapping")
-        extra = sorted(set(entry) - {"defaults", "channels", "threads"})
+        extra = sorted(set(entry) - {"defaults", "channels", "threads"}, key=str)
         if extra:
             raise ScopePolicyValidationError(f"scope_policies.guilds.{guild_id} contains unknown key(s): {', '.join(map(str, extra))}")
         normalized = {
@@ -140,7 +140,7 @@ def resolve_scope_policy(
                 values[field] = fields[field]
                 sources[field] = source
 
-    apply(config["platform"], "platform")
+    apply(config["platform"]["defaults"], "platform")
     guild_key = None if guild_id is None else str(guild_id)
     guild = config["guilds"].get(guild_key)
     if guild is not None:

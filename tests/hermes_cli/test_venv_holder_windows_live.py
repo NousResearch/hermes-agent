@@ -30,14 +30,17 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows venv-holder E2E"
-)
+pytestmark = [
+    pytest.mark.skipif(sys.platform != "win32", reason="live Windows venv-holder E2E"),
+    # ``_spawn`` sleepers carry a "gateway run" argv tail as inert data (the guard's real-gateway
+    # spawn check matches it); every child is ``_kill``ed by the test.
+    pytest.mark.spawns_gateway_lookalike,
+]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _spawn(args: list[str], cwd: Path | None = None) -> subprocess.Popen:
+def _spawn(args: list[str], cwd: Path | None = None, python: str | None = None) -> subprocess.Popen:
     """Spawn a real sleeper process whose argv carries the given tail.
 
     ``python -c "sleep" <tail...>`` — the tail is inert data to the child
@@ -45,7 +48,7 @@ def _spawn(args: list[str], cwd: Path | None = None) -> subprocess.Popen:
     code classifies on.
     """
     proc = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(300)", *args],
+        [python or sys.executable, "-c", "import time; time.sleep(300)", *args],
         cwd=str(cwd or PROJECT_ROOT),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -86,12 +89,26 @@ class TestDetection:
             _kill(proc)
 
     def test_foreign_python_not_detected(self):
-        """A python process with no Hermes argv and cwd OUTSIDE the install
-        must not be reported as a holder."""
+        """A python process with no Hermes argv, cwd OUTSIDE the install AND an
+        interpreter outside the project venv must not be reported as a holder.
+
+        ``sys.executable`` is the wrong sleeper here: the runner's ``uv run`` interpreter
+        lives in the checkout's ``.venv``, which ``project_venv_dir`` resolves since
+        7a94b1fbf77, so a ``sys.executable`` child IS a venv holder by design. The base
+        interpreter the venv was created from is the foreign python."""
         import tempfile
 
+        from hermes_constants import project_venv_dir
+
+        base = getattr(sys, "_base_executable", None) or sys.executable
+        venv_dir = project_venv_dir(PROJECT_ROOT)
+        if venv_dir is not None and str(Path(base).resolve()).lower().startswith(
+            str(venv_dir.resolve()).lower()
+        ):
+            pytest.skip("no interpreter outside the project venv available on this runner")
+
         outside = Path(tempfile.mkdtemp())
-        proc = _spawn(["totally", "unrelated"], cwd=outside)
+        proc = _spawn(["totally", "unrelated"], cwd=outside, python=base)
         try:
             pids = [pid for pid, _, _ in _detect()]
             assert proc.pid not in pids

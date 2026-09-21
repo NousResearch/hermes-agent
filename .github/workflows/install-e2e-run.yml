@@ -1,12 +1,28 @@
 name: Install & Update E2E (reusable)
 
-# Runs ONE update route against ONE starting commit, in the dev sandbox, with a
-# real install (uv, a managed Python, Node, the venv) behind it.
+# Runs ONE {install-method, update-method} combination against ONE starting
+# commit, with a real install (uv, a managed Python, Node, the venv) behind
+# it.
 #
-# Reusable so callers can fan out over the combinations that matter -- update
-# from the tip vs. from an older release, `hermes update` vs. re-running the
-# installer -- without duplicating the runner setup. Each leg is independent:
-# its own sandbox, its own install, nothing rewound or shared.
+# Reusable so callers can fan out over the combinations that matter --
+# update from the tip vs. from an older release, `hermes update` vs.
+# re-running the installer -- without duplicating the runner setup. Each leg
+# is independent: its own isolated HOME, its own install, nothing rewound
+# or shared.
+#
+# No sandbox: tests/install/installer-script-e2e.sh points every git
+# process at a local bare clone (url.<file://serve.git>.insteadOf in a
+# driver-owned GIT_CONFIG_GLOBAL) and isolates HOME, so the installer and
+# updater run byte-for-byte against their real URLs on the bare runner --
+# which is disposable, and therefore IS the sandbox. That also makes this
+# workflow OS-agnostic: the same driver runs on ubuntu and macos runners.
+#
+# Method ids come from scripts/sandbox/generate-e2e-matrix.mjs. Supported
+# today: install via installer-script, update via hermes-update or
+# installer-script (re-run the one-liner).
+# Anything else NATIVELY SKIPS (grey check, no runner): capability
+# knowledge lives here, next to the driver, so the caller can dispatch
+# every declared combination without knowing which ones work.
 #
 # Call it:
 #
@@ -14,14 +30,19 @@ name: Install & Update E2E (reusable)
 #     tip:
 #       uses: ./.github/workflows/install-e2e-run.yml
 #       with:
-#         route: update
+#         install-method: installer-script
+#         update-method: hermes-update
 #         install-ref: refs/heads/main
 
 on:
   workflow_call:
     inputs:
-      route:
-        description: 'Update path to exercise: update (hermes update) or installer (re-run install.sh).'
+      install-method:
+        description: 'How the starting version gets installed. Supported: installer-script (the real curl | install.sh one-liner) and installer-script+desktop (the same one-liner with --include-desktop).'
+        required: true
+        type: string
+      update-method:
+        description: 'How the install updates to HEAD. Supported: hermes-update (the updater), installer-script (re-run the one-liner), installer-script+desktop (re-run with --include-desktop), hermes-desktop-app-update (launch via hermes desktop under Playwright, click Update now). open-app-update runs only where an OS entry point exists (see the per-OS run workflows); pairs without one skip.'
         required: true
         type: string
       install-ref:
@@ -29,84 +50,100 @@ on:
         required: false
         type: string
         default: refs/heads/main
+      leg-id:
+        description: 'Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg''s logs + player artifacts so the report job can link a row to its zip.'
+        required: true
+        type: string
+      tag-has-desktop:
+        description: "Whether install-ref ships the desktop app (apps/desktop). The caller annotates this from the tag's own tree; desktop-method legs from pre-desktop releases natively skip."
+        required: false
+        type: boolean
+        default: true
       runner:
         description: 'Runner label.'
         required: false
         type: string
         default: ubuntu-latest
       timeout-minutes:
-        description: 'Job timeout. A cold run installs real toolchains twice.'
+        description: 'Job timeout. A cold run installs real toolchains twice, and app-update legs add a full Electron build + launch.'
         required: false
         type: number
-        default: 45
+        default: 60
 
 permissions:
   contents: read
 
 jobs:
   e2e:
-    name: ${{ inputs.route }} from ${{ inputs.install-ref }}
+    name: install & update
+    # The pairs the driver can run today; anything else natively skips.
+    # Desktop-surface methods (+desktop installs,
+    # hermes-desktop-app-update) also need the starting tag to ship
+    # apps/desktop (their flags shipped with it).
+    if: >-
+      (inputs.install-method == 'installer-script'
+        || (inputs.install-method == 'installer-script+desktop' && inputs.tag-has-desktop))
+      && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
+        || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
 
     steps:
-      # Full history: the sandbox fetches the starting commit and the test
-      # compares against this commit, so a shallow clone is not enough.
+      # Full history: the driver bare-clones this checkout as the repo the
+      # installer/updater talk to, and both OLD and HEAD must be reachable
+      # in that clone. A shallow clone cannot serve either need.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
-      # bubblewrap + slirp4netns are what the sandbox is built on; util-linux
-      # supplies the `unshare` that builds the multi-uid userns for the
-      # user-level (non-root) install.
-      - name: Install sandbox dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap slirp4netns uidmap util-linux
-
-      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
-      # which is exactly what bwrap needs. Report the state before touching it
-      # so a future runner-image change is visible in the log rather than
-      # silently altering what this job proves.
-      - name: Permit unprivileged user namespaces
-        run: |
-          set -euo pipefail
-          echo "--- kernel userns settings (before)"
-          sysctl kernel.unprivileged_userns_clone 2>/dev/null || echo "  (sysctl absent)"
-          sysctl kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo "  (sysctl absent)"
-          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          echo "--- subuid/subgid for $(id -un)"
-          grep "^$(id -un):" /etc/subuid /etc/subgid || echo "  (none — sandbox will say so)"
+      # One recording mechanism on every OS (Xvfb gives headless linux a
+      # display; the same display serves any app the driver launches).
+      - name: Start screen recording
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: start
+          output: ${{ runner.temp }}/e2e-logs/recording.mkv
 
       - name: Run install + update E2E
         run: |
           set -euo pipefail
-          tests/install/install-update-e2e.sh \
-            --route '${{ inputs.route }}' \
+          tests/install/installer-script-e2e.sh \
+            --install-method '${{ inputs.install-method }}' \
+            --update-method '${{ inputs.update-method }}' \
             --install-ref '${{ inputs.install-ref }}'
         env:
-          # Outside the workspace on purpose: the script creates this directory
-          # up front, and an untracked dir inside the repo makes the worktree
-          # dirty -- which dev-sandbox reacts to by snapshotting the working
-          # copy into a fresh fake-main commit on every invocation, moving the
-          # update target mid-run.
+          # Outside the workspace on purpose: logs written into the repo
+          # would trip the driver's own dirty-tree guard.
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
 
-      # Artifact names cannot contain '/', and install-ref may be a full ref
-      # like refs/heads/main. GitHub Actions expressions have no string-replace
-      # function, so build the safe name here. Runs even on failure -- that is
-      # exactly when the logs are wanted.
+      - name: Stop screen recording
+        if: always()
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: stop
+          output: ${{ runner.temp }}/e2e-logs/recording.mkv
+
+      # Browsers cannot play Matroska: remux (copy codec, no re-encode) so
+      # the artifact zip feeds the static playback.html leg player directly.
+      - name: Remux recording for browser playback
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f "${{ runner.temp }}/e2e-logs/recording.mkv" ]; then
+            ffmpeg -y -hide_banner -loglevel error -i "${{ runner.temp }}/e2e-logs/recording.mkv" \
+              -c copy "${{ runner.temp }}/e2e-logs/recording.mp4"
+          fi
+
+      # The leg player: ONE static HTML per run, uploaded up front by the
+      # leg-player job in install-e2e.yml (archive: false, so GitHub names
+      # the artifact after the file: playback.html). The report job links
+      # every ran leg to it with the leg's zip as a #zip= hash param.
       - name: Build artifact name
         if: always()
         id: artifact
         run: |
           set -euo pipefail
-          safe_ref='${{ inputs.install-ref }}'
-          safe_ref="${safe_ref//\//-}"
-          echo "name=install-e2e-${{ inputs.route }}-${safe_ref}" >> "$GITHUB_OUTPUT"
+          echo "name=install-e2e-logs-${{ inputs.leg-id }}" >> "$GITHUB_OUTPUT"
 
       # The installer's own transcripts say far more than the assertion that
       # tripped when a real install breaks.

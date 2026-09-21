@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -518,6 +519,121 @@ class TestSchemaConversion:
         assert "definitions" not in schema["parameters"]
 
 
+    def test_properties_map_entry_named_properties_is_not_injected_with_type(self):
+        """A ``properties`` map must be repaired per-entry, never as a schema node.
+
+        Regression: ``_repair_object_shape`` recursed over every value as a
+        schema node, including the ``properties`` map itself. When one of its
+        KEYS was literally named ``properties``/``required``, the
+        missing-``type`` heuristic fired on the map and injected
+        ``"type": "object"`` — a bare string, not a schema — as a *parameter*.
+        Strict providers then 400 the whole tool array with
+        ``"object" is not of types "boolean", "object"``. Real-world repro: a
+        Tencent Docs MCP server whose ``smartsheet_add_table`` tool has a
+        parameter named ``properties`` (#110530).
+        """
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+        normalized = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string"},
+                "properties": {
+                    "type": "object",
+                    "properties": {"title": {"type": "string"}},
+                },
+            },
+        })
+
+        props = normalized["properties"]
+        # No bogus "type" parameter was injected into the properties map itself.
+        assert set(props) == {"file_id", "properties"}
+        # The legitimately-named `properties` parameter keeps its schema shape.
+        assert props["properties"]["type"] == "object"
+        assert props["properties"]["properties"] == {"title": {"type": "string"}}
+
+        # Same signature one level deeper (smartsheet add_view: items.properties map).
+        nested = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "condition_items": {
+                    "type": "object",
+                    "properties": {
+                        "properties": {"type": "string"},
+                        "value": {"type": "string"},
+                    },
+                },
+            },
+        })
+        inner = nested["properties"]["condition_items"]["properties"]
+        assert set(inner) == {"properties", "value"}
+
+        # ``$defs`` is a schema map too: an entry literally named ``properties`` must not
+        # gain a bogus ``type`` sibling inside the ``$defs`` map.
+        defs_case = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "$defs": {"properties": {"type": "string"}},
+        })
+        assert set(defs_case["$defs"]) == {"properties"}
+
+
+    def test_properties_map_entry_named_required_is_not_injected_with_type(self):
+        """A parameter literally named ``required`` keeps its map entry intact.
+
+        Same code path as the ``properties``-named collision above (#110530),
+        and the one where the keyword and the parameter name collide at the
+        same level: the map is repaired per-entry, so no phantom
+        ``properties`` entry appears inside it and no non-list ``required``
+        keyword is synthesised at the object level.
+        """
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+        normalized = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "table": {"type": "string"},
+                "required": {"type": "array", "items": {"type": "string"}},
+            },
+        })
+
+        props = normalized["properties"]
+        assert set(props) == {"table", "required"}
+        # The legitimately-named `required` parameter keeps its array schema.
+        assert props["required"] == {"type": "array", "items": {"type": "string"}}
+        # The object-level `required` keyword is the coerced empty list, not a schema
+        # synthesised from the same-named property.
+        assert normalized["required"] == []
+
+
+    def test_normalized_mcp_schema_keeps_required_as_list(self):
+        """``_normalize_mcp_input_schema`` (the production MCP entry) always emits a
+        ``required`` list.
+
+        Regression (#56123): when every ``required`` entry pointed at a property missing
+        from ``properties``, the repair pass pruned them all and dropped the key
+        entirely (partial pruning already worked). Strict OpenAI-compatible backends read
+        the missing key as ``null`` and reject the whole request with
+        ``null is not of type "array"``. The key now survives as ``[]``, and an object
+        node that never had a ``required`` key is coerced to ``[]`` too.
+        """
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+        stale = _normalize_mcp_input_schema({
+            "type": "object", "properties": {}, "required": ["stale"],
+        })
+        assert stale["required"] == []
+
+        partial = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"command": {"type": "string"}, "path": {"type": "string"}},
+            "required": ["command", "path", "missing_entry"],
+        })
+        assert partial["required"] == ["command", "path"]
+
+        absent = _normalize_mcp_input_schema({"type": "object", "properties": {"a": {"type": "string"}}})
+        assert absent["required"] == []
+
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
         from tools.mcp_tool_schema import _normalize_mcp_input_schema
@@ -552,6 +668,33 @@ class TestSchemaConversion:
 
         assert schema["name"] == "mcp__my_server__get_sum"
         assert "-" not in schema["name"]
+
+    def test_long_names_are_clamped_to_64_chars(self):
+        """Portable Agent Plugin names can push mcp__<server>__<tool> past the
+        64-char limit OpenAI-compatible providers enforce on function names
+        (issue #81331). The registry name must be clamped with a stable hash
+        suffix, distinct long names must not collide, and the same inputs
+        must always produce the same shortened name.
+        """
+        from tools.mcp_tool_schema import _convert_mcp_schema, mcp_prefixed_tool_name
+
+        server_name = "agent_plugin_my_server_997167c9__my_server"
+        mcp_tool = _make_mcp_tool(name="reply_communication_todo")
+        schema = _convert_mcp_schema(server_name, mcp_tool)
+
+        assert len(schema["name"]) <= 64
+        assert schema["name"] == mcp_prefixed_tool_name(server_name, "reply_communication_todo")
+
+        other_tool = _make_mcp_tool(name="reply_communication_task")
+        other_schema = _convert_mcp_schema(server_name, other_tool)
+        assert other_schema["name"] != schema["name"]
+        assert len(other_schema["name"]) <= 64
+
+        # Deterministic across repeated calls with the same inputs.
+        assert (
+            mcp_prefixed_tool_name(server_name, "reply_communication_todo")
+            == schema["name"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1021,6 +1164,64 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_start_defaults_stdio_cwd_to_session_cwd(self, tmp_path, monkeypatch):
+        """A pinned session working directory becomes the stdio default cwd.
+
+        Hosted/multiplexed sessions (ACP, gateway) pin their logical cwd; a stdio
+        server spawned there inherits the Hermes process dir instead, so
+        relative-path servers resolve against the wrong tree.
+        """
+        from agent.runtime_cwd import clear_session_cwd, set_session_cwd
+        from tools.mcp_tool import MCPServerTask
+
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            set_session_cwd(str(workspace))
+            try:
+                with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+                    server = MCPServerTask("session_cwd")
+                    await server.start({"command": "npx", "args": ["-y", "test"]})
+                    assert Path(params.call_args.kwargs["cwd"]) == workspace
+                    await server.shutdown()
+            finally:
+                clear_session_cwd()
+
+        asyncio.run(_test())
+
+    def test_start_configured_cwd_overrides_session_cwd(self, tmp_path, monkeypatch):
+        """An explicit per-server `cwd` in config always wins over the session anchor."""
+        from agent.runtime_cwd import clear_session_cwd, set_session_cwd
+        from tools.mcp_tool import MCPServerTask
+
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=SimpleNamespace(tools=[]))
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            set_session_cwd(str(workspace))
+            try:
+                with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+                    server = MCPServerTask("explicit_wins")
+                    await server.start({"command": "npx", "args": ["-y", "test"], "cwd": "/plugin"})
+                    assert params.call_args.kwargs["cwd"] == "/plugin"
+                    await server.shutdown()
+            finally:
+                clear_session_cwd()
+
+        asyncio.run(_test())
 
     def test_stdio_recycle_deadline_pauses_while_rpc_active(self):
         from tools.mcp_tool import MCPServerTask
@@ -1392,6 +1593,29 @@ class TestBuildSafeEnv:
         assert result["NOTION_TOKEN"] == "from-op"
         assert "UNTRACKED_SECRET_KEY" not in result
 
+    def test_secret_source_vars_resolve_through_active_profile_scope(self, monkeypatch):
+        """Under multiplex the stdio child gets the ROUTED profile's value for a source-tagged name,
+        never the launch profile's os.environ copy; a name the profile lacks is omitted."""
+        from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+        from hermes_cli import env_loader
+        from tools.mcp_tool_config import _build_safe_env
+
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "GITHUB_TOKEN", "bitwarden")
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
+        fake_env = {"PATH": "/usr/bin", "GITHUB_TOKEN": "default-profile", "NOTION_TOKEN": "default-notion"}
+        set_multiplex_active(True)
+        token = set_secret_scope({"GITHUB_TOKEN": "profile-b"})
+        try:
+            with patch.dict("os.environ", fake_env, clear=True):
+                result = _build_safe_env(None)
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+        assert result["PATH"] == "/usr/bin"
+        assert result["GITHUB_TOKEN"] == "profile-b"
+        assert "NOTION_TOKEN" not in result
+
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""
         from tools.mcp_tool_config import _build_safe_env
@@ -1433,6 +1657,8 @@ class TestSanitizeError:
         for text, expected in (
             ("Error with ghp_abc123def456", "Error with [REDACTED]"),
             ("key sk-projABC123xyz", "key [REDACTED]"),
+            # Dotted/dashed provider keys (``sk-sp-…``/``sk-ws-…``) must not leak a tail.
+            ("key sk-sp-ABCDEFGH12345678.abcdefgh_XYZ-0987.", "key [REDACTED]."),
             ("Authorization: Bearer eyJabc123def", "Authorization: [REDACTED]"),
             ("url?token=secret123", "url?[REDACTED]"),
         ):
@@ -2172,7 +2398,7 @@ class TestSamplingCallbackText:
             "function": {
                 "name": "ask",
                 "description": "Ask Crawl4AI",
-                "parameters": {"type": "object", "properties": {}},
+                "parameters": {"type": "object", "properties": {}, "required": []},
             },
         }]
 
@@ -2542,6 +2768,92 @@ class TestDiscoveryFailedCount:
         _servers.pop("ok1", None)
         _servers.pop("ok2", None)
         _servers.pop("fail1", None)
+
+
+class TestDiscoveryConnectConcurrency:
+    """MCP discovery bounds how many servers connect at once (#117373)."""
+
+    @staticmethod
+    def _run_pass(server_names, cap):
+        """Run a discovery pass with ``mcp.discovery_concurrency=cap``; return (peak in-flight, connected)."""
+        import asyncio as _asyncio
+
+        from tools import mcp_tool_discovery as _discovery
+        from tools.mcp_tool import _servers
+        from tools.mcp_tool_loop import _ensure_mcp_loop
+
+        in_flight = 0
+        max_in_flight = 0
+        connected = []
+
+        async def tracked_register(name, cfg):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            # Yield real control so gathers genuinely overlap.
+            await _asyncio.sleep(0.05)
+            in_flight -= 1
+            connected.append(name)
+            return []
+
+        with patch("tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
+             patch("hermes_cli.config.load_config", return_value={"mcp": {"discovery_concurrency": cap}}), \
+             patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=tracked_register), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
+            _ensure_mcp_loop()
+            try:
+                _discovery._run_discovery_pass(server_names)
+            finally:
+                for name in server_names:
+                    _servers.pop(name, None)
+        return max_in_flight, connected
+
+    def test_configured_cap_bounds_in_flight_connects_and_zero_means_unlimited(self):
+        """``mcp.discovery_concurrency`` caps simultaneous connects (still concurrent, every server
+        still connected — no head-of-line starvation); 0 restores the unbounded gather."""
+        server_names = {f"srv{i}": {"command": "npx", "args": [f"s{i}"]} for i in range(8)}
+
+        peak, connected = self._run_pass(server_names, cap=3)
+        assert 1 < peak <= 3, f"in-flight connects peaked at {peak}, cap is 3"
+        assert sorted(connected) == sorted(server_names)
+
+        peak_unlimited, connected = self._run_pass(server_names, cap=0)
+        assert peak_unlimited == len(server_names), f"0 must mean unlimited, peaked at {peak_unlimited}"
+        assert sorted(connected) == sorted(server_names)
+
+    def test_pass_timeout_capped_by_waiter_budget(self):
+        """The discovery pass timeout is capped so a slow pass cannot outlive the
+        cross-process lock waiter's fail-over budget: with the connect cap,
+        ceil(N/cap) waves make a pass legitimately long, and an uncapped
+        120s-per-wave timeout would let a lock loser run unguarded discovery
+        beside a still-connecting holder (#117373 review)."""
+        from tools import mcp_tool_discovery as _discovery
+        from tools.mcp_tool import _MCP_DISCOVERY_LOCK_MAX_RETRIES, _MCP_DISCOVERY_LOCK_RETRY_DELAY_S
+        from tools.mcp_tool import _MCP_DISCOVERY_PASS_MAX_SEC
+
+        waiter_budget = _MCP_DISCOVERY_LOCK_MAX_RETRIES * _MCP_DISCOVERY_LOCK_RETRY_DELAY_S
+        assert waiter_budget > _MCP_DISCOVERY_PASS_MAX_SEC, (
+            f"waiter budget {waiter_budget}s must outlast the pass ceiling "
+            f"{_MCP_DISCOVERY_PASS_MAX_SEC}s or a slow pass re-opens unguarded discovery")
+
+        captured = {}
+
+        def fake_run_on_mcp_loop(factory, timeout=None):
+            captured["timeout"] = timeout
+            return None
+
+        # 40 servers = 14 waves at cap 3: uncapped, the pass would block 28 min
+        # and outlive the waiter budget by 26+ minutes.
+        server_names = {f"srv{i}": {} for i in range(40)}
+        with patch("tools.mcp_tool_discovery._loop._run_on_mcp_loop",
+                   side_effect=fake_run_on_mcp_loop):
+            _discovery._run_discovery_pass(server_names)
+
+        assert captured["timeout"] == _MCP_DISCOVERY_PASS_MAX_SEC, (
+            f"pass timeout must be capped at {_MCP_DISCOVERY_PASS_MAX_SEC}s, "
+            f"got {captured['timeout']}s (uncapped: {120 * 14}s vs waiter "
+            f"budget {waiter_budget}s)")
 
 
 class TestMCPSelectiveToolLoading:
@@ -2979,7 +3291,7 @@ class TestMCPDiscoveryCrossProcessLock:
         if sys.platform == "win32":
             import portalocker
 
-            self._lock_exclusive(fh)
+            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
         else:
             import fcntl
 
@@ -3067,49 +3379,42 @@ class TestMCPDiscoveryCrossProcessLock:
 
 
 class TestRedirectHeaderStripper:
-    """Cross-origin redirect header boundary (portable Agent Plugins v1)."""
+    """Cross-origin redirect header boundary (portable Agent Plugins v1).
 
-    def _make_response(self, next_headers):
-        import httpx
+    The stripper is an ``AsyncClient`` factory overriding ``_build_redirect_request`` on each built
+    client — the only
+    seam that sees the actual redirect follow-up (``response.next_request`` is unset when response
+    hooks fire) without also touching non-redirect traffic (a request hook would strip the OAuth
+    auth flow's token/registration calls to a different-origin authorization server)."""
 
-        next_request = httpx.Request(
-            "GET", "https://other.example.test/mcp", headers=next_headers
-        )
-        response = SimpleNamespace(
-            is_redirect=True,
-            next_request=next_request,
-        )
-        return response, next_request
+    def _build_redirect(self, httpx, *, strict=False, configured=frozenset(),
+                        headers, location):
+        from tools.mcp_tool_errors import _make_redirect_header_stripper
+
+        build_client = _make_redirect_header_stripper(
+            httpx, httpx.URL("https://origin.example.test/mcp"),
+            strict=strict, configured_header_names=configured)
+        client = build_client()
+        request = httpx.Request("GET", "https://origin.example.test/mcp", headers=headers)
+        response = httpx.Response(302, headers={"location": location}, request=request)
+        return client._build_redirect_request(request, response)
 
     def test_default_strips_only_authorization(self):
         import httpx
 
-        from tools.mcp_tool_errors import _make_redirect_header_stripper
-
-        hook = _make_redirect_header_stripper(
-            httpx.URL("https://origin.example.test/mcp")
-        )
-        response, next_request = self._make_response(
-            {"Authorization": "Bearer x", "X-Tenant": "t"}
-        )
-        asyncio.run(hook(response))
+        next_request = self._build_redirect(
+            httpx, headers={"Authorization": "Bearer x", "X-Tenant": "t"},
+            location="https://other.example.test/mcp")
         assert "authorization" not in next_request.headers
         assert next_request.headers["x-tenant"] == "t"
 
     def test_strict_strips_configured_headers_cross_origin(self):
         import httpx
 
-        from tools.mcp_tool_errors import _make_redirect_header_stripper
-
-        hook = _make_redirect_header_stripper(
-            httpx.URL("https://origin.example.test/mcp"),
-            strict=True,
-            configured_header_names={"x-tenant"},
-        )
-        response, next_request = self._make_response(
-            {"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"}
-        )
-        asyncio.run(hook(response))
+        next_request = self._build_redirect(
+            httpx, strict=True, configured={"x-tenant"},
+            headers={"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"},
+            location="https://other.example.test/mcp")
         assert "authorization" not in next_request.headers
         assert "x-tenant" not in next_request.headers
         # Client-generated headers unrelated to package config survive.
@@ -3118,19 +3423,9 @@ class TestRedirectHeaderStripper:
     def test_same_origin_redirect_keeps_headers(self):
         import httpx
 
-        from tools.mcp_tool_errors import _make_redirect_header_stripper
-
-        hook = _make_redirect_header_stripper(
-            httpx.URL("https://origin.example.test/mcp"),
-            strict=True,
-            configured_header_names={"x-tenant"},
-        )
-        next_request = httpx.Request(
-            "GET",
-            "https://origin.example.test/other",
+        next_request = self._build_redirect(
+            httpx, strict=True, configured={"x-tenant"},
             headers={"Authorization": "Bearer x", "X-Tenant": "t"},
-        )
-        response = SimpleNamespace(is_redirect=True, next_request=next_request)
-        asyncio.run(hook(response))
+            location="https://origin.example.test/other")
         assert next_request.headers["authorization"] == "Bearer x"
         assert next_request.headers["x-tenant"] == "t"

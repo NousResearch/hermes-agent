@@ -2,7 +2,7 @@
 
 Hermes logs one line per API call::
 
-    ... INFO [<session_id>] agent.conversation_loop: API call #N: model=... in=<prompt> out=<out> total=... latency=..s cache=<hit>/<total>
+    ... INFO [<session_id>] agent.conversation_loop: API call #N: model=... in=<prompt> out=<out> total=... latency=..s cache=<hit>/<total> (pct) [write=<n>] [id=<response id>] [upstream=<name>]
 
 Given the rotated logs, this reproduces: prompt-size distribution, cache hit-ratio buckets, the
 "plateau" signature of a broken cache prefix (hit count stuck at the previous call's breakpoint while
@@ -30,6 +30,11 @@ _LINE = re.compile(
 )
 
 
+_WRITE = re.compile(r" write=(\d+)")
+_ID = re.compile(r" id=(\S+)")
+_UPSTREAM = re.compile(r" upstream=(.+?)(?: [a-z_]+=|$)")
+
+
 def parse_logs(paths: List[str], sids: set) -> List[Dict[str, Any]]:
     calls: List[Dict[str, Any]] = []
     for path in paths:
@@ -41,9 +46,15 @@ def parse_logs(paths: List[str], sids: set) -> List[Dict[str, Any]]:
             for line in fh:
                 m = _LINE.match(line)
                 if m and m.group(2) in sids:
-                    calls.append({"ts": m.group(1), "sid": m.group(2), "n": int(m.group(3)), "model": m.group(4),
-                                  "inp": int(m.group(5)), "out": int(m.group(6)), "lat": float(m.group(7)),
-                                  "hit": int(m.group(8))})
+                    rec = {"ts": m.group(1), "sid": m.group(2), "n": int(m.group(3)), "model": m.group(4),
+                           "inp": int(m.group(5)), "out": int(m.group(6)), "lat": float(m.group(7)),
+                           "hit": int(m.group(8))}
+                    # Newer lines (post 2026-09) also carry write= / id= / upstream=; optional.
+                    for key, pat in (("write", _WRITE), ("id", _ID), ("upstream", _UPSTREAM)):
+                        mm = pat.search(line)
+                        if mm:
+                            rec[key] = int(mm.group(1)) if key == "write" else mm.group(1)
+                    calls.append(rec)
     return calls
 
 

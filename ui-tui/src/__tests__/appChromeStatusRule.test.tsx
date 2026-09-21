@@ -104,7 +104,42 @@ const baseProps = {
   voiceLabel: ''
 }
 
+describe('StatusRule model label', () => {
+  it('shows a clamped effort as what the route sends, never as a distinct level (#61634)', () => {
+    const clamped = textContent(
+      StatusRule({ ...baseProps, modelReasoningEffort: 'ultra', modelReasoningEffortWire: 'max' })
+    )
+
+    expect(clamped).toContain('ultra→max')
+    // Verbatim (or not-yet-stamped) wire levels make no claim.
+    expect(
+      textContent(StatusRule({ ...baseProps, modelReasoningEffort: 'high', modelReasoningEffortWire: 'high' }))
+    ).toContain('opus 4.8 high')
+    expect(textContent(StatusRule({ ...baseProps, modelReasoningEffort: 'ultra' }))).toContain('opus 4.8 ultra')
+  })
+})
+
 describe('StatusRule session title', () => {
+  it('marks only estimated context occupancy at every visible width', () => {
+    for (const cols of [80, 120, 200]) {
+      for (const estimated of [true, false]) {
+        const text = textContent(
+          StatusRule({
+            ...baseProps,
+            cols,
+            statusBarFields: new Set(['context_detail']),
+            usage: { ...baseProps.usage, context_estimated: estimated }
+          })
+        )
+
+        const context = text.match(/(~?\d+(?:\.\d+)?k(?:\/\d+k| tok))/)?.[1]
+
+        expect(context, `context must render at ${cols} columns`).toBeTruthy()
+        expect(context?.startsWith('~')).toBe(estimated)
+      }
+    }
+  })
+
   it('pins the named session at the far-right edge instead of the cwd label', () => {
     const element = StatusRule({
       ...baseProps,

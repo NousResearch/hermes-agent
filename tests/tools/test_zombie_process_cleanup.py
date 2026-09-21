@@ -103,6 +103,7 @@ class TestAgentCloseMethod:
             from run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.session_id = "test-close-cleanup"
+            agent._process_owner_task_ids = {"sa-owned"}
             agent._active_children = []
             agent._active_children_lock = threading.Lock()
             agent.client = None
@@ -111,11 +112,17 @@ class TestAgentCloseMethod:
                  patch("run_agent.cleanup_vm") as mock_cleanup_vm, \
                  patch("run_agent.cleanup_browser") as mock_cleanup_browser, \
                  patch("tools.computer_use.tool.release_computer_use_session") as mock_cleanup_cua:
+                mock_registry.list_sessions.return_value = [
+                    {"session_id": "owned", "owner_task_id": "sa-owned", "status": "running"},
+                    {"session_id": "foreign", "owner_task_id": "parent", "status": "running"},
+                    {"session_id": "finished", "owner_task_id": "sa-owned", "status": "exited"},
+                ]
                 agent.close()
 
-                mock_registry.kill_all.assert_called_once_with(
-                    task_id="test-close-cleanup"
+                mock_registry.kill_process.assert_called_once_with(
+                    "owned", source="agent_close", consume_output=True,
                 )
+                mock_registry.kill_all.assert_not_called()
                 mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_browser.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_cua.assert_called_once_with("test-close-cleanup")
@@ -149,7 +156,7 @@ class TestAgentCloseMethod:
             agent.client = None
 
             with patch(
-                "tools.process_registry.process_registry.kill_all",
+                "tools.process_registry.process_registry.list_sessions",
                 side_effect=RuntimeError("process cleanup failed"),
             ), patch(
                 "tools.computer_use.tool.release_computer_use_session",
@@ -272,7 +279,7 @@ class TestAgentCloseMethod:
             ) as mock_vm, patch(
                 "run_agent.cleanup_browser"
             ) as mock_browser:
-                mock_reg.kill_all.side_effect = RuntimeError("boom")
+                mock_reg.list_sessions.side_effect = RuntimeError("boom")
 
                 agent.close()
 
@@ -473,6 +480,25 @@ class TestDelegationCleanup:
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
         monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.1)
+
+        # The parent's cap must not elapse before the worker thread has opened the child's turn, or
+        # the "late result" scenario degrades into "child never started" on a loaded runner. Gate the
+        # settle wait the timeout rides on (``_ChildRun.run`` waits on ``heartbeat.settled``).
+        class _GatedSettle(threading.Event):
+            def wait(self, timeout=None):
+                child_started.wait(timeout=5)
+                return super().wait(timeout)
+
+        import tools.delegate_tool as delegate_tool
+
+        real_start_heartbeat = delegate_tool._start_heartbeat
+
+        def start_gated_heartbeat(*args, **kwargs):
+            heartbeat = real_start_heartbeat(*args, **kwargs)
+            heartbeat.settled = _GatedSettle()
+            return heartbeat
+
+        monkeypatch.setattr(delegate_tool, "_start_heartbeat", start_gated_heartbeat)
 
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(

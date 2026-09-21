@@ -16,6 +16,7 @@ export {
   localeConfigValue,
   normalizeLocale
 } from './languages'
+export { LocalizedTabTitle } from './localized-tab-title'
 export {
   createPluginI18n,
   type PluginI18n,

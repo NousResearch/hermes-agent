@@ -17,10 +17,12 @@ from urllib.parse import parse_qs, quote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
 from gateway.platforms.base import (
-    BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async)
+    BasePlatformAdapter, SendResult,
+    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
+)
+from gateway.platforms.event import MessageEvent, MessageType
 from .media_cache import ext_for_mime
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
 from utils import TRUTHY_STRINGS
@@ -90,11 +92,6 @@ def _closed_ext(mime: str, overrides: Dict[str, str], fallback: str) -> str:
                         fallback=fallback) or fallback
 
 
-def _setting(extra: Dict[str, Any], key: str, env: str, default: str = "") -> Any:
-    """Config ``extra[key]`` wins over env var ``env`` (falsy values fall through)."""
-    return extra.get(key) or os.getenv(env, default)
-
-
 def _temp_guid() -> str:
     return f"temp-{datetime.utcnow().timestamp()}"
 
@@ -106,6 +103,8 @@ def _ok():
 
 
 class BlueBubblesAdapter(BasePlatformAdapter):
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
     platform = Platform.BLUEBUBBLES
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
@@ -114,19 +113,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.BLUEBUBBLES)
         extra = config.extra or {}
-        self.server_url = _normalize_server_url(_setting(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
+        self.server_url = _normalize_server_url(_extra_or_secret(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
         self.password = extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "")
-        self.webhook_host = _setting(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
-        self.webhook_port = int(_setting(extra, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
-        path = str(_setting(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
+        self.webhook_host = _extra_or_secret(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
+        self.webhook_port = int(_extra_or_secret(extra, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
+        path = str(_extra_or_secret(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
         self.webhook_path = path if path.startswith("/") else f"/{path}"
         self.send_read_receipts = bool(extra.get("send_read_receipts", True))
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
-            _require_mention = os.getenv("BLUEBUBBLES_REQUIRE_MENTION")
+            _require_mention = _get_scoped_secret("BLUEBUBBLES_REQUIRE_MENTION")
         self.require_mention = str(_require_mention).strip().lower() in TRUTHY_STRINGS
         self._mention_patterns = self._compile_mention_patterns(
-            extra["mention_patterns"] if "mention_patterns" in extra else os.getenv("BLUEBUBBLES_MENTION_PATTERNS"))
+            extra["mention_patterns"] if "mention_patterns" in extra else _get_scoped_secret("BLUEBUBBLES_MENTION_PATTERNS"))
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._private_api_enabled: Optional[bool] = None
@@ -224,13 +223,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         app.router.add_post(self.webhook_path, self._handle_webhook)
         # The webhook auth value rides in the query string (BlueBubbles cannot send custom headers)
         # — keep it out of aiohttp access logs.
-        self._runner = web.AppRunner(app, access_log=None)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
-        await site.start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._runner = await bind_listener(
+            self, app, self.webhook_host, self.webhook_port, self.webhook_path, access_log=None)
         self._mark_connected()
-        logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
-                    self.webhook_path)
+        if self._runner is not None:
+            logger.info("[bluebubbles] webhook listening on http://%s:%s%s", self.webhook_host, self.webhook_port,
+                        self.webhook_path)
         await self._register_webhook()  # the server only sends events to webhooks registered via its API
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
@@ -251,7 +251,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """External webhook URL for BlueBubbles registration (local binds → localhost)."""
+        """External webhook URL for BlueBubbles registration (local binds → localhost). In
+        shared-listener mode it is the default listener's ``/p/<profile>/`` URL."""
+        shared = getattr(self, "_shared_ingress_url", None)
+        if shared:
+            return shared
         host = "localhost" if self.webhook_host in _LOCAL_HOSTS else self.webhook_host
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
@@ -575,19 +579,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if isinstance(assoc_type, int) and assoc_type in _TAPBACK_CODES:  # tapback reactions delivered as messages
             return _ok()
         text = self._value(record.get("text"), record.get("message"), record.get("body")) or ""
-        media_urls, media_types, msg_type = await self._collect_attachments(record)
-        if not text and media_urls:
-            text = "(attachment)"
         chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
-        if not sender or not (chat_guid or chat_identifier) or not text:
-            return web.json_response({"error": "missing message fields"}, status=400)
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
+        # Mention gate BEFORE the attachment downloads: an unmentioned group message must not
+        # pull every attachment through the REST API only to be dropped.
         if is_group and self.require_mention:
             if not self._message_matches_mention_patterns(text):
                 logger.debug("[bluebubbles] ignoring group message (require_mention=true, no mention pattern matched)")
                 return _ok()
             text = self._clean_mention_text(text)
+        media_urls, media_types, msg_type = await self._collect_attachments(record)
+        if not text and media_urls:
+            text = "(attachment)"
+        if not sender or not (chat_guid or chat_identifier) or not text:
+            return web.json_response({"error": "missing message fields"}, status=400)
         source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
                                    chat_type="group" if is_group else "dm", user_id=sender, user_name=sender,
                                    chat_id_alt=chat_identifier)

@@ -9,16 +9,25 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
+from hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
+
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
 
-_DESCENDANTS_SQL = """
+_DESCENDANTS_SQL = f"""
             WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
                 SELECT id, parent_session_id, started_at FROM sessions WHERE id = ?
                 UNION
                 SELECT s.id, s.parent_session_id, s.started_at
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
+                -- Continuation edges only (same predicate as the session list's chain CTE): a subagent run,
+                -- a /branch fork, a /new reset child or a tool-owned row is its own conversation, and resuming
+                -- INTO one parks the user's chat in a row the sidebar never lists (#115092).
+                WHERE {_sql_json_extract('s.model_config', '$._delegate_from')} IS NULL
+                  AND {_sql_json_extract('s.model_config', '$._branched_from')} IS NULL
+                  AND NOT ({_RESET_CHILD_SQL.format(a='s')})
+                  AND COALESCE(s.source, '') != 'tool'
             )
             SELECT id, parent_session_id, started_at FROM descendants
             """
@@ -180,20 +189,23 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             return _open_probed()
 
 
-def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
-    """Open a SessionDB for ``profile`` (None/empty = this process's own state.db).
-
-    Access-mode semantics: see :func:`_open_session_db_at_path`.
-    """
+def _session_db_path_for_profile(profile: Optional[str]) -> Path:
+    """state.db path for ``profile`` (None/empty = this process's own)."""
     from hermes_cli.web_server_cron import _cron_profile_home
     from hermes_state import _default_db_path
 
     if profile:
         _name, home = _cron_profile_home(profile)
-        db_path = Path(home) / "state.db"
-    else:
-        db_path = Path(_default_db_path())
-    return _open_session_db_at_path(db_path, read_only=read_only)
+        return Path(home) / "state.db"
+    return Path(_default_db_path())
+
+
+def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
+    """Open a SessionDB for ``profile`` (None/empty = this process's own state.db).
+
+    Access-mode semantics: see :func:`_open_session_db_at_path`.
+    """
+    return _open_session_db_at_path(_session_db_path_for_profile(profile), read_only=read_only)
 
 
 # In-process throttle for the opportunistic auto-archive trigger, keyed by
@@ -216,8 +228,31 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _last_auto_archive_check[key] = now
 
         from hermes_cli.config import load_config as _load_full_config
-        cfg = (_load_full_config().get("sessions") or {})
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        # The config that governs a store is the one in that store's OWN home. A zero-arg
+        # load_config() resolves through the PROCESS HERMES_HOME, so the dashboard swept every
+        # profile's sessions with the launch profile's sessions.auto_archive/auto_archive_days —
+        # one profile's retention silently decided another's.
+        profile_home = _session_db_path_for_profile(profile).parent
+        _home_token = set_hermes_home_override(str(profile_home))
+        try:
+            cfg = (_load_full_config().get("sessions") or {})
+        finally:
+            reset_hermes_home_override(_home_token)
         if not cfg.get("auto_archive", False):
+            return
+        from hermes_cli.profiles import _check_gateway_running
+
+        # A live gateway owns this profile's store and runs the same sweep on its own
+        # housekeeping tick ("state.db maintenance tick" in gateway/run.py, profile-scoped so a
+        # multiplexed secondary's store is swept too). Opening it WRITABLE from `hermes
+        # serve` adds a second writer to a database another process is already archiving,
+        # for zero extra coverage (#110405). `_check_gateway_running` is the canonical
+        # per-profile predicate (`_maybe_run_skill_maintenance` below uses it): its
+        # multiplexer rung catches a served secondary, which owns no gateway.pid or lock
+        # of its own and a bare lock-file probe would report stopped.
+        if _check_gateway_running(profile_home):
             return
         db = _open_session_db_for_profile(profile, read_only=False)
         try:
@@ -230,14 +265,61 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _log.debug("opportunistic auto-archive skipped: %s", exc)
 
 
+def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
+    """Measure chat inactivity, not socket inactivity (Desktop stays connected)."""
+    import tui_gateway.server as gateway
+
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home().resolve()
+    with gateway._sessions_lock:
+        sessions = [session for session in gateway._sessions.values()
+                    if Path(session.get("profile_home") or home).resolve() == home]
+        if any(session.get("running") for session in sessions):
+            return None
+        last_active = max(
+            [started_at, gateway._closed_session_activity.get(str(home), 0)]
+            + [float(session.get("last_active") or started_at) for session in sessions])
+    return max(0.0, time.time() - last_active)
+
+
+def _maybe_run_skill_maintenance(started_at: float) -> None:
+    from hermes_constants import get_hermes_home
+    from hermes_cli.profiles import _check_gateway_running
+
+    # A live messaging gateway already owns these chores for this profile.
+    if _check_gateway_running(get_hermes_home()):
+        return
+
+    from agent.curator import maybe_run_curator
+    from tools.skills_sync_client import maybe_pull_skills
+    from tools.skills_sync_client_org import maybe_pull_org_skills
+
+    try:
+        idle_for = _skill_maintenance_idle_for(started_at)
+        if idle_for is not None:
+            maybe_run_curator(idle_for_seconds=idle_for)
+    except Exception as exc:
+        _log.debug("serve curator tick skipped: %s", exc)
+    for pull in (maybe_pull_skills, maybe_pull_org_skills):
+        try:
+            pull()
+        except Exception as exc:
+            _log.debug("serve skill sync tick skipped: %s", exc)
+
+
 async def _auto_archive_ticker_loop(
     interval_s: float = 3600.0, initial_delay_s: float = 90.0) -> None:
-    """Poll-rate timer for the auto-archive sweep (primary profile), so a
-    long-idle Desktop keeps sweeping without any ``/api/sessions`` request.
-    The real cadence is still owned by state_meta inside ``maybe_auto_archive``."""
+    """Poll maintenance for this serve profile, including Desktop-only installs.
+
+    Individual chores own their config/interval gates. Curator additionally uses
+    real chat inactivity; merely keeping a Desktop WebSocket open is not activity.
+    """
+    started_at = time.time()
 
     def _sweep() -> None:
         _maybe_auto_archive_for_profile(None)
+        _maybe_run_skill_maintenance(started_at)
 
     await asyncio.sleep(initial_delay_s)
     while True:

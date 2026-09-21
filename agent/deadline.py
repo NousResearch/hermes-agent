@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+from contextlib import contextmanager
 import faulthandler
 import logging
 import os
@@ -339,13 +340,73 @@ def run_bounded_sync(
 # --- Whole-tree process termination --------------------------------------------
 
 
+@contextmanager
+def _process_tree_snapshot(pid: int, *, hard_kill: bool):
+    """Stop each hard-kill target before discovering its children: a running
+    parent can fork after psutil builds its PID map and escape the final signal.
+    Resume anything we stopped if signalling fails. Graceful signals never stop
+    their recipients, since their handlers must remain able to run.
+    """
+    descendants = []
+    stopped = []
+    try:
+        try:
+            import psutil
+            root = psutil.Process(pid)
+            descendants = root.children(recursive=True)
+            if hard_kill:
+                pending = [root]
+                seen = {os.getpid()}
+                known = {process.pid: process for process in descendants}
+                stop_deadline = time.monotonic() + 1.0
+                while pending:
+                    for process in pending:
+                        if process.pid in seen:
+                            continue
+                        seen.add(process.pid)
+                        if time.monotonic() >= stop_deadline:
+                            raise TimeoutError("process tree did not stop before snapshot deadline")
+                        try:
+                            status = process.status()
+                            if status in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                                continue
+                            if status != psutil.STATUS_STOPPED:
+                                process.suspend()
+                                stopped.append(process)
+                            while process.status() != psutil.STATUS_STOPPED:
+                                if time.monotonic() >= stop_deadline:
+                                    raise TimeoutError("process did not stop before snapshot deadline")
+                                time.sleep(0.001)
+                        except psutil.NoSuchProcess:
+                            continue
+                    # Rescan after stopping the discovered generation. A child
+                    # may have forked while that generation was being stopped.
+                    for process in root.children(recursive=True):
+                        known.setdefault(process.pid, process)
+                    descendants = list(known.values())
+                    pending = [process for process in descendants if process.pid not in seen]
+        except Exception:
+            # Preserve the existing best-effort group fallback when discovery or
+            # stopping is unavailable; never strand a successfully stopped target.
+            logger.debug("kill_process_tree: snapshot incomplete for pid %s", pid, exc_info=True)
+        yield descendants
+    finally:
+        for process in stopped:
+            try:
+                process.resume()
+            except Exception:
+                logger.debug("kill_process_tree: target already gone or resume refused", exc_info=True)
+
+
 def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
     """Terminate ``pid`` and all its descendants, portably; True when anything was signalled.
 
-    Windows: ``taskkill /F /T`` (``sig`` ignored). POSIX: descendants are snapshotted via psutil
-    BEFORE signalling (once the parent dies they reparent and a parent walk finds nothing), then
-    the process group is signalled when ``pid`` leads one, and every snapshotted descendant
-    individually — which also reaches ``setsid`` children. ``sig`` defaults to ``SIGKILL``."""
+    Windows: ``taskkill /F /T`` (``sig`` ignored). POSIX: snapshot descendants via
+    psutil; for SIGKILL, stop and rescan the live tree so a concurrent fork cannot
+    escape a stale snapshot. Signal identity-checked descendants before their
+    parent, then its group when ``pid`` leads one. Stopping is best-effort with a
+    bounded wait; unavailable psutil still leaves process-group cleanup. Other
+    signals do not suspend recipients. ``sig`` defaults to ``SIGKILL``."""
     if sys.platform == "win32":
         try:
             from hermes_cli._subprocess_compat import windows_hide_flags
@@ -367,37 +428,33 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
     if sig is None:
         sig = _signal.SIGKILL
 
-    try:
-        import psutil
-        descendants = psutil.Process(int(pid)).children(recursive=True)
-    except Exception:
-        # Already gone, or psutil unavailable — the group signal still covers same-session descendants.
-        descendants = []
-
-    signalled = False
-    try:
-        # getpgid→killpg has an inherent TOCTOU shared by every killpg site; the psutil
-        # sweep below is identity-aware (PID + create time) and does not.
-        pgid = os.getpgid(pid)
-    except (ProcessLookupError, PermissionError, OSError):
-        pgid = None
-    try:
-        if pgid is not None and pgid == pid:
-            # pid leads its own group (the == check avoids signalling the caller's group).
-            os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only branch (win32 returns above)
-        else:
-            os.kill(pid, sig)
-        signalled = True
-    except ProcessLookupError:
-        pass
-    except (PermissionError, OSError):
-        logger.debug("kill_process_tree: signal failed for pid %s", pid, exc_info=True)
-
-    for child in descendants:
+    with _process_tree_snapshot(int(pid), hard_kill=sig == _signal.SIGKILL) as descendants:
+        signalled = False
+        # Signal descendants while their ownership ancestry is still observable.
+        # Frozen hard-kill targets cannot fork during this bottom-up teardown.
+        for child in reversed(descendants):
+            try:
+                if child.is_running():
+                    child.send_signal(sig)
+                    signalled = True
+            except Exception:
+                continue
         try:
-            if child.is_running():  # identity-aware: recycled PIDs skipped
-                child.send_signal(sig)
-                signalled = True
-        except Exception:
-            continue
-    return signalled
+            # getpgid→killpg has an inherent TOCTOU shared by every killpg site; the psutil
+            # sweep below is identity-aware (PID + create time) and does not.
+            pgid = os.getpgid(pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = None
+        try:
+            if pgid is not None and pgid == pid:
+                # pid leads its own group (the == check avoids signalling the caller's group).
+                os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only branch (win32 returns above)
+            else:
+                os.kill(pid, sig)
+            signalled = True
+        except ProcessLookupError:
+            pass
+        except (PermissionError, OSError):
+            logger.debug("kill_process_tree: signal failed for pid %s", pid, exc_info=True)
+
+        return signalled

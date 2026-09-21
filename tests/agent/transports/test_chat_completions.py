@@ -183,6 +183,20 @@ class TestChatCompletionsBasic:
         assert "anthropic_content_blocks" in msgs[1]
         assert "bedrock_content_blocks" in msgs[1]
 
+    def test_convert_messages_strips_name_on_tool_results_only(self, transport):
+        """``name`` is stripped from tool results only (schema-foreign there),
+        preserved on user/assistant messages; the original list is untouched."""
+        msgs = [
+            {"role": "user", "content": "hi", "name": "sylvain"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok",
+             "name": "execute_code"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert result[1] == {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
+        # Schema-valid on non-tool roles — untouched, including by identity.
+        assert result[0]["name"] == "sylvain"
+        assert msgs[1]["name"] == "execute_code"
+
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
         returned by identity (preserves the deepcopy-on-demand contract)."""
@@ -569,6 +583,35 @@ class TestChatCompletionsValidate:
         assert transport.validate_response(None) is False
 
 
+
+    @pytest.mark.parametrize("usage", [None, SimpleNamespace(completion_tokens=0)])
+    def test_rejects_known_router_timeout_shim_without_generated_tokens(self, transport, usage):
+        """#68396: an HTTP-200 router timeout shim with no generated tokens is not a completion."""
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="Connect timeout, please try again later.",
+                tool_calls=None,
+            ))],
+            usage=usage,
+        )
+
+        assert transport.validate_response(response) is False
+
+    @pytest.mark.parametrize(
+        ("content", "tool_calls", "usage"),
+        [
+            ("Connect timeout, please try again later.", None, SimpleNamespace(completion_tokens=1)),
+            ("Connect timeout, please try again later.", [SimpleNamespace()], None),
+        ],
+    )
+    def test_accepts_non_shim_timeout_text(self, transport, content, tool_calls, usage):
+        """Positive controls (#68396): generated tokens, embedded phrase, or tool calls stay valid."""
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=tool_calls))],
+            usage=usage,
+        )
+
+        assert transport.validate_response(response) is True
 
     def test_valid(self, transport):
         r = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))])

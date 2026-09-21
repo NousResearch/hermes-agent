@@ -22,6 +22,7 @@ from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.message_content import flatten_message_text
+from agent.moa_alternation import destination_key, is_role_alternation_rejection, merge_same_role_messages
 from agent.transports import get_transport
 from agent.usage_pricing import CanonicalUsage
 
@@ -120,12 +121,13 @@ _preset_cache: dict[tuple, Any] = {}
 
 
 def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
-    """``(preset, raw moa config)``; the resolved preset is cached per config mtime
+    """``(preset, raw moa config)``; the resolved preset is cached per config file signature
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
+    from utils import file_signature
     try:
-        cfg_stamp = get_config_path().stat().st_mtime_ns
+        cfg_stamp = file_signature(get_config_path().stat())
     except OSError:
         cfg_stamp = None
     moa_raw = load_config().get("moa") or {}
@@ -142,7 +144,7 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
 
 
 _runtime_cache_lock = threading.Lock()
-_runtime_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_runtime_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 
 # Short TTL so rotated keys / base_url edits are picked up within 5 minutes.
 _RUNTIME_CACHE_TTL_SECONDS = 300.0
@@ -204,7 +206,9 @@ _REFERENCE_SYSTEM_PROMPT = (
     "systems exist and reason about them from the context given rather than "
     "asking for access.\n\n"
     "Respond with your advice directly — no preamble, no disclaimers about "
-    "tools or access. Your response is private guidance handed to the "
+    "tools or access. Advise in prose: never emit a tool call or a JSON "
+    "tool-call object, because the aggregator replays what looks like one. "
+    "Your response is private guidance handed to the "
     "aggregator, not an answer shown to the user. NEVER claim to have executed "
     "anything."
 )
@@ -245,12 +249,15 @@ def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] |
 def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """Slot → ``call_llm`` kwargs with the provider's real api_mode/base_url/api_key.
 
-    Cached per (provider, model) with a short TTL. Falls back to bare provider/model
+    Cached per (profile home, provider, model) with a short TTL. Falls back to bare provider/model
     on error — never cached, or a transient error would pin bare kwargs for a TTL.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
-    cache_key = (provider, model)
+    # hermes_home_key() in the key: the resolved api_key/base_url are per-profile, and under a
+    # multiplex gateway two profiles can share (provider, model) with different accounts.
+    from hermes_constants import hermes_home_key
+    cache_key = (hermes_home_key(), provider, model)
     now = time.monotonic()
     with _runtime_cache_lock:
         entry = _runtime_cache.get(cache_key)
@@ -265,8 +272,9 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
         extra_body = overrides.get("extra_body") if isinstance(overrides, dict) else None
         if isinstance(extra_body, dict) and extra_body:
             out["extra_body"] = dict(extra_body)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
+    except Exception as exc:
+        logger.warning("MoA slot %s: provider '%s' could not be resolved (%s); calling with bare provider/model",
+                       _slot_label(slot), provider, exc)
         return out
     with _runtime_cache_lock:
         _runtime_cache[cache_key] = (now, out)
@@ -380,15 +388,14 @@ def _run_reference(
             messages, slot, runtime, reserve_output_tokens=max_tokens, context_length_cache=context_length_cache,
         )
         trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl)
-        # Per-slot max_tokens beats the preset-level reference_max_tokens.
-        slot_max_tokens = slot.get("max_tokens")
+
         # Copilot gates premium models on request attribution; MoA fan-out serves the
         # user's current turn, so mirror the main agent's x-initiator header.
         from agent.auxiliary_client import _normalize_aux_provider
         is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
         response = call_llm(
             task="moa_reference", messages=trimmed, temperature=temperature,
-            max_tokens=slot_max_tokens if slot_max_tokens is not None else max_tokens,
+            max_tokens=max_tokens,
             timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
             extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
         )
@@ -630,12 +637,36 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
+# Cached guidance (user_turn / off-cadence every_n fanout) is reused on later iterations of the
+# same turn, where it predates the tool results the acting model now sees. Without this line the
+# block reads as fresh instruction and an advisor's suggested tool call gets replayed after it
+# already ran.
+_STALE_GUIDANCE_NOTE = (
+    "This guidance was produced earlier in this turn, before the tool results below it. "
+    "Check the transcript before acting on it: a step it suggests may already have run, and "
+    "repeating a completed tool call is never the next step.\n"
+)
+
+
 _ADVISORY_INSTRUCTION = (
     "[The conversation above is the current state of the task. Give your "
     "most intelligent judgement: what is going on, what should happen next, "
     "what risks or mistakes you see, and how the acting agent should "
     "proceed.]"
 )
+
+
+def _tool_activity_since_last_user(messages: list[dict[str, Any]]) -> bool:
+    """Whether the acting model has already called tools since the last real user turn.
+    Guidance cached from the start of the turn predates those results, so replaying a
+    tool call it suggests can repeat work the transcript already shows as done."""
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role == "user":
+            return False
+        if role == "tool" or (role == "assistant" and msg.get("tool_calls")):
+            return True
+    return False
 
 
 def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -790,8 +821,8 @@ def aggregate_moa_context(
     long syntheses). ``agent`` makes the fan-out interruptible.
 
     ``reference_max_tokens`` applies ONLY to the reference fan-out — the aggregator's own synthesis call is
-    never capped, so it always uses its model's own maximum. ``call_llm`` omits the parameter entirely when
-    it is ``None`` (see its docstring), which also sidesteps providers that reject ``max_tokens`` outright.
+    not given an advisor budget. Omission uses provider-specific defaults; native protocols may
+    still require an internal wire limit.
     A hardcoded cap on the aggregator call previously truncated long aggregator syntheses (#53580) — passing
     ``reference_max_tokens`` to both calls here would silently reintroduce that regression.
     """
@@ -886,26 +917,25 @@ def _completed_response_as_stream_chunk(response: Any) -> Any:
 
 
 def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str) -> None:
-    """Attach the per-turn reference block at the END of the aggregator prompt.
+    """Attach the per-turn reference block as its OWN trailing user message.
 
-    The block varies per iteration; appending keeps ``[system][task][tool-history]``
-    cache-stable. A trailing user turn is merged in place (string, or a new text part
-    AFTER the cache_control-marked part); otherwise a user message is appended (two
-    consecutive user turns would be rejected by strict providers).
+    The block varies per turn; appending keeps ``[system][task][tool-history]``
+    cache-stable. It is never merged into a trailing user turn: iteration 1 of a
+    tool loop ends on ``user(task)``, and a merged ``user(task + guidance)`` byte-differs
+    from the ``user(task)`` every later iteration replays, so the provider prefix cache
+    collapsed to the system prompt on iteration 2 of every turn (#112358). Converters
+    that require strict alternation (Anthropic Messages, Converse, native Gemini) merge
+    the two user turns as SEPARATE content blocks, so the task block stays byte-stable
+    there too; on the OpenAI-compatible wire the request ends ``user(task), user(guidance)``,
+    which a chat template that enforces strict user/assistant alternation rejects.
     """
-    last = agg_messages[-1] if agg_messages else None
-    last_content = last.get("content") if last is not None and last.get("role") == "user" else None
-    if isinstance(last_content, str):
-        last["content"] = last_content + "\n\n" + guidance
-    elif isinstance(last_content, list):
-        last["content"] = [*last_content, {"type": "text", "text": "\n\n" + guidance}]
-    else:
-        agg_messages.append({"role": "user", "content": guidance})
+    agg_messages.append({"role": "user", "content": guidance})
 
 
 def peel_reference_guidance(messages: list[dict[str, Any]], guidance: Any) -> list[dict[str, Any]]:
-    """Exact inverse of ``_attach_reference_guidance`` (the three attach shapes), so a
-    cache breakpoint never lands on the turn-varying guidance. Inputs are not mutated."""
+    """Exact inverse of ``_attach_reference_guidance`` (plain string, or its cache-decorated
+    single-text-part form), so a cache breakpoint never lands on the turn-varying guidance.
+    Inputs are not mutated."""
     if not guidance or not messages:
         return messages
     guidance_text = str(guidance)
@@ -913,21 +943,12 @@ def peel_reference_guidance(messages: list[dict[str, Any]], guidance: Any) -> li
     if not isinstance(last, dict) or last.get("role") != "user":
         return messages
     content = last.get("content")
-    if content == guidance_text:  # shape (c): guidance was its own user message
+    if content == guidance_text:
         return list(messages[:-1])
-    suffix = "\n\n" + guidance_text
-    if isinstance(content, str) and content.endswith(suffix):  # shape (a): merged into a string turn
-        return [*messages[:-1], {**last, "content": content[: -len(suffix)]}]
-    if isinstance(content, list) and content:
-        last_part = content[-1]
-        if isinstance(last_part, dict) and last_part.get("type", "text") == "text":
-            text = last_part.get("text") or ""
-            if text in (suffix, guidance_text):
-                # Shape (b): guidance rode as its own trailing part. Guidance as the
-                # only content drops the whole message (mirrors shape c).
-                return list(messages[:-1]) if len(content) == 1 else [*messages[:-1], {**last, "content": list(content[:-1])}]
-            if text.endswith(suffix):
-                return [*messages[:-1], {**last, "content": [*content[:-1], {**last_part, "text": text[: -len(suffix)]}]}]
+    if isinstance(content, list) and len(content) == 1:
+        part = content[0]
+        if isinstance(part, dict) and part.get("type", "text") == "text" and (part.get("text") or "") == guidance_text:
+            return list(messages[:-1])
     return messages
 
 
@@ -964,6 +985,10 @@ class MoAChatCompletions:
         self._fanout_turn_sig: str | None = None
         self._fanout_last_state_sig: str | None = None
         self._privacy_mode: str = ""  # normalized moa.privacy_filter, refreshed per create()
+        # Destinations (route, model) that 400'd on adjacent same-role messages this session:
+        # their aggregator requests are pre-merged; every other destination keeps the split,
+        # cache-stable shape (agent/moa_alternation.py).
+        self._merge_same_role_destinations: set[tuple[str, str]] = set()
 
     def consume_reference_usage(self) -> tuple[Any, Any]:
         """Pop pending fan-out ``(CanonicalUsage, cost_usd_or_None)`` and reset both
@@ -1088,10 +1113,6 @@ class MoAChatCompletions:
         )
         trace = self._pending_trace
         if trace is not None:
-            # Trace the exact aggregator INPUT (persisted copy redacted; live input raw).
-            trace["aggregator_input_messages"] = (
-                _redact_trace_messages([dict(m) for m in agg_messages]) if getattr(self, "_privacy_mode", "") else agg_messages
-            )
             trace["aggregator_label"] = _slot_label(aggregator)
         # stream=True returns the RAW token stream (consumer reassembles + retries);
         # the non-streaming path forwards no stream/stream_options/timeout. The
@@ -1104,13 +1125,40 @@ class MoAChatCompletions:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
         # Pop the runtime's extra_body so the explicit kwarg never collides with **agg_runtime.
         agg_extra_body = _merge_slot_extra_body(agg_runtime.pop("extra_body", None), api_kwargs.get("extra_body"))
-        agg_response = call_llm(
-            task="moa_aggregator", messages=agg_messages, temperature=prepared["aggregator_temperature"],
+        destination = destination_key(agg_runtime)
+        # Facades built via __new__ (tests, swaps) have no __init__ state.
+        remembered = getattr(self, "_merge_same_role_destinations", None)
+        if remembered is None:
+            remembered = self._merge_same_role_destinations = set()
+        merged = destination in remembered
+        if merged:
+            agg_messages = merge_same_role_messages(agg_messages)
+        send = functools.partial(
+            call_llm, task="moa_aggregator", temperature=prepared["aggregator_temperature"],
             max_tokens=api_kwargs.get("max_tokens"), tools=tools, extra_body=agg_extra_body,
             reasoning_config=_aggregator_reasoning_config(aggregator),  # same policy as direct create()
             **stream_kwargs, **agg_runtime,
         )
+        try:
+            agg_response = send(messages=agg_messages)
+        except Exception as exc:
+            # Strict-alternation template rejected ``user(task), user(guidance)``: merge the pair for
+            # THIS destination only and retry once; remember it so later iterations pre-merge.
+            retry_messages = None if merged else merge_same_role_messages(agg_messages)
+            if retry_messages is None or retry_messages is agg_messages or not is_role_alternation_rejection(exc, agg_runtime):
+                raise
+            remembered.add(destination)
+            logger.warning(
+                "MoA aggregator %s rejected adjacent same-role messages — merging them for this "
+                "destination for the rest of the session and retrying once: %.200s", _slot_label(aggregator), exc,
+            )
+            agg_messages = retry_messages
+            agg_response = send(messages=agg_messages)
         if trace is not None:
+            # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).
+            trace["aggregator_input_messages"] = (
+                _redact_trace_messages([dict(m) for m in agg_messages]) if getattr(self, "_privacy_mode", "") else agg_messages
+            )
             # Streaming output lands as the turn's assistant message; the trace marks it.
             trace["aggregator_streamed"] = stream
             output = None
@@ -1198,7 +1246,7 @@ class MoAChatCompletions:
         raw_reference_timeout = preset.get("reference_timeout")
         reference_outputs = _run_references_parallel(
             reference_models, ref_messages, temperature=_preset_temperature(preset, "reference_temperature"),
-            max_tokens=preset.get("reference_max_tokens"),
+
             progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
             reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,
             agent=self._agent, late_accounting_sink=self._record_late_reference_accounting,
@@ -1244,6 +1292,7 @@ class MoAChatCompletions:
 
     def _build_guidance(
         self, reference_outputs: list[tuple[str, str, Any]], aggregator: dict[str, Any], degraded_reference_policy: str,
+        stale: bool = False,
     ) -> str | None:
         """Render the reference block attached to the aggregator prompt (None = nothing)."""
         agg_refs, degraded, all_failed = _guidance_inputs(
@@ -1274,7 +1323,8 @@ class MoAChatCompletions:
                 f"{header}"
                 f"References: {', '.join(label for label, _, _ in agg_refs)}\n\n"
                 "Use the reference responses below as private context. You are the aggregator and acting model: "
-                "answer the user directly or call tools as needed.\n\n"
+                "answer the user directly or call tools as needed.\n"
+                f"{_STALE_GUIDANCE_NOTE if stale else ''}\n"
                 f"{_join_reference_outputs(agg_refs, degraded)}"
             )
         return None
@@ -1305,7 +1355,8 @@ class MoAChatCompletions:
 
         ref_messages = _reference_messages(messages)
         cache_key = self._fanout_cache_key(preset, ref_messages, reference_models)
-        if cache_key == self._ref_cache_key and self._ref_cache_outputs:
+        cache_hit = bool(cache_key == self._ref_cache_key and self._ref_cache_outputs)
+        if cache_hit:
             # HIT: already ran and accounted. Do NOT zero pending totals (a late
             # interrupted reference may have deposited) and no trace (not a new turn).
             reference_outputs = list(self._ref_cache_outputs)
@@ -1314,7 +1365,10 @@ class MoAChatCompletions:
             reference_outputs = self._run_fanout(preset, ref_messages, reference_models, aggregator, aggregator_temperature, cache_key)
 
         agg_messages = [dict(m) for m in messages]
-        guidance = self._build_guidance(reference_outputs, aggregator, str(preset.get("degraded_reference_policy") or "loud"))
+        guidance = self._build_guidance(
+            reference_outputs, aggregator, str(preset.get("degraded_reference_policy") or "loud"),
+            stale=cache_hit and _tool_activity_since_last_user(messages),
+        )
         if guidance:
             _attach_reference_guidance(agg_messages, guidance)
 
@@ -1389,3 +1443,20 @@ def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:
         resolved_preset = "default"
     # ``agent`` lets the fan-out wait be aborted on a user interrupt.
     return MoAClient(resolved_preset, reference_callback=_moa_reference_relay, agent=agent)
+
+
+def bind_moa_runtime(agent, preset_name: Any, api_key: Any = None) -> None:
+    """Make ``agent`` act as the MoA preset: pin the virtual runtime fields and install the facade.
+
+    Every site that puts an agent onto ``provider: moa`` (init, ``/model`` switch, fallback
+    activation) must pin the same fields — the facade speaks only chat.completions, has no HTTP
+    endpoint and no OpenAI client kwargs — or the next dispatch/rebuild reaches a real wire with a
+    virtual identity (``moa://local`` 404, or the preset name sent as a model id).
+    """
+    agent.model = str(preset_name or "default")
+    agent.provider = agent.requested_provider = "moa"
+    agent.api_mode = "chat_completions"
+    agent.api_key = api_key or "moa-virtual-provider"
+    agent.base_url = "moa://local"
+    agent._client_kwargs = {}
+    agent.client = build_moa_facade(agent, agent.model)

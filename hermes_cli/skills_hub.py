@@ -304,7 +304,7 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
         c.print(f"[dim]Existing: {', '.join(existing)}[/]")
     else:
         c.print("[bold]Category[/] "
-                "[dim](optional — press Enter to install flat at ~/.hermes/skills/<name>/)[/]")
+                f"[dim](optional — press Enter to install flat at {display_hermes_home()}/skills/<name>/)[/]")
     answer = _line_input("Category: ")
     if answer and not _VALID_CATEGORY_RE.match(answer):
         c.print(f"[dim]Invalid category {answer!r} — installing flat.[/]")
@@ -419,17 +419,15 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     page_size = max(1, min(page_size, 100))
     c = console or _console
     all_results, source_counts, timed_out = _fetch_browse_results(c, source)
+    from tools.skills_hub_github import _provider_filter_of
     if not all_results:
-        c.print("[dim]No skills found in the Skills Hub.[/]\n")
-        return
-    # Provider filter (nvidia/openai/...) narrows GitHub-tap skills by their per-tap
-    # ``extra.provider`` label (the runtime index stores them all under source="github").
-    from tools.skills_hub_github import _PROVIDER_FILTER_VALUES, _filter_results_by_provider
-    if source.strip().lower() in _PROVIDER_FILTER_VALUES:
-        all_results = _filter_results_by_provider(all_results, source)
-        if not all_results:
+        # Provider narrowing happens inside parallel_search_sources; keep the
+        # provider-specific empty message.
+        if _provider_filter_of(source):
             c.print(f"[dim]No skills found for provider '{source}'.[/]\n")
-            return
+        else:
+            c.print("[dim]No skills found in the Skills Hub.[/]\n")
+        return
     deduped, page_items, page, total_pages, start = _rank_and_page(all_results, page, page_size)
     _render_browse_page(c, deduped, page_items, page, total_pages, start, source,
                         source_counts, timed_out)
@@ -493,13 +491,29 @@ def inspect_skill(identifier: str) -> Optional[dict]:
 # --- install ---
 
 def _install_blocked(c: Console, bundle, message: str, verdict: str, detail: str,
-                     q_path: Optional[Path] = None, lead: str = "") -> None:
+                     q_path: Optional[Path] = None, lead: str = "", label: str = "Installation blocked:") -> None:
     """Print the blocked-install line, drop the quarantine copy, append the audit row."""
-    c.print(f"{lead}[bold red]Installation blocked:[/] {message}")
+    c.print(f"{lead}[bold red]{label}[/] {message}")
     if q_path is not None:
         shutil.rmtree(q_path, ignore_errors=True)
     from tools.skills_hub import append_audit_log
     append_audit_log("BLOCKED", bundle.name, bundle.source, bundle.trust_level, verdict, detail)
+
+
+def _scan_block_message(result, identifier: str) -> str:
+    """User-facing sentence for a scan-blocked install (the audit row keeps the scanner's raw reason).
+
+    Says what happened (not installed), why in plain words (high-risk patterns), whether ``--force``
+    can help, and the read-only next step (``hermes skills inspect``). The hard-block rule mirrors
+    ``tools.skills_guard.should_allow_install``: a dangerous verdict on a non-official source."""
+    n = len(result.findings)
+    findings = f"{n} high-risk pattern(s)" if n else "high-risk patterns"
+    hard_block = result.verdict == "dangerous" and result.trust_level in ("community", "trusted")
+    policy = ("Hermes never installs unverified skills with high-risk findings, even with --force."
+              if hard_block else "Re-run with --force to install anyway.")
+    return (f"the security scan found {findings} in '{identifier}' (listed above). "
+            f"{policy} Review the findings or ask the author to fix them; to read the skill without "
+            f"installing, run `hermes skills inspect {identifier}`.")
 
 
 def _invalid_path(c: Console, bundle, exc: ValueError, q_path: Optional[Path] = None) -> None:
@@ -585,18 +599,30 @@ def _pinned_sources(c: Console, sources, source_id: Optional[str], identifier: s
     return None
 
 
-def _print_fetch_failure(c: Console, sources, identifier: str) -> None:
+def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source=None) -> None:
     rate_limited = any(getattr(src, "is_rate_limited", False)
                        or getattr(getattr(src, "github", None), "is_rate_limited", False)
                        for src in sources)
-    c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.")
+    # Index hit but files gone: a stale index entry, not a user typo — name it so users stop
+    # re-trying spellings (#3259). Only when no adapter was rate limited: a throttled fetch
+    # also yields meta-without-bundle, and calling that "stale" would send users away from a
+    # skill that exists.
+    if meta is not None and not rate_limited:
+        src_id = getattr(source, "source_id", lambda: "the registry")()
+        c.print(f"[bold red]Error:[/] '{identifier}' is listed in the {src_id} index, "
+                f"but its files no longer exist upstream.")
+        c.print("[dim]Stale index entry: the skill was likely renamed or removed by "
+                "its author. Try `hermes skills search` for an alternative.[/]\n")
+        return
+    c.print(f"[bold red]Error:[/] Could not download '{identifier}'.")
     if rate_limited:
         c.print("[yellow]Hint:[/] GitHub API rate limit exhausted "
                 "(unauthenticated: 60 requests/hour).\n"
                 "Set [bold]GITHUB_TOKEN[/] in your .env or install the [bold]gh[/] CLI and run "
                 "[bold]gh auth login[/] to raise the limit to 5,000/hr.\n")
     else:
-        c.print()
+        c.print(f"Check the name with [bold]hermes skills search {identifier.rsplit('/', 1)[-1]}[/] "
+                "and check your internet connection. If it keeps failing, run [bold]hermes doctor[/].\n")
 
 
 def _scan_quarantined(c: Console, q_path: Path, bundle, meta, identifier: str):
@@ -663,7 +689,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"\n[bold]Fetching:[/] {identifier}")
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
-        _print_fetch_failure(c, sources, identifier)
+        _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
         return
     if not _resolve_url_bundle_name(c, bundle, meta, identifier, name_override, skip_confirm):
         return
@@ -694,10 +720,10 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     result = _scan_quarantined(c, q_path, bundle, meta, identifier)
-    allowed, reason = should_allow_install(result, force=force)
+    allowed, _reason = should_allow_install(result, force=force)
     if not allowed:
-        _install_blocked(c, bundle, reason, result.verdict, f"{len(result.findings)}_findings",
-                         q_path=q_path, lead="\n")
+        _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
+                         f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
         return
     # Advisory second opinion — warn-and-continue by design (PII-class findings are
     # informational); the install confirmation below is where the user decides.
@@ -757,6 +783,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
     from agent.skill_utils import get_disabled_skill_names
+    from agent.skill_commands import skill_command_collision_note
     c = console or _console
     ensure_hub_dirs()
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
@@ -783,9 +810,12 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         counts[source_type] += 1
         enabled_count += is_enabled
         disabled_count += not is_enabled
+        status = "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]"
+        # Name taken by a built-in: the skill loads but has no /<name> (see agent.skill_commands).
+        if note := skill_command_collision_note(name):
+            status += f"\n[yellow]{note}[/]"
         table.add_row(name, skill.get("category", ""), source_display,
-                      _trust_cell(trust, source_display),
-                      "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]")
+                      _trust_cell(trust, source_display), status)
 
     c.print(table)
     tail = (f"{enabled_count} enabled shown" if enabled_only
@@ -808,6 +838,11 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
     c.print(table)
     update_count = sum(1 for entry in results if entry.get("status") == "update_available")
     c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
+    orphaned = [entry.get("name", "") for entry in results if entry.get("status") == "orphaned"]
+    if orphaned:
+        c.print(f"[yellow]Orphaned:[/] {', '.join(orphaned)} — lock-file entries whose local "
+                "directory is missing or replaced by a non-directory. For missing directories, "
+                "remove the stale entry with: hermes skills uninstall <name>\n")
 
 
 def _has_local_edits(installed: dict) -> bool:

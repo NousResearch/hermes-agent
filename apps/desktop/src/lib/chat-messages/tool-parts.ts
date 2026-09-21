@@ -1,5 +1,6 @@
 import { firstStringField, normalize } from '@/lib/text'
-import { parseTodos } from '@/lib/todos'
+import { isTodoToolName, parseTodos } from '@/lib/todos'
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart, GatewayEventPayload } from './types'
@@ -87,9 +88,9 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
   // `clarify.request` (a fresh request id) must correlate with the `tool.start`
   // row (the model's tool_call_id) so the two ids don't produce a duplicate
   // clarify card — same correlation ClarifyToolPending uses for request↔args.
-  // `server` is setup_mcp's identifying arg, for the identical reason.
+  // A connection request carries the model's tool_call_id itself, so it needs no arg match.
   const query =
-    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path']) ||
+    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path']) ||
     batchClarifyMatchValue(payloadArgs.questions)
 
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
@@ -179,10 +180,33 @@ function findToolPartIndex(
     }
   }
 
-  const pendingIndices = parts
-    .map((part, index) => ({ part, index }))
-    .filter(({ part }) => part.type === 'tool-call' && part.toolName === name && part.result === undefined)
-    .map(({ index }) => index)
+  const pendingIndices: number[] = []
+
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]
+
+    if (
+      part.type === 'tool-call' &&
+      part.toolName === name &&
+      part.result === undefined &&
+      part.completedAt === undefined
+    ) {
+      // Interactive request IDs differ from provider call IDs and correlate by identifying arguments.
+      const requestBacked = name === 'clarify' || name === 'setup_mcp'
+
+      if (
+        !requestBacked &&
+        stableId &&
+        phase === 'running' &&
+        part.toolCallId &&
+        !part.toolCallId.startsWith('live-tool:')
+      ) {
+        continue
+      }
+
+      pendingIndices.push(index)
+    }
+  }
 
   if (pendingIndices.length === 0) {
     return -1
@@ -231,7 +255,7 @@ function carryTodos(payload: GatewayEventPayload | undefined, ...prev: unknown[]
     return next === null ? undefined : { todos: next }
   }
 
-  if (payload?.name !== 'todo') {
+  if (!isTodoToolName(payload?.name)) {
     return undefined
   }
 
@@ -259,31 +283,36 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
   }
 }
 
-function toolResult(
+function toolResultMetadata(
   payload: GatewayEventPayload | undefined,
+  previous: ToolResultMetadata | undefined,
   prevResult?: unknown,
   prevArgs?: unknown
-): Record<string, unknown> {
-  const parsedResult = parseMaybeJsonObject(payload?.result)
-
+): ToolResultMetadata {
   return {
-    ...parsedResult,
-    ...(payload?.inline_diff ? { inline_diff: payload.inline_diff } : {}),
-    ...(payload?.summary ? { summary: payload.summary } : {}),
-    ...(payload?.message ? { message: payload.message } : {}),
-    ...(payload?.preview ? { preview: payload.preview } : {}),
+    ...previous,
+    ...(payload?.inline_diff !== undefined ? { inline_diff: payload.inline_diff } : {}),
+    ...(payload?.summary !== undefined ? { summary: payload.summary } : {}),
+    ...(payload?.message !== undefined ? { message: payload.message } : {}),
+    ...(payload?.preview !== undefined ? { preview: payload.preview } : {}),
     ...(payload?.duration_s !== undefined ? { duration_s: payload.duration_s } : {}),
     ...carryTodos(payload, prevResult, prevArgs),
-    ...(payload?.error ? { error: payload.error } : {})
+    ...(payload?.error !== undefined ? { error: payload.error } : {})
   }
 }
 
 function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
-  return parts.map(part =>
-    (part.type === 'text' || part.type === 'reasoning') && part.completedAt === undefined
-      ? ({ ...part, completedAt } as ChatMessagePart)
-      : part
-  )
+  const next = parts.slice()
+
+  for (let index = 0; index < next.length; index += 1) {
+    const part = next[index]
+
+    if ((part.type === 'text' || part.type === 'reasoning') && part.completedAt === undefined) {
+      next[index] = { ...part, completedAt } as ChatMessagePart
+    }
+  }
+
+  return next
 }
 
 export function upsertToolPart(
@@ -319,16 +348,30 @@ export function upsertToolPart(
     timestamp: prev?.timestamp ?? occurredAt,
     ...(phase === 'complete' && {
       completedAt: occurredAt,
-      result: toolResult(payload, prevResult, prevArgs),
-      isError: Boolean(payload?.error)
+      result: payload?.result !== undefined ? payload.result : prevResult,
+      toolResultMetadata: toolResultMetadata(payload, prev?.toolResultMetadata, prevResult, prevArgs),
+      isError:
+        payload?.error !== undefined ? Boolean(payload.error) : Boolean(prev && 'isError' in prev && prev.isError)
     })
   } satisfies ChatMessagePart
 
   if (index === -1) {
-    return [...next, base]
+    next.push(base)
+  } else if (
+    phase === 'running' &&
+    prev?.type === 'tool-call' &&
+    prev.completedAt !== undefined &&
+    prev.result === undefined
+  ) {
+    // A settle-time seal (interim boundary, mid-turn user message, lost
+    // completion) closed this call without a result. A running event for the
+    // same id says the tool is still executing, so the row goes live again
+    // instead of reading "Result unavailable" over a ticking sibling.
+    const { completedAt: _completedAt, ...unsealed } = next[index] as Extract<ChatMessagePart, { type: 'tool-call' }>
+    next[index] = { ...unsealed, ...base }
+  } else {
+    next[index] = { ...next[index], ...base }
   }
-
-  next[index] = { ...next[index], ...base }
 
   return next
 }
@@ -343,6 +386,50 @@ export interface SettledClarifyProjection {
   streamId: string | null
 }
 
+/**
+ * Find the message that owns a tool call, by its stable call id, anywhere in
+ * the transcript — not just in the currently-streaming bubble.
+ *
+ * Interim commentary and turn settles seal the streaming bubble and drop the
+ * stream id while a long-running tool is still executing. When the completion
+ * finally arrives it must reconcile with the part that already exists (and,
+ * sealed with `completedAt` but no `result`, renders as "Result unavailable"),
+ * instead of seeding a fresh bubble with a duplicate row (#113035).
+ *
+ * Only an UNRESOLVED part (never completed: no `result` key, sealed or not)
+ * can own an event. Tool call ids are not unique across turns — llama.cpp
+ * emits one constant id for every call and Hermes' own deterministic ids
+ * repeat — so a part that already carries its completion is a finished call
+ * from an earlier turn, not the owner of the new one. Routing to it would
+ * draw the new call over the old row and leave the live turn empty.
+ *
+ * Newest-first among unresolved parts: interim boundaries append bubbles, so
+ * the owner of an in-flight call is the most recent message that carries the
+ * id without a result.
+ */
+export function toolCallOwnerMessageId(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload | undefined
+): string | null {
+  const stableId = toolId(payload)
+
+  if (!stableId) {
+    return null
+  }
+
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = messages[messageIndex]
+
+    for (const part of message.parts) {
+      if (part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result')) {
+        return message.id
+      }
+    }
+  }
+
+  return null
+}
+
 interface PendingClarifyLocation {
   messageIndex: number
   partIndex: number
@@ -350,7 +437,8 @@ interface PendingClarifyLocation {
 
 function findPendingClarifyLocation(
   messages: ChatMessage[],
-  payload: GatewayEventPayload
+  payload: GatewayEventPayload,
+  toolName = 'clarify'
 ): PendingClarifyLocation | null {
   const stableId = toolId(payload)
   const matchValues = toolPayloadMatchValues(payload)
@@ -363,12 +451,9 @@ function findPendingClarifyLocation(
     for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
       const part = message.parts[partIndex]
 
-      if (part.type !== 'tool-call' || part.toolName !== 'clarify' || part.result !== undefined) {
+      if (part.type !== 'tool-call' || part.toolName !== toolName || part.result !== undefined) {
         continue
       }
-
-      pendingCount += 1
-      solePending = { messageIndex, partIndex }
 
       const exactId = Boolean(stableId && part.toolCallId === stableId)
       const contextual = hasToolMatchOverlap(matchValues, toolPartMatchValues(part))
@@ -376,6 +461,17 @@ function findPendingClarifyLocation(
       if (exactId || contextual) {
         return { messageIndex, partIndex }
       }
+
+      // A sealed call (settle-time `completedAt`, no result) is a clarify the
+      // turn stopped on without an answer. It is history, not the session's
+      // open question, so it may only be re-armed by a genuine correlation
+      // above, never adopted as the fallback for an uncorrelated request.
+      if (part.completedAt !== undefined) {
+        continue
+      }
+
+      pendingCount += 1
+      solePending = { messageIndex, partIndex }
     }
   }
 
@@ -500,18 +596,39 @@ export function restorePendingClarifyToolCall(
   payload: GatewayEventPayload,
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
-  const clarifyPayload = { ...payload, name: 'clarify' }
-  const location = findPendingClarifyLocation(messages, clarifyPayload)
+  return restorePendingBlockingToolCall(messages, { ...payload, name: 'clarify' }, occurredAt)
+}
+
+/** Restore a blocking tool row (clarify, connection card) from a resume snapshot: mark the
+ *  existing pending part's message live, or append a row when the transcript has none. */
+export function restorePendingBlockingToolCall(
+  messages: ChatMessage[],
+  clarifyPayload: GatewayEventPayload & { name: string },
+  occurredAt = Date.now() / 1000
+): PendingClarifyProjection {
+  const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name)
 
   if (location) {
     const message = messages[location.messageIndex]
+    const part = message.parts[location.partIndex]
+    // A correlated row that settle sealed (stop, lost completion) is live
+    // again: drop the seal so the card renders as pending, not as history.
+    const sealed = part.type === 'tool-call' && part.completedAt !== undefined && part.result === undefined
 
-    if (message.pending) {
+    if (message.pending && !sealed) {
       return { messages, streamId: message.id }
     }
 
     const next = [...messages]
-    next[location.messageIndex] = { ...message, pending: true }
+
+    if (sealed) {
+      const { completedAt: _completedAt, ...unsealed } = part
+      const parts = [...message.parts]
+      parts[location.partIndex] = unsealed as ChatMessagePart
+      next[location.messageIndex] = { ...message, parts, pending: true }
+    } else {
+      next[location.messageIndex] = { ...message, pending: true }
+    }
 
     return { messages: next, streamId: message.id }
   }
@@ -531,7 +648,7 @@ export function restorePendingClarifyToolCall(
     return { messages: next, streamId: tail.id }
   }
 
-  const streamId = nextLiveToolId('clarify-message')
+  const streamId = nextLiveToolId(`${clarifyPayload.name}-message`)
 
   return {
     messages: [
@@ -568,13 +685,13 @@ export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
     let partChanged = false
 
     const parts = message.parts.map(part => {
-      if (part.type !== 'tool-call' || Object.hasOwn(part, 'result')) {
+      if (part.type !== 'tool-call' || part.completedAt !== undefined || Object.hasOwn(part, 'result')) {
         return part
       }
 
       partChanged = true
 
-      return { ...part, result: {} }
+      return { ...part, completedAt: part.timestamp ?? 0 }
     })
 
     if (!partChanged) {
@@ -696,7 +813,7 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       result: parseStoredToolResult(content),
       isError: false
     } as ChatMessagePart
-    messages[i] = { ...message, parts }
+    messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
 
     return true
   }

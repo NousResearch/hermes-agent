@@ -1,9 +1,9 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
-import type { RpcEvent } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -15,7 +15,7 @@ function mountStream() {
   stream = renderMessageStream(SID)
 }
 
-function emit(type: RpcEvent['type'], payload: RpcEvent['payload'] = {}) {
+function emit(type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) {
   act(() => stream.handleEvent({ payload, session_id: SID, type }))
 }
 
@@ -45,6 +45,34 @@ describe('useMessageStream compaction lifecycle', () => {
     emit(type, payload)
 
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
+  })
+
+  // Manual /compress pins `compressing` (methods_session._compress_live) and
+  // always clears it with `ready` from that function's `finally`. The desktop
+  // matched only the auto-compaction spelling, so /compress showed no phase at
+  // all — the TUI has handled both since createGatewayEventHandler.ts:904.
+  it('drives the compaction phase from the manual /compress spelling', () => {
+    mountStream()
+    setSessionCompacting(OTHER_SID, true)
+
+    emit('status.update', { kind: 'compressing', text: '\u280b compressing 42 messages (~120,000 tok)\u2026' })
+    expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true, [SID]: true })
+
+    emit('status.update', { kind: 'ready' })
+
+    expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
+  })
+
+  it('retires the manual /compress phase even when the compress aborted', () => {
+    mountStream()
+
+    emit('status.update', { kind: 'compressing', text: 'compressing\u2026' })
+    expect($compactingSessions.get()).toEqual({ [SID]: true })
+
+    // CompressionLockHeld / raise both land on the same `ready` edge.
+    emit('status.update', { kind: 'ready' })
+
+    expect($compactingSessions.get()).toEqual({})
   })
 
   it('clears the compaction phase on the structured completion edge', () => {

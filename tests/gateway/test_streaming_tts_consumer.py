@@ -12,6 +12,8 @@ import asyncio
 import queue
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -205,6 +207,118 @@ def _run_test(coro_factory, timeout=10.0):
         loop.close()
 
 
+@pytest.fixture
+def gateway_tts_turn(monkeypatch, tmp_path):
+    """Real agent delivery + real TurnRunner callback wiring; only the speech provider and PCM sink are fake."""
+    from agent.agent_runtime_helpers import strip_think_blocks
+    from agent.stream_delivery import StreamDeliveryMixin
+    from gateway.config import StreamingConfig
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.stream_consumer import StreamConsumerConfig
+    from gateway.turn_context import TurnContext
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    class Agent(StreamDeliveryMixin):
+        _strip_think_blocks = strip_think_blocks
+
+    class Streamer(FakeStreamer):
+        def __init__(self):
+            super().__init__()
+            self.clauses = []
+
+        def stream(self, text):
+            self.clauses.append(text)
+            yield b"\x01\x00" * 480
+
+    class Adapter(FakeVoiceAdapter):
+        def __init__(self):
+            super().__init__()
+            self.heard = asyncio.Queue()
+
+        async def write_streaming_tts(self, handle, chunk):
+            await super().write_streaming_tts(handle, chunk)
+            self.heard.put_nowait(chunk)
+
+    def make(loop):
+        streamer, adapter = Streamer(), Adapter()
+        monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
+        tts = StreamingTTSConsumer(adapter, "voice", {}, loop)
+        ctx = TurnContext(
+            streaming_tts_consumer_holder=[tts], user_config={},
+            resolve_display_setting=lambda *args: True, interim_assistant_messages_enabled=True,
+            source=SimpleNamespace(platform=SimpleNamespace(value="realtime"), chat_id="voice"),
+            _run_still_current=lambda: True,
+        )
+        runner = SimpleNamespace(
+            config=SimpleNamespace(streaming=StreamingConfig()),
+            _delivery_adapter_for=lambda source: adapter,
+            _build_stream_consumer_config=lambda *args, **kwargs: (StreamConsumerConfig(), None),
+        )
+        _, delta, interim, _ = TurnRunner(runner, ctx)._setup_stream_consumer("realtime")
+        agent = Agent()
+        agent.stream_delta_callback, agent._stream_callback, agent.interim_assistant_callback = delta, None, interim
+        return agent, tts, adapter, streamer
+
+    return make
+
+
+async def _speak_then_tool_result(agent, tts, adapter, streamer, before_tool, acknowledgment, result):
+    """Invariant: the acknowledgment reaches PCM before the tool result exists, then the result follows once."""
+    tts.start()
+    try:
+        await asyncio.to_thread(before_tool)
+        await asyncio.wait_for(adapter.heard.get(), timeout=3)  # spoken during the tool pause, not after
+        assert streamer.clauses == [acknowledgment]
+        assert adapter.finish_count == 0 and not tts.done
+        await asyncio.to_thread(agent.stream_delta_callback, None)
+        await asyncio.to_thread(agent.stream_delta_callback, result)
+        tts.finish()
+        assert await tts.wait_complete(timeout=3)
+        assert streamer.clauses == [acknowledgment, result]
+        assert adapter.begin_count == adapter.finish_count == 1
+    finally:
+        tts.finish()
+        await tts.wait_complete(timeout=3)
+
+
+def test_tool_boundary_none_flushes_streamed_acknowledgment(gateway_tts_turn):
+    """The ``None`` tool-boundary delta releases already-streamed speech without ending the audio stream."""
+    async def run():
+        agent, tts, adapter, streamer = gateway_tts_turn(asyncio.get_running_loop())
+        acknowledgment, result = "I will check that.", "The result is available."
+
+        def before_tool():
+            assert agent._deliver_to_stream_callbacks(acknowledgment)
+            agent._record_streamed_assistant_text(acknowledgment)
+            agent._emit_interim_assistant_message({"role": "assistant", "content": acknowledgment})
+            agent.stream_delta_callback(None)
+
+        await _speak_then_tool_result(agent, tts, adapter, streamer, before_tool, acknowledgment, result)
+
+    asyncio.run(run())
+
+
+def test_completed_commentary_is_spoken_exactly_once(gateway_tts_turn):
+    """Completed commentary (no text delta exists for it) reaches TTS once; the later interim dedupes."""
+    async def run():
+        agent, tts, adapter, streamer = gateway_tts_turn(asyncio.get_running_loop())
+        acknowledgment, result = "I will check that.", "The result is available."
+
+        def before_tool():
+            agent._fire_streamed_codex_commentary(acknowledgment)
+            agent._emit_interim_assistant_message({"role": "assistant", "content": "", "codex_message_items": [{
+                "type": "message", "phase": "commentary",
+                "content": [{"type": "output_text", "text": acknowledgment}],
+            }]})
+            agent.stream_delta_callback(None)
+
+        await _speak_then_tool_result(agent, tts, adapter, streamer, before_tool, acknowledgment, result)
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------------------
 # Adapter contract defaults (BasePlatformAdapter)
 # ---------------------------------------------------------------------------
@@ -349,6 +463,19 @@ class TestStreamerFormatAndLooping:
             tts_streaming.resolve_streaming_provider = original_resolve
             loop.close()
 
+    def test_chunker_min_len_comes_from_tts_streaming_config(self):
+        """The gateway consumer honours tts.streaming.min_len (#96927) instead of the class default."""
+        import tools.tts_streaming as tts_streaming
+        original_resolve = tts_streaming.resolve_streaming_provider
+        tts_streaming.resolve_streaming_provider = lambda *_args, **_kwargs: None
+        loop = asyncio.new_event_loop()
+        try:
+            consumer = StreamingTTSConsumer(FakeVoiceAdapter(), "chat1", {"streaming": {"min_len": 6}}, loop)
+            assert consumer._chunker.min_len == 6
+        finally:
+            tts_streaming.resolve_streaming_provider = original_resolve
+            loop.close()
+
 
 class TestGatewayIntegrationSeam:
     """The actual adapter seam is per-turn, not chat-only."""
@@ -415,9 +542,11 @@ class TestFallbackSafety:
             consumer.finish()
 
             completed = await consumer.wait_complete(timeout=5.0)
-            # Pre-audio failure: should NOT report completed (fall back)
+            # Pre-audio failure: should NOT report completed (fall back); the adapter handle is
+            # only opened on the first PCM chunk (#76466), so nothing was begun or aborted.
             assert completed is False
-            assert adapter.abort_count >= 1
+            assert consumer.suppress_whole_file is False
+            assert adapter.begin_count == 0
 
         _run_test(run)
 
@@ -671,3 +800,28 @@ class TestGatewayOuterFinalisationNoNameError:
         # This is trivially true with a holder, but was NOT true when
         # the consumer was a run_sync local.
         _ = holder[0]
+
+
+class TestEndpointReportedRate:
+    """Issue #76466: the adapter handle opens with the rate the provider learned from the
+    endpoint's response, not the construction-time default."""
+
+    def test_begin_uses_rate_learned_on_first_chunk(self):
+        class _Learns(FakeStreamer):
+            def stream(self, text):
+                self.sample_rate = 44100
+                yield from super().stream(text)
+
+        async def run(loop):
+            adapter = FakeVoiceAdapter()
+            consumer = _make_consumer(adapter, "chat1", loop, _Learns(chunks_per_clause=2))
+            assert consumer._audio_format.sample_rate == 24000  # provisional
+            consumer.start()
+            consumer.on_delta("A sentence. ")
+            consumer.finish()
+            assert await consumer.wait_complete(timeout=5.0) is True
+            assert adapter.begin_count == 1
+            assert adapter.handle.audio_format.sample_rate == 44100
+            assert len(adapter.written_chunks) == 2
+
+        _run_test(run)

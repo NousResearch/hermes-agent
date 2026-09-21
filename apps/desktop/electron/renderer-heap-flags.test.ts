@@ -1,7 +1,7 @@
 // #77311: the renderer heap ceiling knob (`desktop.renderer_max_old_space_mb`)
 // and `desktop.electron_flags` must reach app.commandLine on packaged launches
 // that never go through the `hermes desktop` launcher.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 
@@ -37,5 +37,29 @@ describe('renderer heap flags', () => {
 
     // --disable-gpu is already on the launcher's argv: not re-applied.
     expect(planned).toEqual([{ name: 'js-flags', value: '--expose-gc --max-old-space-size=1536' }])
+
+    // Space-separated is the same switch: the argv value must reach the merge
+    // (and win the ceiling) rather than being scanned as a switch of its own.
+    expect(planLaunchSwitches(cfg, ['/app/hermes', '--js-flags', '--max-old-space-size=4096'])).toEqual([
+      { name: 'disable-gpu' },
+      { name: 'js-flags', value: '--max-old-space-size=4096' }
+    ])
+  })
+
+  it('warns once when a desktop block names the keys in an indentation it cannot read', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    // Valid YAML, unsupported subset (four-space keys / two-space list items).
+    expect(readDesktopLaunchConfig('desktop:\n    renderer_max_old_space_mb: 2048\n')).toEqual({
+      electronFlags: [],
+      rendererMaxOldSpaceMb: 0
+    })
+    expect(warn).toHaveBeenCalledTimes(1)
+
+    // A desktop block that never mentions them is not a misconfiguration.
+    readDesktopLaunchConfig('desktop:\n  font_family: ""\n')
+    expect(warn).toHaveBeenCalledTimes(1)
+
+    warn.mockRestore()
   })
 })

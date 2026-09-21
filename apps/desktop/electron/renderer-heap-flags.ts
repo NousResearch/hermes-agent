@@ -21,9 +21,13 @@ export interface PlannedSwitch {
 /**
  * Read the two launch keys out of `config.yaml` text without a YAML parser
  * (the main bundle ships none). Deliberately narrow: a top-level `desktop:`
- * mapping with two-space-indented `electron_flags` (flow list, block list or
- * one string) and `renderer_max_old_space_mb` (integer). Anything else keeps
- * the defaults — a malformed config must never block the launch.
+ * mapping with two-space-indented `electron_flags` (flow list, block list with
+ * four-space `- ` items, or one string) and `renderer_max_old_space_mb`
+ * (integer). Anything else keeps the defaults — a malformed config must never
+ * block the launch — but a `desktop:` block that clearly MEANT to set one of
+ * them and produced nothing warns once, because the failure is otherwise
+ * invisible (the app just launches with no heap ceiling). The supported shape
+ * is documented in `website/docs/user-guide/desktop.md`.
  */
 export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
   const out: DesktopLaunchConfig = { electronFlags: [], rendererMaxOldSpaceMb: 0 }
@@ -35,6 +39,9 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
   }
 
   const unquote = (raw: string) => raw.trim().replace(/^(['"])(.*)\1$/, '$2')
+
+  const blockLines: string[] = []
+
   const splitFlow = (raw: string) =>
     raw
       .slice(1, -1)
@@ -48,6 +55,8 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
     if (/^\S/.test(line)) {
       break // next top-level key
     }
+
+    blockLines.push(line)
 
     const keyed = /^ {2}([a-z_]+):\s*(.*?)\s*$/.exec(line)
 
@@ -81,6 +90,23 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
 
         out.electronFlags = items.filter(Boolean)
       }
+    }
+  }
+
+  if (out.electronFlags.length === 0 && out.rendererMaxOldSpaceMb === 0) {
+    // The parser is a deliberate subset, so a valid-YAML-but-unsupported shape
+    // (any indentation other than two-space keys / four-space `- ` items)
+    // yields nothing at all. Silence there reads as "the knob does not work";
+    // one line naming the supported shape is the difference between a five
+    // minute fix and a bug report.
+    const meantToSet = blockLines.some(line => /(electron_flags|renderer_max_old_space_mb)\s*:/.test(line))
+
+    if (meantToSet) {
+      console.warn(
+        '[hermes] config.yaml: desktop.electron_flags / desktop.renderer_max_old_space_mb were ignored — ' +
+          'the launch reader supports only two-space-indented keys under a top-level `desktop:` with ' +
+          'four-space `- ` list items (see the Desktop docs). Launching with Chromium defaults.'
+      )
     }
   }
 
@@ -124,7 +150,25 @@ export function planLaunchSwitches(cfg: DesktopLaunchConfig, argv: readonly stri
     }
   }
 
-  for (const arg of argv) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = String(argv[i] ?? '').trim()
+    const next = i + 1 < argv.length ? String(argv[i + 1] ?? '').trim() : ''
+    // `--name value` is as valid on a command line as `--name=value`. Scanning
+    // the two tokens independently dropped the value: `--js-flags
+    // --max-old-space-size=4096` registered a bare `js-flags` with no parts
+    // and a bogus `max-old-space-size` switch, so the config's ceiling
+    // replaced the launcher's instead of merging with it. `--js-flags` always
+    // takes a value (its own value is dash-prefixed), any other switch pairs
+    // only with a non-flag token.
+    const bareName = /^--([^=\s]+)$/.exec(arg)?.[1]
+
+    if (bareName && next && (bareName === 'js-flags' || !next.startsWith('-'))) {
+      consider(`${arg}=${next}`, true)
+      i += 1
+
+      continue
+    }
+
     consider(arg, true)
   }
 

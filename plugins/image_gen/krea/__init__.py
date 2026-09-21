@@ -62,7 +62,8 @@ DEFAULT_RESOLUTION = "1K"  # only resolution Krea currently supports
 _DEFAULT_STYLE_REFERENCE_STRENGTH = 0.6
 _MAX_STYLE_REFERENCES = 10
 _REMOTE_REFERENCE_PREFIXES = ("http://", "https://", "data:")
-# Base64 grows a file by a third and the managed gateway rejects bodies over about 4.5 MB.
+# Base64 grows a file by a third and the managed gateway rejects bodies over about 4.5 MB,
+# so all local references together stay under this.
 _MAX_LOCAL_REFERENCE_BYTES = 3 * 1024 * 1024
 _VALID_CREATIVITY = {"raw", "low", "medium", "high"}
 
@@ -320,6 +321,7 @@ def _inline_local_style_refs(
     from agent.file_safety import raise_if_read_blocked
 
     inlined: List[Any] = []
+    total_bytes = 0
     for ref in style_refs:
         source = ref.get("url") if isinstance(ref, dict) else ref
         if not isinstance(source, str) or source.lower().startswith(_REMOTE_REFERENCE_PREFIXES):
@@ -328,9 +330,10 @@ def _inline_local_style_refs(
         path = Path(os.path.expanduser(source))
         if not path.is_file():
             return [], fail(f"Style reference image not found: {source}", "invalid_image_url")
-        if path.stat().st_size > _MAX_LOCAL_REFERENCE_BYTES:
+        total_bytes += path.stat().st_size
+        if total_bytes > _MAX_LOCAL_REFERENCE_BYTES:
             return [], fail(
-                f"Style reference image {source} is over 3 MB; resize it or pass a public URL",
+                "Local style reference images total over 3 MB; resize them or pass public URLs",
                 "source_too_large")
         raise_if_read_blocked(str(path))
         mime = mimetypes.guess_type(path.name)[0] or "image/png"

@@ -332,6 +332,22 @@ class TestGenerate:
         assert result["error_type"] == "source_too_large"
         mock_post.assert_not_called()
 
+    def test_local_style_references_are_limited_in_total_not_per_file(self, tmp_path, monkeypatch):
+        from plugins.image_gen import krea
+
+        monkeypatch.setattr(krea, "_MAX_LOCAL_REFERENCE_BYTES", 10)
+        first = tmp_path / "a.png"
+        second = tmp_path / "b.png"
+        first.write_bytes(b"\x89PNG\r\n")
+        second.write_bytes(b"\x89PNG\r\n")
+
+        with patch("plugins.image_gen.krea.requests.post") as mock_post:
+            result = krea.KreaImageGenProvider().generate(
+                prompt="test", reference_image_urls=[str(first), str(second)])
+
+        assert result["error_type"] == "source_too_large"
+        mock_post.assert_not_called()
+
     def test_missing_local_style_reference_is_refused_before_submit(self):
         from plugins.image_gen.krea import KreaImageGenProvider
 

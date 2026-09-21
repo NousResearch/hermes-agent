@@ -319,7 +319,7 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
-import { createPoolRetirer } from './pool-retire'
+import { createPoolRetirer, teardownStopsBackend } from './pool-retire'
 import { createPoolRetirementClient } from './pool-retire-http'
 import {
   BackgroundSlotRetryBackoff,
@@ -12395,9 +12395,14 @@ function startPoolIdleReaper() {
 
     for (const [profile, entry] of [...backendPool.entries()]) {
       if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
-        // Remote descriptors hold no child/slot. Local children require the
-        // same admission authority as foreground and LRU reclamation.
-        const retiring = entry.process
+        // One decision for every pooled shape: a teardown that stops a backend
+        // process — a local child, or a remote `serve` this app spawned over
+        // SSH (stopPoolBackend's teardown kills it) — must first clear the same
+        // admission fence foreground and LRU reclamation use, so a backend
+        // mid-cron is never SIGTERM'd. A descriptor with no owned backend
+        // behind it is just a local handle: it kills nothing and is still
+        // dropped on staleness.
+        const retiring = teardownStopsBackend(entry, sshConnections.has(sshScopeKey(profile)))
           ? poolRetirer.retireIdle(profile, poolIdleMs())
           : stopPoolBackend(profile)
 
@@ -12838,7 +12843,7 @@ function broadcastPoolBackendRetiring(poolKey: string) {
 const poolRetirer = createPoolRetirer({
   pool: backendPool,
   coordinator: localBackendSpawnCoordinator,
-  ...createPoolRetirementClient(fetchJson),
+  ...createPoolRetirementClient(fetchJson, fetchJsonForBackend),
   stopBackend: stopPoolBackend,
   onRetiring: broadcastPoolBackendRetiring,
   log: rememberLog

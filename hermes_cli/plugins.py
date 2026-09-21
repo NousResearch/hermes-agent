@@ -1561,6 +1561,23 @@ def get_plugin_manager() -> PluginManager:
         return manager
 
 
+def evict_plugin_manager(home: Path | None = None) -> None:
+    """Unload and forget one profile's plugin manager and imported directory modules."""
+    global _plugin_manager
+    _join_background_discovery()
+    key = _plugin_home_key() if home is None else home.expanduser().resolve()
+    with _plugin_managers_lock:
+        manager = _plugin_managers_by_home.pop(key, None)
+        if manager is None:
+            return
+        _clear_plugin_submodules(manager)
+        try:
+            manager.unload()
+        finally:
+            if _plugin_manager is manager:
+                _plugin_manager = None
+
+
 def _reset_plugin_managers_for_tests() -> None:
     """Test-only: drop every cached manager and its submodules for a fully clean slate."""
     global _plugin_manager

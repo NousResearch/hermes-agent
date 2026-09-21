@@ -263,6 +263,20 @@ def join_mcp_discovery(timeout: "float | None" = None) -> bool:
     return not thread.is_alive()
 
 
+def clear_mcp_discovery_for_current_home(*, timeout: float = 30.0) -> bool:
+    """Join and forget one temporary profile's discovery bookkeeping."""
+    home_key = hermes_home_key()
+    thread = _current_home_thread()
+    if thread is not None:
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            return False
+    with _mcp_discovery_lock:
+        _mcp_discovery_thread.pop(home_key, None)
+        _mcp_discovery_started.discard(home_key)
+    return True
+
+
 def ensure_mcp_discovery_before_agent_build(
     *,
     logger,

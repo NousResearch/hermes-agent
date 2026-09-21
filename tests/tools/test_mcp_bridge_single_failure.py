@@ -148,10 +148,12 @@ class TestShutdownClearsCooldownState:
                 pass
 
         mcp_mod._servers["dead"] = _DeadServer()  # type: ignore[assignment]
-        # _mcp_loop is None in this test process, so the async _shutdown
-        # coroutine is never scheduled; only the final sweep can clear.
-        with patch("tools.mcp_tool_loop._stop_mcp_loop"):
-            _mcp_lifecycle.shutdown_mcp_servers()
+        # The async _shutdown coroutine is never scheduled; only the final
+        # sweep can clear the cooldown state.
+        with patch.object(mcp_mod, "_mcp_loop", None), \
+                patch("tools.mcp_tool_loop._stop_mcp_loop"):
+            completed = _mcp_lifecycle.shutdown_mcp_servers()
 
+        assert completed is False
         assert mcp_mod._server_connect_retry_after == {}
         assert mcp_mod._server_connect_failures == {}

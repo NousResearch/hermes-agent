@@ -310,6 +310,14 @@ test('Linux update gate permits only the checkout-managed Desktop build', () => 
     }),
     false
   )
+  assert.equal(
+    linuxDesktopUpdateCanReplaceClient(root, `${root}/node_modules/electron/dist/electron`, {
+      isLinux: true,
+      isPackaged: false,
+      realpath: identityRealpath
+    }),
+    true
+  )
 })
 
 test('Linux update gate compares canonical paths and does not gate other platforms', () => {

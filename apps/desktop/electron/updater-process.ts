@@ -44,6 +44,7 @@ export interface UpdateScriptHandoff {
 
 export interface LinuxDesktopUpdateGateDeps {
   isLinux?: boolean
+  isPackaged?: boolean
   realpath?: (candidate: string) => string
 }
 
@@ -54,8 +55,9 @@ export function linuxDesktopUpdateCanReplaceClient(
   deps: LinuxDesktopUpdateGateDeps = {}
 ): boolean {
   const isLinux = deps.isLinux ?? process.platform === 'linux'
+  const isPackaged = deps.isPackaged ?? true
 
-  if (!isLinux) {
+  if (!isLinux || !isPackaged) {
     return true
   }
 

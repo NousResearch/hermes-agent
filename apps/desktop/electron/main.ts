@@ -4600,6 +4600,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
 
   if (
     !linuxDesktopUpdateCanReplaceClient(updateRoot, process.execPath, {
+      isPackaged: IS_PACKAGED,
       realpath: candidate => {
         try {
           return fs.realpathSync.native(candidate)

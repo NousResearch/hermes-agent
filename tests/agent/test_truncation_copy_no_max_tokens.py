@@ -14,13 +14,17 @@ from agent.turn_truncation import _CEILING_NO_TEXT, _THINKING_EXHAUSTED
 
 
 def test_truncated_site_copy_does_not_mention_max_tokens():
-    assert "max_tokens" not in site_copy("truncated")
+    copy = site_copy("truncated")
+    assert "max_tokens" not in copy
+    assert "/reasoning low" in copy
 
 
 def test_thinking_exhausted_copy_does_not_mention_max_tokens():
     for variant in _THINKING_EXHAUSTED:
         assert "max_tokens" not in variant
+    assert "lowering reasoning effort" in _THINKING_EXHAUSTED[2]
 
 
 def test_ceiling_no_text_copy_does_not_mention_max_tokens():
     assert "max_tokens" not in _CEILING_NO_TEXT
+    assert "/model" in _CEILING_NO_TEXT

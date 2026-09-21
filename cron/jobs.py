@@ -2287,6 +2287,9 @@ def _record_run_outcome(
         # Consecutive agent-failure streak; delivery failures do NOT count
         # (scheduler._failure_streak_nudge).
         job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
+        if job.get("no_agent"):
+            # Keep script failures visible after a later healthy run resets the streak.
+            job["last_script_error"] = {"at": now, "detail": str(error or "")[:500]}
     job["last_delivery_error"] = delivery_error
     # Clear both claims: the run is over, so the job is claimable again.
     job["fire_claim"] = None

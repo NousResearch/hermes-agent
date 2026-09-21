@@ -2,12 +2,7 @@ name: vaultknox
 repo: https://github.com/Ufonik88/Hermes-VaultKnox
 sha: 899fd8a5052928a19eaa86742329574f581d03a7
 subdir: src/vaultknox/_hermes_plugin
-description: 'Secret-leak protection for Hermes chats. Scans inbound messages and outbound
-  replies for API keys, tokens, and passwords with a 28-pattern detector registry,
-  redacts them before they reach session storage or the user, and injects safe
-  secret-handling rules so the agent never asks for secrets in chat. Zero dependencies,
-  fully offline detection; pairs with the optional hermes-vault CLI for encrypted
-  storage.'
+description: "Secret-leak protection for Hermes chats. Scans inbound messages and outbound replies for API keys, tokens, and passwords with a 28-pattern detector registry, redacts them before they reach session storage or the user, and injects safe secret-handling rules so the agent never asks for secrets in chat. Zero dependencies, fully offline detection; pairs with the optional hermes-vault CLI for encrypted storage. Disclosure — rewrites inbound user messages (regex secret redaction, may false-positive on password-like strings), injects a secret-handling prompt each conversation and rewrites assistant replies that ask for secrets; the vaultknox tool is inert unless the separate vaultknox pip package is installed, and its write gate is a tool argument the model sets."
 maintainer: Ufonik88
 tier: community
 category: tools

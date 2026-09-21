@@ -170,7 +170,9 @@ def test_cli_bulk_complete_continues_after_evidence_rejection(kanban_home, capsy
     parser = argparse.ArgumentParser(prog="hermes", add_help=False)
     kc.build_parser(parser.add_subparsers(dest="command"))
 
-    rc = kc.kanban_command(parser.parse_args(["kanban", "complete", ordinary, required, later]))
+    rc = kc.kanban_command(parser.parse_args([
+        "kanban", "complete", ordinary, required, later, "--result", "completed",
+    ]))
 
     captured = capsys.readouterr()
     assert rc == 1

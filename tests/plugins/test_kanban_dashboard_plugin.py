@@ -91,7 +91,10 @@ def test_dashboard_completion_forwards_evidence_to_shared_gate(client):
     assert rejected.status_code == 400
     accepted = client.patch(
         f"/api/plugins/kanban/tasks/{task_id}",
-        json={"status": "done", "evidence": [{"kind": "review", "detail": "dashboard receipt"}]},
+        json={
+            "status": "done", "result": "completed",
+            "evidence": [{"kind": "review", "detail": "dashboard receipt"}],
+        },
     )
     assert accepted.status_code == 200
     with kbc.connect() as conn:

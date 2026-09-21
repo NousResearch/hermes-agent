@@ -195,6 +195,16 @@ class TestScanFile:
         ids = {fi.pattern_id for fi in scan_file(f, "install.sh")}
         assert {"curl_pipe_shell", "wget_pipe_shell", "echo_pipe_exec"} <= ids
 
+    def test_markdown_curl_pipe_shell_synopsis_without_operand_is_not_executable(self, tmp_path):
+        """A prose label such as ``curl | sh install`` is not a runnable curl command (#118155)."""
+        f = tmp_path / "reference.md"
+        f.write_text(
+            "- **`curl | sh` install** — keeps updating itself in place.\n",
+            encoding="utf-8",
+        )
+
+        assert not any(fi.pattern_id == "curl_pipe_shell" for fi in scan_file(f, "reference.md"))
+
     def test_detect_gitlab_pat(self, tmp_path):
         f = tmp_path / "leak.md"
         # Concatenated so no contiguous token literal exists in this file

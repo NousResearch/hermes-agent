@@ -136,6 +136,24 @@ describe('formatCombo — honest Control labels', () => {
   })
 })
 
+describe('codeEditorClaimsCombo', () => {
+  it('reserves Mod-/ for a focused CodeMirror file editor', async () => {
+    const { codeEditorClaimsCombo } = await loadCombo('Win32')
+    const editor = document.createElement('div')
+    editor.className = 'cm-editor'
+    const content = document.createElement('div')
+    editor.append(content)
+    document.body.append(editor)
+
+    expect(codeEditorClaimsCombo(content, 'mod+/')).toBe(true)
+    expect(codeEditorClaimsCombo(content, 'mod+k')).toBe(false)
+    expect(codeEditorClaimsCombo(document.createElement('div'), 'mod+/')).toBe(false)
+    expect(codeEditorClaimsCombo(document, 'mod+/')).toBe(false)
+
+    editor.remove()
+  })
+})
+
 describe('actionAllowedInInput', () => {
   it('keeps primary-modifier chords global while typing, gating bare/Shift combos to the allowlist', async () => {
     const { actionAllowedInInput } = await loadCombo('MacIntel')

@@ -255,6 +255,12 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   )
 }
 
+// CodeMirror already binds Mod-/ to its language-aware comment command. This
+// must win over the app-wide keybind panel shortcut while editing a file.
+export function codeEditorClaimsCombo(target: EventTarget | null, combo: string): boolean {
+  return combo === 'mod+/' && target instanceof Element && target.closest('.cm-editor') != null
+}
+
 const INPUT_SAFE_ACTIONS = new Set([
   'composer.modelPicker',
   'composer.voice',

@@ -19,7 +19,7 @@ import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
-import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { actionAllowedInInput, codeEditorClaimsCombo, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
@@ -388,6 +388,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
 
       if (handleApprovalKey(event)) {
+        return
+      }
+
+      // CodeMirror's built-in Mod-/ command comments the selected file lines.
+      // Yield before resolving the global `keybinds.openPanel` binding.
+      if (codeEditorClaimsCombo(event.target, combo)) {
         return
       }
 

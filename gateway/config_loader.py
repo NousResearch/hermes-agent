@@ -252,8 +252,53 @@ def shared_loop_targets(registry) -> list:
     return targets
 
 
+def snapshot_authored_extra(platforms_data: dict) -> dict:
+    """``{plat_name: extra}`` as the user authored it under ``platforms.<plat>.extra``, captured
+    right after ``merge_platform_sections`` and BEFORE either copy site runs. Reading
+    ``platforms_data`` live at a copy site would mistake values the earlier site bridged from the
+    block's own ``extra:`` sub-dict for authored ones (``telegram: {reply_to_mode: all, extra:
+    {reply_to_mode: off}}`` must still resolve to ``all``). Copies, never creates slots."""
+    return {
+        name: dict(_coerce_dict(plat.get("extra")))
+        for name, plat in platforms_data.items() if isinstance(plat, dict)
+    }
+
+
+def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, warned: Optional[set] = None) -> dict:
+    """Effective ``<plat>:`` block for YAML→extra/env bridging: *block* (top-level or
+    nested) overlaid with the keys the user authored in ``platforms.<plat>.extra``.
+
+    Returns a NEW dict and never mutates *block* or *extra*. For every key present in
+    both with DIFFERENT values, ONE warning logs that the authored extra took precedence
+    (equal values are silent). *warned* dedupes across both copy sites within one
+    ``load_yaml_layer`` pass; ``None`` gives the caller a fresh local set.
+    """
+    if warned is None:
+        warned = set()
+    where = f"the top-level '{plat_name}:' block" if toplevel else f"platforms.{plat_name}"
+
+    def overlay_onto(source: dict) -> dict:
+        overlay = {k: extra[k] for k in source if k in extra}
+        for key, value in overlay.items():
+            if source[key] != value and (plat_name, key) not in warned:
+                warned.add((plat_name, key))
+                logger.warning(
+                    "%s set in both %s and platforms.%s.extra; platforms.%s.extra took precedence",
+                    key, where, plat_name, plat_name,
+                )
+        return {**source, **overlay}
+
+    effective = overlay_onto(block)
+    # A root block may carry its own ``extra:`` sub-dict (``_bridged_keys`` merges it with
+    # ``PlatformConfig.from_dict`` semantics); the authored extra outranks that too.
+    if isinstance(block.get("extra"), dict):
+        effective["extra"] = overlay_onto(block["extra"])
+    return effective
+
+
 def bridge_platform_shared_keys(
-    yaml_cfg: dict, gateway_platforms: Any, gw_data: dict, platforms_data: dict, targets: list
+    yaml_cfg: dict, gateway_platforms: Any, gw_data: dict, platforms_data: dict, targets: list,
+    warned: Optional[set] = None, authored: Optional[dict] = None,
 ) -> None:
     """Copy shared keys (allow_from, require_mention, …) from each platform's YAML section into ``extra``.
 
@@ -262,13 +307,19 @@ def bridge_platform_shared_keys(
     ``_enabled_explicit`` so the env pass honors ``enabled: false`` for migrated plugin platforms
     instead of re-enabling them on token/SDK presence.
     """
+    if authored is None:
+        authored = snapshot_authored_extra(platforms_data)
     for plat in targets:
         if plat == Platform.LOCAL:
             continue
         platform_cfg, cfg_toplevel = platform_section(yaml_cfg, plat.value, gateway_platforms)
         if not isinstance(platform_cfg, dict):
             continue
-        bridged = _bridged_keys(plat, platform_cfg, gw_data, root_block=cfg_toplevel)
+        # An authored ``platforms.<plat>.extra`` key beats the same key in the (top-level or
+        # nested) block, so the shared-key bridge works on the effective block.
+        effective = _authored_wins(
+            authored.get(plat.value, {}), platform_cfg, plat.value, toplevel=cfg_toplevel, warned=warned)
+        bridged = _bridged_keys(plat, effective, gw_data, root_block=cfg_toplevel)
         has_channel_overrides = "channel_overrides" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
             plat_data = _dict_slot(platforms_data, plat.value)
@@ -289,11 +340,16 @@ def bridge_platform_shared_keys(
         extra.update(bridged)
 
 
-def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_data: dict, registry) -> None:
+def apply_plugin_yaml_hooks(
+    yaml_cfg: dict, gateway_platforms: Any, platforms_data: dict, registry,
+    warned: Optional[set] = None, authored: Optional[dict] = None,
+) -> None:
     """Plugin-owned YAML→env config bridges (``PlatformEntry.apply_yaml_config_fn``). Order: shared-key
     loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``."""
     if registry is None:
         return
+    if authored is None:
+        authored = snapshot_authored_extra(platforms_data)
     for entry in registry.all_entries():
         # Plugin-owned YAML→env config bridges (#24836). See ``PlatformEntry.apply_yaml_config_fn`` for the
         # hook contract. Order: shared-key loop (above) → this dispatch → legacy hardcoded blocks (below;
@@ -301,15 +357,21 @@ def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_da
         # ``GatewayConfig.from_dict``.
         if entry.apply_yaml_config_fn is None:
             continue
-        platform_cfg, _ = platform_section(yaml_cfg, entry.name, gateway_platforms)
+        platform_cfg, cfg_toplevel = platform_section(yaml_cfg, entry.name, gateway_platforms)
         if not isinstance(platform_cfg, dict):
             continue
+        # Overlay the authored extra BEFORE the hook so the block the hook sees — and
+        # therefore the values it bridges to env — already carry the authored nested
+        # value for keys present in both (adapter readers are env-first).
+        effective = _authored_wins(
+            authored.get(entry.name, {}), platform_cfg, entry.name, toplevel=cfg_toplevel, warned=warned)
         try:
-            seeded = entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)
+            seeded = entry.apply_yaml_config_fn(yaml_cfg, effective)
         except Exception as e:
             logger.debug("apply_yaml_config_fn for %s raised: %s", entry.name, e)
             continue
         if isinstance(seeded, dict) and seeded:
+            # Safe: seeded values already equal the authored ones for keys present in both.
             _dict_slot(_dict_slot(platforms_data, entry.name), "extra").update(seeded)
 
 
@@ -419,6 +481,9 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         registry = None
 
     targets = shared_loop_targets(registry)
-    bridge_platform_shared_keys(yaml_cfg, gateway_platforms, gw_data, platforms_data, targets)
-    apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry)
+    authored = snapshot_authored_extra(platforms_data)
+    warned: set = set()  # one warning per conflicting (platform, key) across both copy sites
+    bridge_platform_shared_keys(
+        yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)
+    apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry, warned=warned, authored=authored)
     bridge_core_env_settings(yaml_cfg, platforms_data)

@@ -811,13 +811,15 @@ def browser_snapshot(
     if _is_camofox_mode():
         return _camofox("camofox_snapshot", full, task_id)
     effective_task_id = _last_session_key(task_id or "default")
-    result = _session._run_browser_command(effective_task_id, "snapshot", [] if full else ["-c"])
-    if not result.get("success"):
-        return _failed_response(result, "Failed to get snapshot")
-
+    # Probe before reading the accessibility tree: snapshot content from a metadata
+    # page must never enter the response, even transiently.
     blocked = _blocked_private_page_content(effective_task_id)
     if blocked is not None:
         return blocked
+
+    result = _session._run_browser_command(effective_task_id, "snapshot", [] if full else ["-c"])
+    if not result.get("success"):
+        return _failed_response(result, "Failed to get snapshot")
 
     response = {"success": True, **_snapshot_fields(result)}
     _lp._copy_fallback_warning(response, result)

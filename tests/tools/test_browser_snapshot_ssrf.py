@@ -84,8 +84,9 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         assert result["success"] is False
         assert "private or internal address" in result["error"]
         assert self.PRIVATE_URL in result["error"]
-        # Must have called eval to check URL
-        assert call_count["n"] == 2  # snapshot + eval
+        # The guard probes before fetching snapshot content, so a blocked page
+        # performs only the fixed URL eval and never reads its accessibility tree.
+        assert call_count["n"] == 1
 
     def test_allows_public_url_after_eval_navigation(self, monkeypatch):
         """Snapshot must succeed when current page URL is public."""

@@ -24,9 +24,9 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any, Deque, Dict, List, Optional, Tuple
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
 _PROFILE_REJECTED = object()
@@ -932,6 +932,16 @@ def _invalid_request(message: str) -> "web.Response":
     return web.json_response({"error": {"message": message, "type": "invalid_request_error"}}, status=400)
 
 
+def _error_envelope(resp: "web.Response") -> tuple[str, str]:
+    """``(code, message)`` of an ``_error_response`` payload, for callers that re-publish a
+    refusal produced on another surface (the admission 429s become a terminal run status)."""
+    try:
+        err = (json.loads(resp.body.decode("utf-8")) or {}).get("error") or {}
+        return str(err.get("code") or ""), str(err.get("message") or "")
+    except Exception:
+        return "", ""
+
+
 _api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(
     "api_agent_request_reservation", default=None)
 
@@ -1205,7 +1215,17 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._max_concurrent_runs: int = self._resolve_max_concurrent_runs()  # 0 disables
         self._history_tool_output_max_chars = self._resolve_api_server_int(
             "history_tool_output_max_chars", default=0)
-        # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
+        # Bounded run-admission queue (#7483 follow-up): a run-starting request is admitted into
+        # the queue whenever it has room and waits its turn in FIFO arrival order, so a burst
+        # larger than the cap is served in sequence instead of refused. One counter, one
+        # invariant: executing turns <= _max_concurrent_runs across every run-starting endpoint.
+        # The only 429s are a queue already at run_queue_max_depth (_run_queue_full_response)
+        # and a wait that expires (_run_queue_timeout_response); 0 disables each bound.
+        self._run_queue_max_depth: int = self._resolve_run_queue_max_depth()
+        self._run_queue_wait_seconds: float = self._resolve_run_queue_wait_seconds()
+        self._run_slots_in_use: int = 0
+        # FIFO slot waiters (asyncio.Future); their list length IS the queue depth.
+        self._run_slot_waiters: Deque["asyncio.Future"] = deque()        # In-flight _run_agent() turns (/v1/runs tracks its own via _active_run_tasks).
         # Concurrency cap shared across all agent-serving endpoints (/v1/chat/completions, /v1/responses,
         # /v1/runs, /api/sessions/{id}/chat[/stream]). Read from config.yaml
         # gateway.api_server.max_concurrent_runs; 0 disables the cap.
@@ -1282,6 +1302,79 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if reservation:
             _release_pending_api_work(self, reservation)
 
+    # -- Bounded run-admission queue (gateway.api_server.max_concurrent_runs / run_queue_*) ---
+
+    def _run_queue_is_saturated(self) -> bool:
+        """Whether every execution slot is taken right now (cap disabled -> never)."""
+        return self._max_concurrent_runs > 0 and self._run_slots_in_use >= self._max_concurrent_runs
+
+    def _run_queue_depth(self) -> int:
+        """How many requests are admitted and waiting for a slot right now.
+
+        Every such request is a FIFO waiter — a sync request awaiting its turn, or a /v1/runs
+        run parked in ``_execute_run`` — so the waiter list IS the queue depth.
+        """
+        return len(self._run_slot_waiters)
+
+    def _run_queue_full_response(self) -> "web.Response":
+        """429 for a refusal that never entered the queue: the depth bound is already reached."""
+        return _error_response(
+            f"Too many queued runs (max {self._run_queue_max_depth})",
+            429, err_type="rate_limit_error", code="run_queue_full",
+            headers={"Retry-After": "1"})
+
+    def _run_queue_timeout_response(self) -> "web.Response":
+        """429 for a wait that expired without a free slot."""
+        return _error_response(
+            f"Timed out waiting for a run slot ({self._run_queue_wait_seconds:g} s)",
+            429, err_type="rate_limit_error", code="run_queue_timeout",
+            headers={"Retry-After": "1"})
+
+    def _forget_run_slot_waiter(self, waiter: "asyncio.Future") -> None:
+        """Drop a waiter that gave up, so a later release can never hand it a slot."""
+        with suppress(ValueError):
+            self._run_slot_waiters.remove(waiter)
+        if not waiter.done():
+            waiter.cancel()
+
+    async def _acquire_run_slot(self) -> Optional["web.Response"]:
+        """Take one execution slot, waiting in FIFO arrival order while the queue is full.
+
+        Returns ``None`` once the slot is HELD (every caller releases it in a ``finally``);
+        otherwise the 429 to send: ``run_queue_full`` when the queue already sits at
+        ``run_queue_max_depth``, ``run_queue_timeout`` when no slot frees within
+        ``run_queue_wait_seconds``.
+        """
+        if not self._run_queue_is_saturated():
+            self._run_slots_in_use += 1  # no await between the check and the take: atomic here
+            return None
+        if self._run_queue_max_depth > 0 and self._run_queue_depth() >= self._run_queue_max_depth:
+            return self._run_queue_full_response()
+        waiter: "asyncio.Future" = asyncio.get_running_loop().create_future()
+        self._run_slot_waiters.append(waiter)
+        try:
+            # shield: a timeout must not cancel the future that carries the handover.
+            await asyncio.wait_for(asyncio.shield(waiter), timeout=self._run_queue_wait_seconds)
+        except asyncio.TimeoutError:
+            if waiter.done() and not waiter.cancelled():
+                return None  # a slot was handed over as the timer fired — keep and use it
+            self._forget_run_slot_waiter(waiter)
+            return self._run_queue_timeout_response()
+        except BaseException:  # cancellation: stop waiting and leave the queue clean
+            self._forget_run_slot_waiter(waiter)
+            raise
+        return None
+
+    def _release_run_slot(self) -> None:
+        """Give one slot back, handing it straight to the head live waiter (FIFO, count unchanged)."""
+        while self._run_slot_waiters:
+            waiter = self._run_slot_waiters.popleft()
+            if waiter.done():
+                continue  # gave up (timeout/cancel) between the release and now
+            waiter.set_result(True)
+            return
+        self._run_slots_in_use = max(0, self._run_slots_in_use - 1)
+
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""
         # "stopping" is not terminal: executor work continues until the agent notices.
@@ -1322,6 +1415,32 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception:
             return default
         return max(0, value)
+
+    @staticmethod
+    def _resolve_run_queue_max_depth() -> int:
+        """gateway.api_server.run_queue_max_depth (0 disables the bound; default 100; negatives -> 0)."""
+        default = 100
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            raw = cfg_get(
+                load_config(), "gateway", "api_server", "run_queue_max_depth", default=default)
+            value = int(raw)
+        except Exception:
+            return default
+        return max(0, value)
+
+    @staticmethod
+    def _resolve_run_queue_wait_seconds() -> float:
+        """gateway.api_server.run_queue_wait_seconds (bounded slot wait; default 120s; <=0 -> default)."""
+        default = 120.0
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            raw = cfg_get(
+                load_config(), "gateway", "api_server", "run_queue_wait_seconds", default=default)
+            value = float(raw)
+        except Exception:
+            return default
+        return value if value > 0 else default
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -3805,7 +3924,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     def _concurrency_limited_response(self) -> Optional["web.Response"]:
         """429 when the concurrent-run cap is reached (0 disables), else None. Uses the same
-        adapter-owned work count as shutdown draining (admitted requests included)."""
+        adapter-owned work count as shutdown draining (admitted requests included).
+
+        No longer on the admission path (bounded run queue): a run-starting request takes a slot
+        through ``_acquire_run_slot`` and only a full queue or an expired wait answers 429. Kept
+        for the surfaces/tests that still ask this question directly.
+        """
         limit = self._max_concurrent_runs
         if limit <= 0:
             return None

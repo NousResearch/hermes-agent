@@ -566,16 +566,26 @@ class OpenAICompatRoutesMixin:
         return agent_task, agent_ref
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
+        """POST /v1/chat/completions — hold an execution slot for the whole turn, then run it.
+
+        Over cap this request queues behind the live turns (bounded wait, FIFO) instead of being
+        refused; only a queue at its depth bound or an expired wait returns 429.
+        """
+        limited = await self._acquire_run_slot()
+        if limited is not None:
+            return limited
+        try:
+            return await self._handle_chat_completions_turn(request)
+        finally:
+            self._release_run_slot()
+
+    async def _handle_chat_completions_turn(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
-        # Bound total in-flight agent runs (configurable; #7483).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
         try:
             body = await request.json()
         except Exception:
@@ -943,16 +953,26 @@ class OpenAICompatRoutesMixin:
         return response
 
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
+        """POST /v1/responses — hold an execution slot for the whole turn, then run it.
+
+        Over cap this request queues behind the live turns (bounded wait, FIFO) instead of being
+        refused; only a queue at its depth bound or an expired wait returns 429.
+        """
+        limited = await self._acquire_run_slot()
+        if limited is not None:
+            return limited
+        try:
+            return await self._handle_responses_turn(request)
+        finally:
+            self._release_run_slot()
+
+    async def _handle_responses_turn(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
             _content_has_visible_payload, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
             _resolve_media_to_data_urls, _responses_usage_payload)
-        # Bound total in-flight agent runs (configurable; #7483).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err

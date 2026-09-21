@@ -2181,9 +2181,12 @@ DEFAULT_CONFIG = {
         # HERMES_MEDIA_TRUST_RECENT_SECONDS. Only consulted when strict is true.
         "trust_recent_files_seconds": 600,
         "api_server": {  # OpenAI-compatible API server platform (gateway/platforms/api_server.py).
-            # Max concurrent agent runs. Requests to /v1/chat/completions, /v1/responses, and
-            # /v1/runs beyond this get HTTP 429 + Retry-After, bounding CPU/memory/LLM-quota
-            # exhaustion from a request flood. 0 = no cap.
+            # Max concurrent agent runs across /v1/chat/completions, /v1/responses and /v1/runs,
+            # bounding CPU/memory/LLM-quota exhaustion from a request flood. A run-starting
+            # request beyond this is ADMITTED and queued (it waits its turn in arrival order)
+            # instead of refused: 429 + Retry-After is reserved for a queue already at
+            # run_queue_max_depth and for a wait that expires (run_queue_wait_seconds).
+            # 0 = no cap (nothing queues).
             "max_concurrent_runs": 10,
             # Cap (chars) on each tool output and tool-call argument string in the stored
             # /v1/responses conversation history used for previous_response_id chaining. The
@@ -2191,7 +2194,12 @@ DEFAULT_CONFIG = {
             # response_store.db write several hundred KB. 0 = store tool outputs verbatim
             # (default: the capped text is what the model is replayed on the next turn).
             "history_tool_output_max_chars": 0,
-        },
+            # Max run-starting requests admitted and waiting for a slot before new ones get
+            # 429 run_queue_full. 0 = unbounded queue.
+            "run_queue_max_depth": 100,
+            # Seconds a queued request waits for a slot before 429 run_queue_timeout, so a
+            # caller learns its turn never came instead of holding a connection open forever.
+            "run_queue_wait_seconds": 120,        },
     },
     # Real-time token streaming to messaging platforms (gateway; restart after enabling). Off by
     # default: costs extra edit/draft API calls per response.

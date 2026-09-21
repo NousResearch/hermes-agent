@@ -138,6 +138,38 @@ def _make_slow_agent(**kwargs):
     return mock_agent, ready, interrupted
 
 
+async def _saturate_run_queue(adapter: APIServerAdapter, depth: int = 1):
+    """Fill the admission queue with real slot waiters so the next new run is refused.
+
+    Occupies the run cap (``_run_slots_in_use``) and queues *depth* real
+    ``_acquire_run_slot()`` waiters, which is what the depth bound counts. Returns the waiter
+    tasks: the caller cancels them with ``_drain_run_queue`` and ends the held turn with
+    ``adapter._release_run_slot()``.
+    """
+    adapter._run_queue_max_depth = depth
+    adapter._run_slots_in_use = max(adapter._max_concurrent_runs, 1)
+    waiters = [asyncio.create_task(adapter._acquire_run_slot()) for _ in range(depth)]
+    for _ in range(200):
+        if len(adapter._run_slot_waiters) == depth:
+            break
+        await asyncio.sleep(0.01)
+    assert len(adapter._run_slot_waiters) == depth
+    return waiters
+
+
+async def _drain_run_queue(adapter: APIServerAdapter, waiters) -> None:
+    """Drop the hold: cancel the waiters (they never claim a slot) and let them unwind."""
+    for waiter in waiters:
+        waiter.cancel()
+    for waiter in waiters:
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            pass
+    for waiter in waiters:
+        assert waiter not in adapter._run_slot_waiters
+
+
 @pytest.fixture
 def adapter():
     return _make_adapter()
@@ -1268,33 +1300,44 @@ class TestRunIdempotency:
     async def test_capacity_rejection_does_not_reserve_key(
         self, adapter, tmp_path
     ):
+        """A refusal that never entered the queue must not burn the Idempotency-Key."""
         _use_idempotency_db(adapter, tmp_path / "idem.db")
         app = _create_runs_app(adapter)
-        with patch.object(
-            adapter,
-            "_concurrency_limited_response",
-            side_effect=[
-                web.json_response({"error": "full"}, status=429),
-                None,
-            ],
-        ):
-            async with TestClient(TestServer(app)) as cli:
-                headers = {"Idempotency-Key": "capacity-retry"}
-                rejected = await cli.post(
+        adapter._max_concurrent_runs = 1
+        headers = {"Idempotency-Key": "capacity-retry"}
+        async with TestClient(TestServer(app)) as cli:
+            waiters = await _saturate_run_queue(adapter)
+            rejected = await cli.post(
+                "/v1/runs", json={"input": "valid"}, headers=headers
+            )
+            rejected_body = await rejected.json()
+            await _drain_run_queue(adapter, waiters)
+
+            with patch.object(adapter, "_create_agent") as create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = agent.session_completion_tokens = (
+                    agent.session_total_tokens
+                ) = 0
+                create.return_value = agent
+                accepted = await cli.post(
                     "/v1/runs", json={"input": "valid"}, headers=headers
                 )
-                with patch.object(adapter, "_create_agent") as create:
-                    agent = MagicMock()
-                    agent.run_conversation.return_value = {"final_response": "done"}
-                    agent.session_prompt_tokens = agent.session_completion_tokens = (
-                        agent.session_total_tokens
-                    ) = 0
-                    create.return_value = agent
-                    accepted = await cli.post(
-                        "/v1/runs", json={"input": "valid"}, headers=headers
-                    )
+                accepted_body = await accepted.json()
+                # The queue now has room, so the retry is admitted as queued work; ending the
+                # held turn lets it start.
+                adapter._release_run_slot()
+                for _ in range(120):
+                    status = adapter._run_statuses.get(accepted_body.get("run_id"), {})
+                    if status.get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
         assert rejected.status == 429
+        assert rejected_body["error"]["code"] == "run_queue_full"
         assert accepted.status == 202
+        assert accepted_body["status"] == "queued"
+        assert adapter._run_slots_in_use == 0
 
     @pytest.mark.asyncio
     async def test_sequential_duplicate_reuses_original(self, adapter, tmp_path):
@@ -1592,15 +1635,21 @@ class TestRunIdempotency:
                     "/v1/runs", json={"input": "same"}, headers=headers
                 )
                 first_body = await first.json()
-                with patch.object(
-                    adapter,
-                    "_concurrency_limited_response",
-                    return_value=web.json_response({"error": "full"}, status=429),
-                ):
+                for _ in range(120):
+                    status = adapter._run_statuses.get(first_body["run_id"], {})
+                    if status.get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+                # A saturated queue would refuse a NEW run; the replay must still be answered.
+                waiters = await _saturate_run_queue(adapter)
+                try:
                     replay = await cli.post(
                         "/v1/runs", json={"input": "same"}, headers=headers
                     )
-                replay_body = await replay.json()
+                    replay_body = await replay.json()
+                finally:
+                    await _drain_run_queue(adapter, waiters)
+                    adapter._release_run_slot()
                 assert replay.status == 202
                 assert replay_body["run_id"] == first_body["run_id"]
                 assert replay_body["replayed"] is True

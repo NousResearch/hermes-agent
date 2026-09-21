@@ -763,6 +763,14 @@ def _valid_http_url(value: str) -> bool:
     return True
 
 
+def _valid_http_path(value: str) -> bool:
+    return (
+        value.startswith("/")
+        and not any(character.isspace() for character in value)
+        and not any(character in value for character in "?#{}")
+    )
+
+
 def run_mcp_server(
     verbose: bool = False,
     *,
@@ -782,8 +790,12 @@ def run_mcp_server(
     if transport not in {"stdio", "http"}:
         print(f"Error: unsupported MCP transport: {transport}", file=sys.stderr)
         sys.exit(2)
-    if not path.startswith("/"):
-        print("Error: MCP HTTP path must start with '/'", file=sys.stderr)
+    if not _valid_http_path(path):
+        print(
+            "Error: MCP HTTP path must be an absolute literal path without "
+            "whitespace, query, fragment, or route parameters",
+            file=sys.stderr,
+        )
         sys.exit(2)
     if not 1 <= port <= 65535:
         print("Error: MCP HTTP port must be between 1 and 65535", file=sys.stderr)

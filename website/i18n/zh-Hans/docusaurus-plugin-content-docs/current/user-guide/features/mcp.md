@@ -568,6 +568,7 @@ events_wait(after_cursor=42, timeout_ms=30000)
 ```bash
 hermes mcp serve              # 普通模式
 hermes mcp serve --verbose    # 在 stderr 输出调试日志
+hermes mcp serve --transport http  # 在 127.0.0.1:8000/mcp 启动本地 Streamable HTTP
 ```
 
 ### 工作原理
@@ -578,7 +579,7 @@ MCP 服务器直接从 Hermes 的会话存储（`~/.hermes/sessions/sessions.jso
 
 ### 当前限制
 
-- 内嵌的 `hermes mcp serve` 目前只暴露 **stdio-only** MCP 服务器。如果你需要 HTTP MCP 服务器，请运行单独的适配器——或者，更常见的做法是使用 Hermes 的 MCP **客户端**侧，它已经同时支持 stdio 和 HTTP（`mcp_servers.yaml` / `config.yaml` 中的 `url` + `headers`；参见上方的 [HTTP 服务器](#http-servers)）。
+- Streamable HTTP 每个服务器进程使用一个静态 bearer token。可信本地网络之外的流量应通过可信反向代理终止 TLS。
 - 事件轮询间隔约 200ms，通过基于 mtime 优化的数据库轮询实现（文件未变化时跳过处理）
 - 暂不支持 `claude/channel` 推送通知协议
 - 仅支持纯文本发送（`messages_send` 不支持媒体/附件发送）

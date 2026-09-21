@@ -74,6 +74,27 @@ def test_wildcard_http_bind_requires_client_reachable_public_url(monkeypatch, ca
     assert "wildcard MCP HTTP binds require --public-url" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("path", ["mcp", "/m cp", "/mcp?x=1", "/mcp#part", "/mcp/{id}"])
+def test_http_rejects_unusable_route_path_before_starting_bridge(
+    monkeypatch, capsys, path,
+):
+    import mcp_serve
+
+    starts = []
+
+    class Bridge:
+        def start(self):
+            starts.append(True)
+
+    monkeypatch.setattr(mcp_serve, "EventBridge", Bridge)
+    with pytest.raises(SystemExit) as invalid_path:
+        mcp_serve.run_mcp_server(transport="http", path=path)
+
+    assert invalid_path.value.code == 2
+    assert "absolute literal path" in capsys.readouterr().err
+    assert starts == []
+
+
 @pytest.mark.parametrize("port", [-1, 0, 65536])
 def test_http_rejects_invalid_bind_port_before_starting_bridge(
     monkeypatch, capsys, port,

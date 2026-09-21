@@ -12,6 +12,19 @@ import argparse
 from typing import Callable
 
 
+class _QuietArgumentParser(argparse.ArgumentParser):
+    """Argument parser for startup classification that never writes or exits."""
+
+    def _print_message(self, message, file=None) -> None:
+        return None
+
+    def exit(self, status=0, message=None) -> None:
+        raise argparse.ArgumentError(None, message or f"parser exited with status {status}")
+
+    def error(self, message) -> None:
+        raise argparse.ArgumentError(None, message)
+
+
 def _add_server_runtime_args(parser) -> None:
     """Runtime flags shared by ``dashboard`` and ``serve`` (same ``web_server.start_server``)."""
     parser.add_argument(
@@ -123,3 +136,38 @@ def build_dashboard_parser(
             "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
             "testing against a staging/preview portal.")
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+
+def invocation_starts_web_runtime(command: str, argv: list[str]) -> bool:
+    """Whether canonical parsing says a serve/dashboard invocation hosts the runtime.
+
+    Invalid/help and one-shot lifecycle invocations return false. The quiet parser
+    preserves argparse's option-abbreviation and validation semantics without
+    printing before the real CLI parser handles the command.
+    """
+    def noop(_args) -> None:
+        return None
+
+    try:
+        if command == "serve":
+            parser = _QuietArgumentParser(add_help=True, exit_on_error=False)
+            _configure_serve_parser(parser, cmd_dashboard=noop)
+            args = parser.parse_args(argv)
+        elif command == "dashboard":
+            parser = _QuietArgumentParser(add_help=False, exit_on_error=False)
+            subparsers = parser.add_subparsers(dest="command")
+            build_dashboard_parser(
+                subparsers,
+                cmd_dashboard=noop,
+                cmd_dashboard_register=noop,
+            )
+            args = parser.parse_args([command, *argv])
+        else:
+            return False
+    except (argparse.ArgumentError, SystemExit, ValueError):
+        return False
+    return not (
+        getattr(args, "stop", False)
+        or getattr(args, "status", False)
+        or getattr(args, "dashboard_subcommand", None) is not None
+    )

@@ -207,7 +207,7 @@ const coderConn = {
 }
 
 function fakeDesktop() {
-  let bootProgressHandler: ((payload: Record<string, unknown>) => void) | null = null
+  const bootProgressHandlers = new Set<(payload: Record<string, unknown>) => void>()
 
   return {
     getConnection: vi.fn(async (profile?: null | string) => {
@@ -227,15 +227,17 @@ function fakeDesktop() {
       timestamp: Date.now()
     })),
     onBootProgress: vi.fn(callback => {
-      bootProgressHandler = callback
+      bootProgressHandlers.add(callback)
 
       return () => {
-        bootProgressHandler = null
+        bootProgressHandlers.delete(callback)
       }
     }),
     // Test helper: fire a post-boot progress event through the real subscription.
     emitBootProgress(payload: Record<string, unknown>) {
-      bootProgressHandler?.(payload)
+      for (const handler of bootProgressHandlers) {
+        handler(payload)
+      }
     },
     onBackendExit: vi.fn(callback => {
       backendExit = callback
@@ -1650,6 +1652,111 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($connection.get()).toBeNull()
   })
+
+  it.each(['boot', 'switch'] as const)('waits for an announced update before completing %s', async path => {
+    const desktop = fakeDesktop()
+
+    const connection = deferred<typeof primaryConn>()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    if (path === 'boot') {
+      desktop.getConnection.mockImplementation(() => connection.promise)
+    }
+
+    render(<Harness />)
+    await flushAsync()
+
+    if (path === 'switch') {
+      desktop.getConnection.mockImplementation(() => connection.promise)
+      act(() => connectionApplied?.())
+      await flushAsync()
+    }
+
+    const callsBeforeUpdate = desktop.getConnection.mock.calls.length
+
+    const progress = {
+      error: null,
+      fakeMode: false,
+      message: 'An update is finishing',
+      phase: 'backend.update-wait',
+      progress: 12,
+      running: true,
+      timestamp: Date.now()
+    }
+
+    // Main is intentionally parked, not hung. Its live update gate emits
+    // progress every second, for longer than the ordinary cold-spawn budget.
+    await act(async () => {
+      for (let second = 0; second < 90; second += 1) {
+        desktop.emitBootProgress({ ...progress, timestamp: Date.now() })
+        await vi.advanceTimersByTimeAsync(1000)
+      }
+    })
+
+    expect($desktopBoot.get().error).toBeNull()
+    expect(desktop.getConnection).toHaveBeenCalledTimes(callsBeforeUpdate)
+
+    act(() => {
+      desktop.emitBootProgress({ ...progress, phase: 'backend.ready', progress: 94 })
+      connection.resolve(primaryConn)
+    })
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get()).toMatchObject({ error: null, visible: false })
+    expect($gatewaySwitching.get()).toBe(false)
+  })
+
+  it.each(['silent', 'finished', 'endless', 'ordinary'] as const)(
+    'still bounds a hung connection when update progress is %s',
+    async kind => {
+      const desktop = fakeDesktop()
+      desktop.getConnection.mockImplementation(() => new Promise(() => undefined))
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      render(<Harness />)
+      await flushAsync()
+
+      const progress = {
+        error: null,
+        fakeMode: false,
+        message: '',
+        phase: kind === 'ordinary' ? 'backend.resolve' : 'backend.update-wait',
+        progress: 12,
+        running: true,
+        timestamp: Date.now()
+      }
+
+      act(() => desktop.emitBootProgress(progress))
+
+      if (kind === 'finished') {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(40_000)
+          desktop.emitBootProgress({ ...progress, phase: 'backend.spawn' })
+          await vi.advanceTimersByTimeAsync(10_000)
+        })
+        expect($desktopBoot.get().error).toBeNull()
+      }
+
+      await act(async () => {
+        if (kind === 'endless' || kind === 'ordinary') {
+          // A heartbeat must not turn the gate's finite update budget into
+          // an infinite spinner. Non-update progress earns no extra time.
+          const seconds = kind === 'endless' ? 21 * 60 : 50
+
+          for (let second = 0; second < seconds; second += 1) {
+            desktop.emitBootProgress({ ...progress, timestamp: Date.now() })
+            await vi.advanceTimersByTimeAsync(1000)
+          }
+        } else {
+          await vi.advanceTimersByTimeAsync(45_000)
+        }
+      })
+
+      expect($desktopBoot.get().error).toBe('Timed out connecting to Hermes backend')
+      expect(FakeWebSocket.instances).toHaveLength(0)
+    }
+  )
 
   it('a getConnection() that hangs on INITIAL boot rejects on its own after the reconnect-attempt timeout, not only when main eventually gives up (#93454)', async () => {
     // boot()'s getConnection() had no bound of its own — only main's own

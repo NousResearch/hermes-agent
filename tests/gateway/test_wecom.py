@@ -349,6 +349,33 @@ class TestMediaHelpers:
         assert result["downgraded"] is True
         assert "AMR" in (result["downgrade_note"] or "")
 
+    @pytest.mark.asyncio
+    async def test_inbound_download_uses_gateway_cap_not_outbound_upload_cap(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._download_remote_bytes = AsyncMock(
+            return_value=(b"%PDF-test", {"content-type": "application/pdf"})
+        )
+        inbound_cap = 128 * 1024 * 1024
+
+        with patch(
+            "plugins.platforms.wecom.media.get_inbound_media_max_bytes",
+            return_value=inbound_cap,
+        ), patch(
+            "plugins.platforms.wecom.media.cache_document_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/report.pdf"),
+        ):
+            cached = await adapter._cache_media(
+                "file",
+                {"url": "https://example.com/report.pdf", "filename": "report.pdf"},
+            )
+
+        adapter._download_remote_bytes.assert_awaited_once_with(
+            "https://example.com/report.pdf", max_bytes=inbound_cap
+        )
+        assert cached == ("/tmp/report.pdf", "application/pdf")
+
 
 class TestMediaUpload:
 

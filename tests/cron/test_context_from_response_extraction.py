@@ -98,3 +98,64 @@ class TestScriptModeArchives:
         assert injected is True
         assert "plain script payload" in prompt
         assert "line two" in prompt
+
+
+class TestUnreadableArchives:
+    """A corrupt archive file must be skipped like a silent one, not kill the run."""
+
+    def test_corrupt_newest_archive_falls_through_to_older(self, cron_env):
+        """Newest .md holds non-UTF-8 bytes: skip it and use the older good one."""
+        import os
+        from cron.jobs import OUTPUT_DIR, create_job
+        from cron.scheduler_prompt import _inject_context_from
+
+        source = create_job(prompt="Upstream", schedule="0 8 * * *")
+        _write_archive(
+            cron_env, source["id"], "2026-09-18_08-00-00.md",
+            "# Cron Job: up\n\n## Prompt\n\ngo\n\n## Response\n\nOLDER-GOOD\n",
+        )
+        corrupt = OUTPUT_DIR / source["id"] / "2026-09-19_08-00-00.md"
+        corrupt.write_bytes(b"\xff\xfe\x00corrupt")
+        os.utime(corrupt, (2_000_000_000, 2_000_000_000))
+
+        job = create_job(prompt="Report", schedule="0 8 * * *")
+        job["context_from"] = [source["id"]]
+
+        prompt, injected = _inject_context_from(job, "Report")
+
+        assert injected is True
+        assert "OLDER-GOOD" in prompt
+
+    def test_corrupt_only_archive_skips_source(self, cron_env):
+        """A source whose only archive is undecodable is skipped, not fatal."""
+        from cron.jobs import OUTPUT_DIR, create_job
+        from cron.scheduler_prompt import _inject_context_from
+
+        source = create_job(prompt="Upstream", schedule="0 8 * * *")
+        out_dir = OUTPUT_DIR / source["id"]
+        out_dir.mkdir(parents=True)
+        (out_dir / "2026-09-19_08-00-00.md").write_bytes(b"\xff\xfe\x00corrupt")
+
+        job = create_job(prompt="Report", schedule="0 8 * * *")
+        job["context_from"] = [source["id"]]
+
+        assert _inject_context_from(job, "Report") == ("Report", False)
+
+    def test_build_job_prompt_survives_corrupt_archive(self, cron_env):
+        """E2E through the real run path: _build_job_prompt must not raise on a
+        corrupt archive - the job fires with no injected context."""
+        from cron.jobs import OUTPUT_DIR, create_job
+        from cron.scheduler_prompt import _build_job_prompt
+
+        source = create_job(prompt="Upstream", schedule="0 8 * * *")
+        out_dir = OUTPUT_DIR / source["id"]
+        out_dir.mkdir(parents=True)
+        (out_dir / "2026-09-19_08-00-00.md").write_bytes(b"\xff\xfe\x00corrupt")
+
+        job = create_job(prompt="Report", schedule="0 8 * * *")
+        job["context_from"] = [source["id"]]
+
+        prompt = _build_job_prompt(job)
+
+        assert "Report" in prompt
+        assert "Output from job" not in prompt

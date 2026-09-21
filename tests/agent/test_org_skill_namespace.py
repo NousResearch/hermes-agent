@@ -72,6 +72,18 @@ class TestTokenGatedDiscovery:
         _mark_active(skills, "org-9")
         assert sku.read_active_org_id(skills) == "org-9"
 
+    def test_undecodable_marker_treated_as_no_org(self, tmp_path):
+        """A non-UTF-8 .active_org marker resolves as no org instead of raising."""
+        skills = tmp_path / "skills"
+        org_root = skills / sku.ORG_MIRROR_DIR_NAME
+        org_root.mkdir(parents=True)
+        (org_root / sku.ORG_ACTIVE_MARKER).write_bytes(b"\xff\xfe\x00corrupt")
+        assert sku.read_active_org_id(skills) is None
+        # The gate call inside iter_skill_index_files must not raise either.
+        _mk_skill(skills, "personal-a")
+        found = [p.parent.name for p in sku.iter_skill_index_files(skills, "SKILL.md")]
+        assert "personal-a" in found
+
 
 class TestSnapshotEntryProvenance:
     def test_org_entry_strips_prefix_and_carries_provenance(self, tmp_path):

@@ -122,7 +122,14 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             latest_output = ""
             for output_file in output_files:
-                candidate = output_file.read_text(encoding="utf-8").strip()
+                try:
+                    candidate = output_file.read_text(encoding="utf-8").strip()
+                except (OSError, UnicodeDecodeError) as e:
+                    # Unreadable or non-UTF-8 archive: skip it like a silent/blank
+                    # file so an older usable archive still gets used.
+                    logger.warning(
+                        "context_from: skipping unreadable archive %s: %s", output_file, e)
+                    continue
                 # Only the run header describes suppression; script/agent payloads can
                 # quote these markers. Keep error documents useful for recovery context.
                 header = candidate.split("\n---\n", 1)[0].split("\n## Prompt", 1)[0]

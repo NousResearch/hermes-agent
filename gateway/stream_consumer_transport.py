@@ -16,6 +16,11 @@ from gateway.stream_consumer_fences import ensure_closed_code_fences
 
 logger = logging.getLogger("gateway.stream_consumer")
 
+# Longest interim-edit interval flood backoff may reach. Interim edits are skipped (not slept)
+# until the interval elapses, so honouring a 30s Telegram retry_after costs nothing but a
+# stale preview; anything longer is left to the strike counter and the fallback send path.
+_MAX_EDIT_BACKOFF_SECS = 30.0
+
 
 class StreamTransportMixin:
     """Send/edit/frame primitives and the transport-ordered ``_send_or_edit``."""
@@ -174,6 +179,19 @@ class StreamTransportMixin:
             if getattr(result, "success", False):
                 self._last_sent_text = text  # parity with the edit-based no-op skip
                 return True
+            # P5(b): an AUTHORIZATION decline is terminal for the whole run, not
+            # merely "drafts are unusable". Disabling drafts alone routes the
+            # turn-final to _first_send — a plain send into the chat the
+            # connector just refused. Verified: ops were ['draft', 'send'].
+            from gateway.relay.egress import declined_send
+
+            if declined_send(result):
+                logger.warning(
+                    "send_draft DECLINED by the connector's egress guard; "
+                    "suppressing every later send for this run (the destination "
+                    "is not approved for this connection)"
+                )
+                self._egress_declined = True
             logger.debug("send_draft returned success=False, disabling draft transport: %s",
                          getattr(result, "error", "unknown"))
         self._draft_failures += 1
@@ -417,6 +435,15 @@ class StreamTransportMixin:
 
     async def _first_send(self, text: str, *, finalize: bool) -> bool:
         """First send, threaded to the user's message (correct topic/thread)."""
+        if getattr(self, "_egress_declined", False):
+            # The connector refused this destination earlier in the run (see
+            # _send_draft_frame). This is where every fallback path converges,
+            # so the check belongs here rather than at each caller.
+            logger.warning(
+                "suppressing the plain-send fallback: the connector already "
+                "declined this destination for this run"
+            )
+            return False
         result = await self.adapter.send(
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
@@ -459,6 +486,12 @@ class StreamTransportMixin:
         if not result.success:
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)
+        raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, dict) and raw_response.get("skipped"):
+            # Adapter deferred the edit (Telegram's shared send+edit slot was busy): nothing
+            # changed on screen, so the visible prefix and flood state stay as they were and the
+            # next tick retries with the newer text.
+            return True
         self._already_sent = True
         self._track_preview_ids_from_result(result)
         # Oversized edit split across continuations: message_id is now the LAST
@@ -487,6 +520,22 @@ class StreamTransportMixin:
                                ) -> bool:
         """Classify a failed edit: partial overflow, flood backoff, or fallback mode.  Always
         False; the caller's finalize path may still deliver the tail."""
+        # P5(b): an AUTHORIZATION decline is terminal for the run. Every branch
+        # below treats a failed edit as "editing is unavailable" and hands the
+        # unseen tail to the fallback, which SENDS it as a new message to the
+        # chat the connector just refused. Measured: ops were
+        # ['edit', 'edit', 'send'].
+        from gateway.relay.egress import declined_send
+
+        if declined_send(result):
+            logger.warning(
+                "edit DECLINED by the connector's egress guard; suppressing "
+                "every later send for this run (the destination is not "
+                "approved for this connection)"
+            )
+            self._egress_declined = True
+            self._edit_supported = False
+            return False
         turn_final = finalize and is_turn_final
         if (turn_final and self.cfg.cursor and self._last_sent_text.endswith(self.cfg.cursor)
                 and self._visible_prefix() == text):
@@ -517,12 +566,18 @@ class StreamTransportMixin:
                 self._notify_new_message()
             return False
 
-        # Flood control: adaptive backoff (double the interval); disable edits only
+        # Flood control: adaptive backoff (double the interval, or the server's own
+        # retry_after when Telegram hands one back — the penalty is usually 9s+, so
+        # doubling 0.8s → 1.6s → 3.2s burns all strikes inside it); disable edits only
         # after _MAX_FLOOD_STRIKES in a row.
         immediate_final_fallback = False
         if self._is_flood_error(result):
             self._flood_strikes += 1
-            self._current_edit_interval = min(self._current_edit_interval * 2, 10.0)
+            backoff = min(self._current_edit_interval * 2, 10.0)
+            retry_after = getattr(result, "retry_after", None)
+            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                backoff = max(backoff, min(float(retry_after), _MAX_EDIT_BACKOFF_SECS))
+            self._current_edit_interval = backoff
             logger.debug("Flood control on edit (strike %d/%d), backoff interval → %.1fs",
                          self._flood_strikes, self._MAX_FLOOD_STRIKES, self._current_edit_interval)
             immediate_final_fallback = (

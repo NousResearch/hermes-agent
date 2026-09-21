@@ -47,6 +47,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
         "price": "$0.015 (text) / $0.0175 (style refs)", "path": "medium-turbo", "upscale": False,
     },
 }
+KREA_MODEL_IDS = frozenset(_MODELS)
 
 DEFAULT_MODEL = "krea-2-medium"
 

@@ -511,6 +511,10 @@ from cron.executions import (
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
+# Distinct last_status for a run that completed but had nothing to deliver (see
+# _RunDelivery.silent_response) — kept apart from "ok" so a job that silently stopped
+# delivering doesn't look identical to one that did real work.
+SILENT_STATUS = "no_op"
 
 # Agent-declared failure marker for cron runs. Unlike SILENT, it is deliberately strict so a
 # report that merely quotes the token cannot turn a healthy run into a failed one.
@@ -2796,6 +2800,11 @@ class _RunDelivery:
     should_deliver: bool = False
     unresolved_origin: bool = False
     blocked_config: bool = False
+    # True when delivery was skipped because the agent explicitly returned the silence marker
+    # (see _is_cron_silence_response) -- a deliberate "nothing to report", not a failure. Recorded
+    # as its own last_status ("no_op") so it stays distinguishable from a normal successful
+    # delivery; otherwise a job that silently stopped delivering looks identically healthy.
+    silent_response: bool = False
     # True when ``error`` is the agent's own ``[CRON_FAILURE]`` evidence rather than a runtime
     # error string, so composition must not run it through the provider-error heuristics.
     agent_declared: bool = False
@@ -2855,6 +2864,7 @@ def _save_compose_deliver(
         # and wrongly swallowed a real report that merely quoted "[SILENT]" mid-sentence (#51438, #46917).
         logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
         d.should_deliver = False
+        d.silent_response = True
 
     if d.should_deliver and fence.lost():
         d.should_deliver = False
@@ -2925,6 +2935,8 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         mark_kwargs["quota_hold_seconds"] = _hold_s
     if d.success and not d.delivery_error and d.should_deliver and job.get("last_delivery_queued"):
         mark_kwargs["status"] = "delivery_queued"
+    elif d.success and d.silent_response:
+        mark_kwargs["status"] = SILENT_STATUS
     if fire_owner is not None:
         mark_kwargs["expected_fire_owner"] = fire_owner
     if d.blocked_config:

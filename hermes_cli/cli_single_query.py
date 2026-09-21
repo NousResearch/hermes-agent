@@ -189,13 +189,18 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     from agent.turn_author import take_turn_author_from_env
     from hermes_cli.quiet_single_query import (
         adopt_unanswered_turn, bind_quiet_session_key, continue_quiet_notify_completions,
-        exit_single_query, quiet_notify_linger_seconds, take_turn_report_path, write_turn_report,
+        exit_single_query, quiet_notify_linger_seconds, start_turn_activity_heartbeat,
+        take_turn_report_path, write_turn_report,
     )
 
     author = take_turn_author_from_env()
     # A spawner that bounds only the turn (cron Bot Chat lane) learns the outcome from this
     # report, written before the linger below; popped so tool subprocesses do not inherit it.
     turn_report_path = take_turn_report_path()
+    # Same contract, liveness leg: while the turn keeps making progress the spawner must not
+    # kill it (its cap is idle-bound), so the agent's activity clock is published beside the
+    # report. Stopped at the first report write — past it the spawner never kills.
+    heartbeat = start_turn_activity_heartbeat(getattr(cli, "agent", None), turn_report_path)
     # A dispatcher's re-run of a failed bot delivery resumes the DM row its first attempt persisted.
     adopt_unanswered_turn(cli, effective_query)
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
@@ -286,6 +291,11 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     _exit_code = _single_query_exit_code(result)
     if emitter is not None:
         _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
+    # The quiet run is over (turn, linger, follow-ups): its liveness leg stops with it. Daemon
+    # thread, so this is belt-and-braces on the normal path — but a run that never gets here
+    # (BaseException) leaves no stray writer either.
+    if heartbeat is not None:
+        heartbeat.set()
     exit_single_query(_exit_code)
 
 

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   $wakeWord,
   applyWakeStartResult,
+  applyWakeState,
   applyWakeStatus,
   applyWakeStopResult,
   armWakeWord,
@@ -62,6 +63,25 @@ describe('applyWakeStatus', () => {
     const state = $wakeWord.get()
     expect(state.listening).toBe(true)
     expect(state.notice).toBe('Microphone delivers only silence — grant mic access')
+  })
+})
+
+describe('applyWakeState', () => {
+  it('surfaces bounded recovery progress and restores listening after recovery', () => {
+    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey hermes' })
+
+    applyWakeState({ attempt: 1, max_attempts: 3, state: 'retrying' })
+    expect($wakeWord.get()).toMatchObject({
+      enabled: true,
+      listening: false,
+      notice: 'microphone disconnected — retrying (1/3)'
+    })
+
+    applyWakeState({ attempt: 1, max_attempts: 3, state: 'listening' })
+    expect($wakeWord.get()).toMatchObject({ enabled: true, listening: true, notice: '' })
+
+    applyWakeState({ attempt: 3, max_attempts: 3, message: 'device unavailable', state: 'failed' })
+    expect($wakeWord.get()).toMatchObject({ enabled: true, listening: false, notice: 'device unavailable' })
   })
 })
 

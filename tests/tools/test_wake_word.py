@@ -593,6 +593,47 @@ def test_detector_flags_silent_stream_and_recovers(monkeypatch):
 # ── Singleton lifecycle ──────────────────────────────────────────────────
 
 
+def test_transient_stream_failure_reopens_capture_and_reports_recovery(monkeypatch, tmp_path):
+    opened = []
+    states = []
+    recovered = threading.Event()
+
+    class _FailingStream(_FakeStream):
+        def read(self, _n):
+            raise OSError("transient microphone disconnect")
+
+    class _RecoveredStream(_FakeStream):
+        def read(self, n):
+            recovered.set()
+            return super().read(n)
+
+    def _stream(**kwargs):
+        stream = (_FailingStream if not opened else _RecoveredStream)(**kwargs)
+        opened.append(stream)
+        return stream
+
+    monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_stream), None))
+    monkeypatch.setattr(ww, "_build_engine", lambda _cfg: _FakeEngine(fire=False))
+    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
+    monkeypatch.setattr(ww, "_STREAM_RESTART_DELAYS", (0.01, 0.02, 0.04))
+    owner = object()
+
+    ww.start_listening(
+        lambda: None,
+        owner=owner,
+        config={},
+        on_state=lambda state, details: states.append((state, details["attempt"])),
+    )
+    try:
+        assert recovered.wait(2), "listener never reopened capture after the read failure"
+        assert ww.owns_listener(owner)
+        assert states == [("retrying", 1), ("listening", 1)]
+        assert len(opened) == 2
+        assert opened[0].closed is True
+    finally:
+        ww.stop_listening(owner=owner)
+
+
 def test_detection_callback_can_pause_and_close_stream(monkeypatch, tmp_path):
     streams = []
 
@@ -650,6 +691,7 @@ def test_stream_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
     monkeypatch.setattr(ww, "_build_engine", lambda cfg: engine)
     monkeypatch.setattr(ww, "_lock_path", lambda: lock_path)
+    monkeypatch.setattr(ww, "_STREAM_RESTART_DELAYS", (0.01, 0.02, 0.04))
     owner = object()
 
     ww.start_listening(lambda: None, owner=owner, config={})

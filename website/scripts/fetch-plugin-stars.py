@@ -141,14 +141,24 @@ def probe_stars(
                 _log(f"GraphQL: {err.get('message') if isinstance(err, dict) else err}")
         elif errors is not None:
             _log("GraphQL probe returned malformed errors")
+            return {slug: previous[slug] for slug in slugs if slug in previous}, False
         data = payload.get("data")
         if not isinstance(data, dict):
             _log("GraphQL probe returned no repository data; keeping previous counts")
             return {slug: previous[slug] for slug in slugs if slug in previous}, False
         for i, slug in enumerate(slugs):
-            node = data.get(f"r{i}")
-            if isinstance(node, dict) and isinstance(node.get("stargazerCount"), int):
-                fresh[slug] = node["stargazerCount"]
+            alias = f"r{i}"
+            if alias not in data:
+                _log(f"GraphQL probe omitted {alias}; keeping previous counts")
+                return {slug: previous[slug] for slug in slugs if slug in previous}, False
+            node = data[alias]
+            if node is None:
+                continue
+            count = node.get("stargazerCount") if isinstance(node, dict) else None
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                _log(f"GraphQL probe returned a malformed star count for {slug}; keeping previous counts")
+                return {slug: previous[slug] for slug in slugs if slug in previous}, False
+            fresh[slug] = count
 
     headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}"}
     for slug in (slug for slug in slugs if slug not in fresh):
@@ -158,7 +168,7 @@ def probe_stars(
                 _log(f"REST fallback returned a malformed payload for {slug}")
                 continue
             count = payload.get("stargazers_count")
-            if isinstance(count, int):
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
                 fresh[slug] = count
             else:
                 _log(f"REST fallback returned no star count for {slug}")

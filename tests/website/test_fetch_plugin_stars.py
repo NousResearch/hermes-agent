@@ -80,7 +80,10 @@ def test_probe_starts_with_one_graphql_request_and_rest_fills_missing_counts(mod
 
 
 @pytest.mark.parametrize(
-    "failure_mode", ["exception", "no_data", "malformed_errors", "malformed_payload"],
+    "failure_mode", [
+        "exception", "no_data", "malformed_errors", "malformed_payload",
+        "missing_alias", "malformed_node", "invalid_count",
+    ],
 )
 def test_failed_graphql_probe_stops_fallback_and_keeps_cache(
     mod, tmp_path, monkeypatch, capsys, failure_mode,
@@ -99,8 +102,14 @@ def test_failed_graphql_probe_stops_fallback_and_keeps_cache(
         if failure_mode == "no_data":
             return {"data": None, "errors": [None]}
         if failure_mode == "malformed_errors":
-            return {"data": None, "errors": 1}
-        return None
+            return {"data": {"r0": None, "r1": None}, "errors": 1}
+        if failure_mode == "malformed_payload":
+            return None
+        if failure_mode == "missing_alias":
+            return {"data": {"r0": None}}
+        if failure_mode == "malformed_node":
+            return {"data": {"r0": "bad", "r1": None}}
+        return {"data": {"r0": {"stargazerCount": True}, "r1": None}}
     monkeypatch.setattr(mod, "_graphql", limited)
 
     def unexpected_rest(*args, **kwargs):
@@ -113,8 +122,9 @@ def test_failed_graphql_probe_stops_fallback_and_keeps_cache(
     assert "::warning::Plugin star probe incomplete; missing cached counts for: b/two" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("malformed_payload", [[], {"stargazers_count": True}, {"stargazers_count": -1}])
 def test_rest_fallback_stops_after_rate_limit_and_ignores_malformed_payload(
-    mod, tmp_path, monkeypatch,
+    mod, tmp_path, monkeypatch, malformed_payload,
 ):
     cat = _catalog(
         tmp_path,
@@ -136,7 +146,7 @@ def test_rest_fallback_stops_after_rate_limit_and_ignores_malformed_payload(
     def rest(url, headers):
         calls.append(url)
         if len(calls) == 1:
-            return []
+            return malformed_payload
         raise urllib.error.HTTPError(url, 429, "rate limited", hdrs=None, fp=None)
     monkeypatch.setattr(mod, "_http_json", rest)
 

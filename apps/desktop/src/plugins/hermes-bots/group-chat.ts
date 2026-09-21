@@ -24,6 +24,7 @@ import type {
   GroupMessage,
   GroupMessageAuthor,
   GroupPrompt,
+  GroupQuote,
   RosterRow
 } from './types'
 
@@ -1688,7 +1689,8 @@ export function appendGroupChatEntry(
   from: GroupMessageAuthor,
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  replyTo?: GroupQuote
 ): GroupMessage {
   const entry: GroupMessage = {
     id: groupChatEntryId(),
@@ -1698,6 +1700,12 @@ export function appendGroupChatEntry(
     // cutting here too keeps the duplicate-echo guard comparing like with like.
     text: compactGroupChatSyncText(normalizeGroupChatText(text), GROUP_CHAT_HISTORY_LINE_CHARS).text,
     thread: thread || 'legacy'
+  }
+
+  if (replyTo) {
+    // The quoted line travels with the reply: the log is trimmed, so a
+    // reference to the original could not be resolved later.
+    entry.replyTo = replyTo
   }
 
   if (Array.isArray(images) && images.length) {

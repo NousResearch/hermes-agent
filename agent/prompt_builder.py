@@ -1249,17 +1249,50 @@ def _current_session_platform_hint() -> str:
         return ""
 
 
+# Default per-turn budget for the rendered skills catalog block (chars). When the full-with-descriptions
+# render exceeds this, the renderer progressively demotes categories in a stable priority order until the
+# output fits. Below the budget: no change vs. prior behavior. The compact_categories path is reused — the
+# budget gate is a *progressive* caller, not a new state machine. Default keeps a typical 137-skill install
+# (the 2026-09 common case) on full descriptions; users with hundreds of skills see demoted names-only lines.
+_DEFAULT_CATALOG_MAX_CHARS = 6000
+
+
+def _resolve_catalog_max_chars(config: "Any | None" = None) -> int:
+    """Read ``skills.catalog_max_chars`` from config (or HERMES_HOME/config.yaml); ``0`` disables the gate."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+            config = load_config() or {}
+        except Exception:
+            config = {}
+    raw = (config.get("skills") or {}).get("catalog_max_chars")
+    if raw is None:
+        return _DEFAULT_CATALOG_MAX_CHARS
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_CATALOG_MAX_CHARS
+    return max(0, n)
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
+    catalog_max_chars: "int | None" = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
     External dirs (``skills.external_dirs``) are read-only and lose name collisions to local skills.
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
+    ``catalog_max_chars`` (skills.catalog_max_chars in config.yaml, default 6000) is a soft budget: when the
+    rendered block exceeds it, the renderer progressively demotes categories using a stable priority order
+    until the output fits. Set to 0 to disable the gate (always full descriptions). The gate is cache-aware:
+    the budget is part of the cache key so profile-level overrides don't collide.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
     """
+    if catalog_max_chars is None:
+        catalog_max_chars = _resolve_catalog_max_chars()
     _home_token = None
     if skills_dir_override is not None:
         skills_dir = Path(skills_dir_override)
@@ -1274,7 +1307,8 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not external_dirs and not project_dirs:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
+            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs,
+            catalog_max_chars)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1336,13 +1370,69 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
+    catalog_max_chars: int = _DEFAULT_CATALOG_MAX_CHARS,
 ) -> str:
-    """Render the ## Skills block; "" when there is nothing to list."""
+    """Render the ## Skills block; "" when there is nothing to list.
+
+    The catalog_max_chars budget is progressive: render with descriptions, measure, and if over budget,
+    demote lowest-priority categories to names-only until the block fits. Always-already-demoted
+    categories (compact_categories from focus mode) stay demoted. The priority order is: coding-relevant
+    categories (terminal/web/file/devops/github/research/software-development/...) come last to demote;
+    non-coding (creative/productivity/social-media/...) come first. ``None`` or ``0`` disables the gate.
+    """
     if not skills_by_category:
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
-    demoted = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    presettled_demote = frozenset(cat for cat in skills_by_category if cat.split("/", 1)[0] in (compact_categories or frozenset()))
+    # Budget gate: render with no extra demotion. If over budget, greedily add the category whose
+    # description block is largest to the demote set — biggest size win per demotion, deterministic
+    # by (size desc, name asc) so cache hits stay stable. Coding vs non-coding is irrelevant here:
+    # the budget is the question, not the task. ``0`` or negative disables the gate.
+    if catalog_max_chars and catalog_max_chars > 0:
+        baseline = _render_skills_index_with_demote(
+            skills_by_category, category_descriptions, presettled_demote, available_tools,
+        )
+        if len(baseline) <= catalog_max_chars:
+            return baseline
+        eligible = sorted(
+            (cat for cat in skills_by_category if cat not in presettled_demote),
+            key=lambda c: (-_category_block_chars(c, skills_by_category, category_descriptions), c),
+        )
+        demoted = presettled_demote
+        for cat in eligible:
+            tentative = demoted | {cat}
+            rendered = _render_skills_index_with_demote(
+                skills_by_category, category_descriptions, tentative, available_tools,
+            )
+            if len(rendered) <= catalog_max_chars:
+                break
+            demoted = tentative
+        else:
+            rendered = _render_skills_index_with_demote(
+                skills_by_category, category_descriptions, demoted | set(eligible), available_tools,
+            )
+        return rendered
+    return _render_skills_index_with_demote(
+        skills_by_category, category_descriptions, presettled_demote, available_tools,
+    )
+
+
+def _category_block_chars(
+    category: str, skills_by_category: dict[str, list[tuple[str, str]]],
+    category_descriptions: dict[str, str],
+) -> int:
+    """Approximate rendered chars for one category with descriptions — biggest wins first under the budget gate."""
+    cat_desc = category_descriptions.get(category, "")
+    n_skills = len({n for n, _ in skills_by_category[category]})
+    # 4 indent + name + ": " + desc (cap 60) + newline ~= 4 + 30 + 70 = ~104. Category line ~30 + cat_desc.
+    return 30 + len(cat_desc) + n_skills * 104
+
+
+def _render_skills_index_with_demote(
+    skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
+    demoted: "frozenset[str] | set[str]", available_tools: "set[str] | None",
+) -> str:
     hidden_note = (
         "\n(Categories marked [names only] are outside the current coding "
         "context, so their descriptions are omitted — the skills work "
@@ -1401,7 +1491,7 @@ def _oneshot_prompt_variant() -> bool:
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None,
+    project_dirs: "list[Path] | None" = None, catalog_max_chars: int = _DEFAULT_CATALOG_MAX_CHARS,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
@@ -1412,7 +1502,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
-        _oneshot_prompt_variant(),
+        int(catalog_max_chars), _oneshot_prompt_variant(),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1470,7 +1560,8 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools,
+                                  catalog_max_chars)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

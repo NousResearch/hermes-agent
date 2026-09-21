@@ -1112,6 +1112,15 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Soft budget for the skills catalog block in the system prompt (chars).
+  # When the rendered "## Skills" listing exceeds this, the renderer progressively demotes
+  # the largest categories to a names-only line until the block fits. Below the budget:
+  # every skill keeps its description. Set to 0 to disable the gate (always full descriptions).
+  # A typical 137-skill install renders to ~16K chars; the default 6000 keeps the block lean
+  # while preserving every skill name (so skill_view(name) still resolves). The cache key
+  # includes this value, so profile-level overrides don't collide.
+  catalog_max_chars: 6000
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

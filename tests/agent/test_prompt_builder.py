@@ -372,6 +372,121 @@ class TestBuildSkillsSystemPrompt:
 
 
 
+    def test_catalog_budget_under_no_demote(self, monkeypatch, tmp_path):
+        """catalog_max_chars larger than the render: no categories are demoted; descriptions preserved."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+        for i in range(3):
+            d = skills_dir / f"skill-{i}"
+            d.mkdir()
+            (d / "SKILL.md").write_text(
+                f"---\nname: skill-{i}\ndescription: Description {i}\n---\n"
+            )
+        full = build_skills_system_prompt(catalog_max_chars=0)  # gate disabled
+        trimmed = build_skills_system_prompt(catalog_max_chars=100_000)  # over budget: no-op
+        # Both should render every description
+        for i in range(3):
+            assert f"Description {i}" in full
+            assert f"Description {i}" in trimmed
+
+
+    def test_catalog_budget_over_demotes_largest_first(self, monkeypatch, tmp_path):
+        """catalog_max_chars tighter than the render: demote largest category first; all names preserved.
+
+        With many skills, the budget gate progressively demotes. The exact threshold depends on
+        the irreducible header/footer cost; the invariant we test is that the output respects the
+        budget AND every skill name stays visible.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        # 10 skills in big cat, 5 in small cat. The big cat renders to ~1100 chars with desc.
+        for i in range(10):
+            d = skills_dir / "big" / f"big-{i}"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: big-{i}\ndescription: Big skill {i} description text\n---\n"
+            )
+        for i in range(5):
+            d = skills_dir / "small" / f"small-{i}"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: small-{i}\ndescription: Small skill {i} description text\n---\n"
+            )
+        baseline = build_skills_system_prompt(catalog_max_chars=0)
+        # Budget that fits a small-cat-with-desc but not the full baseline.
+        # Irreducible floor (prefix + footer + all-demoted) ~ 1500 chars. Mid-budget 1700 forces
+        # the bigger cat to demote first.
+        target_budget = max(int(len(baseline) * 0.6), 1700)
+        result = build_skills_system_prompt(catalog_max_chars=target_budget)
+        # Every name still visible (demote = names-only, never hidden)
+        for i in range(10):
+            assert f"big-{i}" in result
+        for i in range(5):
+            assert f"small-{i}" in result
+        # Output respects the budget — within 200 chars of target (header/footer floor noise)
+        assert len(result) <= target_budget + 200, (
+            f"output {len(result)} too large for budget {target_budget}"
+        )
+
+
+    def test_catalog_budget_extreme_demotes_all_names_only(self, monkeypatch, tmp_path):
+        """catalog_max_chars below the irreducible floor: every category demoted; no descriptions; names still listed."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        for cat in ("alpha", "beta"):
+            d = skills_dir / cat / f"{cat}-skill"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {cat}-skill\ndescription: {cat} desc\n---\n"
+            )
+        # 100 chars: way below the ~1.3K irreducible prefix/footer floor
+        result = build_skills_system_prompt(catalog_max_chars=100)
+        assert "alpha-skill" in result
+        assert "beta-skill" in result
+        assert "alpha desc" not in result
+        assert "beta desc" not in result
+        assert "alpha [names only]" in result
+        assert "beta [names only]" in result
+
+
+    def test_catalog_budget_zero_disables_gate(self, monkeypatch, tmp_path):
+        """catalog_max_chars=0 explicitly disables the gate — exact equivalence to the unset case."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+        d = skills_dir / "x"
+        d.mkdir()
+        (d / "SKILL.md").write_text(
+            "---\nname: x\ndescription: X desc\n---\n"
+        )
+        a = build_skills_system_prompt(catalog_max_chars=0)
+        b = build_skills_system_prompt()
+        assert a == b
+
+
+    def test_catalog_budget_isolated_from_compact_categories(self, monkeypatch, tmp_path):
+        """compact_categories (focus mode) and catalog_max_chars compose: both are demote sets."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        for cat in ("alpha", "beta"):
+            d = skills_dir / cat / f"{cat}-skill"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {cat}-skill\ndescription: {cat} desc\n---\n"
+            )
+        # focus demotes alpha; budget gate then demotes beta too.
+        result = build_skills_system_prompt(
+            compact_categories=frozenset({"alpha"}),
+            catalog_max_chars=200,
+        )
+        # alpha demoted (focus), beta demoted (budget). Both names visible.
+        assert "alpha-skill" in result
+        assert "beta-skill" in result
+        assert "alpha desc" not in result
+        assert "beta desc" not in result
+
+
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

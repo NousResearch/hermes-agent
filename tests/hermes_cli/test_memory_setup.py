@@ -122,3 +122,83 @@ def test_cmd_status_memory_tool_gate_enabled(capsys, monkeypatch):
     assert re.search(r"Memory tool:\s+enabled", captured)
     assert re.search(r"Memory injection:\s+enabled", captured)
     assert re.search(r"User profile:\s+disabled", captured)
+
+
+# ---------------------------------------------------------------------------
+# provider answers reach a writer — memory.<name> when the plugin overrides nothing
+# ---------------------------------------------------------------------------
+
+
+def _real_provider(schema, *, own_writer):
+    """A provider built on the real ABC, because that is what every bundled plugin is:
+    MemoryProvider.save_config exists with an EMPTY body, so a plain hasattr() check cannot
+    tell a plugin that persists from one that silently drops."""
+    from agent.memory_provider import MemoryProvider
+
+    class _Provider(MemoryProvider):
+        name = "test-provider"
+
+        def initialize(self, session_id, **kwargs):
+            pass
+
+        def is_available(self):
+            return True
+
+        def get_tool_schemas(self):
+            return []
+
+        def get_config_schema(self):
+            return schema
+
+    if own_writer:
+        _Provider.save_config = MagicMock()
+    return _Provider()
+
+
+def _setup_harness(monkeypatch, tmp_path, provider, name, selections, answer, saved):
+    """Drive cmd_setup with a scripted picker/prompt, deep-copying what save_config receives so a
+    mutation made after the save cannot masquerade as a persisted value."""
+    from copy import deepcopy
+
+    picks = iter(selections)
+    monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [(name, "local", provider)])
+    monkeypatch.setattr(memory_setup, "_curses_select", lambda *a, **k: next(picks))
+    monkeypatch.setattr(memory_setup, "_install_dependencies", MagicMock())
+    monkeypatch.setattr(memory_setup, "_prompt", lambda *a, **k: answer)
+    monkeypatch.setattr(memory_setup, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {}})
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg, **kw: saved.update(deepcopy(cfg)))
+
+
+def test_setup_persists_answers_when_the_plugin_does_not_override_save_config(tmp_path, monkeypatch):
+    """The retaindb/byterover shape: subclasses MemoryProvider but overrides no writer, so the
+    inherited no-op would swallow the values. They belong in memory.<name>, which is where those
+    providers read them (plugins/memory/retaindb:41, plugins/memory/byterover:41)."""
+    provider = _real_provider(
+        [
+            {"key": "project", "description": "Project identifier", "default": ""},
+            {"key": "mode", "description": "Mode", "default": "one", "choices": ["one", "two"]},
+        ],
+        own_writer=False,
+    )
+    saved = {}
+    _setup_harness(monkeypatch, tmp_path, provider, "brv", [0, 1], "team-alpha", saved)
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    assert saved["memory"]["provider"] == "brv"
+    assert saved["memory"].get("brv") == {"project": "team-alpha", "mode": "two"}
+
+
+def test_setup_does_not_give_a_self_writing_provider_a_second_config_home(tmp_path, monkeypatch):
+    """A plugin that really overrides save_config (mem0.json, honcho.json, ...) keeps exactly one
+    source of truth: its own writer is used and memory.<name> is left alone."""
+    provider = _real_provider([{"key": "host", "description": "Host", "default": ""}], own_writer=True)
+    saved = {}
+    _setup_harness(monkeypatch, tmp_path, provider, "mem", [0], "https://example.invalid", saved)
+
+    memory_setup.cmd_setup(SimpleNamespace())
+
+    type(provider).save_config.assert_called_once()
+    assert type(provider).save_config.call_args[0][0] == {"host": "https://example.invalid"}
+    assert "mem" not in saved["memory"]

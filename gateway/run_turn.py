@@ -1290,6 +1290,7 @@ class GatewayTurnMixin:
         self, attempt, hs, plan, history, _hyg_msgs, _hyg_model, _hyg_runtime,
         source, session_entry, session_key, _quick_key, run_generation,
         commit_authority_check=None, commit_authority_lock=None, cache_owner=None,
+        cache_refresh_callback=None,
         compression_in_place=None,
     ):
         """Run one detached hygiene compression attempt end to end; publishes the transcript to
@@ -1358,13 +1359,13 @@ class GatewayTurnMixin:
                 expected_agent=cache_owner,
                 run_generation=run_generation if cache_owner is not None else None,
             )
-            if (
-                cache_owner is not None and not evicted
-                and (commit_authority_check is None or commit_authority_check())
-            ):
-                state = self._peek_session_state(session_key)
-                if state is not None:
-                    state.persistent.cache_refresh_required = True
+            if cache_owner is not None and not evicted:
+                if cache_refresh_callback is not None:
+                    cache_refresh_callback()
+                elif commit_authority_check is None:
+                    state = self._peek_session_state(session_key)
+                    if state is not None:
+                        state.persistent.cache_refresh_required = True
 
             if not attempt.cleanup_deferred:
                 await self._cleanup_agent_resources_off_loop(_hyg_agent, context="session hygiene")
@@ -1372,7 +1373,7 @@ class GatewayTurnMixin:
     async def _hmwa_run_session_hygiene(
         self, event, source, session_entry, session_key, history, _quick_key, run_generation,
         *, trigger_tokens=None, commit_authority_check=None, commit_authority_lock=None,
-        cache_owner=None, compression_in_place=None,
+        cache_owner=None, cache_refresh_callback=None, compression_in_place=None,
     ):
         """Auto-compress pathologically large transcripts before the agent starts so oversized
         histories don't cause repeated truncation/context failures. Token source: the API's
@@ -1420,6 +1421,7 @@ class GatewayTurnMixin:
                         commit_authority_check=commit_authority_check,
                         commit_authority_lock=commit_authority_lock,
                         cache_owner=cache_owner,
+                        cache_refresh_callback=cache_refresh_callback,
                         compression_in_place=compression_in_place,
                     )
         except HygieneTurnHoldExceeded:

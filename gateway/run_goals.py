@@ -394,6 +394,14 @@ class GatewayGoalsMixin:
             with route_lock:
                 return _authority_current_locked()
 
+        def _mark_cache_refresh_if_current() -> None:
+            with route_lock:
+                if not _authority_current_locked():
+                    return
+                current_state = self._peek_session_state(session_key)
+                if current_state is not None:
+                    current_state.persistent.cache_refresh_required = True
+
         async def _run() -> None:
             try:
                 history = await self.async_session_store.load_transcript(expected_session_id)
@@ -407,6 +415,7 @@ class GatewayGoalsMixin:
                     commit_authority_check=_authority_current_locked,
                     commit_authority_lock=route_lock,
                     cache_owner=agent,
+                    cache_refresh_callback=_mark_cache_refresh_if_current,
                     compression_in_place=bool(getattr(agent, "compression_in_place", True)),
                 )
             except asyncio.CancelledError:

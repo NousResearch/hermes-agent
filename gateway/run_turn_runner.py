@@ -1304,9 +1304,11 @@ class TurnRunner:
         agent.thinking_progress = ctx._thinking_enabled
         # This cached messaging agent has the matching post-turn scheduler. Other AIAgent surfaces
         # deliberately leave this false so opting in globally cannot disable their only proactive
-        # compaction path.
+        # compaction path. Codex app-server compaction mutates a live provider thread and cannot use
+        # the transcript/session fence, so it must retain its existing inline threshold path.
         agent.compression_defer_threshold_to_post_turn = bool(
             getattr(agent, "compression_post_turn_background_requested", False)
+            and str(getattr(agent, "api_mode", "")).lower() != "codex_app_server"
         )
         if ctx.mute_notification_reply:
             # Controls and operational event/step callbacks remain wired. These

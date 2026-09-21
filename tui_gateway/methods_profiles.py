@@ -10,6 +10,7 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 # ext -> mime; iteration order is the on-disk lookup order for assets.
 _ASSET_EXTS = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
@@ -354,12 +355,14 @@ def _inherit_launch_model(path) -> bool:
 
 def _mirror_launch_credentials(path, params: dict) -> dict:
     """Copy launch .env / auth.json / voice sections into a new profile (best-effort per item).
-    ``mirror_credentials`` false skips everything. ``model_inherited`` is filled in by the caller.
+    Clones and ``mirror_credentials`` false skip everything. ``model_inherited`` is filled in by the caller.
 
     ``share_auth`` is accepted from older clients and ignored: a profile never reads the launch
     profile's auth.json (#111724), so "shared" auth would leave it with no provider at all."""
     mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
-    if not is_truthy_value(params.get("mirror_credentials", True)):
+    # A clone inherits its source's files, not missing values from the launch profile.
+    if (str(params.get("clone_from") or "").strip() or is_truthy_value(params.get("clone_all", False))
+            or not is_truthy_value(params.get("mirror_credentials", True))):
         return mirrored
     launch_home = get_hermes_home()
     # .env: only over the seeded comment-only stub (never a clone's secrets).
@@ -380,11 +383,12 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
 
 
 @method("profiles.create")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
     ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
-    ``model`` + ``provider``, ``no_alias``, ``mirror_credentials`` (default true: a bare
+    ``model`` + ``provider``, ``no_alias``, ``mirror_credentials`` (fresh profiles only, default true: a bare
     ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless);
     ``share_auth`` is accepted from older clients and ignored."""
     name = str(params.get("name") or "").strip()
@@ -394,6 +398,7 @@ def _(rid, params: dict) -> dict:
         from hermes_cli import profiles as profiles_mod
         clone_from = str(params.get("clone_from") or "").strip() or None
         clone_all = is_truthy_value(params.get("clone_all", False))
+        cloning = bool(clone_from) or clone_all
         path = profiles_mod.create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all,
             clone_config=bool(clone_from) and not clone_all,
@@ -405,7 +410,7 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5062, str(e))
     # CLI/REST create flow: bundled skills for fresh profiles, then the alias wrapper.
-    if not clone_from:
+    if not cloning:
         _best_effort(lambda: profiles_mod.seed_profile_skills(path, quiet=True))
     if not is_truthy_value(params.get("no_alias", False)):
         _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
@@ -417,7 +422,7 @@ def _(rid, params: dict) -> dict:
     model_set = False
     if model and provider:
         model_set = _best_effort(lambda: _pin_profile_model(path, provider, model))
-    elif is_truthy_value(params.get("mirror_credentials", True)):
+    elif not cloning and is_truthy_value(params.get("mirror_credentials", True)):
         mirrored["model_inherited"] = _try(lambda: _inherit_launch_model(path), False)
     return _ok(rid, {"ok": True, "name": name, "path": str(path), "soul_written": soul_written,
                      "model_set": model_set, "mirrored": mirrored})

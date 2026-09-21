@@ -214,7 +214,7 @@ def _profile_create(args):
         if clone_all:
             print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
-            print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
+            print(f"Cloned config, .env, SOUL.md, skills, and plugin packages from {source_label}.")
         if sync_imports:
             print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
                   "keeps pulling the same Claude Code / Codex trees.")
@@ -272,7 +272,7 @@ def _profile_create(args):
         print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
     else:
         print(f"  {name} gateway start      Start the messaging gateway")
-    if clone or clone_all:
+    if cloned:
         print(f"\n  Edit {profile_dir_display}/.env for different API keys")
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
     else:

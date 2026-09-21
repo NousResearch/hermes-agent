@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,7 +19,7 @@ from hermes_cli.plugin_catalog import (
     _NAME_RE,
 )
 
-logger = logging.getLogger(__name__)
+from hermes_cli.plugin_installation import installation_transaction
 
 CATALOG_SIDECAR = ".hermes-catalog.json"
 
@@ -60,6 +59,7 @@ def resolve_catalog_name(identifier: str, console) -> PluginCatalogEntry:
     return entry
 
 
+@installation_transaction
 def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry) -> None:
     """``.hermes-catalog.json`` inside the install dir — how ``update``/``list``/dashboards know the plugin
     came from the catalog and at which pin."""
@@ -68,10 +68,8 @@ def write_catalog_sidecar(target: Path, entry: PluginCatalogEntry) -> None:
         "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
-    try:
-        (target / CATALOG_SIDECAR).write_text(json.dumps(sidecar, indent=2) + "\n", encoding="utf-8")
-    except OSError as exc:
-        logger.warning("Failed to write catalog sidecar in %s: %s", target, exc)
+    from utils import atomic_write_text
+    atomic_write_text(target / CATALOG_SIDECAR, json.dumps(sidecar, indent=2) + "\n")
 
 
 def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
@@ -111,6 +109,7 @@ def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry])
 
 # ── Catalog-aware install / update ───────────────────────────────────────────
 
+@installation_transaction
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance sidecar.
@@ -120,15 +119,21 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
         raise_if_removed(entry.name, entry.repo)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
-        reviewed_pin=entry.sha, python_deps=python_deps)
-    write_catalog_sidecar(target, entry)
+        reviewed_pin=entry.sha, python_deps=python_deps, catalog_entry=entry)
     return target, manifest, installed_name
 
 
+@installation_transaction
 def repin_catalog_plugin(target: Path, sidecar: dict) -> tuple[str, bool]:
     """Re-pin a catalog install to the current catalog SHA (never ``git pull``). Returns
     ``(new_sha, changed)``; raises ``PluginOperationError`` when the entry left the catalog."""
     from hermes_cli.plugins_cmd import PluginOperationError, _get_enabled_set, _save_enabled_set
+    # TUI callers may have read provenance before waiting for this transaction.
+    # Never resurrect a removed install or act on a replaced catalog identity.
+    current = read_catalog_sidecar(target)
+    if current is None or current.get("catalog_name") != sidecar.get("catalog_name"):
+        raise PluginOperationError("Plugin installation changed; refresh its state and retry the update.")
+    sidecar = current
     catalog_name = str(sidecar["catalog_name"])
     entry = get_live_catalog_entry(catalog_name)
     if entry is None:
@@ -143,6 +148,7 @@ def repin_catalog_plugin(target: Path, sidecar: dict) -> tuple[str, bool]:
     return entry.sha, True
 
 
+@installation_transaction
 def cmd_update_catalog(name: str, target: Path, sidecar: dict, console) -> None:
     from hermes_cli.plugins_cmd import PluginOperationError, _fail
     console.print(f"[dim]Checking catalog pin for {name}...[/dim]")

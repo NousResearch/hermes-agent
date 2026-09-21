@@ -6,6 +6,8 @@
 
 import { describe, expect, it } from 'vitest'
 
+import { registerPluginLocales, translatePlugin } from '@/i18n/plugin-i18n'
+
 import { BOTS_LOCALES } from './i18n'
 
 type Leaf = string | ((...args: never[]) => string)
@@ -26,7 +28,29 @@ const zh = BOTS_LOCALES.zh
 const zhHant = BOTS_LOCALES['zh-hant']
 
 describe('BOTS_LOCALES', () => {
-  it('covers the English key tree in every shipped locale', () => {
+  it.each(['ar', 'ru'] as const)('localizes clone feedback in %s while unrelated keys retain English fallback', locale => {
+    const dispose = registerPluginLocales('hermes-bots-clone-test', BOTS_LOCALES)
+    try {
+      const name = 'DESTINATION_SENTINEL'
+
+      for (const [key, args] of [
+        ['bot.duplicating', [name]],
+        ['bot.duplicated', [name]],
+        ['bot.cloneAppearanceFailed', [name]]
+      ] as const) {
+        const message = translatePlugin('hermes-bots-clone-test', locale, key, [...args])
+        expect(message).not.toBe(translatePlugin('hermes-bots-clone-test', 'en', key, [...args]))
+        expect(message).toContain(name)
+        expect(message).toMatch(locale === 'ar' ? /[\u0600-\u06ff]/ : /[\u0400-\u04ff]/)
+      }
+      expect(translatePlugin('hermes-bots-clone-test', locale, 'roster.emptyTitle', []))
+        .toBe(translatePlugin('hermes-bots-clone-test', 'en', 'roster.emptyTitle', []))
+    } finally {
+      dispose()
+    }
+  })
+
+  it('covers the English key tree in each full locale', () => {
     expect(ja).toBeDefined()
     expect(zh).toBeDefined()
     expect(zhHant).toBeDefined()

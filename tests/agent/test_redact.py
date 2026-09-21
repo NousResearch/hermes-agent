@@ -530,6 +530,49 @@ class TestTelegramTokens:
         assert "ABCDEfghij" not in result
 
 
+class TestIncomingWebhookUrls:
+    """An incoming-webhook URL is itself the credential: whoever holds it can post into the
+    workspace as the app. Hermes keeps one as ``incoming_webhook_url`` for Teams delivery and
+    ships Slack and Discord adapters, so they reach config dumps, tool output and logs."""
+
+    SLACK = "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+    DISCORD = "https://discord.com/api/webhooks/1234567890123456789/AbCdEf-GhIjKlMnOpQrStUvWxYz0123456789"
+    TEAMS = "https://acme.webhook.office.com/webhookb2/abc-def@ghi/IncomingWebhook/0123456789abcdef/aaaa-bbbb"
+
+    def test_slack_webhook_secret_is_masked(self):
+        result = redact_sensitive_text(f"posting to {self.SLACK}")
+        assert self.SLACK not in result
+        # The host and ids stay readable so the log still says which integration.
+        assert "hooks.slack.com/services/T00000000/B00000000/" in result
+
+    def test_discord_webhook_secret_is_masked(self):
+        result = redact_sensitive_text(f"posting to {self.DISCORD}")
+        assert self.DISCORD not in result
+        assert "discord.com/api/webhooks/1234567890123456789/" in result
+
+    def test_teams_webhook_secret_is_masked(self):
+        result = redact_sensitive_text(f"posting to {self.TEAMS}")
+        assert self.TEAMS not in result
+
+    def test_file_read_uses_the_non_reusable_sentinel(self):
+        """Same contract as the other credential shapes: a secret read out of a file is masked
+        with a sentinel that cannot be written back as a truncated-looking credential (#35519)."""
+        result = redact_sensitive_text(f"webhook: {self.SLACK}", file_read=True)
+
+        assert self.SLACK not in result
+        assert "redacted-secret" in result
+        assert "XXXX" not in result  # no head/tail of the secret survives
+
+    def test_ordinary_urls_still_pass_through(self):
+        """Web URLs are passed through on purpose; only the vendor webhook shapes match."""
+        for benign in (
+            "see https://api.slack.com/messaging/webhooks for setup",
+            "docs at https://example.com/api/webhooks/overview",
+            "GET https://discord.com/api/v10/users/@me",
+        ):
+            assert redact_sensitive_text(benign) == benign
+
+
 class TestPassthrough:
     def test_empty_string(self):
         assert redact_sensitive_text("") == ""

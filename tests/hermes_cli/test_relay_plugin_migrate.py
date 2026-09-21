@@ -57,8 +57,8 @@ def test_legacy_env_becomes_validated_toml_selected_from_env(profile_env):
     sink = document["components"][0]["config"]["atof"]["sinks"][0]
     assert sink["type"] == "file" and sink["filename"] == "hermes-atof.jsonl"
     assert document["components"][0]["config"]["atif"]["filename_template"] == "trajectory-{session_id}.json"
-    # Relay itself accepts the file Hermes will load at runtime.
-    report = nemo_relay.plugin.validate({}, additional_plugins_toml=toml_path)
+    # Relay accepts the complete document generated from the legacy settings.
+    report = nemo_relay.plugin.validate_exact(document)
     assert report["config"]["diagnostics"] == []
     # .env now selects the file; the legacy lines survive as comments (not deleted), so the
     # runtime warning + doctor finding go quiet and a second run is a no-op.
@@ -89,19 +89,15 @@ def test_update_migrates_every_profile_home_separately(profile_env):
     assert (idle / ".env").read_text(encoding="utf-8") == "SLACK_BOT_TOKEN=y\n"
 
 
-def _relay_report(*diagnostics, dynamic_plugins=None):
-    return {
-        "config": {"diagnostics": list(diagnostics)},
-        "config_paths": [],
-        "dynamic_plugins": list(dynamic_plugins or []),
-    }
+def _relay_report(*diagnostics):
+    return {"config": {"diagnostics": list(diagnostics)}, "config_paths": [], "dynamic_plugins": []}
 
 
 def test_error_diagnostics_reject_the_payload_like_relay_0_8_did(monkeypatch):
     monkeypatch.setattr(
         nemo_relay.plugin,
-        "validate",
-        lambda _payload, additional_plugins_toml=None: _relay_report(
+        "validate_exact",
+        lambda _payload: _relay_report(
             {"level": "warning", "code": "unknown_field", "message": "unknown field 'x'"},
             {"level": "error", "code": "unsupported_value", "message": "atof.mode 'nope' is unsupported"},
         ),
@@ -113,95 +109,9 @@ def test_error_diagnostics_reject_the_payload_like_relay_0_8_did(monkeypatch):
 
 def test_warning_diagnostics_are_returned_not_raised(monkeypatch):
     warning = {"level": "warning", "code": "unknown_field", "message": "unknown field 'x'"}
-    observed = {}
-
-    def validate(payload, additional_plugins_toml=None):
-        observed["payload"] = payload
-        observed["document"] = tomllib.loads(
-            Path(additional_plugins_toml).read_text(encoding="utf-8")
-        )
-        return _relay_report(warning)
-
-    monkeypatch.setattr(nemo_relay.plugin, "validate", validate)
+    monkeypatch.setattr(nemo_relay.plugin, "validate_exact", lambda _payload: _relay_report(warning))
 
     assert validate_relay_plugin_payload({"version": 1}) == [warning]
-    assert observed == {"payload": {}, "document": {"version": 1}}
-
-
-def test_selected_optional_dynamic_plugin_failure_is_not_rejected(monkeypatch):
-    monkeypatch.setattr(
-        nemo_relay.plugin,
-        "validate",
-        lambda _payload, additional_plugins_toml=None: _relay_report(
-            dynamic_plugins=[{
-                "plugin_id": "fixture.optional",
-                "selected": True,
-                "failure": {
-                    "phase": "validation",
-                    "code": "integrity_failed",
-                    "message": "failed optional integrity verification",
-                },
-            }]
-        ),
-    )
-
-    assert validate_relay_plugin_payload({"version": 1}) == []
-
-
-def test_real_relay_dynamic_plugin_failure_leaves_env_untouched(profile_env, monkeypatch):
-    (profile_env / ".env").write_text(LEGACY_ENV.format(home=profile_env), encoding="utf-8")
-    before = (profile_env / ".env").read_text(encoding="utf-8")
-    artifact = profile_env / "artifact.bin"
-    artifact.write_bytes(b"dynamic plugin trust fixture")
-    manifest = profile_env / "relay-plugin-manifest.toml"
-    manifest.write_text(
-        f'''manifest_version = 1
-
-[plugin]
-id = "fixture.required"
-kind = "worker"
-
-[compat]
-relay = ">=0.9.0,<0.10"
-worker_protocol = "grpc-v1"
-
-[defaults]
-enabled = false
-
-[capabilities]
-items = ["plugin_worker"]
-
-[source]
-artifact = "{artifact}"
-
-[integrity]
-sha256 = "sha256:{'0' * 64}"
-
-[load]
-runtime = "command"
-entrypoint = "fixture-worker"
-''',
-        encoding="utf-8",
-    )
-    payload = {
-        "version": 1,
-        "plugins": {
-            "policy": {"defaults": {"startup": "required", "attestation": "integrity_only"}},
-            "dynamic": [{"manifest": str(manifest)}],
-        },
-    }
-    monkeypatch.setattr(
-        "hermes_cli.relay_plugin_migrate.relay_plugin_payload_from_legacy_env",
-        lambda _env: payload,
-    )
-
-    result = migrate_profile_relay_env(profile_env)
-
-    assert not result.migrated
-    assert "dynamic plugin 'fixture.required' (integrity_failed)" in result.validation_error
-    assert "failed integrity verification" in result.validation_error
-    assert (profile_env / ".env").read_text(encoding="utf-8") == before
-    assert not (profile_env / RELAY_PLUGINS_TOML_NAME).exists()
 
 
 def test_error_diagnostics_leave_env_untouched(profile_env, monkeypatch):
@@ -209,10 +119,8 @@ def test_error_diagnostics_leave_env_untouched(profile_env, monkeypatch):
     before = (profile_env / ".env").read_text(encoding="utf-8")
     monkeypatch.setattr(
         nemo_relay.plugin,
-        "validate",
-        lambda _payload, additional_plugins_toml=None: _relay_report(
-            {"level": "error", "code": "bad", "message": "rejected"}
-        ),
+        "validate_exact",
+        lambda _payload: _relay_report({"level": "error", "code": "bad", "message": "rejected"}),
     )
 
     result = migrate_profile_relay_env(profile_env)

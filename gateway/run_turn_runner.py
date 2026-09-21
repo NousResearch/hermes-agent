@@ -283,7 +283,23 @@ class TurnRunner:
                 # for full detail and platform message-length limits handle the rest.
                 if pl > 0 and len(args_str) > pl:
                     args_str = args_str[:pl - 3] + "..."
-                code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name, keys=list(args.keys()), args=args_str)
+                if getattr(adapter, "supports_code_blocks", False):
+                    # Markdown-capable surfaces (Telegram MarkdownV2, Discord, Slack): fence the
+                    # raw args so the platform formatter stashes them verbatim instead of
+                    # mangling code as markdown (_underscores_, *stars*, bare braces). Bare
+                    # fence — no language tag (Slack mrkdwn prints one literally), matching
+                    # _progress_terminal_blocks. Fence length must EXCEED any backtick run in
+                    # the args (CommonMark), but Telegram MarkdownV2 only parses exactly-3-
+                    # backtick fences — a longer opener is literal text, so a nested ``` in
+                    # the args would then open a real pre block mid-JSON ("Can't find end of
+                    # Code entity"). Escape backticks inside the args instead, keeping the
+                    # fence fixed at 3 (MarkdownV2 requires \` escaped inside pre; the
+                    # Telegram formatter's _protect_fenced does this at send time).
+                    code = t("gateway.progress.tool_verbose_fenced", emoji=emoji, tool=tool_name,
+                             keys=list(args.keys()), args=args_str.replace("`", "\\`"))
+                else:
+                    code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name,
+                             keys=list(args.keys()), args=args_str)
             elif code is None:
                 code = (t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview) if preview
                         else t("gateway.progress.tool_pending", emoji=emoji, tool=tool_name))

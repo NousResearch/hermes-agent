@@ -973,6 +973,11 @@ gateway:
     tool_verbose: |-
       {emoji} {tool}({keys})
       {args}
+    tool_verbose_fenced: |-
+      {emoji} {tool}({keys})
+      ```
+      {args}
+      ```
     tool_preview: "{emoji} {tool} : \"{preview}\""
     tool_pending: "{emoji} {tool}..."
     task_status_running: "en cours"

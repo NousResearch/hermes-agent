@@ -22,7 +22,7 @@ const configReadOrigins = new WeakMap<object, ConfigReadOrigin>()
 // Every origin object ever bound, so resolveConfigWriteScope can tell a
 // captured read origin handed back as `writeScope` apart from a fresh
 // `{ connectionId, profile }` pin from the scope selector.
-const knownConfigReadOrigins = new WeakSet<ConfigReadOrigin>()
+const knownConfigReadOrigins = new WeakSet<object>()
 
 /** Snapshot the `(connectionId, profile)` that served a config GET. */
 export function bindConfigReadOrigin(record: object, origin: ConfigReadOrigin): void {
@@ -62,7 +62,9 @@ export function resolveConfigWriteScope(
     // below instead of re-running capabilityScoped, which would stamp
     // `priority: 'foreground'` onto an AMBIENT origin that never carried it —
     // the two branches must yield the same tag for the same read.
-    return knownConfigReadOrigins.has(requestScope) ? { ...requestScope } : capabilityScoped(requestScope)
+    return knownConfigReadOrigins.has(requestScope)
+      ? { ...(requestScope as ConfigReadOrigin) }
+      : capabilityScoped(requestScope)
   }
 
   const captured = peekConfigReadOrigin(record)

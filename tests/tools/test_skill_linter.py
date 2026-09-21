@@ -163,6 +163,62 @@ def test_invalid_platforms_value_warns():
     assert "platforms-value" in _rules(findings)
 
 
+def _with_conditions(yaml_lines: str) -> str:
+    return CLEAN.replace("    related_skills: []\n", "    related_skills: []\n" + yaml_lines)
+
+
+def test_requires_toolsets_typo_is_error_with_suggestion():
+    # The bundled research-paper-writing shape: `files` is not a toolset (`file` is), so the
+    # prompt builder hid the skill from every session with no signal.
+    findings = lint_content(_with_conditions("    requires_toolsets: [terminal, files]\n"))
+    hits = [f for f in findings if f.rule == "unknown-toolset"]
+    assert len(hits) == 1 and hits[0].severity == ERROR
+    assert "'files'" in hits[0].message and "'file'" in hits[0].message
+
+
+def test_requires_toolsets_registered_names_are_silent():
+    content = _with_conditions("    requires_toolsets: [terminal, file, browser]\n"
+                               "    fallback_for_toolsets: [web]\n"
+                               "    requires_tools: [read_file, terminal]\n"
+                               "    fallback_for_tools: [web_search]\n")
+    assert not [f for f in lint_content(content) if f.rule in ("unknown-toolset", "unknown-tool")]
+
+
+def test_unknown_toolset_without_close_match_is_warning():
+    findings = lint_content(_with_conditions("    fallback_for_toolsets: [zzqx-plugin-lane]\n"))
+    hits = [f for f in findings if f.rule == "unknown-toolset"]
+    assert len(hits) == 1 and hits[0].severity == WARNING
+    assert "did you mean" not in hits[0].message
+
+
+def test_plugin_registered_toolset_is_silent(monkeypatch):
+    import toolsets
+    monkeypatch.setattr(toolsets, "_get_plugin_toolset_names", lambda: {"zzqx-plugin-lane"})
+    findings = lint_content(_with_conditions("    requires_toolsets: [zzqx-plugin-lane]\n"))
+    assert "unknown-toolset" not in _rules(findings)
+
+
+def test_unknown_tool_is_warning_with_suggestion():
+    findings = lint_content(_with_conditions("    requires_tools: [read_fil]\n"))
+    hits = [f for f in findings if f.rule == "unknown-tool"]
+    assert len(hits) == 1 and hits[0].severity == WARNING
+    assert "'read_file'" in hits[0].message
+
+
+def test_registry_provided_tool_is_silent(monkeypatch):
+    from tools.registry import registry
+    monkeypatch.setattr(registry, "get_all_tool_names", lambda: ["mcp_zzqx_lookup"])
+    findings = lint_content(_with_conditions("    requires_tools: [mcp_zzqx_lookup]\n"))
+    assert "unknown-tool" not in _rules(findings)
+
+
+def test_condition_lists_that_are_empty_or_malformed_do_not_raise():
+    for yaml_lines in ("    requires_toolsets:\n", "    requires_toolsets: []\n",
+                       "    requires_toolsets: [~, 123]\n", "    requires_tools: terminal\n"):
+        findings = lint_content(_with_conditions(yaml_lines))
+        assert not [f for f in findings if f.rule in ("unknown-toolset", "unknown-tool")]
+
+
 def test_lint_skill_reads_from_disk(tmp_path):
     skill_dir = tmp_path / "my-skill"
     skill_dir.mkdir()

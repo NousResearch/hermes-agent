@@ -12,6 +12,7 @@ Covers:
 
 import json
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -201,6 +202,53 @@ class TestPoolRotationCycle:
         assert recovered is False
         assert has_retried is True
         pool.mark_exhausted_and_rotate.assert_not_called()
+
+    def test_first_429_with_long_reset_rotates_to_available_alternative(self):
+        """A reset horizon that signals quota end should bypass the retry wait."""
+        for reset_at in (
+            time.time() + 600,
+            datetime.fromtimestamp(time.time() + 600, timezone.utc).isoformat(),
+        ):
+            agent, pool, entries = self._make_agent_with_pool(2)
+            for index, entry in enumerate(entries):
+                entry.runtime_api_key = f"key-{index}"
+                entry.last_status = "ok"
+            pool.entries.return_value = entries
+            pool.current.return_value = entries[0]
+            agent._credential_pool_entry_id = entries[0].id
+            agent.api_key = entries[0].runtime_api_key
+
+            recovered, has_retried = agent._recover_with_credential_pool(
+                status_code=429,
+                has_retried_429=False,
+                error_context={"reason": "rate_limit_error", "reset_at": reset_at},
+            )
+
+            assert recovered is True
+            assert has_retried is False
+            agent._swap_credential.assert_called_once_with(entries[1])
+
+    def test_long_reset_without_alternative_and_short_reset_still_retry(self):
+        """Only a long reset plus another usable entry may bypass the first retry."""
+        for pool_entries, reset_delay in ((1, 600), (2, 30)):
+            agent, pool, entries = self._make_agent_with_pool(pool_entries)
+            for index, entry in enumerate(entries):
+                entry.runtime_api_key = f"key-{index}"
+                entry.last_status = "ok"
+            pool.entries.return_value = entries
+            pool.current.return_value = entries[0]
+            agent._credential_pool_entry_id = entries[0].id
+            agent.api_key = entries[0].runtime_api_key
+
+            recovered, has_retried = agent._recover_with_credential_pool(
+                status_code=429,
+                has_retried_429=False,
+                error_context={"reason": "rate_limit_error", "reset_at": time.time() + reset_delay},
+            )
+
+            assert recovered is False
+            assert has_retried is True
+            pool.mark_exhausted_and_rotate.assert_not_called()
 
     def test_second_429_rotates_to_next(self):
         """Second consecutive 429 should rotate to next credential."""

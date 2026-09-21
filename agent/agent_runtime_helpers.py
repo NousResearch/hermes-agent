@@ -24,7 +24,7 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
-    STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
+    STATUS_DEAD, STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
     credential_pool_matches_provider, resolve_runtime_pool_key,
 )
 from agent.error_classifier import FailoverReason
@@ -703,6 +703,7 @@ _STATUS_TO_FAILOVER_REASON = {
 }
 _USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
 _USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
+_QUOTA_END_RESET_HORIZON_SECONDS = 60.0
 
 
 def _failed_credential_identity(agent, pool) -> Tuple[Optional[str], Optional[str]]:
@@ -821,15 +822,27 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
         )
         return (True, False) if rotate_and_swap(429, "rate limit, pre-exhausted") else (False, True)
     usage_limit_reached = False
+    quota_end_with_alternative = False
     if error_context:
         context_reason = str(error_context.get("reason") or "").lower()
         context_message = str(error_context.get("message") or "").lower()
         usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
         )
-    if not has_retried_429 and not usage_limit_reached:
+        reset_at = _parse_absolute_timestamp(error_context.get("reset_at"))
+        has_long_reset_horizon = (
+            reset_at is not None
+            and reset_at - time.time() >= _QUOTA_END_RESET_HORIZON_SECONDS
+        )
+        quota_end_with_alternative = has_long_reset_horizon and current_entry is not None and any(
+            entry is not current_entry
+            and getattr(entry, "last_status", None) not in {STATUS_EXHAUSTED, STATUS_DEAD}
+            for entry in pool.entries()
+        )
+    if not has_retried_429 and not usage_limit_reached and not quota_end_with_alternative:
         return False, True
-    return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
+    label = "rate limit, quota end" if quota_end_with_alternative else "rate limit"
+    return (True, False) if rotate_and_swap(429, label) else (False, True)
 
 
 def recover_with_credential_pool(

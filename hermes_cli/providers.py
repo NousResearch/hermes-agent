@@ -33,7 +33,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
                                   base_url_override="https://chatgpt.com/backend-api/codex"),
     # Local delegated runtime. It has no HTTP endpoint, but must be resolvable by
     # the shared /model switch path because the Desktop picker emits this id.
-    "google-antigravity": HermesOverlay(transport="antigravity_runtime", auth_type="external_process", keyless=True),
+    "google-antigravity": HermesOverlay(transport="antigravity_runtime", auth_type="external_process"),
     "openai-api": HermesOverlay(transport="codex_responses", base_url_override="https://api.openai.com/v1",
                                 base_url_env_var="OPENAI_BASE_URL"),
     "xai-oauth": HermesOverlay(transport="codex_responses", auth_type="oauth_external",

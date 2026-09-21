@@ -42,12 +42,14 @@ def is_native_compaction_model(
 
 def resolve_native_compaction_capabilities(
     *, model: Optional[str], base_url: Optional[str], provider: Optional[str] = None, is_codex_backend: bool = False,
+    provider_capabilities: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, bool]:
     """Resolve the native-compaction capability for a runtime destination (a resolved ``False``
     is distinct from "unresolved" and must survive model switches unchanged)."""
     direct_default = (provider or "").strip().lower() == "openai" and not base_url
+    trusted_proxy = isinstance(provider_capabilities, dict) and provider_capabilities.get("openai_native_compaction") is True
     return {"native_compaction": is_native_compaction_model(model, provider=provider, base_url=base_url) and (
-        direct_default or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend))}
+        direct_default or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend) or trusted_proxy)}
 
 
 def is_direct_openai_route(base_url: Optional[str], *, is_codex_backend: bool = False) -> bool:

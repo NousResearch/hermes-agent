@@ -915,9 +915,9 @@
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    /* Hold the select's 7.5rem floor: without it the column shrinks below the
-       select and the control overruns its neighbour. */
-    min-width: 7.5rem;
+    /* Size to content and never shrink: the select's own 7.5rem floor is the
+       real minimum, and a shrunken column lets it overrun the next one. */
+    flex: 0 0 auto;
     color: var(--ifm-color-emphasis-600);
     font-size: 0.68rem;
     text-transform: uppercase;

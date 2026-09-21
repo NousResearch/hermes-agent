@@ -387,7 +387,9 @@ def _profile_gate_collect(kb: Any) -> list[tuple[str, dict]]:
             continue
         seen.add(resolved)
         try:
-            conn = kb.connect(board=slug)
+            # connect() lives on the split module now; the aggregate kanban_db
+            # alias is compat-only for external plugins (deprecation 2026-09-14).
+            conn = _kbc().connect(board=slug)
         except Exception:
             continue
         try:

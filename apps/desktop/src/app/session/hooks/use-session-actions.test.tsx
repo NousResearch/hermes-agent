@@ -377,6 +377,33 @@ describe('connection-qualified session deletion', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
   })
 
+  it('archives a registry session through its captured connection owner', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ connection_id: 'source-a', id: 'shared-session', profile: 'worker' })])
+    vi.mocked(setSessionArchived).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions?.archiveSession('shared-session')
+    })
+
+    expect(setSessionArchived).toHaveBeenCalledWith('shared-session', true, {
+      connectionId: 'source-a',
+      profile: 'worker'
+    })
+  })
+
   it('tears down the selected session from synchronous refs when render state is stale', async () => {
     const navigate = vi.fn()
     const requestGateway = vi.fn().mockResolvedValue({})

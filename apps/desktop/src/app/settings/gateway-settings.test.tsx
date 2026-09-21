@@ -309,6 +309,38 @@ describe('GatewaySettings', () => {
       registry.value = null
     })
 
+    it('fails closed instead of cascading against an empty saved dashboard URL', async () => {
+      const savedWithoutUrl = {
+        id: 'saved-without-url',
+        kind: 'cloud',
+        label: 'Incomplete',
+        authMode: 'oauth'
+      }
+
+      getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud', remoteUrl: '' })
+      registry.value = { connections: [savedWithoutUrl] }
+      const agentSignIn = vi.fn()
+      const oauthLogoutConnectionConfig = vi.fn()
+      Object.assign(window.hermesDesktop, {
+        oauthLogoutConnectionConfig,
+        cloud: {
+          status: vi.fn().mockResolvedValue({ signedIn: true }),
+          login: vi.fn(),
+          agentSignIn
+        }
+      })
+      selectConnection.mockRejectedValueOnce(reauthError)
+
+      render(<GatewaySettings embedded />)
+      const row = (await screen.findByText('Incomplete')).closest('[data-slot]') as HTMLElement
+      fireEvent.click(within(row).getByRole('button', { name: 'Use gateway' }))
+
+      await waitFor(() => expect(selectConnection).toHaveBeenCalledTimes(1))
+      expect(oauthLogoutConnectionConfig).not.toHaveBeenCalled()
+      expect(agentSignIn).not.toHaveBeenCalled()
+      registry.value = null
+    })
+
     it('does not cascade for a non-reauth switch failure', async () => {
       mountCloudPanelWith({
         status: vi.fn().mockResolvedValue({ signedIn: true }),

@@ -422,7 +422,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
   // the one recovery that exists for this state — drop the lapsed cookies,
   // ensure the portal session, silent-cascade the agent — then retry the
   // switch once. Everything else stays a plain failed switch.
-  const selectSavedCloudWithReauth = async (id: string, url: string) => {
+  const selectSavedCloudWithReauth = async (id: string, dashboardUrl?: string) => {
     try {
       await selectConnection(id)
     } catch (error) {
@@ -432,11 +432,13 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
       const desktop = window.hermesDesktop
 
-      if (!desktop?.cloud) {
+      // Cloud registry URLs are the persisted agent dashboardUrl. Keep saved
+      // rows usable without discovery, but never run the cascade against ''.
+      if (!desktop?.cloud || !dashboardUrl) {
         throw error
       }
 
-      const outcome = await reestablishCloudAgentSession(desktop, url)
+      const outcome = await reestablishCloudAgentSession(desktop, dashboardUrl)
 
       if (outcome !== 'connected') {
         notify({
@@ -452,11 +454,11 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     }
   }
 
-  const activateSavedCloud = async (id: string, url: string) => {
+  const activateSavedCloud = async (id: string, dashboardUrl?: string) => {
     setCloudConnectingId(id)
 
     try {
-      await selectSavedCloudWithReauth(id, url)
+      await selectSavedCloudWithReauth(id, dashboardUrl)
     } catch (err) {
       notifyError(err, g.cloudConnectFailed)
     } finally {
@@ -1355,7 +1357,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
                       ) : (
                         <Button
                           disabled={cloudConnectingId !== null}
-                          onClick={() => void activateSavedCloud(connection.id, connection.url || '')}
+                          onClick={() => void activateSavedCloud(connection.id, connection.url)}
                           size="sm"
                           variant="outline"
                         >

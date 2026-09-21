@@ -277,12 +277,20 @@ def _filter_secret_env(
 
 
 def _neutralize_github_credential_paths(env: dict) -> None:
-    """Force GH_CONFIG_DIR/GIT_CONFIG_GLOBAL to a nonexistent path rather than merely
-    stripping them: a caller-supplied value survives scrubbing (it isn't itself a secret,
-    just a path), and simply removing it lets `gh`/`git` fall back to their DEFAULT
-    location — the operator's own keyring/config — silently granting a spawned child the
-    operator's real GitHub credentials. GIT_TERMINAL_PROMPT=0 stops `gh`/`git` from
-    blocking on (or leaking through) an interactive credential prompt instead."""
+    """Route GitHub identity through the bot account when present; never fall back to the
+    operator's default credential location.
+
+    HERMES_GITHUB_BOT_LOGIN marks a Bot-governed session. In that case we let ``gh`` use
+    its default config dir (~/.config/gh), which holds the Bot account's login used by
+    the PR-feedback plugin and ``gh stack``. Without the marker, the original /dev/null
+    behavior is preserved so a spawned child never inherits the operator's real GitHub
+    credentials."""
+    bot_login = env.get("HERMES_GITHUB_BOT_LOGIN")
+    if bot_login:
+        env.pop("GH_CONFIG_DIR", None)
+        env.pop("GIT_CONFIG_GLOBAL", None)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        return
     env["GH_CONFIG_DIR"] = os.devnull
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_TERMINAL_PROMPT"] = "0"

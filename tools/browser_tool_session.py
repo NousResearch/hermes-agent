@@ -432,25 +432,25 @@ def _handle_browser_command_timeout(task_id: str, session_info: Dict[str, Any], 
     """Recover session state after a command timeout.
 
     Cloud/CDP: no daemon to probe — replace the stuck client generation now (same
-    ``bb_session_id`` so cloud cleanup works). Local daemon alive (PID live, verified,
-    socket accepts): only the command wedged — mark suspect, recycle at next use.
-    Local daemon wedged/dead: tree-kill and evict now (Chromium children would leak).
-    Both local branches ``mark_suspect`` first so the poisoned-cache invariant holds
-    even if eviction races another thread's replacement.
-
-    See #68139, #72205.
-    * **Local daemon alive** (PID readable, process alive, identity-verified as ours, control socket accepts
-    a connection): the *command* wedged — page hang, stuck navigation — but the daemon itself is fine.
-    Killing it would be overkill and slow. Mark the session suspect only; the next use recycles it through
-    ``ensure_healthy`` → clean agent-browser ``close`` → fresh session. Tree-kill the daemon's process tree
-    via ``agent.deadline.kill_process_tree`` and evict the cache entry now; the next browser call respawns
-    from scratch. See #72206.
+    ``bb_session_id`` so cloud cleanup works). Local: ``_recycle_local_session``.
+    See #68139, #72205, #72206.
     """
     if session_info.get("bb_session_id") or session_info.get("cdp_url"):
         _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
         return
+    _recycle_local_session(task_id, session_info, task_socket_dir, "browser command timed out; session may be poisoned")
 
-    _bt._browser_session_backend(task_id).mark_suspect("browser command timed out; session may be poisoned")
+
+def _recycle_local_session(task_id: str, session_info: Dict[str, Any], task_socket_dir: str, reason: str) -> None:
+    """Stop handing out a poisoned local session record (timeout or protocol-level failure).
+
+    Daemon alive (PID live, verified as ours, control socket accepts): only the *command*
+    wedged — mark suspect, recycle at next use through ``ensure_healthy``. Daemon wedged or
+    dead: tree-kill and evict now (Chromium children would leak). Both branches
+    ``mark_suspect`` first so the poisoned-cache invariant holds even if eviction races
+    another thread's replacement.
+    """
+    _bt._browser_session_backend(task_id).mark_suspect(reason)
 
     session_name = str(session_info.get("session_name") or "")
     daemon_pid = _read_browser_daemon_pid(task_socket_dir, session_name) if session_name else None
@@ -461,16 +461,30 @@ def _handle_browser_command_timeout(task_id: str, session_info: Dict[str, Any], 
         and _browser_daemon_responsive(task_socket_dir)
     )
     if daemon_alive:
-        _bt.logger.warning("browser daemon for %s is alive after command timeout; session "
-                           "marked suspect and will be recycled at next use", task_id)
+        _bt.logger.warning("browser daemon for %s is alive (%s); session marked suspect and will be "
+                           "recycled at next use", task_id, reason)
         return
 
-    _bt.logger.warning("browser daemon for %s is wedged or dead after command timeout; "
-                       "tree-killing and evicting the session", task_id)
+    _bt.logger.warning("browser daemon for %s is wedged or dead (%s); tree-killing and evicting the session",
+                       task_id, reason)
     _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
     # The poisoned entry is gone either way; the flag must not poison a session
     # created later under the same key.
     _bt._suspect_browser_sessions.pop(task_id, None)
+
+
+def _is_recoverable_local_backend_failure(session_info: Dict[str, Any], result: Dict[str, Any]) -> bool:
+    """True when a finished command failed at the agent-browser level — nonzero exit (101 =
+    the CLI panicked against a stale session daemon), or empty/non-JSON output from a dead
+    daemon — on a plain local Chromium session. Parsed-JSON failures carry no ``returncode``
+    (the backend answered; the page said no) and must not recycle; cloud/CDP/real-profile/
+    Lightpanda sessions have their own recovery (#115184)."""
+    feats = session_info.get("features") or {}
+    if not feats.get("local") or feats.get("lightpanda") or feats.get("real_profile"):
+        return False
+    if session_info.get("cdp_url") or session_info.get("bb_session_id"):
+        return False
+    return result.get("returncode") is not None and not result.get("success")
 
 
 def _interpret_browser_command_output(command: str, stdout: str, stderr: str, returncode: int) -> Dict[str, Any]:
@@ -486,10 +500,10 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
         if returncode != 0:
             error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
             _bt.logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": error_msg, "returncode": returncode}
         if command not in _bt._EMPTY_OK_COMMANDS:
             _bt.logger.warning("browser '%s' returned empty output (rc=0)", command)
-            return {"success": False, "error": f"Browser command '{command}' returned no output"}
+            return {"success": False, "error": f"Browser command '{command}' returned no output", "returncode": returncode}
         return {"success": True, "data": {}}
 
     try:
@@ -503,7 +517,7 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
             if recovered_path and Path(recovered_path).exists():
                 _bt.logger.info("browser 'screenshot' recovered file from non-JSON output: %s", recovered_path)
                 return {"success": True, "data": {"path": recovered_path, "raw": raw}}
-        return {"success": False, "error": f"Non-JSON output from agent-browser for '{command}': {raw}"}
+        return {"success": False, "error": f"Non-JSON output from agent-browser for '{command}': {raw}", "returncode": returncode}
 
     # Empty snapshot content is a common sign of daemon/CDP issues.
     if command == "snapshot" and parsed.get("success"):
@@ -591,30 +605,11 @@ def _spawn_and_collect(
     return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)
 
 
-def _run_browser_command(
-    task_id: str,
-    command: str,
-    args: List[str] = None,
-    timeout: Optional[int] = None,
-    _engine_override: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Run one agent-browser CLI command against the task's session; returns its parsed JSON.
-    ``timeout=None`` reads ``browser.command_timeout``; ``_engine_override`` forces an engine
-    for this call only (Lightpanda fallback retries with Chrome without touching global state)."""
-    if timeout is None:
-        timeout = _bt._safe_command_timeout()
-    args = args or []
-
-    preflight = _browser_command_preflight()
-    if "browser_cmd" not in preflight:
-        return preflight
-    browser_cmd = preflight["browser_cmd"]
-
-    try:
-        session_info = _get_session_info(task_id)
-    except Exception as e:
-        _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
-        return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+def _dispatch_browser_command(
+    task_id: str, session_info: Dict[str, Any], browser_cmd: str, command: str, args: List[str],
+    timeout: int, _engine_override: Optional[str],
+) -> "tuple[str, Dict[str, Any]]":
+    """Build the agent-browser argv for ``session_info`` and run it once → ``(engine, result)``."""
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)
@@ -643,6 +638,48 @@ def _run_browser_command(
     except Exception as e:
         _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}
+    return engine, result
+
+
+def _run_browser_command(
+    task_id: str,
+    command: str,
+    args: List[str] = None,
+    timeout: Optional[int] = None,
+    _engine_override: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run one agent-browser CLI command against the task's session; returns its parsed JSON.
+    ``timeout=None`` reads ``browser.command_timeout``; ``_engine_override`` forces an engine
+    for this call only (Lightpanda fallback retries with Chrome without touching global state)."""
+    if timeout is None:
+        timeout = _bt._safe_command_timeout()
+    args = args or []
+
+    preflight = _browser_command_preflight()
+    if "browser_cmd" not in preflight:
+        return preflight
+    browser_cmd = preflight["browser_cmd"]
+
+    for attempt in range(2):
+        try:
+            session_info = _get_session_info(task_id)
+        except Exception as e:
+            _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
+            return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
+        engine, result = _dispatch_browser_command(task_id, session_info, browser_cmd, command, args, timeout,
+                                                   _engine_override)
+        # #115184: a protocol-level failure (exit 101 on a stale session daemon, empty/non-JSON
+        # output) poisons the cached local session record exactly like a timeout — recycle it
+        # the same way and retry once on the replacement before handing the caller the error.
+        # ``close`` is exempt: a dead daemon is already closed, and cleanup must never spawn
+        # a fresh session just to close it.
+        if attempt == 0 and command != "close" and _is_recoverable_local_backend_failure(session_info, result):
+            _bt.logger.warning("browser '%s' failed at the backend level (task=%s, rc=%s); recycling the session "
+                               "and retrying once", command, task_id, result.get("returncode"))
+            _recycle_local_session(task_id, session_info, _prepare_session_socket_dir(session_info["session_name"]),
+                                   f"agent-browser '{command}' exited {result.get('returncode')}")
+            continue
+        break
 
     # Lightpanda automatic Chrome fallback — runs for ALL exit paths (timeout,
     # empty, non-JSON, nonzero rc, parsed).

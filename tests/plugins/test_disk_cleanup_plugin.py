@@ -239,6 +239,45 @@ class TestProtectedDirsNeverRmtreed:
         assert dg.load_tracked() == []
 
 
+class TestGitWorktreeFilesNeverCleaned:
+    """Regression tests for #115295 — git-owned test_* files (committed regression tests
+    inside worktrees/checkouts) are never tracked or auto-deleted; scratch files outside
+    git trees still are."""
+
+    def test_quick_drops_stale_tracked_worktree_entry_instead_of_deleting(self, _isolate_env):
+        """A test_* file inside a linked git worktree ($HERMES_HOME/worktrees/, .git is a
+        pointer FILE) is not classified as disposable, and a stale pre-fix tracked entry
+        (category "test") is dropped by quick()'s re-validation, not deleted."""
+        dg = _load_lib()
+        wt = _isolate_env / "worktrees" / "repro-wt"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /elsewhere/main/.git/worktrees/repro-wt\n")
+        f = wt / "test_durable.py"
+        f.write_text("x")
+        assert dg.guess_category(f) is None
+        dg.save_tracked([{"path": str(f), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert f.exists(), "git-owned test files must never be auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "stale entry is dropped from tracking, not kept"
+
+    def test_scratch_outside_git_trees_still_cleaned(self, _isolate_env):
+        """Control: root-level test_* scratch is still auto-deleted — even when HERMES_HOME
+        itself lives inside a git checkout (dotfiles repo); only .git entries strictly below
+        HERMES_HOME mark a file as git-owned."""
+        dg = _load_lib()
+        (_isolate_env.parent / ".git").mkdir()
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        assert dg.guess_category(scratch) == "test"
+        dg.save_tracked([{"path": str(scratch), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        result = dg.quick()
+        assert not scratch.exists()
+        assert result["deleted"] == 1
+
+
 class TestStaleCronEntryMigration:
     """Regression tests for #37721 — stale cron-output entries in tracked.json."""
 

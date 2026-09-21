@@ -125,6 +125,10 @@ def _recover_unicode_encode_error(
     # Gate the retry on the error type, not on whether anything was found — a new
     # transformed field could slip through.
     if _surrogates_found or _is_surrogate_error:
+        if _surrogates_found:
+            # In-place rewrites may have popped _DB_PERSISTED_MARKER off stamped live dicts;
+            # force a full flush scan so the repaired rows are rewritten.
+            agent._db_flush_scan_prefix = None
         agent._unicode_sanitization_passes += 1
         agent._buffer_vprint(
             "⚠️  Stripped invalid surrogate characters from messages. Retrying..."
@@ -139,6 +143,8 @@ def _recover_unicode_encode_error(
     # Strip all non-ASCII from messages/tool schemas and retry; api_kwargs too so a
     # non-ASCII transformed field doesn't survive via _build_api_kwargs cache paths.
     _messages_sanitized = _sanitize_messages_non_ascii(messages)
+    if _messages_sanitized:
+        agent._db_flush_scan_prefix = None
     if isinstance(api_messages, list):
         _sanitize_messages_non_ascii(api_messages)
     if isinstance(api_kwargs, dict):
@@ -227,6 +233,8 @@ def recover_before_classification(
     if getattr(agent, "_vision_supported", True) and _looks_like_image_content_rejection(_err_body) and _status_ok:
         agent._vision_supported = False
         _imgs_removed = _strip_images_from_messages(messages)
+        if _imgs_removed:
+            agent._db_flush_scan_prefix = None
         if isinstance(api_messages, list):
             _strip_images_from_messages(api_messages)
         _vlines(
@@ -1778,7 +1786,8 @@ def route_classified_error(
         )
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
-            if agent._try_activate_fallback(reason=classified.reason):
+            reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+            if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:

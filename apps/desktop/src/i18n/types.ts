@@ -68,11 +68,7 @@ export interface Translations {
     grant: string
     connected: string
     checking: string
-    waitingSignIn: string
     notConnected: string
-    notAvailable: string
-    startWith: (count: number) => string
-    startWithout: string
     skipped: string
     disabled: string
     failed: string
@@ -81,7 +77,6 @@ export interface Translations {
     waiting: string
     timeout: string
     refresh: string
-    statusError: string
     connectError: string
     connectErrorFor: (app: string) => string
     unavailable: string
@@ -90,6 +85,11 @@ export interface Translations {
     empty: string
     disclaimer: string
     execution: string
+    setup: (server: string) => string
+    openInBrowser: string
+    setupCancel: string
+    authorizedToolsUnavailable: string
+    required: string
   }
   sessionImport: {
     title: string
@@ -139,6 +139,7 @@ export interface Translations {
     connect: string
     connecting: string
     continue: string
+    bots: string
     copied: string
     copy: string
     copyFailed: string
@@ -183,6 +184,8 @@ export interface Translations {
     deleteTitle: (name: string) => string
     deleteBody: string
     pathCopied: string
+    revealMissing: string
+    revealUnavailable: string
   }
 
   boot: {
@@ -432,6 +435,7 @@ export interface Translations {
   }
 
   settings: {
+    subpages: Record<string, string>
     closeSettings: string
     exportConfig: string
     importConfig: string
@@ -620,6 +624,8 @@ export interface Translations {
       toolViewDesc: string
       hideCodeDiffsTitle: string
       hideCodeDiffsDesc: string
+      hideThreadTimelineTitle: string
+      hideThreadTimelineDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
       uiScaleTitle: string
@@ -1584,6 +1590,19 @@ export interface Translations {
       updateToPin: (sha: string) => string
       updateFailed: (name: string) => string
       updated: (name: string) => string
+      uninstall: string
+      uninstallTip: (name: string, profile: string) => string
+      uninstallConfirmTitle: (name: string) => string
+      uninstallConfirmBody: (name: string, profile: string) => string
+      uninstallFailed: (name: string) => string
+      uninstalled: (name: string) => string
+      uninstallDesktopTip: (name: string) => string
+      uninstallDesktopConfirmBody: (name: string) => string
+      uninstalledDesktop: (name: string) => string
+      deepLinkErrorTitle: string
+      deepLinkCatalogInvalidName: string
+      deepLinkCatalogUnknown: (name: string) => string
+      deepLinkCatalogUnavailable: string
     }
     officialCatalog: string
     officialPill: string
@@ -2178,21 +2197,18 @@ export interface Translations {
     failedRename: string
   }
 
+  modelAssignment: {
+    saveFailed: string
+    confirmTitle: string
+    confirmDetail: string
+    confirmAction: string
+    declined: string
+  }
+
   cron: {
     close: string
     title: string
     count: (count: number) => string
-    modelImpact: {
-      title: string
-      message: (count: number) => string
-      detailMore: (names: string, remaining: number) => string
-      review: string
-      saveFailed: string
-      confirmTitle: string
-      confirmDetail: string
-      confirmAction: string
-      declined: string
-    }
     search: string
     loading: string
     states: Record<string, string>
@@ -2364,6 +2380,10 @@ export interface Translations {
     results: string
     pinned: string
     sessions: string
+    terminal: string
+    files: string
+    review: string
+    logs: string
     cronJobs: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
@@ -3646,7 +3666,6 @@ export interface Translations {
       authorized: (server: string) => string
       failed: (server: string) => string
       toolCount: (count: number) => string
-      notInCatalog: (server: string) => string
       envRequired: string
       sendFailed: string
       reloadFailed: string
@@ -3689,6 +3708,7 @@ export interface Translations {
       statusDone: string
       /** Over-budget / rejected memory write title — not "Saved to memory". */
       resultUnavailable: string
+      resultInterrupted: string
       memoryWriteNoted: string
       actions: {
         read: string

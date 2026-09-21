@@ -98,6 +98,10 @@ export interface RosterRow {
   ghost?: boolean
   handle?: string
   has_avatar?: boolean
+  /** The connection's backend identity (/api/status `install_id`) when the
+   *  roster source has seen it — stable across Desktops, unlike `connectionId`
+   *  / `connectionLabel`, which are THIS Desktop's names for the connection. */
+  installId?: string
   last_session?: SessionPreview | null
   remoteSource?: boolean
   route?: ProfileRoute
@@ -109,6 +113,11 @@ export interface RosterRow {
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string
+  /** Canonical ids this profile was previously known by (`hermes profile
+   *  rename` records them in profile.yaml; the gateway surfaces them on
+   *  profiles.list). Lets group chats re-link persisted member descriptors
+   *  after a rename (#110200). */
+  previous_names?: string[]
   ui_meta?: Record<string, unknown> & { 'hermes-bots'?: BotMeta }
   /** Compare-and-swap revisions, per ui_meta key. */
   ui_meta_revisions?: Record<string, number>
@@ -124,7 +133,9 @@ export type GroupMember = Pick<
   | 'display_name'
   | 'ghost'
   | 'handle'
+  | 'installId'
   | 'name'
+  | 'previous_names'
   | 'remoteSource'
   | 'route'
   | 'sourceMissing'
@@ -146,8 +157,14 @@ export interface Attachment {
 export interface GroupMessageAuthor {
   kind: 'member' | 'user'
   name: string
-  /** Connection label, present when the speaker lives on another machine. */
+  /** Connection label (`connectionLabel || connectionId`) — this Desktop's
+   *  name for the speaker's connection; display-only. */
   source?: string
+  /** The speaker's gateway identity (/api/status `install_id`): the same
+   *  token on every Desktop, so a mirrored entry passes the self test whatever
+   *  the reader labelled that connection. Absent when the source never
+   *  reported one. */
+  gateway?: string
 }
 
 export interface GroupMessage {
@@ -169,8 +186,14 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** Whether user text may create sticky member holds. Defaults to true for
+   *  rooms written by older builds; the room settings switch can disable it. */
+  holdDetection?: boolean
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
+  /** Room-entry ids consumed while a member was held, replayed into that
+   *  member's next visible turn. Keyed by the durable member key. */
+  heldMessages?: Record<string, string[]>
   holds?: Record<string, GroupHold>
   image?: null | string
   log: GroupMessage[]
@@ -183,7 +206,14 @@ export interface GroupChat {
    *  `{ name }`, and the sweep re-validates the route before trusting one. */
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
-  stranded?: Record<string, number | { before: number; thread?: string }>
+  /** A member turn this Desktop is not (or no longer) polling: the message-count baseline to
+   *  harvest its late reply from. `turn` names the poll that owns it while that poll runs. */
+  stranded?: Record<string, number | { before: number; thread?: string; turn?: string }>
+  /** #93813: how far each member's external-write reconcile sweep has read
+   *  into that member's per-group session transcript (absolute row index of
+   *  the last mirrored row + 1). Persisted so external posts aren't rescanned
+   *  (or re-mirrored) after a window restart. */
+  externalCursors?: Record<string, number>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean
@@ -259,6 +289,9 @@ export interface GroupActivityEvent {
   kind: GroupActivityKind
   member?: string
   preview?: string
+  /** Typed failure cause (gateway `data.reason` or the normalized
+   *  `slot_wait_timeout`); absent on non-failures and untyped failures. */
+  reason?: string
 }
 
 /**
@@ -299,6 +332,8 @@ export interface GatewaySource {
   connectionId: string
   count?: number
   error?: null | string
+  /** Backend identity (/api/status `install_id`) when the enumeration saw it. */
+  installId?: string
   kind?: string
   label?: string
   reachable?: boolean

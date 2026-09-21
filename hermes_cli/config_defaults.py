@@ -22,6 +22,10 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
+    # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
+    # of switching the turn to a fallback model.
+    "fallback": {"min_switch_reset_seconds": 0},
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
@@ -1325,8 +1329,9 @@ DEFAULT_CONFIG = {
         # ~/.hermes/cache/delegation/ with a head+tail window + read_file offset footer, nothing
         # lost). 0 disables the ceiling; the dynamic budget still applies.
         "max_summary_chars": 24000,
-        # Wall-clock cap per child (seconds, floor 30). 0 = no timeout: children fail only from real
-        # errors (API, tools, iteration budget).
+        # Inactivity cap per child (seconds, floor 30) — time with NO progress, not total runtime. 0 = no cap:
+        # children fail only from real errors (API, tools, iteration budget). A progressing child (including one
+        # waiting on a multi-minute completion) restarts the window; a frozen one is caught.
         "child_timeout_seconds": 0,
         # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
         # "none" (empty = inherit)
@@ -1750,9 +1755,8 @@ DEFAULT_CONFIG = {
         # False = fail during the run instead.
         "preflight": True,
         # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
-        # cron.model > the job's creation-time snapshot > model.default. An unpinned job keeps
-        # running on the model it was created under when model.default later changes; cron.model
-        # is the way to move the whole fleet at once. "" = fall through.
+        # cron.model > model.default (the main agent model). An unpinned job follows the main
+        # model on every run; cron.model decouples the whole fleet from chat. "" = fall through.
         "model": "",
         # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
         # from global config.
@@ -1924,16 +1928,17 @@ DEFAULT_CONFIG = {
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
     },
-    # Tool Search: deferrable (MCP / non-core plugin) tools are replaced in the model-facing array
-    # by tool_search / tool_describe / tool_call bridges and surfaced on demand. Core Hermes tools
-    # (terminal, file tools, todo, memory, browser_*, ...) are NEVER deferred.
+    # Tool Search replaces deferred tools in the model-facing array with the
+    # tool_search / tool_describe / tool_call bridges and surfaces them on demand.
+    # Working-set core tools stay eager, while the explicit ``defer`` list below
+    # may include cold, event-triggered built-ins as well as plugin/MCP tools.
     "tools": {
         "tool_search": {
-            # Tiered: tier 0 (no deferrable tools) = everything eager; tier 1 = bridge + a
+            # Tiered: tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a
             # name+description manifest when it fits the budget (degrades to names-only); tier 2
             # (over budget even names-only, e.g. ~3,300-tool APIs) = bare bridge + a
             # one-line-per-server summary (name + tool count). "auto"|"on" = activate when at least
-            # one deferrable tool exists ("auto" is an alias of "on" today, reserved for a future
+            # one deferred tool exists ("auto" is an alias of "on" today, reserved for a future
             # budget-gated mode; keep it the default so explicit "on"/"off" pins are unaffected).
             # "off" = pass-through, no bridge.
             "enabled": "auto",
@@ -1952,6 +1957,17 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
             # Range 200..60000.
             "listing_max_tokens": 4000,
+            # Tools replaced by the bridge by default. This list intentionally includes cold,
+            # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
+            # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
+            "defer": [
+                "computer_use", "session_search", "image_generate",
+                "todo_list", "process_manage", "cronjob_manage",
+                # Desktop GUI surface (desktop_ui + project toolsets)
+                "drive_preview", "gui_tour", "desktop_preview", "annotate_preview",
+                "show_tip", "desktop_project", "close_terminal",
+                "apply_layout", "read_terminal", "read_window_below", "focus_pane",
+            ],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires
@@ -2303,6 +2319,19 @@ DEFAULT_CONFIG = {
         # request workspace-wide diagnostics (slower).
         "wait_mode": "document",
         "wait_timeout": 5.0,
+        # Budget for the FIRST request against a workspace whose server is not running yet (spawn +
+        # initialize + the server's initial program build; tsserver on a large project can need a
+        # minute). Once the client is up, wait_timeout applies again. 0 = same as wait_timeout.
+        "warmup_timeout": 0.0,
+        # After a server fails (spawn error or outer timeout) its (server, workspace root) pair is
+        # skipped. 0 = for the process lifetime (until `hermes lsp restart`); N = retried after N
+        # seconds, so one transient stall does not silence a workspace forever.
+        "broken_retry_seconds": 0.0,
+        # Workspace roots (glob patterns, ~ expanded; a bare path also matches everything under
+        # it) where no language server runs at all, e.g. one huge monorepo whose server cannot
+        # finish in budget, while every other workspace keeps its diagnostics. Must be a list —
+        # any other shape logs a warning and skips LSP for every workspace until fixed.
+        "exclude_roots": [],
         # Missing server binaries: auto = install via npm/go/pip into <HERMES_HOME>/lsp/bin/ on
         # first use; manual = only binaries on PATH; off = alias for manual.
         "install_strategy": "auto",
@@ -2473,6 +2502,10 @@ DEFAULT_CONFIG = {
         # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
         # strings; a single string is shell-split.
         "electron_flags": [],
+        # V8 old-space ceiling (MB) for the renderer, applied as --js-flags=--max-old-space-size=N by
+        # the app itself (also for Start-menu / .desktop launches). 0 = Chromium's default limit.
+        # A ceiling turns a machine-wide freeze into a bounded renderer reload (#77311).
+        "renderer_max_old_space_mb": 0,
         # Linux Ozone backend, bridged to ELECTRON_OZONE_PLATFORM_HINT (explicit env wins). auto =
         # Chromium default; x11 = XWayland, for compositors that ignore always-on-top for Wayland
         # clients (e.g. COSMIC) — also puts the HUD on the solid-window input path; wayland = force

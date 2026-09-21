@@ -217,30 +217,48 @@ def _profile_session_fields(row, profile_path):
     """Attach last_session / worker_session / canonical_session to a roster row. The DB is a
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
-    db_path = Path(profile_path) / "state.db"
-    db = None
-    if _try(db_path.exists, False):
-        db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
-    try:
-        row["last_session"], row["worker_session"] = _latest_profile_session_rows(db)
-        # Resolved server-side on every listing so no client carries a session pointer.
-        row["canonical_session"] = _canonical_session_row(db, profile_path)
-    finally:
-        if db is not None:
-            _best_effort(db.close)
+    def _read() -> dict:
+        db_path = Path(profile_path) / "state.db"
+        db = None
+        if _try(db_path.exists, False):
+            db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
+        try:
+            last, worker = _latest_profile_session_rows(db)
+            # Resolved server-side on every listing so no client carries a session pointer.
+            return {"last_session": last, "worker_session": worker,
+                    "canonical_session": _canonical_session_row(db, profile_path)}
+        finally:
+            if db is not None:
+                _best_effort(db.close)
+
+    # These three are a pure function of the profile's session store, and the roster re-asks every
+    # 5s per connection — so they are reused while that store has not moved (#117257).
+    from tui_gateway.profile_roster_cache import cached_session_fields
+
+    row.update(cached_session_fields(profile_path, _read))
 
 
 def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     """Attach ``ui_meta`` / ``ui_meta_revisions`` / ``has_avatar`` from profile.yaml + assets.
     ``ui_meta_revisions`` is always present: it feature-detects gateway-owned CAS for a new profile."""
-    raw_meta = _read_profile_yaml(profile_dir)
-    ui_meta, revisions = raw_meta.get("ui_meta"), raw_meta.get("_ui_meta_revisions")
-    # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
-    row["ui_meta_revisions"] = _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}
-    if isinstance(ui_meta, dict) and ui_meta:
-        # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
-        # coerce YAML-only scalars to their ISO string at the boundary (#92506).
-        row["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
+    def _read() -> dict:
+        raw_meta = _read_profile_yaml(profile_dir)
+        ui_meta, revisions = raw_meta.get("ui_meta"), raw_meta.get("_ui_meta_revisions")
+        # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
+        fields = {"ui_meta_revisions":
+                  _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}}
+        if isinstance(ui_meta, dict) and ui_meta:
+            # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
+            # coerce YAML-only scalars to their ISO string at the boundary (#92506).
+            fields["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
+        return fields
+
+    # Second parse of this profile.yaml in the same request (``read_profile_meta`` already read it
+    # for the row's description/display name) — reused while the file has not moved (#117383). The
+    # ui_meta CAS writer below keeps reading it raw and uncached: it writes the document back.
+    from tui_gateway.profile_roster_cache import cached_ui_meta_fields
+
+    row.update(cached_ui_meta_fields(profile_dir, _read))
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
@@ -256,7 +274,8 @@ def _(rid, params: dict) -> dict:
     for p in list_profiles(lazy_skill_count=True):
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
-               "display_name": p.display_name or "", "skill_count": p.skill_count or 0}
+               "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
+               "previous_names": list(p.previous_names or [])}
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))

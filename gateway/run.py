@@ -700,6 +700,15 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
     text = _sanitize_surrogates(str(text))
 
+    # Some OpenAI-compatible providers leak their exact end-of-sequence control token into
+    # ``final_response`` even though finish_reason is already ``stop``.  It is transport metadata,
+    # not an assistant message; without filtering, chat adapters send a literal ``<|eos|>`` bubble.
+    # Reuse the MEDIA boundary's exact, terminal-only recognizer (#111046 / #111348): examples
+    # mentioning the token mid-response and non-exact variants remain byte-identical.
+    _eos_start = _terminal_sentinel_start(text)
+    if _eos_start >= 0:
+        text = text[:_eos_start].rstrip()
+
     # Cancellation metadata, not prose; ACP/TUI already suppress this sentinel, chat surfaces should too.
     # See #7921.
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
@@ -1900,8 +1909,6 @@ _AGENT_ENV_BRIDGE = {
     "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
     "gateway_notify_interval": "HERMES_AGENT_NOTIFY_INTERVAL",
     "session_stall_timeout": "HERMES_SESSION_STALL_TIMEOUT",
-    # Internal bridge only — config.yaml (agent.reconnect_attention_after) is the documented setting.
-    "reconnect_attention_after": "HERMES_RECONNECT_ATTENTION_AFTER_SECONDS",
     "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
     "cron_drain_timeout": "HERMES_CRON_DRAIN_TIMEOUT",
     "gateway_auto_continue_freshness": "HERMES_AUTO_CONTINUE_FRESHNESS",
@@ -2159,6 +2166,7 @@ from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     _reply_anchor_for_event,
+    _terminal_sentinel_start,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.restart import (
@@ -3223,26 +3231,37 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
 # Max seconds between platform reconnect retries (primary watcher and secondary profiles share it).
 _RECONNECT_BACKOFF_CAP = 300
 
-# Seconds continuously in the reconnect queue before NEEDS_ATTENTION. Retrying never stops (transient
-# outages must self-heal); this only makes a permanently-failing loop loud. 0 disables.
-_RECONNECT_ATTENTION_AFTER_SECONDS = _float_env("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", 7200)
-
-
 def _reconnect_backoff(attempt: int) -> int:
     """Exponential reconnect backoff: 30s, 60s, 120s, ... capped at 5 min."""
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+def _reconnect_attention_after_secs() -> float:
+    """``agent.reconnect_attention_after`` of the profile whose scope is bound at call time (the launch
+    profile's when unbound). Seconds continuously in the reconnect queue before NEEDS_ATTENTION; retrying
+    never stops (transient outages must self-heal), this only makes a permanently-failing loop loud.
+    Non-positive disables. Read per call, never cached: one process serves many profiles and a config
+    edit must not need a gateway restart (#115635)."""
+    from hermes_cli.config import load_config_readonly
+    agent_cfg = load_config_readonly().get("agent")
+    raw = agent_cfg.get("reconnect_attention_after") if isinstance(agent_cfg, dict) else None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(_DEFAULT_CONFIG["agent"]["reconnect_attention_after"])
+
+
 def _reconnect_needs_attention(info: dict, now: float) -> bool:
     """True when a reconnect-queue entry has waited long enough for NEEDS_ATTENTION.
     ``queued_at`` is re-stamped on each (re)entry, so only *continuous* failure escalates."""
-    if _RECONNECT_ATTENTION_AFTER_SECONDS <= 0:
+    threshold = _reconnect_attention_after_secs()
+    if threshold <= 0:
         return False  # escalation disabled
     queued_at = info.get("queued_at")
     if queued_at is None:
         info["queued_at"] = now
         return False
-    return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
+    return (now - queued_at) >= threshold
 
 
 # "No session DB pinned": lets ``_session_db`` distinguish "resolve from profile scope" from a
@@ -3257,10 +3276,10 @@ _AUTO_RESET_CONTEXT_NOTES = {
 
 
 def _write_runtime_status_quiet(**fields: Any) -> None:
-    """Best-effort ``gateway_state.json`` write; status persistence must never abort the caller."""
+    """Best-effort status publication; persistence must never abort or block the caller."""
     try:
-        from gateway.status import write_runtime_status
-        write_runtime_status(**fields)
+        from gateway.status import publish_runtime_status
+        publish_runtime_status(**fields)
     except Exception:
         pass
 
@@ -3467,7 +3486,16 @@ class GatewayRunner(
         # Secondary-profile busy modes snapshotted at multiplex startup; handlers never reread config.
         self._busy_input_modes_by_profile: Dict[str, str] = {}
         self._busy_text_modes_by_profile: Dict[str, str] = {}
+        self._busy_text_timing = self._busy_text_timing_from_config(_load_gateway_config())
+        self._busy_text_timing_by_profile: Dict[str, tuple[float, float]] = {}
+        self._human_delay = self._human_delay_from_config(_load_gateway_config())
+        self._human_delay_by_profile: Dict[str, Optional[tuple[int, int]]] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
+        # Live launchd ``ExitTimeOut`` for this job (None when not launchd-owned). Read once at
+        # boot — launchd fixes it at load — and applied only to signal-driven stops, which are the
+        # only stops launchd times. See _load_launchd_exit_timeout().
+        self._stop_requested_by_signal = False
+        self._launchd_exit_timeout_s = self._load_launchd_exit_timeout(self._restart_drain_timeout)
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
@@ -4566,7 +4594,12 @@ def _housekeeping_org_skill_sync() -> None:
 
 def _housekeeping_auto_archive() -> None:
     """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
-    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
+    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound.
+
+    Profile-scoped by its caller: ``acquire()`` and ``load_config()`` both resolve through
+    ``get_hermes_home()``, so an unscoped tick swept only the LAUNCH profile's store and a
+    multiplexed secondary was never archived by anyone — the dashboard/serve trigger defers to
+    the gateway for every profile a gateway owns (``web_server_sessions``)."""
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
@@ -4642,7 +4675,8 @@ def _start_gateway_housekeeping(
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
-    from gateway.run_profile_reconcile import _mcp_config_reconciler
+    from gateway.run_delivery_queue_watch import DRAIN_LABEL, DeliveryQueueWatch, wait_for_next_tick
+    from gateway.run_profile_reconcile import _mcp_config_reconciler, profile_scoped_chore
     chores: list[tuple[int, str, Any]] = [
         # First every tick: re-stamp ``updated_at`` in gateway_state.json so it is a real heartbeat.
         # ``hermes gateway status`` / ``/api/status`` warn when it ages past 2x ``interval`` with the
@@ -4652,8 +4686,7 @@ def _start_gateway_housekeeping(
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
-        chores.append((1, "Cron durable delivery queue drain",
-                       lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
+        chores.append((1, DRAIN_LABEL, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
     chores += [
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
         (60, "Media cache cleanup", _housekeeping_media_caches),
@@ -4665,15 +4698,27 @@ def _start_gateway_housekeeping(
         # already ended (#111010). Runs every tick so the outage is bounded by one housekeeping interval.
         chores.append((1, "Cron ticker supervisor", cron_thread.restart_if_dead))
     chores += [
-        (60, "Curator tick", _housekeeping_curator),
-        (60, "Sync pull tick", _housekeeping_skill_sync),
-        (60, "Org sync pull tick", _housekeeping_org_skill_sync),
-        (60, "Auto-archive tick", _housekeeping_auto_archive),
+        # Per served profile: each profile has its own skills tree, curator state, Nous login
+        # and state.db.
+        (60, "Curator tick", profile_scoped_chore(runner, _housekeeping_curator)),
+        (60, "Sync pull tick", profile_scoped_chore(runner, _housekeeping_skill_sync)),
+        (60, "Org sync pull tick", profile_scoped_chore(runner, _housekeeping_org_skill_sync)),
+        (60, "Auto-archive tick", profile_scoped_chore(runner, _housekeeping_auto_archive)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
         (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
+
+    # Between ticks the queue file is watched so a worker's send goes out when it is queued,
+    # not up to ``interval`` later (#117307); the tick's drain above remains the fallback.
+    queue_watch = None
+    if adapters is not None or runner is not None:
+        def served_homes() -> list:
+            return [home for _name, home in _handoff_watch_scopes(runner)] if runner is not None else [None]
+
+        queue_watch = DeliveryQueueWatch(
+            served_homes, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner))
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0
@@ -4682,7 +4727,7 @@ def _start_gateway_housekeeping(
         for every, label, fn in chores:
             if tick_count % every == 0:
                 _housekeeping_chore(label, fn)
-        stop_event.wait(timeout=interval)
+        wait_for_next_tick(stop_event, interval, queue_watch, _housekeeping_chore)
     logger.info("Gateway housekeeping stopped")
 
 
@@ -5031,6 +5076,19 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
             root.setLevel(_stderr_level)
 
 
+def _start_gateway_make_restart_signal_handler(runner):
+    """Build the SIGUSR1 handler: log what the signal means, then the drain-aware service restart."""
+    def restart_signal_handler():
+        # systemd's `reload` verb (ExecReload=kill -USR1) lands here too; say so, because operators
+        # expect `reload` to mean an in-process config reload, not a drain-and-relaunch (#117267).
+        logger.info(
+            "SIGUSR1 received (systemctl reload / hermes gateway restart): performing a graceful "
+            "gateway restart — drain active turns, exit, supervisor relaunches. Not an in-process "
+            "config reload.")
+        runner.request_restart(detached=False, via_service=True)
+    return restart_signal_handler
+
+
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     def shutdown_signal_handler(received_signal=None):
@@ -5080,6 +5138,12 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
 
             _best_effort(_log_context, "format_context_for_log failed: %s")
             _best_effort(_diagnostic, "spawn_async_diagnostic failed: %s")
+        if not planned_takeover:
+            # Supervisor/operator SIGNAL stop (bootout, kickstart -k, systemd, s6, bare kill) — the
+            # only kind launchd times with ExitTimeOut. In-band SIGUSR1 restarts never pass through
+            # here, and a sibling-driven --replace takeover is not launchd-timed either, so both
+            # keep the configured drain. _stop_impl uses this to cap the drain to the live budget.
+            runner._stop_requested_by_signal = True
         asyncio.create_task(runner.stop())
     return shutdown_signal_handler
 
@@ -5335,8 +5399,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     shutdown_signal_handler = _start_gateway_make_shutdown_signal_handler(
         runner, _signal_initiated_shutdown)
 
-    def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+    restart_signal_handler = _start_gateway_make_restart_signal_handler(runner)
 
     loop = asyncio.get_running_loop()
 

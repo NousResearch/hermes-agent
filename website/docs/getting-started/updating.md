@@ -58,6 +58,8 @@ The restart is drain-first: the running gateway refuses new turns, then waits fo
 
 Chat turns show their session key, model and current tool; cron jobs show the job id, name and the process running them (an external restart-safe worker on systemd installs, otherwise the gateway itself). `hermes gateway status` lists the same units while the gateway is draining. To stop waiting, finish or kill the listed work, or lower `agent.restart_after_turn_timeout` in `config.yaml` (`0` enters the forced drain immediately).
 
+Wedged work does not hold the restart: a chat turn idle past `agent.gateway_timeout`, or a cron run older than the scheduler's in-flight allowance (`max(2 × the job's interval, cron.inflight_max_minutes)`, 30 minutes by default), is excluded from the wait and interrupted by the restart instead.
+
 ### Missing Windows updater files
 
 If the maintained updater script is missing (for example after antivirus quarantine), the legacy update forwarder fails instead of reporting a successful hand-off. Repair the installation and review the security software's quarantine report before retrying; do not disable antivirus protection. Before reporting success, the maintained updater checks the CLI import, Windows executable header, ASAR header and packaged main entry, readable renderer HTML with a local module entry, initial module files, and current build stamp. These are minimum artifact checks, not a full dependency audit or an application/backend launch test. Missing Python is reported before waiting for Desktop shutdown; dependency repair is still allowed to run as part of the update. Electron checks maintained handoff prerequisites before stopping backends when that layout is present; genuine legacy-flat updater layouts remain supported, so not every missing updater file is detected before backend shutdown.
@@ -130,7 +132,7 @@ The same inventory is embedded in every real update's receipt (`~/.hermes/logs/u
 
 Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. The SQLite runtime repair is one of those steps (`sqlite_runtime_repair`): a failed repair records the actual reason (for example the `uv sync` error) and the SQLite version pair, a deferred or not-applicable repair lands in the skips with its reason. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command, and the update exits non-zero so automation never treats a mixed-version fleet as healthy. Both `--plan` and the fleet check ask each running gateway directly over its local control socket (`gateway.sock` in the profile's data directory, a named pipe on Windows) when available, so version and supervisor information comes from the gateway itself; gateways from older versions are still discovered through their state files as before.
 
-A multiplexed default gateway is one process serving several profiles, so it appears once in the matrix and vouches for every profile in its `served_profiles` record. The same coverage clears the "A previous `hermes update` pulled new code but did not restart running gateways" hint: once that gateway (or, after a manual `git pull`, every gateway an update restarted) runs the current code, `hermes gateway restart` is enough — the hint no longer waits for the next `hermes update` to write a fresh receipt.
+A multiplexed default gateway is one process serving several profiles, so it appears once in the matrix and vouches for every profile in its `served_profiles` record. The same coverage clears the "A previous `hermes update` pulled new code but did not restart running gateways" hint: once that gateway (or, after a manual `git pull`, every gateway an update restarted) runs the current code, `hermes gateway restart` is enough — the hint no longer waits for the next `hermes update` to write a fresh receipt. The same is true of a `fleet_restart_pending` breadcrumb left by an update that died before recording which gateways it owed (or by an older updater that never recorded them): once every live gateway runs the current checkout, the breadcrumb is retired and the hint stops. An update whose pre-update plan found no gateway at all owes nothing and leaves no breadcrumb. A backend supervised by Desktop, systemd or launchd is restarted by its supervisor and never blocks this settlement; only a manual backend whose reminder could not be saved keeps the obligation open.
 
 ### Manual backend restart reminders
 
@@ -207,6 +209,28 @@ $ hermes update
 Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
 
 A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
+
+#### Scripted updates: `hermes update --list-venv-holders`
+
+A scheduled `hermes update --yes` that keeps hitting the venv guard (typically because the
+Desktop app relaunches its backend) can ask first instead of looping. `hermes update
+--list-venv-holders` is read-only: it prints the processes the guard would refuse on as a
+JSON list of `{pid, exe, argv, kind}` and exits `0` when the venv is free or `3` when holders
+are present. `kind` is `gateway` (a pausable gateway the updater handles itself), `backend`
+(a `hermes serve` / dashboard backend — the Desktop app's shape), `hermes:<subcommand>` for any
+other Hermes process, or `python` for an unrelated interpreter. Automation can stop exactly
+those PIDs (or quit the Desktop app) and retry; nothing is terminated by the flag itself. The
+guard only exists on Windows, so the list is always `[]` elsewhere.
+
+```
+$ hermes update --list-venv-holders
+[
+  {"pid": 4242, "exe": "C:\\hermes\\venv\\Scripts\\python.exe",
+   "argv": "...python.exe -m hermes_cli.main serve --port 8642", "kind": "backend"}
+]
+$ echo $LASTEXITCODE
+3
+```
 
 Both guards, the Desktop update preflight, and the dependency repair steps look for the environment at `venv` first and then at the uv-default `.venv`, so a source checkout set up with `uv venv` / `uv sync` updates the same way an installer-created `venv` does. When both directories exist, `venv` is the one that gets updated.
 

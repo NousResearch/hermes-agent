@@ -2,6 +2,7 @@ import {
   type ConnectionState,
   type GatewayEvent,
   isGatewayReauthRequired,
+  isStableOpen,
   reconnectBackoffDelayMs,
   registryBackendScopeKey,
   resolveGatewayWsUrl,
@@ -125,6 +126,10 @@ interface Secondary {
    * remount loop (#94769). 0 = never opened.
    */
   lastOpenedAt: number
+  /** Date.now() of the CURRENT socket's 'open'; null while not open. Stability
+   *  clock for the backoff reset (#83134) — `lastOpenedAt` persists across
+   *  closes and would make every failed redial look like a stable session. */
+  openedAt: null | number
   activeRequests: number
   connectPromise: Promise<void> | null
   offEvent: () => void
@@ -878,7 +883,6 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
 
   try {
     await openSecondary(entry)
-    entry.reconnectAttempt = 0
   } catch (error) {
     if (isGatewayReauthRequired(error)) {
       notifyError(error, translateNow('boot.errors.gatewaySignInRequired'), { action: RECOVERY_ACTIONS.openGateways() })
@@ -958,6 +962,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     connection: null,
     gateway,
     lastOpenedAt: 0,
+    openedAt: null,
     activeRequests: 0,
     connectPromise: null,
     offEvent: () => {},
@@ -993,10 +998,18 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     reportGatewayState(scope, state)
 
     if (state === 'open') {
-      entry.reconnectAttempt = 0
       entry.stalledDials = 0
+      entry.openedAt = Date.now()
       clearTimer(entry)
     } else if (state === 'closed' || state === 'error') {
+      // Same stable-open rule as the primary (#83134): an accept-then-close socket
+      // is a failed attempt, so the ladder resets only after a socket that lived.
+      if (isStableOpen(entry.openedAt)) {
+        entry.reconnectAttempt = 0
+      }
+
+      entry.openedAt = null
+
       // A dead socket cannot emit the terminal event that normally releases
       // its turn lease. Drop the orphaned lease before deciding whether this
       // route is still retained/active enough to reconnect.

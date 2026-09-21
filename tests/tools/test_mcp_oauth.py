@@ -315,6 +315,29 @@ class TestBuildOAuthAuth:
         assert "access-secret" not in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_failed_token_exchange_carries_a_bounded_redacted_excerpt(self, tmp_path, monkeypatch):
+        """A non-2xx body names the cause (WAF "Request blocked" vs ``invalid_grant``) without HTML,
+        beyond 200 characters or credential-shaped spans (#115329)."""
+        import httpx
+        from mcp.client.auth.oauth2 import OAuthTokenError
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _set_interactive_stdin(monkeypatch)
+        provider = build_oauth_auth("supabase", "https://mcp.supabase.com/mcp")
+        waf = ("<HTML><HEAD><TITLE>ERROR</TITLE></HEAD><BODY><H1>403 ERROR</H1>\n  Request blocked.\n"
+               "Bearer leaked-bearer-token <PRE>" + "x" * 400 + "</PRE></BODY></HTML>")
+
+        with pytest.raises(OAuthTokenError) as exc_info:
+            await provider._handle_token_response(httpx.Response(403, content=waf.encode()))
+
+        message = str(exc_info.value)
+        assert message.startswith("Token exchange failed (403): ERROR 403 ERROR Request blocked.")
+        assert "[REDACTED]" in message
+        assert "<" not in message and "leaked-bearer-token" not in message
+        assert len(message) <= len("Token exchange failed (403): ") + 200
+        assert provider.context.current_tokens is None
+
+    @pytest.mark.asyncio
     async def test_token_read_error_does_not_expose_body(self, tmp_path, monkeypatch):
         import httpx
         from mcp.client.auth.oauth2 import OAuthTokenError

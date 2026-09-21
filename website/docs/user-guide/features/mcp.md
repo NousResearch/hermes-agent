@@ -57,10 +57,33 @@ Hermes ships a curated catalog of MCP servers that Nous staff has reviewed
 and merged. They're disabled by default — install only what you actually
 want.
 
-In the desktop app you can also ask: "add the Linear MCP". The agent calls
-`manage_connections` with an `mcp: true` target, an approval card appears in
-the chat, and Install writes the same config the CLI would. On the CLI and in
-messaging apps the agent relays the commands below instead.
+You can also ask in chat: "add the Linear MCP". The agent calls
+`manage_connections` with an `mcp: true` target and a setup card appears. The
+card works the same way in the desktop app (a dialog), the terminal UI
+(`hermes --tui`, a callout above the composer) and the classic CLI (a panel):
+
+1. **Fields.** If the entry declares setup values, the card shows all of them
+   at once. A plain value is prefilled with its default. A secret is masked.
+   Nothing is saved while you type.
+2. **Connect or Cancel.** Cancel skips that one server; other servers in the
+   same request continue.
+3. **Authorization.** For an OAuth entry the card shows the authorization link.
+   Hermes never opens the browser by itself: click **Open in browser** on the
+   desktop, or press Enter in the terminal. Over SSH the card tells you how to
+   reach the callback port or paste the redirected URL.
+4. **Save.** Hermes saves the server configuration, the tokens and your setup
+   values together, once the server has accepted the new token and the first
+   connection has returned. If the server rejects the token, or you cancel
+   before that point, nothing from the attempt is kept, your earlier
+   configuration and tokens stay as they were, and a failed form reopens with
+   what you typed. A server that is already authorized connects with its saved
+   tokens; Hermes asks you to authorize again only when they no longer work.
+5. **Tools.** Hermes then lists the server's tools and registers them. The
+   agent can call them in the same turn. If authorization worked and the tool
+   list failed, the card says "Authorized. Tools unavailable." and the agent can
+   run discovery again later without asking you to authorize again.
+
+In messaging apps there is no card; the agent relays the commands below.
 
 ```bash
 hermes mcp                   # interactive picker (default)
@@ -349,6 +372,10 @@ Refresh tokens are bound to the authorization server that granted them: Hermes r
 
 The redirect back from the authorization server is checked against RFC 9207: when the server's metadata advertises `authorization_response_iss_parameter_supported`, a redirect without a matching `iss` is rejected. Figma's authorization server (`https://api.figma.com`) advertises that support and then omits `iss`; Hermes fills the missing value from the discovered issuer for that one issuer and logs a warning, so `hermes mcp login figma` completes. A present-but-different `iss` is still rejected, and no other server gets the exemption.
 
+The authorization server's metadata document must name the server the resource advertised (RFC 8414 §3.3); a document for a different server is rejected before any registration or login. One shape is accepted without an exact match: a server advertised with a path (`https://host/path`) whose document, fetched from `https://host/.well-known/oauth-authorization-server/path`, names the origin `https://host` as its issuer — Strava's MCP connector publishes exactly that pair. Only the origin's operator controls that well-known location, so the document is treated as the advertised server's own; a document naming another origin or another path, or one reached only through a redirect or a fallback location, still fails with `Authorization server metadata issuer mismatch`.
+
+**Google-hosted servers (Gmail, Calendar).** Google only issues a refresh token when the authorization request carries `access_type=offline`, which MCP discovery never advertises. Hermes adds it (plus `prompt=consent`, so a repeat login is re-granted one) whenever the discovered authorization server is `accounts.google.com`, so the connection persists across restarts and works from `hermes gateway`. Other issuers' requests are untouched.
+
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
 - **Hermes Desktop (automatic):** when you run the OAuth sign-in from the Desktop app's MCP setup UI against a remote backend, Desktop hosts the callback listener on *your* machine and relays the authorization back to the gateway automatically — no tunnel, paste, or proxy needed. Requires both the Desktop app and the backend to be up to date.
@@ -388,6 +415,8 @@ mcp_servers:
 Then run `hermes mcp login googledrive` — with the pre-registered client, Hermes skips registration and runs the normal browser authorization flow.
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
+
+**Need longer than 5 minutes to approve?** Set `oauth.timeout` on the server entry (seconds). `hermes mcp login`, the dashboard and Desktop re-auth all wait `oauth.timeout` + 15 s (or the entry's `connect_timeout`, whichever is longer); a login that still runs out of time reports `Connecting to MCP server '<name>' timed out after Ns` naming both knobs instead of a blank failure line.
 
 ## mTLS / client certificates
 
@@ -831,6 +860,16 @@ npx --version
 ```
 
 Then verify your config and restart Hermes.
+
+The startup summary in `agent.log` names every server that did not register, with the recorded
+connect error, so you never have to work out the failing one by elimination:
+
+```
+MCP: registered 116 tool(s) from 4 server(s) (2 failed: github (Connection closed); notion (HTTP 401 from POST https://mcp.notion.com/mcp))
+```
+
+A server that was skipped this pass because it is still inside its retry cooldown from an earlier
+failure is listed as `not attempted (in retry cooldown)`.
 
 ### Remote (HTTP) server rejects the connection
 

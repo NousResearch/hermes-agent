@@ -1,13 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { buildFirstTaskSeedMessages } from '@/components/onboarding-chat/setup-profile'
-import { DEFAULT_ANSWERS } from '@/store/onboarding-answers'
 import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 
 const api = vi.fn()
 
-it('carries fresh catalog evidence into the guide and the exact working-profile handoff seed', async () => {
+it('carries fresh catalog evidence into the guide, read from the pinned backend', async () => {
   vi.stubGlobal('window', { hermesDesktop: { api } })
 
   const entry = {
@@ -23,10 +21,6 @@ it('carries fresh catalog evidence into the guide and the exact working-profile 
   expect(guide[0].content).toContain('"name":"future-studio"')
   expect(guide[0].content).toContain('"readiness":"setup_required"')
   expect(guide[0].display_kind).toBe('hidden')
-
-  const handoff = await buildFirstTaskSeedMessages('Make a scene in Future Studio', DEFAULT_ANSWERS, 'build', scope)
-  expect(handoff[0].content).toContain('"name":"future-studio"')
-  expect(handoff[0].content).toContain('not necessarily the desktop computer')
   expect(api).toHaveBeenLastCalledWith(expect.objectContaining(scope))
   expect(api.mock.calls.every(([request]) => request.path === '/api/mcp/catalog?detect_apps=true')).toBe(true)
 })

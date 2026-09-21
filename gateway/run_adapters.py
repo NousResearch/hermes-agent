@@ -33,6 +33,7 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+_UNSET = object()  # "no per-profile human_delay snapshot": fall back to the primary's value
 
 
 class GatewayAdapterLifecycleMixin:
@@ -657,8 +658,12 @@ class GatewayAdapterLifecycleMixin:
             if not await _idle(10):  # re-check every 10 seconds
                 return
 
-    def _flag_reconnect_needs_attention(self, platform, info: dict, now: float) -> None:
-        """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker."""
+    def _flag_reconnect_needs_attention(
+        self, platform, info: dict, now: float, *, status_key: Optional[str] = None
+    ) -> None:
+        """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker. The threshold
+        is the bound profile's ``agent.reconnect_attention_after``: secondaries call this inside their
+        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key."""
         from gateway.run import _reconnect_needs_attention
         if info.get("attention_flagged") or not _reconnect_needs_attention(info, now):
             return
@@ -668,10 +673,10 @@ class GatewayAdapterLifecycleMixin:
             "%s has been failing/reconnecting continuously for %.1f hours (%d attempts) — flagging "
             "NEEDS_ATTENTION. Retries continue, but this usually means a permanent problem (revoked "
             "credentials, missing intents, broken sidecar). Check `hermes status` / `/platform list`.",
-            platform.value, queued_for / 3600.0, info.get("attempts", 0),
+            status_key or platform.value, queued_for / 3600.0, info.get("attempts", 0),
         )
         self._update_platform_runtime_status(
-            platform.value, platform_state="retrying", needs_attention=True,
+            status_key or platform.value, platform_state="retrying", needs_attention=True,
             retrying_since=(datetime.now(timezone.utc) - timedelta(seconds=queued_for)).isoformat(),
         )
 
@@ -842,12 +847,12 @@ class GatewayAdapterLifecycleMixin:
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
         from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
-            # ``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+            # Runtime-status publication re-stamps the previous writer's record in place, so a multiplexer's
             # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
             # would keep refusing (exit 78) / reporting "served" for profiles nobody serves.
             with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
-                from gateway.status import write_runtime_status
-                write_runtime_status(served_profiles=[])
+                from gateway.status import publish_runtime_status
+                publish_runtime_status(served_profiles=[])
             return 0
         try:
             from hermes_cli.profiles import get_active_profile_name
@@ -858,18 +863,27 @@ class GatewayAdapterLifecycleMixin:
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)
         self._served_profile_signatures = {}
+        transient_failed = set()
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop
             # Preserve changes made while the initial connection is awaiting I/O.
-            self._served_profile_signatures[profile_name] = profile_serve_signature(profile_home)
+            scan_signature = profile_serve_signature(profile_home)
             try:
                 connected += await self._start_one_profile_adapters(profile_name, profile_home, claimed)
             except MultiplexConfigError:
                 raise
             except Exception as e:
                 logger.error("Failed to start adapters for profile '%s': %s", profile_name, e, exc_info=True)
+                # Not acknowledged: the reconcile watcher retries a transiently-failed profile.
+                transient_failed.add(profile_name)
+            else:
+                self._served_profile_signatures[profile_name] = scan_signature
         self._record_served_profiles(active, profile_homes)
+        # ``_note_served_profiles`` fills a missing signature with the current one; that refill
+        # would park a transiently-failed profile before the first watcher tick can retry it.
+        for profile_name in transient_failed:
+            self._served_profile_signatures.pop(profile_name, None)
         self._restore_secondary_completion_ledgers(profile_homes)
         return connected
 
@@ -893,7 +907,7 @@ class GatewayAdapterLifecycleMixin:
         """Record the served set (eligible for routing/HTTP prefixes/cron/runtime scope — broader
         than "has a connected adapter") for `hermes status`; seed per-profile PairingStores."""
         with _log_suppressed(logging.DEBUG, "could not record served_profiles", exc_info=True):
-            from gateway.status import write_runtime_status
+            from gateway.status import publish_runtime_status
             from gateway.pairing import PairingStore
             served = [active] + sorted(name for name, _home in profile_homes if name != active)
             self._note_served_profiles(profile_homes)
@@ -902,7 +916,7 @@ class GatewayAdapterLifecycleMixin:
                     self.pairing_stores[name] = (
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
-            write_runtime_status(served_profiles=served)
+            publish_runtime_status(served_profiles=served)
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises
@@ -1092,7 +1106,8 @@ class GatewayAdapterLifecycleMixin:
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
-        busy_text_mode: Optional[str] = None,
+        busy_text_mode: Optional[str] = None, busy_text_timing: Optional[tuple[float, float]] = None,
+        human_delay: Optional[tuple[int, int]] | object = _UNSET,
     ) -> None:
         """Install the runner callbacks every adapter needs (defaults = primary handlers;
         secondary wiring passes profile-scoped variants). ``set_reaction_handler`` is optional."""
@@ -1109,6 +1124,11 @@ class GatewayAdapterLifecycleMixin:
         )
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
+        timing = busy_text_timing or getattr(self, "_busy_text_timing", None)
+        if timing:
+            adapter._busy_text_debounce_seconds, adapter._busy_text_hard_cap_seconds = timing
+        adapter._human_delay_range_ms = (
+            getattr(self, "_human_delay", None) if human_delay is _UNSET else human_delay)
 
     def _configure_profile_adapter(
         self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform
@@ -1124,6 +1144,8 @@ class GatewayAdapterLifecycleMixin:
         # Voice transcripts from this bot's channels dispatch through THIS adapter (primary wiring lives at
         # connect time; see #75198).
         text_modes = getattr(self, "_busy_text_modes_by_profile", None)
+        timings = getattr(self, "_busy_text_timing_by_profile", None)
+        delays = getattr(self, "_human_delay_by_profile", None)
         self._wire_adapter_handlers(
             adapter,
             message_handler=self._make_profile_message_handler(profile_name),
@@ -1136,6 +1158,8 @@ class GatewayAdapterLifecycleMixin:
                 if isinstance(text_modes, dict)
                 else self._busy_text_mode
             ),
+            busy_text_timing=(timings.get(profile_name) if isinstance(timings, dict) else None),
+            human_delay=(delays.get(profile_name, _UNSET) if isinstance(delays, dict) else _UNSET),
         )
         # Voice transcripts from this bot's channels dispatch through THIS adapter.
         self._bind_voice_input_callback(adapter)
@@ -1191,8 +1215,10 @@ class GatewayAdapterLifecycleMixin:
 
     async def _run_secondary_profile_reconnect(self, profile_name: str, platform: Platform) -> None:
         """Reconnect a retryable secondary adapter under its own profile scope."""
-        from gateway.run import _reconnect_backoff
+        from gateway.run import _profile_runtime_scope, _reconnect_backoff
         attempts = 0
+        # Same escalation shape as the primary queue entry; ``queued_at`` is this task's start.
+        queue_info = {"queued_at": time.monotonic(), "attempts": 0}
         current_task = asyncio.current_task()
         try:
             while self._running:
@@ -1231,6 +1257,13 @@ class GatewayAdapterLifecycleMixin:
                 if not self._running:
                     return
                 attempts += 1
+                queue_info["attempts"] = attempts
+                profile_home = self._profile_home_or_none(profile_name)
+                # The attempt above already hydrated this profile's secret sources off-loop.
+                with self._scope_or_null(
+                        functools.partial(_profile_runtime_scope, hydrate_secrets=False), profile_home):
+                    self._flag_reconnect_needs_attention(
+                        platform, queue_info, time.monotonic(), status_key=f"{profile_name}:{platform.value}")
                 backoff = _reconnect_backoff(attempts)
                 logger.info(
                     "Secondary %s reconnect retry in %ds (profile: %s)", platform.value, backoff, profile_name

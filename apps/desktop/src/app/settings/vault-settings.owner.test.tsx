@@ -22,7 +22,14 @@ vi.mock('@/store/gateway', async importActual => ({
   }
 }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
-vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
+// Partial mock: the profile switch under test also fires module-level
+// subscribers elsewhere in the store graph (cron-model-impact dismisses its
+// notification), so only the two calls this suite asserts on are stubbed.
+vi.mock('@/store/notifications', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  notify: vi.fn(),
+  notifyError: vi.fn()
+}))
 
 import { useStore } from '@nanostores/react'
 

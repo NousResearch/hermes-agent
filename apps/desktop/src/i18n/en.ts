@@ -12,11 +12,7 @@ export const en: Translations = {
     grant: 'Reconnect',
     connected: 'Connected',
     checking: 'Checking your apps…',
-    waitingSignIn: 'Waiting for you to finish signing in…',
     notConnected: 'Not connected',
-    notAvailable: 'Not available',
-    startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
-    startWithout: 'Start without connections',
     skipped: 'Skipped',
     disabled: 'Unavailable',
     failed: 'Could not connect',
@@ -25,7 +21,6 @@ export const en: Translations = {
     waiting: 'Waiting for your browser…',
     timeout: 'Still waiting for authorization.',
     refresh: 'Refresh status',
-    statusError: 'Could not check connections. Try refreshing.',
     connectError: 'Could not start authorization. Try again.',
     connectErrorFor: (app: string) => `Could not start authorization for ${app}.`,
     unavailable: 'Connectors are unavailable for this session.',
@@ -33,7 +28,12 @@ export const en: Translations = {
     search: 'Find an app',
     empty: 'No matching apps',
     disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
-    execution: 'Connector tools'
+    execution: 'Connector tools',
+    setup: server => `Set up ${server}`,
+    openInBrowser: 'Open in browser',
+    setupCancel: 'Cancel',
+    authorizedToolsUnavailable: 'Authorized. Tools unavailable.',
+    required: 'Required'
   },
 
   sessionImport: {
@@ -85,6 +85,7 @@ export const en: Translations = {
     connect: 'Connect',
     connecting: 'Connecting',
     continue: 'Continue',
+    bots: 'Bots',
     copied: 'Copied',
     copy: 'Copy',
     copyFailed: 'Copy failed',
@@ -128,7 +129,9 @@ export const en: Translations = {
     renameLabel: 'New name',
     deleteTitle: name => `Delete ${name}?`,
     deleteBody: 'It will be moved to the Trash — you can restore it from there.',
-    pathCopied: 'Path copied'
+    pathCopied: 'Path copied',
+    revealMissing: 'That folder is not on this computer',
+    revealUnavailable: 'That path is not on this computer — it lives on the backend machine. Use “Reveal in filetree”.'
   },
 
   boot: {
@@ -487,6 +490,56 @@ export const en: Translations = {
   },
 
   settings: {
+    subpages: {
+      appearanceTheme: 'Theme',
+      appearanceTypography: 'Typography',
+      appearanceWindowLayout: 'Window & layout',
+      appearanceChatDisplay: 'Chat display',
+      appearancePet: 'Pet',
+      appearanceGeneral: 'General',
+      modelMain: 'Main model',
+      modelAuxiliary: 'Auxiliary models',
+      modelMoa: 'Mixture of Agents',
+      modelFallbacks: 'Fallback models',
+      chatBehavior: 'Behavior',
+      chatAttachments: 'Attachments',
+      workspaceProjects: 'Projects & discovery',
+      workspaceShell: 'Shell environment',
+      workspaceFiles: 'Files & execution',
+      safetyApprovals: 'Approvals',
+      safetyPrivacy: 'Privacy & network',
+      safetyCheckpoints: 'Checkpoints',
+      browserProfile: 'Browser profile',
+      browserNetwork: 'Local & private URLs',
+      memoryPersistent: 'Persistent memory',
+      memoryContext: 'Context & compression',
+      voiceConversation: 'Voice conversation',
+      voiceTranscription: 'Speech to text',
+      voiceSpeech: 'Text to speech',
+      advancedRuntime: 'Agent limits',
+      advancedTools: 'Tool access',
+      advancedTerminal: 'Terminal backend',
+      advancedOutput: 'Output limits',
+      advancedDelegation: 'Subagents',
+      advancedDesktop: 'Desktop & startup',
+      gatewayConnection: 'This window',
+      gatewayDevices: 'Saved connections',
+      gatewayManagedUpdates: 'Remote updates',
+      gatewayManagedUpdatesUnavailable: 'Remote updates need a desktop version with managed SSH update support.',
+      gatewayManagedUpdatesEmpty: 'Add an SSH connection in Saved connections to manage its updates here.',
+      keyboardShortcuts: 'Key bindings',
+      screenCapture: 'Screen capture',
+      notificationAlerts: 'Desktop alerts',
+      notificationSounds: 'Sounds',
+      archivedSessions: 'Archive & retention',
+      defaultDirectory: 'Default project folder',
+      vaultCredentials: 'Saved credentials',
+      vaultSources: 'Password managers',
+      appUpdates: 'Version & updates',
+      uninstall: 'Uninstall',
+      billingOverview: 'Overview',
+      billingPlans: 'Plans'
+    },
     closeSettings: 'Close settings',
     exportConfig: 'Export config',
     importConfig: 'Import config',
@@ -732,6 +785,8 @@ export const en: Translations = {
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       hideCodeDiffsTitle: 'Hide code diffs',
       hideCodeDiffsDesc: 'Show file edits as inline tool rows with added/removed line counts, without the code.',
+      hideThreadTimelineTitle: 'Hide thread timeline bars',
+      hideThreadTimelineDesc: 'Hide the navigation bars along the right edge of each conversation.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
       uiScaleTitle: 'UI Scale',
@@ -1172,11 +1227,11 @@ export const en: Translations = {
       pasteSessionToken: 'Paste session token',
       plainTextConfirmTitle: 'Store the gateway token in plain text?',
       plainTextConfirmDesc:
-        'No OS keyring service was found on this machine, so the token would be saved unencrypted in the app’s connection settings file, readable by any process running as this user. Install or enable GNOME Keyring or KWallet for encrypted storage.',
+        'No OS keyring service was found on this machine, so the token would be saved unencrypted in the app’s connection settings file, readable by any process running as this user. Install or enable your system keychain (GNOME Keyring or KWallet on Linux) for encrypted storage.',
       plainTextConfirmAction: 'Save as plain text',
       plainTextStoredTitle: 'Token stored in plain text',
       plainTextStoredDesc:
-        'Secure storage is unavailable, so the saved token is stored unencrypted in the app’s connection settings file on this machine. Install or enable GNOME Keyring or KWallet to encrypt it.',
+        'Secure storage is unavailable, so the saved token is stored unencrypted in the app’s connection settings file on this machine. Install or enable your system keychain (GNOME Keyring or KWallet on Linux) to encrypt it.',
       keychainEncryptionTitle: 'Encrypt saved secrets with the OS keychain',
       keychainEncryptionDesc:
         'Off by default. When on, gateway tokens and sign-in credentials are encrypted with your system keychain (Keychain Access, GNOME Keyring, or Windows DPAPI) — your system may ask for permission or a password. When off, they are stored as plain files readable only by your user account.',
@@ -1793,7 +1848,23 @@ export const en: Translations = {
       tierCommunity: 'community',
       updateToPin: (sha: string) => `Update to ${sha}`,
       updateFailed: (name: string) => `Could not update ${name}`,
-      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`
+      updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
+      uninstall: 'Uninstall',
+      uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
+      uninstallConfirmTitle: (name: string) => `Uninstall ${name}?`,
+      uninstallConfirmBody: (name: string, profile: string) =>
+        `This deletes the plugin's files from the ${profile} profile. Any desktop half it shipped is removed with it. Reinstall it from the catalog or from Git at any time.`,
+      uninstallFailed: (name: string) => `Could not uninstall ${name}`,
+      uninstalled: (name: string) => `${name} uninstalled. Restart the gateway to unload it.`,
+      uninstallDesktopTip: (name: string) => `Uninstall ${name} from this app`,
+      uninstallDesktopConfirmBody: (name: string) =>
+        `This deletes ${name} from the desktop-plugins folder on this computer and unloads it now. Reinstall it from Git or drop the folder back at any time.`,
+      uninstalledDesktop: (name: string) => `${name} uninstalled.`,
+      deepLinkErrorTitle: 'Plugin install link rejected',
+      deepLinkCatalogInvalidName: 'The link\u2019s catalog name is missing or invalid.',
+      deepLinkCatalogUnknown: (name: string) =>
+        `\u201C${name}\u201D is not in the Hermes plugin catalog. Nothing was installed.`,
+      deepLinkCatalogUnavailable: 'Could not load the Hermes plugin catalog. Check your connection and open the link again.'
     },
     officialCatalog: 'Available to install',
     officialPill: 'Official',
@@ -2515,22 +2586,18 @@ export const en: Translations = {
     failedRename: 'Failed to rename profile'
   },
 
+  modelAssignment: {
+    saveFailed: 'Hermes did not save that model change.',
+    confirmTitle: 'Model Selection Warning',
+    confirmDetail: 'Confirm only if you accept this trade-off.',
+    confirmAction: 'Confirm',
+    declined: 'Model change cancelled — you declined the data-training tier warning.'
+  },
+
   cron: {
     close: 'Close cron',
     title: 'Scheduled jobs',
     count: count => `${count} ${count === 1 ? 'job' : 'jobs'}`,
-    modelImpact: {
-      title: 'Scheduled jobs stay on their original model',
-      message: count =>
-        `${count} unpinned scheduled ${count === 1 ? 'job keeps' : 'jobs keep'} running on the model ${count === 1 ? 'it was' : 'they were'} created under. Pin ${count === 1 ? 'it' : 'them'} or set cron.model to move ${count === 1 ? 'it' : 'them'}.`,
-      detailMore: (names, remaining) => `${names} and ${remaining} more`,
-      review: 'Review scheduled jobs',
-      saveFailed: 'Hermes did not save that model change.',
-      confirmTitle: 'Model Selection Warning',
-      confirmDetail: 'Confirm only if you accept this trade-off.',
-      confirmAction: 'Confirm',
-      declined: 'Model change cancelled — you declined the data-training tier warning.'
-    },
     search: 'Search cron jobs...',
     loading: 'Loading cron jobs...',
     states: {
@@ -2749,6 +2816,10 @@ export const en: Translations = {
     results: 'Results',
     pinned: 'Pinned',
     sessions: 'Sessions',
+    terminal: 'Terminal',
+    files: 'Files',
+    review: 'Review',
+    logs: 'Logs',
     cronJobs: 'Cron jobs',
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',
@@ -4256,7 +4327,6 @@ export const en: Translations = {
       authorized: server => `Authorized ${server}`,
       failed: server => `Setup failed for ${server}`,
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
-      notInCatalog: server => `“${server}” is not in the MCP catalog`,
       envRequired: 'Fill in the required credentials first',
       sendFailed: 'Could not send MCP setup response',
       reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',
@@ -4298,6 +4368,7 @@ export const en: Translations = {
       statusRecovered: 'Recovered',
       statusDone: 'Done',
       resultUnavailable: 'Result unavailable',
+      resultInterrupted: 'Interrupted',
       memoryWriteNoted: 'Memory write noted',
       actions: {
         read: 'Read',

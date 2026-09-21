@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cron.jobs import create_job, get_job, list_jobs, load_jobs, save_jobs
+from cron.jobs import create_job, get_job, list_jobs, load_jobs, pause_job, save_jobs
 from hermes_cli import cron as cron_cli
 from hermes_cli.cron import cron_command
 from hermes_cli.subcommands.cron import build_cron_parser
@@ -259,6 +259,18 @@ class TestCronDoctor:
 
 class TestCronListStatusRendering:
     """`cron list` must never paint an undelivered run as a success (#83993)."""
+
+    def test_default_list_includes_paused_jobs(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        job = create_job(prompt="Paused digest", schedule="every 1h")
+        pause_job(job["id"])
+
+        cron_command(Namespace(cron_command="list", all=False))
+
+        out = capsys.readouterr().out
+        assert job["id"] in out
+        assert "[paused]" in out
+        assert "No scheduled jobs" not in out
 
     def test_delivery_failed_is_not_green_ok(self, tmp_cron_dir, capsys, monkeypatch):
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])

@@ -690,6 +690,8 @@ Import the app's real components directly so your UI is native by default:
 > `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`,
 > `DecodeText`.
 
+`DecodeText`'s `loop` is opt-in as of this change — it decodes once and holds by default, so pass `loop` explicitly on progress surfaces that should keep scrambling.
+
 Plus helpers: `cn` (class merge), `icons.*` (the app's lucide set), `haptic`,
 `profileColor` / `profileColorSoft` (deterministic identity colors), the time
 formatters `relativeTime` / `fmtDateTime` / `fmtDayTime` / `coarseElapsed`,

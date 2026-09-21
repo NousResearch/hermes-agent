@@ -61,30 +61,6 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 # see _run_housekeeping_in_executor.
 _HOUSEKEEPING_MAX_WORKERS = 4
 
-
-def _get_or_create_pool(
-    owner: Any, attr: str, prefix: str, max_workers: int
-) -> concurrent.futures.ThreadPoolExecutor:
-    """Get-or-create one of the gateway-owned pools under the owner's shared lock.
-
-    A module-level function, not a method: ``_get_executor`` is called unbound against
-    lightweight test doubles (``GatewayRunner._get_executor(fake)``), so it must not depend on
-    any sibling method those doubles do not implement.
-    """
-    lock = getattr(owner, "_executor_lock", None)
-    if lock is None:
-        lock = threading.Lock()
-        owner._executor_lock = lock
-    with lock:
-        if getattr(owner, "_executor_closing", False):
-            raise RuntimeError("Gateway is shutting down; executor unavailable")
-        executor = getattr(owner, attr, None)
-        if executor is None or getattr(executor, "_shutdown", False):
-            executor = concurrent.futures.ThreadPoolExecutor(
-                max_workers=max_workers, thread_name_prefix=prefix)
-            setattr(owner, attr, executor)
-        return executor
-
 # End reasons meaning the USER deliberately closed this thread. Shared by _classify_completion_target and
 # _resolve_async_delegation_session so they never disagree (else a "delivered" reason is acked, then lost).
 _USER_BOUNDARY_END_REASONS = ("session_reset", "user_exit", "session_switch", "new_session")
@@ -4330,13 +4306,35 @@ class GatewayRunner(
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""
-        return _get_or_create_pool(self, "_executor", "hermes-gateway", 10)
+        lock = getattr(self, "_executor_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._executor_lock = lock
+        with lock:
+            if getattr(self, "_executor_closing", False):
+                raise RuntimeError("Gateway is shutting down; executor unavailable")
+            executor = getattr(self, "_executor", None)
+            if executor is None or getattr(executor, "_shutdown", False):
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=10, thread_name_prefix="hermes-gateway")
+                self._executor = executor
+            return executor
 
     def _get_housekeeping_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for best-effort session housekeeping."""
-        # Prefix stays under "hermes-gateway" so existing thread-name scans keep matching.
-        return _get_or_create_pool(
-            self, "_housekeeping_executor", "hermes-gateway-hk", _HOUSEKEEPING_MAX_WORKERS)
+        lock = getattr(self, "_executor_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._executor_lock = lock
+        with lock:
+            if getattr(self, "_executor_closing", False):
+                raise RuntimeError("Gateway is shutting down; executor unavailable")
+            executor = getattr(self, "_housekeeping_executor", None)
+            if executor is None or getattr(executor, "_shutdown", False):
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=_HOUSEKEEPING_MAX_WORKERS, thread_name_prefix="hermes-gateway-hk")
+                self._housekeeping_executor = executor
+            return executor
 
     def _shutdown_executor(self, drain_timeout: float = 0.0) -> int:
         """Stop the gateway-owned executor; returns the number of worker threads still running.
@@ -4352,9 +4350,8 @@ class GatewayRunner(
             self._executor = None
             housekeeping = getattr(self, "_housekeeping_executor", None)
             self._housekeeping_executor = None
-        # Housekeeping is best-effort and nothing awaits it by now, so it gets no drain budget —
-        # but it MUST be stopped: its workers are non-daemon and concurrent.futures' atexit hook
-        # would otherwise join them and strand the process "down but not exited".
+        # Housekeeping is best-effort and nothing drains it, so it gets no drain budget — but a
+        # pool nobody drains must still be shut down, or its threads outlive the runner.
         if housekeeping is not None:
             try:
                 housekeeping.shutdown(wait=False, cancel_futures=True)

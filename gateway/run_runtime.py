@@ -49,8 +49,30 @@ async def _build_profile_authority(runner, name, home, *, register):
         try:
             authority = await initialize_session_authority(
                 runner, profile_id=str(home), instance_id=instance_id, db=db, register=register)
+            # Capture the registrations before yielding to the fallible collector: the
+            # runner's store, its epoch map or its authority may be replaced while we wait.
+            store = runner.session_store
+            epochs = store._local_authority_epochs
+            db_path, epoch = Path(db.db_path).resolve(), authority.epoch
+            try:
+                # Reclaim only before publication; the collector still refuses hot-serve.
+                from gateway.run_input_reclamation import collect_legacy_copies_before_ingress
+                await asyncio.to_thread(collect_legacy_copies_before_ingress, runner, authority)
+            except BaseException:
+                from gateway.session_cron import unbind_owner
+                unbind_owner(authority)
+                if epochs.get(db_path) == epoch:
+                    epochs.pop(db_path)
+                if register and getattr(runner, 'session_authority', None) is authority:
+                    runner.session_authority = None
+                    if getattr(store, '_local_authority_epoch', None) == epoch:
+                        store._local_authority_epoch = None
+                # Metadata withdrawal is not worker cancellation or ownership release.
+                raise
         except BaseException:
-            registry.remove(home)
+            # Never mask the launch failure or remove a replacement authority's slot.
+            if not register and registry.for_home(home) is None:
+                registry.remove(home)
             raise
     registry.replace(home, authority)
     return authority

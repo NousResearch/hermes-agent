@@ -44,6 +44,8 @@ def test_rejected_batch_keeps_an_alias_another_capture_reused(tmp_path, monkeypa
 async def test_physical_holders_and_uncertain_stat_deny_collection(tmp_path, monkeypatch, alias):
     db, owner = _authority(tmp_path, monkeypatch)
     with db:
+        from gateway.hosted_room_input_custody import initialize_input_custody
+        initialize_input_custody(db)
         first = _staged(tmp_path, 'shared.png', 2048)
         name = {'same': 'shared.png', 'case': 'SHARED.png', 'hardlink': 'linked.png',
             'distinct': 'other.png', 'missing-holder': 'missing.png'}[alias]

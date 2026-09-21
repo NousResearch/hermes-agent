@@ -38,6 +38,8 @@ def branch_in_transaction(db, conn, session_id, payload):
     ids, tools = db._tail_rows_after_watermark(conn,
         'SELECT id,tool_calls FROM messages WHERE session_id=? AND active=1 ORDER BY id', [target])
     db._clone_message_rows(conn, ids, session_id=child)
+    from hermes_state_input_custody import copy_branch_input_refs
+    copy_branch_input_refs(conn, session_id, child, physical_session=target)
     conn.execute('UPDATE sessions SET message_count=?,tool_call_count=? WHERE id=?', (len(ids), tools, child))
     if payload.get('title'):
         db._set_session_title_in_transaction(conn, child, payload['title'], source=db.TITLE_SOURCE_USER)

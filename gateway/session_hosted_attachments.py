@@ -135,10 +135,11 @@ def submission_payload(rpc, prompt, attachments=None):
     return {'text': text, **({'attachments': images} if images else {})}
 
 
-def committed_submission_payload(rpc, prompt, attachments=None):
-    from gateway.session_ingress_media import admit_attachments
-    payload = submission_payload(rpc, prompt, attachments)
-    return {'text': payload['text'], **admit_attachments(payload.get('attachments'))}
+def committed_submission_payload(rpc, prompt, attachments=None, *, admission=None):
+    if admission is None:
+        raise RuntimeStoreError('input_preparation_required')
+    from gateway.hosted_room_input_preparation import reconstruct_accepted_payload
+    return reconstruct_accepted_payload(rpc, prompt, attachments, admission)
 
 
 def _attested_inputs(attachments, digests):

@@ -58,6 +58,8 @@ async def test_retained_bytes_are_released_after_cancel_and_settlement(tmp_path,
     actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     with db:
+        from gateway.hosted_room_input_custody import initialize_input_custody
+        initialize_input_custody(db)
         shared = _staged(tmp_path, 'shared.png', 64)
         first = await _submit(authority, 'first', [shared])
         second = await _submit(authority, 'second', [shared])

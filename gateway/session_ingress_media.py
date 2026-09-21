@@ -5,6 +5,7 @@ and upload limits. Its flat age-based cleanup skips this retained subdirectory:
 native bytes are released by ``release_admission_media`` once their row is
 terminal and no live native input or retained API image context still holds them.
 """
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -26,6 +27,9 @@ def _media_root():
 # cleanup of the staging file can change what executes.
 _ATTACHMENT_MIMES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
 _ATTACHMENT_LIMIT = 10
+
+# Trusted preparation scope; never populated from public payload fields.
+_preparation_capture = ContextVar('native_input_preparation_capture', default=None)
 
 
 def admit_attachments(attachments):
@@ -88,22 +92,44 @@ def capture_native_media(paths):
         for value in paths:
             _capture_file(Path(value), limit, total, references, staged)
             total = sum(reference['size'] for reference in references)
+        # Ownership is per physical target; admission semantics remain per entry.
+        # Keep duplicates in references (and in the byte budget), not in publication.
+        targets = {}
         for temporary, reference in zip(staged, references):
-            target = Path(reference['path'])
-            root = target.parent.parent
-            if target.parent.resolve() != target.parent:
+            existing = targets.setdefault(reference['path'], (temporary, reference))
+            if existing[1] != reference:
                 raise RuntimeStoreError('invalid_params')
-            target.parent.mkdir(mode=0o700, exist_ok=True)
-            if target.exists() or target.is_symlink():
-                restore_native_media([reference])
-            else:
-                os.replace(temporary, target)
-            for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
-                _sync_directory(directory)
+        unique_staged = [item[0] for item in targets.values()]
+        unique_references = [item[1] for item in targets.values()]
+        publish = lambda: _publish_native_media(unique_staged, unique_references)
+        custody = _preparation_capture.get()
+        if custody is None:
+            publish()
+        else:
+            custody(unique_staged, unique_references, publish)
     finally:
         for temporary in staged:
             temporary.unlink(missing_ok=True)
     return references
+
+
+def _publish_native_media(staged, references):
+    for temporary, reference in zip(staged, references):
+        target = Path(reference['path'])
+        root = target.parent.parent
+        if target.parent.resolve() != target.parent:
+            raise RuntimeStoreError('invalid_params')
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        try:
+            # No replacement: concurrent captures must not change physical custody.
+            os.link(temporary, target)
+        except FileExistsError:
+            restore_native_media([reference])
+        # Drop our private link before subsequent fallible sync/identity handoff.
+        # Unknown surviving hardlinks still make the collector refuse deletion.
+        temporary.unlink()
+        for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
+            _sync_directory(directory)
 
 
 def _capture_file(path, limit, total, references, staged):
@@ -171,6 +197,13 @@ def _held_media_paths(conn):
             references.extend(attachments or ())
             references.extend(native or ())
         held.update(reference['path'] for reference in references)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_native_items'").fetchone():
+        import time
+        from hermes_state_input_custody import copy_is_held
+        now = time.time()
+        for copy in conn.execute("SELECT * FROM input_custody_copies WHERE namespace='native' AND state!='removed'"):
+            if copy_is_held(conn, copy, now):
+                held.add(str(_media_root() / copy['digest'] / copy['name']))
     return held
 
 
@@ -214,6 +247,7 @@ def release_admission_media(db, admission_id):
         return 0
     root = _media_root()
     def collect(conn):
+        from gateway.hosted_room_input_custody import custody_holds
         held = _held_media_paths(conn)
         identities = _held_file_identities(held, root)
         if identities is None:
@@ -222,6 +256,8 @@ def release_admission_media(db, admission_id):
         for reference in mine:
             path = Path(reference['path'])
             if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
+                continue
+            if custody_holds(conn, db.db_path, reference):
                 continue
             try:
                 if path.parent.resolve() != path.parent or _file_identity(path) in identities:

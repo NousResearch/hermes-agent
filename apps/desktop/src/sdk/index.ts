@@ -1457,17 +1457,22 @@ export const host = {
    *  a non-retained secondary socket closes at refcount 0 between calls — and
    *  the gateway reaps any runtime session that socket minted, failing the
    *  next RPC with 4001. Acquire before the first session-scoped RPC, release
-   *  (idempotent) in a `finally`. Feature-detect: older hosts lack this. */
-  retainProfile: async (route: PluginProfileRoute | string): Promise<() => void> => {
+   *  (idempotent) in a `finally`. An explicit user action can mark the retain
+   *  foreground so a retired route takes the pool's reserved interactive
+   *  slot. Feature-detect: older hosts lack this. */
+  retainProfile: async (
+    route: PluginProfileRoute | string,
+    options?: PluginProfileRequestOptions
+  ): Promise<() => void> => {
     if (typeof route !== 'string') {
       if (!route.connectionId.trim() || !route.profile.trim()) {
         throw new Error('Profile route must include connectionId and profile')
       }
 
-      return retainGatewayForAgent(route.connectionId, route.profile)
+      return retainGatewayForAgent(route.connectionId, route.profile, options)
     }
 
-    return retainGatewayForAgent(null, route.trim() || 'default')
+    return retainGatewayForAgent(null, route.trim() || 'default', options)
   },
 
   /** Read persisted sessions from a profile's owning source without dialing

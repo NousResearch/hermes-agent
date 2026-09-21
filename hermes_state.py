@@ -1064,21 +1064,15 @@ class SessionDB(
             (conn.executemany if many else conn.execute)(sql, params)
         self._execute_write(_do, patience_s=patience_s)
 
-    @staticmethod
-    def _write_rowcount_on_conn(conn, sql: str, params: Any = ()) -> int:
-        """Execute one UPDATE/DELETE on an existing transaction and return rows changed."""
-        rowcount = conn.execute(sql, params).rowcount
-        if rowcount is None or rowcount < 0:
-            rowcount = conn.execute("SELECT changes()").fetchone()[0]
-        return rowcount
-
     def _write_rowcount(self, sql: str, params: Any = (), *, patience_s: Optional[float] = None) -> int:
         """Run one UPDATE/DELETE through ``_execute_write``; return rows changed
         (``SELECT changes()`` when the driver reports None / negative)."""
-        return self._execute_write(
-            lambda conn: self._write_rowcount_on_conn(conn, sql, params),
-            patience_s=patience_s,
-        )
+        def _do(conn):
+            rowcount = conn.execute(sql, params).rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
+        return self._execute_write(_do, patience_s=patience_s)
 
     def _read_one(self, sql: str, params: Any = ()) -> Optional[sqlite3.Row]:
         """``fetchone()`` of one read-only statement via ``_read_ctx``."""

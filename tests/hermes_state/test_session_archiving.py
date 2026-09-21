@@ -51,6 +51,34 @@ def test_unarchiving_compression_tip_unarchives_projected_root(db):
     assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True)] == ["tip"]
 
 
+def test_unarchive_if_archived_changes_only_archived_lineages(db):
+    _compression_pair(db)
+    assert db.unarchive_if_archived("tip") is False
+
+    assert db.set_session_archived("tip", True) is True
+    assert db.unarchive_if_archived("tip") is True
+
+    assert db.get_session("root")["archived"] == 0
+    assert db.get_session("tip")["archived"] == 0
+
+
+def test_lineage_flags_do_not_cross_reset_fork_boundary(db):
+    _compression_pair(db)
+    db.create_session(
+        "reset", source="cli", parent_session_id="root", model_config={"_reset_from": "root"},
+    )
+
+    assert db.set_session_archived("root", True) is True
+    assert db.get_session("tip")["archived"] == 1
+    assert db.get_session("reset")["archived"] == 0
+
+    assert db.set_session_archived("reset", True) is True
+    assert db.unarchive_if_archived("reset") is True
+    assert db.get_session("root")["archived"] == 1
+    assert db.get_session("tip")["archived"] == 1
+    assert db.get_session("reset")["archived"] == 0
+
+
 def test_archived_only_view_includes_hidden_archived_sessions(db):
     """The archived-only view is the recovery surface: a session that is both
     archived and hidden (Bot Mode marks its sessions hidden) must appear

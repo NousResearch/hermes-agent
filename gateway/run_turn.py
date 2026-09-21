@@ -87,6 +87,19 @@ _UNEXPECTED_SILENCE_REPLY = (
 )
 
 
+async def _unarchive_session_on_human_activity(
+    session_db: Any, session_id: str, display_kind: Optional[str],
+) -> bool:
+    """Resurface an archived lineage only for a validated human inbound turn."""
+    if session_db is None or not session_id or display_kind is not None:
+        return False
+    try:
+        return bool(await session_db.unarchive_if_archived(session_id))
+    except Exception:
+        logger.warning("auto-unarchive failed for session=%s", session_id, exc_info=True)
+        return False
+
+
 def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
     """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
     text = " ".join(str(prompt or "").split())
@@ -2098,6 +2111,12 @@ class GatewayTurnMixin:
         )
         if message_text is None:
             return None, _session_env_tokens
+
+        # A validated human message revives a soft-hidden conversation. Machinery display kinds cover
+        # internal events and scheduled heartbeats, which must preserve a deliberate archive (#117713).
+        await _unarchive_session_on_human_activity(
+            self._session_db, session_entry.session_id, persist_user_display_kind,
+        )
 
         message_text, persist_user_message, persist_user_timestamp = (
             self._hmwa_apply_message_timestamp(event, message_text)

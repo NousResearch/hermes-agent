@@ -306,10 +306,6 @@ class SessionCompressionMixin:
                 "WHERE id = ? AND ended_at IS NULL", (time.time(), parent_session_id))
             if updated.rowcount != 1:
                 raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
-            # Publishing proves this conversation is active again. The archive sweep may have hidden the
-            # whole idle lineage before this turn; clear that flag atomically so root-projected listings
-            # admit the new tip instead of leaving a live gateway chat invisible (#117713).
-            self._set_lineage_column_on_conn(conn, "archived", child_session_id, 0)
         self._execute_write(_do)
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:

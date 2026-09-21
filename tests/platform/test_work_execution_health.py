@@ -623,3 +623,121 @@ def test_nova_apply_does_not_clobber_the_operators_gateway_config(tmp_path, monk
         "nova apply removed kanban.dispatch_in_gateway from the home config; applying to "
         "fix a stalled board would turn the dispatcher off"
     )
+
+
+# ---------------------------------------------------------------------------
+# A channel costs a profile, and a bundle that declares none should pay nothing
+#
+# `nova apply` on the first AWS deployment created three profiles for two agents:
+# customer-support, operations, and operations__acme-support-telegram. The third
+# comes from the example bundle's Telegram channel, which names both agents in
+# `allowed_agents` — a real feature, correctly applied, and nothing the first
+# deployment wanted: it takes no inbound channels at all.
+# ---------------------------------------------------------------------------
+
+
+def _bundle_without_channels(tmp_path):
+    """The example bundle with its channel declaration removed."""
+    import shutil
+
+    root = tmp_path / "bundle"
+    shutil.copytree(EXAMPLE_BUNDLE, root)
+    (root / "channels.yaml").unlink()
+    return root
+
+
+def _apply(home, bundle_root):
+    from nova.apply import apply_bundle
+    from nova.audit import AuditLog
+    from nova.runtime.hermes import HermesRuntime
+    from nova.spec import load_bundle
+
+    bundle = load_bundle(bundle_root)
+    runtime = HermesRuntime(home=home, tenant_id=bundle.tenant_id)
+    apply_bundle(
+        bundle, runtime,
+        audit=AuditLog(home / "audit.jsonl", tenant_id=bundle.tenant_id),
+    )
+    return bundle, runtime
+
+
+def _profiles(home):
+    root = home / "profiles"
+    return sorted(p.name for p in root.iterdir()) if root.is_dir() else []
+
+
+def test_a_bundle_with_no_channels_creates_one_profile_per_agent(tmp_path, monkeypatch):
+    """No channels declared, no channel profiles. The deployment gets what it asked for."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("NOVA_HOME", str(home))
+
+    bundle, _ = _apply(home, _bundle_without_channels(tmp_path))
+    expected = sorted(a.id for a in bundle.agents if a.enabled)
+    assert _profiles(home) == expected, (
+        f"apply created {_profiles(home)} for agents {expected}; a bundle that declares "
+        "no channels must not materialize a channel-scoped profile"
+    )
+    assert not any("__" in name for name in _profiles(home))
+
+
+def test_a_declared_channel_is_what_creates_the_extra_profile(tmp_path, monkeypatch):
+    """The other half, so the test above is a contract and not a description of a bug.
+
+    The channel profile is correct behaviour — it is how a per-channel approval policy is
+    enforced. It is only unwanted when the channel is.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("NOVA_HOME", str(home))
+
+    _apply(home, EXAMPLE_BUNDLE)
+    assert any("__" in name for name in _profiles(home)), (
+        f"the example bundle declares a channel but produced no channel profile: "
+        f"{_profiles(home)}"
+    )
+
+
+def test_both_declared_agents_are_dispatchable_after_apply(tmp_path, monkeypatch):
+    """(d) end to end on a channel-free bundle: apply, submit, and the gateway's own
+    dispatcher claims both independent steps."""
+    import sqlite3
+
+    from nova.audit import AuditLog
+    from nova.supervisor import submit_objective
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("NOVA_HOME", str(home))
+    (home / "config.yaml").write_text(
+        "kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8"
+    )
+
+    bundle, runtime = _apply(home, _bundle_without_channels(tmp_path))
+    from hermes_cli.profiles import profile_exists
+
+    for agent in bundle.agents:
+        if agent.enabled:
+            assert profile_exists(agent.id), f"{agent.id} is not dispatchable after apply"
+
+    submit_objective(
+        bundle.objectives[0], bundle.agents, runtime,
+        audit=AuditLog(home / "audit.jsonl", tenant_id=bundle.tenant_id),
+        tenant_id=bundle.tenant_id,
+    )
+    spawned, results, _ = _tick(home)
+    assert spawned, f"nothing claimed after a clean apply; {results}"
+
+    connection = sqlite3.connect(home / "kanban.db")
+    try:
+        claimed = connection.execute(
+            "SELECT assignee, status, worker_pid FROM tasks WHERE id IN "
+            f"({','.join('?' * len(spawned))})", spawned,
+        ).fetchall()
+    finally:
+        connection.close()
+    assert {a for a, _s, _p in claimed} == {"operations", "customer-support"}, claimed
+    assert all(s == "running" and p for _a, s, p in claimed), claimed

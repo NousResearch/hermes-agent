@@ -291,3 +291,93 @@ def test_credentials_that_are_shaped_like_variable_names_are_still_refused(value
 def test_real_variable_names_are_not_mistaken_for_credentials(name):
     """A check that rejects legitimate names is one people work around."""
     assert ProviderSpec.parse(Doc({"api_key_env": name})).api_key_env == name
+
+
+# ---------------------------------------------------------------------------
+# A native provider does not need the endpoint it ignores
+#
+# The first AWS deployment applied cleanly and then said, of three Bedrock
+# agents, "cannot run yet — ACME_LLM_URL is not set". The credential was already
+# working: `sts:GetCallerIdentity` inside the worker returned the instance role.
+#
+# The tenant's deployment.yaml deferred its endpoint to ${ACME_LLM_URL}, which is
+# the right shape for the customer-gateway provider that file describes. Agents
+# naming `bedrock` inherit that endpoint through `merged_with`, and `bedrock`
+# takes a region, not a URL — `build_provider_config` says so in a warning of its
+# own. `required_env` demanded the variable behind it anyway.
+# ---------------------------------------------------------------------------
+
+
+def test_a_native_provider_does_not_require_the_endpoint_it_ignores():
+    """The deployed case. Inherited endpoint, native provider, no variable to set."""
+    spec = ProviderSpec(
+        provider="bedrock", model="anthropic.claude-sonnet-4-6",
+        endpoint="${ACME_LLM_URL}", api_key_env="ACME_LLM_KEY", region="eu-west-2",
+    )
+    assert required_env(spec) == (), (
+        "a Bedrock agent is reported unrunnable over a URL the runtime discards and a "
+        "credential variable it never reads; its identity is the instance role"
+    )
+
+
+def test_the_same_provider_still_warns_that_the_endpoint_is_ignored():
+    """Not silence — the declaration is still wrong, it is just not a prerequisite.
+    Dropping the warning with the requirement would hide a real misconfiguration."""
+    _, warnings = build_provider_config(
+        ProviderSpec(provider="bedrock", endpoint="${ACME_LLM_URL}")
+    )
+    assert any("ignores a declared endpoint" in w for w in warnings)
+
+
+def test_a_custom_provider_still_requires_its_endpoint_variable():
+    """The other half. A gateway-backed provider genuinely cannot run without a URL."""
+    spec = ProviderSpec(
+        provider="acme-gateway", endpoint="${ACME_LLM_URL}", api_key_env="ACME_LLM_KEY",
+    )
+    assert set(required_env(spec)) == {"ACME_LLM_URL", "ACME_LLM_KEY"}, (
+        "a custom provider must still demand its endpoint and credential; without them "
+        "there is nowhere to send a request and nothing to authenticate with"
+    )
+
+
+def test_a_native_providers_region_reference_is_still_required():
+    """Region is the one deferred value Bedrock genuinely consumes, so it stays required.
+    This is why the fix subtracts the endpoint's references, not everything but the key."""
+    spec = ProviderSpec(provider="bedrock", endpoint="${GATEWAY_URL}", region="${AWS_REGION}")
+    assert set(required_env(spec)) == {"AWS_REGION"}
+
+
+def test_a_name_used_by_both_endpoint_and_region_stays_required():
+    """The subtraction must not take a variable the region also needs."""
+    spec = ProviderSpec(provider="bedrock", endpoint="${SHARED}", region="${SHARED}")
+    assert set(required_env(spec)) == {"SHARED"}
+
+
+def test_a_bedrock_agent_with_no_env_file_reports_ready(tmp_path):
+    """End to end through the readiness report the operator actually sees.
+
+    No `<profile>/.env`, no ACME_LLM_URL in the environment, and the agent is runnable —
+    because on EC2 the credential is the instance role and there is no variable for it.
+    """
+    profile = tmp_path / "operations"
+    profile.mkdir()
+    spec = ProviderSpec(
+        provider="bedrock", model="anthropic.claude-sonnet-4-6",
+        endpoint="${ACME_LLM_URL}", api_key_env="ACME_LLM_KEY",
+    )
+    report = check("operations", required_env(spec), profile_dir=profile, environ={})
+    assert report.ready, report.explain()
+    assert report.missing == ()
+
+
+def test_a_gateway_agent_with_no_env_file_reports_what_is_missing(tmp_path):
+    """The refusal this whole report exists for, unchanged."""
+    profile = tmp_path / "support"
+    profile.mkdir()
+    spec = ProviderSpec(
+        provider="acme-gateway", endpoint="${ACME_LLM_URL}", api_key_env="ACME_LLM_KEY",
+    )
+    report = check("support", required_env(spec), profile_dir=profile, environ={})
+    assert not report.ready
+    assert set(report.missing) == {"ACME_LLM_URL", "ACME_LLM_KEY"}
+    assert "ACME_LLM_URL" in report.explain()

@@ -120,15 +120,35 @@ def build_provider_config(provider: ProviderSpec) -> tuple[dict[str, Any], list[
 def required_env(provider: ProviderSpec, runtime_config: Optional[dict[str, Any]] = None) -> tuple[str, ...]:
     """Variables that must exist in the worker's environment for this agent to run.
 
-    A native provider's ``api_key_env`` is excluded: the runtime resolves those credentials
-    through its own conventional variables and never reads the name declared here, so
-    demanding it would send an operator to provision a variable nothing will read — and a
-    readiness report that is wrong in the safe direction still trains people to ignore it.
-    ``build_provider_config`` warns about the same declaration for the same reason.
+    Two declarations are excluded for a native provider, for one reason: the runtime does
+    not read either of them, so demanding them sends an operator to provision variables
+    nothing will consume — and a readiness report that is wrong in the safe direction still
+    trains people to ignore it. ``build_provider_config`` warns about both declarations for
+    the same reason, which is what makes requiring them a contradiction inside one module.
+
+    ``api_key_env``
+        A native provider resolves its own credential through its own conventional
+        variable, or through an ambient identity. ``bedrock`` on EC2 is the clearest case:
+        the credential is the instance role, and there is no variable to set at all.
+    The endpoint's ``${VAR}`` references
+        ``bedrock`` takes a region, not a URL. A tenant whose ``deployment.yaml`` defers its
+        endpoint to ``${SOMETHING_URL}`` — normal for the gateway-backed shape the example
+        bundle shows — hands that reference to every agent through ``merged_with``. An agent
+        that then names a native provider inherits a URL the runtime discards, and before
+        this it inherited the demand for the variable behind it too: "cannot run yet" on a
+        deployment whose credentials were already working.
+
+    ``region`` references are NOT excluded. A native provider genuinely uses its region, so
+    a ``${VAR}`` there is a real prerequisite — which is why this subtracts the endpoint's
+    references rather than everything that is not the credential.
     """
     names = list(provider.required_env)
-    if provider.provider in NATIVE_PROVIDERS and provider.api_key_env in names:
-        names.remove(provider.api_key_env)
+    if provider.provider in NATIVE_PROVIDERS:
+        ignored = {provider.api_key_env} if provider.api_key_env else set()
+        # A name used by both endpoint and region is still required: the region use is real.
+        region_names = set(env_references(provider.region, required_only=True))
+        ignored |= set(env_references(provider.endpoint, required_only=True)) - region_names
+        names = [name for name in names if name not in ignored]
     for value in _strings(runtime_config or {}):
         names.extend(env_references(value, required_only=True))
     return tuple(dict.fromkeys(names))

@@ -309,7 +309,8 @@ def _triage_signals(conn: sqlite3.Connection, task_ids: list[str]) -> set[str]:
     failed = {
         r["id"]
         for r in conn.execute(
-            f"SELECT id FROM tasks WHERE consecutive_failures >= 2 AND id IN ({marks})",
+            f"SELECT id FROM tasks WHERE consecutive_failures >= 2"
+            f" AND status NOT IN ('triage', 'done', 'archived') AND id IN ({marks})",
             tuple(task_ids),
         ).fetchall()
     }

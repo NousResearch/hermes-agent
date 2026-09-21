@@ -2748,7 +2748,7 @@ def _first_positional_argv_index() -> int | None:
             # token itself as an option, not a command or its value.
             i += 1
             continue
-        action, _option_string, explicit_arg = option_tuples[0]
+        action, _option_string, _separator, explicit_arg = option_tuples[0]
         if action.nargs == 0 or explicit_arg is not None:
             i += 1
         else:

@@ -38,7 +38,12 @@ _BENIGN_PROBE_METHODS = frozenset({"ping", "health", "healthcheck"})
 class _BenignProbeMethodFilter(logging.Filter):
     """Suppress acp 'Background task failed' tracebacks caused by unknown liveness-probe methods
     (e.g. ``ping``); every other background-task error, incl. method_not_found for non-probe
-    methods, stays visible."""
+    methods, stays visible.
+
+    An ``invalid_params`` rejection is also not a crash — it is the adapter answering a malformed
+    request exactly as designed (e.g. a bad ``_meta.hermes.toolsets``). The traceback made a normal
+    protocol rejection look like a failure in the log, so it is collapsed to one WARNING line that
+    still names the reason."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if record.getMessage() != "Background task failed" or not record.exc_info:
@@ -49,9 +54,17 @@ class _BenignProbeMethodFilter(logging.Filter):
         except ImportError:
             return True
         exc = record.exc_info[1]
-        if not isinstance(exc, RequestError) or getattr(exc, "code", None) != -32601:
+        if not isinstance(exc, RequestError):
             return True
-        data = getattr(exc, "data", None)
+        code, data = getattr(exc, "code", None), getattr(exc, "data", None)
+        if code == -32602:
+            details = data.get("details") if isinstance(data, dict) else None
+            record.msg = "Rejected request: %s (%s)" % (details or exc, code)
+            record.args, record.exc_info, record.exc_text = (), None, None
+            record.levelno, record.levelname = logging.WARNING, "WARNING"
+            return True
+        if code != -32601:
+            return True
         return not (isinstance(data, dict) and data.get("method") in _BENIGN_PROBE_METHODS)
 
 
@@ -96,6 +109,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--yes", "-y", action="store_true", dest="assume_yes",
                         help="Accept all prompts (currently used by --setup-browser to skip the "
                              "~400 MB Chromium download confirmation).")
+    parser.add_argument("-t", "--toolsets", default=None,
+                        help="Comma-separated toolsets enabled for every session this process serves "
+                             "(default: the ACP platform toolsets). A client can scope a single session "
+                             "further via the session/new `_meta.hermes.toolsets` extension.")
     return parser.parse_args(argv)
 
 
@@ -207,13 +224,18 @@ def main(argv: list[str] | None = None) -> None:
     # model_tools.py module scope to avoid freezing the gateway's loop on lazy import (#16856).
     if os.environ.get("HERMES_ACP_SKIP_CONFIGURED_MCP", "").strip() != "1":
         try:
-            from hermes_cli.mcp_startup import start_background_mcp_discovery
+            from hermes_cli.mcp_startup import set_mcp_server_filter, start_background_mcp_discovery
 
+            # ``hermes acp`` arrives here through hermes_cli.main, which has already narrowed the
+            # spawn set by ``-t``; ``hermes-acp`` / ``python -m acp_adapter.entry`` does not go
+            # through it, so apply the same filter here — otherwise one flag means two different
+            # things depending on which launcher the editor was pointed at.
+            set_mcp_server_filter(args.toolsets)
             start_background_mcp_discovery(logger=logger, thread_name="acp-mcp-discovery")
         except Exception:
             logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
-    agent = HermesACPAgent()
+    agent = HermesACPAgent(default_toolsets=args.toolsets)
     try:
         asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:

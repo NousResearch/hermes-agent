@@ -80,7 +80,13 @@ def cmd_acp(args):
     """Launch Hermes Agent as an ACP server."""
     try:
         from acp_adapter.entry import main as acp_main
-        acp_main([flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)])
+        argv = [flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)]
+        # ``-t/--toolsets`` takes a value, so it cannot ride in _ACP_FLAGS. argparse may hand it
+        # over repeated (list) as well as comma-separated; the adapter splits on both.
+        if toolsets := getattr(args, "toolsets", None):
+            argv += ["--toolsets", toolsets if isinstance(toolsets, str)
+                     else ",".join(str(t) for t in toolsets)]
+        acp_main(argv)
     except ImportError as e:
         from hermes_cli.main_dep_hints import missing_optional_deps_message
 

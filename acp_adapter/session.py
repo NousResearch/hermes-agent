@@ -108,6 +108,39 @@ def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
     return list(dict.fromkeys(names))
 
 
+def _normalize_acp_toolsets(value: Any) -> List[str] | None:
+    """Coerce a toolset selection — JSON array or comma/space-delimited string — into a clean
+    list of names. ``None`` (also for a malformed value or an empty selection) means "no
+    selection", so the caller keeps whatever default applies."""
+    if not isinstance(value, (str, list, tuple)):
+        return None
+    names: List[str] = []
+    for item in ([value] if isinstance(value, str) else value):
+        names += [part.strip() for part in str(item).replace(",", " ").split()]
+    return list(dict.fromkeys(n for n in names if n)) or None
+
+
+def _unknown_acp_toolsets(names: List[str]) -> List[str]:
+    """Names the toolset registry does not know. ``mcp-*`` (per-connection MCP servers, which are
+    registered later in the session) is always allowed; plugin toolsets are resolved by discovering
+    plugins once. An unavailable registry validates nothing rather than rejecting everything."""
+    try:
+        from toolsets import validate_toolset
+    except Exception:
+        logger.debug("Toolset registry unavailable; skipping ACP toolset validation", exc_info=True)
+        return []
+    unknown = [n for n in names if not n.startswith("mcp-") and not validate_toolset(n)]
+    if unknown:
+        try:
+            from hermes_cli.plugins import discover_plugins
+            discover_plugins()
+        except Exception:
+            logger.debug("Plugin discovery failed while validating ACP toolsets", exc_info=True)
+            return unknown
+        unknown = [n for n in unknown if not validate_toolset(n)]
+    return unknown
+
+
 def _parse_model_config(mc: Any) -> dict:
     """Decode a persisted model_config JSON blob; ``{}`` when absent/invalid/non-dict."""
     try:
@@ -138,6 +171,13 @@ class SessionState:
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
+    # This session's own toolset request (``session/new`` ``_meta.hermes.toolsets``); ``None`` =
+    # none was made, so the process ``--toolsets`` default (a property of the process, re-read on
+    # every launch) applies, then the platform default. Deliberately not the *resolved* list: persisting
+    # the process default would pin one launch's flag onto the session forever.
+    # Never holds the expanded ``mcp-*`` entries either, which belong to a live connection's MCP
+    # servers — persisting those would resurrect toolsets whose servers are gone.
+    toolsets: List[str] | None = None
     is_running: bool = False
     # A state-mutating slash command (/reset, /compress, /model) is in flight. Turn claims
     # must queue behind it: /compress's LLM call and /model's agent rebuild take seconds, so
@@ -159,9 +199,11 @@ class SessionManager:
     Sessions are held in-memory for fast access **and** persisted to the shared
     SessionDB so they survive restarts and are searchable via ``session_search``."""
 
-    def __init__(self, agent_factory=None, db=None):
+    def __init__(self, agent_factory=None, db=None, default_toolsets=None):
         """``agent_factory``: AIAgent-like factory (tests); default builds a real AIAgent from
-        the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``."""
+        the runtime provider config. ``db``: SessionDB; default lazily opens ``~/.hermes/state.db``.
+        ``default_toolsets``: process-wide selection from ``hermes acp --toolsets`` applied to every
+        session that does not request its own; ``None`` keeps the platform default."""
         self._sessions: Dict[str, SessionState] = {}
         self._lock = threading.Lock()
         # Serializes DB restores: session construction runs off the event loop, so two
@@ -170,21 +212,31 @@ class SessionManager:
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
         self._cwd_backfilled = False
+        self._default_toolsets = _normalize_acp_toolsets(default_toolsets)
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
-        """Create a new session with a unique ID and a fresh AIAgent."""
+    def create_session(self, cwd: str = ".", toolsets=None) -> SessionState:
+        """Create a new session with a unique ID and a fresh AIAgent. ``toolsets`` scopes this
+        session only; ``None`` falls back to the process default, then the platform default."""
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
-        state = self._install_state(session_id, agent, cwd, getattr(agent, "model", "") or "", [])
-        logger.info("Created ACP session %s (cwd=%s)", session_id, cwd)
+        toolsets = _normalize_acp_toolsets(toolsets)  # the request, not the resolved list
+        agent = self._make_agent(session_id=session_id, cwd=cwd, toolsets=toolsets)
+        state = self._install_state(session_id, agent, cwd, getattr(agent, "model", "") or "", [],
+                                    toolsets=toolsets)
+        logger.info("Created ACP session %s (cwd=%s, toolsets=%s)", session_id, cwd,
+                    getattr(agent, "enabled_toolsets", None) or "default")
         return state
 
-    def get_session(self, session_id: str) -> Optional[SessionState]:
+    def get_session(self, session_id: str, toolsets=None) -> Optional[SessionState]:
         """Return the session, transparently restoring it from the DB (e.g. after
-        a process restart) when it is not in memory; ``None`` if unknown."""
+        a process restart) when it is not in memory; ``None`` if unknown.
+
+        ``toolsets`` scopes a session restored by this call, overriding the selection persisted
+        with it. A session already in memory keeps the scope it was built with — narrowing a live
+        agent would mean rebuilding it mid-session, and the point of the override is to re-apply a
+        scope after a restart."""
         with self._lock:
             state = self._sessions.get(session_id)
         if state is not None:
@@ -192,7 +244,7 @@ class SessionManager:
         with self._restore_lock:
             with self._lock:
                 state = self._sessions.get(session_id)  # a concurrent restore may have installed it
-            return state if state is not None else self._restore(session_id)
+            return state if state is not None else self._restore(session_id, toolsets=toolsets)
 
     def fork_session(self, session_id: str, cwd: str = ".") -> Optional[SessionState]:
         """Deep-copy a session's history into a new session."""
@@ -201,9 +253,13 @@ class SessionManager:
         if original is None:
             return None
         new_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
+        # The child inherits the parent's scope; a fork that silently widened it would hand the
+        # editor a session with tools the parent was denied.
+        agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None,
+                                 toolsets=original.toolsets)
         model = getattr(agent, "model", original.model) or original.model
-        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history),
+                                    toolsets=original.toolsets)
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -249,10 +305,11 @@ class SessionManager:
         results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)
         return results
 
-    def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
-        """Update the working directory for a session and its tool overrides."""
+    def update_cwd(self, session_id: str, cwd: str, toolsets=None) -> Optional[SessionState]:
+        """Update the working directory for a session and its tool overrides. ``toolsets`` scopes
+        the session when this call is what restores it from the DB (see ``get_session``)."""
         cwd = _translate_acp_cwd(cwd)
-        state = self.get_session(session_id)  # checks DB too
+        state = self.get_session(session_id, toolsets=toolsets)  # checks DB too
         if state is None:
             return None
         state.cwd = cwd
@@ -276,10 +333,11 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: List[Dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: List[Dict[str, Any]], *, persist: bool = True,
+                       toolsets: List[str] | None = None) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
-                             history=history, cancel_event=threading.Event())
+                             history=history, cancel_event=threading.Event(), toolsets=toolsets)
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -319,7 +377,12 @@ class SessionManager:
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
-        session_meta = {"cwd": state.cwd}
+        session_meta: Dict[str, Any] = {"cwd": state.cwd}
+        # The session's own request only — never the process default (which belongs to a launch,
+        # not a session) and never the expanded ``mcp-*`` entries, whose per-connection servers
+        # are long gone by the time a restore runs. Unscoped sessions add no key at all.
+        if state.toolsets:
+            session_meta["toolsets"] = list(state.toolsets)
         for key in ("provider", "base_url", "api_mode"):
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
@@ -415,7 +478,7 @@ class SessionManager:
 
         threading.Thread(target=_run, name=f"acp-git-meta-{session_id[:8]}", daemon=True).start()
 
-    def _restore(self, session_id: str) -> Optional[SessionState]:
+    def _restore(self, session_id: str, toolsets=None) -> Optional[SessionState]:
         """Load an ACP session from the database into memory, recreating the AIAgent."""
         db = self._get_db()
         if db is None:
@@ -439,26 +502,51 @@ class SessionManager:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []
 
+        # A scoped session stays scoped across a process restart: its own request rides along in
+        # the model_config meta blob. An explicit request on session/load wins over the persisted
+        # one; a session that never made one still picks up this process's --toolsets default.
+        toolsets = _normalize_acp_toolsets(toolsets)
+        if toolsets is None and (persisted := _normalize_acp_toolsets(meta.get("toolsets"))):
+            # A persisted name can stop resolving between launches (plugin uninstalled, custom
+            # toolset dropped from config.yaml). Neither silent answer is acceptable: the platform
+            # default would hand the session tools it was scoped away from, and the unresolvable
+            # name reaches the registry as an empty selection, i.e. a zero-tool agent that still
+            # accepts prompts. Fail the restore instead, and say why.
+            if unknown := _unknown_acp_toolsets(persisted):
+                from acp.exceptions import RequestError
+                logger.warning("ACP session %s is scoped to toolset(s) that no longer exist: %s",
+                               session_id, ", ".join(unknown))
+                raise RequestError.internal_error(
+                    {"details": f"Session {session_id} is scoped to unknown toolset(s): "
+                                f"{', '.join(unknown)}"})
+            toolsets = persisted
         try:
             agent = self._make_agent(
                 session_id=session_id, cwd=cwd, model=model, api_mode=meta.get("api_mode") or None,
                 requested_provider=meta.get("provider") or row.get("billing_provider"),
-                base_url=meta.get("base_url") or row.get("billing_base_url"))
+                base_url=meta.get("base_url") or row.get("billing_base_url"), toolsets=toolsets)
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False)
+                                    history, persist=False, toolsets=toolsets)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
     # ---- internal -----------------------------------------------------------
 
+    def _session_toolsets(self, toolsets=None) -> List[str] | None:
+        """Base toolset selection for a session: the per-session request, else the process
+        ``--toolsets`` default, else ``None`` (the platform default)."""
+        return _normalize_acp_toolsets(toolsets) or self._default_toolsets
+
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
-                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
+                    enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None,
+                    toolsets: list[str] | None = None):
         """``enabled_toolsets``/``disabled_toolsets`` carry a live session's toolsets into a rebuild; ``None`` derives
-        them from the config-declared MCP servers (fresh session)."""
+        them from ``toolsets`` (this session's scope, else the process default, else the platform default) plus the
+        config-declared MCP servers."""
         if self._agent_factory is not None:
             return self._agent_factory()
 
@@ -482,7 +570,8 @@ class SessionManager:
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
             "enabled_toolsets": (list(enabled_toolsets) if enabled_toolsets is not None
-                                 else _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers)),
+                                 else _expand_acp_enabled_toolsets(self._session_toolsets(toolsets) or ["hermes-acp"],
+                                                                   mcp_server_names=configured_mcp_servers)),
             "disabled_toolsets": list(disabled_toolsets) if disabled_toolsets is not None else None,
             "model": model or default_model,
             "cwd": cwd,

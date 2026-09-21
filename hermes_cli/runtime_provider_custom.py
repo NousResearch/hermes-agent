@@ -356,6 +356,49 @@ def _try_resolve_from_custom_pool(
     return None
 
 
+def _resolve_named_custom_credential(
+    custom_provider: Dict[str, Any], base_url: str, requested_provider: str,
+    explicit_api_key: Optional[str] = None,
+) -> tuple[Any, Optional[Dict[str, Any]]]:
+    """Resolve one named provider credential with the same precedence for every caller."""
+    rp = _rp()
+    explicit_key = _clean(explicit_api_key)
+    if rp.has_usable_secret(explicit_key):
+        return explicit_key, None
+
+    key_cmd = _clean(custom_provider.get("key_cmd", ""))
+    if key_cmd:
+        from agent.command_token_source import build_command_token_provider
+        token_provider = build_command_token_provider(
+            key_cmd, str(custom_provider.get("name", requested_provider) or "custom")
+        )
+        if token_provider is not None:
+            return token_provider, None
+
+    configured_key = _clean(custom_provider.get("api_key", ""))
+    key_env = _clean(custom_provider.get("key_env") or custom_provider.get("api_key_env"))
+    if not rp.has_usable_secret(configured_key) and key_env:
+        configured_key = get_secret_str(key_env, "").strip()
+    if rp.has_usable_secret(configured_key):
+        return configured_key, None
+
+    pool_result = rp._try_resolve_from_custom_pool(
+        base_url, "custom", custom_provider.get("api_mode"),
+        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+    )
+    if pool_result:
+        return pool_result.get("api_key", ""), pool_result
+
+    if key_env and not rp._loopback_hostname(base_url_hostname(base_url)):
+        provider_name = custom_provider.get("name") or requested_provider
+        raise rp.AuthError(
+            f"No usable credentials found for named custom provider '{provider_name}'. Set {key_env}.",
+            provider=str(requested_provider or provider_name),
+            code="missing_api_key",
+        )
+    return "", None
+
+
 def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
     extra_body = custom_provider.get("extra_body")
     if not isinstance(extra_body, dict) or not extra_body:
@@ -476,31 +519,19 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None
-    pool_result = rp._try_resolve_from_custom_pool(
-        base_url, "custom", custom_provider.get("api_mode"),
-        provider_name=custom_provider.get("provider_key") or custom_provider.get("name"),
+    api_key, pool_result = _resolve_named_custom_credential(
+        custom_provider, base_url, requested_provider, explicit_api_key,
     )
     if pool_result:
         # The pool doesn't know the custom_providers fields — propagate them here too.
         _apply_custom_provider_extras(custom_provider, target_model, pool_result)
         return pool_result
-    explicit_key = (explicit_api_key or "").strip()
-    candidates = [
-        explicit_key,
-        _clean(custom_provider.get("api_key", "")),
-        get_secret_str(_clean(custom_provider.get("key_env", "")), "").strip(),
-        *rp._host_gated_env_key_candidates(base_url, ollama=False),
-    ]
-    api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")
-    # ``key_cmd`` credentials are minted per request (short-lived bearers would go stale
-    # mid-session); both wire clients accept a callable api_key (the Entra ID contract). An
-    # explicit --api-key still wins as the one-off recovery escape hatch.
-    key_cmd = _clean(custom_provider.get("key_cmd", ""))
-    if key_cmd and not rp.has_usable_secret(explicit_key):
-        from agent.command_token_source import build_command_token_provider
-        token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
-        if token_provider is not None:
-            api_key = token_provider
+    if not api_key:
+        api_key = next(
+            (candidate for candidate in rp._host_gated_env_key_candidates(base_url, ollama=False)
+             if rp.has_usable_secret(candidate)),
+            "",
+        )
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
                              requested_provider=requested_provider)

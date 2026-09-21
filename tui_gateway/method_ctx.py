@@ -21,7 +21,9 @@ def rebind(fn, g: dict, _seen=None):
         return _seen[id(fn)]
     wrapped = getattr(fn, "__wrapped__", None)
     if wrapped is not None and fn.__code__ is _CM_HELPER_CODE:
-        return contextlib.contextmanager(rebind(wrapped, g, _seen))
+        real = contextlib.contextmanager(rebind(wrapped, g, _seen))
+        _seen[id(fn)] = real
+        return real
     closure = fn.__closure__
     if closure:
         def _cell(cell):

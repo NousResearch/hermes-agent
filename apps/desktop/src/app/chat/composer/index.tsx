@@ -31,8 +31,8 @@ import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
+import { $composerSendPrefs, activeSendGestures, type SendGraceReason } from '@/store/composer-prefs'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
-import { $composerSendPrefs, activeSendGestures, type SendGraceReason } from '@/store/composer-send'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { sessionBlockingPrompt } from '@/store/prompts'
@@ -60,6 +60,7 @@ import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
+import { resolveComposerEnterKeyIntent } from './enter-key-mode'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
@@ -900,6 +901,11 @@ export function ChatBar({
     /** Does a send started THIS way wait for the grace window? */
     const delays = (reason: SendGraceReason) => sendGraceFor.includes(reason)
 
+    /** What a bare press means once no gesture has claimed it: break the line,
+     *  or nothing at all. The resolver owns that decision — the gestures above
+     *  it are ours, the mode is the shared contract's. */
+    const enterKeyIntent = () => resolveComposerEnterKeyIntent({ enterNewline, enterSends, key: event.key })
+
     // Undo/redo before anything else — we own the stack (see useComposerUndo),
     // so these never reach Chromium's native history, which has no record of
     // the Range-based edits the rich editor makes.
@@ -1212,25 +1218,25 @@ export function ChatBar({
 
         queueDraft()
 
-        return
-      }
+        return      }
 
       submitDraft()
 
       return
     }
 
-    // Plain Enter. What it does depends on the send mode (Settings → Keyboards
-    // → Send with): it commits the draft, breaks the line, or commits on the
-    // second tap. See store/composer-send.ts.
+    // Plain Enter. What it does depends on the send settings (Settings →
+    // Keyboard Shortcuts → Send behavior): it commits the draft, breaks the
+    // line, or commits on the second tap. See store/composer-prefs.ts.
     if (event.key === 'Enter' && !event.shiftKey) {
+      // Resolve Enter from the live DOM, not render-derived composer state.
+      const editorText = liveComposerDraft(editorRef.current, draftRef.current)
       // Decide from the DOM, not React state. `hasComposerPayload` is derived
       // from the AUI composer state, which lags the latest keystroke by a
       // render, so on fast typing / IME the just-typed text isn't in state yet.
       // Without the live read, a real message typed while prompts are queued
       // would drain the queue instead of sending. submitDraft() re-syncs and
       // sends the live editor text.
-      const editorText = liveComposerDraft(editorRef.current, draftRef.current)
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
       if (disabled) {
@@ -1315,9 +1321,10 @@ export function ChatBar({
 
       // No gesture is armed, so the press lands in the composer — or is dropped,
       // when the user asked for a bare Enter that only stays out of the way.
-      // Either way it never sends.
+      // Either way it never sends. The mode module owns that question: gestures
+      // never get here, so this is the only decision left to make.
       if (!sendOnDoubleTap) {
-        if (!enterNewline) {
+        if (enterKeyIntent() === 'ignore') {
           event.preventDefault()
         }
 
@@ -1337,7 +1344,7 @@ export function ChatBar({
         // The first press of a possible pair: fall through UNPREVENTED so the
         // editor inserts the line break, exactly as it does for Shift+Enter —
         // unless the press is meant to do nothing at all.
-        if (!enterNewline) {
+        if (enterKeyIntent() === 'ignore') {
           event.preventDefault()
         }
 
@@ -1400,8 +1407,7 @@ export function ChatBar({
         event.preventDefault()
         triggerHaptic('cancel')
         void Promise.resolve(haltRun())
-      }
-    }
+      }    }
   }
 
   const triggerKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)

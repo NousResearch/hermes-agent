@@ -25,7 +25,11 @@ const CONFIG_SUBPAGE_DEFINITIONS: Record<string, ConfigSubpageDefinition[]> = {
     {
       id: 'behavior',
       labelKey: 'chatBehavior',
-      fields: ['display.personality', 'timezone', 'display.show_reasoning']
+      fields: ['display.personality', 'timezone', 'display.show_reasoning'],
+      // Composer send behaviour lives at `desktop.composer.*`. It has its own
+      // curated page under Keyboard Shortcuts, but the raw config editor is
+      // organised by section, so the fields belong to Chat's behavior page here.
+      prefixes: ['desktop.composer.']
     },
     { id: 'attachments', labelKey: 'chatAttachments', fields: ['agent.image_input_mode'] }
   ],

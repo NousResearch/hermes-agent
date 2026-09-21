@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
 import { composerSendKeys, primarySendRow } from '@/lib/keybinds/actions'
-import { $composerSendPrefs } from '@/store/composer-send'
+import { $composerSendPrefs } from '@/store/composer-prefs'
 
 import { COMPLETION_DRAWER_CLASS } from './completion-drawer'
 
@@ -37,11 +37,9 @@ export function HelpHint() {
         ))}
       </Section>
 
-      <Section title={c.hotkeys}>
-        <HotkeyRow combos={[...sendRow.combos]} description={c.hotkeyDescs[sendRow.id] ?? ''} key={sendRow.id} />
+      <Section title={c.hotkeys}>        <HotkeyRow combos={[...sendRow.combos]} description={c.hotkeyDescs[sendRow.id] ?? ''} key={sendRow.id} />
         {COMPOSER_HOTKEY_ROWS.map(row => (
-          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />
-        ))}
+          <HotkeyRow combos={[...row.combos]} description={c.hotkeyDescs[row.id] ?? ''} key={row.id} />        ))}
       </Section>
 
       <p className="px-2.5 py-1 text-xs text-muted-foreground/80">

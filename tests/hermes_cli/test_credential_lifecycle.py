@@ -104,7 +104,7 @@ def test_lifecycle_serializes_the_complete_env_transaction(hermes_home, monkeypa
             assert release_first.wait(timeout=5)
         return True
 
-    monkeypatch.setattr(config, "load_env", fake_load_env)
+    monkeypatch.setattr(config, "load_env_strict", fake_load_env)
     monkeypatch.setattr(config, "save_env_value", fake_save_env_value)
     monkeypatch.setattr(
         credential_lifecycle,
@@ -140,6 +140,48 @@ def test_lifecycle_serializes_the_complete_env_transaction(hermes_home, monkeypa
     assert not first.is_alive() and not second.is_alive()
     assert failures == []
     assert second_loaded.is_set()
+
+
+def test_update_rolls_back_env_when_config_mirror_write_fails(hermes_home, monkeypatch):
+    from hermes_cli import credential_lifecycle
+
+    old = "sk-rollback-" + "a" * 24
+    new = "sk-rollback-" + "b" * 24
+    _write_env(hermes_home, OPENAI_API_KEY=old)
+    _write_config(hermes_home, f"model:\n  api_key: {old}\n")
+    config_before = hermes_home.joinpath("config.yaml").read_bytes()
+
+    def fail_config_write(*_args, **_kwargs):
+        raise OSError("simulated config write failure")
+
+    monkeypatch.setattr("utils.atomic_yaml_write", fail_config_write)
+
+    with pytest.raises(OSError, match="simulated config write failure"):
+        credential_lifecycle.save_provider_env_credential("OPENAI_API_KEY", new)
+
+    assert hermes_home.joinpath(".env").read_text(encoding="utf-8") == f"OPENAI_API_KEY={old}\n"
+    assert hermes_home.joinpath("config.yaml").read_bytes() == config_before
+
+
+def test_delete_rolls_back_env_and_config_when_followup_fails(hermes_home, monkeypatch):
+    from hermes_cli import credential_lifecycle
+
+    old = "sk-rollback-" + "c" * 24
+    _write_env(hermes_home, OPENAI_API_KEY=old)
+    _write_config(hermes_home, f"model:\n  api_key: {old}\n")
+    env_before = hermes_home.joinpath(".env").read_bytes()
+    config_before = hermes_home.joinpath("config.yaml").read_bytes()
+
+    def fail_followup(_env_var):
+        raise OSError("simulated follow-up failure")
+
+    monkeypatch.setattr(credential_lifecycle, "purge_env_credential_references", fail_followup)
+
+    with pytest.raises(OSError, match="simulated follow-up failure"):
+        credential_lifecycle.remove_provider_env_credential("OPENAI_API_KEY")
+
+    assert hermes_home.joinpath(".env").read_bytes() == env_before
+    assert hermes_home.joinpath("config.yaml").read_bytes() == config_before
 
 
 # ---------------------------------------------------------------------------

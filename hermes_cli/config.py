@@ -2453,18 +2453,19 @@ def _sanitize_env_lines(lines: list) -> list:
 def sanitize_env_file() -> int:
     """Rewrite ~/.hermes/.env with normalized line formatting; returns the number of changed lines."""
     env_path = get_env_path()
-    if not env_path.exists():
-        return 0
-    with open(env_path, encoding="utf-8-sig", errors="replace") as f:
-        original_lines = f.readlines()
-    sanitized = _sanitize_env_lines(original_lines)
-    if sanitized == original_lines:
-        return 0
-    fixes = abs(len(sanitized) - len(original_lines)) or sum(
-        1 for a, b in zip(original_lines, sanitized) if a != b)
-    _write_env_lines(env_path, sanitized, preserve_mode=False)
-    invalidate_env_cache()
-    return fixes
+    with env_store_lock_for_path(env_path):
+        if not env_path.exists():
+            return 0
+        with open(env_path, encoding="utf-8-sig", errors="replace") as f:
+            original_lines = f.readlines()
+        sanitized = _sanitize_env_lines(original_lines)
+        if sanitized == original_lines:
+            return 0
+        fixes = abs(len(sanitized) - len(original_lines)) or sum(
+            1 for a, b in zip(original_lines, sanitized) if a != b)
+        _write_env_lines(env_path, sanitized, preserve_mode=False)
+        invalidate_env_cache()
+        return fixes
 
 
 def _read_env_lines(env_path: Path) -> list:
@@ -2599,17 +2600,24 @@ def _env_store_lock_holder(lock_path: Path) -> threading.local:
 
 
 @contextmanager
-def env_store_lock(timeout_seconds: float = 15.0):
-    """Serialize one profile's complete ``.env`` mutation across threads and processes."""
+def env_store_lock_for_path(env_path: Path, timeout_seconds: float = 15.0):
+    """Serialize one ``.env`` target's mutation across threads and processes."""
     from hermes_cli.auth import _file_lock
 
-    lock_path = get_env_path().with_name(".env.lock")
+    lock_path = Path(env_path).with_name(".env.lock")
     with _file_lock(
         lock_path,
         _env_store_lock_holder(lock_path),
         timeout_seconds,
         "Timed out waiting for credential store lock",
     ):
+        yield
+
+
+@contextmanager
+def env_store_lock(timeout_seconds: float = 15.0):
+    """Serialize the active profile's complete ``.env`` mutation."""
+    with env_store_lock_for_path(get_env_path(), timeout_seconds):
         yield
 
 

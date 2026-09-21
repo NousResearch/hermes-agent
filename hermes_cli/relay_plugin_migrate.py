@@ -160,12 +160,28 @@ def _comment_out_legacy_lines(lines: list[str], names: set[str]) -> list[str]:
 def migrate_profile_relay_env(home: Path, *, validate: bool = True) -> RelayMigrationResult:
     """Migrate ONE profile home's ``.env``. Never raises for a no-op; a Relay import/validation failure
     leaves ``.env`` untouched and is reported in ``validation_error``."""
-    from hermes_cli.config import _env_line_defines_key, _quote_env_value, _read_env_lines, _write_env_lines
+    from hermes_cli.config import (
+        _env_line_defines_key, _quote_env_value, _read_env_lines, _write_env_lines,
+        env_store_lock_for_path,
+    )
     result = RelayMigrationResult(home=home)
     env_path = home / ".env"
     if not env_path.is_file():
         result.skipped_reason = "no .env"
         return result
+    with env_store_lock_for_path(env_path):
+        return _migrate_profile_relay_env_locked(
+            home, env_path, result, validate=validate,
+            _env_line_defines_key=_env_line_defines_key,
+            _quote_env_value=_quote_env_value,
+            _read_env_lines=_read_env_lines,
+            _write_env_lines=_write_env_lines,
+        )
+
+
+def _migrate_profile_relay_env_locked(
+        home, env_path, result, *, validate, _env_line_defines_key, _quote_env_value,
+        _read_env_lines, _write_env_lines):
     lines = _read_env_lines(env_path)
     env: dict[str, str] = {}
     for line in lines:

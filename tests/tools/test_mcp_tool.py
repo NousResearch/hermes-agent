@@ -2837,6 +2837,39 @@ class TestDiscoveryConnectConcurrency:
             for name in server_names:
                 _servers.pop(name, None)
 
+    def test_pass_timeout_capped_by_waiter_budget(self):
+        """The discovery pass timeout is capped so a slow pass cannot outlive the
+        cross-process lock waiter's fail-over budget: with the connect cap,
+        ceil(N/cap) waves make a pass legitimately long, and an uncapped
+        120s-per-wave timeout would let a lock loser run unguarded discovery
+        beside a still-connecting holder (#117373 review)."""
+        from tools import mcp_tool_discovery as _discovery
+        from tools.mcp_tool import _MCP_DISCOVERY_LOCK_MAX_RETRIES, _MCP_DISCOVERY_LOCK_RETRY_DELAY_S
+        from tools.mcp_tool import _MCP_DISCOVERY_PASS_MAX_SEC
+
+        waiter_budget = _MCP_DISCOVERY_LOCK_MAX_RETRIES * _MCP_DISCOVERY_LOCK_RETRY_DELAY_S
+        assert waiter_budget > _MCP_DISCOVERY_PASS_MAX_SEC, (
+            f"waiter budget {waiter_budget}s must outlast the pass ceiling "
+            f"{_MCP_DISCOVERY_PASS_MAX_SEC}s or a slow pass re-opens unguarded discovery")
+
+        captured = {}
+
+        def fake_run_on_mcp_loop(factory, timeout=None):
+            captured["timeout"] = timeout
+            return None
+
+        # 40 servers = 14 waves at cap 3: uncapped, the pass would block 28 min
+        # and outlive the waiter budget by 26+ minutes.
+        server_names = {f"srv{i}": {} for i in range(40)}
+        with patch("tools.mcp_tool_discovery._loop._run_on_mcp_loop",
+                   side_effect=fake_run_on_mcp_loop):
+            _discovery._run_discovery_pass(server_names)
+
+        assert captured["timeout"] == _MCP_DISCOVERY_PASS_MAX_SEC, (
+            f"pass timeout must be capped at {_MCP_DISCOVERY_PASS_MAX_SEC}s, "
+            f"got {captured['timeout']}s (uncapped: {120 * 14}s vs waiter "
+            f"budget {waiter_budget}s)")
+
 
 class TestMCPSelectiveToolLoading:
     """Tests for per-server MCP filtering and utility tool policies."""

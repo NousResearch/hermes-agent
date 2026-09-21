@@ -5,10 +5,10 @@ from __future__ import annotations
 from .ci_contract import manifest_path as ci_manifest_path
 
 import argparse
-import os
 import fcntl
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess

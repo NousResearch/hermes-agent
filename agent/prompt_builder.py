@@ -1364,10 +1364,12 @@ def _render_skills_index(
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
     from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
+    proceed_note = "Only proceed without loading a skill if genuinely none are relevant to the task."
     if is_single_query_session():
         return (
             ONESHOT_SKILLS_LOAD_GUIDANCE
-            + "\n<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
+            + "\n<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>\n\n"
+            + proceed_note
             + hidden_note
         )
     return (
@@ -1388,7 +1390,7 @@ def _render_skills_index(
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"
         "</available_skills>\n\n"
-        "Only proceed without loading a skill if genuinely none are relevant to the task."
+        + proceed_note
         + hidden_note
     )
 

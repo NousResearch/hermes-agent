@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
 import { pathToFileURL } from 'node:url'
+import { readFilePreviewDataUrl } from './file-preview'
 
 import {
   app,
@@ -17345,11 +17346,13 @@ ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
 })
 
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
-  return readFileDataUrlForIpc(filePath, {
-    maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'File preview' })),
-    purpose: 'File preview'
-  })
+  return readFilePreviewDataUrl(() =>
+    readFileDataUrlForIpc(filePath, {
+      maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
+      mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'File preview' })),
+      purpose: 'File preview'
+    })
+  )
 })
 
 // Remote attachment transfer is independent of the preview / Settings path.

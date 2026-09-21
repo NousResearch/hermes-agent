@@ -417,7 +417,17 @@ const DirectiveImage: FC<{ id: string; label: string }> = ({ id, label }) => {
       window.hermesDesktop && isRemoteGateway() ? gatewayMediaDataUrl(id) : window.hermesDesktop?.readFileDataUrl(id)
 
     void Promise.resolve(load)
-      .then(url => alive && url && setSrc(url))
+      .then(url => {
+        if (!alive) {
+          return
+        }
+
+        if (url) {
+          setSrc(url)
+        } else {
+          setFailed(true)
+        }
+      })
       .catch(() => alive && setFailed(true))
 
     return () => {

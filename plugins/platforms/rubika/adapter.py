@@ -184,7 +184,7 @@ class RubikaAdapter(BasePlatformAdapter):
         chat = data.get("chat") or {}
         chat_type = str(chat.get("chat_type") or "").lower()
         is_group = chat_type == "group"
-        name = chat.get("title") if is_group else chat.get("first_name") or chat_id
+        name = (chat.get("title") or chat_id) if is_group else (chat.get("first_name") or chat_id)
         return {"name": name, "type": "group" if is_group else "dm"}
 
 

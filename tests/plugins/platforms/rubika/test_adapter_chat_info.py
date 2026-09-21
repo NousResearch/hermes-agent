@@ -27,3 +27,12 @@ async def test_get_chat_info_group():
         "chat": {"chat_id": "g1", "chat_type": "Group", "title": "Team Chat"}})
     info = await adapter.get_chat_info("g1")
     assert info == {"name": "Team Chat", "type": "group"}
+
+
+@pytest.mark.asyncio
+async def test_get_chat_info_group_missing_title():
+    adapter = _adapter()
+    adapter._client.call = AsyncMock(return_value={
+        "chat": {"chat_id": "g2", "chat_type": "Group"}})
+    info = await adapter.get_chat_info("g2")
+    assert info == {"name": "g2", "type": "group"}

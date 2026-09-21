@@ -672,33 +672,56 @@ class _MessagingRoomRead:
     def recipient_json(self):
         return self.inventory.recipient_json
 
-    def require_current(self, method=None, room_id=None):
+    def _exact_request(self, method, room_id):
         if type(self) is not _MessagingRoomRead:
             raise RuntimeStoreError('permission_denied')
         if method is not None and method not in _DETAIL_SCOPE:
             raise RuntimeStoreError('permission_denied')
         if room_id is not None and room_id != self.room_id:
             raise RuntimeStoreError('permission_denied')
+        return method, room_id
+
+    def _require_current_on_connection(self, conn, recipient, *, held_writer):
+        db = self.inventory.db
+        if held_writer:
+            if (conn is None or db._read_conns_closed or conn is not db._conn
+                    or db._db_replaced or db._db_file_was_replaced()
+                    or db._db_wal_generation_lost or db._wal_generation_was_lost()):
+                raise RuntimeStoreError('permission_denied')
+            db._raise_if_db_corrupt()
+        if _json(self.inventory._require_context()) != _json(recipient):
+            raise RuntimeStoreError('permission_denied')
+        inventory = self.inventory._consent(conn, recipient)
+        if (self.inventory.state_json is None
+                or _json(inventory) != self.inventory.state_json):
+            raise RuntimeStoreError('permission_denied')
+        state = _room_binding(
+            conn, recipient, self.inventory.profile_id, self.room_id)
+        if (state is None or not state['active']
+                or state['owner'] != self.owner
+                or state['inventory_binding_id'] != inventory['binding_id']
+                or state['binding_id'] != self.binding_id
+                or state['generation'] != self.generation
+                or state['room_ref'] != self.room_ref
+                or _json(state) != self.state_json):
+            raise RuntimeStoreError('messaging_room_read_stale')
+        self.inventory.checker(self.owner, self.room_id, conn=conn)
+        self.inventory._require_context()
+        return state
+
+    def require_current(self, method=None, room_id=None):
+        self._exact_request(method, room_id)
         recipient = self.inventory._require_context()
         with self.inventory.db._read_ctx() as conn:
-            self.inventory._require_context()
-            inventory = self.inventory._consent(conn, recipient)
-            if (self.inventory.state_json is None
-                    or _json(inventory) != self.inventory.state_json):
-                raise RuntimeStoreError('permission_denied')
-            state = _room_binding(
-                conn, recipient, self.inventory.profile_id, self.room_id)
-            if (state is None or not state['active']
-                    or state['owner'] != self.owner
-                    or state['inventory_binding_id'] != inventory['binding_id']
-                    or state['binding_id'] != self.binding_id
-                    or state['generation'] != self.generation
-                    or state['room_ref'] != self.room_ref
-                    or _json(state) != self.state_json):
-                raise RuntimeStoreError('messaging_room_read_stale')
-            self.inventory.checker(self.owner, self.room_id, conn=conn)
-            self.inventory._require_context()
-            return state
+            return self._require_current_on_connection(
+                conn, recipient, held_writer=False)
+
+    def require_current_on_held_connection(self, conn, method=None, room_id=None):
+        """Recheck consent on this context's already-held live writer only."""
+        self._exact_request(method, room_id)
+        recipient = self.inventory._require_context()
+        return self._require_current_on_connection(
+            conn, recipient, held_writer=True)
 
 
 def _attest_inventory(runner, event):

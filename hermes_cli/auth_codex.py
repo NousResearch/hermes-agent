@@ -309,7 +309,7 @@ def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "
     attempt, attempts = 1, 3
     while True:
         try:
-            with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
+            with _codex_http_client(url=url, timeout=httpx.Timeout(15.0)) as client:
                 return client.post(url, **kwargs)
         except Exception as exc:
             if attempt == attempts or not _is_transient_transport_error(exc):
@@ -358,7 +358,7 @@ def _cap_codex_response_body(response: "httpx.Response") -> None:
     response.stream = _CappedByteStream(response)
 
 
-def _codex_http_client(**kwargs: Any) -> "httpx.Client":
+def _codex_http_client(url: str = "", **kwargs: Any) -> "httpx.Client":
     """Build an ``httpx.Client`` for Codex OAuth/probe endpoints with Happy-Eyeballs racing and a
     1 MiB response-body cap (``_cap_codex_response_body``).
 
@@ -370,7 +370,22 @@ def _codex_http_client(**kwargs: Any) -> "httpx.Client":
     blackholes IPv6 makes each serial connect attempt eat the full connect timeout before IPv4 is tried, so
     token refresh / device login / usage probes time out where the official Codex CLI (which races families
     per RFC 8305) works.
+
+    Proxy policy matches the chat transport (``build_keepalive_http_client``): ``url`` resolves the env
+    proxy through ``_get_proxy_for_base_url`` (NO_PROXY honoured by the gateway matcher, not by httpx) and
+    the result is handed to httpx explicitly, with ``trust_env=False`` so httpx never re-derives mounts
+    from ``NO_PROXY``. A bracketed IPv6 entry — ``[::1]``, what Clash Verge/mihomo writes — makes httpx
+    derive an unparseable ``all://*[::1]`` mount, so every request dies with ``InvalidURL: Invalid port:
+    ':1]'`` while the chat transport keeps working (#118159). The verify context keeps ``trust_env``
+    semantics (``SSL_CERT_FILE``/``SSL_CERT_DIR``), which blanket ``trust_env=False`` would lose.
     """
+    from agent.process_bootstrap import _get_proxy_for_base_url
+
+    proxy = _get_proxy_for_base_url(url)
+    kwargs.setdefault("trust_env", False)
+    kwargs.setdefault("verify", httpx.create_ssl_context(trust_env=True))
+    if proxy is not None:
+        kwargs.setdefault("proxy", proxy)
     client = httpx.Client(event_hooks={"response": [_cap_codex_response_body]}, **kwargs)
     with suppress(Exception):
         from agent.process_bootstrap import enable_happy_eyeballs_on_client
@@ -436,6 +451,7 @@ def refresh_codex_oauth_pure(
         raise _codex_err(_MISSING_REFRESH_TOKEN_MSG.format(relogin=_codex_relogin_command()),
                          "codex_auth_missing_refresh_token", relogin=True)
     with _codex_http_client(
+        url=CODEX_OAUTH_TOKEN_URL,
         timeout=httpx.Timeout(max(5.0, float(timeout_seconds))),
         headers={"Accept": "application/json", "User-Agent": CODEX_OAUTH_USER_AGENT}) as client:
         response = client.post(
@@ -702,8 +718,9 @@ def _probe_codex_quota_restored(
         headers = {
             "Authorization": f"Bearer {token}", "Accept": "application/json",
             "User-Agent": "codex-cli", **codex_account_headers(token)}
-        with _codex_http_client(timeout=10.0) as client:
-            response = client.get(_codex_usage_probe_url(base_url), headers=headers)
+        probe_url = _codex_usage_probe_url(base_url)
+        with _codex_http_client(url=probe_url, timeout=10.0) as client:
+            response = client.get(probe_url, headers=headers)
         if response.status_code == 200:
             payload = response.json() or {}
             # A model-scoped allowance (``additional_rate_limits``) at 100% still 429s that
@@ -969,7 +986,7 @@ def _codex_poll_authorization_code(
     start = time.monotonic()
     code_resp = None
     try:
-        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
+        with _codex_http_client(url=issuer, timeout=httpx.Timeout(15.0)) as client:
             consecutive_blips = 0
             while time.monotonic() - start < max_wait:
                 time.sleep(poll_interval)

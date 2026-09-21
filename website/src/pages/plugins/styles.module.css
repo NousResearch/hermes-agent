@@ -934,8 +934,17 @@
     font: 500 0.78rem "DM Sans", sans-serif;
   }
 
+  [data-theme="light"] .compactSelect select {
+    border-color: var(--ifm-color-emphasis-300);
+  }
+
   .compactSort select { max-width: 11.5rem; }
   .filterPanel { display: none; }
+}
+
+/* Below ~820px the uppercase labels leave no room for the select's own value. */
+@media (max-width: 820px) {
+  .compactSelect > span { display: none; }
 }
 
 @media (max-width: 600px) {
@@ -958,8 +967,8 @@
     width: 100%;
     min-width: 0;
     padding: 0.55rem 0.75rem;
-    background: rgba(7, 7, 13, 0.94);
-    border-bottom: 1px solid rgba(255, 215, 0, 0.08);
+    background: var(--ifm-navbar-background-color);
+    border-bottom: 1px solid var(--ifm-hr-border-color);
     backdrop-filter: blur(16px);
   }
 
@@ -991,6 +1000,17 @@
   .activeFilterCount {
     min-width: 1.25rem;
     border-radius: 999px;
+    background: var(--ifm-color-emphasis-200);
+    color: var(--ifm-font-color-base);
+  }
+
+  /* Gold accents are tuned for the dark theme; against the light surface the
+     translucent gold borders are invisible. */
+  [data-theme="light"] .controlsTopRow .filterToggle {
+    border-color: var(--ifm-color-emphasis-300);
+  }
+
+  [data-theme="dark"] .activeFilterCount {
     background: rgba(255, 215, 0, 0.14);
     color: #ffd700;
   }

@@ -118,6 +118,12 @@ _DEFAULT_PAYLOADS = {
         "conversation_history": [], "is_first_turn": True, "model": "gpt-4", "platform": "cli",
     },
     "post_llm_call": {"session_id": "test-session", "model": "gpt-4", "platform": "cli"},
+    "pre_delivery": {
+        "session_id": "test-session", "task_id": "test-task", "turn_id": "test-turn",
+        "platform": "cli", "model": "gpt-4", "attempt": 0,
+        "original_prompt": "Keep existing hooks.", "final_response": "Done.",
+        "conversation_history": [],
+    },
     "pre_verify": {
         "session_id": "test-session", "platform": "cli", "model": "gpt-4", "coding": True,
         "attempt": 0, "final_response": "All done — the change is applied.",

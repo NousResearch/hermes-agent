@@ -831,6 +831,8 @@ DEFAULT_CONFIG = {
         # failures append an output tail) | "all" (running updates + final raw output) | "result"
         # (final raw only) | "error" (raw only on non-zero exit) | "off".
         "background_process_notifications": "concise",
+        # Maximum agent wakes caused by notify_on_complete jobs per session; 0 = unlimited.
+        "background_process_completion_wake_budget": 8,
         "streaming": False,
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"

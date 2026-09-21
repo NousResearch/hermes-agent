@@ -79,6 +79,13 @@ WATCH_LIFETIME_MAX_HITS = 8
 WATCH_GLOBAL_MAX_PER_WINDOW = 15
 WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
+# Process completions are agent wakes, so bound both one noisy conversation and the
+# whole gateway.  The completion itself remains in the finished-process ledger.
+COMPLETION_WAKE_BUDGET = 8
+COMPLETION_WAKE_STRIKE_LIMIT = 3
+COMPLETION_WAKE_GLOBAL_MAX_PER_WINDOW = 15
+COMPLETION_WAKE_GLOBAL_WINDOW_SECONDS = 10
+COMPLETION_WAKE_GLOBAL_COOLDOWN_SECONDS = 30
 
 
 # --- systemd cgroup isolation for gateway-spawned local executors ------------------
@@ -546,6 +553,7 @@ class ProcessSession:
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
+    _completion_wake_strikes: int = field(default=0, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
 
     def append_output(self, text: str) -> None:
@@ -621,6 +629,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self._global_watch_lock = threading.Lock()
         self._global_watch_window_start = self._global_watch_tripped_until = 0.0
         self._global_watch_window_hits = self._global_watch_suppressed_during_trip = 0
+        # Completion wakes use a separate breaker: watch-pattern traffic must not consume
+        # the completion budget, and vice versa.
+        self._completion_wake_lock = threading.Lock()
+        self._completion_wake_global_lock = threading.Lock()
+        self._completion_wake_window_start = self._completion_wake_tripped_until = 0.0
+        self._completion_wake_window_hits = self._completion_wake_suppressed = 0
+        self._completion_wake_ledger: Dict[str, Dict[str, Any]] = {}
+        self._completion_wake_global_summary: Optional[dict] = None
         # Driver-installed sinks (desktop gateway): on_output(session, chunk) streams
         # live output from reader threads; on_close(session_or_none, process_id) drops
         # a read-only terminal tab without killing the process.
@@ -1540,9 +1556,84 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "started_at": session.started_at,
             }
             _redact_process_result(notification)
-            self.completion_queue.put(notification)
+            self._enqueue_completion_wake(session, notification)
         session._completion_event.set()
         return was_running
+
+    @staticmethod
+    def _completion_wake_config() -> int:
+        """Read the profile's YAML wake budget; zero/negative means unlimited."""
+        try:
+            from hermes_cli.config_effective import load_user_config_effective
+            from hermes_cli.config import cfg_get
+            raw = cfg_get(load_user_config_effective(), "display", "background_process_completion_wake_budget", default=COMPLETION_WAKE_BUDGET)
+            value = int(raw)
+            return value if value >= 0 else COMPLETION_WAKE_BUDGET
+        except (TypeError, ValueError, OSError):
+            return COMPLETION_WAKE_BUDGET
+
+    def _completion_wake_global_admit(self, now: float) -> bool:
+        """Admit a completion wake unless the gateway-wide breaker is tripped."""
+        with self._completion_wake_global_lock:
+            if self._completion_wake_tripped_until and now < self._completion_wake_tripped_until:
+                self._completion_wake_suppressed += 1
+                return False
+            if self._completion_wake_tripped_until:
+                self._completion_wake_tripped_until = 0.0
+                self._completion_wake_suppressed = 0
+                self._completion_wake_window_start = now
+                self._completion_wake_window_hits = 0
+            if now - self._completion_wake_window_start >= COMPLETION_WAKE_GLOBAL_WINDOW_SECONDS:
+                self._completion_wake_window_start, self._completion_wake_window_hits = now, 0
+            if self._completion_wake_window_hits >= COMPLETION_WAKE_GLOBAL_MAX_PER_WINDOW:
+                self._completion_wake_tripped_until = now + COMPLETION_WAKE_GLOBAL_COOLDOWN_SECONDS
+                self._completion_wake_suppressed = 1
+                return False
+            self._completion_wake_window_hits += 1
+            return True
+
+    def _enqueue_completion_wake(self, session: ProcessSession, notification: dict) -> None:
+        """Apply per-session and global wake budgets at the sole completion enqueue seam."""
+        key = session.session_key or session.parent_session_id or session.task_id or session.id
+        now = time.time()
+        budget = self._completion_wake_config()
+        with self._completion_wake_lock:
+            ledger = self._completion_wake_ledger.setdefault(key, {"wakes": 0, "suppressed": 0, "summary": None})
+            exhausted = budget > 0 and ledger["wakes"] >= budget
+            if exhausted:
+                ledger["suppressed"] += 1
+                summary = ledger.get("summary")
+                if summary is None:
+                    summary = {"type": "completion_overflow", "session_key": key, "task_id": session.task_id,
+                               "owner_task_id": session.owner_task_id or session.task_id,
+                               "platform": session.watcher_platform, "chat_id": session.watcher_chat_id,
+                               "thread_id": session.watcher_thread_id, "count": ledger["suppressed"],
+                               "message": "1 background job completed"}
+                    ledger["summary"] = summary
+                    self.completion_queue.put(summary)
+                else:
+                    summary["count"] = ledger["suppressed"]
+                    summary["message"] = f"{ledger['suppressed']} background jobs completed"
+                return
+            if not self._completion_wake_global_admit(now):
+                session._completion_wake_strikes += 1
+                if session._completion_wake_strikes >= COMPLETION_WAKE_STRIKE_LIMIT:
+                    ledger["suppressed"] += 1
+                if self._completion_wake_global_summary is None:
+                    self._completion_wake_global_summary = {
+                        "type": "completion_overflow", "session_key": "", "task_id": "",
+                        "owner_task_id": "", "platform": "", "chat_id": "", "thread_id": "",
+                        "count": 1, "message": "1 background job completed",
+                    }
+                    self.completion_queue.put(self._completion_wake_global_summary)
+                else:
+                    summary = self._completion_wake_global_summary
+                    summary["count"] += 1
+                    summary["message"] = f"{summary['count']} background jobs completed"
+                return
+            ledger["wakes"] += 1
+            session._completion_wake_strikes = 0
+        self.completion_queue.put(notification)
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:

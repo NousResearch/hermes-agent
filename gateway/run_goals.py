@@ -386,9 +386,8 @@ class GatewayGoalsMixin:
         def _authority_current_locked() -> bool:
             live_entry = self.session_store._entries.get(session_key)
             return bool(
-                live_entry is not None
+                live_entry is session_entry
                 and live_entry.session_id == expected_session_id
-                and self._is_session_run_current(session_key, run_generation)
             )
 
         def _authority_current() -> bool:
@@ -396,19 +395,24 @@ class GatewayGoalsMixin:
                 return _authority_current_locked()
 
         async def _run() -> None:
-            history = await self.async_session_store.load_transcript(expected_session_id)
-            # /new, /resume or rotating compaction won while this task was queued: the old snapshot
-            # no longer owns this routing key and must not be published back into it.
-            if not _authority_current():
-                return
-            await self._hmwa_run_session_hygiene(
-                event, source, session_entry, session_key, history, session_key,
-                run_generation, trigger_tokens=trigger_tokens,
-                commit_authority_check=_authority_current_locked,
-                commit_authority_lock=route_lock,
-                cache_owner=agent,
-                compression_in_place=bool(getattr(agent, "compression_in_place", True)),
-            )
+            try:
+                history = await self.async_session_store.load_transcript(expected_session_id)
+                # A replaced route no longer owns this routing key. Same-session successor turns
+                # remain valid; the compression watermark preserves their appended rows.
+                if not _authority_current():
+                    return
+                await self._hmwa_run_session_hygiene(
+                    event, source, session_entry, session_key, history, session_key,
+                    run_generation, trigger_tokens=trigger_tokens,
+                    commit_authority_check=_authority_current_locked,
+                    commit_authority_lock=route_lock,
+                    cache_owner=agent,
+                    compression_in_place=bool(getattr(agent, "compression_in_place", True)),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Post-turn context compaction failed for session %s", session_key)
 
         task = self._retain_background_task(asyncio.create_task(
             _run(), name=f"post-turn-compaction:{str(session_key)[:48]}",

@@ -399,18 +399,10 @@ class GatewayAgentCacheMixin:
         from a worker /stop or /new invalidated is recognized and dropped."""
         if not session_key:
             return 0
-        route_lock = getattr(getattr(self, "session_store", None), "_lock", None)
-        if route_lock is not None:
-            route_lock.acquire()
-        try:
-            persistent = self._session_state(session_key).persistent
-            # Monotonic by design (#28686): incremented here, NEVER reset. The route lock is also
-            # the detached-compaction authority lock, so generation claims and commits linearize.
-            persistent.run_generation = int(persistent.run_generation) + 1
-            return persistent.run_generation
-        finally:
-            if route_lock is not None:
-                route_lock.release()
+        persistent = self._session_state(session_key).persistent
+        # Monotonic by design (#28686): incremented here, NEVER reset.
+        persistent.run_generation = int(persistent.run_generation) + 1
+        return persistent.run_generation
 
     def _invalidate_session_run_generation(self, session_key: str, *, reason: str = "") -> int:
         """Invalidate any in-flight run token for ``session_key``.

@@ -1123,10 +1123,11 @@ class GatewayTurnMixin:
                 _hyg_in_place = False
             else:
                 if commit_authority_check is not None:
-                    live_entry = self.session_store._advance_compression_session_locked(
-                        session_entry.session_key, session_entry.session_id, _hyg_new_sid,
+                    live_entry = self.session_store.advance_compression_session_if_current(
+                        session_entry.session_key, session_entry,
+                        session_entry.session_id, _hyg_new_sid,
                     )
-                    if live_entry is None or not commit_authority_check():
+                    if live_entry is None:
                         _hyg_rotated = False
                         _hyg_in_place = False
                     else:
@@ -1173,14 +1174,11 @@ class GatewayTurnMixin:
         """Adopt a finished hygiene compression, rebind the session + turn lease, record
         streak/cooldown, and warn the user on abort."""
         from gateway.run import _reset_hygiene_failure_streak, hygiene_compaction_recovered
-        try:
-            _hyg_rotated, _hyg_in_place, _new_count, _new_tokens = await self._hmwa_hygiene_adopt_transcript(
-                attempt, _compressed, history, plan, session_entry=session_entry, source=source,
-                _quick_key=_quick_key, run_generation=run_generation,
-                commit_authority_check=commit_authority_check,
-            )
-        finally:
-            attempt.commit_fence.release_admission_lock()
+        _hyg_rotated, _hyg_in_place, _new_count, _new_tokens = await self._hmwa_hygiene_adopt_transcript(
+            attempt, _compressed, history, plan, session_entry=session_entry, source=source,
+            _quick_key=_quick_key, run_generation=run_generation,
+            commit_authority_check=commit_authority_check,
+        )
         # Summary failure aborts the compressor (nothing dropped). Warn the user visibly — agent.log
         # is invisible on TG/Discord — so they know the chat is "frozen" and can /compress or /reset.
         _comp = getattr(attempt.agent, "context_compressor", None)
@@ -1318,7 +1316,6 @@ class GatewayTurnMixin:
                 total_ceiling_seconds=hs.total_ceiling_seconds,
                 admission_check=commit_authority_check,
                 admission_lock=commit_authority_lock,
-                retain_admission_lock_after_commit=commit_authority_lock is not None,
             )
             # Default executor (NOT self._get_executor): a hung summary must never occupy an
             # agent-work slot. MUST run in the caller's contextvars (multiplex secret scope).
@@ -1361,12 +1358,14 @@ class GatewayTurnMixin:
                 expected_agent=cache_owner,
                 run_generation=run_generation if cache_owner is not None else None,
             )
-            if cache_owner is not None and not evicted:
+            if (
+                cache_owner is not None and not evicted
+                and (commit_authority_check is None or commit_authority_check())
+            ):
                 state = self._peek_session_state(session_key)
                 if state is not None:
                     state.persistent.cache_refresh_required = True
-            if attempt.commit_fence is not None:
-                attempt.commit_fence.release_admission_lock()
+
             if not attempt.cleanup_deferred:
                 await self._cleanup_agent_resources_off_loop(_hyg_agent, context="session hygiene")
 
@@ -1401,7 +1400,15 @@ class GatewayTurnMixin:
                 user_config=hs.data if isinstance(hs.data, dict) else None,
             )
             if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
-                await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)
+                if commit_authority_check is None:
+                    await self._hmwa_hygiene_codex_compaction(
+                        hs, plan, history, session_entry, session_key, _hyg_runtime,
+                    )
+                else:
+                    logger.info(
+                        "Skipping detached post-turn compaction for codex_app_server session %s",
+                        session_key,
+                    )
             elif _hyg_runtime.get("api_key"):
                 # Pass the FULL transcript (tool results included) as the agent loop does: filtering
                 # to user/assistant starved the compressor (tool results are the bulk of context).

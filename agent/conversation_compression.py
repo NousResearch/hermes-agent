@@ -454,7 +454,6 @@ class CompressionCommitFence:
         *,
         admission_check: Optional[Callable[[], bool]] = None,
         admission_lock: Any = None,
-        retain_admission_lock_after_commit: bool = False,
     ) -> None:
         self._lock = threading.Lock()
         self._cancelled = False
@@ -479,7 +478,6 @@ class CompressionCommitFence:
         self._admission_check = admission_check
         self._admission_lock = admission_lock
         self._admission_lock_held = False
-        self._retain_admission_lock_after_commit = retain_admission_lock_after_commit
         # Holder-scoped release published by the worker once it owns the durable lock (no ABA on a NEW holder).
         # Holder-qualified durable-lock release hook (#76354 review F4; transplanted from PR #71569 by
         # @ciabata-git). The worker publishes an idempotent, holder-scoped release callable once it owns the
@@ -592,14 +590,13 @@ class CompressionCommitFence:
         """Leave a commit boundary entered by :meth:`begin_commit`."""
         self._commit_phase.clear()
         self._lock.release()
-        if not self._retain_admission_lock_after_commit:
-            self.release_admission_lock()
+        self.release_admission_lock()
         if self._admission_revoked:
             # A revoke during THIS commit deferred its lease release (never free mid-mutation); release now.
             self.release_cancelled_compression_lock()
 
     def release_admission_lock(self) -> None:
-        """Release a retained host authority lock once post-commit route adoption is complete."""
+        """Release the host authority lock after commit admission or mutation."""
         if self._admission_lock_held:
             self._admission_lock_held = False
             self._admission_lock.release()

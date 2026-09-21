@@ -111,6 +111,18 @@ class SessionTranscriptMixin:
         self._save()  # bookkeeping, not user activity: leave ``updated_at`` alone
         return entry
 
+    def advance_compression_session_if_current(
+        self, session_key: str, expected_entry: SessionEntry,
+        expected_session_id: str, target_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """Advance only while the exact route captured by detached compaction is still live."""
+        with self._lock:
+            if self._entry_locked(session_key) is not expected_entry:
+                return None
+            return self._advance_compression_session_locked(
+                session_key, expected_session_id, target_session_id,
+            )
+
     def _get_transcript_drain_lock(self):
         """Return the lock that serializes pending-queue drain boundaries."""
         return self._lazy("_transcript_drain_lock", threading.RLock)

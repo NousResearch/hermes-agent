@@ -130,6 +130,71 @@ class TestResolveProxyUrl:
         assert resolve_proxy_url(target_hosts=["149.154.167.220"]) is None
 
 
+class TestMacosProxyProbeCache:
+    """``scutil --proxy`` is a ~11 ms fork and resolve_proxy_url runs it on the SEND path —
+    per chunk of an outbound message and per media attachment."""
+
+    SCUTIL_OUT = "<dictionary> {\n  HTTPEnable : 1\n  HTTPProxy : 10.0.0.1\n  HTTPPort : 3128\n}"
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch):
+        import gateway.platforms.base as base
+        monkeypatch.setattr(base.sys, "platform", "darwin")
+        base.reset_macos_proxy_cache()
+        yield
+        base.reset_macos_proxy_cache()
+
+    def _count_forks(self, monkeypatch):
+        import gateway.platforms.base as base
+        calls = []
+
+        def fake(*a, **kw):
+            calls.append(a)
+            return self.SCUTIL_OUT
+        monkeypatch.setattr(base.subprocess, "check_output", fake)
+        return base, calls
+
+    def test_repeated_probes_fork_scutil_once(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        results = [base._detect_macos_system_proxy() for _ in range(10)]
+        assert len(calls) == 1, f"expected 1 scutil fork for 10 probes, got {len(calls)}"
+        assert results == ["http://10.0.0.1:3128"] * 10
+
+    def test_expired_ttl_re_reads(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(base.time, "monotonic", lambda: clock["t"])
+        base._detect_macos_system_proxy()
+        clock["t"] += base._MACOS_PROXY_TTL_SECONDS + 1
+        base._detect_macos_system_proxy()
+        assert len(calls) == 2
+
+    def test_a_failing_scutil_is_not_re_forked_every_call(self, monkeypatch):
+        """A broken or slow scutil must not cost a fork per chunk either."""
+        import gateway.platforms.base as base
+        calls = []
+
+        def boom(*a, **kw):
+            calls.append(a)
+            raise OSError("scutil unavailable")
+        monkeypatch.setattr(base.subprocess, "check_output", boom)
+        assert [base._detect_macos_system_proxy() for _ in range(5)] == [None] * 5
+        assert len(calls) == 1
+
+    def test_reset_forces_a_re_read(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        base._detect_macos_system_proxy()
+        base.reset_macos_proxy_cache()
+        base._detect_macos_system_proxy()
+        assert len(calls) == 2
+
+    def test_non_darwin_never_forks(self, monkeypatch):
+        base, calls = self._count_forks(monkeypatch)
+        monkeypatch.setattr(base.sys, "platform", "linux")
+        assert base._detect_macos_system_proxy() is None
+        assert calls == []
+
+
 class TestRunAgentProxyDispatch:
     """Test that _run_agent() delegates to proxy when configured."""
 

@@ -1,8 +1,11 @@
 """Tests for hermes_cli.gateway_windows."""
 
+import errno
+import json
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -365,11 +368,12 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in xml_seen["text"]
     assert "<RestartOnFailure>" in xml_seen["text"]
     assert "<Count>999</Count>" in xml_seen["text"]
-    # Scheduled Task launches the console-less .vbs via wscript.exe, never cmd.exe
-    # (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A).
-    assert "<Command>wscript.exe</Command>" in xml_seen["text"]
-    assert "//B //Nologo" in xml_seen["text"]
-    assert "Hermes_Gateway_alice.task.vbs" in xml_seen["text"]
+    # Task Scheduler launches the BOM-encoded PowerShell wrapper in supervised mode.
+    assert "powershell.exe</command>" in xml_seen["text"].lower()
+    assert "-WindowStyle Hidden" in xml_seen["text"]
+    assert "Hermes_Gateway_alice.ps1" in xml_seen["text"]
+    assert "-Supervised" in xml_seen["text"]
+    assert "wscript.exe" not in xml_seen["text"].lower()
     assert "cmd.exe" not in xml_seen["text"]
 
 
@@ -377,31 +381,36 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
 def test_install_task_success_removes_stale_startup_fallback(monkeypatch, tmp_path, capsys):
     """A recovered Scheduled Task must replace, not duplicate, the fallback."""
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
-    startup_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.vbs"
+    startup_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.lnk"
+    legacy_vbs_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.vbs"
     legacy_entry = tmp_path / "Startup" / "Hermes_Gateway_alice.cmd"
     startup_entry.parent.mkdir()
     startup_entry.write_text("stale fallback", encoding="utf-8")
+    legacy_vbs_entry.write_text("stale VBS fallback", encoding="utf-8")
     legacy_entry.write_text("stale legacy fallback", encoding="utf-8")
 
     monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *args, **kwargs: (False, True))
     monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
     monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
     monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
     monkeypatch.setattr(
         gateway_windows,
         "_install_scheduled_task",
         lambda task_name, path: (True, "Created Scheduled Task 'Hermes_Gateway_alice'"),
     )
     monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup_entry)
+    monkeypatch.setattr(gateway_windows, "_legacy_vbs_startup_entry_path", lambda: legacy_vbs_entry)
     monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: legacy_entry)
     monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
 
     gateway_windows.install(start_now=False, start_on_login=True)
 
     assert not startup_entry.exists()
+    assert not legacy_vbs_entry.exists()
     assert not legacy_entry.exists()
     output = capsys.readouterr().out
-    assert output.count("Removed obsolete Windows login fallback") == 2
+    assert output.count("Removed obsolete Windows login fallback") == 3
 
 
 @pytest.mark.windows_only
@@ -429,42 +438,104 @@ def test_install_task_success_tolerates_startup_fallback_resolution_failure(
         raise RuntimeError("HOME is unavailable")
 
     monkeypatch.setattr(gateway_windows, "get_startup_entry_path", raise_current_startup_path)
+    monkeypatch.setattr(gateway_windows, "_legacy_vbs_startup_entry_path", raise_legacy_startup_path)
     monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", raise_legacy_startup_path)
     monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: next_steps.append(True))
 
     gateway_windows.install(start_now=False, start_on_login=True)
 
     output = capsys.readouterr().out
-    assert output.count("Could not remove obsolete Windows login fallback") == 2
+    assert output.count("Could not remove obsolete Windows login fallback") == 3
     assert "APPDATA is unavailable" in output
     assert "HOME is unavailable" in output
     assert next_steps == [True]
 
 
-def test_gateway_vbs_script_is_console_less(monkeypatch):
-    """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
-    (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
+@pytest.mark.windows_only
+def test_gateway_powershell_script_keeps_paths_as_base64_data(monkeypatch, tmp_path):
+    """PowerShell 5.1 must never parse arbitrary path characters as source text."""
+    tricky_dir = tmp_path / "D’Arcy %HERMES_TEST_EXPAND% & Tools"
+    tricky_dir.mkdir()
+    tricky = str(tricky_dir)
     monkeypatch.setattr(
         gateway_windows,
         "_resolve_detached_python",
-        lambda exe: (r"C:\venv\Scripts\pythonw.exe", Path(r"C:\venv"), []),
+        lambda exe: (sys.executable, Path(sys.executable).parent.parent, []),
     )
-    content = gateway_windows._build_gateway_vbs_script(
-        r"C:\venv\Scripts\python.exe",
-        r"C:\Hermes",
-        r"C:\Hermes",
+    content = gateway_windows._build_gateway_powershell_script(
+        sys.executable,
+        tricky,
+        tricky,
         "--profile work",
     )
     assert "cmd.exe" not in content.lower()
-    assert 'CreateObject("WScript.Shell")' in content
-    assert "pythonw.exe" in content
-    assert "hermes_cli.main" in content
-    assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
-    for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
-        assert var in content
-    assert "--profile" in content and "work" in content
+    assert "WScript.Shell" not in content
+    assert tricky not in content
+    assert "FromBase64String" in content
+    assert "CreateNoWindow = $true" in content
+    assert gateway_windows._powershell_utf8_expression(tricky) in content
     assert content.endswith("\r\n")
+
+    launcher = tricky_dir / "Hermes Gateway.ps1"
+    launcher.write_bytes(content.encode("utf-8-sig"))
+    env = {**os.environ, "HERMES_TEST_EXPAND": "EXPANDED"}
+    result = subprocess.run(
+        [gateway_windows._powershell_executable(), "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-File", str(launcher), "-ValidateOnly"],
+        env=env, capture_output=True, timeout=60,
+    )
+    assert result.returncode == 0, gateway_windows._decode_schtasks_output(result.stderr)
+    assert content.encode("utf-8-sig").startswith(b"\xef\xbb\xbf")
+
+
+@pytest.mark.windows_only
+@pytest.mark.parametrize(("child_exit", "expected"), [(75, 75), (78, 0)])
+def test_generated_launcher_supervision_preserves_exit_contract(
+    monkeypatch, tmp_path, child_exit, expected,
+):
+    real_popen = subprocess.Popen
+    calls = []
+
+    class Child:
+        def wait(self):
+            return child_exit
+
+    def fake_popen(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return Child()
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_build_gateway_argv", lambda: (["python.exe", "gateway"], str(tmp_path), {}))
+    monkeypatch.setattr(gateway_windows, "_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(gateway_windows.subprocess, "Popen", fake_popen)
+
+    assert gateway_windows._run_generated_launcher(True) == expected
+    assert calls[0][1]["creationflags"] & subprocess.CREATE_NEW_CONSOLE
+    assert not calls[0][1]["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    assert calls[0][1]["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW
+    assert calls[0][1]["startupinfo"].wShowWindow == subprocess.SW_HIDE
+    assert calls[0][1]["env"]["HERMES_GATEWAY_EXTERNAL_SUPERVISOR"] == "1"
+
+    spawned = []
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawned.append(True) or 1234)
+    assert gateway_windows._run_generated_launcher(False) == 0
+    assert spawned == [True]  # canonical spawn owns breakaway from an updater/launcher Job Object
+
+    if child_exit == 75:
+        # Native proof of the Task flags: the child owns a console, but its window is hidden.
+        proof = tmp_path / "hidden-console.json"
+        code = (
+            "import ctypes,json,sys; k=ctypes.windll.kernel32; u=ctypes.windll.user32; "
+            "m=ctypes.c_ulong(); h=k.GetStdHandle(-11); w=k.GetConsoleWindow(); "
+            "open(sys.argv[1],'w').write(json.dumps({'console':bool(k.GetConsoleMode(h,ctypes.byref(m))),"
+            "'window':bool(w),'visible':bool(u.IsWindowVisible(w))}))"
+        )
+        native = real_popen(
+            [sys.executable, "-c", code, str(proof)],
+            **gateway_windows._supervised_hidden_console_kwargs(),
+        )
+        assert native.wait(timeout=15) == 0
+        assert json.loads(proof.read_text()) == {"console": True, "window": True, "visible": False}
 
 
 def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_path):
@@ -483,33 +554,64 @@ def test_atomic_write_leaves_no_staging_file_when_swap_fails(monkeypatch, tmp_pa
     assert sorted(p.name for p in startup.iterdir()) == []
 
 
+def test_archive_legacy_launcher_falls_back_only_for_cross_volume_move(monkeypatch, tmp_path):
+    source = tmp_path / "Startup" / "Hermes_Gateway.vbs"
+    task_script = tmp_path / "other-volume" / "gateway-service" / "Hermes_Gateway.cmd"
+    source.parent.mkdir()
+    task_script.parent.mkdir(parents=True)
+    source.write_text("legacy launcher", encoding="utf-8")
+    real_replace = Path.replace
+
+    def cross_volume_replace(self, target):
+        if self == source:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: task_script)
+    monkeypatch.setattr(Path, "replace", cross_volume_replace)
+
+    archived = gateway_windows._archive_legacy_launcher(source)
+
+    assert archived is not None and archived.parent == task_script.parent / "legacy-launchers"
+    assert archived.read_text(encoding="utf-8") == "legacy launcher"
+    assert not source.exists()
+
+
 def test_uninstall_and_reinstall_sweep_stale_startup_staging_file(monkeypatch, tmp_path):
     """Debris from a pre-fix failed swap is removed by uninstall() and by an install() that takes the
     Scheduled Task path (which never rewrites the Startup folder itself)."""
     startup = tmp_path / "Startup"
     startup.mkdir()
-    entry, staging = startup / "Hermes_Gateway_alice.vbs", startup / "Hermes_Gateway_alice.tmp"
+    entry = startup / "Hermes_Gateway_alice.lnk"
+    legacy_entry = startup / "Hermes_Gateway_alice.vbs"
+    staging = startup / "Hermes_Gateway_alice.tmp.lnk"
+    legacy_staging = startup / "Hermes_Gateway_alice.tmp"
     script = tmp_path / "task" / "Hermes_Gateway_alice.cmd"
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
     monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
     monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: entry)
+    monkeypatch.setattr(gateway_windows, "_legacy_vbs_startup_entry_path", lambda: legacy_entry)
     monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.cmd")
+    monkeypatch.setattr(gateway_windows, "_startup_staging_path", lambda: staging)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_staging_path", lambda: legacy_staging)
     monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
 
     staging.write_text("stale", encoding="utf-8")
+    legacy_staging.write_text("legacy stale", encoding="utf-8")
     gateway_windows.uninstall()
-    assert not staging.exists()
+    assert not staging.exists() and not legacy_staging.exists()
 
     staging.write_text("stale", encoding="utf-8")
+    legacy_staging.write_text("legacy stale", encoding="utf-8")
     monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *a, **k: (False, True))
     monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script)
     monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
     monkeypatch.setattr(gateway_windows, "_install_scheduled_task", lambda name, path: (True, "created"))
     monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
     gateway_windows.install()
-    assert not staging.exists()
+    assert not staging.exists() and not legacy_staging.exists()
 
 
 def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tmp_path, capsys):
@@ -520,7 +622,7 @@ def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tm
     (home / "gateway-service").mkdir(parents=True)
     startup.mkdir()
     legacy_vbs = startup / "Hermes_Gateway.vbs"
-    legacy_vbs.write_text(gateway_windows._build_startup_launcher(home / "gateway-service" / "Hermes_Gateway.cmd"), encoding="utf-8")
+    legacy_vbs.write_text(str(home / "gateway-service"), encoding="utf-8")
     legacy_pair = home / "gateway-service" / "Hermes_Gateway.cmd"
     legacy_pair.write_text("legacy", encoding="utf-8")
     schtasks_calls = []
@@ -538,7 +640,8 @@ def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tm
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
     monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: home / "gateway-service" / "Hermes_Gateway_alice.cmd")
-    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.vbs")
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.lnk")
+    monkeypatch.setattr(gateway_windows, "_legacy_vbs_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.vbs")
     monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_alice.cmd")
     monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
     monkeypatch.setattr(gateway_windows, "_hermes_home", lambda: home)
@@ -570,7 +673,7 @@ def test_secondary_profile_leaves_default_profiles_bare_launchers_alone(monkeypa
     (default_home / "gateway-service").mkdir(parents=True)
     startup.mkdir()
     default_vbs = startup / "Hermes_Gateway.vbs"
-    default_vbs.write_text(gateway_windows._build_startup_launcher(default_home / "gateway-service" / "Hermes_Gateway.cmd"), encoding="utf-8")
+    default_vbs.write_text(str(default_home / "gateway-service"), encoding="utf-8")
     task_xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", default_home / "gateway-service" / "Hermes_Gateway.vbs", None)
     schtasks_calls = []
 
@@ -583,7 +686,8 @@ def test_secondary_profile_leaves_default_profiles_bare_launchers_alone(monkeypa
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_work")
     monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: home / "gateway-service" / "Hermes_Gateway_work.cmd")
-    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup / "Hermes_Gateway_work.vbs")
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup / "Hermes_Gateway_work.lnk")
+    monkeypatch.setattr(gateway_windows, "_legacy_vbs_startup_entry_path", lambda: startup / "Hermes_Gateway_work.vbs")
     monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: startup / "Hermes_Gateway_work.cmd")
     monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
     monkeypatch.setattr(gateway_windows, "_hermes_home", lambda: home)
@@ -666,7 +770,7 @@ def test_reconcile_scheduled_task_reregisters_only_on_drift(monkeypatch, tmp_pat
     registration is deleted and re-created from the current template (so ``RestartOnFailure`` and the
     logon ``Delay`` reach existing installs), while an aligned one is left alone."""
     script_path = tmp_path / "gateway.cmd"
-    launcher = script_path.with_suffix(".task.vbs")
+    launcher = script_path.with_suffix(".ps1")
     template = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", launcher, r"PC\me")
     calls: list[list[str]] = []
     registered = {"xml": _PRE_HARDENING_TASK_XML}

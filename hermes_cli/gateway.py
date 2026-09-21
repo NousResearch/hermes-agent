@@ -2010,6 +2010,39 @@ def _windows_scheduled_task_state(task_name: str) -> str | None:
     """
     if not is_windows():
         return None
+    # pywin32 is a declared Windows dependency. Query COM in-process first: spawning Windows
+    # PowerShell can consume the entire ten-second startup budget before COM is reached on busy hosts.
+    try:
+        import pythoncom
+        import pywintypes
+        from win32com.client import Dispatch
+
+        pythoncom.CoInitialize()
+        service = root = task = None
+        try:
+            service = Dispatch("Schedule.Service")
+            service.Connect()
+            root = service.GetFolder("\\")
+            try:
+                task = root.GetTask(task_name)
+            except pywintypes.com_error as exc:
+                # pywin32 wraps ITaskFolder::GetTask's HRESULT in EXCEPINFO scode; the outer
+                # DISP_E_EXCEPTION alone cannot distinguish absence from an RPC/access failure.
+                codes = {getattr(exc, "hresult", None)}
+                if len(exc.args) > 2 and isinstance(exc.args[2], tuple) and len(exc.args[2]) > 5:
+                    codes.add(exc.args[2][5])
+                return "MISSING" if codes & {-2147024894, -2147024893} else None
+            states = ("Unknown", "Disabled", "Queued", "Ready", "Running")
+            state = int(task.State)
+            return states[state] if 0 <= state < len(states) else "Unknown"
+        except pywintypes.com_error:
+            return None
+        finally:
+            task = root = service = None
+            pythoncom.CoUninitialize()
+    except (ImportError, OSError):
+        pass
+
     quoted_name = task_name.replace("'", "''")
     ps_cmd = (
         "$ErrorActionPreference = 'Stop'; "
@@ -2025,7 +2058,9 @@ def _windows_scheduled_task_state(task_name: str) -> str | None:
         "}"
     )
     try:
-        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        # PowerShell 7 starts materially faster on current Windows runners. The ten-second bound is
+        # intentional because this probe sits on the gateway startup path.
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
         if powershell is None:
             return None
         result = subprocess.run(

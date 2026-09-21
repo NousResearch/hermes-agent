@@ -7,7 +7,9 @@ hidden-console launcher instead of ``schtasks /Run`` so start/restart behavior i
 
 from __future__ import annotations
 
+import base64
 import ctypes
+import errno
 import json
 import locale
 import logging
@@ -191,8 +193,8 @@ def _preserve_hermes_home_path(path: str | Path) -> str:
     return str(candidate)
 
 
-# ── Quoting helpers. cmd.exe (.cmd body), VBScript literals and schtasks /TR are three DIFFERENT
-# parsers — never reuse one helper for another. The task XML path avoids /TR quoting entirely.
+# ── Quoting helpers. cmd.exe and PowerShell literals are different parsers — never reuse one
+# helper for another. Native child argv is rendered separately with ``subprocess.list2cmdline``.
 
 def _quote_cmd_script_arg(value: str) -> str:
     """Quote one argument INSIDE a .cmd file for cmd.exe: split on spaces/tabs outside double quotes,
@@ -206,11 +208,10 @@ def _quote_cmd_script_arg(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def _quote_vbs_string(value: str) -> str:
-    """VBScript double-quoted literal (embedded quote doubled; newline refused)."""
-    if "\r" in value or "\n" in value:
-        raise ValueError(f"refusing to quote VBScript value containing newline: {value!r}")
-    return '"' + value.replace('"', '""') + '"'
+def _powershell_utf8_expression(value: str) -> str:
+    """PowerShell expression decoding UTF-8 data from an ASCII-only Base64 literal."""
+    encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+    return f"[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))"
 
 
 # ── schtasks.exe wrapper
@@ -331,7 +332,7 @@ def _sanitize_filename(value: str) -> str:
 
 def get_task_script_path() -> Path:
     """The generated ``gateway.cmd`` wrapper under ``<HERMES_HOME>/gateway-service/`` (per-profile
-    installs stay self-contained); the async and supervised VBS launchers live beside it."""
+    installs stay self-contained); the PowerShell launcher lives beside it."""
     _assert_windows()
     script_dir = _hermes_home() / "gateway-service"
     script_dir.mkdir(parents=True, exist_ok=True)
@@ -350,6 +351,11 @@ def _startup_dir() -> Path:
 
 def get_startup_entry_path() -> Path:
     _assert_windows()
+    return _startup_dir() / f"{_sanitize_filename(get_task_name())}.lnk"
+
+
+def _legacy_vbs_startup_entry_path() -> Path:
+    _assert_windows()
     return _startup_dir() / f"{_sanitize_filename(get_task_name())}.vbs"
 
 
@@ -360,7 +366,13 @@ def _legacy_startup_entry_path() -> Path:
 
 def _startup_staging_path() -> Path:
     """The Startup-folder staging file; also the debris a pre-fix failed swap left behind (#114093)."""
-    return get_startup_entry_path().with_suffix(".tmp")
+    entry = get_startup_entry_path()
+    return entry.with_name(f"{entry.stem}.tmp.lnk")
+
+
+def _legacy_startup_staging_path() -> Path:
+    """Pre-PowerShell Startup staging name retained for cleanup of failed historical swaps."""
+    return _legacy_vbs_startup_entry_path().with_suffix(".tmp")
 
 
 def _stable_gateway_working_dir(project_root: Path) -> str:
@@ -430,96 +442,101 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
     return "\r\n".join(lines) + "\r\n"
 
 
-def _build_gateway_vbs_script(
-    python_path: str, working_dir: str, hermes_home: str, profile_arg: str, *, wait_for_exit: bool = False,
+def _build_gateway_powershell_script(
+    python_path: str, working_dir: str, hermes_home: str, profile_arg: str,
 ) -> str:
-    """Build the hidden-console ``gateway.vbs`` launcher (CRLF-terminated).
+    """Build the hidden PowerShell 5.1 launcher shared by Startup and Task Scheduler.
 
-    Run via ``wscript.exe``, not ``cmd.exe``: at logon Windows broadcasts CTRL_CLOSE_EVENT to console
-    groups, killing a cmd-hosted gateway with STATUS_CONTROL_C_EXIT, which Task Scheduler treats as a
-    user cancel (``RestartOnFailure`` never fires). wscript has no console; python.exe runs with window
-    style 0 so descendants inherit one hidden console instead of flashing their own (#54220/#56747).
-
-    Why: issue #45599 root cause #1.
-    ``wscript.exe`` is a GUI-subsystem executable with no console, so this launcher receives no console
-    control events. It ``Run``s the console ``python.exe`` with window style 0 (hidden): the gateway owns a
-    single hidden console — never shown, never CTRL_CLOSE'd at logon, and inherited by every
-    console-subsystem descendant (git, gh, node, …) so none of them allocate a visible flashing conhost
-    (#54220/#56747; the previous console-less pythonw.exe gateway forced exactly that per-descendant flash).
-    No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
-    ``_resolve_detached_python``).
-
-    Scheduled Tasks wait for the child and return transient failures so RestartOnFailure can
-    observe gateway crashes, but do not retry fatal configuration errors. Other callers detach.
+    ``-Supervised`` runs the gateway in the launcher and returns transient failures to Task
+    Scheduler, while mapping the fatal-configuration exit to a clean stop. The default mode runs a
+    short Python detacher which delegates to :func:`_spawn_detached`; that preserves the gateway's
+    breakaway/hidden-console contract even when the PowerShell launcher itself is in a Job Object.
+    ProcessStartInfo receives the executable and native-quoted arguments separately, so percent signs,
+    Unicode smart quotes and PowerShell metacharacters in paths remain data.
     """
-    from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV, GATEWAY_FATAL_CONFIG_EXIT_CODE
+    from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV
 
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
-    # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
-    command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
+    bootstrap_argv = [
+        "-c",
+        ("from hermes_cli.gateway_windows import _run_generated_launcher as r; "
+         "raise SystemExit(r('--supervised' in __import__('sys').argv))"),
+    ]
+    detached_arguments = subprocess.list2cmdline(bootstrap_argv)
+    supervised_arguments = subprocess.list2cmdline([*bootstrap_argv, "--supervised"])
     static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
-    q = _quote_vbs_string
+    q = _powershell_utf8_expression
     lines = [
-        f"' {_TASK_DESCRIPTION}",
-        "Option Explicit",
-        "Dim sh, env, existing_pp" + (", exitCode" if wait_for_exit else ""),
-        'Set sh = CreateObject("WScript.Shell")',
-        'Set env = sh.Environment("PROCESS")',
-        f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
-        *[f"env.Item({q(k)}) = {q(v)}" for k, v in _GATEWAY_ENV],
-        # A detached child must not inherit task ownership from its launching gateway.
-        f"env.Item({q(EXTERNAL_GATEWAY_SUPERVISOR_ENV)}) = {q('1' if wait_for_exit else '')}",
-        f"env.Item({q('VIRTUAL_ENV')}) = {q(_preserve_hermes_home_path(venv_dir))}",
-        # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%`` at runtime.
-        f"existing_pp = env.Item({q('PYTHONPATH')})",
-        "If Len(existing_pp) > 0 Then",
-        f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath + os.pathsep)} & existing_pp",
-        "Else",
-        f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
-        "End If",
-        f"sh.CurrentDirectory = {q(working_dir)}",
-        # Both modes keep the same hidden console; only the task owns the child's lifetime.
-        *([f"exitCode = sh.Run({q(command_line)}, 0, True)",
-           f"If exitCode = {GATEWAY_FATAL_CONFIG_EXIT_CODE} Then exitCode = 0",
-           "WScript.Quit exitCode"]
-          if wait_for_exit else [f"sh.Run {q(command_line)}, 0, False"]),
+        "#requires -Version 5.1",
+        f"# {_TASK_DESCRIPTION}",
+        "param([switch]$Supervised, [switch]$ValidateOnly)",
+        "$ErrorActionPreference = 'Stop'",
+        f"$python = {q(python_exe_path)}",
+        f"$workingDirectory = {q(working_dir)}",
+        "if (!(Test-Path -LiteralPath $python) -or !(Test-Path -LiteralPath $workingDirectory)) {",
+        "  throw 'Launcher dependency missing'",
+        "}",
+        "if ($ValidateOnly) { Write-Output 'Launcher dependencies verified'; exit 0 }",
+        "$startInfo = New-Object System.Diagnostics.ProcessStartInfo",
+        "$startInfo.FileName = $python",
+        f"$startInfo.Arguments = if ($Supervised) {{ {q(supervised_arguments)} }} else {{ {q(detached_arguments)} }}",
+        "$startInfo.WorkingDirectory = $workingDirectory",
+        "$startInfo.UseShellExecute = $false",
+        "$startInfo.CreateNoWindow = $true",
+        "$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden",
+        f"$startInfo.EnvironmentVariables['HERMES_HOME'] = {q(hermes_home)}",
+        *[f"$startInfo.EnvironmentVariables[{q(k)}] = {q(v)}" for k, v in _GATEWAY_ENV],
+        f"if ($Supervised) {{ $startInfo.EnvironmentVariables[{q(EXTERNAL_GATEWAY_SUPERVISOR_ENV)}] = '1' }} else {{",
+        f"  $startInfo.EnvironmentVariables[{q(EXTERNAL_GATEWAY_SUPERVISOR_ENV)}] = ''",
+        "}",
+        f"$startInfo.EnvironmentVariables['VIRTUAL_ENV'] = {q(_preserve_hermes_home_path(venv_dir))}",
+        "$existingPath = $startInfo.EnvironmentVariables['PYTHONPATH']",
+        f"$startInfo.EnvironmentVariables['PYTHONPATH'] = {q(static_pythonpath)}",
+        f"if ($existingPath) {{ $startInfo.EnvironmentVariables['PYTHONPATH'] += {q(os.pathsep)} + $existingPath }}",
+        "$child = [System.Diagnostics.Process]::Start($startInfo)",
+        "if ($null -eq $child) { throw 'Gateway child did not start' }",
+        "$child.WaitForExit()",
+        "exit $child.ExitCode",
     ]
     return "\r\n".join(lines) + "\r\n"
 
 
-def _build_startup_launcher(script_path: Path) -> str:
-    """The tiny Startup-folder .vbs that chains hidden. Quits silently if the target is gone so a
-    stale entry doesn't error on every login."""
-    target = str(script_path.with_suffix(".vbs"))
-    command = subprocess.list2cmdline(["wscript.exe", target])
-    lines = [
-        f"' {_TASK_DESCRIPTION}",
-        "Option Explicit",
-        "Dim fso, sh, target",
-        f"target = {_quote_vbs_string(target)}",
-        'Set fso = CreateObject("Scripting.FileSystemObject")',
-        "If Not fso.FileExists(target) Then WScript.Quit 0",
-        'Set sh = CreateObject("WScript.Shell")',
-        f"sh.Run {_quote_vbs_string(command)}, 0, False",
+def _powershell_executable() -> str:
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    candidate = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return str(candidate) if candidate.exists() else "powershell.exe"
+
+
+def _powershell_launcher_arguments(script_path: Path, *, supervised: bool = False) -> str:
+    argv = [
+        "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-WindowStyle", "Hidden", "-File", str(script_path),
     ]
-    return "\r\n".join(lines) + "\r\n"
+    if supervised:
+        argv.append("-Supervised")
+    return subprocess.list2cmdline(argv)
 
 
 def _write_task_script() -> Path:
-    """Generate the gateway.cmd wrapper (kept as a compatibility artifact) and the console-less .vbs
-    launchers for detached callers and Task Scheduler supervision. Return the .cmd path."""
+    """Generate the compatibility ``.cmd`` and the BOM-encoded PowerShell launcher.
+
+    Updating an old Startup-only install also replaces its active VBScript entry with a hidden
+    PowerShell shortcut. Superseded launchers are moved to ``legacy-launchers`` for recovery.
+    """
     _assert_windows()
     settings = _launcher_settings()
     script_path = get_task_script_path()
     _atomic_write(script_path, _build_gateway_cmd_script(*settings), script_path.with_suffix(".tmp"))
-    # Keep the shared async launcher for Startup fallback and existing external callers.
-    vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
-    task_vbs_path = script_path.with_suffix(".task.vbs")
-    _atomic_write(
-        task_vbs_path, _build_gateway_vbs_script(*settings, wait_for_exit=True),
-        task_vbs_path.with_name(task_vbs_path.name + ".tmp"),
+    ps1_path = script_path.with_suffix(".ps1")
+    _atomic_write_powershell(
+        ps1_path, _build_gateway_powershell_script(*settings),
+        ps1_path.with_name(ps1_path.name + ".tmp"),
     )
+    # The updater calls this without reinstalling Startup persistence. Convert a legacy fallback
+    # before retiring the async VBS it points at.
+    if _legacy_vbs_startup_entry_path().exists() or _legacy_startup_entry_path().exists():
+        _install_startup_entry(script_path)
+    _archive_legacy_launcher(script_path.with_suffix(".vbs"))
     return script_path
 
 
@@ -540,6 +557,90 @@ def _atomic_write(path: Path, content: str, tmp: Path) -> None:
             pass
 
 
+def _atomic_write_powershell(path: Path, content: str, tmp: Path) -> None:
+    """Atomically write a Windows PowerShell 5.1 script with a UTF-8 BOM."""
+    try:
+        tmp.write_bytes(content.encode("utf-8-sig"))
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _archive_legacy_launcher(path: Path, *, preserve_source: bool = False) -> Path | None:
+    """Move one superseded Hermes launcher into a recoverable per-profile archive."""
+    if not path.exists():
+        return None
+    archive_dir = get_task_script_path().parent / "legacy-launchers"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    archived = archive_dir / f"{path.stem}.{stamp}.{uuid.uuid4().hex[:8]}{path.suffix}"
+    if preserve_source:
+        shutil.copy2(path, archived)
+    else:
+        try:
+            path.replace(archived)
+        except OSError as exc:
+            # Startup may live on another volume from HERMES_HOME. Keep atomic rename on the
+            # normal path; only the explicit cross-device error falls back to copy-and-remove.
+            if exc.errno != errno.EXDEV and getattr(exc, "winerror", None) != 17:
+                raise
+            shutil.move(str(path), str(archived))
+    return archived
+
+
+_STARTUP_SHORTCUT_WRITER = """#requires -Version 5.1
+$ErrorActionPreference = 'Stop'
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($env:HERMES_SHORTCUT_PATH)
+$shortcut.TargetPath = $env:HERMES_SHORTCUT_TARGET
+$shortcut.Arguments = $env:HERMES_SHORTCUT_ARGUMENTS
+$shortcut.WorkingDirectory = $env:HERMES_SHORTCUT_WORKING_DIRECTORY
+$shortcut.WindowStyle = 7
+$shortcut.Description = 'Hermes gateway startup without VBScript'
+$shortcut.Save()
+if (!(Test-Path -LiteralPath $env:HERMES_SHORTCUT_PATH)) { throw 'Shortcut was not created' }
+"""
+
+
+def _create_startup_shortcut(entry: Path, launcher_path: Path, working_dir: str) -> None:
+    """Create the hidden PowerShell Startup shortcut through a BOM-encoded PS 5.1 helper."""
+    staging = _startup_staging_path()
+    helper = launcher_path.with_name(f"{launcher_path.stem}.shortcut.tmp.ps1")
+    _atomic_write_powershell(helper, _STARTUP_SHORTCUT_WRITER, helper.with_name(helper.name + ".tmp"))
+    env = {
+        **os.environ,
+        "HERMES_SHORTCUT_PATH": str(staging),
+        "HERMES_SHORTCUT_TARGET": _powershell_executable(),
+        "HERMES_SHORTCUT_ARGUMENTS": _powershell_launcher_arguments(launcher_path),
+        "HERMES_SHORTCUT_WORKING_DIRECTORY": working_dir,
+    }
+    try:
+        proc = subprocess.run(
+            [_powershell_executable(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(helper)],
+            env=env, capture_output=True, text=False, timeout=_SCHTASKS_TIMEOUT_S,
+            creationflags=windows_hide_flags(),
+        )
+        if proc.returncode != 0 or not staging.exists():
+            detail = _decode_schtasks_output(proc.stderr or proc.stdout).strip()
+            raise RuntimeError(f"PowerShell shortcut creation failed (code {proc.returncode}): {detail}")
+        # Preserve the existing shortcut before atomically replacing it. Only after the new active
+        # entry exists do we move the legacy VBS/CMD entries out of Startup.
+        _archive_legacy_launcher(entry, preserve_source=True)
+        staging.replace(entry)
+        for old_entry in (_legacy_vbs_startup_entry_path(), _legacy_startup_entry_path()):
+            _archive_legacy_launcher(old_entry)
+    finally:
+        for temporary in (helper, staging):
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 # ── Install / uninstall
 
 def _resolve_task_user() -> str | None:
@@ -554,12 +655,14 @@ def _resolve_task_user() -> str | None:
 
 
 def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> str:
-    """Task Scheduler XML with safe long-running defaults. ``launcher_path`` is the console-less
-    ``.vbs`` run via ``wscript.exe`` (see ``_build_gateway_vbs_script`` for why not cmd.exe).
+    """Task Scheduler XML with safe long-running defaults. ``launcher_path`` is the BOM-encoded
+    PowerShell launcher, invoked hidden in supervised mode so failures reach Task Scheduler.
 
     See #45599.
     """
     user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    powershell = _powershell_executable()
+    arguments = _powershell_launcher_arguments(launcher_path, supervised=True)
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -602,8 +705,8 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>wscript.exe</Command>
-      <Arguments>//B //Nologo "{escape(str(launcher_path))}"</Arguments>
+      <Command>{escape(powershell)}</Command>
+      <Arguments>{escape(arguments)}</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -621,7 +724,7 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
     # Other /Delete failures are non-fatal: /Create /F may still replace it; keep the detail.
     user = _resolve_task_user()
-    launcher_path = script_path.with_suffix(".task.vbs")
+    launcher_path = script_path.with_suffix(".ps1")
     xml_path = script_path.with_suffix(".task.xml")
     xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
     # Immediate manual starts use _spawn_detached(). See #45599.
@@ -632,6 +735,7 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         for argv in variants:
             code, out, err = _exec_schtasks(argv)
             if code == 0:
+                _archive_legacy_launcher(script_path.with_suffix(".task.vbs"))
                 return (True, f"Created Scheduled Task {task_name!r}")
             last_code, last_err = code, (err or out or "")
     finally:
@@ -645,16 +749,11 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
 
 
 def _install_startup_entry(script_path: Path) -> Path:
-    """Write the Startup-folder fallback launcher. Returns its path."""
+    """Install a hidden PowerShell Startup shortcut. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(entry, _build_startup_launcher(script_path), _startup_staging_path())
-    legacy_entry = _legacy_startup_entry_path()
-    try:
-        if legacy_entry.exists():
-            legacy_entry.unlink()
-    except OSError:
-        pass
+    launcher_path = script_path.with_suffix(".ps1")
+    _create_startup_shortcut(entry, launcher_path, _stable_gateway_working_dir(script_path.parent.parent))
     return entry
 
 
@@ -674,6 +773,7 @@ def _remove_startup_fallback() -> tuple[list[Path], list[tuple[Path, Exception]]
     failures: list[tuple[Path, Exception]] = []
     for label, resolver in (
         ("current Startup fallback", get_startup_entry_path),
+        ("legacy VBScript Startup fallback", _legacy_vbs_startup_entry_path),
         ("legacy Startup fallback", _legacy_startup_entry_path),
     ):
         # Path resolution itself depends on the user environment.  The task is
@@ -686,12 +786,12 @@ def _remove_startup_fallback() -> tuple[list[Path], list[tuple[Path, Exception]]
             failures.append((Path(f"<{label}>"), exc))
             continue
         try:
-            entry.unlink()
-        except FileNotFoundError:
-            continue
+            archived = _archive_legacy_launcher(entry)
         except OSError as exc:
             failures.append((entry, exc))
         else:
+            if archived is None:
+                continue
             removed.append(entry)
     return removed, failures
 
@@ -835,6 +935,59 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     return proc.pid
 
 
+def _supervised_hidden_console_kwargs() -> dict:
+    """Popen flags for a real, hidden console owned by the supervised gateway.
+
+    ``CREATE_NO_WINDOW`` creates no console on Windows. The Task path instead needs a real console
+    (so git/node/cmd descendants inherit it) whose window is hidden with STARTUPINFO/SW_HIDE.
+    """
+    _assert_windows()
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": (
+            getattr(subprocess, "CREATE_NEW_CONSOLE", 0x00000010)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        ),
+        "startupinfo": startupinfo,
+    }
+
+
+def _run_generated_launcher(supervised: bool) -> int:
+    """Backend for the generated PowerShell launcher.
+
+    Async mode delegates to the canonical breakaway spawn. Supervised mode keeps the child in the
+    Task Scheduler job, but uses the same hidden-console flags and environment construction; it waits
+    so exit 75 remains restartable and maps fatal configuration exit 78 to a clean stop.
+    """
+    _assert_windows()
+    if not supervised:
+        _spawn_detached()
+        return 0
+
+    from gateway.restart import EXTERNAL_GATEWAY_SUPERVISOR_ENV, GATEWAY_FATAL_CONFIG_EXIT_CODE
+
+    argv, working_dir, env_overlay = _build_gateway_argv()
+    env = {
+        **os.environ,
+        **env_overlay,
+        EXTERNAL_GATEWAY_SUPERVISOR_ENV: "1",
+        _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0",
+    }
+    log_dir = _hermes_home() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stray_log = log_dir / "gateway-stdio.log"
+    with open(stray_log, "ab", buffering=0) as log_fh:
+        proc = subprocess.Popen(
+            argv, cwd=working_dir, env=env,
+            **_supervised_hidden_console_kwargs(),
+            close_fds=True, stdin=subprocess.DEVNULL, stdout=log_fh, stderr=log_fh,
+        )
+        exit_code = proc.wait()
+    return 0 if exit_code == GATEWAY_FATAL_CONFIG_EXIT_CODE else exit_code
+
+
 def _stdin_is_interactive(*, isatty: bool, console_mode_ok: bool | None) -> bool:
     """A human can answer a prompt only on a real console. The Windows CRT reports isatty()==True for
     every character device — the NUL device included (`hermes gateway start < NUL`, stdin=DEVNULL) — so
@@ -960,10 +1113,12 @@ def install(
     script_path = _write_task_script()
     # A pre-fix install that failed its Startup-folder swap left `Hermes_Gateway.tmp` there, and the
     # Scheduled Task path below never touches that folder — sweep it so a re-run clears the debris.
-    try:
-        _startup_staging_path().unlink(missing_ok=True)
-    except OSError:
-        pass
+    for staging_resolver in (_startup_staging_path, _legacy_startup_staging_path):
+        try:
+            staging_path = staging_resolver()
+            _archive_legacy_launcher(staging_path)
+        except Exception:
+            pass
     if force:
         # Pre-suffix strays (task ``Hermes_Gateway``, Startup ``Hermes_Gateway.vbs``) are unreachable by
         # the current names, so a plain reconcile never heals them (#116157).
@@ -1361,9 +1516,13 @@ def uninstall() -> None:
             print(f"⚠ schtasks /Delete returned code {code}: {detail}")
 
     for path, label in (
-        (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
+        (get_startup_entry_path(), "Windows login item"),
+        (_legacy_vbs_startup_entry_path(), "legacy VBScript Windows login item"),
+        (_legacy_startup_entry_path(), "legacy Windows login item"),
         (_startup_staging_path(), "Windows login item staging file"),
-        (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Async launcher"),
+        (_legacy_startup_staging_path(), "legacy Windows login item staging file"),
+        (script_path, "Task script"), (script_path.with_suffix(".ps1"), "PowerShell launcher"),
+        (script_path.with_suffix(".vbs"), "legacy async launcher"),
         (script_path.with_suffix(".task.vbs"), "Task launcher"),
     ):
         try:
@@ -1387,7 +1546,9 @@ def is_task_registered() -> bool:
 
 
 def is_startup_entry_installed() -> bool:
-    return get_startup_entry_path().exists() or _legacy_startup_entry_path().exists()
+    return any(path.exists() for path in (
+        get_startup_entry_path(), _legacy_vbs_startup_entry_path(), _legacy_startup_entry_path(),
+    ))
 
 
 def _query_scheduled_task_xml(task_name: str) -> str | None:
@@ -1457,7 +1618,7 @@ def scheduled_task_drift(task_name: str) -> list[str]:
     if registered is None:
         return []
     template = _build_scheduled_task_xml(
-        task_name, get_task_script_path().with_suffix(".task.vbs"), _resolve_task_user())
+        task_name, get_task_script_path().with_suffix(".ps1"), _resolve_task_user())
     return compare_scheduled_task_drift(registered, template)
 
 

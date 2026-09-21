@@ -130,6 +130,11 @@ const TEST_EXTRAS: Array<{ extra: string; cmd: string; desc: string }> = [
     desc: "خود pytest و pytest-asyncio، mcp، httpx، ruff و ty — پیش‌نیاز هر اجرای تستی",
   },
   {
+    extra: "mcp",
+    cmd: "pip install \"mcp==2.0.0\"",
+    desc: "SDK پروتکل MCP به‌تنهایی (بدون extra کامل dev) — پنج فایل gated با importorskip(\"mcp\") به‌جای skip اجرا می‌شوند: test_mcp_serve.py و چهار فایل MCP در tests/tools",
+  },
+  {
     extra: "messaging",
     cmd: "pip install -e \".[messaging]\"",
     desc: "تست‌های تلگرام، Discord، Slack و کانال‌های پیام‌رسانی (tests/gateway، tests/tools)",

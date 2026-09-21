@@ -997,7 +997,10 @@ def _off_route_host(c: _Ctx) -> str:
 # Structured codes some gateways put on a 403 that mean "the upstream is down,
 # retry later" — not a credential refusal (#75388). Checked before the auth
 # default so the configured retry budget applies and no credential is benched.
-_403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
+# ``server_error`` is the same class of wrapper: OpenCode relays stamp it on a
+# 403 when the upstream answer was unparseable, and the same request succeeds
+# seconds later (#117869).
+_403_TRANSIENT_CODES = frozenset({"upstream_unavailable", "server_error"})
 
 
 def _status_403(c: _Ctx) -> Verdict:

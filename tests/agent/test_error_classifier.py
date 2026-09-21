@@ -220,6 +220,34 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is False
 
+    def test_403_server_error_code_is_transient_not_auth(self):
+        """A relay 403 whose body self-identifies as ``server_error`` is an upstream
+        failure, not a credential refusal: the same request succeeds on retry (#117869)."""
+        body = {
+            "error": {
+                "type": "server_error",
+                "code": "server_error",
+                "message": "Upstream request failed: [server_error] Upstream response was not valid JSON",
+            }
+        }
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body), provider="custom"
+        )
+        assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
+    def test_403_server_error_type_without_code_stays_auth(self):
+        """A real credential refusal carries no transient code: ``permission_error``
+        keeps the auth verdict and the abort path (fallback, not retry)."""
+        body = {"error": {"message": "Forbidden", "type": "permission_error"}}
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body), provider="custom"
+        )
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+        assert result.should_fallback is True
+
 
 
 

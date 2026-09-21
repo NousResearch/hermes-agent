@@ -56,6 +56,41 @@ class TestApiServerProfileResolution:
             is _PROFILE_REJECTED
         )
 
+    def test_hermes_handle_aliases_to_default_profile(self, monkeypatch):
+        """A peer advertises its default profile's @handle as 'hermes' (botHandle()), but the
+        mirror is keyed by profile name — '/p/hermes/' must reach the same profile '/p/default/'
+        does (#118076), not 404."""
+        adapter = _make_adapter(multiplex=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("default", "/profiles/default"),
+                ("worker", "/profiles/worker"),
+            ],
+        )
+
+        assert (
+            adapter._resolve_request_profile(cast(Any, _FakeReq("hermes")))
+            == "default"
+        )
+
+    def test_real_hermes_profile_is_not_shadowed_by_the_alias(self, monkeypatch):
+        """A gateway that genuinely serves a profile literally named 'hermes' must keep
+        resolving to itself, never silently redirect to 'default'."""
+        adapter = _make_adapter(multiplex=True)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            lambda multiplex: [
+                ("default", "/profiles/default"),
+                ("hermes", "/profiles/hermes"),
+            ],
+        )
+
+        assert (
+            adapter._resolve_request_profile(cast(Any, _FakeReq("hermes")))
+            == "hermes"
+        )
+
 
 class TestApiServerRouteTable:
     def test_route_table_includes_models_options_and_chat(self):

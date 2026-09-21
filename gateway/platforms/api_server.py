@@ -1518,7 +1518,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             served = {name for name, _ in profiles_to_serve(multiplex=True)}
         except Exception:
             return _PROFILE_REJECTED
-        return profile if profile in served else _PROFILE_REJECTED
+        if profile in served:
+            return profile
+        # 'hermes' is the reserved @handle a peer always advertises its default profile
+        # under (apps/desktop hermes-bots/data.ts:botHandle), never a real profile name.
+        # Addressing the mirror by that handle must reach the same profile it labels
+        # (#118076), unless a profile is actually named 'hermes'.
+        if profile == "hermes" and "hermes" not in served and "default" in served:
+            return "default"
+        return _PROFILE_REJECTED
 
     @staticmethod
     def _profile_scope(profile: Optional[str]):

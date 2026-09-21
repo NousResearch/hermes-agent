@@ -79,7 +79,7 @@ def test_probe_starts_with_one_graphql_request_and_rest_fills_missing_counts(mod
     assert data["fetched_at"] > "2026-01-01"
 
 
-def test_failed_probe_keeps_timestamp_and_warns_about_uncached_slugs(mod, tmp_path, monkeypatch, capsys):
+def test_failed_graphql_probe_stops_fallback_and_keeps_cache(mod, tmp_path, monkeypatch, capsys):
     cat = _catalog(tmp_path, "https://github.com/a/one", "https://github.com/b/two")
     out = tmp_path / "plugin-stars.json"
     timestamp = "2026-01-01T00:00:00+00:00"
@@ -92,9 +92,9 @@ def test_failed_probe_keeps_timestamp_and_warns_about_uncached_slugs(mod, tmp_pa
         raise urllib.error.HTTPError("u", 401, "unauthorized", hdrs=None, fp=None)
     monkeypatch.setattr(mod, "_graphql", limited)
 
-    def rest_failed(url, headers):
-        raise urllib.error.HTTPError(url, 401, "unauthorized", hdrs=None, fp=None)
-    monkeypatch.setattr(mod, "_http_json", rest_failed)
+    def unexpected_rest(*args, **kwargs):
+        raise AssertionError("a wholesale GraphQL failure must not fan out into REST requests")
+    monkeypatch.setattr(mod, "_http_json", unexpected_rest)
 
     assert mod.main(catalog_dir=cat, output=out, probe=True, live_url=None, token="t") == 0
     data = json.loads(out.read_text())

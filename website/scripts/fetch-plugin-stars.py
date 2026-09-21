@@ -129,7 +129,8 @@ def probe_stars(
     try:
         payload = _graphql(stars_query(slugs), token)
     except (urllib.error.URLError, OSError, ValueError) as e:
-        _log(f"GraphQL probe failed ({e}); falling back to REST")
+        _log(f"GraphQL probe failed ({e}); keeping previous counts")
+        return {slug: previous[slug] for slug in slugs if slug in previous}, False
     else:
         data = payload.get("data") or {}
         for err in payload.get("errors") or []:

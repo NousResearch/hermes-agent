@@ -62,6 +62,19 @@ def test_unchanged_file_is_parsed_once_and_each_caller_gets_its_own_dict(tmp_pat
     assert len(calls) == 1, f"expected one parse, got {len(calls)}"
 
 
+@pytest.mark.parametrize("prefix", [b"", b"\xef\xbb\xbf"])
+def test_strict_read_rejects_invalid_utf8_after_nonstrict_cache_warmup(tmp_path, prefix):
+    env = tmp_path / ".env"
+    env.write_bytes(prefix + b"KEY=synthetic-\xff\n")
+    expected = {"KEY": "synthetic-\u00ff"}
+    assert ss.load_env_file(env) == expected
+    # A tolerant profile load must not relax a subsequent MCP strict read.
+    for _ in range(2):
+        with pytest.raises(UnicodeDecodeError):
+            ss.load_env_file(env, strict=True)
+        assert ss.load_env_file(env) == expected
+
+
 def test_edits_and_deletion_are_seen(tmp_path, monkeypatch):
     env = tmp_path / ".env"
     env.write_bytes(b"KEY=aaa\n")

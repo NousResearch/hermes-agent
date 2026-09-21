@@ -14,7 +14,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Callable, ContextManager
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
@@ -42,6 +42,10 @@ _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
 _STOPPABLE_STATUSES = ("queued", "running", "indeterminate", "deferred", "stopping")
 _RETRYABLE_STATUSES = ("indeterminate", "deferred")
+
+
+class _DelegatedSendOutcomeUncertain(RuntimeError):
+    """The canonical event committed but delegated post-admission work did not confirm."""
 
 
 def _hosted_room_turn_timeout_seconds() -> float:
@@ -700,18 +704,93 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
-    def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
+    def send(
+        self, *, room_id: str, event_id: str, payload: Any,
+        new_event_authorizer: Callable[[Any], Any] | None = None,
+        new_event_commit_authorizer: Callable[[Any], Any] | None = None,
+        new_event_lifetime: (
+            Callable[[], ContextManager[Callable[[Any], None]]] | None
+        ) = None,
+    ) -> dict[str, Any]:
+        if new_event_authorizer is not None:
+            if not callable(new_event_authorizer):
+                raise hosted_rooms.HostedRoomError("new_event_authorizer must be callable")
+            if ((new_event_commit_authorizer is None) != (new_event_lifetime is None)
+                    or (new_event_commit_authorizer is not None
+                        and not callable(new_event_commit_authorizer))
+                    or (new_event_lifetime is not None and not callable(new_event_lifetime))):
+                raise hosted_rooms.HostedRoomError(
+                    "commit authorizer and lifetime must be supplied together")
+            # Delegated receipt recovery is read-only: an exact accepted replay
+            # returns before member readiness refresh, policy preparation or a
+            # runtime wakeup.  A missing receipt falls through to the ordinary
+            # canonical NEW-message path and its held-writer authorizer.
+            replay_payload = discussion.validate_user_payload(payload)
+            gateway_id, epoch = self._owned_authority(room_id)
+            from gateway.session_hosted_attachments import append_user_event
+            try:
+                return append_user_event(
+                    self, room_id=room_id, event_id=event_id, payload=replay_payload,
+                    gateway_id=gateway_id, epoch=epoch, existing_only=True)
+            except hosted_rooms.EventNotFoundError:
+                pass
         normalized = discussion.validate_user_payload(payload)
         gateway_id, epoch = self._owned_authority(room_id)
         from gateway.session_hosted_attachments import append_user_event
-        event = append_user_event(
-            self, room_id=room_id, event_id=event_id, payload=normalized,
-            gateway_id=gateway_id, epoch=epoch)
-        binding = next((b for b in self.bindings() if b.room_id == room_id), None)
-        if binding is None:
-            raise hosted_rooms.RoomNotFoundError("hosted room not found")
-        self.prepare_room(binding)
-        self.runtime.wakeup()
+        committed = False
+        lifetime = (
+            new_event_lifetime()
+            if new_event_lifetime is not None
+            else contextlib.nullcontext(None)
+        )
+        try:
+            with lifetime as require_external:
+                if require_external is not None and not callable(require_external):
+                    raise hosted_rooms.HostedRoomError(
+                        "new_event_lifetime must yield a writer verifier")
+
+                def guarded(
+                    callback: Callable[[Any], Any] | None,
+                ) -> Callable[[Any], Any] | None:
+                    if callback is None:
+                        return None
+                    if require_external is None:
+                        return callback
+
+                    def invoke(conn):
+                        assert require_external is not None
+                        require_external(conn)
+                        return callback(conn)
+
+                    return invoke
+
+                event = append_user_event(
+                    self, room_id=room_id, event_id=event_id, payload=normalized,
+                    gateway_id=gateway_id, epoch=epoch,
+                    authorize_new=guarded(new_event_authorizer),
+                    authorize_commit=guarded(new_event_commit_authorizer))
+                committed = True
+        except Exception as exc:
+            if committed and new_event_authorizer is not None:
+                raise _DelegatedSendOutcomeUncertain from exc
+            raise
+        if new_event_authorizer is not None and event.get("idempotent") is True:
+            return event
+
+        def finish_admission():
+            binding = next((b for b in self.bindings() if b.room_id == room_id), None)
+            if binding is None:
+                raise hosted_rooms.RoomNotFoundError("hosted room not found")
+            self.prepare_room(binding)
+            self.runtime.wakeup()
+
+        if new_event_authorizer is None:
+            finish_admission()
+        else:
+            try:
+                finish_admission()
+            except Exception as exc:
+                raise _DelegatedSendOutcomeUncertain from exc
         return event
 
     def stop_room(

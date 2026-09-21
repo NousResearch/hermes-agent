@@ -13,12 +13,13 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ContextManager, Protocol, cast
 
 from gateway import hosted_room_driver as state
+from hermes_state_runtime import RuntimeStoreError
 
 from gateway.hosted_rooms_common import identifier
 
@@ -153,35 +154,66 @@ class HostedRoomRuntime:
         self._unavailable_route_retries: dict[tuple[str, str], dict[str, float]] = {}
         self._blocked_rooms: set[str] = set()
         self._status_lock, self._current_tasks = threading.Lock(), {}
+        # NEW event admission and stop publish under one outer lock.  Stop
+        # releases it before joining workers, so admission never waits on a
+        # thread whose shutdown needs the admission holder to finish.
+        self._lifecycle_lock = threading.Lock()
         self._room_schedule_cursor, self._cycles = 0, 0
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
         """Start the bounded room-worker supervisor idempotently."""
-        with self._status_lock:
-            if self._thread is not None and self._thread.is_alive():
-                return
-            self._stop.clear()
-            self._wake.set()
-            self._thread = threading.Thread(
-                target=self._worker_loop, name="hosted-room-driver-supervisor", daemon=True)
-            self._thread.start()
+        with self._lifecycle_lock:
+            with self._status_lock:
+                if self._thread is not None and self._thread.is_alive():
+                    return
+                self._stop.clear()
+                self._wake.set()
+                self._thread = threading.Thread(
+                    target=self._worker_loop, name="hosted-room-driver-supervisor", daemon=True)
+                self._thread.start()
 
     def stop(self, *, timeout: float = 5.0) -> bool:
         """Request a bounded clean stop without interrupting accepted turns."""
-        self._stop.set()
-        self._wake.set()
-        with self._status_lock:
-            thread = self._thread
+        deadline = time.monotonic() + max(0.0, timeout)
+        remaining = max(0.0, deadline - time.monotonic())
+        acquired = (self._lifecycle_lock.acquire(timeout=remaining) if remaining
+                    else self._lifecycle_lock.acquire(blocking=False))
+        if not acquired:
+            return False
+        try:
+            self._stop.set()
+            self._wake.set()
+            with self._status_lock:
+                thread = self._thread
+        finally:
+            self._lifecycle_lock.release()
         if thread is None:
             return True
-        deadline = time.monotonic() + max(0.0, timeout)
         thread.join(max(0.0, deadline - time.monotonic()))
         with self._status_lock:
             room_threads = tuple(self._room_threads.values())
         for room_thread in room_threads:
             room_thread.join(max(0.0, deadline - time.monotonic()))
         return not any(t.is_alive() for t in (thread, *room_threads))
+
+    @contextmanager
+    def new_event_admission(self):
+        """Linearize one NEW canonical event against runtime stop.
+
+        Admission-first retains this guard through the event transaction's
+        commit.  Stop-first publishes ``_stop`` under the same guard and the
+        later admission fails.  No worker join occurs while the guard is held.
+        """
+
+        with self._lifecycle_lock:
+            with self._status_lock:
+                thread = self._thread
+                running = bool(thread and thread.is_alive())
+                stopping = self._stop.is_set()
+            if not running or stopping:
+                raise RuntimeStoreError("runtime_coordination_required")
+            yield
 
     def wakeup(self) -> None:
         """Wake the worker after task admission or a room-state change."""

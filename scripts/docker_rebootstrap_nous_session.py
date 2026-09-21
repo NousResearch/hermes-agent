@@ -36,12 +36,19 @@ Design constraints
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
+
+try:  # POSIX only; the container runs Linux, but this module is imported by tests on any host.
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX
+    fcntl = None  # type: ignore[assignment]
 
 # Env var the orchestrator sets to the re-seed payload. Deliberately DISTINCT
 # from HERMES_AUTH_JSON_BOOTSTRAP (create-only, blank-volume seed) so the two
@@ -138,6 +145,52 @@ def _seed_is_newer(local_nous: Any, seed_nous: dict) -> bool:
     )
 
 
+# How long to wait for a concurrent auth.json transaction before giving up. A boot hook must
+# not block the container, and declining to re-seed is always recoverable — the next boot retries.
+LOCK_TIMEOUT_SECONDS = 10.0
+
+
+@contextlib.contextmanager
+def _auth_store_lock(auth_path: str) -> "Iterator[bool]":
+    """Hold the same cross-process lock ``hermes_cli.auth`` takes for an auth.json transaction.
+
+    This module is stdlib-only by design (see the module docstring), so it re-implements the
+    primitive rather than importing it — but the lock FILE and the primitive have to stay
+    identical to ``hermes_cli/auth.py::_auth_store_lock`` (``auth_path.with_suffix(".lock")``
+    plus ``fcntl.flock(LOCK_EX)``) or the two writers do not exclude each other at all.
+
+    Yields True while the lock is held, False when it could not be taken. ``auth.json`` holds
+    refresh tokens that the running gateway rotates under this same lock, so a caller that
+    cannot take it declines to re-seed instead of racing that rotation.
+    """
+    if fcntl is None:  # pragma: no cover - non-POSIX
+        yield False
+        return
+    lock_path = os.path.splitext(auth_path)[0] + ".lock"
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        yield False
+        return
+    try:
+        deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    yield False
+                    return
+                time.sleep(0.05)
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
     """Core logic. Returns a short status string for logging/testing:
 
@@ -146,6 +199,8 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
       - "no_auth_file"     — auth.json absent (blank volume → let the normal
                              HERMES_AUTH_JSON_BOOTSTRAP path handle it)
       - "auth_unreadable"  — auth.json present but unparseable (leave as-is)
+      - "lock_unavailable" — another process holds the auth store lock (a token rotation);
+                             decline rather than clobber it, the next boot retries
       - "not_terminal"     — local entry is healthy and at least as new → no-op
       - "reseeded"         — terminal entry replaced from seed
       - "reseeded_newer"   — healthy-but-stale entry replaced by a newer seed
@@ -161,6 +216,17 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
         # Blank volume — this is the normal first-boot case, not a re-seed.
         return "no_auth_file"
 
+    # The read, the terminal/newer decision and the replace are ONE transaction: the gateway
+    # rotates refresh tokens through hermes_cli.auth under this same lock, and an unlocked
+    # read-modify-replace here reverts a rotation that landed after our read.
+    with _auth_store_lock(auth_path) as locked:
+        if not locked:
+            return "lock_unavailable"
+        return _reseed_locked(auth_path, seed_nous)
+
+
+def _reseed_locked(auth_path: str, seed_nous: Any) -> str:
+    """The auth.json transaction itself; callers must hold ``_auth_store_lock``."""
     try:
         with open(auth_path, "r", encoding="utf-8") as fh:
             store = json.load(fh)

@@ -128,4 +128,54 @@ def test_stale_temp_from_a_killed_prior_run_does_not_block_reseed(tmp_path):
     assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "reseeded"
     store = json.loads(Path(auth).read_text())
     assert store["providers"]["nous"]["refresh_token"] == "FRESH-rt"
-    assert sorted(p.name for p in home.iterdir()) == sorted(["auth.json", stale.name]), "no new temp survives"
+    # auth.lock is the canonical auth-store lock (hermes_cli/auth.py::_auth_store_lock); the
+    # re-seed now runs as one locked transaction, so it is expected beside auth.json. Still an
+    # exact directory listing, so any OTHER stray file fails this as before.
+    assert sorted(p.name for p in home.iterdir()) == sorted(
+        ["auth.json", "auth.lock", stale.name]), "no new temp survives"
+
+
+# ---------------------------------------------------------------------------
+# auth.json is a shared credential store — the re-seed is one locked transaction
+# ---------------------------------------------------------------------------
+
+
+def test_declines_while_another_process_holds_the_auth_store_lock(tmp_path, monkeypatch):
+    """The gateway rotates refresh tokens through hermes_cli.auth under auth.lock. An unlocked
+    read-modify-replace here reverts a rotation that landed after our read, so a re-seed that
+    cannot take the lock must decline and leave auth.json exactly as it found it."""
+    import fcntl
+
+    monkeypatch.setattr(mod, "LOCK_TIMEOUT_SECONDS", 0.2)
+    auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
+    before = Path(auth).read_text()
+
+    # flock is per open file description, so a second descriptor conflicts even in-process.
+    held = os.open(str(Path(auth).with_suffix(".lock")), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = mod.reseed_if_terminal(auth, _FRESH_SEED)
+    finally:
+        fcntl.flock(held, fcntl.LOCK_UN)
+        os.close(held)
+
+    assert result == "lock_unavailable"
+    assert Path(auth).read_text() == before
+
+
+def test_locks_the_same_file_hermes_cli_auth_uses(tmp_path):
+    """Interop contract: hermes_cli/auth.py::_auth_store_lock locks
+    ``auth_path.with_suffix('.lock')``. Lock a different path and the two writers stop
+    excluding each other silently, which is the whole bug."""
+    auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
+    assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "reseeded"
+    assert Path(auth).with_suffix(".lock").exists()
+
+
+def test_uncontended_reseed_is_unchanged(tmp_path):
+    """The lock must not change the feature: with nothing holding it, a terminal entry is
+    still replaced."""
+    auth = _write_auth(tmp_path, {"nous": _terminal_nous_state()})
+    assert mod.reseed_if_terminal(auth, _FRESH_SEED) == "reseeded"
+    store = json.loads(Path(auth).read_text())
+    assert store["providers"]["nous"]["refresh_token"] == "FRESH-rt"

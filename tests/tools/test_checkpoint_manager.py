@@ -1230,7 +1230,9 @@ class TestClearFunctions:
 
         legacy = base / "legacy-20200101-000000"
         legacy.mkdir()
-        (legacy / "junk").write_bytes(b"x" * 1000)
+        junk = legacy / "junk"
+        junk.write_bytes(b"x" * 1000)
+        junk.chmod(0o400)  # Git object files carry the read-only attribute on Windows (#117170).
 
         result = clear_legacy()
         assert result["deleted"] == 1

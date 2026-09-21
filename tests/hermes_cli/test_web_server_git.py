@@ -1,12 +1,85 @@
+import asyncio
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import web_server
+from hermes_cli.web_routers import git as git_router
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def reset_gh_auth_probe_state():
+    previous = (git_router._gh_auth_cache, git_router._gh_auth_probe_task, git_router._gh_auth_probe_started)
+    git_router._gh_auth_cache, git_router._gh_auth_probe_task, git_router._gh_auth_probe_started = None, None, 0.0
+    try:
+        yield
+    finally:
+        git_router._gh_auth_cache, git_router._gh_auth_probe_task, git_router._gh_auth_probe_started = previous
+
+
+class _GhProbe:
+    """Stand-in for ``_probe_gh_auth``: blocks until released, reports how many ran and how many overlapped."""
+
+    def __init__(self):
+        self.started, self.release = threading.Event(), threading.Event()
+        self.calls, self.running, self.peak, self.logged_in = 0, 0, 0, False
+        self._lock = threading.Lock()
+
+    def __call__(self):
+        with self._lock:
+            self.calls += 1
+            self.running += 1
+            self.peak = max(self.peak, self.running)
+        answer = self.logged_in  # read at START, like the real `gh auth status`
+        self.started.set()
+        assert self.release.wait(timeout=2)
+        with self._lock:
+            self.running -= 1
+        return {"available": True, "authenticated": answer}
+
+
+def test_gh_auth_concurrent_cache_misses_share_one_probe(monkeypatch):
+    """Overlapping requests never start a second `gh` while one is in flight (#111509)."""
+    probe = _GhProbe()
+    monkeypatch.setattr(git_router, "_probe_gh_auth", probe)
+
+    async def exercise():
+        tasks = [asyncio.create_task(git_router.gh_auth_status_route()) for _ in range(5)]
+        while not probe.started.is_set():
+            await asyncio.sleep(0)
+        probe.release.set()
+        return await asyncio.gather(*tasks)
+
+    assert asyncio.run(exercise()) == [{"available": True, "authenticated": False}] * 5
+    assert (probe.calls, probe.peak) == (1, 1)
+
+
+def test_gh_auth_refresh_waits_out_a_probe_started_before_it(monkeypatch):
+    """``refresh=true`` issued after `gh auth login` must not adopt the answer of a probe that started
+    while still logged out — and must not run a second `gh` concurrently to get its own."""
+    probe = _GhProbe()
+    monkeypatch.setattr(git_router, "_probe_gh_auth", probe)
+
+    async def exercise():
+        stale = asyncio.create_task(git_router.gh_auth_status_route())  # cache miss while logged out
+        while not probe.started.is_set():
+            await asyncio.sleep(0)
+        probe.logged_in = True  # `gh auth login` completes
+        refreshed = asyncio.create_task(git_router.gh_auth_status_route(refresh=True))
+        await asyncio.sleep(0)
+        probe.release.set()
+        return await stale, await refreshed, await git_router.gh_auth_status_route()
+
+    stale, refreshed, cached = asyncio.run(exercise())
+    assert stale == {"available": True, "authenticated": False}
+    assert refreshed == {"available": True, "authenticated": True}
+    assert cached == {"available": True, "authenticated": True}  # the TTL cache holds the fresh answer
+    assert (probe.calls, probe.peak) == (2, 1)
 
 
 @pytest.fixture
@@ -118,7 +191,13 @@ def repo_with_remote(tmp_path):
     branch that has NO local head (the teammate-branch case)."""
     origin = tmp_path / "origin.git"
     origin.mkdir()
-    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True, capture_output=True)
+    # -b main: a bare init's HEAD symref otherwise follows the runner's ambient
+    # init.defaultBranch (unset on some CI images -> legacy "master"), which
+    # dangles here since only main/feature are ever pushed and breaks
+    # `git remote show origin`'s "HEAD branch:" resolution.
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, capture_output=True,
+    )
 
     root = tmp_path / "clone"
     root.mkdir()
@@ -194,3 +273,33 @@ def test_worktree_add_from_origin_base_does_not_track(client, repo_with_remote):
         cwd=repo_with_remote, capture_output=True, text=True,
     )
     assert probe.returncode != 0
+
+
+def test_worktree_add_without_base_uses_remote_default(client, repo_with_remote):
+    main_sha = subprocess.run(
+        ["git", "rev-parse", "origin/main"],
+        cwd=repo_with_remote,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(repo_with_remote, "switch", "-c", "parked-feature")
+    (repo_with_remote / "feature-only.txt").write_text("feature\n", encoding="utf-8")
+    _git(repo_with_remote, "add", "feature-only.txt")
+    _git(repo_with_remote, "commit", "-m", "feature only")
+
+    added = client.post(
+        "/api/git/worktree/add",
+        json={"path": str(repo_with_remote), "branch": "fresh-default"},
+    ).json()
+
+    tree = Path(added["path"])
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tree,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert head == main_sha
+    assert not (tree / "feature-only.txt").exists()

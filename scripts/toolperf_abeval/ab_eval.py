@@ -17,7 +17,7 @@ Usage:
   python ab_eval.py report --models MODEL1,MODEL2
 
 Environment:
-  ABEVAL_ROOT    working/results root   (default: ./abeval-workspace)
+  ABEVAL_ROOT    working/results root   (default: system temporary directory/hermes-abeval-workspace)
   ABEVAL_HOME    HERMES_HOME for runs   (default: $ABEVAL_ROOT/home)
                  Must be a configured Hermes home with credentials for the
                  models under test. See README.md for a minimal setup.
@@ -29,17 +29,28 @@ This is the harness used for the August 2026 core-toolset performance batch
 (tracker: NousResearch/hermes-agent#77056).
 """
 import json
+import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sys
 import time
+import tempfile
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 
-ROOT = Path(os.environ.get("ABEVAL_ROOT", "abeval-workspace")).resolve()
+from report_contract import validate_toolperf_report
+
+ROOT = Path(os.environ.get("ABEVAL_ROOT", str(Path(tempfile.gettempdir()) / "hermes-abeval-workspace"))).resolve()
 HOME = Path(os.environ.get("ABEVAL_HOME", str(ROOT / "home"))).resolve()
+_BATTERY_MANIFEST = "manifest.json"
+_GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+_CREDENTIAL_KEY = re.compile(
+    r"(?i)(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
+    r"client[_-]?secret|secret|password|authorization|credential|token)(?:$|[_-])"
+)
 
 TASKS = {
     # P: python-not-found + venv module confusion (terminal failure hints)
@@ -143,18 +154,153 @@ SUCCESS = {
 }
 
 
-def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
+def _safe_config(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(key): {"credential_digest": hashlib.sha256(json.dumps(child, sort_keys=True).encode()).hexdigest()}
+            if _CREDENTIAL_KEY.search(str(key)) else _safe_config(child)
+            for key, child in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_safe_config(child) for child in value]
+    return value
+
+
+def _endpoint_environment_digest() -> str:
+    # Read provider metadata in the evaluation home without changing this process.
+    probe = """
+import hashlib, json, os, re
+from pathlib import Path
+from dotenv import dotenv_values
+from hermes_cli.env_loader import _apply_external_secret_sources
+from hermes_cli.auth import PROVIDER_REGISTRY
+values = dotenv_values(os.path.join(os.environ["HERMES_HOME"], ".env"))
+_apply_external_secret_sources(Path(os.environ["HERMES_HOME"]))
+keys = {p.base_url_env_var for p in PROVIDER_REGISTRY.values() if p.base_url_env_var}
+keys.update(k for p in PROVIDER_REGISTRY.values() for k in p.api_key_env_vars)
+keys.update(k for k in set(os.environ) | set(values) if re.search(r"(?i)(api[_-]?key|token|secret|password|credential)", k))
+keys.update(k for k in set(os.environ) | set(values) if k.endswith(("_BASE_URL", "_ENDPOINT")))
+config_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+if config_path.exists():
+    keys.update(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", config_path.read_text(encoding="utf-8")))
+effective = {k: str(values.get(k) or os.environ.get(k) or "").strip() for k in sorted(keys)}
+print(hashlib.sha256(json.dumps(effective, sort_keys=True).encode()).hexdigest())
+"""
+    return subprocess.run(
+        [sys.executable, "-c", probe], cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "HERMES_HOME": str(HOME)},
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _model_provenance(model: str) -> dict[str, str]:
+    config: object = {}
+    config_path = HOME / "config.yaml"
+    if config_path.exists():
+        import yaml
+
+        try:
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise SystemExit(f"unable to read ABEVAL_HOME model config: {config_path}") from exc
+    model_config = config.get("model", {}) if isinstance(config, Mapping) else {}
+    provider = (
+        str(model_config.get("provider") or "configured-default")
+        if isinstance(model_config, Mapping)
+        else "configured-default"
+    )
+    provider_config = {}
+    if isinstance(config, Mapping) and isinstance(config.get("providers"), Mapping):
+        # Include both runtime configuration views, including aliases and legacy entries.
+        provider_config = {"providers": config["providers"],
+                           "custom_providers": config.get("custom_providers", [])}
+    elif isinstance(config, Mapping):
+        provider_config = {"custom_providers": config.get("custom_providers", [])}
+    if isinstance(config, Mapping) and isinstance(config.get("secrets"), Mapping):
+        provider_config["secret_sources"] = _safe_config(config["secrets"])
+    payload = _safe_config(
+        {"model": model, "provider": provider, "model_config": model_config,
+         "provider_config": provider_config, "endpoint_environment_digest": _endpoint_environment_digest()}
+    )
+    digest = hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return {"model": model, "provider": provider, "config_digest": digest}
+
+
+def _evaluator_provenance() -> dict[str, str]:
+    evaluator_digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    battery_digest = hashlib.sha256(
+        json.dumps(TASKS, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return {"evaluator_digest": evaluator_digest, "battery_digest": battery_digest,
+            "interpreter": sys.version, "implementation": sys.implementation.name}
+
+
+def _resolve_clean_source(pythonpath: str) -> tuple[Path, str]:
+    source_root = Path(pythonpath).expanduser().resolve()
+    if not source_root.is_dir():
+        raise SystemExit(f"evaluated source tree is not a directory: {source_root}")
+    status = subprocess.run(
+        ["git", "-C", str(source_root), "status", "--porcelain", "--untracked-files=all"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    if status.returncode or status.stdout.strip():
+        raise SystemExit(f"evaluated source tree must be clean: {source_root}")
+    try:
+        source_sha = subprocess.run(
+            ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise SystemExit(f"unable to resolve evaluated source revision: {source_root}") from exc
+    if not _GIT_SHA.fullmatch(source_sha):
+        raise SystemExit(f"evaluated source revision is not a full git SHA: {source_root}")
+    return source_root, source_sha
+
+
+def run(arm: str, model: str, reps: int, pythonpath: str, only=None, only_rep=None):
+    source_root, source_sha = _resolve_clean_source(pythonpath)
+    if ROOT == source_root or source_root in ROOT.parents:
+        raise SystemExit("evaluation workspace must be outside the evaluated source tree")
     resdir = ROOT / "results" / model.replace("/", "_") / arm
     resdir.mkdir(parents=True, exist_ok=True)
+    manifest_path = ROOT / "results" / model.replace("/", "_") / _BATTERY_MANIFEST
+    manifest = {"model": model, "tasks": sorted(TASKS), "repetitions": reps}
+    if manifest_path.exists():
+        existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if existing != manifest:
+            raise SystemExit(f"evaluation battery manifest mismatch: {manifest_path}")
+    else:
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     meta_path = resdir / "meta.jsonl"
+    model_provenance = _model_provenance(model)
+    evaluator_provenance = _evaluator_provenance()
     done = set()
     if meta_path.exists():
+        existing_rows = []
         for line in meta_path.read_text(encoding="utf-8").splitlines():
             try:
-                done.add(json.loads(line)["run_id"])
-            except (ValueError, KeyError):
-                continue
+                existing_rows.append(json.loads(line))
+            except (ValueError, KeyError) as exc:
+                raise SystemExit("corrupt resume metadata; repair before running more evaluations") from exc
+            if not isinstance(existing_rows[-1], dict) or "run_id" not in existing_rows[-1]:
+                raise SystemExit("invalid resume metadata row")
+        existing_shas = {row.get("source_sha") for row in existing_rows}
+        if existing_shas != {source_sha}:
+            raise SystemExit(
+                f"evaluation results are bound to another or unknown source revision: {meta_path}"
+            )
+        if any(row.get("model_provenance") != model_provenance or
+               row.get("evaluator_provenance") != evaluator_provenance
+               for row in existing_rows):
+            raise SystemExit("evaluation resume provenance mismatch")
+        done = {row["run_id"] for row in existing_rows}
+        if len(done) != len(existing_rows):
+            raise SystemExit("duplicate evaluation run rows")
     for rep in range(reps):
+        if only_rep is not None and rep != only_rep:
+            continue
         for name in TASKS:
             if only and name not in only:
                 continue
@@ -165,6 +311,7 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
             work.mkdir(parents=True, exist_ok=True)
             make_sandbox(work)
             atof = resdir / f"{run_id}.atof.jsonl"
+            atof.unlink(missing_ok=True)
             relay_config = work / "relay-plugins.toml"
             relay_config.write_text(
                 f"""
@@ -190,11 +337,13 @@ mode = "overwrite"
             )
             env = dict(os.environ)
             env.update({
-                "PYTHONPATH": pythonpath,
+                "PYTHONPATH": str(source_root),
                 "HERMES_HOME": str(HOME),
                 "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
             })
             q = TASKS[name].replace("{WORK}", str(work))
+            if _resolve_clean_source(str(source_root))[1] != source_sha:
+                raise SystemExit("evaluated source changed during battery")
             t0 = time.time()
             try:
                 p = subprocess.run(
@@ -206,6 +355,8 @@ mode = "overwrite"
                 rc = p.returncode
             except subprocess.TimeoutExpired:
                 out, rc = "", -9
+            if _resolve_clean_source(str(source_root))[1] != source_sha:
+                raise SystemExit("evaluated source changed during battery")
             dt = time.time() - t0
             if rc != 0 and not out.strip():
                 # Startup crash / infra flake — do NOT record it as a data
@@ -213,12 +364,54 @@ mode = "overwrite"
                 print(f"[{arm}/{model}] {run_id} INFRA-CRASH exit={rc} "
                       f"{dt:.0f}s — not recorded, will retry on resume", flush=True)
                 continue
+            if rc == 0 and atof.exists():
+                # The CLI has exited, so the trace producer has finished flushing.
+                with atof.open("a", encoding="utf-8") as trace:
+                    trace.write("\n" + json.dumps({
+                        "kind": "evaluation", "category": "run", "scope_category": "end",
+                        "run_id": run_id,
+                    }) + "\n")
+            if score_run(atof) is None:
+                print(f"[{arm}/{model}] {run_id} incomplete trace — not recorded, will retry on resume", flush=True)
+                continue
             rec = {"run_id": run_id, "task": name, "rep": rep, "arm": arm,
                    "model": model, "wall_s": round(dt, 1), "exit": rc,
+                   "source_sha": source_sha,
+                   "model_provenance": model_provenance,
+                   "evaluator_provenance": evaluator_provenance,
                    "tail": "\n".join(out.splitlines()[-12:])}
             with open(meta_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(rec) + "\n")
             print(f"[{arm}/{model}] {run_id} {dt:.0f}s exit={rc}", flush=True)
+
+
+def run_paired(model, reps, baseline, fixes):
+    """Counterbalance adjacent task/repetition pairs across the two arms."""
+    for source in (baseline, fixes):
+        _resolve_clean_source(source)
+    for rep in range(reps):
+        for index, task in enumerate(TASKS):
+            arms = [("baseline", baseline), ("fixes", fixes)]
+            if (rep * len(TASKS) + index) % 2:
+                arms.reverse()
+            for arm, source in arms:
+                run(arm, model, reps, source, only=[task], only_rep=rep)
+
+
+def _outcome_failures(table, expected_tasks):
+    failures = []
+    for task in sorted(expected_tasks):
+        arms = table.get(task, {})
+        baseline, fixes = arms.get("baseline", []), arms.get("fixes", [])
+        if not baseline or not fixes or not all(row["ok"] for row in fixes):
+            failures.append(f"{task}: fixes did not complete every success predicate")
+            continue
+        for metric in ("llm", "tools", "errs", "retries", "kb", "wall"):
+            before = sum(row[metric] for row in baseline) / len(baseline)
+            after = sum(row[metric] for row in fixes) / len(fixes)
+            if after > before:
+                failures.append(f"{task}: {metric} regressed")
+    return failures
 
 
 def score_run(atof: Path):
@@ -227,12 +420,34 @@ def score_run(atof: Path):
     last_err_tool = None
     if not atof.exists():
         return None
-    for line in atof.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = atof.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    open_scopes = Counter()
+    completed = False
+    for line in lines:
+        if not line.strip():
+            continue
+        if completed:
+            return None
         try:
             ev = json.loads(line)
         except ValueError:
-            continue
+            return None
+        if not isinstance(ev, dict):
+            return None
         k, c, sc = ev.get("kind"), ev.get("category"), ev.get("scope_category")
+        if k == "evaluation" and c == "run" and sc == "end":
+            completed = ev.get("run_id") == atof.name.removesuffix(".atof.jsonl")
+        if k == "scope":
+            identity = (c, ev.get("scope_id", ev.get("name")))
+            if sc == "start":
+                open_scopes[identity] += 1
+            elif sc == "end":
+                open_scopes[identity] -= 1
+                if open_scopes[identity] < 0:
+                    return None
         if k == "scope" and c == "llm" and sc == "end":
             llm += 1
         elif k == "scope" and c == "tool" and sc == "start":
@@ -253,11 +468,16 @@ def score_run(atof: Path):
                 last_err_tool = ev.get("name")
             else:
                 last_err_tool = None
+    if not completed or not llm or any(open_scopes.values()):
+        return None
     return {"llm": llm, "tools": tools, "errs": errs,
             "retries": retries, "kb": result_bytes // 1024}
 
 
 def report(models):
+    all_pass = True
+    for model in models:
+        (ROOT / "results" / model.replace("/", "_") / "report.json").unlink(missing_ok=True)
     for model in models:
         mdir = ROOT / "results" / model.replace("/", "_")
         print(f"\n================ MODEL: {model} ================")
@@ -268,7 +488,12 @@ def report(models):
                 continue
             for line in meta_path.read_text(encoding="utf-8").splitlines():
                 m = json.loads(line)
-                s = score_run(mdir / arm / f"{m['run_id']}.atof.jsonl") or {}
+                s = score_run(mdir / arm / f"{m['run_id']}.atof.jsonl")
+                if s is None:
+                    raise SystemExit(
+                        f"invalid tool-performance completeness: missing or unreadable trace "
+                        f"for {arm}/{m['run_id']}"
+                    )
                 work = ROOT / "runs" / model.replace("/", "_") / arm / m["run_id"]
                 try:
                     ok = SUCCESS[m["task"]](m.get("tail", ""), work)
@@ -307,6 +532,88 @@ def report(models):
             print(f"{'TOTAL':20s} | {arm:8s} | {n:2d} {100 * a['ok'] / n:3.0f}% "
                   f"{a['llm'] / n:5.1f} {a['tools'] / n:5.1f} {a['errs'] / n:5.1f} "
                   f"{a['retries'] / n:5.1f} {a['kb'] / n:5.0f} {a['wall'] / n:5.0f}s")
+        manifest_path = mdir / _BATTERY_MANIFEST
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+        expected_tasks = set(manifest.get("tasks", ()))
+        repetitions = manifest.get("repetitions")
+        expected = (
+            {(task, rep) for task in expected_tasks for rep in range(repetitions)}
+            if isinstance(repetitions, int) and repetitions > 0 else set()
+        )
+        provenance = {arm: "unavailable" for arm in ("baseline", "fixes")}
+        arm_model_provenance = {}
+        evaluator_provenance = None
+        provenance_errors = []
+        for arm in ("baseline", "fixes"):
+            meta_path = mdir / arm / "meta.jsonl"
+            if meta_path.exists():
+                rows = [json.loads(line) for line in meta_path.read_text(encoding="utf-8").splitlines()]
+                if rows:
+                    shas = {row.get("source_sha") for row in rows}
+                    if len(shas) != 1 or not all(isinstance(sha, str) and _GIT_SHA.fullmatch(sha) for sha in shas):
+                        provenance_errors.append(f"{arm}: mixed or unavailable source_sha values")
+                    else:
+                        provenance[arm] = next(iter(shas))
+                    model_values = {
+                        json.dumps(row.get("model_provenance"), sort_keys=True)
+                        for row in rows
+                    }
+                    if len(model_values) != 1 or any(
+                        not isinstance(row.get("model_provenance"), Mapping) for row in rows
+                    ):
+                        provenance_errors.append(f"{arm}: mixed or unavailable model provenance")
+                    else:
+                        arm_model_provenance[arm] = json.loads(next(iter(model_values)))
+                    evaluator_values = {
+                        json.dumps(row.get("evaluator_provenance"), sort_keys=True)
+                        for row in rows
+                    }
+                    if len(evaluator_values) != 1:
+                        provenance_errors.append(f"{arm}: mixed evaluator provenance")
+                    elif evaluator_provenance is None:
+                        evaluator_provenance = json.loads(next(iter(evaluator_values)))
+                    elif evaluator_provenance != json.loads(next(iter(evaluator_values))):
+                        provenance_errors.append("baseline and fixes use different evaluator provenance")
+        if (
+            len(arm_model_provenance) == 2
+            and arm_model_provenance["baseline"] != arm_model_provenance["fixes"]
+        ):
+            provenance_errors.append("baseline and fixes use different model provenance")
+        if evaluator_provenance != _evaluator_provenance():
+            provenance_errors.append("recorded evaluator differs from current evaluator")
+        if provenance_errors:
+            raise SystemExit("invalid tool-performance provenance: " + "; ".join(provenance_errors))
+        observed = {}
+        for arm in ("baseline", "fixes"):
+            meta_path = mdir / arm / "meta.jsonl"
+            rows = [json.loads(line) for line in meta_path.read_text(encoding="utf-8").splitlines()] if meta_path.exists() else []
+            observed[arm] = Counter((row.get("task"), row.get("rep")) for row in rows)
+        complete = bool(expected) and all(observed[arm] == Counter({pair: 1 for pair in expected}) for arm in ("baseline", "fixes"))
+        outcome_failures = _outcome_failures(table, expected_tasks)
+        report_data = {
+            "baseline_sha": provenance.get("baseline", "unavailable"),
+            "fixes_sha": provenance.get("fixes", "unavailable"),
+            "model": model,
+            "model_provenance": _model_provenance(model),
+            "arm_model_provenance": arm_model_provenance,
+            "evaluator_provenance": evaluator_provenance or {},
+            "concurrency": 1,
+            "metrics": {arm: dict(agg[arm]) for arm in ("baseline", "fixes")},
+            "complete": complete,
+            "outcome_failures": outcome_failures,
+            "status": "pass" if complete and not outcome_failures else "fail",
+        }
+        if report_data["status"] != "pass":
+            all_pass = False
+        errors = validate_toolperf_report(report_data)
+        if errors:
+            raise SystemExit("invalid tool-performance report: " + ", ".join(errors))
+        pending_report = mdir / "report.pending.json"
+        pending_report.write_text(
+            json.dumps(report_data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        pending_report.replace(mdir / "report.json")
+    return all_pass
 
 
 if __name__ == "__main__":
@@ -319,9 +626,14 @@ if __name__ == "__main__":
         only = (sys.argv[sys.argv.index("--only") + 1].split(",")
                 if "--only" in sys.argv else None)
         run(arm, model, reps, pythonpath, only)
+    elif cmd == "paired":
+        run_paired(sys.argv[sys.argv.index("--model") + 1],
+                   int(sys.argv[sys.argv.index("--reps") + 1]),
+                   sys.argv[sys.argv.index("--baseline") + 1],
+                   sys.argv[sys.argv.index("--fixes") + 1])
     elif cmd == "report":
         models = sys.argv[sys.argv.index("--models") + 1].split(",")
-        report(models)
+        sys.exit(0 if report(models) else 1)
     else:
         print(__doc__)
         sys.exit(2)

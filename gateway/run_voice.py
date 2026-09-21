@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import time
+import weakref
 from contextlib import suppress
 from difflib import SequenceMatcher
 from types import SimpleNamespace
@@ -136,7 +137,7 @@ class GatewayVoiceMixin:
         return raw.guild.id if getattr(raw, "guild", None) else None  # regular message
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
         guild_id = self._get_guild_id(event)
@@ -177,7 +178,7 @@ class GatewayVoiceMixin:
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect.")
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)
         if not (guild_id and hasattr(adapter, "leave_voice_channel")
                 and hasattr(adapter, "is_in_voice_channel")
@@ -228,11 +229,62 @@ class GatewayVoiceMixin:
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
             source.user_id = source.user_name = str(user_id)
-            return source
-        return SessionSource(
-            platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
-            user_name=str(user_id), chat_type="channel",
-            profile=getattr(adapter, "_owner_profile", None))
+        else:
+            source = SessionSource(
+                platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
+                user_name=str(user_id), chat_type="channel",
+                profile=getattr(adapter, "_owner_profile", None))
+        # Serialization drops transport provenance; auth must still follow the receiving bot.
+        source._transport_adapter_ref = weakref.ref(adapter)
+        return source
+
+    @staticmethod
+    def _voice_fast_lane_config() -> dict:
+        """Read the opt-in Discord voice conversation-isolation policy."""
+        from gateway.run import _load_gateway_config
+
+        try:
+            config = _load_gateway_config()
+        except Exception:
+            return {}
+        discord = config.get("discord") if isinstance(config, dict) else None
+        if not isinstance(discord, dict):
+            return {}
+        policy = discord.get("voice_fast_lane")
+        return dict(policy) if isinstance(policy, dict) else {}
+
+    # Imperative/infinitive verbs that signal an explicit file/code/system operation, as
+    # opposed to idle conversation ("can you hear me?", "what did you just say?").
+    _VOICE_FAST_LANE_WORK_VERB_RE = re.compile(
+        r"\b(?:inspect|fix|run|commit|write|edit|creat\w*|delet\w*|remov\w*|updat\w*|add|"
+        r"execut\w*|test|patch|debug|build|deploy|install|check|investigat\w*|review|"
+        r"refactor|implement|analyz\w*|restart|configur\w*|merge|push|pull|clone|"
+        r"kill|revert)\b", re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _voice_fast_lane_requests_work(text: str) -> bool:
+        """True when transcribed voice text asks for an explicit operation rather than idle
+        conversation. Fast-lane voice turns stay tool-free (private, low-latency chat) right up
+        until the speaker explicitly asks for work, at which point the turn must keep full task
+        capability instead of silently dropping the request."""
+        return bool(GatewayVoiceMixin._VOICE_FAST_LANE_WORK_VERB_RE.search(text or ""))
+
+    def _voice_fast_lane_matches(self, adapter, guild_id: int, user_id: int) -> tuple[bool, str]:
+        """Only the configured channel and allowlisted speaker get a private transcript."""
+        policy = self._voice_fast_lane_config()
+        if policy.get("enabled") is not True:
+            return False, ""
+        channel_id = str(policy.get("channel_id") or "").strip()
+        user_ids = policy.get("user_ids")
+        if not channel_id or not isinstance(user_ids, list):
+            return False, ""
+        if str(user_id) not in {str(item) for item in user_ids}:
+            return False, ""
+        clients = getattr(adapter, "_voice_clients", None)
+        client = clients.get(guild_id) if isinstance(clients, dict) else None
+        actual_channel_id = str(getattr(getattr(client, "channel", None), "id", "") or "")
+        return (True, channel_id) if actual_channel_id == channel_id else (False, "")
 
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str, *, adapter=None
@@ -245,11 +297,18 @@ class GatewayVoiceMixin:
         if not text_ch_id:
             return
         source = self._voice_input_source(adapter, guild_id, user_id, text_ch_id)
+        # The cached source still carries the previous speaker's identity (per-sender routes,
+        # #106019): drop the pin so the seam re-resolves for THIS speaker.
+        from gateway.session_identity import clear_identity
+        clear_identity(source)
+        if self._canonicalize(source, transport_profile=getattr(adapter, "_owner_profile", None)) is None:
+            logger.warning("Dropping voice input: its profile route targets an unserved profile")
+            return
         # Validate the session owner against the current allowlist before auto-resuming. A session created
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from
         # it, must not silently receive a full agent response on gateway restart just because it has a
         # resume-pending marker (issue #23778).
-        if not self._is_user_authorized(source):
+        if not self._is_user_authorized_for_source(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
         if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
@@ -275,6 +334,12 @@ class GatewayVoiceMixin:
             source=source, text=transcript, message_type=MessageType.VOICE,
             raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
             channel_prompt=channel_prompt)
+        fast_lane, voice_channel_id = self._voice_fast_lane_matches(adapter, guild_id, user_id)
+        if fast_lane and not self._voice_fast_lane_requests_work(transcript):
+            # Delivery stays in the bound text channel; only storage identity changes.
+            source._voice_fast_lane = True
+            source._session_key_lane = f"discord-voice:{voice_channel_id}"
+            event.metadata["voice_fast_lane"] = True
         await adapter.handle_message(event)
 
     def _should_send_voice_reply(
@@ -288,7 +353,7 @@ class GatewayVoiceMixin:
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
@@ -352,7 +417,7 @@ class GatewayVoiceMixin:
 
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         guild_id = self._get_guild_id(event)
         play = getattr(adapter, "play_in_voice_channel", None)
         is_in_vc = getattr(adapter, "is_in_voice_channel", None)

@@ -12,10 +12,13 @@ from contextlib import suppress
 from typing import Any, Callable, List, Optional, Tuple
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.delegation_context import is_dispatcher_owned_worker_context
+from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
+from agent.served_model import result_model_fields
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
@@ -42,33 +45,20 @@ def _assistant_row_missing_visible_text(msg: dict) -> bool:
 def _record_kanban_budget_exhausted(
     kanban_task: str, api_call_count: int, max_iterations: int, logger: logging.Logger
 ) -> None:
-    """Record a terminal ``timed_out`` outcome for a kanban worker out of budget.
-
-    Routed via ``_record_task_failure`` (not ``kanban_block``) so it counts toward the
-    consecutive-failure circuit breaker. Idempotent via the ``_end_run`` CAS
-    (``WHERE ended_at IS NULL``), so safe from multiple exit paths.
-
-    This is a bounded fallback (#87096): the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``)
-    guarantees idempotence — if another path already closed the run this is a no-op — so it is safe to call
-    from multiple exit paths.
-    """
+    """Park exhausted work for narrower scope instead of restarting the same exploration."""
     try:
         from hermes_cli import kanban_db as _kb
         from hermes_cli import kanban_db_connect as _kbc
-        from hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
         try:
-            _kbd._record_task_failure(
-                _conn,
-                kanban_task,
-                error=(
-                    f"Iteration budget exhausted ({api_call_count}/{max_iterations}) — "
-                    "task could not complete within the allowed iterations"
-                ),
-                outcome="timed_out",
-                release_claim=True,
-                end_run=True,
-                event_payload_extra={"budget_used": api_call_count, "budget_max": max_iterations},
+            task = _kb.get_task(_conn, kanban_task)
+            if task is None:
+                return
+            expected = os.environ.get("HERMES_KANBAN_RUN_ID") or task.current_run_id
+            _kb.block_task(
+                _conn, kanban_task,
+                reason=f"Iteration budget exhausted ({api_call_count}/{max_iterations}) — provide narrower evidence or scope before resuming",
+                kind="needs_input", expected_run_id=int(expected) if expected is not None else None,
             )
         finally:
             with suppress(Exception):
@@ -76,6 +66,63 @@ def _record_kanban_budget_exhausted(
     except Exception:
         logger.warning(
             "Failed to record budget-exhausted failure for task %s", kanban_task, exc_info=True
+        )
+
+
+def _record_kanban_guardrail_halt(
+    kanban_task: str,
+    decision,
+    logger: logging.Logger,
+) -> None:
+    """Close a Kanban run stopped by a tool-loop safety guard.
+
+    A controlled guardrail halt returns a normal CLI response and process exit
+    code.  Without an explicit board transition the dispatcher mistakes that
+    clean process exit for a missing ``kanban_complete``/``kanban_block`` call
+    and retries it as a protocol violation.  Route the halt through the normal
+    failure circuit instead, preserving bounded retries and the task override.
+    """
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    tool_name = str(getattr(decision, "tool_name", "") or "unknown")
+    code = str(getattr(decision, "code", "") or "tool_guardrail_halt")
+    error = f"Tool guardrail halted {tool_name}: {code}"
+    try:
+        from hermes_cli import kanban_db as _kb
+
+        from hermes_cli import kanban_db_dispatch as _kbd
+        _conn = _hermes_cli_kanban_db_connect.connect()
+        try:
+            failure_kwargs = {
+                "outcome": "crashed",
+                "release_claim": True,
+                "end_run": True,
+                "event_payload_extra": {
+                    "guardrail": code,
+                    "tool_name": tool_name,
+                },
+            }
+            raw_run_id = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+            if raw_run_id.isdigit():
+                failure_kwargs["expected_run_id"] = int(raw_run_id)
+            claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK", "").strip()
+            if claim_lock:
+                failure_kwargs["expected_claim_lock"] = claim_lock
+            _kbd._record_task_failure(
+                _conn,
+                kanban_task,
+                error,
+                **failure_kwargs,
+            )
+        finally:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+    except Exception:
+        logger.warning(
+            "Failed to record tool-guardrail halt for task %s",
+            kanban_task,
+            exc_info=True,
         )
 
 
@@ -122,12 +169,23 @@ def _resolve_budget_fallback(
 ) -> Tuple[Any, Any, bool]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback)``."""
+    _guardrail_decision = getattr(agent, "_tool_guardrail_halt_decision", None)
+    if _guardrail_decision is not None:
+        # A controlled tool-loop halt is a terminal outcome in its own right — record
+        # it and skip the budget-exhaustion path entirely so the two recordings never
+        # race for the same kanban run.
+        _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+        if _kanban_task:
+            _record_kanban_guardrail_halt(_kanban_task, _guardrail_decision, logger)
+        return final_response, _turn_exit_reason, False
+
     budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
     preserved_verification_fallback = False
     if (
-        final_response is None and budget_exhausted and not interrupted and not failed
+        (final_response is None or not str(final_response).strip())
+        and budget_exhausted and not interrupted and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
     ):
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
@@ -142,31 +200,22 @@ def _resolve_budget_fallback(
             preserved_verification_fallback = True
         else:
             # _handle_max_iterations makes one extra toolless request for a summary.
-            agent._emit_status(
+            agent._emit_diagnostic_status(
                 f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
                 "— asking model to summarise"
             )
             if not agent.quiet_mode:
                 agent._safe_print(
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-                    "— requesting summary..."
+                    "— requesting summary...", diagnostic=True,
                 )
             final_response = agent._handle_max_iterations(messages, api_call_count)
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete.
     _kanban_task = os.environ.get("HERMES_KANBAN_TASK") if budget_exhausted else None
-    # If running as a kanban worker, signal the dispatcher that the worker could not complete (rather than
-    # treating it as a protocol violation). This applies whether the user-facing fallback came from the
-    # summary call or an explicitly pending continuation; both exhausted the task budget and must advance
-    # the failure circuit. We route through ``_record_task_failure(outcome="timed_out")`` rather than
-    # ``kanban_block`` so this counts toward the dispatcher's consecutive-failure circuit breaker (#29747
-    # gap 2).
-    # Bounded fallback (#87096): budget was exhausted but none of the normal fallback paths were eligible
-    # (interrupted / failed / anomalous exit_reason). If running as a kanban worker we must still record a
-    # terminal outcome so the task does not remain in an ambiguous lifecycle state. The worker's run is
-    # closed via ``_record_task_failure`` (compare-and-swap receipt path) which is a no-op if another path
-    # closed it — the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
+    # A budget stop requires narrower scope; pin the block to this worker's run
+    # so an old process cannot park work that another worker has already reclaimed.
     if _kanban_task:
         _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
     return final_response, _turn_exit_reason, preserved_verification_fallback
@@ -347,6 +396,7 @@ def _append_file_mutation_footer(agent, final_response, logger):
         # Empty/interrupted turns already have other surface text that shouldn't be augmented.
         _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
         if _failed and agent._file_mutation_verifier_enabled():
+            _failed = agent._file_mutations_still_failed(_failed)
             footer = agent._format_file_mutation_failure_footer(_failed)
             if footer:
                 final_response = final_response.rstrip() + "\n\n" + footer
@@ -375,7 +425,9 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
         )
         if _is_empty_terminal or _is_partial_fragment or str(_turn_exit_reason) == "partial_stream_recovery":
             _explanation = agent._format_turn_completion_explanation(
-                _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None)
+                _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
+                db_path=getattr(getattr(agent, "_session_db", None), "db_path", None),
+                model=str(getattr(agent, "model", "") or ""),
             )
             if _explanation:
                 # Replace the bare sentinel; keep a partial fragment and append why.
@@ -411,22 +463,24 @@ def _apply_output_hooks(
         session_id=agent.session_id or "",
         model=agent.model,
         platform=platform,
+        turn_id=turn_id,  # per-turn identity for the hook callback gate
     ):
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True
             break
-    # post_llm_call (e.g. sync conversation data to an external memory system).
-    _invoke_hook_safely(
-        "post_llm_call", logger,
-        session_id=agent.session_id,
-        task_id=effective_task_id,
-        turn_id=turn_id,
-        user_message=original_user_message,
-        assistant_response=final_response,
-        conversation_history=list(messages),
-        model=agent.model,
-        platform=platform,
-    )
+    # Detached forks are internal work and must not publish turns under the parent's session ID.
+    if not getattr(agent, "_persist_disabled", False):
+        _invoke_hook_safely(
+            "post_llm_call", logger,
+            session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            user_message=original_user_message,
+            assistant_response=final_response,
+            conversation_history=list(messages),
+            model=agent.model,
+            platform=platform,
+        )
     return final_response, transformed, pre_transform
 
 
@@ -448,15 +502,31 @@ def finalize_turn(
         logger=logger,
     )
 
+    # Loop exits that are failures in their own right (outer-loop error cap, shutdown, context
+    # that could not be shrunk) carry the verdict the UI descriptor needs; a bare
+    # ``turn_exit_reason`` collapsed to code="unknown", retryable=True on every surface.
+    # Advisory verdicts (``fails_turn=False``) only add the code: ``failed``/``completed`` keep
+    # the loop's values so cron, kanban and transcript persistence behave as before.
+    _exit_failure = None if interrupted else exit_reason_failure(_turn_exit_reason)
+    if _exit_failure is not None and _exit_failure.fails_turn:
+        failed = True
+
+    # Sibling producers (``turn_recovery``, ``codex_runtime``) return ``completed=False`` for an
+    # interrupted turn; the gateway stream gate and the API run status rely on that contract.
     completed = (
         final_response is not None
         and not failed
+        and not interrupted
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)
 
     _cleanup_errors: List[str] = []
+    # The model has answered (or the loop gave up): a title upgrade held back because it shares a
+    # self-hosted endpoint with the main request (#117296) may go out now.
+    from agent.turn_context import start_deferred_title_upgrade
+    _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
     _guarded_cleanup(
         "save_trajectory",
@@ -547,6 +617,8 @@ def finalize_turn(
         "pre_transform_response": _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
+        # requested_model / served_model: proxy-reported deployment or Hermes' own fallback route.
+        **result_model_fields(agent),
         "provider": agent.provider,
         "base_url": agent.base_url,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_TOKEN_KEYS},
@@ -569,12 +641,20 @@ def finalize_turn(
     # surfaces status="error" (desktop can toast) instead of a quiet complete frame, plus
     # the machine-readable cause 'session_persistence_failed:<locked|compression|...>'.
     if failed and str(_turn_exit_reason) == "session_persistence_failed":
+        from hermes_constants import profile_cli_selector
+
+        # Never rebind final_response here: the memory sync and the background-review gate
+        # below must still see an empty response on a persistence-failed turn.
         result["error"] = final_response or (
             "session storage could not be written — check the state database "
-            "health (`hermes doctor`), then send your message again"
+            f"health (`hermes {profile_cli_selector()}doctor`), then send your message again"
         )
         _cause = getattr(agent, "_last_persistence_error_cause", None)
         result["failure_reason"] = "session_persistence_failed:" + (_cause or "unknown")
+    elif _exit_failure is not None:
+        if failed:
+            result["error"] = final_response or str(_turn_exit_reason)
+        stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors
@@ -622,18 +702,19 @@ def finalize_turn(
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
-    _invoke_hook_safely(
-        "on_session_end", logger,
-        session_id=agent.session_id,
-        task_id=effective_task_id,
-        turn_id=turn_id,
-        completed=completed,
-        failed=failed,
-        interrupted=interrupted,
-        turn_exit_reason=_turn_exit_reason,
-        model=agent.model,
-        platform=_platform,
-    )
+    if not getattr(agent, "_persist_disabled", False):
+        _invoke_hook_safely(
+            "on_session_end", logger,
+            session_id=agent.session_id,
+            task_id=effective_task_id,
+            turn_id=turn_id,
+            completed=completed,
+            failed=failed,
+            interrupted=interrupted,
+            turn_exit_reason=_turn_exit_reason,
+            model=agent.model,
+            platform=_platform,
+        )
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False

@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import file_mutation_result_landed, is_guardrail_refusal
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -35,6 +36,15 @@ STALL_GUARD_REPEATABLE_TOOLS = frozenset({"process_manage"})
 _STALL_GUARD_REPEATABLE_SUFFIXES = ("_get_result", "_poll")  # generated / MCP poller conventions
 # Nth consecutive identical (tool, args, result) call that fires the notice; 3 tolerates one double-check.
 STALL_GUARD_IDENTICAL_CALL_THRESHOLD = 3
+# Repeating multi-call cycles (A,B,A,B,... with identical args AND results) defeat the
+# consecutive streak above — every alternation resets it, so a model replaying the same
+# 2–4 call batch each iteration ran to the budget unflagged (port of can1357/oh-my-pi#10521,
+# which widened their loop guard from single-call turns to whole tool-call batches).
+# Longest cycle period detected; laps reuse the streak thresholds (notice at
+# STALL_GUARD_IDENTICAL_CALL_THRESHOLD laps, halt at no_progress_block_after laps).
+_STALL_GUARD_MAX_CYCLE_PERIOD = 4
+# History window: enough for block_after laps of the longest cycle plus slack.
+_STALL_GUARD_CYCLE_HISTORY = 64
 # From the 2nd byte-identical repeat the duplicate payload becomes a reference stub; smaller results
 # aren't worth it, errors never are. The args preview keeps WHAT was called if compression evicts the original.
 IDENTICAL_RESULT_STUB_MIN_CHARS = 512
@@ -209,6 +219,13 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     if result is None or file_mutation_result_landed(tool_name, result):
         return False, ""
 
+    # A harness REFUSAL of a redundant call (repeated identical read/search) carries
+    # ``"error"`` for the model's benefit -- exactly what the substring test below keys
+    # on -- but nothing failed; counting it lets the cheap refusal feed the streak that
+    # fires the next, harder one. Mirrored in ``agent.display._detect_tool_failure``.
+    if is_guardrail_refusal(result):
+        return False, ""
+
     if tool_name == "terminal":
         data = safe_json_loads(result)
         exit_code = data.get("exit_code") if isinstance(data, dict) else None
@@ -249,6 +266,11 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Stopped {tool_name}: the same call with identical arguments returned the same result "
         "{count} times in a row. Stop repeating it unchanged; use the result already provided or change strategy."
     ),
+    "identical_cycle_halt": (
+        "Stopped {tool_name}: the same repeating cycle of tool calls (period {period}) with identical "
+        "arguments and identical results has run {count} times. Repeating the batch unchanged is not "
+        "progress; use the results already provided or change strategy."
+    ),
     "loop_web_search_cap": (
         "Blocked web_search: this turn has already made {cap} web searches, the per-turn limit. "
         "This looks like a runaway search loop. Work with the results you already have and give the user your answer."
@@ -263,6 +285,13 @@ _IDENTICAL_CALL_NOTICE = (
     "[hermes note: this is the {ordinal} consecutive identical call to "
     "{tool_name} with identical arguments returning the same result. "
     "Do not repeat it — change arguments, use a different tool, or "
+    "proceed with what you have.]"
+)
+
+_IDENTICAL_CYCLE_NOTICE = (
+    "[hermes note: the last {count} rounds repeated the same cycle of {period} tool calls "
+    "(ending with {tool_name}) with identical arguments and identical results. "
+    "Do not repeat the batch — change arguments, use a different tool, or "
     "proceed with what you have.]"
 )
 
@@ -285,6 +314,7 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         # signature -> a mutating call succeeded since its last failure
         self._progress_since_failure: dict[ToolCallSignature, bool] = {}
+        self._same_tool_failure_result_hashes: dict[str, str] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
         # Identical-call streak: CONSECUTIVE identical (tool, args, result) calls; any different call or
@@ -298,6 +328,10 @@ class ToolCallGuardrailController:
         self._identical_streak_result_hash: str = ""
         self._identical_streak_count: int = 0
         self._identical_streak_first_call_id: str = ""
+        # Batch-cycle loop breaker (port of can1357/oh-my-pi#10521): sequence of
+        # (signature, result_hash, repeatable) for every observed call this turn, so a repeating
+        # multi-call cycle (A,B,A,B,...) is caught even though it resets the consecutive streak above.
+        self._call_history: deque[tuple[ToolCallSignature, str, bool]] = deque(maxlen=_STALL_GUARD_CYCLE_HISTORY)
         # tool_call_id -> spillover path, so a stub referencing a persisted-output preview can't dangle.
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
@@ -353,10 +387,20 @@ class ToolCallGuardrailController:
             if self._progress_since_failure.pop(signature, False):
                 self._exact_failure_counts.pop(signature, None)
             exact_count = self._exact_failure_counts[signature] = self._exact_failure_counts.get(signature, 0) + 1
-            same_count = self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
+            # same_tool_failure counts REPEATS of the same failure cause on one tool, not just
+            # any failure on that tool: three distinct diagnostic misses (a missing repo, a red
+            # test, a missing path) are three different problems, not one broken path. A change
+            # in result content restarts the streak at 1 instead of compounding onto it.
+            cause_hash = _result_hash(result)
+            if self._same_tool_failure_result_hashes.get(tool_name) != cause_hash:
+                self._same_tool_failure_counts[tool_name] = 1
+            else:
+                self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
+            self._same_tool_failure_result_hashes[tool_name] = cause_hash
+            same_count = self._same_tool_failure_counts[tool_name]
             self._no_progress.pop(signature, None)
-            # same_tool_failure counts DIFFERENT args on one tool; for failure-tolerant
-            # tools a run of distinct red commands is diagnosis, not a loop — warn, never halt.
+            # for failure-tolerant tools a run of distinct red commands is diagnosis,
+            # not a loop — warn, never halt.
             if (
                 # Hard-stop widening (#89069 / #100849 bundle): the per-turn no-progress BLOCK above only
                 # covers tools in idempotent_tools, so a model replaying the same successful
@@ -380,11 +424,13 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+        self._same_tool_failure_result_hashes.pop(tool_name, None)
         # A successful mutation is progress for every failing signature still counted
         # this turn. Pure loops never mutate between attempts, so the replay detector keeps its teeth.
         if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
+            self._same_tool_failure_result_hashes.clear()
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
@@ -434,10 +480,58 @@ class ToolCallGuardrailController:
             if self.config.hard_stop_enabled and count >= self.config.no_progress_block_after and self._halt_decision is None:
                 self._decide("halt", "identical_call_streak_halt", tool_name, count, signature)
 
+        # Batch-cycle detection (oh-my-pi#10521): a repeating multi-call cycle resets the
+        # consecutive streak on every alternation, so check the call history for a period-p lap.
+        if is_plain_str:
+            self._call_history.append((signature, result_hash, is_stall_guard_repeatable(tool_name)))
+        else:
+            self._call_history.clear()
+        if notice is None and is_plain_str:
+            cycle = self._detect_identical_cycle()
+            if cycle is not None:
+                period, laps = cycle
+                notice = _IDENTICAL_CYCLE_NOTICE.format(count=laps, period=period, tool_name=tool_name)
+                if self.config.hard_stop_enabled and laps >= self.config.no_progress_block_after and self._halt_decision is None:
+                    self._decide("halt", "identical_cycle_halt", tool_name, laps, signature, period=period)
+
         stub = None
         if is_plain_str and count >= 2 and not failed and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS:
             stub = self._build_result_reference_stub(tool_name, args)
         return IdenticalCallObservation(notice=notice, stub=stub)
+
+    def _detect_identical_cycle(self) -> tuple[int, int] | None:
+        """Detect a repeating identical-call cycle ending at the latest observed call.
+
+        Returns ``(period, laps)`` for the smallest period 2..max whose trailing laps
+        (identical signature AND result per position) reach the notice threshold, else None.
+        Period 1 is the consecutive streak's job. A cycle made ONLY of poller-exempt tools
+        is exempt (an unchanged poll loop is legitimate waiting); one non-exempt call in
+        the cycle keeps the guard armed, matching the single-call exemption semantics.
+        """
+        history = self._call_history
+        for period in range(2, _STALL_GUARD_MAX_CYCLE_PERIOD + 1):
+            if len(history) < period * STALL_GUARD_IDENTICAL_CALL_THRESHOLD:
+                continue
+            laps = 1
+            # Count how many consecutive trailing laps equal the final lap.
+            while True:
+                base = len(history) - period * (laps + 1)
+                if base < 0:
+                    break
+                lap_equal = all(
+                    history[base + i][:2] == history[len(history) - period + i][:2]
+                    for i in range(period)
+                )
+                if not lap_equal:
+                    break
+                laps += 1
+            if laps >= STALL_GUARD_IDENTICAL_CALL_THRESHOLD:
+                tail = [history[len(history) - period + i] for i in range(period)]
+                if all(repeatable for _, _, repeatable in tail):
+                    continue
+                # A constant sub-cycle would already have fired at a smaller period.
+                return period, laps
+        return None
 
     def record_persisted_result(self, tool_call_id: str, file_path: str) -> None:
         """Remember the spillover path a persisted result was saved to."""

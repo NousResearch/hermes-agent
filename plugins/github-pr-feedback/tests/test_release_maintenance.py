@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import subprocess
 
 from github_pr_feedback.controller import LocalGitRepository
-from github_pr_feedback.ledger import FeedbackLedger
+from github_pr_feedback.ledger import FeedbackLedger, MaintenanceCommandEvidence
 from github_pr_feedback.policy import (
     ReleaseMaintenanceLane,
     ReleaseMaintenancePolicy,
@@ -14,6 +15,22 @@ from github_pr_feedback.policy import (
 
 HEAD = "a" * 40
 NOW = datetime(2026, 8, 25, 12, 0, tzinfo=UTC)
+
+
+def command_evidence(
+    *, returncode: int = 0, timed_out: bool = False
+) -> tuple[MaintenanceCommandEvidence, ...]:
+    return (
+        MaintenanceCommandEvidence(
+            argv=("python3", "-m", "pytest", "-q"),
+            cwd="/tmp/widgets",
+            returncode=returncode,
+            duration_ms=125,
+            timed_out=timed_out,
+            stdout_sha256="a" * 64,
+            stderr_sha256="b" * 64,
+        ),
+    )
 
 
 def maintenance_policy() -> ReleaseMaintenancePolicy:
@@ -82,11 +99,18 @@ class Workspaces:
         return self.root / lane
 
 
-def controller(tmp_path: Path, *, github: GitHub, kanban: Kanban, now: datetime):
+def controller(
+    tmp_path: Path,
+    *,
+    github: GitHub,
+    kanban: Kanban,
+    now: datetime,
+    policy: ReleaseMaintenancePolicy | None = None,
+):
     from github_pr_feedback.release_maintenance import ReleaseMaintenanceController
 
     return ReleaseMaintenanceController(
-        maintenance_policy(),
+        policy or maintenance_policy(),
         target(tmp_path),
         FeedbackLedger(tmp_path / "ledger.sqlite3"),
         github,
@@ -108,6 +132,34 @@ def test_open_pull_requests_pause_release_maintenance_before_head_or_workspace_r
     assert result.status == "waiting_open_prs"
     assert result.tasks_created == 0
     assert kanban.tasks == []
+
+
+def test_require_zero_open_prs_false_lets_a_continuous_burndown_reach_the_quiet_gate(
+    tmp_path: Path,
+) -> None:
+    """An always-busy burndown repository can carry dozens of open PRs forever.
+
+    quiet_period_seconds (re-armed per new base SHA) is what actually protects
+    against auditing mid-churn; require_zero_open_prs=False lets maintenance
+    run without waiting for the entire backlog to close first.
+    """
+
+    policy = replace(maintenance_policy(), require_zero_open_prs=False)
+    github = GitHub(open_prs=(object(), object()))
+    kanban = Kanban()
+
+    first = controller(tmp_path, github=github, kanban=kanban, now=NOW, policy=policy).scan()
+    ready = controller(
+        tmp_path,
+        github=github,
+        kanban=kanban,
+        now=NOW + timedelta(seconds=901),
+        policy=policy,
+    ).scan()
+
+    assert first.status == "waiting_quiet"
+    assert ready.status == "auditing"
+    assert ready.tasks_created == 2
 
 
 def test_quiet_exact_head_dispatches_each_read_only_specialist_once(
@@ -153,6 +205,7 @@ def test_failed_lane_routes_one_bounded_repair_without_waiving_other_lanes(
         status="failed",
         summary="three failures in the order ledger suite",
         completed_at=NOW,
+        command_evidence=command_evidence(returncode=1),
     )
     from github_pr_feedback.release_maintenance import ReleaseMaintenanceController
 
@@ -193,6 +246,7 @@ def test_all_lane_receipts_dispatch_fresh_head_final_verifier(tmp_path: Path) ->
             status="passed",
             summary="passed",
             completed_at=NOW,
+            command_evidence=command_evidence(),
         )
     from github_pr_feedback.release_maintenance import ReleaseMaintenanceController
 
@@ -233,6 +287,7 @@ def test_final_receipt_completes_wave_without_new_tasks(tmp_path: Path) -> None:
             status="passed",
             summary="passed",
             completed_at=NOW,
+            command_evidence=command_evidence(),
         )
     from github_pr_feedback.release_maintenance import ReleaseMaintenanceController
 

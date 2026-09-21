@@ -163,7 +163,7 @@ def run_tool_round(
         decision = agent._tool_guardrail_halt_decision
         _turn_exit_reason = "guardrail_halt"
         final_response = agent._toolguard_controlled_halt_response(decision)
-        agent._emit_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
+        agent._emit_diagnostic_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still
         # alive, so SSE/TUI clients see the explanation.
@@ -173,6 +173,18 @@ def run_tool_round(
                 with suppress(Exception):
                     agent.stream_delta_callback(final_response)
                     agent.stream_delta_callback(None)
+        return _verdict("break")
+
+    from agent.kanban_stop import successful_kanban_terminal_transition
+    if successful_kanban_terminal_transition(
+        messages=messages, tool_calls=assistant_message.tool_calls,
+    ):
+        # A completed/blocked kanban worker must not make another provider call: the
+        # durable {"ok": true} tool result is this turn's terminal state. final_response
+        # must be non-None (not just falsy) for the finalizer to mark this ``completed``
+        # rather than reading the tool-ending turn as stuck mid-flight.
+        _turn_exit_reason = "kanban_terminal_transition"
+        final_response = final_response or ""
         return _verdict("break")
 
     # Reset per-turn retry counters so one truncation can't poison the turn.

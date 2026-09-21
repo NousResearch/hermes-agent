@@ -14,7 +14,7 @@ import shlex
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
@@ -63,10 +63,11 @@ def _run_state_kwargs(args: argparse.Namespace, cmd: str) -> tuple[Optional[dict
     return ({} if st is None else {"state_type": st, "state_name": sn}), 0
 
 
-def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
-    """``--workspace`` -> ``(kind, path|None)``: ``scratch``, ``worktree``, ``worktree:<p>``, ``dir:<p>``."""
+def _parse_workspace_flag(value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``--workspace`` -> ``(kind, path|None)``: ``scratch``, ``worktree``, ``worktree:<p>``, ``dir:<p>``.
+    Omitted -> ``(None, None)`` so ``create_task`` can tell "default" from an explicit scratch."""
     if not value:
-        return ("scratch", None)
+        return (None, None)
     v = value.strip()
     if v in {"scratch", "worktree"}:
         return (v, None)
@@ -93,6 +94,87 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     if any(ch.isspace() for ch in branch):
         raise argparse.ArgumentTypeError("--branch must not contain whitespace")
     return branch
+
+
+def _dispatcher_readiness(hermes_home: Optional[Path] = None) -> dict[str, Any]:
+    """Return strict, machine-readable gateway dispatcher readiness.
+
+    The desktop boot gate must distinguish a live embedded dispatcher from an
+    offline or uncertain gateway. Unlike the CLI warning helper below,
+    uncertainty fails closed so a headless backend cannot strand ready work.
+    """
+    try:
+        from gateway.status import resolve_gateway_liveness  # type: ignore
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "ready": False,
+            "gateway_pid": None,
+            "message": f"Gateway dispatcher readiness could not be verified: {exc}",
+        }
+    try:
+        liveness = resolve_gateway_liveness(profile_dir=hermes_home, use_cache=False)
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "ready": False,
+            "gateway_pid": None,
+            "message": f"Gateway dispatcher readiness probe failed: {exc}",
+        }
+    if liveness.probe_error:
+        return {
+            "status": "unknown",
+            "ready": False,
+            "gateway_pid": liveness.pid,
+            "message": "Gateway dispatcher readiness probe returned an unreadable state",
+        }
+
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", True))
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "ready": False,
+            "gateway_pid": liveness.pid,
+            "message": f"Kanban dispatcher configuration could not be read: {exc}",
+        }
+
+    pid = liveness.pid
+    if pid and dispatch_on:
+        return {
+            "status": "ready",
+            "ready": True,
+            "gateway_pid": pid,
+            "message": f"gateway pid={pid}, dispatch enabled",
+        }
+    if pid:
+        return {
+            "status": "disabled",
+            "ready": False,
+            "gateway_pid": pid,
+            "message": (
+                "Gateway is running but kanban.dispatch_in_gateway=false in "
+                "config.yaml — the task will sit in 'ready' until you flip it "
+                "back on and restart the gateway, OR run the legacy "
+                "standalone daemon (`hermes kanban daemon --force`)."
+            ),
+        }
+    return {
+        "status": "offline",
+        "ready": False,
+        "gateway_pid": None,
+        "message": (
+            "No gateway is running — the task will sit in 'ready' until you "
+            "start it. Run:\n"
+            "    hermes gateway start\n"
+            "The gateway hosts an embedded dispatcher (tick interval 60s by "
+            "default); your task will be picked up on the next tick after "
+            "the gateway comes up."
+        ),
+    }
 
 
 def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool, str]:
@@ -210,8 +292,16 @@ def _profile_author() -> str:
         return "user"
 
 
+def _unblock_author() -> str:
+    """Distinguish an operator CLI transition from a worker retry."""
+
+    if str(os.environ.get("HERMES_KANBAN_TASK") or "").strip():
+        return _profile_author()
+    return "operator"
+
+
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
+    "init", "create", "swarm", "assign", "set-reasoning", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
@@ -232,12 +322,9 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
             return False
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
+    from agent.delegation_context import kanban_path_is_fenced
 
-        return is_delegated_child_process_context()
-    except Exception:
-        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+    return kanban_path_is_fenced(kb.kanban_home()) or kanban_path_is_fenced(kb.kanban_db_path())
 
 
 def _joined_words(words) -> Optional[str]:
@@ -343,6 +430,16 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
+    body = args.body
+    body_file = getattr(args, "body_file", None)
+    if body is not None and body_file is not None:
+        return _err("kanban: --body and --body-file are mutually exclusive", 2)
+    if body_file is not None:
+        try:
+            body = sys.stdin.read() if body_file == "-" else Path(body_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            return _err(f"kanban: --body-file: {exc}", 2)
+
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
@@ -360,7 +457,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
                     "use 1 to trip on the first failure.", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
-            conn, title=args.title, body=args.body, assignee=args.assignee,
+            conn, title=args.title, body=body, assignee=args.assignee,
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
@@ -369,6 +466,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
             max_retries=max_retries, model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
+            reasoning_effort=getattr(args, "reasoning_effort", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
@@ -387,6 +485,34 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _cmd_reconcile_dispatch(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        updated = kb.reconcile_legacy_dispatch_task(
+            conn,
+            args.task_id,
+            idempotency_key=args.idempotency_key,
+            head_sha=args.head_sha,
+            body=args.body,
+            assignee=args.assignee,
+            workspace_path=args.workspace_path,
+            branch_name=args.branch_name,
+            max_retries=args.max_retries,
+            max_runtime_seconds=args.max_runtime,
+        )
+        task = kb.get_task(conn, args.task_id)
+    if not updated:
+        print(
+            f"cannot reconcile {args.task_id}: card is not the exact legacy intake shape",
+            file=sys.stderr,
+        )
+        return 1
+    if args.json:
+        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+    else:
+        print(f"Reconciled {args.task_id} -> ready")
     return 0
 
 
@@ -596,6 +722,31 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_set_reasoning(args: argparse.Namespace) -> int:
+    raw_effort = args.effort.strip().lower()
+    effort = (
+        None
+        if raw_effort in {"inherit", "default", "-", "null"}
+        else raw_effort
+    )
+    try:
+        with kbc.connect_closing() as conn:
+            ok = kb.set_reasoning_effort(conn, args.task_id, effort)
+    except (ValueError, RuntimeError) as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    if not ok:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    if effort is None:
+        print(f"Cleared reasoning effort on {args.task_id} "
+              "(worker uses its profile default)")
+    else:
+        print(f"Set reasoning effort on {args.task_id}: {effort} "
+              "(applies on next dispatch)")
+    return 0
+
+
 def _cmd_reclaim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None))
@@ -675,11 +826,18 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                                   tuple(diags_by_task.keys())):
                 meta[r["id"]] = {k: r[k] for k in ("title", "status", "assignee")}
 
+    # What this home believes it may claim on a shared board (#113620).
+    allowlist = kbd.dispatch_profile_allowlist_summary()
+
     if getattr(args, "json", False):
+        # Per-task rows unchanged; the home-scope allowlist rides as a trailing row
+        # (task_id null) so existing `payload[0]["diagnostics"]` consumers keep working.
         _print_json([{"task_id": tid, **meta.get(tid, {}), "diagnostics": [d.to_dict() for d in dl]}
-                     for tid, dl in diags_by_task.items()])
+                     for tid, dl in diags_by_task.items()]
+                    + [{"task_id": None, "dispatch_profiles": allowlist, "diagnostics": []}])
         return 0
 
+    print(f"kanban.dispatch_profiles: {allowlist}")
     if not diags_by_task:
         print("No active diagnostics on this board.")
         return 0
@@ -696,9 +854,23 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 
 def _cmd_link(args: argparse.Namespace) -> int:
+    # A worker linking its own running card (dependency-block handoff) proves
+    # ownership with its run id; linking a foreign task never needs one.
+    expected_child_run_id = (
+        _worker_run_id_for(args.child_id)
+        if args.child_id == os.environ.get("HERMES_KANBAN_TASK") else None)
     with kbc.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
+        gated = kb.link_tasks(conn, args.parent_id, args.child_id,
+                              expected_child_run_id=expected_child_run_id)
     print(f"Linked {args.parent_id} -> {args.child_id}")
+    if gated:
+        print(
+            f"Note: {args.child_id} was ready and is now todo — parent "
+            f"{args.parent_id} is not done yet. The ready -> running claim "
+            f"re-checks parents, so the child only runs after the parent "
+            f"completes; use `hermes kanban unlink {args.parent_id} {args.child_id}` "
+            f"to run it now."
+        )
     return 0
 
 
@@ -827,15 +999,31 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
     from hermes_cli.goals import judge_goal
 
-    verdict, reason = "done", ""
+    verdict, reason, transport_failed = "done", "", False
     try:
-        verdict, reason, _, _, _ = judge_goal(goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                                              last_response=evidence.strip())
+        # Headless handoff checks run outside any agent turn: bind the per-task relay-affinity
+        # scope (mirrors kanban_specify) so the relay does not reject the judge call (#113669).
+        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task.id}")
+        try:
+            verdict, reason, _, _, transport_failed = judge_goal(
+                goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                last_response=evidence.strip())
+        finally:
+            if affinity_token is not None:
+                reset_affinity_scope(affinity_token)
     except Exception as judge_exc:
         import logging as _logging
 
         _logging.getLogger(__name__).warning("goal judge check failed, allowing lifecycle handoff: %s",
                                              judge_exc, exc_info=True)
+    if transport_failed:
+        # ``judge_goal`` fails open to ``continue`` on transport errors (relay 400, auth, timeout);
+        # an unreachable judge is not a human "not done" and must not reject the handoff (#83610).
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning("goal judge unreachable (%s), allowing lifecycle handoff", reason)
+        return ("done", None)
     return (verdict, None if verdict == "done" else reason)
 
 
@@ -879,20 +1067,58 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+            from hermes_cli.kanban_completion_policy import CompletionPolicyError
+
+            try:
+                done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
+                                        expected_run_id=_worker_run_id_for(tid),
+                                        force=bool(getattr(args, "force", False)))
+            except kb.LiveClaimError:
+                fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
+                                 f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
+                                 f"--force to close its run and complete anyway.")
+                return False
+            except kb.EmptyCompletionError as empty_err:
+                fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "
+                                 f"describing what was done (an empty completion is not evidence).")
+                return False
+            if not done:
+                # complete_task returns bare False for a dependency refusal too;
+                # name the open parents instead of claiming the id is unknown.
+                blockers = kb.unsatisfied_parents(conn, tid)
+                if blockers:
+                    detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
+                    fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
+                                     f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+            return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:
-    metadata, rc = _parse_metadata_flag(getattr(args, "metadata", None))
+    result = getattr(args, "result", None)
+    raw_metadata = getattr(args, "metadata", None)
+    summary = getattr(args, "summary", None)
+    title = getattr(args, "title", None)
+    body = getattr(args, "body", None)
+    priority = getattr(args, "priority", None)
+    if result is None and (summary is not None or raw_metadata is not None):
+        return _err("kanban edit: --summary and --metadata require --result", 2)
+    if all(value is None for value in (title, body, priority, result)):
+        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
     with kbc.connect_closing() as conn:
-        ok = kb.edit_completed_task_result(conn, args.task_id, result=args.result,
-                                           summary=getattr(args, "summary", None), metadata=metadata)
-    return _ok_or_err(ok, f"cannot edit {args.task_id} (unknown id or task is not done)", f"Edited {args.task_id}")
+        ok = kb.edit_task(
+            conn, args.task_id, title=title, body=body, priority=priority,
+            result=result, summary=summary, metadata=metadata,
+        )
+    return _ok_or_err(
+        ok,
+        f"cannot edit {args.task_id} (unknown id, or --result used on a task that is not done)",
+        f"Edited {args.task_id}",
+    )
 
 
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
@@ -917,8 +1143,13 @@ def _cmd_block(args: argparse.Namespace) -> int:
             where = landed.status if landed else "blocked"
             if where == "todo":
                 return f"{tid} → todo (dependency wait){suffix}"
+            if kind == "dependency" and where == "blocked":
+                return f"Blocked {tid} as needs_input (no open parent to wait on){suffix}"
             if where == "triage":
-                return f"{tid} → triage (unblock loop detected — needs a human decision){suffix}"
+                # Only a typed owner-input block carries a question for a human.
+                verdict = ("needs a human decision" if (landed.block_kind if landed else kind) == "needs_input"
+                           else "orchestration attention needed")
+                return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
@@ -944,7 +1175,7 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     if rc:
         return rc
     reason = _stripped_or_none(getattr(args, "reason", None))
-    author = _profile_author() if reason else None
+    author = _unblock_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
         op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
@@ -1013,13 +1244,13 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     author = _profile_author()
     # Dedupe while preserving order; positional task_id always first.
     ids = list(dict.fromkeys(_bulk_ids(args)))
-    dry_run, force = bool(args.dry_run), bool(args.force)
+    dry_run = bool(args.dry_run)
 
     results: list[dict[str, object]] = []
     with kbc.connect_closing() as conn:
         for tid in ids:
-            ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, force=force, dry_run=dry_run)
-            results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run, "forced": force,
+            ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, dry_run=dry_run)
+            results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run,
                             "reason": reason, "error": err})
 
     failed = [r for r in results if not r["promoted"]]
@@ -1073,6 +1304,14 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    delivery_metadata = {
+        key: value
+        for key, value in (
+            ("parent_chat_id", getattr(args, "parent_chat_id", None)),
+            ("guild_id", getattr(args, "guild_id", None)),
+        )
+        if value
+    }
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
@@ -1082,6 +1321,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             user_id_alt=getattr(args, "user_id_alt", None),
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
+            delivery_metadata=delivery_metadata or None,
         )
     print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{args.thread_id}" if args.thread_id else "")
           + f" to {args.task_id}")
@@ -1232,6 +1472,7 @@ _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
     "assign": _cmd_assign, "set-model": _cmd_set_model,
+    "set-reasoning": _cmd_set_reasoning,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,

@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import pytest
 
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from agent import secret_scope as ss
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
@@ -110,7 +113,7 @@ async def test_profile_middleware_binds_auth_before_handler(
     )()
     monkeypatch.setattr(
         "hermes_cli.profiles.profiles_to_serve",
-        lambda multiplex, profile_allowlist=None: [
+        lambda multiplex: [
             ("default", tmp_path), ("worker", worker_home)
         ],
     )

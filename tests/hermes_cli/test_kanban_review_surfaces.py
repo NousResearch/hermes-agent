@@ -20,6 +20,9 @@ def review_worker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_PROFILE", "builder")
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
+    # kanban_request_review now rejects reviewers that are not installed profiles (#106163).
+    (home / "profiles" / "reviewer").mkdir(parents=True)
+    (home / "profiles" / "reviewer" / "config.yaml").write_text("{}\n")  # identity marker
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     with kbc.connect() as conn:
@@ -239,6 +242,9 @@ def test_worker_guidance_distinguishes_same_card_and_downstream_review() -> None
     assert "inspect those cards" in KANBAN_GUIDANCE
     assert "pre-created review, QA, or release child" in KANBAN_GUIDANCE
     assert "call `kanban_complete`" in KANBAN_GUIDANCE
+    assert "Never run a recursive" in KANBAN_GUIDANCE
+    assert "`rg --files`" in KANBAN_GUIDANCE
+    assert "must include a non-empty factual `summary`" in KANBAN_GUIDANCE
     assert "Never sticky-block that parent for `review-required`" in KANBAN_GUIDANCE
     assert "`kanban_request_changes`" in KANBAN_GUIDANCE
     assert "metadata=..." in KANBAN_GUIDANCE

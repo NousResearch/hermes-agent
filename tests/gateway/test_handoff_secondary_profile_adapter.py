@@ -67,7 +67,7 @@ def _make_multiplex_runner():
         platform=Platform.TELEGRAM, chat_type="dm",
     ))
 
-    async def _switch(key, sid):
+    async def _switch(key, sid, *, conversation_kind="interactive", persisted_cwd=None):
         captured["session_key"] = key
         return SessionEntry(
             session_key=key, session_id=sid,
@@ -165,6 +165,20 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
 
     assert used["adapter_tag"] == "primary"
     assert used["home_chat_id"] == "1111"
+
+
+@pytest.mark.asyncio
+async def test_isolated_handoff_without_persisted_cwd_fails_closed(monkeypatch):
+    """A legacy cwd-less handoff cannot enter an enabled isolated gateway."""
+    runner, _ = _make_multiplex_runner()
+    runner.session_store.conversation_worktree_isolation_enabled = lambda _key: True
+
+    with pytest.raises(RuntimeError, match="without a persisted verified workspace"):
+        await runner._process_handoff(
+            {"id": "cli-session", "title": "work", "handoff_platform": "telegram"},
+            profile_name=None,
+        )
+    runner.session_store.get_or_create_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio

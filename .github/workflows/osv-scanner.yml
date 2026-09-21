@@ -14,16 +14,15 @@ name: OSV-Scanner
 # code patterns in PR diffs) by covering the orthogonal "currently-pinned
 # dep became known-vulnerable" case.
 #
-# Uses Google's officially-recommended reusable workflow, pinned by SHA.
-# Findings land in the repo's Security tab for direct main/scheduled scans. PR
-# scans keep the artifact and unified review status without creating a
-# baseline-mismatch check.
-# fail-on-vuln is disabled so the job does not block merges on pre-existing
-# vulnerabilities in pinned deps that we may need to patch deliberately.
+# Uses Google's scanner and reporter actions pinned by SHA. The upstream
+# reusable workflow wraps the same actions, but currently calls an unpinned
+# download-artifact action internally; spelling the steps out here keeps this
+# repo's full-SHA action policy intact.
 #
-# The reusable workflow can't emit custom outputs, so a wrapper job
-# downloads the SARIF result and summarizes the vulnerability count into
-# a review_status for the unified PR comment.
+# Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
+# fail-on-vuln is disabled so the job does not block merges on pre-existing
+# vulnerabilities in pinned deps that we may need to patch deliberately. The
+# same SARIF file is summarized into a review_status for the unified PR comment.
 
 on:
   workflow_call:
@@ -42,63 +41,80 @@ on:
   workflow_dispatch:
 
 permissions:
-  # Required to upload SARIF file to CodeQL. See: https://github.com/github/codeql-action/issues/2117
-  actions: read
   contents: read
-  security-events: write
 
 jobs:
-  scan:
-    name: Scan lockfiles
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@baa4139e56d6312335d899e6ba045fa16d1d3d0b # v2.5.1
-    with:
-      # Scan explicit lockfiles rather than recursing, so we only look at
-      # the five sources of truth and skip vendored / test / worktree dirs.
-      scan-args: |-
-        --lockfile=uv.lock
-        --lockfile=package-lock.json
-        --lockfile=website/package-lock.json
-        --lockfile=plugins/platforms/photon/sidecar/package-lock.json
-        --lockfile=scripts/whatsapp-bridge/package-lock.json
-      # The upstream reusable workflow uploads this exact file under its
-      # fixed artifact name, which the wrapper downloads below.
-      results-file-name: osv-results.sarif
-      # Direct schedule/push/dispatch runs do not populate workflow_call
-      # inputs. In a called workflow github.event_name remains the caller's
-      # original event, so exclude both PR and workflow_call contexts here.
-      upload-sarif: ${{ inputs.upload-sarif || (github.event_name != 'pull_request' && github.event_name != 'workflow_call') }}
-      fail-on-vuln: false
-
   emit-status:
-    name: Emit review status
+    name: Scan lockfiles and emit review status
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     runs-on: ubuntu-latest
-    needs: scan
-    if: always()
     outputs:
       review_status: ${{ steps.emit.outputs.review_status }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Download SARIF result
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Prepare OSV output directory
+        run: mkdir -p osv-results
+
+      - name: Run OSV scanner
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        with:
+          # Scan explicit lockfiles rather than recursing, so we only look at
+          # the five sources of truth and skip vendored / test / worktree dirs.
+          scan-args: |-
+            --output=osv-results/results.json
+            --format=json
+            --lockfile=uv.lock
+            --lockfile=package-lock.json
+            --lockfile=website/package-lock.json
+            --lockfile=plugins/platforms/photon/sidecar/package-lock.json
+            --lockfile=scripts/whatsapp-bridge/package-lock.json
+        continue-on-error: true
+
+      - name: Build OSV SARIF
+        uses: google/osv-scanner-action/osv-reporter-action@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+        with:
+          scan-args: |-
+            --output=osv-results/osv-results.sarif
+            --new=osv-results/results.json
+            --gh-annotations=false
+            --fail-on-vuln=false
+
+      - name: Upload SARIF result artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: OSV Scanner SARIF file
-          path: /tmp/osv-results
-        continue-on-error: true
+          path: osv-results/osv-results.sarif
+          retention-days: 5
+          if-no-files-found: error
+
+      - name: Upload to code scanning
+        # inputs.upload-sarif is unset (not false) on the schedule/push/workflow_dispatch
+        # triggers below, where the upload must still happen — only an explicit `false`
+        # (ci.yaml's PR call) skips it.
+        if: ${{ !cancelled() && inputs.upload-sarif != false }}
+        uses: github/codeql-action/upload-sarif@cdefb33c0f6224e58673d9004f47f7cb3e328b89 # v4.31.10
+        with:
+          sarif_file: osv-results/osv-results.sarif
 
       - name: Emit review_status
         id: emit
+        if: always()
         run: |
           set -euo pipefail
           STATUS="[]"
 
-          if [ -f /tmp/osv-results/osv-results.sarif ]; then
+          if [ -f osv-results/osv-results.sarif ]; then
             # Count vulnerabilities from the SARIF file
             VULN_COUNT=$(python3 -c "
           import json, sys
           try:
-              with open('/tmp/osv-results/osv-results.sarif') as f:
+              with open('osv-results/osv-results.sarif') as f:
                   data = json.load(f)
               count = 0
               vulns = []
@@ -122,7 +138,7 @@ jobs:
               VULN_DETAIL=$(python3 -c "
           import json, sys
           try:
-              with open('/tmp/osv-results/osv-results.sarif') as f:
+              with open('osv-results/osv-results.sarif', encoding='utf-8') as f:
                   data = json.load(f)
               vulns = []
               for run in data.get('runs', []):

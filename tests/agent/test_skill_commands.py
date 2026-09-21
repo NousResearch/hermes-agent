@@ -34,7 +34,7 @@ description: Description for {name}.
 
 {body}
 """
-    (skill_dir / "SKILL.md").write_text(content)
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     return skill_dir
 
 
@@ -56,6 +56,33 @@ class TestScanSkillCommands:
 
 
 
+
+
+    def test_scan_uses_live_profile_skills_dir_after_module_import(self, tmp_path):
+        """A profile switch must not leave slash-command discovery on the old root."""
+        import agent.skill_commands as sc_mod
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile = tmp_path / "profile"
+        profile_skills = profile / "skills"
+        profile.mkdir()
+        _make_skill(profile_skills, "profile-only")
+
+        with (
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_home", None),
+            patch.object(skills_tool_module, "_get_disabled_skill_names", return_value=set()),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+            patch("agent.skill_utils.get_project_skills_dirs", return_value=[]),
+        ):
+            token = set_hermes_home_override(profile)
+            try:
+                commands = scan_skill_commands()
+            finally:
+                reset_hermes_home_override(token)
+
+        assert "/profile-only" in commands
 
 
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
@@ -267,7 +294,7 @@ class TestScanSkillCommands:
 
         profile_b = tmp_path / "profiles" / "b"
         _make_skill(profile_b / "skills", "b-only", body="Body of b-only.")
-        (profile_b / "config.yaml").write_text("{}\n")
+        (profile_b / "config.yaml").write_text("{}\n", encoding="utf-8")
 
         with (
             patch.object(sc_mod, "_skill_commands", {}),
@@ -517,6 +544,20 @@ class TestScanSkillCommands:
         # partial one growing from 0.
         assert observed_sizes == [skill_count] * skill_count
 
+    def test_non_ascii_name_registers_command(self, tmp_path):
+        """A CJK skill name slugs to itself (punctuation still stripped) instead of "" and being
+        silently dropped (#12351); ``resolve_skill_command_key`` round-trips it."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "novel-clipper"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: 小说+拆条\ndescription: Split novels into clips.\n---\n\nBody.\n", encoding="utf-8"
+            )
+            result = scan_skill_commands()
+            assert "/小说拆条" in result
+            assert result["/小说拆条"]["name"] == "小说+拆条"
+            assert resolve_skill_command_key("小说拆条") == "/小说拆条"
+
 
 class TestResolveSkillCommandKey:
     """Telegram bot-command names disallow hyphens, so the menu registers
@@ -703,7 +744,7 @@ class TestBuildSkillInvocationMessage:
             skill_dir = _make_skill(tmp_path, "test-skill")
             references = skill_dir / "references"
             references.mkdir()
-            (references / "api.md").write_text("reference")
+            (references / "api.md").write_text("reference", encoding="utf-8")
             scan_skill_commands()
             msg = build_skill_invocation_message("/test-skill", "do stuff")
 
@@ -730,7 +771,7 @@ class TestSkillDirectoryHeader:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "scripted-skill")
             (skill_dir / "scripts").mkdir()
-            (skill_dir / "scripts" / "run.js").write_text("console.log('hi')")
+            (skill_dir / "scripts" / "run.js").write_text("console.log('hi')", encoding="utf-8")
             scan_skill_commands()
             msg = build_skill_invocation_message("/scripted-skill")
 

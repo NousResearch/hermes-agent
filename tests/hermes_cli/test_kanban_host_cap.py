@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,55 @@ def test_max_in_progress_counts_other_boards(
     # Host budget (2) already consumed by the second board → nothing spawns.
     assert not spawns
     assert not res.spawned
+    assert res.host_capacity_saturated is True
+
+
+def test_max_in_progress_per_profile_counts_other_boards(
+    kanban_home, all_assignees_spawnable,
+):
+    """A profile's per-profile cap applies to workers on every board."""
+    kb.create_board("second")
+    with kbc.connect(board="second") as conn:
+        running_id = kb.create_task(conn, title="busy", assignee="alice")
+        assert kb.claim_task(conn, running_id) is not None
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="waiting", assignee="alice")
+        res = kbd.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn_factory(spawns),
+            max_in_progress_per_profile=1,
+        )
+
+    assert not spawns
+    assert not res.spawned
+    assert len(res.skipped_per_profile_capped) == 1
+    assert res.skipped_per_profile_capped[0][1:] == ("alice", 1)
+
+
+def test_host_capacity_is_reported_when_board_cap_is_checked_first(
+    kanban_home, all_assignees_spawnable,
+):
+    """A board-local cap must not hide an already-full host cap."""
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    import hermes_cli.kanban_db_dispatch as _hermes_cli_kanban_db_dispatch
+    spawns: list = []
+    with _hermes_cli_kanban_db_connect.connect() as conn:
+        running_id = kb.create_task(conn, title="already-running", assignee="alice")
+        assert kb.claim_task(conn, running_id) is not None
+        kb.create_task(conn, title="waiting-for-slot", assignee="alice")
+
+        res = _hermes_cli_kanban_db_dispatch.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn_factory(spawns),
+            max_spawn=1,
+            max_in_progress=1,
+        )
+
+    assert not spawns
+    assert not res.spawned
+    assert res.host_capacity_saturated is True
 
 
 def test_max_in_progress_partial_budget_across_boards(
@@ -175,6 +225,64 @@ def test_max_in_progress_partial_budget_across_boards(
     # 1 running elsewhere + budget 2 → exactly one new spawn here.
     assert len(spawns) == 1
     assert len(res.spawned) == 1
+
+
+def test_model_capacity_counts_running_workers_on_other_boards(
+    kanban_home, all_assignees_spawnable,
+):
+    """A model cap is host-wide even when boards use separate databases."""
+    kb.create_board("second")
+    with kbc.connect(board="second") as conn:
+        busy = kb.create_task(
+            conn, title="busy", assignee="alice", provider_override="local",
+            model_override="shared-model",
+        )
+        assert kb.claim_task(conn, busy) is not None
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        waiting = kb.create_task(
+            conn, title="waiting", assignee="bob", provider_override="local",
+            model_override="shared-model",
+        )
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=5,
+            max_in_progress_per_model=1,
+        )
+
+    assert not spawns
+    assert res.skipped_per_model_capped == [(waiting, "local", "shared-model", 1)]
+
+
+def test_workspace_ownership_counts_running_workers_on_other_boards(
+    kanban_home, all_assignees_spawnable, tmp_path,
+):
+    """A physical checkout cannot be concurrently owned by different boards."""
+    kb.create_board("second")
+    shared = tmp_path / "shared-checkout"
+    shared.mkdir()
+    with kbc.connect(board="second") as conn:
+        owner = kb.create_task(
+            conn, title="other board owner", assignee="alice",
+            workspace_kind="dir", workspace_path=str(shared),
+        )
+        assert kb.claim_task(conn, owner) is not None
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        contender = kb.create_task(
+            conn, title="current board contender", assignee="bob",
+            workspace_kind="dir", workspace_path=str(shared),
+        )
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=5,
+            reconcile_orphans=False,
+        )
+        task = kb.get_task(conn, contender)
+
+    assert not spawns
+    assert res.workspace_collisions == [(contender, owner, str(shared.resolve()))]
+    assert task is not None and task.status == "ready"
 
 
 def test_count_running_tasks_other_boards_fails_open(
@@ -240,6 +348,73 @@ def test_review_lane_gets_reserved_slot_under_ready_backlog(
     # Budget 2: one ready + the reserved review slot — never 2×ready.
     assert len(spawned_ids) == 2
     assert review_id in spawned_ids
+
+
+def _guard_review_row(conn: sqlite3.Connection, review_id: str) -> dict:
+    """Latest run ``rate_limited`` → ``check_respawn_guard`` returns a cooldown."""
+    now = int(time.time())
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, outcome, "
+            "started_at, ended_at) VALUES (?, 'reviewer', 'rate_limited', "
+            "'rate_limited', ?, ?)",
+            (review_id, now, now),
+        )
+    assert kbd.check_respawn_guard(conn, review_id, lane="review") == "rate_limit_cooldown"
+    return {"max_in_progress": 1}
+
+
+def _cap_review_row(conn: sqlite3.Connection, review_id: str) -> dict:
+    """``reviewer`` already has one running worker → the review row is per-profile capped."""
+    busy_id = kb.create_task(conn, title="busy", assignee="reviewer")
+    assert kb.claim_task(conn, busy_id) is not None
+    return {"max_in_progress": 2, "max_in_progress_per_profile": 1}
+
+
+@pytest.mark.parametrize("make_unspawnable", [_guard_review_row, _cap_review_row])
+def test_unspawnable_review_does_not_reserve_the_only_ready_slot(
+    kanban_home, all_assignees_spawnable, monkeypatch, make_unspawnable,
+):
+    """A review card the review loop would refuse this tick (respawn guard,
+    per-profile cap) must not consume the fairness reservation — otherwise the
+    ready lane starves every tick while the reserved slot goes unused."""
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        ready_id = kb.create_task(conn, title="ready-now", assignee="alice")
+        review_id = _park_in_review(conn, "review-unspawnable", "reviewer")
+        caps = make_unspawnable(conn, review_id)
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory(spawns), **caps)
+
+    assert [task_id for task_id, *_ in res.spawned] == [ready_id]
+
+
+def test_unguarded_review_reserves_the_only_ready_slot(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A dispatchable review card still receives the single shared slot."""
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="ready-now", assignee="alice")
+        review_id = _park_in_review(conn, "review-now", "reviewer")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    assert [task_id for task_id, *_ in res.spawned] == [review_id]
 
 
 def test_review_reservation_released_when_no_review_work(

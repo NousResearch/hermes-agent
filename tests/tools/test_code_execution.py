@@ -242,6 +242,35 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                       "TZ value must be wrapped in single quotes by shlex.quote()")
 
 
+class TestToolCallLimit(unittest.TestCase):
+    def test_zero_disables_tool_call_limit(self):
+        from tools.code_execution_tool import _tool_call_limit_reached
+
+        self.assertFalse(_tool_call_limit_reached(100_000, 0))
+
+    def test_positive_limit_is_enforced(self):
+        from tools.code_execution_tool import _tool_call_limit_reached
+
+        self.assertFalse(_tool_call_limit_reached(4, 5))
+        self.assertTrue(_tool_call_limit_reached(5, 5))
+
+    def test_negative_limit_disables_it_same_as_zero(self):
+        """The documented contract (cli-config.yaml.example) is `<= 0 = unlimited`,
+        and _tool_call_limit_reached already treats every non-positive value as
+        unbounded -- the config validator must not reject exactly the values the
+        adjacent limit predicate treats as valid."""
+        from tools.code_execution_tool import _configured_max_tool_calls, _tool_call_limit_reached
+
+        self.assertEqual(_configured_max_tool_calls({"max_tool_calls": -1}), -1)
+        self.assertFalse(_tool_call_limit_reached(100_000, -1))
+
+    def test_non_integer_limit_is_rejected(self):
+        from tools.code_execution_tool import _configured_max_tool_calls
+
+        with self.assertRaisesRegex(ValueError, "must be an integer"):
+            _configured_max_tool_calls({"max_tool_calls": "unlimited"})
+
+
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):
     """Integration tests using the mock dispatcher."""
@@ -294,6 +323,24 @@ print(result.get("output", ""))
         self.assertEqual(result["status"], "success")
         self.assertIn("mock output for: echo hello", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
+
+    def test_zero_limit_allows_more_than_legacy_default_through_rpc(self):
+        """The real sandbox/RPC path honors zero as unlimited past 50 calls."""
+        code = """
+from hermes_tools import terminal
+for i in range(51):
+    terminal(f"echo {i}")
+print("completed-51")
+"""
+        with patch(
+            "tools.code_execution_tool._load_config",
+            return_value={"timeout": 30, "max_tool_calls": 0},
+        ):
+            result = self._run(code)
+
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertIn("completed-51", result["output"])
+        self.assertEqual(result["tool_calls_made"], 51)
 
 
     def test_concurrent_tool_calls_match_responses(self):
@@ -593,7 +640,12 @@ class TestEnvVarFiltering(unittest.TestCase):
         try:
             os.environ["HERMES_TIMEZONE"] = "America/New_York"
             child_env = self._get_child_env()
-            self.assertEqual(child_env.get("TZ"), "America/New_York")
+            if sys.platform == "win32":
+                # The MSVC runtime only parses POSIX-form TZ; an IANA name yields a wrong
+                # offset (#112233), so Windows children keep the OS zone instead.
+                self.assertNotIn("TZ", child_env)
+            else:
+                self.assertEqual(child_env.get("TZ"), "America/New_York")
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
@@ -638,6 +690,20 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("'code' parameter", result["error"])
         self.assertIn("execute_code(code=...)", result["error"])
         self.assertIn("terminal(command=...)", result["error"])
+        self.assertNotIn("NoneType", result["error"])
+
+    def test_terminal_command_class_argument_names_schema_error(self):
+        """Do not execute an unrecognized command list; explain the schema."""
+        from tools.terminal_tool import _handle_terminal
+
+        result = json.loads(
+            _handle_terminal({"command_class": ["pytest"]}, task_id="test")
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("'command_class' parameter", result["error"])
+        self.assertIn("terminal(command=\"...\")", result["error"])
+        self.assertIn("string", result["error"])
         self.assertNotIn("NoneType", result["error"])
 
     def test_empty_code_explains_required_parameter(self):
@@ -715,7 +781,7 @@ class TestLoadConfig(unittest.TestCase):
         mock_cli = MagicMock()
         mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
         with patch.dict("sys.modules", {"cli": mock_cli}), \
-             patch("hermes_cli.config.read_raw_config", return_value={}):
+             patch("hermes_cli.config.load_config_readonly", return_value={}):
             result = _load_config()
         self.assertEqual(result, {})
 

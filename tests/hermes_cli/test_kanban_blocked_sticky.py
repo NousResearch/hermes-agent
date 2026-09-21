@@ -77,6 +77,23 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_initially_blocked_operator_task_is_sticky(kanban_home: Path) -> None:
+    import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
+    with _hermes_cli_kanban_db_connect.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="operator intent required",
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        events = kb.list_events(conn, task_id=tid)
+        assert any(event.kind == "blocked" for event in events)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -156,9 +173,20 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
             assert kb.get_task(conn, tid).status == "blocked"
 
 
-# ---------------------------------------------------------------------------
-# Schema-init recovery on legacy DBs is covered by
-# tests/hermes_cli/test_kanban_db.py::test_connect_migrates_legacy_db_before_optional_column_indexes
-# (landed via #28754 / #28781).  The original PR shipped a duplicate test
-# here; dropped during salvage to avoid two assertions of the same contract.
-# ---------------------------------------------------------------------------
+def test_created_with_initial_status_blocked_is_not_promoted_by_recompute_ready(kanban_home: Path) -> None:
+    """Verify a task created with initial_status='blocked' remains blocked when parents complete."""
+    with kbc.connect() as conn:
+        parent_id = kb.create_task(conn, title="parent task")
+        child_id = kb.create_task(
+            conn, title="gated child task", parents=[parent_id], initial_status="blocked"
+        )
+        assert kb.get_task(conn, child_id).status == "blocked"
+        # Complete parent task
+        kb.claim_task(conn, parent_id)
+        kb.complete_task(conn, parent_id, result="done")
+        assert kb.get_task(conn, parent_id).status == "done"
+
+        # recompute_ready must NOT promote the blocked child task
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child_id).status == "blocked"

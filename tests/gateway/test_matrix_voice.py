@@ -236,7 +236,7 @@ class TestMatrixSendVoiceMSC3245:
             self.adapter._client.send_message_event = mock_send_message_event
 
             with patch(
-                "plugins.platforms.matrix.adapter._matrix_transcode_voice_to_ogg",
+                "plugins.platforms.matrix.adapter.transcode_to_ogg_opus",
                 return_value=converted_path,
             ) as mock_transcode, patch(
                 "plugins.platforms.matrix.adapter._matrix_voice_metadata_for_file",
@@ -248,7 +248,7 @@ class TestMatrixSendVoiceMSC3245:
                     caption="Test voice",
                 )
 
-            mock_transcode.assert_called_once_with(temp_path)
+            mock_transcode.assert_called_once_with(temp_path, bitrate="48k", timeout=30)
             assert sent_content is not None, "No message was sent"
             assert "org.matrix.msc3245.voice" in sent_content
             assert sent_content["info"]["mimetype"] == "audio/ogg"

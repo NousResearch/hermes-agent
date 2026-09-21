@@ -439,6 +439,10 @@ def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
 
     assert InProcessCronScheduler().fire_due("j1", force=True) is True
     assert claims == [("j1", {"force": True, "return_job": True})]
+    # An off-tick run-now forwards ``manual`` so the claim does not stamp the next occurrence;
+    # the default (webhook / misfire) fire keeps the occurrence stamp.
+    assert InProcessCronScheduler().fire_due("j1", manual=True) is True
+    assert claims[-1] == ("j1", {"manual": True, "return_job": True})
 
 
 def test_fire_due_lost_claim_does_not_run(monkeypatch):
@@ -532,6 +536,23 @@ def test_heartbeat_roundtrip_and_age(tmp_path, monkeypatch):
     jobs.record_ticker_heartbeat(success=True)
     ok = jobs.get_ticker_success_age()
     assert ok is not None and 0.0 <= ok < 5.0
+
+
+def test_future_ticker_heartbeat_is_not_liveness_evidence(tmp_path, monkeypatch):
+    """A restored or skewed future marker must not keep a dead ticker alive."""
+    import time
+
+    import cron.jobs as jobs
+
+    cron_dir = tmp_path / "cron"
+    cron_dir.mkdir()
+    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", cron_dir / "ticker_heartbeat")
+    (cron_dir / "ticker_heartbeat").write_text(
+        str(time.time() + 3600), encoding="utf-8"
+    )
+
+    assert jobs.get_ticker_heartbeat_age() is None
 
 
 # ── F8: runtime backstop — never resolve a stored pair that exfiltrates a key ──
@@ -893,3 +914,42 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
     assert recovery_homes == [str(failing_home), str(healthy_home)]
     # The failing profile stays in rotation: its ledger may still hold jobs.
     assert set(tick_homes) == {str(failing_home), str(healthy_home)}
+
+
+def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
+    """Hot-serve: with a callable ``profile_homes`` the ticker re-reads the served set every cycle,
+    so a profile created after the multiplexer started gets its jobs fired without a restart."""
+    import threading
+    from unittest.mock import patch
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    alpha = tmp_path / "alpha"
+    gamma = tmp_path / "gamma"
+    (alpha / "cron").mkdir(parents=True)
+    homes = [("alpha", alpha)]
+    stop = threading.Event()
+    ticked: list[str] = []
+
+    def _tick(*args, **kwargs):
+        ticked.append(str(get_hermes_home()))
+        if len(ticked) == 1:  # "hermes profile create gamma" happens between two cycles
+            (gamma / "cron").mkdir(parents=True)
+            homes.append(("gamma", gamma))
+        if len(ticked) >= 4:
+            stop.set()
+        return 0
+
+    provider = InProcessCronScheduler()
+    with patch("cron.scheduler.tick", side_effect=_tick):
+        thread = threading.Thread(
+            target=provider.start, args=(stop,),
+            kwargs={"interval": 0, "profile_homes": lambda: list(homes)}, daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert str(gamma) in ticked, ticked

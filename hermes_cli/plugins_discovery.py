@@ -110,15 +110,22 @@ def scan_directory(
     if not path.is_dir():
         return manifests
     for child in sorted(path.iterdir()):
-        if not child.is_dir() or (depth == 0 and skip_names and child.name in skip_names):
+        try:
+            if not child.is_dir() or (depth == 0 and skip_names and child.name in skip_names):
+                continue
+            manifest_file = next((f for f in (child / "plugin.yaml", child / "plugin.yml") if f.exists()), None)
+            portable_file = child / "plugin.json"
+            has_portable = portable_file.exists() or portable_file.is_symlink()
+        except OSError as exc:
+            # stat() raises (not "False") on an unsearchable directory — Windows ACLs (WinError 5) or a
+            # mode-000 dir; one such plugin must not abort discovery for every other plugin (#111804).
+            logger.warning("Skipping unreadable plugin directory %s: %s", child, exc)
             continue
-        manifest_file = next((f for f in (child / "plugin.yaml", child / "plugin.yml") if f.exists()), None)
-        portable_file = child / "plugin.json"
         if manifest_file is not None:
             manifest = parse_manifest_file(manifest_file, child, source, prefix)
             if manifest is not None:
                 manifests.append(manifest)
-        elif portable_file.exists() or portable_file.is_symlink():
+        elif has_portable:
             try:
                 manifests.append(portable_plugin_manifest(child, source, prefix))
             except Exception as exc:
@@ -146,7 +153,8 @@ def collect_directory_manifests() -> List[PluginManifest]:
     # Excluded bundled top-level categories have their own discovery; platforms scan separately.
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
-    _scan("bundled (top-level)", repo_plugins, "bundled", {"memory", "context_engine", "platforms", "model-providers"})
+    # Vendor SaaS connectors must ship as external plugin repos per plugins/AGENTS.md (June 2026).
+    _scan("bundled (top-level)", repo_plugins, "bundled", {"memory", "context_engine", "platforms", "model-providers", "github-pr-feedback"})
     _scan("bundled/platforms", repo_plugins / "platforms", "bundled")
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)

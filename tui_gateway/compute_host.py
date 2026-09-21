@@ -132,7 +132,9 @@ class ComputeHost:
             if sid in skip:
                 continue
             with contextlib.suppress(Exception):
-                server._finalize_session(session, end_reason=f"compute_host_{reason}")
+                with server._session_prompt_submit_lock(session):
+                    if server._sessions.get(sid) is session:
+                        server._finalize_session(session, end_reason=f"compute_host_{reason}")
 
     def handle_frame(self, frame: dict[str, Any]) -> None:
         kind = str(frame.get("type") or "")
@@ -190,7 +192,9 @@ class ComputeHost:
         self._guarded(frame, "interrupt.ack", body, applied=False)
 
     def _handle_respond(self, frame: dict[str, Any]) -> None:
-        """Resolve an interactive request in the host-owned pending registry."""
+        """Resolve a server→client request this host owns: ``params.frame`` is the client's JSON-RPC response
+        frame relayed by the parent; ``params.lock`` is one batch-clarify lock (answered with ``clarify.lock``'s
+        result so the parent can ack the client)."""
         def body(server: Any, sid: str, request_id: Any) -> None:
             params = frame.get("params")
             error = ("session not found" if sid not in server._sessions
@@ -198,7 +202,13 @@ class ComputeHost:
             if error:
                 self._reply("respond.error", sid, request_id, message=error)
                 return
-            response = server._methods["clarify.respond"](request_id, params)
+            from tui_gateway import server_requests
+            if isinstance(params.get("lock"), dict):
+                response = server._methods["clarify.lock"](request_id, params["lock"])
+            else:
+                response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
+                resolved = server_requests.resolve_response(response_frame)
+                response = {"jsonrpc": "2.0", "id": request_id, "result": {"status": "ok" if resolved else "expired"}}
             self._reply("respond.ack", sid, request_id, response=response)
         self._guarded(frame, "respond.error", body)
 
@@ -211,6 +221,12 @@ class ComputeHost:
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
+            # #101416: the parent already holds this session's active-session lease (claimed in
+            # prompt.submit before routing here). Install the inert borrow BEFORE the turn runs, or
+            # _admit_prompt_turn re-claims from this child pid and is fenced out by the parent's own
+            # registry entry ("already has a live owner"). Unknown flag (parent predates the field):
+            # no borrow, legacy self-claim path, unchanged behaviour.
+            server._install_borrowed_lease(sid, session, frame)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
             with session["history_lock"]:
@@ -234,7 +250,9 @@ class ComputeHost:
             with contextlib.suppress(Exception):
                 server._persist_branch_seed(session)
             server._run_prompt_submit(
-                request_id, sid, session, text, display_kind=frame.get("display_kind") or None)
+                request_id, sid, session, text, display_kind=frame.get("display_kind") or None,
+                display_metadata=(frame.get("display_metadata")
+                                  if isinstance(frame.get("display_metadata"), dict) else None))
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):
                 while run_thread.is_alive():
@@ -287,6 +305,8 @@ class ComputeHost:
             for key in ("cwd", "profile_home"):
                 if frame.get(key):
                     session[key] = str(frame[key])
+            if isinstance(frame.get("conversation_worktree"), dict):
+                session["conversation_worktree"] = dict(frame["conversation_worktree"])
         else:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
@@ -316,8 +336,11 @@ class ComputeHost:
                 reasoning_config_override=frame.get("reasoning_config_override"),
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
+                cwd_override=str(frame.get("cwd") or "") or None,
+                auth_user_id=frame.get("auth_user_id"),
                 context_cwd_is_launch_artifact=bool(
                     frame.get("context_cwd_is_launch_artifact", False)),
+                conversation_worktree=frame.get("conversation_worktree"),
                 session_db=session_db)
             if server._transfer_db_to_agent(agent, session_db):
                 owns_db = False
@@ -339,7 +362,8 @@ class ComputeHost:
                 server._init_session(
                     sid, key, agent, list(history), cols=int(frame.get("cols") or 80),
                     cwd=str(frame.get("cwd") or "") or None, session_db=session_db,
-                    source=frame.get("source"))
+                    source=frame.get("source"),
+                    conversation_worktree=frame.get("conversation_worktree"))
             finally:
                 reset_transport(token)
         except Exception:
@@ -352,6 +376,7 @@ class ComputeHost:
                 "created_at": time.time(), "last_active": time.time(), "running": False,
                 "attached_images": [], "image_counter": 0,
                 "cwd": str(frame.get("cwd") or os.getcwd()), "cols": int(frame.get("cols") or 80),
+                "conversation_worktree": dict(frame.get("conversation_worktree") or {}),
                 "slash_worker": None, "show_reasoning": server._load_show_reasoning(),
                 "tool_progress_mode": server._load_tool_progress_mode(), "edit_snapshots": {},
                 "tool_started_at": {}, "model_override": frame.get("model_override"),
@@ -359,6 +384,8 @@ class ComputeHost:
                 "transport": self._transport}
         session = server._sessions[sid]
         session["transport"] = self._transport
+        # The host pipe names no login; the record carries the one the gateway stamped at creation.
+        session["auth_user_id"] = frame.get("auth_user_id")
         session["profile_home"] = profile_home or session.get("profile_home")
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")

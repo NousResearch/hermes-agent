@@ -246,7 +246,7 @@ def _cmd_list_unmanaged(args) -> int:
         return 0
     print(f"unmanaged skills ({len(rows)}):")
     for r in sorted(rows, key=lambda x: x["name"]):
-        why = "created_by:null" if r.get("has_provenance_key") else "no marker"
+        why = f"created_by:{r.get('created_by') or 'null'}" if r.get("has_provenance_key") else "no marker"
         print(
             f"  {r['name']:44s} activity={r.get('activity_count', 0):4d}  "
             f"last_activity={_fmt_ts(r.get('last_activity_at')):14s}  ({why})")
@@ -332,8 +332,11 @@ def _idle_days(record: dict) -> Optional[int]:
 
 def _cmd_prune(args) -> int:
     """Bulk-archive curator-managed skills idle for >= N days (pinned exempt, archived skipped)."""
+    from agent import curator
     from tools import skill_usage
-    days = getattr(args, "days", 90)
+    days = getattr(args, "days", None)
+    if days is None:
+        days = curator.get_archive_after_days()
     if days < 1:
         print(f"curator: --days must be >= 1 (got {days})", file=sys.stderr)
         return 2
@@ -382,8 +385,14 @@ def _cmd_backup(args) -> int:
 
 
 def _cmd_ledger(args) -> int:
-    """List per-mutation audit ledger entries (newest first)."""
+    """List per-mutation audit ledger entries (newest first), or compact the file in place."""
     from tools import skill_ledger
+    if getattr(args, "compact", False):
+        entries, before, after = skill_ledger.compact_ledger()
+        blobs, freed = skill_ledger.gc_blobs()
+        print(f"curator: ledger compacted — {entries} entries, {before / 2**20:.1f} MB → {after / 2**20:.1f} MB; "
+              f"{blobs} unreferenced blob(s) removed ({freed / 2**20:.1f} MB)")
+        return 0
     rows = skill_ledger.list_entries(
         skill=getattr(args, "skill", None), limit=getattr(args, "limit", None) or 20)
     if not rows:
@@ -641,9 +650,10 @@ _SUBCOMMANDS = (
     ("archive", "Manually archive a skill (move to .archive/, excluded from prompt)", _cmd_archive,
      _SKILL),
     (
-        "prune", "Bulk-archive curator-managed skills idle for >= N days (default 90)", _cmd_prune,
-        _arg("--days", type=int, default=90,
-             help="Archive skills idle for at least N days (default: 90)"),
+        "prune", "Bulk-archive curator-managed skills idle for >= N days (default: curator.archive_after_days)",
+        _cmd_prune,
+        _arg("--days", type=int, default=None,
+             help="Archive skills idle for at least N days (default: curator.archive_after_days, 30)"),
         _YES,
         _arg("--dry-run", dest="dry_run", **_STORE_TRUE,
              help="Show what would be archived without doing it")),
@@ -670,7 +680,9 @@ _SUBCOMMANDS = (
         "ledger", "List the per-mutation skill audit ledger (all actors: curator/agent/user)",
         _cmd_ledger,
         _arg("--skill", default=None, help="Only show entries for this skill"),
-        _arg("--limit", type=int, default=20, help="Max entries to show (default: 20)")),
+        _arg("--limit", type=int, default=20, help="Max entries to show (default: 20)"),
+        _arg("--compact", **_STORE_TRUE,
+             help="Rewrite the ledger dropping unchanged paths from every entry (ids and rollback preserved)")),
     (
         "purge",
         "Delete archived skills older than curator.archive_ttl_days "

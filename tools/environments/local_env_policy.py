@@ -81,6 +81,16 @@ def _build_provider_env_blocklist() -> frozenset:
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
+
+def _is_provider_env_blocklisted(name: str) -> bool:
+    """``name`` is a blocklisted provider/tool credential, matched the way the
+    platform's environment resolves names: exact plus case-folded. On Windows
+    the environment block is case-insensitive, so ``openai_api_key`` IS
+    ``OPENAI_API_KEY``; consistent with ``_is_hermes_internal_secret``, which
+    already folds (``key.upper()``)."""
+    return (name in _HERMES_PROVIDER_ENV_BLOCKLIST
+            or name.upper() in _HERMES_PROVIDER_ENV_BLOCKLIST)
+
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,
 # ``_sanitize_subprocess_env``); execute_code, hermes_subprocess_env, docker and
@@ -122,8 +132,11 @@ _TERMINAL_FIRST_PARTY_ENV_PREFIXES = ("BUZZ_",)
 
 def _matches_terminal_first_party_prefix(name: str) -> bool:
     """Pure name check (``BUZZ_*``), regardless of session context — the snapshot
-    exclusion must stay conservative even when the carve-out is inactive."""
-    return name.startswith(_TERMINAL_FIRST_PARTY_ENV_PREFIXES)
+    exclusion must stay conservative even when the carve-out is inactive.
+    Case-folded: on Windows the env block is case-insensitive, so a
+    lowercase-stored ``buzz_private_key`` IS the credential; it needs the
+    carve-out (and the snapshot exclusion) just like the canonical name."""
+    return name.upper().startswith(_TERMINAL_FIRST_PARTY_ENV_PREFIXES)
 
 
 def _buzz_terminal_context_active() -> bool:
@@ -181,6 +194,37 @@ def _is_hermes_internal_secret(key: str) -> bool:
     return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
 
 
+# Authorization gates: the env names platform adapters read to decide WHO may talk to the
+# agent (allow/deny lists, allow-all opt-ins, bot policy, channel scoping). Not credentials, so
+# no secret scrub touches them, and most profiles' ``.env`` files do not define them, so the
+# child's own dotenv load never overwrites an inherited value: a child spawned FOR profile B
+# from a process that loaded profile A's gates (or a unit-file ``Environment=``) would enforce
+# A's channel/user/role list as its own (#113270). Matched by shape so a gate added to any
+# adapter is covered without a second edit; ``HERMES_*`` never counts (``HERMES_MEDIA_ALLOW_DIRS``,
+# ``HERMES_ALLOW_PRIVATE_URLS`` are process settings, not adapter gates).
+_PROFILE_GATE_ENV_MARKERS = (
+    "_ALLOWED_", "_ALLOW_ALL_", "_ALLOW_FROM", "_ALLOW_BOTS", "_ALLOW_PUBLIC_", "_IGNORED_CHANNELS",
+    "_NO_THREAD_CHANNELS", "_FREE_RESPONSE_CHANNELS", "_BACKFILL_CHANNELS", "_GROUP_ALLOWED",
+)
+
+
+def is_profile_gate_env(name: str) -> bool:
+    """True for a platform authorization gate (``DISCORD_ALLOWED_CHANNELS``, ``TELEGRAM_ALLOW_ALL_USERS``,
+    ``GATEWAY_ALLOWED_USERS``, ``WHATSAPP_GROUP_ALLOW_FROM`` ...) — profile-scoped policy a child acting
+    for ANOTHER profile must never inherit."""
+    upper = name.upper()
+    if upper.startswith("HERMES_") or upper.startswith("_"):
+        return False
+    return any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS)
+
+
+def strip_profile_gate_env(env: dict) -> dict:
+    """Drop every authorization gate from *env* in place (see :func:`is_profile_gate_env`)."""
+    for key in [k for k in env if is_profile_gate_env(k)]:
+        del env[key]
+    return env
+
+
 def _plugin_terminal_env_strip_keys() -> frozenset:
     """Credential env keys owned by plugin-registered terminal backends (Tier-1:
     stripped from every spawned subprocess). Computed at call time because plugins
@@ -197,9 +241,11 @@ def _plugin_terminal_env_strip_keys() -> frozenset:
 # (claude/codex/gemini). Not provider credentials — no child needs them and they are the
 # highest-value secrets to keep from a compromised dependency. Provider keys = Tier 2.
 _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
-    # GitHub auth
+    # GitHub auth. HERMES_GITHUB_BOT_TOKEN is the governed automation identity
+    # (mrkillbobbot); a spawned subprocess must never see it — see CLAUDE.md's
+    # GitHub identity boundary.
     "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
-    "GITHUB_APP_INSTALLATION_ID",
+    "GITHUB_APP_INSTALLATION_ID", "HERMES_GITHUB_BOT_TOKEN",
     # Gateway / messaging bot tokens and access control
     "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN",
     "SLACK_SIGNING_SECRET", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS",

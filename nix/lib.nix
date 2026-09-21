@@ -148,6 +148,9 @@ let
             # keeps catalog edits from rebuilding the Python venv.
             "locales"
             "optional-mcps"
+            # plugin-catalog is bare YAML data, exposed through the Nix
+            # wrapper rather than included in the Python source filter.
+            "plugin-catalog"
           ];
         excludedFiles = [
           # JS root manifests

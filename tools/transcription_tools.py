@@ -30,7 +30,8 @@ from tools.transcription_audio import (
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
-    _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
+    _should_force_faster_whisper_cpu, _transcribe_local_command, _try_lazy_install_stt,
+    build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
     _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
@@ -43,23 +44,10 @@ from tools.transcription_command import (
 logger = logging.getLogger(__name__)
 
 
-def get_env_value(name, default=None):
-    """Read env values through the live config module (resolved per call: tests monkeypatch it around import)."""
-    try:
-        from hermes_cli.config import get_env_value as _get_env_value
-    except ImportError:
-        return os.getenv(name, default)
-    value = _get_env_value(name)
-    return default if value is None else value
-
-
 def _resolve_provider_key(env_var: str, provider_id: str) -> str:
     """STT API key via the shared voice-key resolver (config > env/.env > credential pool); resolved per call."""
-    try:
-        from tools.tool_backend_helpers import resolve_provider_secret
-    except ImportError:  # pragma: no cover — helpers are in-repo
-        return str(get_env_value(env_var) or "").strip()
-    return resolve_provider_secret(env_var, provider_id, env_getter=get_env_value)
+    from tools.tool_backend_helpers import resolve_provider_secret
+    return resolve_provider_secret(env_var, provider_id)
 
 
 def _safe_find_spec(module_name: str) -> bool:
@@ -333,8 +321,10 @@ def _get_or_load_local_model(model_name: str, local_cfg: Dict[str, Any]):
             if _local_model is None or _local_model_name != model_name:
                 logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
                 # stt.local.device / compute_type pin a configuration where ``auto`` mis-detects.
-                _local_model = _load_local_whisper_model(model_name, device=local_cfg.get("device", "auto"),
-                                                         compute_type=local_cfg.get("compute_type", "auto"))
+                _local_model = _load_local_whisper_model(
+                    model_name, device=local_cfg.get("device", "auto"),
+                    compute_type=local_cfg.get("compute_type", "auto"),
+                    force_cpu=_should_force_faster_whisper_cpu())
                 _local_model_name = model_name
             model = _local_model
     return model
@@ -343,8 +333,7 @@ def _get_or_load_local_model(model_name: str, local_cfg: Dict[str, Any]):
 def _replace_cached_model_on_cpu(model_name: str):
     """Load *model_name* on CPU/int8 and make it the cached singleton."""
     global _local_model, _local_model_name
-    from faster_whisper import WhisperModel
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    model = _load_local_whisper_model(model_name, device="cpu", compute_type="int8")
     with _local_model_lock:
         _local_model, _local_model_name = model, model_name
     return model
@@ -370,6 +359,12 @@ def _transcribe_local(
                                   if v})
         try:
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
+            # faster-whisper's transcribe() is lazy: the decode (and with it the
+            # dlopen-on-first-use of the CUDA runtime on Windows) happens while
+            # ITERATING segments, after this call has already returned (#103793).
+            # Consume inside the guard so a first-use cuBLAS/cuDNN load failure
+            # retries on CPU exactly like a load-time failure does.
+            segments = list(segments)
         except Exception as exc:
             # CUDA libs can fail at dlopen-on-first-use, AFTER loading: evict the poisoned
             # cached model, reload on CPU and retry once, else every later message fails.
@@ -379,6 +374,7 @@ def _transcribe_local(
                            "evicting cached model and retrying on CPU (int8).", exc)
             model = _replace_cached_model_on_cpu(model_name)
             segments, info = model.transcribe(file_path, **transcribe_kwargs)
+            segments = list(segments)
         transcript = _join_confident_segments(segments, local_cfg)
         logger.info("Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
                     Path(file_path).name, model_name, info.language, info.duration)

@@ -47,6 +47,11 @@ ALLOWLIST = {
     "hermes_cli/managed_scope.py",
     # Parse-health probe: intentionally answers "does the raw file parse?".
     "gateway/readiness.py",
+    # Parse-health probe for an arbitrary (not-necessarily-active) profile's
+    # config.yaml: must distinguish "empty file" (None) from "not a mapping"
+    # (raise), a distinction read_user_config_raw() erases by coercing both
+    # to {}.
+    "hermes_cli/kanban_worker_environment.py",
 }
 
 # Directories that never count (tests may build fixture configs freely).

@@ -1,3 +1,4 @@
+import type { ModelOptionProvider } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import {
@@ -14,9 +15,11 @@ import {
 import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { setMainModelAssignment } from '@/store/cron-model-impact'
+import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
+import { setMainModelAssignment } from '@/store/model-assignment'
 import { notify, notifyError } from '@/store/notifications'
-import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
+import { guidedOnboardingActive } from '@/store/onboarding-gate'
+import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
 type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
@@ -45,7 +48,7 @@ export type OnboardingFlow =
       saving: boolean
       status: 'confirming_model'
     }
-  | { message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
+  | { detail?: string; message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
 
 export interface DesktopOnboardingState {
   /** null until the first runtime check resolves. Seeded from localStorage so
@@ -75,6 +78,12 @@ export interface DesktopOnboardingState {
    *  custom endpoint"). Forces the API-key form with the local option
    *  preselected instead of the OAuth picker. */
   localEndpoint: boolean
+  /** True when the backend still owes this user the one-time free-tier
+   *  introduction AND the free tier is what carries inference. It makes the
+   *  overlay show its "Hermes is ready" screen once even though the app is
+   *  configured. The backend's `notice_pending` flag is the only source of
+   *  truth — there is no renderer latch — so an ack clears it everywhere. */
+  freeTierReady: boolean
 }
 
 export interface OnboardingContext {
@@ -155,7 +164,8 @@ const INITIAL: DesktopOnboardingState = {
   requested: false,
   firstRunSkipped: readCachedSkipped(),
   manual: false,
-  localEndpoint: false
+  localEndpoint: false,
+  freeTierReady: false
 }
 
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
@@ -166,6 +176,14 @@ let pollTimer: number | null = null
 let providersRefreshPromise: null | Promise<void> = null
 
 const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+// One plain sentence for every way a provider sign-in can fail (start, poll,
+// code exchange); the raw error text rides along as `detail` (desktop-09).
+function signInDidNotFinish(provider: OAuthProvider, raw: unknown): { message: string; detail?: string } {
+  const detail = raw instanceof Error ? errMessage(raw) : typeof raw === 'string' ? raw.trim() : ''
+
+  return { message: translateNow('onboarding.signInDidNotFinish', provider.name), detail: detail || undefined }
+}
 
 const patch = (update: Partial<DesktopOnboardingState>) =>
   $desktopOnboarding.set({ ...$desktopOnboarding.get(), ...update })
@@ -294,6 +312,19 @@ async function fetchProviderDefaultModel(
     return null
   }
 
+  // Re-login to the provider already in use (expired OAuth grant): keep the
+  // model the user was on. Swapping in the provider's recommended default
+  // would silently change what they're chatting with.
+  const currentModel = String(options?.model ?? '')
+
+  if (
+    currentModel &&
+    String(options?.provider ?? '').toLowerCase() === String(matched.slug).toLowerCase() &&
+    models.map(String).includes(currentModel)
+  ) {
+    return { providerSlug: String(matched.slug), defaultModel: currentModel }
+  }
+
   // Prefer the backend's recommended default — it mirrors the curation
   // `hermes model` does (for Nous it honors the user's free/paid tier, so a
   // free user gets a free model rather than a paid default like opus). Fall
@@ -374,6 +405,7 @@ async function completeWithModelConfirm(
       if (generation !== flowGeneration) {
         return
       }
+
       notifyGatewayTools(res.gateway_tools)
     } catch (error) {
       if (generation !== flowGeneration) {
@@ -424,6 +456,14 @@ function providerResolutionFailure(reason: null | string) {
     : 'Connected, but Hermes still cannot resolve a usable provider.'
 }
 
+/** Re-read the OAuth provider list into the onboarding cache. Exported so a
+ *  flow that changes a provider's auth state outside onboarding (a free-tier
+ *  sign-in) can keep the cached rows honest instead of leaving the picker
+ *  describing the previous identity. */
+export async function refreshOnboardingProviders() {
+  await refreshProviders()
+}
+
 async function refreshProviders() {
   if (providersRefreshPromise) {
     await providersRefreshPromise
@@ -458,6 +498,15 @@ async function refreshProviders() {
 }
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
+  // Not during the guided first launch. The free tier carries inference
+  // there, and a credential probe that fires anyway (a free-tier token mid
+  // refresh, a setup-profile session before its runtime settles) would drop
+  // the provider picker over the guide the user is in the middle of. Sign-in
+  // is offered where the guide chooses to, on its own ready screen.
+  if (guidedOnboardingActive()) {
+    return
+  }
+
   patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
 }
 
@@ -475,7 +524,7 @@ let pendingCredentialWarning: null | string = null
 export function requestDesktopOnboardingForCredentialWarning(reason: null | string | undefined) {
   const warning = reason?.trim()
 
-  if (!warning || !isProviderSetupErrorMessage(warning)) {
+  if (!warning || !isProviderSetupErrorMessage(warning) || guidedOnboardingActive()) {
     pendingCredentialWarning = null
 
     return
@@ -509,6 +558,8 @@ export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONB
     providers: null,
     requested: true,
     localEndpoint: false,
+    // The picker replaces the free-tier ready screen when the user asked for it.
+    freeTierReady: false,
     // `null` opts out of the prompt banner entirely (e.g. when the user already
     // picked a specific provider and we auto-start its sign-in).
     reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
@@ -571,7 +622,14 @@ export function closeManualOnboarding() {
   providersRefreshPromise = null
   pendingProviderOAuthId = null
 
-  patch({ targetProfile: undefined, manual: false, requested: false, localEndpoint: false, flow: { status: 'idle' } })
+  patch({
+    targetProfile: undefined,
+    manual: false,
+    requested: false,
+    localEndpoint: false,
+    freeTierReady: false,
+    flow: { status: 'idle' }
+  })
 }
 
 export function completeDesktopOnboarding() {
@@ -589,7 +647,8 @@ export function completeDesktopOnboarding() {
     requested: false,
     firstRunSkipped: false,
     manual: false,
-    localEndpoint: false
+    localEndpoint: false,
+    freeTierReady: false
   })
 }
 
@@ -602,14 +661,27 @@ export function completeDesktopOnboarding() {
 export function dismissFirstRunOnboarding() {
   clearPoll()
   writeCachedSkipped(true)
-  patch({ firstRunSkipped: true, requested: false, manual: false, localEndpoint: false, flow: { status: 'idle' } })
+  patch({
+    firstRunSkipped: true,
+    requested: false,
+    manual: false,
+    localEndpoint: false,
+    freeTierReady: false,
+    flow: { status: 'idle' }
+  })
 }
 
 export function setOnboardingMode(mode: OnboardingMode) {
   patch({ mode })
 }
 
-export async function refreshOnboarding(ctx: OnboardingContext) {
+/**
+ * `stillWanted`, when given, is re-asked after the readiness round: a background
+ * caller (the `setup.ready` listener) passes it so a user action that started
+ * during the round — opening the API-key form, picking a provider — is never
+ * dismissed by a late "ready".
+ */
+export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: () => boolean) {
   // Manual mode (user opened the selector from a working app): never
   // auto-dismiss on runtime-ready — the whole point is to let them add /
   // switch a provider while already configured. Just ensure the provider
@@ -622,8 +694,13 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
 
   const runtime = await checkRuntime(ctx)
 
+  if (stillWanted && !stillWanted()) {
+    return false
+  }
+
   if (runtime.ready) {
     completeDesktopOnboarding()
+    await applyFreeTierIntro(ctx, runtime)
     ctx.onCompleted?.()
 
     return true
@@ -659,6 +736,49 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   await refreshProviders()
 
   return false
+}
+
+/**
+ * Ask the backend whether the one-time free-tier introduction is still owed,
+ * and if so which shape it takes. Pull-based on purpose: the flag lives on the
+ * identity, so a second window (or a reinstall against the same home) shows the
+ * intro exactly once between them.
+ *
+ * The runtime check's route flag picks the shape. When the free tier is the
+ * route inference runs on, the overlay stays up on a ready screen — this is
+ * their first launch and they have nothing else. When a provider of their own
+ * carries inference, the overlay is not warranted: the composer strip (keyed on
+ * the same notice flag) offers the free models without interrupting.
+ */
+async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadinessResult) {
+  setFreeTierRoute(runtime.freeTier)
+  const status = await refreshFreeTierStatus(ctx.requestGateway)
+
+  // The guided first launch IS the introduction. Raising the ready screen on
+  // top of it (a readiness round fires when the layout pick assembles the
+  // window) covered the guide mid-conversation, and dismissing it remounted
+  // the card the user had just answered. The guide acks the notice itself
+  // when it hands off.
+  if (guidedOnboardingActive()) {
+    return
+  }
+
+  if (freeTierReadyPending(status, runtime.freeTier ?? null)) {
+    patch({ freeTierReady: true })
+  }
+}
+
+/** "Begin" / "Sign in instead" / "Other providers" all consume the notice — the
+ *  user has seen it. Returns whether the backend recorded it: on a failed write
+ *  the ready screen stays up, because the flag it is keyed on is still pending. */
+export async function ackFreeTierIntro(ctx: OnboardingContext): Promise<boolean> {
+  return ackFreeTierNotice(ctx.requestGateway)
+}
+
+/** Take the ready screen down. Separate from the ack because the overlay plays
+ *  its exit BEFORE unmounting — clearing the flag up front would cut the fade. */
+export function clearFreeTierIntro() {
+  patch({ freeTierReady: false })
 }
 
 // Open a sign-in URL via the desktop bridge, falling back to window.open
@@ -734,7 +854,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
       return
     }
 
-    setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
+    setFlow({ status: 'error', provider, ...signInDidNotFinish(provider, error) })
   }
 }
 
@@ -759,7 +879,7 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
       )
     } else if (status !== 'pending') {
       clearPoll()
-      setFlow({ status: 'error', provider, start, message: error_message || `Sign-in ${status}.` })
+      setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error_message || status) })
     }
   } catch (error) {
     if (generation !== flowGeneration) {
@@ -767,7 +887,7 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
     }
 
     clearPoll()
-    setFlow({ status: 'error', provider, start, message: `Polling failed: ${errMessage(error)}` })
+    setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error) })
   }
 }
 
@@ -809,14 +929,14 @@ export async function submitOnboardingCode(ctx: OnboardingContext) {
         })
       )
     } else {
-      setFlow({ status: 'error', provider, start, message: resp.message || 'Token exchange failed.' })
+      setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, resp.message) })
     }
   } catch (error) {
     if (generation !== flowGeneration) {
       return
     }
 
-    setFlow({ status: 'error', provider, start, message: errMessage(error) })
+    setFlow({ status: 'error', provider, start, ...signInDidNotFinish(provider, error) })
   }
 }
 
@@ -986,6 +1106,10 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   // the endpoint is up; an unreachable probe hard-blocks because we can't
   // resolve a model to route to.
   let model = ''
+  // The probe tries the URL as entered and its /v1 variant; persist the one that answered —
+  // the runtime POSTs {base_url}/chat/completions verbatim, so a bare host root that only
+  // "detected" via /v1/models would 404 every chat (#65488).
+  let resolvedUrl = url
 
   try {
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
@@ -1003,6 +1127,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     }
 
     model = (probe.models?.[0] ?? '').trim()
+    resolvedUrl = probe.resolved_base_url?.trim() || url
   } catch {
     return { ok: false, message: `Could not reach ${url}.` }
   }
@@ -1015,7 +1140,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   }
 
   try {
-    await setMainModelAssignment({ provider: 'custom', model, base_url: url, api_key: key }, ctx.profile)
+    await setMainModelAssignment({ provider: 'custom', model, base_url: resolvedUrl, api_key: key }, ctx.profile)
 
     if (generation !== flowGeneration) {
       return { ok: false }
@@ -1036,7 +1161,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     if (!runtime.ready) {
       const detail = (runtime.reason ?? '').trim()
 
-      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${url}.` }
+      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${resolvedUrl}.` }
     }
 
     notifyReady('Local / custom endpoint')
@@ -1053,7 +1178,15 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
 
 // User picked a different model from the dropdown on the confirm card.
 // Persists immediately so the displayed value is always what's on disk.
-export async function setOnboardingModel(model: string) {
+//
+// The picker can surface models from ANY configured provider, not just the
+// one the user just authenticated. The selection therefore carries the
+// model's real provider slug — persist against that, or a foreign model
+// gets paired with the sign-in provider (config says provider A serves a
+// model only provider B has; chat errors "provider doesn't have the
+// selected model"). Also keep the flow's providerSlug/label in sync so the
+// confirm card shows the provider that actually serves the picked model.
+export async function setOnboardingModel(model: string, providerSlug: string, label?: string) {
   const generation = flowGeneration
   const { flow } = $desktopOnboarding.get()
 
@@ -1061,14 +1194,18 @@ export async function setOnboardingModel(model: string) {
     return
   }
 
+  // The picker may not know the provider's display name yet (catalog still
+  // loading); keep the current label rather than blanking the card.
+  const displayLabel = label || flow.label
+
   // Optimistic update so the dropdown feels instant; revert on failure.
-  const previous = flow.currentModel
-  setFlow({ ...flow, currentModel: model, saving: true })
+  const previous = { currentModel: flow.currentModel, label: flow.label, providerSlug: flow.providerSlug }
+  setFlow({ ...flow, currentModel: model, providerSlug, label: displayLabel, saving: true })
 
   try {
     await setMainModelAssignment(
       {
-        provider: flow.providerSlug,
+        provider: providerSlug,
         model
       },
       flowProfile ?? $desktopOnboarding.get().targetProfile
@@ -1081,7 +1218,7 @@ export async function setOnboardingModel(model: string) {
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {
-      setFlow({ ...current, currentModel: model, saving: false })
+      setFlow({ ...current, currentModel: model, providerSlug, label: displayLabel, saving: false })
     }
   } catch (error) {
     if (generation !== flowGeneration) {
@@ -1092,7 +1229,7 @@ export async function setOnboardingModel(model: string) {
     const current = $desktopOnboarding.get().flow
 
     if (current.status === 'confirming_model') {
-      setFlow({ ...current, currentModel: previous, saving: false })
+      setFlow({ ...current, ...previous, saving: false })
     }
   }
 }

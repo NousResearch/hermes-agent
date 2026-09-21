@@ -13,6 +13,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch  # noqa: F401 - kept for parity with siblings
 
+import pytest
+
 import hermes_cli.update_cmd as update_cmd
 import hermes_cli.update_inventory as update_inventory
 from hermes_cli import main as cli_main
@@ -245,3 +247,43 @@ def test_inventory_records_the_serve_process_incarnation(monkeypatch):
     plan = update_inventory.collect_runtime_inventory()
     serves = [r for r in plan.runtimes if r.kind == "serve"]
     assert serves and serves[0].detail["create_time"] == 1712345678.5
+
+
+# ---------------------------------------------------------------------------
+# update_inventory: launchd-owned serve/dashboard classification (#116503)
+# ---------------------------------------------------------------------------
+
+def test_inventory_classifies_launchd_job_owned_serve(monkeypatch):
+    """A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead,
+    so the spawner probe alone reads manual-serve — and the update plan then restarts it as a
+    detached argv respawn that fights the job's own KeepAlive respawn. A loaded job whose
+    ProgramArguments match the ledger argv must classify the row launchd (kickstart restart)."""
+    entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: True,  # bootstrap shell provably gone
+    )
+    jobs = [("gui/501", "ai.hermes.dashboard",
+             ["hermes", "serve", "--host", "100.94.65.93", "--port", "9119"], None)]
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    with patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=jobs), \
+         patch("hermes_cli.dashboard_procs._process_ancestors", return_value=[]):
+        plan = update_inventory.collect_runtime_inventory()
+    serves = [r for r in plan.runtimes if r.kind == "serve"]
+    assert serves, "launchd-owned serve must appear in the inventory"
+    row = serves[0]
+    assert row.supervisor == "launchd"
+    assert row.restart_via == "launchd"
+    assert row.detail["launchd_domain"] == "gui/501"
+    assert row.detail["launchd_label"] == "ai.hermes.dashboard"
+
+
+@pytest.mark.macos_only
+def test_stale_serve_warning_names_the_launchd_kickstart_command(capsys):
+    """#116503: a launchd-owned survivor gets the launchctl kickstart hint, not only the
+    manual relaunch advice (a KeepAlive job fights a hand relaunch)."""
+    from hermes_cli import update_abort_recovery
+
+    update_abort_recovery._warn_stale_serve_runtimes(
+        [{"pid": 4321, "kind": "dashboard", "profile": "default", "supervisor": "launchd"}])
+    assert "launchctl kickstart -k gui/$UID/<label>" in capsys.readouterr().out

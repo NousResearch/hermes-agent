@@ -21,6 +21,12 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
     psutil = None  # type: ignore[assignment]
 
 
+def read_only_db_uri(db_path) -> str:
+    """``file:`` URI for a ``mode=ro`` open. ``as_uri()`` percent-encodes ``?``/``#`` in the home
+    path; a raw ``f"file:{path}?mode=ro"`` truncates there and opens the wrong (empty) database."""
+    return Path(db_path).resolve().as_uri() + "?mode=ro"
+
+
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -31,6 +37,35 @@ _PYTHON_SHORT_OPTIONS_WITH_OPERANDS = frozenset({"Q", "W", "X"})
 _PYTHON_LONG_OPTIONS_WITH_OPERANDS = frozenset(
     {"--check-hash-based-pycs", "--jit"}
 )
+
+
+def deleted_sqlite_sidecar_holders(db_path: Path, *, include_self: bool = True):
+    """Return processes holding an orphaned SQLite WAL/SHM generation."""
+    from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+
+    holders = iter_deleted_sqlite_sidecar_holders(db_path)
+    if include_self:
+        return holders
+    own_pid = os.getpid()
+    return [holder for holder in holders if holder[0] != own_pid]
+
+
+def sqlite_sidecar_identity(db_path: Path):
+    """Return the current WAL/SHM inode snapshot for *db_path*."""
+    from hermes_state_dbfile import _stat_sqlite_sidecar_identity
+
+    return _stat_sqlite_sidecar_identity(db_path)
+
+
+def refuse_deleted_wal_generation(db_path: Path) -> None:
+    """Fail closed before opening SQLite when an orphaned sidecar is held."""
+    if not deleted_sqlite_sidecar_holders(db_path, include_self=True):
+        return
+    from hermes_state import DeletedWalGenerationError
+    from hermes_state_errors import _DELETED_WAL_GENERATION_MSG
+
+    logger.error(_DELETED_WAL_GENERATION_MSG)
+    raise DeletedWalGenerationError(_DELETED_WAL_GENERATION_MSG)
 
 
 def _read_proc_argv(pid: int) -> Optional[List[str]]:
@@ -46,6 +81,18 @@ def _read_proc_argv(pid: int) -> Optional[List[str]]:
         return argv or None
     except OSError:
         return None
+
+
+def describe_holder_pid(pid: int) -> str:
+    """``PID 123 (hermes gateway run)`` for operator-facing holder lists; /proc argv first, psutil elsewhere."""
+    argv = _read_proc_argv(pid)
+    if argv is None and psutil is not None:
+        try:
+            argv = psutil.Process(pid).cmdline() or None
+        except Exception:
+            argv = None
+    who = " ".join(" ".join([os.path.basename(argv[0]), *argv[1:]]).split())[:80] if argv else "command line unavailable"
+    return f"PID {pid} ({who})"
 
 
 def _looks_like_python_executable(program: str) -> bool:
@@ -125,6 +172,59 @@ def canonical_sqlite_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
 
 
+def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
+    """Return whether argv proves the process belongs to a DIFFERENT instance.
+
+    ``state.db`` lives at the HERMES_HOME root, so an absolute-path token
+    containing a ``/.hermes`` segment (or naming a ``state.db``/WAL/SHM under
+    some other parent) identifies that token's own Hermes home.  When at least
+    one such token exists AND no token references this instance's state.db,
+    its sidecars, or its home directory, the process provably works on a
+    different generation and must not be counted as an uninspectable holder
+    of ours (issue #92401: a second gateway under /home/demo/.hermes deferred
+    this instance's stale-FTS rebuild forever despite lsof proving zero open
+    handles).  Ambiguous argv without absolute-path tokens returns False and
+    keeps the fail-closed suspicion.
+    """
+    db_path_str = os.path.abspath(os.fspath(db_path))
+    this_home = os.path.dirname(db_path_str)
+    ours = {
+        os.path.normcase(candidate)
+        for candidate in (
+            db_path_str,
+            db_path_str + "-wal",
+            db_path_str + "-shm",
+            this_home,
+        )
+    }
+    other_home_seen = False
+    for token in argv:
+        if not isinstance(token, str):
+            continue
+        if token.startswith("/"):
+            path_token = token
+        elif token.startswith("-") and "=" in token:
+            # ``--db=/abs/path``-style options carry a path value; anchor on
+            # the text after '=' so normpath does not prepend the option.
+            value = token.split("=", 1)[1]
+            path_token = value if value.startswith("/") else None
+        else:
+            path_token = None
+        if path_token is not None:
+            normalized = os.path.normcase(os.path.normpath(path_token))
+            if normalized in ours or normalized.startswith(this_home + os.sep):
+                return False
+            if "/.hermes" in normalized or normalized.endswith("/.hermes"):
+                other_home_seen = True
+            elif os.path.basename(normalized) in (
+                "state.db",
+                "state.db-wal",
+                "state.db-shm",
+            ):
+                other_home_seen = True
+    return other_home_seen
+
+
 def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     """Return foreign holders of the DB or one of its WAL sidecars.
 
@@ -135,7 +235,9 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     if _IS_WINDOWS:
         return []
 
-    db_path_str = os.path.abspath(os.fspath(db_path))
+    # realpath, not abspath: psutil/libproc report the kernel-resolved pathname, so a symlinked
+    # HERMES_HOME would otherwise make every holder invisible and let maintenance proceed.
+    db_path_str = os.path.realpath(os.fspath(db_path))
     watched = {
         canonical_sqlite_path(db_path_str),
         canonical_sqlite_path(db_path_str + "-wal"),
@@ -171,7 +273,11 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                     fds = os.listdir(fd_dir)
                 except OSError:
                     argv = _read_proc_argv(pid)
-                    if argv is not None and _looks_like_hermes(argv):
+                    if (
+                        argv is not None
+                        and _looks_like_hermes(argv)
+                        and not _argv_scoped_to_other_home(argv, db_path)
+                    ):
                         cmdline = " ".join(argv)
                         holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
                     continue
@@ -183,7 +289,11 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                         if exc.errno in (errno.ENOENT, errno.ESRCH):
                             continue
                         argv = _read_proc_argv(pid)
-                        if argv is not None and _looks_like_hermes(argv):
+                        if (
+                            argv is not None
+                            and _looks_like_hermes(argv)
+                            and not _argv_scoped_to_other_home(argv, db_path)
+                        ):
                             holders.append(
                                 (
                                     pid,
@@ -203,7 +313,11 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                             )
                         else:
                             argv = _read_proc_argv(pid)
-                            if argv is not None and _looks_like_hermes(argv):
+                            if (
+                                argv is not None
+                                and _looks_like_hermes(argv)
+                                and not _argv_scoped_to_other_home(argv, db_path)
+                            ):
                                 holders.append(
                                     (
                                         pid,
@@ -238,7 +352,7 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                 continue
             for opened in info.get("open_files") or ():
                 path = getattr(opened, "path", "")
-                if path and canonical_sqlite_path(path) in watched:
+                if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
                     holders.append((pid, path))
     except Exception as exc:
         logger.warning(
@@ -250,20 +364,56 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     return holders
 
 
+def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str] = "--force") -> Optional[str]:
+    """Operator-facing refusal for structural maintenance (VACUUM, index rebuild, bulk delete) while another
+    process holds ``db_path`` or a WAL sidecar; ``None`` when the store is provably quiet.
+
+    Running ``hermes sessions optimize-storage`` underneath a fleet of live gateways put every agent into
+    the retired-WAL refusal until all writers were stopped (#110054). Same fail-closed scan doctor and
+    repair use: an incomplete scan refuses too, it never reads as an all-clear.
+    """
+    holders = foreign_state_db_holders(db_path)
+    if not holders:
+        return None
+    from hermes_constants import profile_cli_selector
+    from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
+
+    by_pid: dict[int, Set[str]] = {}
+    unknown: List[str] = []
+    for pid, target in holders:
+        if pid <= 0 or target.startswith("uninspectable"):
+            unknown.append(target)
+        else:
+            by_pid.setdefault(pid, set()).add(Path(target.removesuffix(" (deleted)")).name)
+    lines = [f"Refusing `hermes sessions {command}`: another process is using {db_path}."]
+    lines += [f"  {describe_holder_pid(pid)}: {', '.join(sorted(by_pid[pid]))}" for pid in sorted(by_pid)]
+    if unknown:
+        lines.append(f"  cannot prove the database is quiet (holder scan incomplete: {unknown[0][:120]})")
+    profile_arg = profile_cli_selector()
+    lines += [
+        "Rewriting the database under a live writer is how every agent ends up refusing turns with the "
+        "retired state.db-wal error. Nothing is lost.",
+        f"Stop them first (`hermes {profile_arg}gateway stop`, quit the Desktop app, pause cron), then re-run.",
+    ]
+    if force_hint:
+        lines.append(f"Override with {force_hint} if you accept the risk.")
+    lines.append(f"Recovery guide: {STORAGE_RECOVERY_DOCS_URL}")
+    return "\n".join(lines)
+
+
 def live_writer_holds_db(
     db_path: Path,
     *,
     connect_repair_durable: Callable[..., sqlite3.Connection],
 ) -> bool:
-    """Return whether repair lacks proven exclusive ownership of ``db_path``."""
-    foreign_holders = foreign_state_db_holders(db_path)
-    if any(
-        pid < 0
-        or path.startswith("uninspectable holder:")
-        or path.startswith("uninspectable descriptor:")
-        or path.endswith(" (deleted)")
-        for pid, path in foreign_holders
-    ):
+    """Return whether repair lacks proven exclusive ownership of ``db_path``.
+
+    ANY foreign process holding the DB or a sidecar is a live holder (#103339): the lock probe below
+    cannot see a DELETE-mode reader (SHARED only) and cannot run at all on a malformed file, and those
+    are exactly the states repair/VACUUM/checkpoint get invoked in. The holder scan is the authority and
+    fails closed on its own failures (unknown/uninspectable sentinels); the probe only adds a positive
+    lock signal on top."""
+    if foreign_state_db_holders(db_path):
         return True
 
     probe = None
@@ -277,8 +427,7 @@ def live_writer_holds_db(
         lowered = str(exc).lower()
         return "locked" in lowered or "busy" in lowered
     except sqlite3.DatabaseError:
-        return False
-    except Exception:
+        # Malformed/unreadable with no holder on the scan: nobody else has it open, so repair may run.
         return False
     finally:
         if probe is not None:

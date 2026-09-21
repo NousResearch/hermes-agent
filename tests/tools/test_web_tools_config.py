@@ -402,11 +402,21 @@ class TestParallelClientConfig:
         fake_parallel.Parallel = Parallel
         fake_parallel.AsyncParallel = AsyncParallel
         sys.modules["parallel"] = fake_parallel
+        # The fake module is intentionally not an installed distribution, so
+        # lazy_deps' metadata probe cannot recognize it. Model the dependency
+        # as satisfied while preserving the real ensure/import/client path; no
+        # unit test may fall through to pip.
+        self._parallel_dist_patcher = patch(
+            "tools.lazy_deps._is_satisfied",
+            side_effect=lambda spec: spec.startswith("parallel-web"),
+        )
+        self._parallel_dist_patcher.start()
 
     def teardown_method(self):
         import tools.web_tools
         tools.web_tools._parallel_client = None
         os.environ.pop("PARALLEL_API_KEY", None)
+        self._parallel_dist_patcher.stop()
         sys.modules.pop("parallel", None)
 
     def test_creates_client_with_key(self):

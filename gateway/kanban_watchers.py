@@ -35,6 +35,17 @@ _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
+# Log-facing field order for a live settings swap in the dispatcher watcher.
+_DISPATCH_SETTINGS_FIELDS = (
+    "interval",
+    "max_spawn",
+    "max_in_progress",
+    "failure_limit",
+    "stale_timeout_seconds",
+    "reconcile_orphans",
+    "default_assignee",
+    "max_in_progress_per_profile",
+)
 
 
 class GatewayKanbanWatchersMixin:
@@ -204,8 +215,9 @@ class GatewayKanbanWatchersMixin:
         """Resolve config, kanban_db and the singleton lock; None when the dispatcher must not run.
 
         Config is read once at boot (restart to apply), except the auto-decompose
-        toggle which is re-read every tick. The env var is an escape hatch to
-        disable without editing YAML.
+        toggle which is re-read every tick, and the dispatch settings which are
+        re-read every tick and applied when the config changes (#117734). The
+        env var is an escape hatch to disable without editing YAML.
         """
         try:
             from hermes_cli.config import load_config as _load_config
@@ -263,6 +275,7 @@ class GatewayKanbanWatchersMixin:
         _load_config, _kb, kanban_cfg = boot
         settings = _resolve_dispatcher_settings(kanban_cfg, _kb)
         interval = settings.interval
+        applied_kanban_cfg = kanban_cfg
 
         # Initial delay so adapters are wired before workers spawn (matches the notifier).
         await asyncio.sleep(5)
@@ -299,6 +312,46 @@ class GatewayKanbanWatchersMixin:
                     # See #49638.
                     if _ad_enabled:
                         await _to_thread_process_service(dispatcher.auto_decompose_tick, _ad_per_tick)
+                    # Cap edits must reach the live loop without a gateway
+                    # restart (#117734). The config dict is compared first so
+                    # an untouched config never pays a re-resolve; a failed
+                    # re-read keeps the last applied settings.
+                    try:
+                        _fresh_cfg = _load_config()
+                        _fresh_kanban = (
+                            _fresh_cfg.get("kanban", {})
+                            if isinstance(_fresh_cfg, dict)
+                            else {}
+                        )
+                    except Exception:
+                        _fresh_kanban = applied_kanban_cfg
+                    if _fresh_kanban != applied_kanban_cfg:
+                        try:
+                            _fresh_settings = _resolve_dispatcher_settings(
+                                _fresh_kanban, _kb
+                            )
+                        except Exception:
+                            logger.exception(
+                                "kanban dispatcher: re-resolving changed kanban.* settings "
+                                "failed; keeping the previous settings"
+                            )
+                        else:
+                            _changed = [
+                                f"{f} {getattr(settings, f, None)!r}->{getattr(_fresh_settings, f, None)!r}"
+                                for f in _DISPATCH_SETTINGS_FIELDS
+                                if getattr(settings, f, None)
+                                != getattr(_fresh_settings, f, None)
+                            ]
+                            dispatcher.settings = _fresh_settings
+                            settings = _fresh_settings
+                            interval = _fresh_settings.interval
+                            applied_kanban_cfg = _fresh_kanban
+                            if _changed:
+                                logger.info(
+                                    "kanban dispatcher: applying changed kanban.* dispatch "
+                                    "settings without restart: %s",
+                                    ", ".join(_changed),
+                                )
                     results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)

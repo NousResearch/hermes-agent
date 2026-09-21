@@ -450,7 +450,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   useInput((ch, key, event) => {
     const live = getUiState()
 
-    if (key.escape) {
+    if (key.escape && !live.vimEnabled) {
       // Escape-configured voice bindings (ctrl/alt/super+escape PTT) must win
       // over the double-Esc interrupt, exactly as they win over the generic
       // Esc handlers below — two quick PTT presses are a stop/start pair,
@@ -673,11 +673,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // Queue-edit cancel beats selection-clear for plain Esc: the queue header
     // explicitly promises "Esc cancel", so honoring it takes priority over the
     // implicit selection-dismissal convention. Without an active edit, fall through.
-    if (key.escape && cState.queueEditIdx !== null) {
+    if (key.escape && !live.vimEnabled && cState.queueEditIdx !== null) {
       return cActions.clearIn()
     }
 
-    if (key.escape && terminal.hasSelection) {
+    if (key.escape && !live.vimEnabled && terminal.hasSelection) {
       return clearSelection()
     }
 

@@ -30,7 +30,8 @@ describe('applyDisplay', () => {
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
-            tui_statusbar: false
+            tui_statusbar: false,
+            vim_mode: true
           }
         }
       },
@@ -45,6 +46,7 @@ describe('applyDisplay', () => {
     expect(s.showReasoning).toBe(true)
     expect(s.statusBar).toBe('off')
     expect(s.streaming).toBe(false)
+    expect(s.vimEnabled).toBe(true)
   })
 
   it('hydrates the destructive slash confirmation policy from approvals', () => {

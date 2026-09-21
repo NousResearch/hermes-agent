@@ -609,8 +609,6 @@ youtube-transcript-api = false
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "hermes_platform", "hermes_platform.*"]
 
 [tool.setuptools.package-data]
-# hermes_platform/catalog ships apps.yaml (PR2); declared now so the wheel picks it up on arrival.
-hermes_platform = ["catalog/*.yaml"]
 hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.json"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —

@@ -663,7 +663,7 @@ export const zhHant = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
-      modelContextLength: '僅覆寫主聊天模型偵測到的上下文視窗（以 token 計）。保留 0 會使用所選模型偵測到的值。不影響輔助模型/MoA 模型。',
+      modelContextLength: '主模型上下文視窗（覆寫）',
       fallbackProviders: '備用模型',
       toolsets: '已啟用工具集',
       timezone: '時區',
@@ -842,7 +842,8 @@ export const zhHant = defineLocale({
     }),
     fieldDescriptions: defineFieldCopy({
       model: '除非你在輸入框選擇其他模型，否則新聊天會使用此模型。',
-      modelContextLength: '保留 0 會使用所選模型偵測到的上下文視窗。',
+      modelContextLength:
+        '僅覆寫主聊天模型偵測到的上下文視窗（以 token 計）。保留 0 會使用所選模型偵測到的值。不影響輔助模型/MoA 模型。',
       fallbackProviders: '預設模型失敗時要嘗試的備用 provider:model 項目。',
       display: {
         personality: '新工作階段的預設助手風格。',

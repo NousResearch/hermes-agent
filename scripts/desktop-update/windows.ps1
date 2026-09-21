@@ -17,7 +17,7 @@
 # OS component -- is "frozen".
 #
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
-#   cmd /d /s /c start "" /min powershell -NoProfile -ExecutionPolicy Bypass
+#   cmd /d /s /c start "" /b powershell -NoProfile -ExecutionPolicy Bypass
 #     -File scripts\desktop-update\windows.ps1
 #     -InstallRoot <path>   repo checkout (HERMES_HOME\hermes-agent)
 #     -Branch <ref>         branch to update against
@@ -48,6 +48,7 @@ param(
     [string]$RelaunchExe = "",
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
+    [switch]$NoGateway,
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
@@ -61,8 +62,9 @@ if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
 }
 
 $ErrorActionPreference = "Continue"
-# Foreground helpers: the script is spawned via `cmd start /min`, so its
-# WinForms window comes up backgrounded unless we explicitly claim focus --
+# Foreground helpers: the script is spawned via `cmd start /b` and inherits
+# the wrapper's hidden console, so its WinForms window comes up backgrounded
+# unless we explicitly claim focus --
 # and after the update we must hand focus TO the relaunched Desktop (a
 # WMI-spawned process starts unfocused). AllowSetForegroundWindow lets us
 # pass our foreground right on to the new Hermes.exe pid.
@@ -438,7 +440,7 @@ function Show-ProgressWindow {
         $form.Controls.Add($title)
         $form.Controls.Add($sub)
         $form.Show()
-        # `cmd start /min` spawned us backgrounded, so the card comes up
+        # `cmd start /b` spawned us backgrounded, so the card comes up
         # behind everything without one explicit activation. Claim it ONCE
         # (so the user knows the update started), then never again — the
         # window is decoration and competes with nothing (no TopMost).
@@ -1596,7 +1598,18 @@ try {
         Write-HandoffLog $finalMsg
         exit $finalCode
     }
-    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    # --gateway restarts the local messaging gateway after the update. The
+    # Desktop passes -NoGateway when it is served by a remote gateway
+    # (#117529): restarting a local one there is never wanted, and with the
+    # same channel credentials as the remote host it becomes a competing
+    # long-poll consumer (e.g. Telegram rejects one of the two getUpdates
+    # callers).
+    $gatewayArg = @("--gateway")
+    if ($NoGateway) {
+        $gatewayArg = @()
+        Write-HandoffLog "update requested without --gateway (remote-served Desktop)"
+    }
+    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes") + $gatewayArg + @("--force", "--branch", $Branch)
     # --keep-stash: never re-apply local source edits after the update (they
     # stay parked in git stash). Probe --help first: the flag ships with newer
     # backends and an unknown flag would abort argparse with exit 2, which

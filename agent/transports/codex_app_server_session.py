@@ -190,6 +190,21 @@ class _ServerRequestRouting:
     auto_approve_apply_patch: bool = False
 
 
+class CodexThreadResumeError(CodexAppServerError):
+    """``thread/resume`` did not hand back the stored thread (unknown/garbage id, rollout still locked by
+    a killed app-server, or codex answered with a different thread). The caller decides the policy."""
+
+    def __init__(self, thread_id: str, detail: str) -> None:
+        super().__init__(code=-32600, message=f"codex thread {thread_id[:8]} could not be resumed: {detail}")
+        self.thread_id = thread_id
+
+
+def _extract_thread_id(result: dict) -> Optional[str]:
+    """Different codex versions serialize the id under thread.id / sessionId / threadId."""
+    thread_obj = result.get("thread") or {}
+    return thread_obj.get("id") or thread_obj.get("sessionId") or result.get("sessionId") or result.get("threadId")
+
+
 class CodexAppServerSession:
     """One Codex thread per Hermes session, lifetime owned by AIAgent. Not thread-safe: one caller at a time."""
 
@@ -201,11 +216,15 @@ class CodexAppServerSession:
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
         model: Optional[str] = None, model_provider: Optional[str] = None,
-        developer_instructions: Optional[str] = None,
+        developer_instructions: Optional[str] = None, resume_thread_id: Optional[str] = None,
+        history_seed: Optional[str] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
+        # A codex thread id persisted by an earlier process for this Hermes session: the first
+        # ``ensure_started`` issues ``thread/resume`` for it instead of ``thread/start``.
+        self._resume_thread_id = resume_thread_id
         # ``thread/start.model`` / ``.modelProvider``: select a provider from codex's own
         # ``[model_providers.<id>]`` table. Only the id travels; codex reads base_url/env_key itself.
         self._model = (model or "").strip() or None
@@ -215,6 +234,9 @@ class CodexAppServerSession:
         # inserts this as the first developer message of every model request. ``baseInstructions`` would
         # REPLACE codex's base and ``instructions`` is accepted but ignored (verified against codex 0.147).
         self._developer_instructions = developer_instructions
+        # Hermes' prior transcript, appended to developerInstructions ONLY when a thread is started from
+        # scratch: a resumed thread already holds the conversation (agent/codex_runtime_history_seed.py).
+        self._history_seed = history_seed
         self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
             os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"), "workspace-write"
         )
@@ -234,12 +256,14 @@ class CodexAppServerSession:
         self._closed = False
 
     def ensure_started(self) -> str:
-        """Spawn, handshake, and ``thread/start``; idempotent, returns the codex thread id."""
+        """Spawn, handshake, and ``thread/start`` (or ``thread/resume`` for a stored id); idempotent, returns
+        the codex thread id. A failed resume raises :class:`CodexThreadResumeError` once; the next call
+        starts a fresh thread on the same handshaken client."""
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
             self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
-        self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
+            self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
         # Hermes supplies the agent identity through its own system prompt; ``personality: "none"`` strips
@@ -251,17 +275,36 @@ class CodexAppServerSession:
             params["modelProvider"] = self._model_provider
         if self._model:
             params["model"] = self._model
-        result = self._client.request("thread/start", params, timeout=15)
-        # Different codex versions serialize the id under thread.id / sessionId / threadId.
-        thread_obj = result.get("thread") or {}
-        thread_id = thread_obj.get("id") or thread_obj.get("sessionId") or result.get("sessionId") or result.get("threadId")
-        if not thread_id:
-            raise CodexAppServerError(
-                code=-32603, message=f"codex thread/start returned no thread id (payload keys: {sorted(result.keys())})",
-            )
+        if self._resume_thread_id:
+            wanted, self._resume_thread_id = self._resume_thread_id, None  # one attempt per stored id
+            thread_id = self._resume_thread(wanted, params)
+            logger.info("codex app-server thread resumed: id=%s cwd=%s", thread_id[:8], self._cwd)
+        else:
+            if self._history_seed:
+                params["developerInstructions"] = "\n\n".join(
+                    part for part in (params.get("developerInstructions"), self._history_seed) if part)
+            result = self._client.request("thread/start", params, timeout=15)
+            thread_id = _extract_thread_id(result)
+            if not thread_id:
+                raise CodexAppServerError(
+                    code=-32603, message=f"codex thread/start returned no thread id (payload keys: {sorted(result.keys())})",
+                )
+            logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
         self._thread_id = thread_id
-        logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
         return thread_id
+
+    def _resume_thread(self, wanted: str, params: dict[str, Any]) -> str:
+        """``thread/resume`` for the stored id; the same thread/start params ride along so the resumed thread
+        carries the CURRENT prompt composition and provider (accepted by the resume schema, codex 0.147)."""
+        assert self._client is not None
+        try:
+            result = self._client.request("thread/resume", {"threadId": wanted, **params}, timeout=15)
+        except CodexAppServerError as exc:
+            raise CodexThreadResumeError(wanted, exc.message) from exc
+        thread_id = _extract_thread_id(result)
+        if thread_id != wanted:
+            raise CodexThreadResumeError(wanted, f"app-server answered with thread {str(thread_id)[:8]!r}")
+        return wanted
 
     def close(self) -> None:
         if self._closed:

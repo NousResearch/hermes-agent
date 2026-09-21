@@ -466,6 +466,30 @@ class TestPrompt:
         assert state.history == []
 
     @pytest.mark.asyncio
+    async def test_prompt_after_tail_exception_runs_instead_of_queueing(self, agent, mock_manager, monkeypatch):
+        """A raise in the post-turn tail (here ``save_session``) costs at most that one turn:
+        the next prompt runs instead of queueing forever behind a turn that already ended (#115588)."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={"final_response": "done", "messages": []})
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+        monkeypatch.setattr(mock_manager, "save_session", MagicMock(side_effect=RuntimeError("disk full")))
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            await agent.prompt(prompt=[TextContentBlock(type="text", text="first")], session_id=resp.session_id)
+
+        monkeypatch.setattr(mock_manager, "save_session", MagicMock())
+        second = await agent.prompt(prompt=[TextContentBlock(type="text", text="second")], session_id=resp.session_id)
+
+        assert second.stop_reason == "end_turn"
+        assert state.queued_prompts == []
+        assert state.agent.run_conversation.call_count == 2
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("executor_raises", [False, True])
     async def test_prompt_fails_tool_calls_left_open_before_responding(self, agent, mock_manager, executor_raises):
         """A ``tool.started`` that never sees ``tool.completed`` (blocked/denied/crashed turn) must

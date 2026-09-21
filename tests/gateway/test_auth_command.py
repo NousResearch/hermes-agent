@@ -38,7 +38,10 @@ def _fixture(tmp_path, monkeypatch):
     homes = {name: default / "profiles" / name for name in ("a", "b")}
     for name, home in homes.items():
         home.mkdir(parents=True)
-        (home / "config.yaml").write_text("model:\n  provider: openai-codex\n", encoding="utf-8")
+        (home / "config.yaml").write_text(
+            "model:\n  provider: openai-codex\nauth:\n  codex_login_flow: browser\n",
+            encoding="utf-8",
+        )
         entry = {"id": "original", "label": name + " original", "auth_type": "oauth",
                  "source": "manual:device_code", "priority": 0,
                  "access_token": _jwt(name + "-old"), "refresh_token": name + "-refresh",

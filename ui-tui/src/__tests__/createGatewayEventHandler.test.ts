@@ -1,5 +1,7 @@
+import type { ConnectionOperationTarget } from '@hermes/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $connectionOperation, resetConnectionOperationsForTests } from '../app/connectionOperationStore.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
@@ -64,7 +66,10 @@ const buildCtx = (appended: Msg[]) =>
 const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
   const respond = vi.fn()
 
-  const handled = createServerRequestHandler({ ringPromptBell: vi.fn(), setStatus: status => patchUiState({ status }) })({
+  const handled = createServerRequestHandler({
+    ringPromptBell: vi.fn(),
+    setStatus: status => patchUiState({ status })
+  })({
     fail: vi.fn(),
     id,
     method,
@@ -81,6 +86,7 @@ describe('createGatewayEventHandler', () => {
     resetUiState()
     resetTurnState()
     resetServerRequestsForTests()
+    resetConnectionOperationsForTests()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
   })
@@ -104,6 +110,34 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().status).toBe('ready')
     expect(getOverlayState().approval).toBeNull()
     expect(getTurnState().tools).toEqual([])
+
+    const target: ConnectionOperationTarget = { action: 'install', kind: 'mcp', name: 'asana', state: 'pending' }
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        deadline_at: 10,
+        op_id: 'op-1',
+        seq: 2,
+        targets: [target],
+        timeout_seconds: 30
+      },
+      type: 'connection.request'
+    })
+    expect($connectionOperation.get()).toMatchObject({ opId: 'op-1', seq: 2, targets: [target] })
+    expect(getOverlayState().connection).toEqual({ opId: 'op-1' })
+
+    onEvent({
+      session_id: 'focused',
+      payload: {
+        deadline_at: 11,
+        op_id: 'op-1',
+        seq: 1,
+        settled: false,
+        targets: [{ ...target, state: 'failed' }]
+      },
+      type: 'connection.update'
+    })
+    expect($connectionOperation.get()).toMatchObject({ seq: 2, targets: [target] })
   })
 
   it('keeps the durable session id when a session.info payload omits it', () => {
@@ -1706,7 +1740,9 @@ describe('createGatewayEventHandler', () => {
   it('renders a failed turn from error_surface instead of the raw provider JSON', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
-    const raw = 'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
+
+    const raw =
+      'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
 
     onEvent({
       payload: {
@@ -1777,7 +1813,10 @@ describe('createGatewayEventHandler', () => {
     const ctx = buildCtx([])
     const onEvent = createGatewayEventHandler(ctx)
 
-    onEvent({ payload: { message: 'invalid params for prompt.submit: turn_author: Extra inputs are not permitted' }, type: 'error' } as any)
+    onEvent({
+      payload: { message: 'invalid params for prompt.submit: turn_author: Extra inputs are not permitted' },
+      type: 'error'
+    } as any)
 
     const line = String((ctx.system.sys as any).mock.calls.at(-1)?.[0])
     expect(line).toContain('/update')

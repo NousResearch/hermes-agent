@@ -745,6 +745,38 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.should_compress is False
 
+    def test_400_content_exists_risk_commandcode_moderation(self):
+        # CommandCode gateway (OpenAI-compatible aggregator fronting DeepSeek)
+        # rejects filtered prompts with HTTP 400 "Content Exists Risk" and a
+        # nested param envelope marking isRetryable=false — deterministic for
+        # the unchanged request, so the recovery is the fallback chain, not a
+        # same-provider retry. Without the pattern the 400 fell through to
+        # format_error and the surfaced copy blamed a malformed request. See
+        # #115218.
+        body = {
+            "error": {
+                "message": "Content Exists Risk",
+                "type": "AI_APICallError",
+                "param": {
+                    "error": "Content Exists Risk", "statusCode": 400,
+                    "name": "AI_APICallError", "message": "Content Exists Risk",
+                    "isRetryable": False, "type": "AI_APICallError",
+                },
+            }
+        }
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': 'Content Exists Risk'}}",
+            status_code=400,
+            body=body,
+        )
+        result = classify_api_error(
+            e, provider="commandcode", model="deepseek/deepseek-v4.1-flash"
+        )
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_compress is False
+
 
 
 
@@ -1645,6 +1677,47 @@ class TestOpenRouterUpstreamRateLimit:
             },
         )
         result = classify_api_error(e, provider="openrouter", model="deepseek/deepseek-v4-flash")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+
+class TestCommandCodeUpstreamUnavailable:
+    """An explicit upstream outage is not a credential rate limit."""
+
+    @pytest.mark.parametrize(
+        ("provider", "status_code"),
+        [
+            ("commandcode", 429),
+            ("commandcode-anthropic", 429),
+            ("commandcode", None),
+            ("other-gateway", 429),
+        ],
+    )
+    def test_upstream_unavailable_keeps_credential_healthy(self, provider, status_code):
+        e = MockAPIError(
+            "Upstream model provider is temporarily unavailable. Please try again in a moment.",
+            status_code=status_code,
+        )
+
+        result = classify_api_error(e, provider=provider, model="deepseek/deepseek-v4-flash")
+
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_rotate_credential is False
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Rate limit exceeded: 200 requests per minute",
+            "Upstream model provider is temporarily unavailable because this account is rate limited.",
+        ],
+    )
+    def test_non_outage_rate_limits_still_rotate_credential(self, message):
+        e = MockAPIError(message, status_code=429)
+
+        result = classify_api_error(
+            e, provider="commandcode", model="deepseek/deepseek-v4-flash"
+        )
+
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
 

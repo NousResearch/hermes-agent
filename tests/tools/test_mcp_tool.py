@@ -2770,6 +2770,92 @@ class TestDiscoveryFailedCount:
         _servers.pop("fail1", None)
 
 
+class TestDiscoveryConnectConcurrency:
+    """MCP discovery bounds how many servers connect at once (#117373)."""
+
+    @staticmethod
+    def _run_pass(server_names, cap):
+        """Run a discovery pass with ``mcp.discovery_concurrency=cap``; return (peak in-flight, connected)."""
+        import asyncio as _asyncio
+
+        from tools import mcp_tool_discovery as _discovery
+        from tools.mcp_tool import _servers
+        from tools.mcp_tool_loop import _ensure_mcp_loop
+
+        in_flight = 0
+        max_in_flight = 0
+        connected = []
+
+        async def tracked_register(name, cfg):
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            # Yield real control so gathers genuinely overlap.
+            await _asyncio.sleep(0.05)
+            in_flight -= 1
+            connected.append(name)
+            return []
+
+        with patch("tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
+             patch("hermes_cli.config.load_config", return_value={"mcp": {"discovery_concurrency": cap}}), \
+             patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=tracked_register), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
+            _ensure_mcp_loop()
+            try:
+                _discovery._run_discovery_pass(server_names)
+            finally:
+                for name in server_names:
+                    _servers.pop(name, None)
+        return max_in_flight, connected
+
+    def test_configured_cap_bounds_in_flight_connects_and_zero_means_unlimited(self):
+        """``mcp.discovery_concurrency`` caps simultaneous connects (still concurrent, every server
+        still connected — no head-of-line starvation); 0 restores the unbounded gather."""
+        server_names = {f"srv{i}": {"command": "npx", "args": [f"s{i}"]} for i in range(8)}
+
+        peak, connected = self._run_pass(server_names, cap=3)
+        assert 1 < peak <= 3, f"in-flight connects peaked at {peak}, cap is 3"
+        assert sorted(connected) == sorted(server_names)
+
+        peak_unlimited, connected = self._run_pass(server_names, cap=0)
+        assert peak_unlimited == len(server_names), f"0 must mean unlimited, peaked at {peak_unlimited}"
+        assert sorted(connected) == sorted(server_names)
+
+    def test_pass_timeout_capped_by_waiter_budget(self):
+        """The discovery pass timeout is capped so a slow pass cannot outlive the
+        cross-process lock waiter's fail-over budget: with the connect cap,
+        ceil(N/cap) waves make a pass legitimately long, and an uncapped
+        120s-per-wave timeout would let a lock loser run unguarded discovery
+        beside a still-connecting holder (#117373 review)."""
+        from tools import mcp_tool_discovery as _discovery
+        from tools.mcp_tool import _MCP_DISCOVERY_LOCK_MAX_RETRIES, _MCP_DISCOVERY_LOCK_RETRY_DELAY_S
+        from tools.mcp_tool import _MCP_DISCOVERY_PASS_MAX_SEC
+
+        waiter_budget = _MCP_DISCOVERY_LOCK_MAX_RETRIES * _MCP_DISCOVERY_LOCK_RETRY_DELAY_S
+        assert waiter_budget > _MCP_DISCOVERY_PASS_MAX_SEC, (
+            f"waiter budget {waiter_budget}s must outlast the pass ceiling "
+            f"{_MCP_DISCOVERY_PASS_MAX_SEC}s or a slow pass re-opens unguarded discovery")
+
+        captured = {}
+
+        def fake_run_on_mcp_loop(factory, timeout=None):
+            captured["timeout"] = timeout
+            return None
+
+        # 40 servers = 14 waves at cap 3: uncapped, the pass would block 28 min
+        # and outlive the waiter budget by 26+ minutes.
+        server_names = {f"srv{i}": {} for i in range(40)}
+        with patch("tools.mcp_tool_discovery._loop._run_on_mcp_loop",
+                   side_effect=fake_run_on_mcp_loop):
+            _discovery._run_discovery_pass(server_names)
+
+        assert captured["timeout"] == _MCP_DISCOVERY_PASS_MAX_SEC, (
+            f"pass timeout must be capped at {_MCP_DISCOVERY_PASS_MAX_SEC}s, "
+            f"got {captured['timeout']}s (uncapped: {120 * 14}s vs waiter "
+            f"budget {waiter_budget}s)")
+
+
 class TestMCPSelectiveToolLoading:
     """Tests for per-server MCP filtering and utility tool policies."""
 
@@ -3293,49 +3379,42 @@ class TestMCPDiscoveryCrossProcessLock:
 
 
 class TestRedirectHeaderStripper:
-    """Cross-origin redirect header boundary (portable Agent Plugins v1)."""
+    """Cross-origin redirect header boundary (portable Agent Plugins v1).
 
-    def _make_response(self, next_headers):
-        import httpx
+    The stripper is an ``AsyncClient`` factory overriding ``_build_redirect_request`` on each built
+    client — the only
+    seam that sees the actual redirect follow-up (``response.next_request`` is unset when response
+    hooks fire) without also touching non-redirect traffic (a request hook would strip the OAuth
+    auth flow's token/registration calls to a different-origin authorization server)."""
 
-        next_request = httpx.Request(
-            "GET", "https://other.example.test/mcp", headers=next_headers
-        )
-        response = SimpleNamespace(
-            is_redirect=True,
-            next_request=next_request,
-        )
-        return response, next_request
+    def _build_redirect(self, httpx, *, strict=False, configured=frozenset(),
+                        headers, location):
+        from tools.mcp_tool_errors import _make_redirect_header_stripper
+
+        build_client = _make_redirect_header_stripper(
+            httpx, httpx.URL("https://origin.example.test/mcp"),
+            strict=strict, configured_header_names=configured)
+        client = build_client()
+        request = httpx.Request("GET", "https://origin.example.test/mcp", headers=headers)
+        response = httpx.Response(302, headers={"location": location}, request=request)
+        return client._build_redirect_request(request, response)
 
     def test_default_strips_only_authorization(self):
         import httpx
 
-        from tools.mcp_tool_errors import _make_redirect_header_stripper
-
-        hook = _make_redirect_header_stripper(
-            httpx.URL("https://origin.example.test/mcp")
-        )
-        response, next_request = self._make_response(
-            {"Authorization": "Bearer x", "X-Tenant": "t"}
-        )
-        asyncio.run(hook(response))
+        next_request = self._build_redirect(
+            httpx, headers={"Authorization": "Bearer x", "X-Tenant": "t"},
+            location="https://other.example.test/mcp")
         assert "authorization" not in next_request.headers
         assert next_request.headers["x-tenant"] == "t"
 
     def test_strict_strips_configured_headers_cross_origin(self):
         import httpx
 
-        from tools.mcp_tool_errors import _make_redirect_header_stripper
-
-        hook = _make_redirect_header_stripper(
-            httpx.URL("https://origin.example.test/mcp"),
-            strict=True,
-            configured_header_names={"x-tenant"},
-        )
-        response, next_request = self._make_response(
-            {"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"}
-        )
-        asyncio.run(hook(response))
+        next_request = self._build_redirect(
+            httpx, strict=True, configured={"x-tenant"},
+            headers={"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"},
+            location="https://other.example.test/mcp")
         assert "authorization" not in next_request.headers
         assert "x-tenant" not in next_request.headers
         # Client-generated headers unrelated to package config survive.
@@ -3344,19 +3423,9 @@ class TestRedirectHeaderStripper:
     def test_same_origin_redirect_keeps_headers(self):
         import httpx
 
-        from tools.mcp_tool_errors import _make_redirect_header_stripper
-
-        hook = _make_redirect_header_stripper(
-            httpx.URL("https://origin.example.test/mcp"),
-            strict=True,
-            configured_header_names={"x-tenant"},
-        )
-        next_request = httpx.Request(
-            "GET",
-            "https://origin.example.test/other",
+        next_request = self._build_redirect(
+            httpx, strict=True, configured={"x-tenant"},
             headers={"Authorization": "Bearer x", "X-Tenant": "t"},
-        )
-        response = SimpleNamespace(is_redirect=True, next_request=next_request)
-        asyncio.run(hook(response))
+            location="https://origin.example.test/other")
         assert next_request.headers["authorization"] == "Bearer x"
         assert next_request.headers["x-tenant"] == "t"

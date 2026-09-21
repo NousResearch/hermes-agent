@@ -36,11 +36,10 @@ def test_chained_responses_turns_store_each_message_once():
     assert [m["role"] for m in history] == ["user", "assistant"] * 3
 
 
-def test_divergent_transcript_still_falls_back_to_appending():
+def test_suffix_only_result_still_appends_to_history():
     build = APIServerAdapter._build_response_conversation_history
     prior = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
-    # A transcript whose first row differs in what it says is not a prefix match.
-    result = {"messages": [{"role": "user", "content": "DIFFERENT", "timestamp": 1.0},
-                           {"role": "assistant", "content": "d"}]}
+    # Mocked/legacy paths return only this turn's rows (no user row): appended after the input.
+    result = {"messages": [{"role": "assistant", "content": "d"}]}
     stored = build(prior, "c", result, "d")
-    assert [m["content"] for m in stored] == ["a", "b", "c", "DIFFERENT", "d"]
+    assert [m["content"] for m in stored] == ["a", "b", "c", "d"]

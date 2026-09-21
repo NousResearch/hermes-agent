@@ -207,6 +207,13 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.bot_mode_dm", "message_agent_tool", ("target", "target", ""), ("message", "message", ""),
         task_id=lambda agent, ctx: ctx.effective_task_id, agent=lambda agent, ctx: agent,
     ),
+    # Bot Mode room post — injected like the DM tool. The executor validates the
+    # request and acknowledges it; the POST is the call itself, which the Desktop
+    # hosting the room harvests (it is the room log's only writer).
+    "room_post": _tool(
+        "tools.bot_room_post", "room_post_tool", ("room", "room", ""), ("text", "text", ""),
+        ("mentions", "mentions"),
+    ),
     "session_search": _session_search,
     "memory": _memory,
     "clarify": _tool(

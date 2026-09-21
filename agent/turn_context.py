@@ -1031,6 +1031,16 @@ def build_turn_context(
     except Exception:
         logger.debug("message_agent injection skipped", exc_info=True)
 
+    # Bot Mode room post — same gate: only a room's member sessions are Bot Chats.
+    # A member cannot write a room log (one writer: the hosting Desktop), so this
+    # tool records the post and the Desktop harvests it.
+    try:
+        from tools.bot_room_post import ensure_room_post_tool
+
+        ensure_room_post_tool(agent)
+    except Exception:
+        logger.debug("room_post injection skipped", exc_info=True)
+
     _ensure_session_row(agent, pending_cli_message)
 
     # A turn interrupted before admission could not write its accepted input because

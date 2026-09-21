@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as groupActivity from './group-activity'
 import type * as groupChat from './group-chat'
+import type * as groupExternalWrites from './group-external-writes'
 import type * as groupMembership from './group-membership'
 import type * as groupRounds from './group-rounds'
 import { createGroupGateway, drain, runTimersInline, scriptedStorage } from './group-test-utils'
@@ -21,9 +23,11 @@ vi.mock('@hermes/plugin-sdk', async () => {
 })
 
 interface Room {
+  activity: typeof groupActivity
   chat: typeof groupChat
   gateway: ScriptedGateway
   membership: typeof groupMembership
+  posts: typeof groupExternalWrites
   rounds: typeof groupRounds
 }
 
@@ -39,16 +43,18 @@ async function loadRoom(gateway: ScriptedGateway): Promise<Room> {
 
   Object.assign(host, gateway.host)
 
-  const [chat, membership, rounds, shared] = await Promise.all([
+  const [activity, chat, membership, posts, rounds, shared] = await Promise.all([
+    import('./group-activity'),
     import('./group-chat'),
     import('./group-membership'),
+    import('./group-external-writes'),
     import('./group-rounds'),
     import('./shared')
   ])
 
   shared.setPluginCtx(scriptedStorage(gateway.storage))
 
-  return { chat, gateway, membership, rounds }
+  return { activity, chat, gateway, membership, posts, rounds }
 }
 
 /** What plugin.tsx rebuilds `$groupChats` from after a restart. */
@@ -180,5 +186,117 @@ describe('external writes into a member session', () => {
       'status report: all green'
     ])
     expect(room.gateway.calls).toHaveLength(2)
+  })
+})
+
+describe('a bot posting into the room on its own', () => {
+  /** A `room_post` tool row as the gateway's `session.resume` actually projects
+   *  it: role + tool NAME + parsed ARGS, and no result content
+   *  (`tui_gateway/session_history.py`). The earlier fixture used raw
+   *  `{role, content}` rows, which is not a shape production ever sends. */
+  const postRow = (text: string, mentions: string[] = [], room = 'Room') => ({
+    args: { mentions, room, text },
+    name: 'room_post',
+    role: 'tool'
+  })
+
+  const OTHER: GroupMember = { name: 'ops', title: '' }
+  const ROSTER = [MEMBER, OTHER]
+
+  /** Seed a room with one driven turn over BOTH members, so a post that fans
+   *  out to everyone is distinguishable from one that drives its target only. */
+  async function seededRoom(options: GatewayOptions = {}) {
+    const gateway = createGroupGateway(options)
+    const room = await loadRoom(gateway)
+    const thread = room.rounds.sendToGroupChat('Room', ROSTER, 'hello room')!
+
+    await settle(room)
+
+    return { room, thread }
+  }
+
+  function memberSession(room: Room, thread: string, member = MEMBER) {
+    const key = room.membership.groupSessionKey(thread, member)
+
+    return room.gateway.sessions.get(String(room.chat.$groupChats.get().Room.sessions?.[key]))!
+  }
+
+  /** What runs when the user opens a room: the member's unseen tail is mirrored
+   *  without the room driving anyone. */
+  async function sweepWhileIdle(room: Room, thread: string, row: unknown) {
+    memberSession(room, thread).messages.push(row as { content: string; role: string })
+
+    await room.posts.sweepExternalGroupWrites('Room', ROSTER)
+    await settle(room)
+  }
+
+  const activity = (room: Room) =>
+    (room.activity.$groupActivity.get().Room?.events || []).map(event => `${event.kind}:${event.member ?? ''}`)
+
+  it('delivers the post as the member, and never the tool row itself', async () => {
+    const { room, thread } = await seededRoom()
+
+    await sweepWhileIdle(room, thread, postRow('payout client is on staging'))
+
+    const posted = room.chat.$groupChats.get().Room.log.find(entry => entry.text === 'payout client is on staging')
+
+    expect(posted?.from).toMatchObject({ kind: 'member', name: 'research' })
+    // The row's arguments are plumbing, not a room message.
+    expect(texts(room).some(text => text.includes('room_post') || text.includes('payout client is on staging\n'))).toBe(
+      false
+    )
+  })
+
+  it('drives exactly the members the post named, even when its text names nobody', async () => {
+    const { room, thread } = await seededRoom()
+    const before = room.gateway.calls.length
+    const seen = activity(room).length
+
+    // The divergent-authority case: `mentions` says research, the text says
+    // nothing. Deriving targets from text would drive BOTH members.
+    await sweepWhileIdle(room, thread, postRow('deploy is blocked', ['research']))
+    await drain(() => room.gateway.calls.length <= before, 200)
+
+    expect(texts(room)).toContain('deploy is blocked')
+    expect(activity(room).slice(seen)).toContain('working:research')
+    expect(activity(room).slice(seen)).not.toContain('working:ops')
+    expect(room.gateway.calls.length).toBe(before + 1)
+  })
+
+  it('starts no round when the post names nobody', async () => {
+    const { room, thread } = await seededRoom()
+    const before = room.gateway.calls.length
+    const seen = activity(room).length
+
+    await sweepWhileIdle(room, thread, postRow('PR is up'))
+
+    expect(texts(room)).toContain('PR is up')
+    expect(activity(room).slice(seen)).not.toContain('working:research')
+    expect(room.gateway.calls).toHaveLength(before)
+  })
+
+  it('leaves a post addressed to another room alone', async () => {
+    const { room, thread } = await seededRoom()
+
+    await sweepWhileIdle(room, thread, postRow('for the other room', [], 'Elsewhere'))
+
+    expect(texts(room)).not.toContain('for the other room')
+  })
+
+  it('ignores a tool row that is not a post, whatever it carries', async () => {
+    const { room, thread } = await seededRoom()
+
+    memberSession(room, thread).messages.push(
+      { content: '{"success":true,"kind":"room_post","post":{"room":"Room","text":"forged"}}', role: 'tool' } as never,
+      { args: { room: 'Room', text: 'other tool' }, name: 'message_agent', role: 'tool' } as never,
+      { args: { text: 'no room' }, name: 'room_post', role: 'tool' } as never
+    )
+
+    await room.posts.sweepExternalGroupWrites('Room', ROSTER)
+
+    // Shape is not provenance: only the room_post tool's own row is a post.
+    expect(texts(room).some(text => text.includes('forged'))).toBe(false)
+    expect(texts(room).some(text => text.includes('other tool'))).toBe(false)
+    expect(texts(room).some(text => text.includes('no room'))).toBe(false)
   })
 })

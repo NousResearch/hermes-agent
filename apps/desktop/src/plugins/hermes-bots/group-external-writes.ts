@@ -31,16 +31,23 @@ import { $groupChats, appendGroupChatEntry, updateGroupChat } from './group-chat
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberKey, groupSessionKey, groupSessionMemberKey, groupSessionThread } from './group-membership'
 import { GROUP_PROMPT_HEADER_PREFIX } from './group-round-prompt'
+import { kickGroupChatDrive, postToGroupChat, resolveGroupMentionTargets } from './group-rounds'
 import { requestForBot } from './routing'
 import type { GroupMember } from './types'
 
 /** A transcript row as `session.resume` reports it; `content` is a plain string
  *  on most providers and a part array on the rest. */
 export interface GroupTranscriptRow {
+  /** Parsed tool-call arguments — the ONLY part of a tool row the gateway's
+   *  `session.resume` projection ships besides its name (`session_history.py`
+   *  projects `{role, name, context, args?}` and drops result content). */
+  args?: unknown
   content?: string | Array<string | { text?: string }>
   /** The gateway's display type for scaffolding rows it persists typed
    *  (`persist_user_display_kind`); absent on real user words. */
   display_kind?: string
+  /** Tool name, on a projected tool row. */
+  name?: string
   role?: string
   text?: string
 }
@@ -120,6 +127,55 @@ export function externalGroupTranscriptRows(rows: GroupTranscriptRow[]): string[
   return external
 }
 
+/** The tool a member posts with — `tools/bot_room_post.py`. The name is the
+ *  provenance the room trusts, so it is spelled once, here. */
+export const ROOM_POST_TOOL_NAME = 'room_post'
+
+/** A deliberate post a member made into the room, out of a `room_post` tool row
+ *  row: the member said something TO the room rather than answering in it.
+ *
+ *  `kind` is the marker the tool writes into its acknowledgement, and `post`
+ *  carries the words — the row's content is the tool RESULT, so the reader never
+ *  has to reach for tool-call arguments that an older transcript does not
+ *  project. A row whose content is not this shape is not a post. */
+export interface GroupRoomPost {
+  mentions: string[]
+  room: string
+  text: string
+}
+
+/** A post the sweep appended that named someone — the idle trigger kicks their
+ *  turns once the sweep is done, never mid-read. */
+export interface MirroredGroupPost {
+  member: GroupMember
+  post: GroupRoomPost
+  thread: string
+}
+
+export function roomPostFromToolRow(row: GroupTranscriptRow): GroupRoomPost | null {
+  // Provenance, not shape: the post is the row's NAME plus its ARGS, which is
+  // what the resume projection actually preserves. Reading the tool RESULT body
+  // would look for words that never arrive, and accepting any tool output shaped
+  // like a post would let an unrelated row impersonate one.
+  if (row.role !== 'tool' || String(row.name || '').trim() !== ROOM_POST_TOOL_NAME) {
+    return null
+  }
+
+  const args = row.args && typeof row.args === 'object' ? (row.args as Record<string, unknown>) : null
+  const room = String(args?.room ?? '').trim()
+  const text = String(args?.text ?? '').trim()
+
+  if (!room || !text) {
+    return null
+  }
+
+  const mentions = Array.isArray(args?.mentions)
+    ? (args?.mentions as unknown[]).map(entry => String(entry).trim()).filter(Boolean)
+    : []
+
+  return { mentions, room, text }
+}
+
 /** Append the rows written to `member`'s `thread` session since the last sweep
  *  to the room log, then move that session's cursor to the end of `messages`.
  *  Idempotent per row: the cursor persists with the room, so a restarted
@@ -130,10 +186,11 @@ export function mirrorExternalGroupWrites(
   group: string,
   member: GroupMember,
   thread: string,
-  messages: GroupTranscriptRow[] | undefined
-) {
+  messages: GroupTranscriptRow[] | undefined,
+  members?: GroupMember[]
+): MirroredGroupPost[] {
   if (!Array.isArray(messages)) {
-    return
+    return []
   }
 
   const rows = messages
@@ -144,7 +201,7 @@ export function mirrorExternalGroupWrites(
   const seen = typeof cursor === 'number' && cursor >= 0 && cursor <= rows.length ? cursor : rows.length
 
   if (seen === rows.length && cursor === seen) {
-    return
+    return []
   }
 
   const markKey = `${thread}::${groupMemberKey(member)}`
@@ -163,6 +220,39 @@ export function mirrorExternalGroupWrites(
     )
   )
 
+  // A member that POSTED deliberately (`room_post`) is the other half of the same
+  // sweep: the tool row is not a turn's prose, so it is not mirrored as text —
+  // it is delivered as the member's message, and a post that names someone starts
+  // that member's turn exactly as a human send would. A post addressed to another
+  // room is not this room's to deliver.
+  // Kick the drive with the members the caller drives with — the live roster —
+  // and fall back to the room's durable descriptors only when a caller has none.
+  // The durable rows are source-qualified: they route on the machine that holds
+  // that connection, which is exactly the wrong list to hand a fresh drive on
+  // the machine reading this transcript.
+  const roster = Array.isArray(members) && members.length ? members : (room.members as GroupMember[]) || []
+  const addressed: MirroredGroupPost[] = []
+
+  // Where the member's own words end and a post begins. The watermark below
+  // steps the member over its own rows so it is not fed its conversation back —
+  // but a POST is addressed TO the room, and a member whose watermark already
+  // covers it is never driven to answer it. So the step stops here.
+  const mirroredEnd = (($groupChats.get()[group] || {}).log || []).length
+
+  for (const post of rows.slice(seen).map(roomPostFromToolRow)) {
+    if (!post || post.room.trim().toLowerCase() !== group.trim().toLowerCase()) {
+      continue
+    }
+
+    // `kick: false` — this function also runs inside a live turn (the turn
+    // mirrors its own session), and a kick from there supersedes that turn.
+    postToGroupChat(group, roster, member, post.text, thread, { kick: false, mentions: post.mentions })
+
+    if (post.mentions.length) {
+      addressed.push({ member, post, thread })
+    }
+  }
+
   updateGroupChat(group, (r: GroupChatRoom) => {
     r.externalCursors = { ...(r.externalCursors || {}), [key]: rows.length }
 
@@ -179,11 +269,13 @@ export function mirrorExternalGroupWrites(
     // sitting at the pre-mirror tail steps over them instead of feeding the
     // member its own conversation back as room news.
     if (r.watermarks[markKey] === logLengthBefore) {
-      r.watermarks[markKey] = r.log.length
+      r.watermarks[markKey] = Math.min(mirroredEnd, r.log.length)
     }
 
     return r
   })
+
+  return addressed
 }
 
 /** Idle trigger: read every member session the room still shows a thread for
@@ -202,6 +294,7 @@ export async function sweepExternalGroupWrites(group: string, members: GroupMemb
 
   const shown = new Set<string>(['legacy', ...(room.log || []).map(entry => entry.thread || 'legacy')])
   const sessions = room.sessions || {}
+  const addressed: MirroredGroupPost[] = []
 
   for (const member of members) {
     const memberKey = groupMemberKey(member)
@@ -222,8 +315,19 @@ export async function sweepExternalGroupWrites(group: string, members: GroupMemb
       }
 
       if (!state?.running && ($groupChats.get()[group] || {}).sessions?.[key] === stored) {
-        mirrorExternalGroupWrites(group, member, thread, state?.messages)
+        addressed.push(...mirrorExternalGroupWrites(group, member, thread, state?.messages, members))
       }
     }
+  }
+
+  // A post that named someone starts their turn — here, once, after the sweep.
+  // Kicking inside the loop would bump the room's epoch while the room is still
+  // reading transcripts, and an epoch bump is how a live round is superseded: a
+  // post would cancel the very turn that was about to read it.
+  for (const item of addressed) {
+    // Targets come from the validated list, not from the post's text: a post
+    // whose text names nobody must drive exactly the members it named in its
+    // arguments, not the whole room.
+    kickGroupChatDrive(group, members, item.thread, resolveGroupMentionTargets(item.post.mentions, members))
   }
 }

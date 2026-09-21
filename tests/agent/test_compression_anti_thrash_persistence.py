@@ -102,7 +102,7 @@ class TestCounterRoundTripsBindSessionState:
         assert compressor._compression_frequency_state() == (0.0, 0)
         assert db.get_session_model_config_value(
             "s1", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, "missing"
-        ) is None
+        ) == "missing"
 
     def test_stale_compressor_refreshes_frequency_guard_before_entry(self, tmp_path):
         db = _db(tmp_path)

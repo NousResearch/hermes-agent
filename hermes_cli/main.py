@@ -2725,8 +2725,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
 )
 
 
-def _first_positional_argv() -> str | None:
-    """First non-flag, non-flag-value token in ``sys.argv[1:]`` (skips values of known flags).
+def _first_positional_argv_index() -> int | None:
+    """Index of the first non-flag, non-flag-value token in ``sys.argv``.
 
     Not a full argparse simulation: an unknown ``--foo bar`` may classify
     ``bar`` as positional, which at worst forces a one-time plugin discovery.
@@ -2740,12 +2740,18 @@ def _first_positional_argv() -> str | None:
     while i < len(argv):
         tok = argv[i]
         if tok == "--":  # everything after is positional
-            return argv[i + 1] if i + 1 < len(argv) else None
+            return i + 2 if i + 1 < len(argv) else None
         if not tok.startswith("-"):
-            return tok
+            return i + 1
         # ``--flag=value`` is a single token; a known value flag consumes the next.
         i += 2 if ("=" not in tok and tok in value_flags and i + 1 < len(argv)) else 1
     return None
+
+
+def _first_positional_argv() -> str | None:
+    """First non-flag, non-flag-value token in ``sys.argv[1:]``."""
+    index = _first_positional_argv_index()
+    return sys.argv[index] if index is not None else None
 
 
 def _startup_should_warn_pending_fleet_restart() -> bool:
@@ -2760,6 +2766,29 @@ def _startup_should_warn_pending_fleet_restart() -> bool:
     from hermes_cli.update_inventory import _SERVE_KINDS
 
     if command in _SERVE_KINDS:
+        command_index = _first_positional_argv_index()
+        tail = sys.argv[command_index + 1:] if command_index is not None else []
+        client_actions = {"--stop", "--status", "-h", "--help"}
+        value_flags = {
+            "--port", "--host", "--open-profile", "--ssh-session-token-file",
+            "--ssh-owner-nonce", "--profile", "-p", "--config",
+        }
+        i = 0
+        while i < len(tail):
+            token = tail[i]
+            if token in client_actions:
+                return True
+            if token in value_flags:
+                i += 2
+                continue
+            if token.startswith(tuple(f"{flag}=" for flag in value_flags)):
+                i += 1
+                continue
+            if not token.startswith("-"):
+                # ``dashboard register`` and any invalid positional are
+                # one-shot/client invocations, never a hosted web runtime.
+                return True
+            i += 1
         return False
     if command != "gateway":
         return True

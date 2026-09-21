@@ -62,3 +62,8 @@ def test_accepts_real_gateway_run(cmd):
     assert matches(cmd) is True
 
 
+@pytest.mark.parametrize("cmd", REJECT)
+def test_rejects_non_gateway_run(cmd):
+    assert matches(cmd) is False
+
+

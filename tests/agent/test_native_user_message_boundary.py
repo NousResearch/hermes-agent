@@ -78,7 +78,7 @@ def test_flushed_image_turn_exports_its_durable_projection(native, override, ima
     row = {"role": "user", "content": content}
     agent = SimpleNamespace(_session_db=native, session_id="parent",
                             _persist_user_message_override=override)
-    _db_flush_write(agent, [_db_flush_row(agent, row, True)], [row])
+    _db_flush_write(agent, [_db_flush_row(agent, row, True)], [row], [row])
     before = deepcopy(row)
     result = _native_user_message(agent, [row], 0, content, override or content)
     assert result == {"role": "user", "content": "inspect the attached image" + "\n[screenshot]" * image_count,
@@ -99,7 +99,7 @@ def test_unrepresented_parts_do_not_become_an_empty_native_anchor(native):
     content = [{"type": "unsupported", "data": "not retained"}]
     row = {"role": "user", "content": content}
     agent = SimpleNamespace(_session_db=native, session_id="parent")
-    _db_flush_write(agent, [_db_flush_row(agent, row, True)], [row])
+    _db_flush_write(agent, [_db_flush_row(agent, row, True)], [row], [row])
     assert _native_user_message(agent, [row], 0, content, content) is None
 
 

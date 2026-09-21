@@ -182,7 +182,7 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
     class _PInfo:
         name = "Kimi For Coding"
 
-    monkeypatch.setattr(md, "get_provider_info", lambda _pid: _PInfo())
+    monkeypatch.setattr(md, "get_provider_info", lambda _pid, *, allow_network=True: _PInfo())
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", canonical)
     monkeypatch.setattr(hermes_cli_models_catalog_static, "CANONICAL_PROVIDERS", canonical)

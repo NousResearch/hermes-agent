@@ -682,7 +682,7 @@ def fetch_ollama_cloud_models(
     mdev_models: list[str] = []
     try:
         from agent.models_dev import list_agentic_models
-        mdev_models = list_agentic_models("ollama-cloud")
+        mdev_models = list_agentic_models("ollama-cloud", allow_network=not cache_only)
     except Exception:
         pass
 

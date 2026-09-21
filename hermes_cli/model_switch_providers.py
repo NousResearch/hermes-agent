@@ -415,7 +415,7 @@ def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_mo
     if not model_ids:
         model_ids = _first_curated(curated, fallback_keys or (slug,))
         if merge_models_dev and slug in _MODELS_DEV_PREFERRED:
-            model_ids = _merge_with_models_dev(slug, model_ids)
+            model_ids = _merge_with_models_dev(slug, model_ids, allow_network=not non_blocking)
     return model_ids
 
 
@@ -797,7 +797,8 @@ def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
     from hermes_cli.model_switch import _declared_model_ids
     configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
     model_ids = list(dict.fromkeys([*configured_models, *b.curated.get("lmstudio", [])]))
-    b.add_builtin_row("lmstudio", get_label("lmstudio"), is_current, model_ids, "hermes")
+    b.add_builtin_row("lmstudio", get_label("lmstudio", allow_network=not b.non_blocking_catalogs),
+                      is_current, model_ids, "hermes")
 
 
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
@@ -815,7 +816,7 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         configured = user_providers.get(hermes_id) if isinstance(user_providers, dict) else None
         configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
         model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
-        pinfo = get_provider_info(mdev_id)
+        pinfo = get_provider_info(mdev_id, allow_network=not b.non_blocking_catalogs)
         display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
         b.add_builtin_row(
             hermes_id, display_name, b.current_provider in (hermes_id, mdev_id), model_ids, "built-in")
@@ -900,7 +901,8 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         elif hermes_slug == "nous":
             # A guest identity never needs the Portal catalog: add_builtin_row pins nous/welcome
             # (or drops the row when nous.guest is off), so only a real account fetches.
-            tier_row = _free_tier_nous_row({"name": get_label(hermes_slug), "models": []})
+            tier_row = _free_tier_nous_row(
+                {"name": get_label(hermes_slug, allow_network=not b.non_blocking_catalogs), "models": []})
             real_account = tier_row is not None and not tier_row["models"]
             model_ids = _nous_picker_model_ids(b.curated, b.force_fresh_nous_tier) if real_account else []
         else:
@@ -912,7 +914,8 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         if isinstance(configured, dict):
             model_ids = list(dict.fromkeys([*_declared_model_ids(configured.get("models")), *model_ids]))
         b.add_builtin_row(
-            hermes_slug, get_label(hermes_slug), b.current_provider in (hermes_slug, pid), model_ids, "hermes")
+            hermes_slug, get_label(hermes_slug, allow_network=not b.non_blocking_catalogs),
+            b.current_provider in (hermes_slug, pid), model_ids, "hermes")
         b.seen_slugs.add(pid.lower())
 
 
@@ -1209,7 +1212,7 @@ def list_authenticated_providers(
     current_base_url = str(current_base_url or "").strip()
     current_model = str(current_model or "").strip()
     user_providers = stringify_provider_map(user_providers)
-    data = fetch_models_dev()
+    data = fetch_models_dev(allow_network=False) if non_blocking_catalogs else fetch_models_dev()
 
     # A single excluded entry like ``copilot`` hides the provider under every key it surfaces
     # as (hermes_id / mdev_id / canonical slug).

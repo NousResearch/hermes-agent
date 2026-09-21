@@ -1705,32 +1705,32 @@ export default function SessionsPage() {
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.total}
             </span>
-            <span className="text-xs text-muted-foreground">Total</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.statTotal}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.statActiveInStore}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.archived}
             </span>
-            <span className="text-xs text-muted-foreground">Archived</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.statArchived}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.messages}
             </span>
-            <span className="text-xs text-muted-foreground">Messages</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.statMessages}</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
             <div className="flex flex-col">
               <span className="text-lg font-semibold tabular-nums leading-none">
                 {Object.keys(stats.by_source).length}
               </span>
-              <span className="text-xs text-muted-foreground">Sources</span>
+              <span className="text-xs text-muted-foreground">{t.sessions.statSources}</span>
             </div>
           )}
         </div>

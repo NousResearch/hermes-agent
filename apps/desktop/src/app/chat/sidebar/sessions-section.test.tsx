@@ -60,6 +60,30 @@ function generateSessions(count: number): SessionInfo[] {
 const noop = () => {}
 
 describe('SidebarSessionsSection memoization & virtualizer stability', () => {
+  it('forwards cross-profile markers to the virtualized recents list', () => {
+    mockVirtualListPropsHistory.length = 0
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        label="Sessions"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open={true}
+        pinned={false}
+        sessions={generateSessions(VIRTUALIZE_THRESHOLD + 1)}
+        showProfileTags
+      />
+    )
+
+    expect(mockVirtualListPropsHistory[0].showProfileTags).toBe(true)
+  })
+
   it('memoizes flatRows and passes the exact same rows array reference across parent re-renders', () => {
     mockVirtualListPropsHistory.length = 0
 

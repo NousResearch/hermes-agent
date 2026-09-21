@@ -53,7 +53,9 @@ vi.mock('@/i18n', () => ({
   })
 }))
 
-vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
+vi.mock('@/app/chat/profile-tag', () => ({
+  ProfileTag: ({ profile }: { profile: null | string | undefined }) => <span data-testid="profile-tag">{profile ?? ''}</span>
+}))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
@@ -159,7 +161,7 @@ const handoffAvatar = (container: HTMLElement) =>
 
 const noop = vi.fn()
 
-const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
+const renderRow = (session: SessionInfo, extra?: { card?: boolean; showProfile?: boolean }) =>
   render(
     <SidebarSessionRow
       card={extra?.card}
@@ -171,6 +173,7 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
       onResume={noop}
       onToggleUnread={noop}
       session={session}
+      showProfile={extra?.showProfile}
       unread={false}
     />
   )
@@ -236,6 +239,21 @@ describe('SidebarSessionRow running arc', () => {
 describe('SidebarSessionRow', () => {
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it.each([
+    ['default', 'default'],
+    ['named', 'research']
+  ])('shows the %s owning-profile marker in a cross-profile list', (_, profile) => {
+    renderRow(makeSession({ profile, title: 'Profile-owned session' }), { showProfile: true })
+
+    expect(screen.getByTestId('profile-tag').textContent).toBe(profile)
+  })
+
+  it('does not show an owning-profile marker in a single-profile list', () => {
+    renderRow(makeSession({ profile: 'research', title: 'Profile-owned session' }))
+
+    expect(screen.queryByTestId('profile-tag')).toBeNull()
   })
 
   it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {

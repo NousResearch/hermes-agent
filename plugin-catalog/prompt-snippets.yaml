@@ -1,7 +1,7 @@
 name: prompt-snippets
 repo: https://github.com/Heybinshao/prompt-snippets
 sha: 8e7ad10180b8c9607ae3a5a9f66e10a5f24f524e
-description: "Prompt snippet library for the Hermes Desktop composer: a quick-pick overlay styled after the app's own slash menu (own shortcut), plus a management view with drag reordering, group tags and import/export. Inserts into the focused session, not the active one. UI in EN / 简中 / 繁體."
+description: "Prompt snippet library for the Hermes Desktop composer: a quick-pick overlay styled after the app's own slash menu (own shortcut), plus a management view with drag reordering, group tags and import/export. Inserts into the focused session, not the active one. UI in EN / 简中 / 繁體. v1.6.0 adds local JSON import/export via the system clipboard; no network."
 maintainer: Heybinshao
 tier: community
 category: desktop

@@ -112,6 +112,38 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _repair_transport_credentials(agent: Any) -> Tuple[bool, bool]:
+    """Strip non-ASCII from ``_client_kwargs["default_headers"]`` and the API key.
+
+    Non-ASCII in the key makes httpx fail encoding the Authorization header — the usual
+    persistent cause of UnicodeEncodeError that survives message/tool sanitization (#6843,
+    e.g. ʋ instead of v from a bad copy-paste). Entra ID bearer providers are callables
+    minting ASCII JWTs; skip them (``_strip_non_ascii`` would crash). Returns
+    ``(headers_sanitized, credential_sanitized)``.
+    """
+    _client_kwargs = getattr(agent, "_client_kwargs", None)
+    _default_headers = _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
+    _headers_sanitized = bool(isinstance(_default_headers, dict) and _sanitize_structure_non_ascii(_default_headers))
+    _credential_sanitized = False
+    _raw_key = getattr(agent, "api_key", None) or ""
+    if isinstance(_raw_key, str) and _raw_key:
+        _clean_key = _strip_non_ascii(_raw_key)
+        if _clean_key != _raw_key:
+            agent.api_key = _clean_key
+            if isinstance(_client_kwargs, dict):
+                _client_kwargs["api_key"] = _clean_key
+            # The live client reads its own api_key copy on every request.
+            if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
+                agent.client.api_key = _clean_key
+            _credential_sanitized = True
+            _vlines(
+                agent,
+                "⚠️  API key contained non-ASCII characters (bad copy-paste?) — stripped them. "
+                "If auth fails, re-copy the key from your provider's dashboard.",
+            )
+    return _headers_sanitized, _credential_sanitized
+
+
 def _recover_unicode_encode_error(
     agent: Any, api_error: Exception, messages: List[Dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
@@ -153,20 +185,7 @@ def _recover_unicode_encode_error(
     # instead of burning both sanitization passes on unchanged requests.
     if not _runtime_uses_ascii_encoding():
         agent._force_ascii_payload = False
-        _client_kwargs = getattr(agent, "_client_kwargs", None)
-        _default_headers = _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
-        _headers_sanitized = isinstance(_default_headers, dict) and _sanitize_structure_non_ascii(_default_headers)
-        _credential_sanitized = False
-        _raw_key = getattr(agent, "api_key", None) or ""
-        if isinstance(_raw_key, str) and _raw_key:
-            _clean_key = _strip_non_ascii(_raw_key)
-            if _clean_key != _raw_key:
-                agent.api_key = _clean_key
-                if isinstance(_client_kwargs, dict):
-                    _client_kwargs["api_key"] = _clean_key
-                if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
-                    agent.client.api_key = _clean_key
-                _credential_sanitized = True
+        _headers_sanitized, _credential_sanitized = _repair_transport_credentials(agent)
         if not (_headers_sanitized or _credential_sanitized):
             return False, active_system_prompt
         agent._unicode_sanitization_passes += 1
@@ -199,33 +218,7 @@ def _recover_unicode_encode_error(
             active_system_prompt = _sanitized_system
             _system_sanitized = True
 
-    _client_kwargs = getattr(agent, "_client_kwargs", None)
-    _default_headers = _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
-    _headers_sanitized = isinstance(_default_headers, dict) and _sanitize_structure_non_ascii(_default_headers)
-
-    # Non-ASCII in the API key makes httpx fail encoding the Authorization header — the
-    # usual persistent cause after message/tool sanitization. Entra ID bearer providers
-    # are callables minting ASCII JWTs; skip them (``_strip_non_ascii`` would crash).
-    # Sanitize the API key — non-ASCII characters in credentials (e.g. ʋ instead of v from a bad copy-paste)
-    # cause httpx to fail when encoding the Authorization header as ASCII. This is the most common cause of
-    # persistent UnicodeEncodeError that survives message/tool sanitization (#6843).
-    _credential_sanitized = False
-    _raw_key = getattr(agent, "api_key", None) or ""
-    if _raw_key and isinstance(_raw_key, str):
-        _clean_key = _strip_non_ascii(_raw_key)
-        if _clean_key != _raw_key:
-            agent.api_key = _clean_key
-            if isinstance(getattr(agent, "_client_kwargs", None), dict):
-                agent._client_kwargs["api_key"] = _clean_key
-            # The live client reads its own api_key copy on every request.
-            if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
-                agent.client.api_key = _clean_key
-            _credential_sanitized = True
-            _vlines(
-                agent,
-                "⚠️  API key contained non-ASCII characters (bad copy-paste?) — stripped them. "
-                "If auth fails, re-copy the key from your provider's dashboard.",
-            )
+    _headers_sanitized, _credential_sanitized = _repair_transport_credentials(agent)
 
     # Always retry on ASCII codec detection: _force_ascii_payload sanitizes the full
     # api_kwargs next iteration even when the checks above find nothing.

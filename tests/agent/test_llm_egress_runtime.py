@@ -9,10 +9,12 @@ import pytest
 
 from agent.llm_egress_firewall import EgressBlocked, SanitizedTextRejected
 from agent.llm_egress_runtime import (
+    _restore_source_provenance_sidecar,
     _typed_payload_violation_locations,
     authorize_agent_sdk_kwargs,
     dispatch_authorized_agent_request,
 )
+from agent.llm_egress_terminal import _READ_FILE_REPLAY_ELISION
 from agent.source_provenance import SourceProvenanceRegistry
 
 
@@ -59,6 +61,27 @@ def test_typed_payload_violation_locations_are_content_free():
     assert locations == (
         ("$.map[0].value.sequence[0]", "SanitizedSegment", 20, ("base64_payload",)),
     )
+
+
+def test_runtime_keeps_classifier_monkeypatch_seam(tmp_path, monkeypatch):
+    import agent.llm_egress_runtime as runtime
+
+    original = runtime._typed_payload
+    calls = 0
+
+    def classify(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "_typed_payload", classify)
+    authorized, _ = runtime.authorize_agent_sdk_kwargs(
+        _agent(tmp_path),
+        {"model": "test-model", "messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert calls == 1
+    assert authorized["messages"][0]["content"] == "hello"
 
 
 def test_runtime_authorizes_mixed_exact_source_and_bounded_sanitized_text(tmp_path):
@@ -139,7 +162,9 @@ def test_runtime_scans_extra_headers_and_query_as_request_content(tmp_path):
             {
                 "model": "test-model",
                 "messages": [{"role": "user", "content": "Fix CI now."}],
-                "extra_headers": {"Authorization": "token=secret-value"},
+                "extra_headers": {
+                    "Authorization": "Bearer sk-test-credential-1234567890"
+                },
                 "extra_query": {"trace": "safe"},
             },
             lambda request: calls.append(request),
@@ -179,7 +204,7 @@ def test_runtime_verifies_authorized_payload_at_provider_boundary(
 @pytest.mark.parametrize(
     "text",
     [
-        "token=super-secret-value",
+        "SECRET_TOKEN=super-secret-value",
         "Read /Users/private/repository/file.py",
         "ZW5jb2RlZCBwcml2YXRlIGRldGFpbA==",
     ],
@@ -341,7 +366,9 @@ def test_codex_generated_context_still_hard_blocks_secrets(tmp_path):
             agent,
             {
                 "model": "gpt-5.6-terra",
-                "input": [{"role": "system", "content": "token=super-secret-value"}],
+                "input": [
+                    {"role": "system", "content": "SECRET_TOKEN=super-secret-value"}
+                ],
             },
         )
 
@@ -951,7 +978,7 @@ def test_protected_nous_keeps_generated_cloud_secrets_blocked(tmp_path):
             {
                 "model": "poolside/laguna-xs-2.1:free",
                 "messages": [
-                    {"role": "system", "content": "token=super-secret-value"}
+                    {"role": "system", "content": "SECRET_TOKEN=super-secret-value"}
                 ],
             },
         )
@@ -1834,7 +1861,7 @@ def test_protected_codex_projects_structured_github_pr_identity_fields(
         "API_TOKEN=not-a-real-secret-token-123456789",
     ),
 )
-def test_protected_codex_elides_structured_terminal_output(
+def test_structured_terminal_replay_remains_outcome_only(
     tmp_path, monkeypatch, payload
 ):
     """Responses API output arrays receive the same terminal replay policy."""
@@ -2594,6 +2621,64 @@ def test_protected_provider_route_splits_without_dispatcher_marker(
     assert json.loads(receipt.payload_bytes)["messages"][0]["content"] == text
 
 
+def test_operator_config_can_temporarily_disable_egress_enforcement(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("HERMES_LLM_EGRESS_ENFORCEMENT", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "runtime:\n  llm_egress_enforcement: disabled\n", encoding="utf-8"
+    )
+
+    import agent.llm_egress_runtime as runtime
+
+    assert runtime.egress_enforcement_enabled() is False
+    assert runtime.provider_uses_egress_firewall("nous") is True
+
+    calls = []
+    runtime.dispatch_authorized_agent_request(
+        _agent(tmp_path),
+        {"model": "test-model", "messages": [{"role": "user", "content": "SECRET_TOKEN=allowed-for-operator-test"}],
+         "_hermes_source_provenance": {"path": "/private/secret"}},
+        lambda request: calls.append(request),
+    )
+    assert calls
+    assert "_hermes_source_provenance" not in calls[0]
+
+    monkeypatch.setenv("HERMES_LLM_EGRESS_ENFORCEMENT", "enabled")
+    assert runtime.egress_enforcement_enabled() is False
+    assert runtime.provider_uses_egress_firewall("nous") is True
+
+
+def test_managed_egress_posture_overrides_environment_disable(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    (tmp_path / "hermes").mkdir()
+    (tmp_path / "managed").mkdir()
+    (tmp_path / "hermes" / "config.yaml").write_text(
+        "runtime:\n  llm_egress_enforcement: disabled\n", encoding="utf-8"
+    )
+    (tmp_path / "managed" / "config.yaml").write_text(
+        "runtime:\n  llm_egress_enforcement: enabled\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_LLM_EGRESS_ENFORCEMENT", "disabled")
+
+    import agent.llm_egress_runtime as runtime
+    from hermes_cli import config as config_mod, managed_scope
+
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
+    assert runtime.egress_enforcement_enabled() is True
+
+
+def test_runtime_config_schema_exposes_egress_posture():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["runtime"]["llm_egress_enforcement"] == "enabled"
+
+
 def test_reconstructed_kanban_worker_redacts_paths_without_marker(
     tmp_path, monkeypatch
 ):
@@ -2708,7 +2793,7 @@ def test_protected_kanban_admits_exact_pr_receipt_decomposer_structure(
     ("unsafe_text", "reason"),
     [
         ("c2VjcmV0LXBheWxvYWQ=", "base64_payload"),
-        ("token=super-secret-value", "secret_detected"),
+        ("SECRET_TOKEN=super-secret-value", "secret_detected"),
         ("AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPP", "base64_payload"),
         (
             "raw review source: def _approved_sanitized_segments(value): "
@@ -4116,3 +4201,19 @@ def test_protected_feedback_replay_preserves_retirement_state(tmp_path, monkeypa
     assert receipt.allowed
     rendered = json.loads(authorized["input"][1]["output"])
     assert all(rendered["json"].get(key) == value for key, value in payload.items())
+
+
+@pytest.mark.parametrize("posture", ["false", "off", "0"])
+@pytest.mark.parametrize("managed", [False, True])
+def test_yaml_false_egress_posture_is_respected(tmp_path, monkeypatch, posture, managed):
+    from agent.llm_egress_runtime import egress_enforcement_enabled
+    from hermes_cli import config, managed_scope
+    home, policy = tmp_path / "home", tmp_path / "policy"
+    home.mkdir(); policy.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(policy))
+    target = policy if managed else home
+    (target / "config.yaml").write_text(f"runtime:\n  llm_egress_enforcement: {posture}\n", encoding="utf-8")
+    config._LOAD_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
+    assert egress_enforcement_enabled() is False

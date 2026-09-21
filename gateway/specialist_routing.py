@@ -14,10 +14,68 @@ import math
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, Protocol
 
-if TYPE_CHECKING:
-    from gateway.capability_registry import CapabilityRegistry
+from gateway.capability_registry import CapabilitySignature, RegistryResolution
+
+
+_FIXED_PROFILE_CAPABILITIES: dict[str, tuple[str, tuple[str, ...], str]] = {
+    "task-orchestrator": (
+        "repository-evidence",
+        ("audit", "inspect", "read", "review", "validate"),
+        "repository-evidence:read",
+    ),
+    "burndown-patch-steward": (
+        "repository-evidence",
+        ("audit", "inspect", "read", "review", "validate"),
+        "repository-evidence:read",
+    ),
+    "acceptance-gate-verifier": (
+        "repository-evidence",
+        ("audit", "inspect", "read", "review", "validate"),
+        "repository-evidence:read",
+    ),
+    "paper-safety-guardian": (
+        "financial-analysis",
+        ("audit", "inspect", "read", "review", "validate"),
+        "financial-analysis:read",
+    ),
+    "market-data-authority-auditor": (
+        "market-data",
+        ("audit", "inspect", "read", "review", "validate"),
+        "market-data:read",
+    ),
+    "route-execution-boundary-auditor": (
+        "repository-evidence",
+        ("audit", "inspect", "read", "review", "validate"),
+        "repository-evidence:read",
+    ),
+    "dependency-tooling-health-sentinel": (
+        "repository-evidence",
+        ("audit", "inspect", "read", "review", "validate"),
+        "repository-evidence:read",
+    ),
+    "copilot-learning-steward": (
+        "repository-evidence",
+        ("audit", "inspect", "read", "review", "validate"),
+        "repository-evidence:read",
+    ),
+    "mission-control-ux-auditor": (
+        "repository-evidence",
+        ("audit", "inspect", "read", "review", "validate"),
+        "repository-evidence:read",
+    ),
+    "research-scout": (
+        "research",
+        ("audit", "read", "research", "review"),
+        "research:read",
+    ),
+    "performance-sentinel": (
+        "repository-evidence",
+        ("audit", "inspect", "read", "review", "validate"),
+        "repository-evidence:read",
+    ),
+}
 
 
 SPECIALIST_PROFILES: dict[str, str] = {
@@ -60,6 +118,22 @@ class SpecialistRouteDecision:
     @property
     def dispatches(self) -> bool:
         return self.kind is RouteKind.SPECIALIST and self.profile is not None
+
+
+def capability_signature_for_profile(profile: str | None) -> CapabilitySignature | None:
+    """Return the fixed local lookup scope for one known specialist profile."""
+    if not isinstance(profile, str):
+        return None
+    capability = _FIXED_PROFILE_CAPABILITIES.get(profile)
+    if capability is None:
+        return None
+    domain, actions, permission = capability
+    return CapabilitySignature(
+        domain=domain,
+        actions=actions,
+        evidence_class="diagnostic-only",
+        requested_permissions=(permission,),
+    )
 
 
 def _general(audit_reason: str) -> SpecialistRouteDecision:
@@ -200,6 +274,94 @@ def parse_specialist_response(
 ClassifierCall = Callable[[list[dict[str, str]]], Awaitable[str]]
 
 
+class CapabilityResolver(Protocol):
+    """Minimal local registry dependency for active-profile routing."""
+
+    def resolve(self, signature: CapabilitySignature, *, profile_id: str | None = None) -> RegistryResolution:
+        """Return the locally verified resolution for one exact signature."""
+
+
+def _inactive_profile_decision() -> SpecialistRouteDecision:
+    return _general("inactive_profile")
+
+
+def _active_registry_decision(
+    resolution: RegistryResolution, fallback: SpecialistRouteDecision | None
+) -> SpecialistRouteDecision:
+    """Build a dispatch only from a local active-resolution receipt."""
+    if not isinstance(resolution.profile, str) or not resolution.profile.strip():
+        return _general("invalid_active_registry_profile")
+    return SpecialistRouteDecision(
+        kind=RouteKind.SPECIALIST,
+        profile=resolution.profile,
+        confidence=fallback.confidence if fallback is not None else None,
+        reason=resolution.reason,
+        title=(fallback.title if fallback is not None and fallback.title else "Specialist task"),
+        audit_reason="active_registry_match",
+    )
+
+
+def apply_registry_resolution(
+    resolution: RegistryResolution, *, fallback: SpecialistRouteDecision | None = None
+) -> SpecialistRouteDecision:
+    """Compose a trusted local resolution with an optional classifier fallback."""
+    if not isinstance(resolution, RegistryResolution):
+        return _general("registry_unavailable")
+    if resolution.status == "active_match":
+        return _active_registry_decision(resolution, fallback)
+    if resolution.status == "unavailable":
+        return _general("registry_unavailable")
+    if resolution.status not in {"no_match", "ambiguous"}:
+        return _general("registry_unavailable")
+    if fallback is None:
+        return _general(f"registry_{resolution.status}")
+    if not fallback.dispatches or fallback.profile not in SPECIALIST_PROFILES:
+        return _inactive_profile_decision()
+    return fallback
+
+
+def resolve_registry(
+    signature: CapabilitySignature,
+    registry: CapabilityResolver | None,
+    *,
+    profile_id: str | None = None,
+) -> RegistryResolution:
+    """Resolve locally and turn registry faults into a typed no-dispatch result."""
+    if not isinstance(signature, CapabilitySignature) or registry is None or not hasattr(registry, "resolve"):
+        return RegistryResolution(
+            status="unavailable", profile=None, reason="local capability registry is unavailable"
+        )
+    try:
+        try:
+            resolution = registry.resolve(signature, profile_id=profile_id)
+        except TypeError:
+            # Keep small test doubles and older external registry adapters
+            # compatible while the concrete registry gains profile identity.
+            resolution = registry.resolve(signature)
+    except Exception:
+        return RegistryResolution(
+            status="unavailable", profile=None, reason="local capability registry is unavailable"
+        )
+    if not isinstance(resolution, RegistryResolution):
+        return RegistryResolution(
+            status="unavailable", profile=None, reason="local capability registry returned invalid data"
+        )
+    return resolution
+
+
+def resolve_route(
+    signature: CapabilitySignature,
+    registry: CapabilityResolver,
+    *,
+    fallback: SpecialistRouteDecision | None = None,
+) -> SpecialistRouteDecision:
+    """Resolve an active specialist before using a fixed classifier fallback."""
+    return apply_registry_resolution(
+        resolve_registry(signature, registry, profile_id=fallback.profile if fallback else None),
+        fallback=fallback,
+    )
+
+
 async def classify_specialist_request(
     request: str,
     classifier: ClassifierCall,
@@ -213,6 +375,8 @@ async def classify_specialist_request(
         return _general("empty_request")
     explicit_burndown = classify_explicit_burndown_patch_request(request)
     if explicit_burndown is not None:
+        if registry is not None and not registry.is_profile_declared(explicit_burndown.profile or ""):
+            return _general("registry_unresolved")
         return explicit_burndown
     if not callable(classifier):
         return _general("classifier_unavailable")

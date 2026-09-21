@@ -13,7 +13,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -159,6 +159,8 @@ class GitHubReader(Protocol):
         self, repository: str, number: int, labels: tuple[str, ...]
     ) -> None: ...
 
+    def remove_issue_label(self, repository: str, number: int, label: str) -> None: ...
+
     def ensure_issue_label(
         self, repository: str, label: str, *, color: str, description: str
     ) -> None: ...
@@ -244,6 +246,9 @@ class ScanResult:
     degraded: bool = False
     required_local_ci_backlog: int = 0
     local_ci_catalogue_deferred: int = 0
+    required_local_ci_backlog_by_repository: Mapping[str, int] = field(
+        default_factory=dict
+    )
 
 
 def _dispatch_generation(task: KanbanTask, lease: ClaimLease) -> KanbanTask:
@@ -1057,7 +1062,10 @@ class PooledLocalGitRepository:
     def _configure_case_collision_sparse_checkout(
         self, workspace: Path, head_sha: str
     ) -> None:
-        """Keep case-colliding tracked paths out of case-insensitive slots."""
+        """Fail closed on a case-insensitive slot whenever the requested head contains
+        case-colliding tracked paths -- silently sparse-checking them out of the tree
+        would let a local CI run pass, and issue a merge-authorizing receipt, without
+        ever testing the colliding files' actual content."""
 
         ignore_case = self._run(
             ["git", "-C", str(workspace), "config", "--bool", "core.ignorecase"],
@@ -1077,22 +1085,11 @@ class PooledLocalGitRepository:
             if len(names_for_key) > 1
             for name in names_for_key
         )
-        patterns = ["/*", *(f"!/{name}" for name in colliding_names)]
-        self._run(
-            ["git", "-C", str(workspace), "sparse-checkout", "init", "--no-cone"]
-        )
-        self._run(
-            [
-                "git",
-                "-C",
-                str(workspace),
-                "sparse-checkout",
-                "set",
-                "--no-cone",
-                *patterns,
-            ]
-        )
-        self._run(["git", "-C", str(workspace), "sparse-checkout", "reapply"])
+        if colliding_names:
+            raise ExactHeadUnavailable(
+                "exact head contains case-colliding tracked paths on a "
+                f"case-insensitive checkout: {', '.join(colliding_names)}"
+            )
 
     def _slot_belongs_to(self, path: Path, workspace: Path) -> bool:
         """Whether ``workspace`` is a live worktree of the repository at ``path``."""
@@ -1211,6 +1208,7 @@ class ScanController:
         created = 0
         attempted = 0
         required_local_ci_backlog = 0
+        required_local_ci_backlog_by_repository: dict[str, int] = {}
         local_ci_catalogue_deferred = 0
         self._label_batches = []
         if not self._policy.enabled or self._policy.not_before is None:
@@ -1218,6 +1216,7 @@ class ScanController:
                 created,
                 skipped,
                 required_local_ci_backlog=required_local_ci_backlog,
+                required_local_ci_backlog_by_repository=required_local_ci_backlog_by_repository,
             )
         for repository in self._policy.targets:
             target = self._policy.targets[repository]
@@ -1247,12 +1246,14 @@ class ScanController:
 
             pull_requests = order_pull_requests(pull_requests)
             self._label_batches.append((repository, target, pull_requests))
-            required_local_ci_backlog += _required_local_ci_backlog_count(
+            repository_backlog = _required_local_ci_backlog_count(
                 self._policy,
                 self._ledger,
                 target,
                 pull_requests,
             )
+            required_local_ci_backlog += repository_backlog
+            required_local_ci_backlog_by_repository[repository] = repository_backlog
             if (
                 self._policy.local_ci_audit is not None
                 and self._policy.local_ci_audit.applies_to(repository)
@@ -1348,6 +1349,34 @@ class ScanController:
                             head_sha=pull_request.head_sha,
                         )
                     )
+                    if local_ci_receipt_status == "completed":
+                        exact_ci = FeedbackReceipt(
+                            repository=pull_request.base_repository,
+                            pr_number=pull_request.number,
+                            feedback_kind="pr_local_ci",
+                            feedback_id=_local_ci_feedback_id(pull_request),
+                            head_sha=pull_request.head_sha,
+                        )
+                        base_sha = (
+                            current.base_sha if current is not None else pull_request.base_sha
+                        )
+                        if (
+                            self._ledger.ci_receipt_row_exists(
+                                pull_request.base_repository,
+                                pull_request.number,
+                                pull_request.head_sha,
+                                base_sha=base_sha,
+                            )
+                            and self._ledger.latest_ci_receipt_for_head(
+                                pull_request.base_repository,
+                                pull_request.number,
+                                pull_request.head_sha,
+                                base_sha=base_sha,
+                            )
+                            is None
+                        ):
+                            self._ledger.quarantine_malformed_ci_receipt(exact_ci)
+                            local_ci_receipt_status = "failed"
                 feedback_pending = False
                 base_refresh_pending = False
                 base_head_cache: dict[tuple[str, str, str], str | None] = {}
@@ -1508,6 +1537,7 @@ class ScanController:
             created,
             skipped,
             required_local_ci_backlog=required_local_ci_backlog,
+            required_local_ci_backlog_by_repository=required_local_ci_backlog_by_repository,
             local_ci_catalogue_deferred=local_ci_catalogue_deferred,
         )
 
@@ -1763,7 +1793,8 @@ class ScanController:
         if not isinstance(latest, CIAuditReceipt) or latest.receipt_id != audit.receipt_id:
             return "superseded_ci_receipt"
         if (
-            audit.actions_state.actions_enabled
+            not audit_policy.required_for_open_prs
+            and audit.actions_state.actions_enabled
             and not audit.actions_state.billing_blocked
             and audit.actions_state.check_count > 0
             and audit.actions_state.all_green
@@ -1908,6 +1939,7 @@ class ScanController:
             current.base_repository,
             current.number,
             current.head_sha,
+            base_sha=current.base_sha,
         )
         if getattr(existing_audit, "status", None) == "failed":
             repair_status = self.dispatch_ci_failure(existing_audit)
@@ -2267,7 +2299,7 @@ class ScanController:
                 prepared.expected_sha,
             )
             task_id = self._kanban.create_or_get_task(
-                _dispatch_generation(_task(
+                _task(
                     self._policy,
                     receipt,
                     prepared,
@@ -2276,7 +2308,7 @@ class ScanController:
                     assignee_override=self._typed_ci_assignee(receipt, feedback.body),
                     labels=labels,
                     internal_intent_review=internal_intent_review,
-                ), lease)
+                )
             )
             _bind_pooled_worktree_task(
                 self._local_git, receipt, task_id, self._policy.board or ""
@@ -3404,7 +3436,7 @@ def _governed_command_prefix(control_home: Path) -> str:
 
     return (
         f"env HERMES_HOME={shlex.quote(str(control_home))} "
-        f"{shlex.quote(sys.executable)} -P -m hermes_cli.main github-pr-feedback"
+        f"{shlex.quote(sys.executable)} -E -P -m hermes_cli.main github-pr-feedback"
     )
 
 
@@ -3417,6 +3449,7 @@ def _scan_result(
     skipped: Mapping[str, int],
     *,
     required_local_ci_backlog: int = 0,
+    required_local_ci_backlog_by_repository: Mapping[str, int] | None = None,
     local_ci_catalogue_deferred: int = 0,
 ) -> ScanResult:
     values = dict(skipped)
@@ -3426,5 +3459,8 @@ def _scan_result(
         values,
         degraded,
         required_local_ci_backlog=required_local_ci_backlog,
+        required_local_ci_backlog_by_repository=dict(
+            required_local_ci_backlog_by_repository or {}
+        ),
         local_ci_catalogue_deferred=local_ci_catalogue_deferred,
     )

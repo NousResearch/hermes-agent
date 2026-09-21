@@ -69,10 +69,16 @@ def _try_acquire_mcp_discovery_lock() -> Any:
     # The cached path lives on the ORIGIN module (tests reset ``tools.mcp_tool._MCP_DISCOVERY_LOCK_PATH``).
     from tools import mcp_tool as _origin
     try:
-        from hermes_constants import get_hermes_home
-        if _origin._MCP_DISCOVERY_LOCK_PATH is None:
-            _origin._MCP_DISCOVERY_LOCK_PATH = str(get_hermes_home() / ".mcp-discovery.lock")
-        fh = open(_origin._MCP_DISCOVERY_LOCK_PATH, "w", encoding="utf-8")
+        from hermes_constants import get_hermes_home, get_hermes_home_override
+        if get_hermes_home_override() is not None:
+            # A multiplexed worker is task-scoped; never reuse the launch
+            # profile's cached path for a routed profile.
+            lock_path = str(get_hermes_home() / ".mcp-discovery.lock")
+        else:
+            if _origin._MCP_DISCOVERY_LOCK_PATH is None:
+                _origin._MCP_DISCOVERY_LOCK_PATH = str(get_hermes_home() / ".mcp-discovery.lock")
+            lock_path = _origin._MCP_DISCOVERY_LOCK_PATH
+        fh = open(lock_path, "w", encoding="utf-8")
     except Exception:
         return _core._LOCK_UNAVAILABLE
     try:
@@ -194,8 +200,9 @@ def _signal_reconnect(server: Any) -> bool:
 
 def reconnect_mcp_server(server_name: str) -> bool:
     """Ask a currently-live MCP server to rebuild after external re-auth."""
+    from tools.mcp_tool_scope import _resolve_server_key
     with _core._lock:
-        server = _core._servers.get(server_name)
+        server = _core._servers.get(_resolve_server_key(server_name, lock_held=True))
     return server is not None and _signal_reconnect(server)
 
 

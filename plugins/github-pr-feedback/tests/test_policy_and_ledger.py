@@ -312,6 +312,26 @@ def test_merge_maintainer_is_disabled_by_default(tmp_path: Path) -> None:
     assert policy.merge_maintainer is None
 
 
+def test_disabled_merge_maintainer_accepts_staged_settings(tmp_path: Path) -> None:
+    repository_path = tmp_path / "widgets"
+    initialize_git_worktree(repository_path)
+    raw = enabled_raw_config(repository_path)
+    raw["merge_maintainer"] = {
+        "enabled": False,
+        "assignee": "pr-merge-maintainer",
+        "repository": "acme/widgets",
+        "author_login": "owner",
+        "base_branch": "stable",
+        "merge_methods": ["squash", "rebase", "merge"],
+        "receipt_max_age_seconds": 21600,
+        "report_only": True,
+        "post_merge": {"enabled": False},
+        "require_per_pr_enrollment": True,
+    }
+
+    assert load_policy(raw).merge_maintainer is None
+
+
 def test_enabled_policy_parses_strict_merge_and_post_merge_settings(
     tmp_path: Path,
 ) -> None:

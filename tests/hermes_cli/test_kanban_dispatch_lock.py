@@ -5,7 +5,8 @@ systemd/launchd host can leave an orphan dispatcher that escapes the
 service cgroup, survives ``systemctl restart``, and becomes a second
 long-lived writer on the same ``kanban.db`` — the documented root cause of
 multi-writer SQLite WAL corruption. ``dispatch_once`` now wraps each tick in
-a non-blocking, board-scoped dispatch lock so two dispatchers can never run
+non-blocking host-admission and board-scoped dispatch locks so cross-board
+snapshots and claims cannot race. Two dispatchers can never run
 a reclaim/spawn/write tick concurrently. The losing dispatcher returns an
 empty ``DispatchResult`` with ``skipped_locked=True`` and does no DB writes.
 """
@@ -67,8 +68,7 @@ def test_held_lock_skips_the_tick_without_writes(conn):
 
 
 def test_lock_is_board_scoped(conn):
-    """Holding board A's dispatch lock must not block a tick on board B —
-    distinct boards have distinct DB files and tick independently."""
+    """The underlying board lock remains independently keyed by DB path."""
     db_default = kb.kanban_db_path(board="default")
     db_other = db_default.with_name("other-board-kanban.db")
 
@@ -78,4 +78,11 @@ def test_lock_is_board_scoped(conn):
         with kbc._dispatch_tick_lock(db_other) as held_b:
             assert held_b is True, "a lock on a different board must be independent"
 
+
+def test_host_admission_lock_is_shared_across_boards(kanban_home):
+    """The admission lock serializes the cross-board snapshot/claim phase."""
+    with kbc._dispatch_host_admission_lock() as held:
+        assert held is True
+        with kbc._dispatch_host_admission_lock() as contended:
+            assert contended is False
 

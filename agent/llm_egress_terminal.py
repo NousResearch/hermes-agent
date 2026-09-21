@@ -95,6 +95,14 @@ _VERIFIED_DIAGNOSTIC_ATOM = re.compile(
 )
 
 
+def _read_grant_text(grant: SourceGrant) -> str | None:
+    try:
+        lines = Path(grant.canonical_path).read_bytes().splitlines(keepends=True)
+        return b"".join(lines[grant.line_start - 1 : grant.line_end]).decode("utf-8")
+    except (OSError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+
+
 def _approved_sanitized(text: str, *, cap: int) -> SanitizedSegment:
     # Admission is finalized by LLMEgressFirewall so every denial is reported
     # as its content-free EgressBlocked decision. Keep only the local type and
@@ -300,6 +308,7 @@ def _scratch_read_file_tool_call_ids(value: Any) -> frozenset[str]:
                     path = parsed.get("path") if isinstance(parsed, Mapping) else None
                 except (TypeError, ValueError, json.JSONDecodeError):
                     path = None
+                # no-tmp: ok — explicitly checking for /tmp/ paths in tool arguments
                 if isinstance(path, str) and path.startswith(("/tmp/", "/private/tmp/")) and isinstance(call_id, str):
                     recognized.update(tool_result_id_variants(call_id))
             for child in item.values():
@@ -1449,7 +1458,7 @@ def _segment_read_file_presentation(
         expected = "\n".join(
             f"{line_number}|{line}"
             for line_number, line in enumerate(
-                raw_text.split("\n"), start=grant.line_start
+                raw_text.splitlines(), start=grant.line_start
             )
         )
         if parsed["content"] == expected:
@@ -1474,7 +1483,7 @@ def _segment_read_file_presentation(
                 expected = "\n".join(
                     f"{line_number}|{line}"
                     for line_number, line in enumerate(
-                        raw_text.split("\n"), start=rebound.line_start
+                        raw_text.splitlines(), start=rebound.line_start
                     )
                 )
                 if parsed["content"] == expected:

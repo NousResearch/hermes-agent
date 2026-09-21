@@ -6,16 +6,14 @@
  * passes `hidden: true` unconditionally (pinned in
  * canonical-chat-creation.test.ts), and this reconciliation sweep pushes rows
  * born visible under the old pref — or minted outside the plugin entirely —
- * back to hidden through bounded reconciliation.
+ * back to hidden on load and on every reconnect.
  *
- * Reconciliation has two paths:
- *   1. by id — group room member sessions recorded by the plugin, repaired
- *      cheaply on load/reconnect without listing profile databases;
- *   2. by title — the explicitly opened bot's own profile listing, which is the only
+ * The sweep has two halves and runs BOTH, id-based first:
+ *   1. by id — every group room's member sessions, which the plugin recorded;
+ *   2. by title — each roster bot's own profile listing, which is the only
  *      thing that reaches CLI-born "Agent Inbox" / extra "Bot Chat" rows AND
  *      the only thing that hides a canonical Bot Chat. Canonical chats are
- *      identified by NAME; no stored id pointer is consulted and idle peers
- *      stay asleep.
+ *      identified by NAME; no stored id pointer is consulted anywhere here.
  *
  * Ported from tests/hide-bot-chats.test.mjs, which sliced the sweep out of
  * the old plugin.js bundle and ran it under `vm`. The functions are module-
@@ -54,11 +52,21 @@ vi.mock('./canonical-chat', () => ({ PROFILE_SESSION_LIST_LIMIT: 200 }))
 
 vi.mock('./data', () => ({ $lastRoster: { get: () => lastRoster.value } }))
 
-vi.mock('./group-chat', () => ({ $groupChats: { get: () => groupChats.value } }))
+vi.mock('./group-chat', () => ({
+  $groupChats: { get: () => groupChats.value },
+  updateGroupChat: (group: string, mutate: (room: any) => unknown) => {
+    groupChats.value = {
+      ...groupChats.value,
+      [group]: mutate(groupChats.value[group] || {})
+    }
+  }
+}))
 
 vi.mock('./group-membership', () => ({
   groupMemberKey: (member: GroupMember) =>
-    member?.route?.connectionId ? `${member.route.connectionId}::${member.name}` : member?.name
+    member?.route?.connectionId ? `${member.route.connectionId}::${member.name}` : member?.name,
+  groupSessionMemberKey: (key: string) =>
+    key.startsWith('thread:') ? key.slice(key.indexOf('::', 'thread:'.length) + 2) : key
 }))
 
 vi.mock('./routing', () => ({
@@ -89,12 +97,6 @@ async function runSweep() {
   for (let turn = 0; turn < 3; turn += 1) {
     await new Promise(resolve => setTimeout(resolve, 0))
   }
-}
-
-async function reconcileProfiles(...bots: RosterRow[]) {
-  const { reconcileBotProfileSessions } = await import('./session-sweep')
-
-  await Promise.all(bots.map(bot => reconcileBotProfileSessions(bot)))
 }
 
 beforeEach(() => {
@@ -196,6 +198,29 @@ describe('the id half: group room member sessions', () => {
     expect(hiddenCalls().every(([, options]) => options.sessionId === 'same-id')).toBe(true)
   })
 
+  it('prunes a missing persisted room session so later startups do not resend it', async () => {
+    groupChats.value = {
+      Core: {
+        sessionOwners: { alpha: { name: 'alpha' } },
+        sessions: { alpha: 'deleted-session' }
+      }
+    }
+    lastRoster.value = [{ name: 'alpha' } as RosterRow]
+    hostMock.setPersistedSessionHidden.mockRejectedValue(
+      new Error('404: {"detail":"Session not found"}')
+    )
+
+    await runSweep()
+
+    expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['deleted-session'])
+    expect((groupChats.value.Core as { sessions: Record<string, string> }).sessions).toEqual({})
+    expect((groupChats.value.Core as { sessionOwners: Record<string, unknown> }).sessionOwners).toEqual({})
+
+    await runSweep()
+
+    expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['deleted-session'])
+  })
+
   it('fails closed on a source-qualified session whose persisted owner is malformed', async () => {
     // A source-qualified key without its immutable owner must never fall
     // through to ambient routing — that hides whichever session happens to
@@ -242,7 +267,7 @@ describe('the title half: each roster bot’s own profile listing', () => {
   })
 
   it('hides Bot-Mode plumbing titles per roster bot, and only those', async () => {
-    await reconcileProfiles(...lastRoster.value)
+    await runSweep()
 
     const lists = hostMock.listPersistedSessions.mock.calls as Array<
       [null | ProfileRoute, { include_hidden?: boolean; profile: string }]
@@ -263,23 +288,14 @@ describe('the title half: each roster bot’s own profile listing', () => {
     expect(hiddenCalls().find(([, options]) => options.sessionId === 'r-1')?.[0]?.connectionId).toBe('mini')
   })
 
-  it('keeps the automatic id repair independent from an unreachable on-demand profile', async () => {
-    // Automatic repair owns only session ids already recorded in group state.
-    // An unreachable on-demand profile reconciliation must not cost those ids.
+  it('runs beside the id half, and a throwing title sweep never breaks it', async () => {
+    // The load/reconnect entrypoint runs BOTH halves; the title sweep is
+    // best-effort, so an unreachable source must not cost the known ids.
     groupChats.value = { Core: { sessions: { alpha: 'room-core-a' } } }
     hostMock.listPersistedSessions.mockRejectedValue(new Error('gateway not ready'))
 
     await runSweep()
-    await reconcileProfiles({ name: 'alpha' } as RosterRow)
 
     expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['room-core-a'])
-  })
-
-  it('does not enumerate the fleet automatically on load', async () => {
-    lastRoster.value = Array.from({ length: 12 }, (_, index) => ({ name: `bot-${index}` })) as RosterRow[]
-
-    await runSweep()
-
-    expect(hostMock.listPersistedSessions).not.toHaveBeenCalled()
   })
 })

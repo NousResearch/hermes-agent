@@ -22,19 +22,87 @@ from github_pr_feedback.cli import (
     _ci_audit_comment,
     _factual_reply_is_missing,
     _retrigger_codex_review,
+    _run_repair_scan_by_repository,
 )
 from github_pr_feedback.controller import KanbanTask
 from github_pr_feedback.github_client import CheckState, Feedback
 from github_pr_feedback.ledger import FeedbackLedger
+from github_pr_feedback.ledger import MaintenanceCommandEvidence
 from github_pr_feedback.merge_controller import MergeDecision
 from github_pr_feedback.policy import (
     CODEX_REVIEW_TRIGGER,
     FeedbackReceipt,
+    PluginPolicy,
     PullRequest,
+    RepairStewardPolicy,
     Reviewer,
     codex_review_trigger_comment,
 )
 from github_pr_feedback.repair_controller import pr_repair_attribution_line
+
+
+def test_single_merge_handoff_uses_deployment_executor_on_every_path(monkeypatch):
+    import github_pr_feedback.cli as cli
+
+    merge_policy = SimpleNamespace(repository="acme/widgets", post_merge=object())
+    policy = SimpleNamespace(
+        merge_policy_for=lambda _repository: merge_policy,
+        repair_steward=None,
+    )
+    calls = []
+    merge = SimpleNamespace(
+        tested_head_sha="b" * 40,
+        method="squash",
+        merge_commit_oid="c" * 40,
+    )
+
+    class Deployment:
+        status = "completed"
+        blocker = None
+
+        def to_payload(self):
+            return {"status": self.status}
+
+    class Executor:
+        def __init__(self, received_policy, received_ledger):
+            calls.append(("init", received_policy, received_ledger))
+
+        def run(self, received_merge):
+            calls.append(("run", received_merge))
+            return Deployment()
+
+    class Ledger:
+        def is_merge_enrolled(self, _repository, _pr_number):
+            return True
+
+        def latest_deployment_receipt(self, _repository, _pr_number):
+            return None
+
+    class MergeController:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run(self, _pr_number):
+            return SimpleNamespace(receipt=merge, decision=SimpleNamespace(blockers=()))
+
+    monkeypatch.setattr(cli, "PostMergeExecutor", Executor)
+    monkeypatch.setattr(cli, "CanonicalMergeEvidenceSource", lambda *_args: object())
+    monkeypatch.setattr(cli, "MergeController", MergeController)
+
+    result = cli._run_single_pr_merge_handoff(
+        policy,
+        Ledger(),
+        17,
+        repository="acme/widgets",
+        github=object(),
+        kanban=object(),
+    )
+
+    assert result["status"] == "merged"
+    assert result["deployment"] == {"status": "completed", "blocker": None}
+    assert [call[0] for call in calls] == ["init", "run"]
+    assert calls[0][1] is merge_policy.post_merge
+    assert calls[1][1] is merge
 
 
 def test_grouped_audit_opens_sqlite_ledger_in_worker_thread(
@@ -206,6 +274,13 @@ def test_scan_prioritizes_feedback_before_degraded_repair_maintenance(
     monkeypatch.setattr("github_pr_feedback.cli._exclusive_scan_lock", lambda: Lock())
     monkeypatch.setattr("github_pr_feedback.cli.FeedbackLedger", Ledger)
     monkeypatch.setattr("github_pr_feedback.cli.RepairController", Repair)
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_repair_scan_by_repository",
+        lambda *_args, **_kwargs: (
+            order.append("repair")
+            or {"status": "degraded", "created": 0, "skipped": {}}
+        ),
+    )
     monkeypatch.setattr("github_pr_feedback.cli._controller", lambda *_args: Feedback())
     monkeypatch.setattr("github_pr_feedback.cli._github_client", lambda _policy: object())
 
@@ -219,6 +294,8 @@ def _run_scan_with_primary_result(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     primary_result: SimpleNamespace,
+    *,
+    repair_callback=None,
 ) -> tuple[int, list[str], dict[str, object]]:
     from github_pr_feedback.cli import _scan
 
@@ -243,7 +320,7 @@ def _run_scan_with_primary_result(
         enabled = True
         repair_steward = object()
         merge_maintainer = object()
-        release_maintenance = object()
+        release_maintenance = SimpleNamespace(repository="configured")
 
         def merge_policies(self):
             return (self.merge_maintainer,)
@@ -270,6 +347,12 @@ def _run_scan_with_primary_result(
                 required_local_ci_backlog=0,
             )
 
+    def repair_by_repository(_policy, _ledger, repository_backlog):
+        order.append(
+            "conflicts" if any(repository_backlog.values()) else "repair"
+        )
+        return {"status": "ok", "created": 0, "skipped": {}}
+
     def merge(*_args: object, **_kwargs: object) -> dict[str, object]:
         order.append("merge")
         return {"status": "ok"}
@@ -284,6 +367,10 @@ def _run_scan_with_primary_result(
     monkeypatch.setattr("github_pr_feedback.cli._exclusive_scan_lock", lambda: Lock())
     monkeypatch.setattr("github_pr_feedback.cli.FeedbackLedger", Ledger)
     monkeypatch.setattr("github_pr_feedback.cli.RepairController", Repair)
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_repair_scan_by_repository",
+        repair_callback or repair_by_repository,
+    )
     monkeypatch.setattr(
         "github_pr_feedback.cli._controller", lambda *_args: Primary()
     )
@@ -307,6 +394,7 @@ def test_scan_keeps_merge_maintainer_moving_during_required_ci_backlog(
         skipped={"local_ci_dispatch_cap": 1},
         degraded=False,
         required_local_ci_backlog=2,
+        required_local_ci_backlog_by_repository={"configured": 2},
     )
 
     returncode, order, payload = _run_scan_with_primary_result(
@@ -318,6 +406,31 @@ def test_scan_keeps_merge_maintainer_moving_during_required_ci_backlog(
     assert payload["required_local_ci_backlog"] == 2
     assert payload["deferred"] == ["non_conflict_repair", "release_maintenance"]
     assert payload["merge"]["status"] == "ok"
+
+
+def test_scan_passes_per_repository_ci_backlog_to_repair_lane(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = SimpleNamespace(
+        created=0,
+        skipped={},
+        degraded=False,
+        required_local_ci_backlog=1,
+        required_local_ci_backlog_by_repository={"org/blocked": 1, "org/ready": 0},
+    )
+    observed = []
+
+    def repair_by_repository(_policy, _ledger, backlog, **_kwargs):
+        observed.append(dict(backlog))
+        return {"status": "ok", "created": 0, "skipped": {}}
+
+    returncode, _order, _payload = _run_scan_with_primary_result(
+        monkeypatch, capsys, result, repair_callback=repair_by_repository
+    )
+
+    assert returncode == 0
+    assert observed == [{"org/blocked": 1, "org/ready": 0}]
 
 
 def test_scan_runs_label_side_lane_after_merge_maintainer(
@@ -393,6 +506,7 @@ def test_scan_does_not_defer_secondary_fanout_for_read_cap_without_ci_backlog(
         skipped={"local_ci_open_pr_scan_cap": 1},
         degraded=False,
         required_local_ci_backlog=0,
+        required_local_ci_backlog_by_repository={"configured": 0},
     )
 
     returncode, order, payload = _run_scan_with_primary_result(
@@ -419,6 +533,67 @@ def test_scan_payload_reports_catalogue_deferred_separately_from_skips() -> None
 
     assert payload["local_ci_catalogue_deferred"] == 199
     assert "local_ci_open_pr_scan_cap" not in payload["skipped"]
+
+
+def test_repair_scan_keeps_unblocked_repositories_eligible() -> None:
+    from github_pr_feedback import cli
+
+    policy = PluginPolicy(
+        enabled=True,
+        targets={},
+        reviewer_logins=frozenset(),
+        reviewer_associations=frozenset(),
+        include_self_feedback=False,
+        include_bot_feedback=False,
+        auto_dispatch=False,
+        not_before=None,
+        assignee=None,
+        board=None,
+        repair_steward=RepairStewardPolicy(
+            assignee="repair-agent",
+            repositories=frozenset({"acme/blocked", "acme/eligible"}),
+            report_only=True,
+        ),
+    )
+    seen: list[tuple[frozenset[str], bool]] = []
+
+    class Repair:
+        def __init__(self, serial_policy, *_args: object, **_kwargs: object) -> None:
+            self.repositories = serial_policy.repair_steward.repositories
+
+        def scan(self, *, conflicts_only=False):
+            seen.append((self.repositories, conflicts_only))
+            return SimpleNamespace(created=1, skipped={}, degraded=False)
+
+    class Github:
+        pass
+
+    class Kanban:
+        pass
+
+    original_repair = cli.RepairController
+    original_github = cli.GitHubClient
+    original_kanban = cli.KanbanSubprocessClient
+    cli.RepairController = Repair
+    cli.GitHubClient = Github
+    cli.KanbanSubprocessClient = Kanban
+    try:
+        payload = _run_repair_scan_by_repository(
+            policy,
+            object(),
+            {"acme/blocked": 1, "acme/eligible": 0},
+        )
+    finally:
+        cli.RepairController = original_repair
+        cli.GitHubClient = original_github
+        cli.KanbanSubprocessClient = original_kanban
+
+    assert seen == [
+        (frozenset({"acme/blocked"}), True),
+        (frozenset({"acme/eligible"}), False),
+    ]
+    assert payload["created"] == 2
+    assert payload["deferred_repositories"] == ["acme/blocked"]
 
 
 class RecordingKanbanRunner:
@@ -690,6 +865,105 @@ def test_scan_lock_rejects_a_concurrent_scan_for_the_same_control_home(
 
     with _exclusive_scan_lock(tmp_path) as after_release:
         assert after_release is True
+
+
+def test_retry_deployment_recovers_completed_merge_without_receipt_and_holds_scan_lock(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from github_pr_feedback import cli
+    from github_pr_feedback.cli import _retry_deployment
+
+    merge = SimpleNamespace(pr_number=17)
+    policy = SimpleNamespace(
+        merge_policy_for=lambda _repository: SimpleNamespace(post_merge=object())
+    )
+    state = {"entered": False, "exited": False}
+
+    class Lock:
+        def __enter__(self):
+            state["entered"] = True
+            return True
+
+        def __exit__(self, *_args):
+            state["exited"] = True
+
+    class Ledger:
+        def failed_deployment_merge_receipts(self, _repository):
+            assert state["entered"] and not state["exited"]
+            return ()
+
+        def latest_deployment_receipt(self, _repository, _pr_number):
+            assert state["entered"] and not state["exited"]
+            return None
+
+        def completed_merge_receipt(self, _repository, _pr_number):
+            assert state["entered"] and not state["exited"]
+            return merge
+
+        def close(self):
+            assert state["entered"] and not state["exited"]
+
+    class Deployment:
+        status = "completed"
+
+        def to_payload(self):
+            return {"status": self.status}
+
+    class Executor:
+        def __init__(self, _policy, _ledger):
+            assert state["entered"] and not state["exited"]
+
+        def run(self, candidate):
+            assert candidate is merge
+            assert state["entered"] and not state["exited"]
+            return Deployment()
+
+    monkeypatch.setattr(cli, "_load_policy_from_context", lambda _ctx: policy)
+    monkeypatch.setattr(cli, "_exclusive_scan_lock", lambda: Lock())
+    monkeypatch.setattr(cli.FeedbackLedger, "for_current_profile", lambda: Ledger())
+    monkeypatch.setattr("github_pr_feedback.cli.PostMergeExecutor", Executor)
+
+    assert _retry_deployment(
+        None, SimpleNamespace(repository="acme/widgets", pr_number=17)
+    ) == 0
+    assert state == {"entered": True, "exited": True}
+    assert json.loads(capsys.readouterr().out) == {"status": "completed"}
+
+
+def test_retry_deployment_defers_when_scan_lock_is_held(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from github_pr_feedback import cli
+    from github_pr_feedback.cli import _retry_deployment
+
+    class Lock:
+        def __enter__(self):
+            return False
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        cli,
+        "_load_policy_from_context",
+        lambda _ctx: SimpleNamespace(
+            merge_policy_for=lambda _repository: SimpleNamespace(post_merge=object())
+        ),
+    )
+    monkeypatch.setattr(cli, "_exclusive_scan_lock", lambda: Lock())
+    monkeypatch.setattr(
+        cli.FeedbackLedger,
+        "for_current_profile",
+        lambda: pytest.fail("lock contention must stop before opening the ledger"),
+    )
+
+    assert _retry_deployment(
+        None, SimpleNamespace(repository="acme/widgets", pr_number=17)
+    ) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "blocker": "scan_in_progress",
+        "status": "blocked",
+    }
 
 
 def test_cli_exposes_status_doctor_and_an_exact_immutable_retry_identity() -> None:
@@ -1031,8 +1305,31 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    from github_pr_feedback.release_maintenance import maintenance_worktree_path
+
     repository = tmp_path / "repository"
     subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    (repository / "README.md").write_text("maintenance\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Hermes Tests",
+            "-c",
+            "user.email=hermes-tests@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "initial",
+        ],
+        check=True,
+    )
+    head_sha = subprocess.check_output(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
+    ).strip()
     settings = enabled_settings(repository)
     settings["release_maintenance"] = {
         "enabled": True,
@@ -1050,6 +1347,24 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
         ],
     }
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
+    worktree_root = tmp_path / "profile" / "github-pr-feedback" / "maintenance-worktrees"
+    exact_cwd = maintenance_worktree_path(
+        worktree_root, "acme/widgets", head_sha, "audit-unit-tests"
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            str(exact_cwd),
+            head_sha,
+        ],
+        check=True,
+    )
     context = RecordingContext(settings)
     parser = argparse.ArgumentParser()
     from github_pr_feedback.cli import handle_cli_with_context, setup_cli
@@ -1061,7 +1376,7 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
             "--repository",
             "acme/widgets",
             "--head-sha",
-            "a" * 40,
+            head_sha,
             "--lane",
             "unit-tests",
             "--status",
@@ -1073,7 +1388,9 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
                 [
                     {
                         "argv": ["python3", "-m", "pytest", "-q"],
-                        "cwd": str(repository),
+                        "cwd": str(
+                            exact_cwd
+                        ),
                         "returncode": 0,
                         "duration_ms": 125,
                         "timed_out": False,
@@ -1090,11 +1407,230 @@ def test_complete_maintenance_cli_records_only_a_configured_exact_head_lane(
     ledger = FeedbackLedger.for_current_profile()
     try:
         assert (
-            ledger.maintenance_receipts("acme/widgets", "a" * 40)["unit-tests"].status
+            ledger.maintenance_receipts("acme/widgets", head_sha)["unit-tests"].status
             == "passed"
         )
     finally:
         ledger.close()
+
+
+def test_maintenance_command_evidence_requires_exact_command_and_clean_head(
+    tmp_path: Path,
+) -> None:
+    from github_pr_feedback.cli import _validate_maintenance_command_evidence
+    from github_pr_feedback.policy import ReleaseMaintenanceLane, ReleaseMaintenancePolicy
+    from github_pr_feedback.release_maintenance import maintenance_worktree_path
+
+    maintenance = ReleaseMaintenancePolicy(
+        assignee="steward",
+        repository="acme/widgets",
+        base_branch="stable",
+        quiet_period_seconds=900,
+        max_runtime_seconds=7200,
+        lanes=(
+            ReleaseMaintenanceLane(
+                "unit-tests", "tester", ("python3", "-m", "pytest", "-q")
+            ),
+        ),
+    )
+
+    def evidence(argv: tuple[str, ...]) -> MaintenanceCommandEvidence:
+        return MaintenanceCommandEvidence(
+            argv=argv,
+            cwd="/tmp/widgets",
+            returncode=0,
+            duration_ms=1,
+            timed_out=False,
+            stdout_sha256="a" * 64,
+            stderr_sha256="b" * 64,
+        )
+
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+
+    def commit(contents: str) -> str:
+        (repository / "README.md").write_text(contents, encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "-c",
+                "user.name=Hermes Tests",
+                "-c",
+                "user.email=hermes-tests@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "maintenance",
+            ],
+            check=True,
+        )
+        return subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
+        ).strip()
+
+    head_sha = commit("initial\n")
+    repaired_head_sha = commit("repaired\n")
+    worktree_root = tmp_path / "maintenance-worktrees"
+    exact_cwd = maintenance_worktree_path(
+        worktree_root, "acme/widgets", head_sha, "audit-unit-tests"
+    )
+    repair_cwd = maintenance_worktree_path(
+        worktree_root, "acme/widgets", head_sha, "repair-unit-tests"
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            str(exact_cwd),
+            head_sha,
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            str(repair_cwd),
+            repaired_head_sha,
+        ],
+        check=True,
+    )
+    _validate_maintenance_command_evidence(
+        maintenance,
+        "unit-tests",
+        (
+            MaintenanceCommandEvidence(
+                argv=("python3", "-m", "pytest", "-q"),
+                cwd=str(exact_cwd),
+                returncode=0,
+                duration_ms=1,
+                timed_out=False,
+                stdout_sha256="a" * 64,
+                stderr_sha256="b" * 64,
+            ),
+        ),
+        worktree_root=worktree_root,
+        head_sha=head_sha,
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        _validate_maintenance_command_evidence(
+            maintenance,
+            "unit-tests",
+            (evidence(("python3", "-m", "pytest", "-q", "--maxfail=1")),),
+            worktree_root=worktree_root,
+            head_sha=head_sha,
+        )
+    with pytest.raises(ValueError, match="exact worktree"):
+        _validate_maintenance_command_evidence(
+            maintenance,
+            "unit-tests",
+            (evidence(("python3", "-m", "pytest", "-q")),),
+            worktree_root=worktree_root,
+            head_sha=head_sha,
+        )
+    with pytest.raises(ValueError, match="HEAD does not match"):
+        _validate_maintenance_command_evidence(
+            maintenance,
+            "unit-tests",
+            (
+                MaintenanceCommandEvidence(
+                    argv=("python3", "-m", "pytest", "-q"),
+                    cwd=str(repair_cwd),
+                    returncode=0,
+                    duration_ms=1,
+                    timed_out=False,
+                    stdout_sha256="a" * 64,
+                    stderr_sha256="b" * 64,
+                ),
+            ),
+            worktree_root=worktree_root,
+            head_sha=head_sha,
+        )
+
+
+def test_scan_keeps_repository_keys_when_only_one_policy_is_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from github_pr_feedback.cli import _scan
+
+    class Lock:
+        def __enter__(self) -> bool:
+            return True
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class Ledger:
+        @classmethod
+        def for_current_profile(cls):
+            return cls()
+
+        def close(self) -> None:
+            pass
+
+    class Policy:
+        enabled = True
+        repair_steward = None
+        merge_maintainer = None
+        release_maintenance = None
+
+        def merge_policies(self):
+            return ()
+
+        def release_policies(self):
+            return (
+                SimpleNamespace(repository="acme/eligible"),
+                SimpleNamespace(repository="acme/blocked"),
+            )
+
+    class Primary:
+        def scan(self, *, apply_labels: bool):
+            assert apply_labels is False
+            return SimpleNamespace(
+                created=0,
+                skipped={},
+                degraded=False,
+                required_local_ci_backlog=1,
+                required_local_ci_backlog_by_repository={
+                    "acme/eligible": 0,
+                    "acme/blocked": 1,
+                },
+            )
+
+        def apply_agent_labels(self):
+            return {"status": "ok", "updated": 0, "skipped": {}}
+
+    monkeypatch.setattr("github_pr_feedback.cli._load_policy_from_context", lambda _ctx: Policy())
+    monkeypatch.setattr("github_pr_feedback.cli._exclusive_scan_lock", lambda: Lock())
+    monkeypatch.setattr("github_pr_feedback.cli.FeedbackLedger", Ledger)
+    monkeypatch.setattr("github_pr_feedback.cli._controller", lambda *_args: Primary())
+    monkeypatch.setattr(
+        "github_pr_feedback.cli._run_release_maintenance_scan",
+        lambda _policy, _ledger, *, maintenance: {
+            "status": "ok",
+            "repository": maintenance.repository,
+        },
+    )
+
+    assert _scan(object()) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["release_maintenance"] == {
+        "acme/eligible": {"repository": "acme/eligible", "status": "ok"}
+    }
 
 
 def test_release_maintenance_scan_is_part_of_the_governed_scan_surface(
@@ -2216,6 +2752,8 @@ def test_ci_audit_handoff_completes_current_task_without_waiting_for_model(
 
     assert calls[0][0] == [
         sys.executable,
+        "-E",
+        "-P",
         "-m",
         "hermes_cli.main",
         "kanban",
@@ -2972,7 +3510,7 @@ def test_retrigger_codex_review_is_a_noop_while_same_head_request_is_pending() -
 
 def test_retrigger_codex_review_is_a_noop_when_codex_already_reviewed_this_head() -> None:
     head = "a" * 40
-    github = _FakeGitHubCodex((_codex_feedback(_codex_summary_body("Completed", head[:7])),))
+    github = _FakeGitHubCodex((_codex_feedback(_codex_summary_body("Completed", head)),))
 
     status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
 

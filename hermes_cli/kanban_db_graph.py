@@ -46,7 +46,7 @@ def initial_task_state(
         return "blocked", tenant
     if triage:
         return "triage", tenant
-    if any(row["status"] != "done" for row in rows.values()):
+    if any(row["status"] not in ("done", "archived") for row in rows.values()):
         return "todo", tenant
     return "ready", tenant
 

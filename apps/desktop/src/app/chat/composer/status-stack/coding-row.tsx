@@ -1,9 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { memo, useEffect } from 'react'
-import { useLocation } from 'react-router'
 
 import { PrTag } from '@/app/chat/pr-tag'
-import { NEW_CHAT_ROUTE } from '@/app/routes'
 import { StatusRow } from '@/components/chat/status-row'
 import {
   type ActionItemSpec,
@@ -22,9 +20,6 @@ import { displayPath } from '@/lib/display-path'
 import { openWorktreeDialog, registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
 import { $pullRequestsByBranch, branchPrKey, refreshPullRequests } from '@/store/pull-requests'
-import { $freshDraftReady, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
-
-import { useComposerScope } from '../scope'
 
 // Tiny uppercase section header, matching the composer "+" menu's labels.
 const MENU_SECTION = 'text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
@@ -67,22 +62,10 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   repoPath
 }: CodingStatusRowProps) {
   const { t } = useI18n()
-  const location = useLocation()
   const s = t.statusStack.coding
   const p = t.sidebar.projects
   const fileMenu = t.fileMenu
-  const scope = useComposerScope()
-  const freshDraftReady = useStore($freshDraftReady)
-  const selectedStoredSessionId = useStore($selectedStoredSessionId)
-  const workspaceCwdOwner = useStore($workspaceCwdOwner)
-  const rawRepoPath = repoPath?.trim() || undefined
-
-  const primaryWorkspaceOwned =
-    location.pathname !== NEW_CHAT_ROUTE &&
-    !freshDraftReady &&
-    (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
-
-  const resolvedRepoPath = scope.target !== 'main' || primaryWorkspaceOwned ? rawRepoPath : undefined
+  const resolvedRepoPath = repoPath?.trim() || undefined
   // This surface's OWN worktree, always — never the primary's. The row used to
   // fall back to the global `$repoStatus` for a blank repoPath, which painted
   // the main pane's branch/± onto a tile whose cwd hadn't resolved yet. That

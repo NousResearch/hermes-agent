@@ -232,6 +232,83 @@ _GIT_CONFIG_OVERRIDES = {
 }
 
 
+def _safe_directory_cache_key(env: "Mapping[str, str]") -> tuple:
+    """Everything that decides which files ``git config --system/--global`` reads, plus the
+    global candidates' mtimes so an edit to ``~/.gitconfig`` is picked up without a restart."""
+    home = env.get("HOME", "")
+    xdg = env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    candidates = (
+        env.get("GIT_CONFIG_SYSTEM") or "/etc/gitconfig",
+        env.get("GIT_CONFIG_GLOBAL") or os.path.join(home, ".gitconfig"),
+        os.path.join(xdg, "git", "config"),
+    )
+    stamps = []
+    for path in candidates:
+        try:
+            stamps.append(os.stat(path).st_mtime_ns)
+        except OSError:
+            stamps.append(None)
+    return (
+        env.get("GIT_CONFIG_GLOBAL"), env.get("GIT_CONFIG_SYSTEM"), env.get("GIT_CONFIG_NOSYSTEM"),
+        home, env.get("XDG_CONFIG_HOME"), env.get("PATH"), *stamps,
+    )
+
+
+_safe_directory_cache: dict[tuple, list[str]] = {}
+
+
+def _user_safe_directories(base_env: "Mapping[str, str]") -> list[str]:
+    """The user's configured ``safe.directory`` values, in git's own effective order.
+
+    Read with ``git config -z --get-all`` under *base_env* (the caller's untouched environment) so
+    an explicit ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM`` still points at the file the user means.
+    Best-effort: any failure (git missing, malformed config, timeout) yields no entries and leaves
+    the caller exactly as it behaved before. Memoised per process on the inputs that select the
+    config files (and the global file's mtime): ``noninteractive_git_env()`` runs on every internal
+    git call, including the startup banner probe, and two ``git config`` children per call is
+    ~10 ms against ~0.2 ms for the rest of the function.
+
+    ``safe.directory`` is an *ordered* multi-valued setting and an empty value resets every entry
+    seen so far, so a user can revoke a system-wide ``safe.directory=*`` and then name only the
+    repositories they actually trust. Order and empty resets are therefore policy, not formatting:
+    scopes are read lowest-precedence first (system, then global) and every value is preserved
+    verbatim -- no de-duplication (it is a sequence, not a set) and no dropping of the reset
+    marker, either of which would resurrect a revoked wildcard and widen trust. ``-z`` keeps a
+    value containing whitespace or a newline as the single entry git reads it as.
+    """
+    cache_key = _safe_directory_cache_key(base_env)
+    cached = _safe_directory_cache.get(cache_key)
+    if cached is not None:
+        return list(cached)
+    env = dict(base_env)
+    # --get-all itself must not be derailed by ambient injection or an interactive prompt.
+    for key in list(env):
+        if key == "GIT_CONFIG_PARAMETERS" or key.startswith(_GIT_CONFIG_INJECT_PREFIXES):
+            env.pop(key, None)
+    env.pop("GIT_CONFIG_COUNT", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    values: list[str] = []
+    for scope in ("--system", "--global"):
+        try:
+            proc = subprocess.run(
+                ["git", "config", scope, "-z", "--get-all", "safe.directory"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=5, stdin=subprocess.DEVNULL, env=env, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode != 0:
+            continue
+        # -z terminates every value with NUL, so the trailing split field is always empty and is
+        # not a config entry; interior empty fields are real reset markers and must survive.
+        records = proc.stdout.split("\0")
+        if records and records[-1] == "":
+            records.pop()
+        values.extend(records)
+    _safe_directory_cache[cache_key] = list(values)
+    return values
+
+
 def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:
     """Environment for *internal* git invocations that must never prompt.
 
@@ -258,6 +335,9 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     for input nobody can type.
     """
     env = dict(base if base is not None else os.environ)
+    # Captured before the isolation below rewrites GIT_CONFIG_GLOBAL/SYSTEM to /dev/null --
+    # reading after that point would resolve the user's config to an empty file.
+    safe_directories = _user_safe_directories(base if base is not None else os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
     # Drop caller-supplied config injection; the GIT_CONFIG_COUNT block is rebuilt below so
@@ -272,8 +352,21 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     env["GIT_PAGER"] = "cat"
     env["PAGER"] = "cat"
     env["GIT_EDITOR"] = "true"
-    env["GIT_CONFIG_COUNT"] = str(len(_GIT_CONFIG_OVERRIDES))
-    for idx, (key, value) in enumerate(_GIT_CONFIG_OVERRIDES.items()):
+    overrides = list(_GIT_CONFIG_OVERRIDES.items())
+    # safe.directory is honoured ONLY from global/system config (git rejects it from repo-level
+    # config so a hostile repo cannot self-authorise), and both are blanked just above. Without
+    # re-injection every internal git call fails "detected dubious ownership" on any repo whose
+    # st_uid != geteuid() -- NFS/CIFS mounts without idmapping, shared checkouts, containers with
+    # a remapped uid -- even though the user's own `git config --global --add safe.directory` is
+    # correctly set and their interactive git works fine. Carried over the GIT_CONFIG_KEY_n
+    # channel, which survives GIT_CONFIG_GLOBAL=/dev/null. Read-only and non-widening: the values
+    # are replayed in git's own effective order, empty reset markers included (see
+    # _user_safe_directories), so a global reset still revokes a system-wide wildcard exactly as it
+    # does for the user's interactive git. Appended last, but the hardening overrides above are
+    # distinct keys, so they are unaffected by ordering within safe.directory.
+    overrides.extend(("safe.directory", value) for value in safe_directories)
+    env["GIT_CONFIG_COUNT"] = str(len(overrides))
+    for idx, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
     return env
@@ -404,12 +497,15 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
 
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
-    env: "Mapping[str, str] | None" = None,
+    env: "Mapping[str, str] | None" = None, cwd: "str | os.PathLike[str] | None" = None,
+    raise_on_spawn_failure: bool = False,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
     Returns a ``CompletedProcess`` when the child finished within *timeout* (any exit code), or
-    ``None`` on spawn failure or timeout.
+    ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
+    exception propagates instead, so callers that treat a *timeout* as a verdict can still tell
+    "our own probe never started" apart from "the child hung".
 
     Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup calls an *unbounded*
     ``communicate()`` after killing the direct child. Killing it can leave a descendant (``git.exe`` under a
@@ -419,25 +515,46 @@ def bounded_probe_run(
     machines (#87134); the git probes hit it first (#68609 / #66037).
     """
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    job = None
     try:
-        proc = subprocess.Popen(
+        # Windows: contain the probe in a Job Object. `taskkill /T` walks LIVE parent pids, and a
+        # Cygwin/MSYS `exec` lets the forked stub exit once the new image runs, so a Git Bash grandchild
+        # (`sleep`, `cat`) has a dead parent and survives the tree-kill holding our pipes (#73403, proven
+        # on windows-latest). KILL_ON_JOB_CLOSE reaches it regardless of ancestry.
+        from hermes_cli.local_runtime.processes import spawn_server
+
+        proc, job = spawn_server(
             list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors=errors,
-            env=dict(env) if env is not None else None, **_popen_kwargs)
+            env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
     except Exception:
+        if raise_on_spawn_failure:
+            raise
         return None
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except Exception:
         # Timeout OR any other communicate() failure (torn-down pipe, decode error): tree-kill and
         # drain bounded — leaving it running would leak the suspended-descendant class this guards.
+        _close_job(job)
         kill_process_tree(proc)
         try:
             proc.communicate(timeout=1)
         except Exception:
             pass
         return None
+    # The probe exited on its own; anything it left behind (`&` jobs) goes with the job.
+    _close_job(job)
     return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
+
+
+def _close_job(job) -> None:
+    if job is None:
+        return
+    try:
+        job.close()
+    except Exception:
+        pass
 
 
 def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
@@ -470,4 +587,3 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()
-

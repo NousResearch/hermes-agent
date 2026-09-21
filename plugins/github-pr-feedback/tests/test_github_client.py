@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from contextlib import AbstractContextManager
+from pathlib import Path
 
 import pytest
 
@@ -277,6 +278,38 @@ def test_subprocess_runner_exposes_safe_failure_code_without_output(
                 min_interval_seconds=0,
             ),
         ).run(["gh", "api", "labels"])
+    assert raised.value.code == code
+
+
+@pytest.mark.parametrize(
+    ("argv", "stderr", "code"),
+    [
+        (["gh", "pr", "merge", "17"], "HTTP 409: merge conflict", "merge_rejected"),
+        (["gh", "api", "repos/acme/widgets/labels/409"], "HTTP 409: conflict", "github_error"),
+    ],
+)
+def test_merge_status_markers_are_scoped_to_merge_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    argv: list[str],
+    stderr: str,
+    code: str,
+) -> None:
+    monkeypatch.setattr(
+        "github_pr_feedback.github_client.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            argv, 1, "", stderr
+        ),
+    )
+    with pytest.raises(GitHubClientError) as raised:
+        SubprocessCommandRunner(
+            sleeper=lambda _delay: None,
+            request_gate=GitHubRequestGate(
+                tmp_path / "github-request-gate.json",
+                sleeper=lambda _delay: None,
+                min_interval_seconds=0,
+            ),
+        ).run(argv)
     assert raised.value.code == code
     assert stderr not in str(raised.value)
 
@@ -1295,32 +1328,65 @@ def test_github_client_flags_a_check_run_waiting_on_human_approval_as_action_req
     )
 
 
-@pytest.mark.parametrize(
-    "method,flag",
-    [("squash", "--squash"), ("rebase", "--rebase"), ("merge", "--merge")],
-)
-def test_github_client_uses_only_fixed_exact_head_merge_argv(
-    method: str, flag: str
-) -> None:
-    merge_argv = (
+@pytest.mark.parametrize("method", ["squash", "rebase", "merge"])
+def test_github_client_uses_only_fixed_exact_head_merge_argv(method: str) -> None:
+    rules_argv = (
         "gh",
-        "pr",
-        "merge",
-        "17",
-        "--repo",
-        "acme/widgets",
-        flag,
-        "--match-head-commit",
-        "a" * 40,
+        "api",
+        "repos/acme/widgets/rules/branches/stable",
     )
-    runner = RecordingRunner({merge_argv: "remote output is not merge truth"})
+    merge_argv = (
+        "gh", "pr", "merge", "17", "--repo", "acme/widgets",
+        {"squash": "--squash", "rebase": "--rebase", "merge": "--merge"}[method],
+        "--match-head-commit", "a" * 40,
+    )
+    runner = RecordingRunner({rules_argv: [], merge_argv: {}})
 
     result = GitHubClient(runner).merge_pull_request(
-        "acme/widgets", 17, "a" * 40, method=method
+        "acme/widgets", 17, "a" * 40, method=method, base_branch="stable"
     )
 
     assert result is None
-    assert runner.calls == [merge_argv]
+    assert runner.calls == [rules_argv, merge_argv]
+
+
+def test_github_client_blocks_merge_queue_before_merge_write(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args_log = tmp_path / "gh-args.log"
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$GH_ARGS_LOG\"\n"
+        "printf '%s\\n' '[{\"type\":\"merge_queue\"}]'\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o700)
+    runner = SubprocessCommandRunner(
+        request_gate=GitHubRequestGate(
+            tmp_path / "github-request-gate.json",
+            min_interval_seconds=0,
+        ),
+        env_overrides={
+            "GH_ARGS_LOG": str(args_log),
+            "HERMES_HOME": str(tmp_path / "hermes"),
+            "PATH": str(bin_dir),
+        },
+    )
+
+    with pytest.raises(GitHubClientError) as raised:
+        GitHubClient(runner).merge_pull_request(
+            "acme/widgets",
+            17,
+            "a" * 40,
+            method="squash",
+            base_branch="stable",
+        )
+
+    assert raised.value.code == "merge_queue_required"
+    assert args_log.read_text(encoding="utf-8").splitlines() == [
+        "api repos/acme/widgets/rules/branches/stable"
+    ]
 
 
 @pytest.mark.parametrize("head_sha", ["short", "g" * 40, "a" * 39, "a" * 41])
@@ -1329,7 +1395,7 @@ def test_github_client_rejects_noncanonical_merge_head_sha(head_sha: str) -> Non
 
     with pytest.raises(ValueError, match="head_sha"):
         GitHubClient(runner).merge_pull_request(
-            "acme/widgets", 17, head_sha, method="squash"
+            "acme/widgets", 17, head_sha, method="squash", base_branch="stable"
         )
 
     assert runner.calls == []
@@ -1340,7 +1406,7 @@ def test_github_client_rejects_unknown_merge_method_without_a_command() -> None:
 
     with pytest.raises(ValueError, match="method"):
         GitHubClient(runner).merge_pull_request(
-            "acme/widgets", 17, "a" * 40, method="octopus"
+            "acme/widgets", 17, "a" * 40, method="octopus", base_branch="stable"
         )
 
     assert runner.calls == []

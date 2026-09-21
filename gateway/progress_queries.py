@@ -573,10 +573,17 @@ def _bounded(response: str) -> str:
 
 def _format_multiple_progress(conn, roots: Iterable[object]) -> str:
     """Summarize source-authorized matching roots without requiring card IDs."""
-    selected = list(roots)[:_MAX_AMBIGUOUS_ROOTS]
+    all_roots = list(roots)
+    selected = all_roots[:_MAX_AMBIGUOUS_ROOTS]
     if not selected:
         return ""
-    heading = f"I found {len(selected)} matching subscribed workstreams."
+    if len(all_roots) > len(selected):
+        heading = (
+            f"I found {len(all_roots)} matching subscribed workstreams "
+            f"(showing {len(selected)})."
+        )
+    else:
+        heading = f"I found {len(selected)} matching subscribed workstreams."
     per_root_limit = max(
         240,
         (MAX_PROGRESS_RESPONSE_CHARS - len(heading) - len(selected)) // len(selected),

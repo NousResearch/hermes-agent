@@ -1,3 +1,5 @@
+import { translateNow } from '@/i18n'
+
 type GatewayReconnectHandler = () => Promise<void> | void
 
 let activeHandler: GatewayReconnectHandler | null = null
@@ -31,4 +33,13 @@ export function reconnectGateway(): Promise<void> {
     })
 
   return inFlight
+}
+
+/** Toast button that re-dials the active connection — attached wherever a
+ *  send fails because Hermes is offline (sudo/secret/approval prompts …). */
+export function reconnectAction(): { label: string; onClick: () => void } {
+  return {
+    label: translateNow('prompts.reconnect'),
+    onClick: () => void reconnectGateway().catch(() => undefined)
+  }
 }

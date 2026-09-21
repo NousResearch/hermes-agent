@@ -13,7 +13,10 @@ import pytest
 def kanban_with_profiles(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_per_model_cap_test_")
     for profile in ("alpha", "beta", "default"):
-        os.makedirs(os.path.join(test_home, "profiles", profile), exist_ok=True)
+        profile_dir = os.path.join(test_home, "profiles", profile)
+        os.makedirs(profile_dir, exist_ok=True)
+        # named_profile_is_live requires an identity marker (config.yaml, .env, etc.)
+        open(os.path.join(profile_dir, ".env"), "w").close()
     monkeypatch.setenv("HERMES_HOME", test_home)
     def is_hermes_module(name):
         return (
@@ -337,7 +340,9 @@ def test_terminal_or_reclaimed_task_releases_model_capacity(
         ]
 
         if release == "completed":
-            assert kb.complete_task(conn, first, result="done")
+            current_run_id = kb.get_task(conn, first).current_run_id
+            assert current_run_id is not None
+            assert kb.complete_task(conn, first, result="done", expected_run_id=current_run_id)
         else:
             alive = {os.getpid(): True}
 

@@ -17,6 +17,7 @@ class _Record:
     worktree_path: str = "/repo/worktrees/root"
     branch: str = "hermes/session/root"
     base_commit: str = "a" * 40
+    repo_common_dir: str = "/repo/.git"
     state: str = "ready"
 
 
@@ -32,6 +33,8 @@ class _DB:
     def get_session(self, session_id):
         if session_id == "tip":
             return {"parent_session_id": "root"}
+        if session_id == "root":
+            return {"cwd": "/repo/worktrees/root"}
         return None
 
     def is_explicit_fork_child(self, session_id):
@@ -73,12 +76,18 @@ def call(params):
     return server._methods["session.worktree_cleanup"]("cleanup", params)
 
 
-def install(monkeypatch, manager, db):
-    monkeypatch.setattr(server, "_profile_db", lambda _params: nullcontext(db))
+def install(monkeypatch, manager, db, manager_calls=None):
+    monkeypatch.setattr(server, "_profile_db", lambda _params, *, writer=False: nullcontext(db))
+
+    def build_manager(*, profile_home=None, db=None, session_cwd=None):
+        if manager_calls is not None:
+            manager_calls.append(session_cwd)
+        return manager, db, False
+
     monkeypatch.setattr(
         server,
         "_conversation_worktree_manager",
-        lambda *, profile_home=None, db=None: (manager, db, False),
+        build_manager,
     )
 
 
@@ -106,6 +115,18 @@ def test_inspect_returns_every_blocking_reason_and_resolves_root(monkeypatch):
     }
     assert manager.inspect_calls == [("root", False)]
     assert manager.remove_calls == []
+
+
+def test_cleanup_manager_uses_root_session_repository_context(monkeypatch):
+    manager = _Manager(CleanupVerdict(allowed=True, reasons=()))
+    db = _DB()
+    manager_calls = []
+    install(monkeypatch, manager, db, manager_calls)
+
+    response = call({"session_id": "root", "action": "inspect"})
+
+    assert "error" not in response
+    assert manager_calls == ["/repo"]
 
 
 def test_inspect_reports_live_root_binding_as_active(monkeypatch):
@@ -236,7 +257,7 @@ def test_close_and_delete_never_imply_worktree_cleanup(monkeypatch, tmp_path):
         raise AssertionError("ordinary session lifecycle called worktree cleanup")
 
     monkeypatch.setattr(server, "_conversation_worktree_manager", cleanup_must_not_be_built)
-    monkeypatch.setattr(server, "_profile_db", lambda _params: nullcontext(db))
+    monkeypatch.setattr(server, "_profile_db", lambda _params, *, writer=False: nullcontext(db))
     monkeypatch.setattr(server, "get_hermes_home", lambda: tmp_path)
 
     closed = server._methods["session.close"]("close", {"session_id": "missing"})

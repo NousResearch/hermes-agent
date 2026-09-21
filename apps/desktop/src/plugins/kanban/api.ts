@@ -11,6 +11,7 @@
 
 import {
   atom,
+  host,
   type PluginOs,
   type PluginRestOptions,
   type PluginStorage,
@@ -107,7 +108,11 @@ export function applyHeartbeatEvents(board: KanbanBoard, events: CompletionEvent
 
 /** One live `task_events` frame → cache-local heartbeat updates plus one
  *  coalesced refresh for events that can actually change board state. */
-function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => void): void {
+function activeSourceKey(): string {
+  return `${host.state.connectionId.get() ?? 'local'}::${host.state.profile.get() || 'default'}`
+}
+
+function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => void, sourceKey: string): void {
   const events = (data as { events?: CompletionEvent[] })?.events
 
   if (!events?.length) {
@@ -133,7 +138,7 @@ function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => 
 
   // Completion notification (after invalidation so notify failure
   // never interferes with cache invalidation).
-  void onKanbanEventsFrame(slug, events).catch(() => undefined)
+  void onKanbanEventsFrame(slug, events, sourceKey).catch(() => undefined)
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -170,6 +175,7 @@ export function bindApi(
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
+  let socketGeneration = 0
   let close: (() => void) | null = null
   let boardRefreshTimer: null | ReturnType<typeof setTimeout> = null
 
@@ -187,15 +193,32 @@ export function bindApi(
 
   const open = (slug: string) => {
     close?.()
-    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data =>
-      onEventsFrame(slug, data, scheduleBoardRefresh)
-    )
+
+    if (boardRefreshTimer !== null) {
+      clearTimeout(boardRefreshTimer)
+      boardRefreshTimer = null
+    }
+
+    const sourceKey = activeSourceKey()
+    const generation = ++socketGeneration
+    const path = slug ? `/events?board=${encodeURIComponent(slug)}` : '/events'
+
+    close = socket(path, data => {
+      // A closed socket can still deliver queued frames. They belong to its
+      // original source and must not update the current cache or cursor.
+      if (generation === socketGeneration && sourceKey === activeSourceKey()) {
+        onEventsFrame(slug, data, scheduleBoardRefresh, sourceKey)
+      }
+    })
   }
 
   open($boardSlug.get())
   unsubs.push($boardSlug.listen(open))
+  unsubs.push(host.state.connectionId.listen(() => open($boardSlug.get())))
+  unsubs.push(host.state.profile.listen(() => open($boardSlug.get())))
 
   return () => {
+    socketGeneration += 1
     unsubs.forEach(unsub => unsub())
     close?.()
 
@@ -203,7 +226,6 @@ export function bindApi(
       clearTimeout(boardRefreshTimer)
       boardRefreshTimer = null
     }
-
     rest = null
     os = null
   }

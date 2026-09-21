@@ -250,6 +250,15 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
 
 @router.post("/api/gateway/start")
 async def start_gateway(profile: Optional[str] = None):
+    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    # The spawned `hermes -p X gateway start` would refuse with exit 78 into an action log nobody reads;
+    # surface the same refusal here so the UI can point at the multiplexer instead of showing "started".
+    if profile and profile != "default" and await asyncio.to_thread(named_profile_served_by_running_multiplexer, profile):
+        raise HTTPException(
+            status_code=409,
+            detail=f"The default gateway already serves profile '{profile}' as a multiplexer; "
+                   "restart it from the default profile instead of starting a separate gateway.",
+        )
     with http_failure("Failed to spawn gateway start", 500, "Failed to start gateway"):
         proc = _spawn_hermes_action(_gateway_subcommand(profile, "start"), "gateway-start")
     return {"ok": True, "pid": proc.pid, "name": "gateway-start"}

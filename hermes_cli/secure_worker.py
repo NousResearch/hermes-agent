@@ -582,7 +582,7 @@ def render_ox_profile(
         "mcp_servers": {
             "secure-github-staging": {
                 "command": broker_python,
-                "args": ["-m", "hermes_cli.secure_github_broker"],
+                "args": ["-E", "-P", "-m", "hermes_cli.secure_github_broker"],
                 "env": {
                     "HERMES_STAGING_GITHUB_OWNER": staging_owner,
                     "HERMES_STAGING_GITHUB_REPO": staging_repo,
@@ -805,6 +805,8 @@ def audit_profile_boundary(
                     or command.is_symlink()
                     or command.resolve() != expected_python
                     or server.get("args") != [
+                    "-E",
+                    "-P",
                     "-m",
                     "hermes_cli.secure_github_broker",
                     ]

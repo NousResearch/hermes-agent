@@ -1,9 +1,10 @@
 /**
- * The bot row's only activation side effect is opening.
+ * The bot row's two side effects: pre-warming and opening.
  *
- * A roster may contain hundreds of rows and can reflow under a stationary
- * pointer. Pointer-entry pre-warming therefore behaves like roster-wide
- * warming in practice and must not start profile backends.
+ * Pre-warm is per-row and hover-scoped. Warming the whole roster on paint
+ * spun up every profile backend the moment the Bots rail rendered, so the row
+ * warms exactly one bot and only once a pointer is actually over it — and a
+ * source-scoped row pre-dials its OWN source rather than the active gateway.
  *
  * Opening is delegated whole: the row hands its exact roster row to
  * openRosterBot and does nothing else. It never activates a connection
@@ -15,12 +16,18 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
-import { fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BotRow } from './bot-row'
-import { translateBots } from './i18n-test-helper'
-import type { RosterRow } from './types'
+import { BotRow, GroupRow } from './bot-row'
+import { $groupChats } from './group-chat'
+import { translateBotsIn } from './i18n-test-helper'
+import type { GroupMember, RosterRow } from './types'
+
+// Which shipped bundle the rendered rows resolve their strings against. `en`
+// matches the literals this file once carried, so a case that has to prove a
+// string comes from the catalog reads the same row under `ja`.
+const locale = vi.hoisted(() => ({ current: 'en' as 'en' | 'ja' | 'zh' }))
 
 const { ensureAgent, ensureBotMetadata, notifyError, openRosterBot, requestProfile, warmAgent, warmProfile } =
   vi.hoisted(() => ({
@@ -41,7 +48,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     host: { ...sdk.host, ensureAgent, notifyError, requestProfile, warmAgent, warmProfile },
     // The plugin bundle normally lands via `ctx.i18n.register` at load, so
     // without this every localized label in the row renders empty.
-    usePluginI18n: () => translateBots
+    usePluginI18n: () => translateBotsIn(locale.current)
   }
 })
 
@@ -70,19 +77,42 @@ beforeEach(() => {
   requestProfile.mockResolvedValue({})
 })
 
-describe('roster browsing never starts profile backends', () => {
-  it('does not warm a local row on paint or pointer entry', () => {
+describe('group-turn presence', () => {
+  it('updates only the exact member face and clears it when the room stops', () => {
+    const local: RosterRow = { name: 'default', connectionId: 'local' }
+    const remote: RosterRow = { name: 'default', connectionId: 'remote', remoteSource: true }
+
+    const { container } = render(
+      <>
+        {[local, remote].map(bot => (
+          <BotRow bot={bot} key={bot.connectionId} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+        ))}
+      </>
+    )
+
+    const moods = () => [...container.querySelectorAll('[data-hb-mood]')].map(el => el.getAttribute('data-hb-mood'))
+    act(() => $groupChats.set({ Room: { log: [], watermarks: {}, running: true, turn: remote } }))
+    expect(moods()).toEqual(['idle', 'think'])
+    act(() => $groupChats.set({ Room: { log: [], watermarks: {}, running: true, turn: local } }))
+    expect(moods()).toEqual(['think', 'idle'])
+    act(() => $groupChats.set({}))
+    expect(moods()).toEqual(['idle', 'idle'])
+  })
+})
+
+describe('pre-warm is hover-scoped, never roster-wide', () => {
+  it('warms nothing on paint and exactly the hovered bot on pointer entry', async () => {
     const row = renderRow({ name: 'alpha' } as RosterRow)
 
     expect(warmProfile).not.toHaveBeenCalled()
 
     fireEvent.pointerEnter(row)
 
-    expect(warmProfile).not.toHaveBeenCalled()
+    expect(warmProfile.mock.calls).toEqual([['alpha']])
     expect(warmAgent).not.toHaveBeenCalled()
   })
 
-  it('does not pre-dial a source-scoped row on pointer entry', () => {
+  it('pre-dials a source-scoped row on its own source', async () => {
     const row = renderRow({
       connectionId: 'work',
       connectionLabel: 'Work',
@@ -93,7 +123,7 @@ describe('roster browsing never starts profile backends', () => {
 
     fireEvent.pointerEnter(row)
 
-    expect(warmAgent).not.toHaveBeenCalled()
+    expect(warmAgent.mock.calls).toEqual([['work', 'research']])
     expect(warmProfile).not.toHaveBeenCalled()
   })
 })
@@ -172,5 +202,94 @@ describe('context-menu mutations hydrate the alias first', () => {
 
     expect(route.profile).toBe('worker')
     expect(params).toMatchObject({ name: 'backend-worker', ui_meta: { 'hermes-bots': { pinned: false } } })
+  })
+})
+
+describe('the bot row context menu speaks the active language', () => {
+  afterEach(() => {
+    locale.current = 'en'
+  })
+
+  it('renders the pin/hide toggles and the groups entry from the catalog, not English literals', async () => {
+    // Regression guard for the roster menu items that stayed hardcoded after
+    // the bundle landed: under `zh` no English label may survive.
+    locale.current = 'zh'
+    fireEvent.contextMenu(renderRow({ name: 'worker', connectionId: 'local' }))
+
+    const menu = await screen.findByRole('menu')
+
+    expect(within(menu).getByText('置顶')).toBeTruthy()
+    expect(within(menu).getByText('隐藏')).toBeTruthy()
+    expect(within(menu).getByText('管理群聊…')).toBeTruthy()
+    expect(within(menu).queryByText('Pin to top')).toBeNull()
+    expect(within(menu).queryByText('Hide')).toBeNull()
+    expect(within(menu).queryByText('Manage groups…')).toBeNull()
+  })
+})
+
+describe('a group row', () => {
+  const members = [{ name: 'alpha' }, { name: 'beta' }, { name: 'gamma' }] as GroupMember[]
+  const row = <GroupRow active={false} group="crew" members={members} needsYou={false} onDisband={noop} onNewSection={noop} onOpen={noop} />
+
+  beforeEach(() => {
+    locale.current = 'en'
+  })
+
+  it('previews an empty room and describes it to assistive tech in the active language', () => {
+    const english = render(row)
+
+    expect(english.getByText('3 bots')).toBeTruthy()
+    expect(english.getByRole('button', { name: 'crew, 3 bots, 3 of 3 available' })).toBeTruthy()
+    english.unmount()
+
+    locale.current = 'ja'
+    const japanese = render(row)
+
+    expect(japanese.getByText('ボット3体')).toBeTruthy()
+    expect(japanese.getByRole('button', { name: 'crew, ボット3体, 3体中3体が利用可能' })).toBeTruthy()
+  })
+
+  it('names the reader in the active language when their line is the latest, without touching the log marker', () => {
+    // 'You' is the persisted author sentinel on the log entry; only its rendering localizes.
+    act(() =>
+      $groupChats.set({ crew: { log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'ship it' }], running: false, watermarks: {} } })
+    )
+    locale.current = 'zh'
+
+    const chinese = render(row)
+
+    expect(chinese.getByText('你: ship it')).toBeTruthy()
+    expect(chinese.queryByText(/^You:/)).toBeNull()
+    expect($groupChats.get().crew.log[0].from.name).toBe('You')
+
+    act(() => $groupChats.set({}))
+  })
+})
+
+describe('age label reflects the last worker run, not only the last conversation (#105874)', () => {
+  const nowSec = () => Date.now() / 1000
+
+  it('shows the worker-run age for a delegate-only bot whose worker is past the liveness window', () => {
+    // A specialist driven only via delegate_task: its newest human conversation is 11 days old,
+    // but it ran a `tool`/`kanban` worker 2h ago (well past the 150s liveness window). The label
+    // must read "2h", not "11d" — the busiest bot in the system used to read as the most idle.
+    renderRow({
+      name: 'auswerter',
+      last_session: { last_active: nowSec() - 11 * 86400 },
+      worker_session: { last_active: nowSec() - 2 * 3600 }
+    } as RosterRow)
+
+    expect(screen.getByText('2h')).toBeTruthy()
+    expect(screen.queryByText('11d')).toBeNull()
+  })
+
+  it('falls back to conversation age when there is no worker session', () => {
+    // worker_session can be absent (None past the 20-row window); the max degrades to the chat age.
+    renderRow({
+      name: 'chatty',
+      last_session: { last_active: nowSec() - 3 * 86400 }
+    } as RosterRow)
+
+    expect(screen.getByText('3d')).toBeTruthy()
   })
 })

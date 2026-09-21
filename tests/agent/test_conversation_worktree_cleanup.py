@@ -129,6 +129,34 @@ def test_cleanup_reports_dirty_unintegrated_and_unpushed_together(prepared_bindi
     assert binding.path.exists()
 
 
+def test_failed_draft_cleanup_keeps_root_identity_retryable(prepared_binding):
+    manager, db, source, _remote, binding, _sibling = prepared_binding
+
+    result = manager.remove_after_explicit_request(
+        binding.root_session_id,
+        retain_for_retry=True,
+    )
+
+    assert result.removed is True
+    record = db.get_conversation_worktree(binding.root_session_id)
+    assert record is not None
+    assert record.state == "creating"
+    branch_check = manager._run_git(
+        source,
+        ["show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}"],
+        3.0,
+        "create",
+    )
+    assert branch_check.returncode == 0, branch_check.stderr
+
+    retried = manager.bind_new_root_session(
+        binding.root_session_id,
+        conversation_kind="interactive",
+    )
+    assert retried is not None
+    assert retried.path.exists()
+
+
 def test_cleanup_refuses_active_session_binding(prepared_binding):
     manager, _db, source, _remote, binding, _sibling = prepared_binding
     certify_safe(source, binding)

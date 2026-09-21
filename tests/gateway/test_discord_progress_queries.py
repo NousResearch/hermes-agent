@@ -100,3 +100,31 @@ def test_specialist_routing_configuration_requires_nonempty_explicit_board(adapt
 
     adapter.config.extra["specialist_routing"]["board"] = ""
     assert adapter._specialist_routing_settings()["enabled"] is False
+
+
+def test_specialist_routing_registry_requires_explicit_profile_declarations(adapter):
+    settings = adapter._specialist_routing_settings()
+    registry = adapter._specialist_capability_registry(settings)
+    assert registry is not None
+    assert registry.is_profile_declared("task-orchestrator") is False
+
+    adapter.config.extra["specialist_routing"]["capabilities"] = {
+        "task-orchestrator": {
+            "domain": "orchestration",
+            "actions": ["plan", "handoff"],
+            "evidence_class": "advisory",
+            "requested_permissions": ["kanban:create"],
+        }
+    }
+    settings = adapter._specialist_routing_settings()
+    registry = adapter._specialist_capability_registry(settings)
+    assert registry is not None
+    assert registry.has_configured_profile("task-orchestrator") is True
+    assert registry.is_profile_declared("task-orchestrator") is False
+    declaration = registry.register_configured_profile("task-orchestrator")
+    assert registry.is_profile_declared("task-orchestrator") is True
+    registry.revoke(declaration_id=declaration, profile_id="task-orchestrator",
+                    signature=registry.configured_signature("task-orchestrator"),
+                    reason_code="operator_revoked")
+    reloaded = adapter._specialist_capability_registry(settings)
+    assert reloaded.is_profile_declared("task-orchestrator") is False

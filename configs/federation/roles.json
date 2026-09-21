@@ -95,19 +95,6 @@
         "title_generation": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
         "approval": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
       }
-    },
-    "revenue_lab": {
-      "primary": {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low"},
-      "fallback_providers": [
-        {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "low"},
-        {"provider": "nous", "model": "tencent/hy3:free", "reasoning_effort": "none"},
-        {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
-      ],
-      "auxiliary": {
-        "compression": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
-        "title_generation": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
-        "approval": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
-      }
     }
   },
   "groups": [
@@ -121,8 +108,7 @@
     {"id": "memory-stewardship", "display_name": "Memory Stewardship", "description": "Safe intake, curation, validation, and correction of persistent context.", "roles": ["memory-intake", "memory-curator", "memory-validator"]},
     {"id": "arts-studio", "display_name": "Arts Studio", "description": "Concept, narrative, image, media, and visual review production.", "roles": ["arts-director", "concept-artist", "storyboarder", "image-generator", "media-renderer", "visual-reviewer"]},
     {"id": "content-studio", "display_name": "Content Studio", "description": "Nerdy discovery, paper and transcript ingestion, classification, and citation quality.", "roles": ["nerdy-content-scout", "paper-ingester", "transcript-ingester", "content-classifier", "citation-verifier", "digest-editor"]},
-    {"id": "editorial-desk", "display_name": "Editorial Desk", "description": "Cross-functional editing and publication curation with attribution and audience fit.", "roles": ["writer", "editor", "citation-verifier", "digest-editor", "publication-curator"]},
-    {"id": "revenue-lab", "display_name": "Revenue Lab", "description": "Local-first revenue experimentation with explicit compliance, approval, evidence, and Luna-yield boundaries.", "roles": ["revenue-lab-steward", "revenue-scout", "revenue-compliance-guardian", "revenue-artifact-auditor", "revenue-routing-analyst", "revenue-outcome-analyst"]}
+    {"id": "editorial-desk", "display_name": "Editorial Desk", "description": "Cross-functional editing and publication curation with attribution and audience fit.", "roles": ["writer", "editor", "citation-verifier", "digest-editor", "publication-curator"]}
   ],
   "departments": [
     {
@@ -220,19 +206,6 @@
         {"id": "citation-verifier", "display_name": "Content Citation Verifier", "description": "Checks that claims, quotes, timestamps, links, versions, licenses, and transformations remain traceable.", "skills": ["grounded-citations"], "toolsets": ["web", "file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["digest-editor", "scientific-validator"]},
         {"id": "digest-editor", "display_name": "Technical Digest Editor", "description": "Synthesizes verified material into concise, audience-appropriate digests while retaining uncertainty and source links.", "skills": ["llm-wiki", "humanizer"], "toolsets": ["file"], "authority": "advisory", "schedule": "weekly", "profile_aliases": [], "handoffs": ["publication-curator", "librarian"]},
         {"id": "publication-curator", "display_name": "Learning Publication Curator", "description": "Chooses what is worth retaining, archives superseded material, and prepares non-authoritative internal learning collections.", "skills": ["llm-wiki"], "toolsets": ["file"], "authority": "operator_gated", "schedule": "weekly", "profile_aliases": [], "handoffs": ["librarian", "memory-intake"]}
-      ]
-    },
-    {
-      "id": "revenue_lab",
-      "display_name": "Revenue Lab",
-      "description": "Operates the external Hermes Revenue Lab project as diagnostic-only, local-first revenue experimentation that yields to Luna and preserves human approval boundaries.",
-      "roles": [
-        {"id": "revenue-lab-steward", "display_name": "Revenue Lab Steward", "description": "Coordinates HRL work, enforces local-first boundaries, and keeps experiment stages, runbooks, and handoffs aligned.", "skills": ["revenue-lab"], "toolsets": ["terminal", "file", "kanban"], "authority": "operator_gated", "schedule": "daily", "profile_aliases": ["hermes-revenue-lab-steward"], "handoffs": ["revenue-compliance-guardian", "revenue-artifact-auditor"]},
-        {"id": "revenue-scout", "display_name": "Revenue Scout", "description": "Finds admissible opportunity candidates using source-bound evidence without outreach, spending, publication, or customer contact.", "skills": ["revenue-lab"], "toolsets": ["terminal", "file", "web"], "authority": "advisory", "schedule": "daily", "profile_aliases": [], "handoffs": ["revenue-compliance-guardian", "revenue-lab-steward"]},
-        {"id": "revenue-compliance-guardian", "display_name": "Revenue Compliance Guardian", "description": "Checks HRL registry, platform policy, approval receipts, and mutation boundaries before any consequential action advances.", "skills": ["revenue-lab"], "toolsets": ["terminal", "file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["safety-guardian", "revenue-lab-steward"]},
-        {"id": "revenue-artifact-auditor", "display_name": "Revenue Artifact Auditor", "description": "Validates sealed run artifacts, ledger entries, provenance, checksums, and quality gates without treating drafts as market evidence.", "skills": ["revenue-lab"], "toolsets": ["terminal", "file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["independent-auditor", "revenue-outcome-analyst"]},
-        {"id": "revenue-routing-analyst", "display_name": "Revenue Routing Analyst", "description": "Maintains HRL model-routing evidence and benchmark receipts while keeping unavailable tiers unavailable until checksum-bound proof changes.", "skills": ["revenue-lab"], "toolsets": ["terminal", "file"], "authority": "operator_gated", "schedule": "weekly", "profile_aliases": [], "handoffs": ["performance-lab", "revenue-lab-steward"]},
-        {"id": "revenue-outcome-analyst", "display_name": "Revenue Outcome Analyst", "description": "Records forecast, outcome, cost, margin, and calibration evidence while preserving unknowns rather than converting them to false certainty.", "skills": ["revenue-lab"], "toolsets": ["terminal", "file"], "authority": "advisory", "schedule": "weekly", "profile_aliases": [], "handoffs": ["memory-curator", "revenue-lab-steward"]}
       ]
     }
   ]

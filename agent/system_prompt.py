@@ -331,7 +331,9 @@ def _tool_guidance_block(agent: Any, *, guarded: bool = False) -> Optional[str]:
     # the kanban_show fallback covers code paths that bypass agent_init.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
     if _kanban_guidance is None and "kanban_show" in names:
-        _kanban_guidance = KANBAN_GUIDANCE
+        from agent.delegation_context import owned_kanban_task
+        if owned_kanban_task():
+            _kanban_guidance = KANBAN_GUIDANCE
     tool_guidance = [
         memory_guidance,
         SESSION_SEARCH_GUIDANCE if not guarded and "session_search" in names else None,
@@ -357,6 +359,29 @@ def _skills_prompt(agent: Any, *, guarded: bool = False) -> str:
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
                                          compact_categories=_compact_cats or None, compact_all_categories=guarded,
                                          skills_dir_override=_agent_skills_dir(agent))
+
+
+def _auto_load_skills_prompt(agent: Any) -> str:
+    """Resolve configured skills once per agent, then keep their bytes stable for the session."""
+    if getattr(agent, "_auto_load_skills_resolved", False):
+        result = getattr(agent, "_auto_load_skills_result", ("", [], []))
+        return result[0] if isinstance(result, tuple) and result else ""
+
+    result = ("", [], [])
+    if (not getattr(agent, "skip_context_files", False)
+            and not is_truthy_value(os.getenv("HERMES_IGNORE_RULES"))
+            and any(name in getattr(agent, "valid_tool_names", set())
+                    for name in ("skills_list", "skill_view", "skill_manage"))):
+        try:
+            from agent.skill_commands import build_auto_load_prompt
+            prompt, loaded, missing = build_auto_load_prompt(
+                task_id=getattr(agent, "session_id", None), home_override=_agent_home(agent))
+            result = (prompt, loaded, missing)
+        except Exception:
+            logger.debug("Could not resolve auto-loaded skills for this session", exc_info=True)
+    agent._auto_load_skills_result = result
+    agent._auto_load_skills_resolved = True
+    return result[0]
 
 
 def _bot_mode_parts(agent: Any) -> List[str]:
@@ -445,6 +470,23 @@ def platform_hint(agent: Any) -> str:
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
     if platform_key == "tui" and _effective_hint:
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
+    if platform_key == "cron":
+        from gateway.session_context import get_session_env
+        delivery_platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM").strip().lower()
+        if delivery_platform:
+            delivery_hint = PLATFORM_HINTS.get(delivery_platform, "")
+            if not delivery_hint:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    entry = platform_registry.get(delivery_platform)
+                    delivery_hint = (entry and entry.platform_hint) or ""
+                except Exception:
+                    pass
+            if delivery_platform == "telegram" and delivery_hint and _telegram_rich_messages_enabled():
+                delivery_hint = delivery_hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
+            delivery_hint = _resolve_platform_hint(agent, delivery_platform, delivery_hint)
+            if delivery_hint:
+                _effective_hint = f"{_effective_hint}\n\n{delivery_hint}".strip()
     return _effective_hint
 
 
@@ -729,7 +771,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
-    volatile_parts: List[str] = [skills_prompt, *_memory_parts(agent)]
+    volatile_parts: List[str] = [skills_prompt, _auto_load_skills_prompt(agent), *_memory_parts(agent)]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     # A remote Kanban worker's request already crosses the protected egress boundary,

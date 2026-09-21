@@ -218,6 +218,9 @@ def test_rendered_ox_profile_passes_when_every_boundary_is_present(
     source_repo: Path, tmp_path: Path, policy: PackPolicy
 ) -> None:
     pack, manifest, config = _built_remote_boundary(source_repo, tmp_path, policy)
+    assert config["mcp_servers"]["secure-github-staging"]["args"] == [
+        "-E", "-P", "-m", "hermes_cli.secure_github_broker"
+    ]
     now = datetime(2026, 8, 23, 20, 0, tzinfo=timezone.utc)
 
     report = audit_profile_boundary(

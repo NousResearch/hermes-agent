@@ -65,6 +65,94 @@ def test_no_platform_is_true():
     assert messaging_is_relay_only_or_absent([]) is True
 
 
+def test_scale_to_zero_gate_accounts_for_secondary_profile_direct_adapter(monkeypatch):
+    # A direct adapter in a served profile owns an inbound socket too; the process
+    # must stay awake even when the launch profile itself is relay-only.
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.run_shutdown import GatewayShutdownMixin
+
+    monkeypatch.setenv("HERMES_SCALE_TO_ZERO", "1")
+    monkeypatch.setenv("GATEWAY_RELAY_WAKE_URL", "https://wake.example.test/instance")
+    runner = object.__new__(GatewayShutdownMixin)
+    runner.config = GatewayConfig(platforms={Platform.RELAY: PlatformConfig(enabled=True)})
+    runner.adapters = {Platform.RELAY: object()}
+    runner._profile_adapters = {"imessage": {Platform("photon"): object()}}
+
+    assert runner._scale_to_zero_should_arm() is False
+
+    # Mid-reconnect the adapter is popped from _profile_adapters and parked in
+    # _profile_failed_platforms (retryable fatal); it is still served and must
+    # keep the process awake or the reconnect can never complete.
+    runner._profile_adapters = {}
+    runner._profile_failed_platforms = {"imessage": {Platform("photon"): object()}}
+
+    assert runner._scale_to_zero_should_arm() is False
+
+
+def test_watcher_reasks_gate_before_dormant_sequence(monkeypatch):
+    # Arming is a boot-time snapshot. A direct adapter hot-added afterwards (profile reconcile)
+    # must stop the dormant sequence; with relay only, the same tick still reaches go_dormant.
+    import asyncio
+    import time
+
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.run_shutdown import GatewayShutdownMixin
+
+    monkeypatch.setenv("GATEWAY_RELAY_SLEEP_URL", "https://sleep.example.test/instance")
+
+    class Relay:
+        def __init__(self):
+            self.calls = []
+
+        def hold_redial(self):
+            return True
+
+        def release_redial(self):
+            return True
+
+        async def go_dormant(self):
+            self.calls.append("go_dormant")
+            return False  # refuse the ack: the tick must abandon before any suspend call
+
+    class Runner(GatewayShutdownMixin):
+        def __init__(self):
+            self.config = GatewayConfig(platforms={Platform.RELAY: PlatformConfig(enabled=True)})
+            self.adapters = {Platform.RELAY: Relay()}
+            self._profile_adapters = {}
+            self._running = True
+            self._running_agents = {}
+            self._background_tasks = set()
+            self._last_inbound_at = time.time() - 3600
+            self._scale_to_zero_cooldown_until = 0.0
+            self._scale_to_zero_no_suspend_logged = False
+            self._scale_to_zero_direct_platform_logged = False
+
+        def _running_agent_count(self):
+            return 0
+
+        def _update_runtime_status(self, state):
+            pass
+
+    async def one_tick(runner):
+        task = asyncio.ensure_future(runner._scale_to_zero_watcher(interval=0.0))
+        await asyncio.sleep(0.05)
+        runner._running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    hot_added = Runner()
+    hot_added._profile_adapters = {"imessage": {Platform("photon"): object()}}
+    asyncio.run(one_tick(hot_added))
+    assert hot_added.adapters[Platform.RELAY].calls == []
+
+    relay_only = Runner()
+    asyncio.run(one_tick(relay_only))
+    assert relay_only.adapters[Platform.RELAY].calls == ["go_dormant"]
+
+
 # ── should_arm (D1/D11/§3.4(1)) ──────────────────────────────────────────────
 
 
@@ -108,9 +196,11 @@ def test_idle_exactly_at_threshold():
 
 
 import os
+import shutil
 import socket as _socket
+import tempfile
 import threading
-import uuid
+from pathlib import Path
 
 
 from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
@@ -122,12 +212,39 @@ from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
 
 _FLY_ENV = {FLY_APP_NAME_ENV: "hermes-agent-stg-test", FLY_MACHINE_ID_ENV: "d891234f"}
 
+# sockaddr_un.sun_path is 104 bytes on macOS/BSD and 108 on Linux (incl. NUL).
+_SUN_PATH_MAX = 100
 
-def _fake_flaps(tmp_path, status_line, capture):
+
+@pytest.fixture()
+def short_sock_dir():
+    """A directory short enough that ``<dir>/fly-api.sock`` fits in sun_path.
+
+    pytest's ``tmp_path`` nests deep enough on macOS and on CI runners that a
+    socket bound under it fails with ``OSError: AF_UNIX path too long``. The
+    production path is the fixed ``/.fly/api`` so the length limit never
+    applies there; only the fake flaps server needs a short home.
+    """
+    candidates = [tempfile.gettempdir(), "/tmp"]
+    for base in candidates:
+        try:
+            path = Path(tempfile.mkdtemp(prefix="s2z-", dir=base))
+        except OSError:
+            continue
+        if len(str(path / "fly-api.sock").encode()) <= _SUN_PATH_MAX:
+            break
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        pytest.skip(f"no temp dir short enough for an AF_UNIX socket (tried {candidates})")
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _fake_flaps(sock_dir, status_line, capture):
     """One-shot unix-socket HTTP server standing in for flaps."""
-    # Darwin caps AF_UNIX paths at 104 bytes; pytest's nested temp roots can
-    # exceed that before the filename is added.
-    sock_path = f"/tmp/hermes-flaps-{uuid.uuid4().hex[:12]}.sock"
+    sock_path = str(sock_dir / "fly-api.sock")
     server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     server.bind(sock_path)
     server.listen(1)
@@ -153,12 +270,11 @@ def _fake_flaps(tmp_path, status_line, capture):
     return sock_path, t
 
 
-def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
+def test_suspend_self_posts_suspend_for_this_machine(short_sock_dir):
     captured: list[bytes] = []
-    sock_path, t = _fake_flaps(tmp_path, "200 OK", captured)
+    sock_path, t = _fake_flaps(short_sock_dir, "200 OK", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is True
     t.join(timeout=5)
-    os.unlink(sock_path)
     request = captured[0].decode()
     # The request must target THIS machine's suspend endpoint, per the Fly
     # Machines API (POST /v1/apps/{app}/machines/{id}/suspend on /.fly/api).
@@ -168,12 +284,11 @@ def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
     assert "Host: flaps\r\n" in request
 
 
-def test_suspend_self_non_2xx_is_false_not_raise(tmp_path):
+def test_suspend_self_non_2xx_is_false_not_raise(short_sock_dir):
     captured: list[bytes] = []
-    sock_path, t = _fake_flaps(tmp_path, "412 Precondition Failed", captured)
+    sock_path, t = _fake_flaps(short_sock_dir, "412 Precondition Failed", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is False
     t.join(timeout=5)
-    os.unlink(sock_path)
 
 
 def test_suspend_self_missing_socket_is_false_not_raise(tmp_path):

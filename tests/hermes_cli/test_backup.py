@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import sqlite3
 import stat
 import zipfile
@@ -171,6 +172,17 @@ class TestShouldExclude:
         assert _should_exclude(Path("profiles/clean/models/big.gguf"))
         assert _should_exclude(Path("profiles/clean/runtimes/llamacpp/x.dll"))
 
+    def test_excludes_regenerable_cache_but_keeps_durable_artifacts(self):
+        """Catalogs and live browser profiles are rebuilt on demand; delivered media and the
+        citation ledger are not, so they stay in the archive."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("cache/model_catalog.json"))
+        assert _should_exclude(Path("cache/chrome-debug/Default/Cookies"))
+        assert _should_exclude(Path("profiles/sage/cache/chrome-debug/cache.db"))
+        assert not _should_exclude(Path("cache/images/x.png"))
+        assert not _should_exclude(Path("profiles/sage/cache/citations/ledger.json"))
+        assert not _should_exclude(Path("skills/example/cache/notes.md"))
+
     def test_keeps_nested_dirs_named_like_runtime_trees(self):
         """A deeper directory that happens to be called models/ or node/ is
         user data (a skill's assets, project files) and must survive."""
@@ -232,6 +244,32 @@ class TestIterBackupFiles:
         assert str(Path("models/big.gguf")) not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
 
+    def test_prunes_regenerable_caches_but_keeps_durable_and_nested(self, tmp_path):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        files = {
+            "cache/model_catalog.json": False,
+            "cache/chrome-debug/Default/Cookies": False,
+            "profiles/sage/cache/chrome-debug/cache.db": False,
+            "cache/images/x.png": True,
+            "cache/citations/ledger.json": True,
+            "profiles/sage/cache/images/y.png": True,
+            "skills/example/cache/state.db": True,
+        }
+        for rel in files:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(b"x")
+
+        skipped: set = set()
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip", skipped)}
+
+        assert {rel for rel, keep in files.items() if keep} == {s.replace(os.sep, "/") for s in selected}
+        assert str(Path("cache/chrome-debug")) in skipped
+        assert str(Path("profiles/sage/cache/chrome-debug")) in skipped
+        assert "cache" not in skipped
+
     def test_skipped_dirs_collected_for_summary(self, tmp_path):
         from hermes_cli.backup import _iter_backup_files
 
@@ -245,6 +283,22 @@ class TestIterBackupFiles:
         list(_iter_backup_files(root, tmp_path / "out.zip", skipped))
         assert "models" in skipped
         assert "hermes-agent" in skipped
+
+    @pytest.mark.linux_only
+    def test_skips_unix_sockets(self, tmp_path, monkeypatch):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        # AF_UNIX paths are capped at ~108 bytes; pytest's tmp_path overflows that under the
+        # test runner's deep temp root, so bind by a relative name from inside ``root``.
+        monkeypatch.chdir(root)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as gateway_socket:
+            gateway_socket.bind("gateway.sock")
+
+            selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+
+        assert "gateway.sock" not in selected
 
 
 # ---------------------------------------------------------------------------
@@ -721,6 +775,37 @@ class TestValidation:
 
 class TestBackupEdgeCases:
 
+    def test_incomplete_archive_is_kept_but_reported_as_failure(self, tmp_path, monkeypatch, capsys):
+        """A file that cannot be read is skipped, the zip still lands, and the CLI exits 1: a
+        cron/systemd timer must never see a partial archive as success (#101096)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        unreadable = hermes_home / "skills" / "locked.md"
+        unreadable.write_text("secret\n")
+        unreadable.chmod(0)
+        if os.access(unreadable, os.R_OK):
+            pytest.skip("running as root: chmod 0 does not make the file unreadable")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from hermes_cli.backup import _RUN_BACKUP_PREFIX, run_backup
+        from hermes_cli.main import cmd_backup
+
+        out_dir = tmp_path / "b"
+        out_dir.mkdir()
+        good_old = out_dir / f"{_RUN_BACKUP_PREFIX}old.zip"
+        good_old.write_bytes(b"PK")
+        out_zip = out_dir / f"{_RUN_BACKUP_PREFIX}new.zip"
+
+        assert run_backup(Namespace(output=str(out_zip), keep=1)) is False
+        assert out_zip.exists()
+        assert good_old.exists(), "an incomplete run must not rotate the last complete backup out"
+        assert "Backup incomplete" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cmd_backup(Namespace(output=str(tmp_path / "out2.zip"), quick=False))
+        assert exc.value.code == 1
+        unreadable.chmod(0o600)
+        assert run_backup(Namespace(output=str(tmp_path / "out4.zip"))) is True
 
     def test_empty_hermes_home(self, tmp_path, monkeypatch):
         """Backup handles empty hermes home (no files to back up)."""
@@ -2478,10 +2563,123 @@ def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, mon
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     for i in range(4):
         (tmp_path / f"hermes-backup-2026-01-0{i + 1}-000000.zip").write_bytes(b"old")
+    custom_prefixed = tmp_path / "hermes-backup-nightly.zip"
+    custom_prefixed.write_bytes(b"mine-too")
     (tmp_path / "my-archive.zip").write_bytes(b"mine")
 
     backup_mod.run_backup(Namespace(output=None, keep=2))
 
-    kept = sorted(p.name for p in tmp_path.glob("hermes-backup-*.zip"))
-    assert len(kept) == 2 and kept[0] == "hermes-backup-2026-01-04-000000.zip"
+    kept = sorted(
+        p.name for p in tmp_path.iterdir() if backup_mod._RUN_BACKUP_NAME_RE.fullmatch(p.name)
+    )
+    assert len(kept) == 2
+    assert "hermes-backup-2026-01-04-000000.zip" in kept
+    assert not (tmp_path / "hermes-backup-2026-01-03-000000.zip").exists()
+    assert custom_prefixed.exists()
     assert (tmp_path / "my-archive.zip").exists()
+
+
+def test_run_backup_keeps_previous_zip_when_new_archive_is_incomplete(tmp_path, monkeypatch):
+    """An incomplete replacement must not prune the last known-good backup."""
+    from argparse import Namespace
+    from hermes_cli import backup as backup_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: x\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    previous = tmp_path / "hermes-backup-2026-01-01-000000.zip"
+    previous.write_bytes(b"known-good")
+
+    def incomplete(_zf, _files, _output, *, on_error, **_kwargs):
+        on_error(Path("config.yaml"), RuntimeError("simulated read failure"))
+        return 0
+
+    monkeypatch.setattr(backup_mod, "_write_zip_entries", incomplete)
+    backup_mod.run_backup(Namespace(output=None, keep=1))
+
+    assert previous.exists()
+
+
+def test_run_backup_skips_retention_when_incomplete_marking_fails(tmp_path, monkeypatch):
+    from argparse import Namespace
+    from hermes_cli import backup as backup_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: x\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    previous = tmp_path / "hermes-backup-2026-01-01-000000.zip"
+    previous.write_bytes(b"known-good")
+
+    def incomplete(_zf, _files, _output, *, on_error, **_kwargs):
+        on_error(Path("config.yaml"), RuntimeError("simulated read failure"))
+        return 0
+
+    real_replace = backup_mod.os.replace
+
+    def fail_incomplete_mark(src, dst):
+        if str(dst).endswith("-incomplete.zip"):
+            raise OSError("simulated rename failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(backup_mod, "_write_zip_entries", incomplete)
+    monkeypatch.setattr(backup_mod.os, "replace", fail_incomplete_mark)
+    backup_mod.run_backup(Namespace(output=None, keep=1))
+
+    generated = [p for p in tmp_path.glob("hermes-backup-*.zip") if p != previous]
+    assert previous.exists()
+    assert len(generated) == 1
+    assert generated[0].exists()
+
+
+def test_run_backup_retention_prioritizes_successful_archives(tmp_path):
+    """``--keep`` bounds incomplete archives without evicting good restore points."""
+    from hermes_cli import backup as backup_mod
+
+    successful = {
+        "hermes-backup-2026-01-01-000000.zip",
+        "hermes-backup-2026-01-02-000000.zip",
+    }
+    incomplete = {
+        "hermes-backup-2026-01-03-000000-incomplete.zip",
+        "hermes-backup-2026-01-04-000000-incomplete.zip",
+        "hermes-backup-2026-01-05-000000-incomplete.zip",
+        "hermes-backup-2026-01-06-000000-incomplete.zip",
+    }
+    for name in successful | incomplete:
+        (tmp_path / name).write_bytes(b"archive")
+
+    backup_mod._prune_run_backup_zips(tmp_path, keep=3, what="backup")
+
+    assert {p.name for p in tmp_path.glob("hermes-backup-*.zip")} == successful | {
+        "hermes-backup-2026-01-06-000000-incomplete.zip",
+    }
+
+
+def test_run_backup_preserves_explicit_prefixed_output_name(tmp_path, monkeypatch):
+    """An explicit destination keeps its name and is outside default retention."""
+    from argparse import Namespace
+    from hermes_cli import backup as backup_mod
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: x\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    previous = tmp_path / "hermes-backup-2026-01-01-000000.zip"
+    previous.write_bytes(b"known-good")
+    explicit = tmp_path / "hermes-backup-explicit.zip"
+
+    def incomplete(_zf, _files, _output, *, on_error, **_kwargs):
+        on_error(Path("config.yaml"), RuntimeError("simulated read failure"))
+        return 0
+
+    monkeypatch.setattr(backup_mod, "_write_zip_entries", incomplete)
+    backup_mod.run_backup(Namespace(output=str(explicit), keep=1))
+
+    assert explicit.exists()
+    assert not (tmp_path / "hermes-backup-explicit-incomplete.zip").exists()
+    assert previous.exists()

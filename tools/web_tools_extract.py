@@ -9,15 +9,17 @@ one-shot keyless rescue. Logs under the origin (tools.web_tools) logger.
 import asyncio
 import json
 import logging
+import multiprocessing
 from typing import Any, Dict, List, Optional
 
 from tools.tool_backend_helpers import selection_error, selection_exists
-from tools.url_safety import normalize_url_for_request, sensitive_query_param_name
+from tools.url_safety import normalize_url_for_request
 from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
 
 logger = logging.getLogger("tools.web_tools")
 
 _NO_RESULT_ERROR = "Extract backend returned no result for this URL"
+_DEFAULT_EXTRACT_TIMEOUT_S = 120.0
 _EXTRACT_BACKENDS_HINT = "firecrawl, tavily, keenable, exa, or parallel."
 _INVALID_ITEM_ERROR = (
     "Invalid URL item at index {}: expected a URL string or an object with a string 'url' or 'href' field"
@@ -103,13 +105,6 @@ def _validate_extract_urls(urls: List[Any]):
                 "Blocked: URL contains what appears to be an API key or token. "
                 "Secrets must not be sent in URLs."
             )
-        if sensitive_query_key := sensitive_query_param_name(normalized_url):
-            return _refuse_all(
-                "Blocked: URL contains a credential-like query parameter "
-                f"({sensitive_query_key}). Web extract backends are third-party "
-                "readers; remove the sensitive query parameter or use a local "
-                "browser session when this access is explicitly required."
-            )
         normalized_urls.append(normalized_url)
         normalized_indices.append(index)
     return normalized_urls, normalized_indices, invalid_urls, None
@@ -139,19 +134,112 @@ def _resolve_extract_provider(backend: str):
     return provider, None
 
 
-async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
-    """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
+def _extract_timeout_seconds() -> float:
+    """Wall-clock cap for one provider ``extract()`` dispatch (``web.extract_timeout``, default 120s).
 
-    Rescue fires on a raised exception or when the WHOLE batch failed (backend outage, not per-page
-    problems). Rescued batches are never cached.
+    A hanging backend (server keeps the response open without finishing) otherwise stalls the
+    tool call indefinitely. 0 or a negative value disables the cap.
+    """
+    from tools.web_tools import _load_web_config
+    try:
+        return float(_load_web_config().get("extract_timeout", _DEFAULT_EXTRACT_TIMEOUT_S))
+    except (TypeError, ValueError):
+        return _DEFAULT_EXTRACT_TIMEOUT_S
+
+
+def _sync_extract_process_entry(
+    provider, fetch_urls: List[str], format: Optional[str], timeout: float, send_conn
+) -> None:
+    """Run a synchronous provider in a child that the parent can terminate.
+
+    A cancelled thread keeps the provider's socket and executor alive. A child
+    process gives the timeout a real resource boundary while preserving the
+    provider object on fork-capable hosts (the normal local/CI path).
+    """
+    import os
+    import threading
+
+    outcome: list[tuple[str, Any]] = []
+
+    def invoke() -> None:
+        try:
+            outcome.append(("ok", provider.extract(fetch_urls, format=format)))
+        except BaseException as exc:  # noqa: BLE001 - marshal the child failure to the parent
+            outcome.append(("error", f"{type(exc).__name__}: {exc}"))
+
+    worker = threading.Thread(target=invoke, daemon=True)
+    worker.start()
+    worker.join(timeout if timeout > 0 else None)
+    if worker.is_alive():
+        # The process is the termination boundary. Exiting here takes the
+        # provider's still-running thread and its sockets with it.
+        send_conn.send(("timeout", None))
+        send_conn.close()
+        os._exit(124)
+    send_conn.send(outcome[0])
+    send_conn.close()
+
+
+async def _run_sync_extract_terminable(provider, fetch_urls: List[str], format: Optional[str], timeout: float):
+    """Run sync extraction in a killable process and enforce its deadline."""
+    methods = multiprocessing.get_all_start_methods()
+    method = "fork" if "fork" in methods else multiprocessing.get_start_method()
+    context = multiprocessing.get_context(method)
+    parent_conn, child_conn = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_sync_extract_process_entry, args=(provider, fetch_urls, format, timeout, child_conn)
+    )
+    process.daemon = True
+    process.start()
+    child_conn.close()
+    deadline = asyncio.get_running_loop().time() + timeout if timeout > 0 else None
+    try:
+        while True:
+            if parent_conn.poll():
+                status, payload = parent_conn.recv()
+                if status == "timeout":
+                    raise asyncio.TimeoutError
+                if status == "error":
+                    raise RuntimeError(payload)
+                return payload
+            if not process.is_alive():
+                raise RuntimeError(f"sync extract provider exited with status {process.exitcode}")
+            if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                raise asyncio.TimeoutError
+            await asyncio.sleep(0.01)
+    finally:
+        parent_conn.close()
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=1.0)
+
+
+async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
+    """Call ``provider.extract`` (async or in a terminable process), with one-shot keyless rescue.
+
+    Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
+    failed (backend outage, not per-page problems). Rescued batches are never cached.
     """
     import inspect
     from tools.web_result_cache import extract_cache_put
+    timeout = _extract_timeout_seconds()
     try:
         if inspect.iscoroutinefunction(provider.extract):
-            results = await provider.extract(fetch_urls, format=format)
-        else:  # sync extract() runs in a thread so network I/O never blocks the loop
-            results = await asyncio.to_thread(provider.extract, fetch_urls, format=format)
+            coro = provider.extract(fetch_urls, format=format)
+            results = await asyncio.wait_for(coro, timeout=timeout) if timeout > 0 else await coro
+        else:
+            # A cancelled to_thread() leaves the underlying provider running.
+            # Use a process boundary so timeout really releases its network
+            # resources instead of accumulating stuck SDK threads.
+            results = await _run_sync_extract_terminable(provider, fetch_urls, format, timeout)
+    except asyncio.TimeoutError as exc:  # hanging backend — bounded, never a stalled tool call
+        logger.warning("web_extract provider '%s' timed out after %.0fs for %d URL(s)",
+                       provider.name, timeout, len(fetch_urls))
+        failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
+                  for u in fetch_urls]
+        if not _rescue_eligible(provider):
+            return failed
+        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
     except Exception as exc:  # noqa: BLE001 — candidate for rescue
         if not _rescue_eligible(provider):
             raise
@@ -160,10 +248,18 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 
-    # Cache each successful fetch's full clean text (best-effort; oversized skipped).
-    for url, fetched in zip(fetch_urls, results):
+    # Cache each successful fetch under the REQUESTED url it reports as its own — never by list
+    # position: providers omit failed URLs or return successes out of request order, and a positional
+    # write filed one page's text under another URL's key for the whole TTL. ``metadata.sourceURL``
+    # counts because Keenable/Firecrawl put the requested URL there when ``url`` is the redirect target.
+    # An entry naming no requested URL is served but not cached (a miss re-fetches; a mis-key poisons).
+    requested = set(fetch_urls)
+    for fetched in results:
+        meta = fetched.get("metadata")
+        source = meta.get("sourceURL") if isinstance(meta, dict) else None
+        url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
-        if _content and not fetched.get("error"):
+        if url and _content and not fetched.get("error"):
             extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
     return results
 

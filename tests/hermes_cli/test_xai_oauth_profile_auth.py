@@ -28,7 +28,6 @@ def test_read_xai_oauth_tokens_uses_credential_pool_when_provider_tokens_empty(m
         },
     }
     monkeypatch.setattr(auth, "_load_auth_store", lambda: store)
-    monkeypatch.setattr(auth, "_load_global_auth_store", lambda: {})
 
     resolved = auth._read_xai_oauth_tokens(_lock=False)
 

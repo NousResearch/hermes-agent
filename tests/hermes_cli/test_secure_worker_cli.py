@@ -4,6 +4,7 @@ import argparse
 import json
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -31,6 +32,20 @@ def test_cli_registers_required_commands() -> None:
         "attest",
         "destroy",
     }
+
+
+def test_main_wires_secure_worker_as_a_parent_command() -> None:
+    from hermes_cli.main import _build_cli_parser
+
+    parser, _subparsers = _build_cli_parser()
+    commands = next(
+        action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    secure_worker = commands.choices["secure-worker"]
+    nested = next(
+        action for action in secure_worker._actions if isinstance(action, argparse._SubParsersAction)
+    )
+    assert {"audit", "run", "pack", "verify"}.issubset(nested.choices)
 
 
 def test_remote_audit_parser_accepts_manifest_and_policy_proofs(tmp_path: Path) -> None:
@@ -110,6 +125,36 @@ def test_run_refuses_mutated_runtime_before_constructing_process(
         config=str(tmp_path / "profile.yaml"),
     )
     assert secure_worker_cli.cmd_run(args) == 1
+
+
+def test_run_uses_python_safe_path_before_loading_hermes_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    config = tmp_path / "config.yaml"
+    config.write_text("model: {}\n", encoding="utf-8")
+    report = BoundaryReport(
+        allowed=True, reasons=(), manifest_sha256="a" * 64,
+        source_commit="b" * 40, config_sha256="c" * 64,
+        policy_sha256="d" * 64, worker_image="worker@sha256:" + "e" * 64,
+        broker_executable_sha256="f" * 64, broker_module_sha256="1" * 64,
+    )
+    monkeypatch.setattr(secure_worker_cli, "_audit_from_args", lambda _args: ({}, report))
+    monkeypatch.setattr(secure_worker_cli, "verify_admission_receipt", lambda *_a, **_k: None)
+    calls = []
+    monkeypatch.setattr(
+        secure_worker_cli.subprocess,
+        "run",
+        lambda argv, **_kwargs: (calls.append(argv) or SimpleNamespace(returncode=0)),
+    )
+
+    args = argparse.Namespace(
+        hermes_args=["--", "review the proposal"], pack=str(pack),
+        receipt=str(tmp_path / "admission.json"), config=str(config),
+    )
+    assert secure_worker_cli.cmd_run(args) == 0
+    assert calls[0][1:5] == ["-E", "-P", "-m", "hermes_cli.main"]
 
 
 def test_attest_requires_explicit_privacy_confirmation(tmp_path: Path) -> None:

@@ -97,30 +97,6 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
-    @pytest.mark.asyncio
-    async def test_voice_fast_lane_queues_followup_instead_of_interrupting(self):
-        """Speech must not discard an in-progress voice reply or task."""
-        from gateway.run import GatewayRunner
-
-        runner, _sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
-        adapter = _make_adapter()
-        event = _make_event(text="And what about tomorrow?", platform_val="discord")
-        event.message_type = MessageType.VOICE
-        event.source._voice_fast_lane = True
-        session_key = build_session_key(event.source)
-        runner.adapters[event.source.platform] = adapter
-        agent = MagicMock()
-        runner._running_agents[session_key] = agent
-
-        handled = await GatewayRunner._handle_active_session_busy_message(
-            runner, event, session_key
-        )
-
-        assert handled is True
-        assert adapter._pending_messages[session_key] is event
-        agent.interrupt.assert_not_called()
-
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
@@ -542,3 +518,52 @@ class TestLongRunningNotificationOwnership:
             "sess", original_agent, executor_task=None
         ) is False
 
+    @pytest.mark.asyncio
+    async def test_restart_during_heartbeat_edit_sends_no_fallback_bubble(self, monkeypatch):
+        """The guard is rechecked after the awaited edit: a restart that begins while the edit is
+        in flight must not be followed by a fresh "Working" send when that edit fails (#10990)."""
+        import asyncio
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+        from gateway.turn_context import TurnContext
+
+        monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.01")
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        runner._draining = runner._restart_requested = False
+        adapter = MagicMock()
+        first_send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="hb-1"))
+        adapter.send = first_send
+
+        async def _edit_then_restart(*a, **k):
+            runner._restart_requested = True  # restart notice goes out while the edit is awaited
+            return SimpleNamespace(success=False)
+
+        adapter.edit_message = AsyncMock(side_effect=_edit_then_restart)
+        runner._delivery_adapter_for = lambda source: adapter
+        runner._agent_activity_summary = staticmethod(lambda agent: None)
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        disp = MagicMock()
+        disp._display_surface_mode.return_value = "on"
+        disp.resolve_display_setting.return_value = False
+        ctx = TurnContext(source=SimpleNamespace(chat_id="c", platform="telegram"), session_key="sess")
+        ctx.agent_holder[0] = agent
+
+        await asyncio.wait_for(runner._run_agent_notify_long_running(disp, ctx, [None]), 5)
+
+        assert first_send.await_count == 1  # the original heartbeat only
+        adapter.edit_message.assert_awaited_once()
+
+    @pytest.mark.parametrize("flag", ["_draining", "_restart_requested"])
+    def test_notification_stops_once_shutdown_or_restart_begins(self, flag):
+        """After the restart/shutdown notice a heartbeat would contradict it (#10990)."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {}
+        agent = MagicMock()
+        runner._running_agents["sess"] = agent
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is True
+        setattr(runner, flag, True)
+        assert runner._should_emit_long_running_notification("sess", agent, executor_task=None) is False

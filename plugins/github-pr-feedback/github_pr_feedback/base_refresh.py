@@ -165,9 +165,11 @@ class DeterministicBaseRefresher:
             return BaseRefreshResult("handoff", "merge_conflict")
         resolved = self._stdout(("git", "rev-parse", "--verify", "HEAD"), worktree)
         if not _SHA.fullmatch(resolved) or resolved.casefold() == identity.head_sha:
+            self._restore_exact_head(worktree, identity.head_sha)
             return BaseRefreshResult("handoff", "merge_result_invalid")
         resolved = resolved.casefold()
         if not self._is_clean(worktree):
+            self._restore_exact_head(worktree, identity.head_sha)
             return BaseRefreshResult("handoff", "merge_result_not_clean")
 
         environment = dict(os.environ)
@@ -179,16 +181,20 @@ class DeterministicBaseRefresher:
             timeout=3600,
         )
         if static.returncode != 0 or static.timed_out:
+            self._restore_exact_head(worktree, identity.head_sha)
             return BaseRefreshResult("handoff", "static_failed")
         if not self._clean_exact_head(worktree, resolved):
+            self._restore_exact_head(worktree, identity.head_sha)
             return BaseRefreshResult("handoff", "static_mutated_worktree")
         try:
             before_push = self._github.get_merge_state(
                 identity.repository, identity.pr_number
             )
         except Exception:  # noqa: BLE001 - uncertain canonical identity fails closed.
+            self._restore_exact_head(worktree, identity.head_sha)
             return BaseRefreshResult("handoff", "identity_unavailable")
         if not _matches_initial(identity, before_push):
+            self._restore_exact_head(worktree, identity.head_sha)
             return BaseRefreshResult("handoff", "identity_race")
 
         if not self._ok(
@@ -201,6 +207,7 @@ class DeterministicBaseRefresher:
             worktree,
             timeout=120,
         ):
+            self._restore_exact_head(worktree, identity.head_sha)
             return BaseRefreshResult("handoff", "push_failed")
         receipt_id = _receipt_id(identity, resolved, static)
         try:

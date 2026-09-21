@@ -9,6 +9,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Guard against aiohttp mock pollution: other test files (e.g. test_slack_*.py)
+# set sys.modules["aiohttp"] = MagicMock() at module level. When this file is
+# collected afterwards, find_spec("aiohttp") raises ValueError because the
+# MagicMock has no __spec__. Skip the whole file when aiohttp is not a real
+# installed module.
+_aio_skip = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(_aio_skip, "__version__", None), str):
+    pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------

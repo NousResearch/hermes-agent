@@ -29,6 +29,7 @@ class ConversationWorktreeRecord:
     failure_message: Optional[str]
     created_at: float
     updated_at: float
+    source_worktree: Optional[str] = None
 
 
 class SessionWorktreesMixin:
@@ -40,6 +41,7 @@ class SessionWorktreesMixin:
             branch=row["branch"],
             base_commit=row["base_commit"],
             repo_common_dir=row["repo_common_dir"],
+            source_worktree=row["source_worktree"],
             state=row["state"],
             failure_phase=row["failure_phase"],
             failure_message=row["failure_message"],
@@ -53,7 +55,7 @@ class SessionWorktreesMixin:
     ) -> Optional[ConversationWorktreeRecord]:
         row = conn.execute(
             "SELECT root_session_id, worktree_path, branch, base_commit, "
-            "repo_common_dir, state, failure_phase, failure_message, "
+            "repo_common_dir, source_worktree, state, failure_phase, failure_message, "
             "created_at, updated_at "
             "FROM conversation_worktree_bindings WHERE root_session_id = ?",
             (root_session_id,),
@@ -75,6 +77,7 @@ class SessionWorktreesMixin:
         branch: str,
         base_commit: str,
         repo_common_dir: str,
+        source_worktree: Optional[str] = None,
     ) -> ConversationWorktreeRecord:
         """Claim an immutable Git identity, or return the identical claim.
 
@@ -95,7 +98,10 @@ class SessionWorktreesMixin:
                     existing.base_commit,
                     existing.repo_common_dir,
                 )
-                if existing_identity != identity:
+                if existing_identity != identity or (
+                    source_worktree is not None
+                    and existing.source_worktree not in (None, source_worktree)
+                ):
                     raise ConversationWorktreeConflict(
                         "conversation worktree identity already claimed for "
                         f"root session {root_session_id!r}"
@@ -106,9 +112,9 @@ class SessionWorktreesMixin:
             conn.execute(
                 "INSERT INTO conversation_worktree_bindings ("
                 "root_session_id, worktree_path, branch, base_commit, "
-                "repo_common_dir, state, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, 'creating', ?, ?)",
-                (root_session_id, *identity, now, now),
+                "repo_common_dir, source_worktree, state, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, 'creating', ?, ?)",
+                (root_session_id, *identity, source_worktree, now, now),
             )
             record = self._conversation_worktree_record_on_conn(conn, root_session_id)
             if record is None:  # pragma: no cover - INSERT is in this transaction.
@@ -190,4 +196,16 @@ class SessionWorktreesMixin:
             root_session_id,
             state="removed",
             allowed_current_states=("creating", "ready", "creation_failed", "retained"),
+        )
+
+    def reset_conversation_worktree_for_retry(
+        self, root_session_id: str
+    ) -> ConversationWorktreeRecord:
+        """Return a physically cleaned failed draft to the createable state."""
+        return self._set_conversation_worktree_state(
+            root_session_id,
+            state="creating",
+            allowed_current_states=("ready", "removed"),
+            failure_phase=None,
+            failure_message=None,
         )

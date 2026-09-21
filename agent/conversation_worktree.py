@@ -498,6 +498,7 @@ class ConversationWorktreeManager:
                             branch=branch,
                             base_commit=base_commit,
                             repo_common_dir=str(source_common_dir),
+                            source_worktree=str(source),
                         )
                     except ConversationWorktreeConflict as exc:
                         record = self._db.get_conversation_worktree(root_session_id)
@@ -546,6 +547,20 @@ class ConversationWorktreeManager:
             )
             raise
 
+    def _durable_source(self, record: ConversationWorktreeRecord) -> Path:
+        # Legacy rows can only recover from an explicitly configured checkout.
+        source = (
+            Path(record.source_worktree).resolve()
+            if record.source_worktree
+            else self._source_repository_identity()[0]
+        )
+        actual = Path(self._git_stdout(
+            source, ["rev-parse", "--path-format=absolute", "--git-common-dir"], "identity"
+        )).resolve()
+        if actual != Path(record.repo_common_dir).resolve():
+            raise ConversationWorktreeError("durable source repository identity changed", phase="identity")
+        return source
+
     def resolve_existing_session(
         self, root_session_id: str
     ) -> ConversationWorktreeBinding | None:
@@ -553,8 +568,14 @@ class ConversationWorktreeManager:
         record = self._db.get_conversation_worktree(root_session_id)
         if record is None:
             return None
-        source, source_common_dir = self._source_repository_identity()
-        path, branch = self._expected_identity(root_session_id)
+        source_common_dir = Path(record.repo_common_dir).resolve()
+        source = self._durable_source(record)
+        path = Path(record.worktree_path).resolve()
+        branch = record.branch
+        if not source.is_dir() or not source_common_dir.is_dir():
+            raise ConversationWorktreeError(
+                "durable conversation repository identity is unavailable", phase="identity"
+            )
         if self._is_within(path, source):
             raise ConversationWorktreeError(
                 "worktree_root must not create conversation worktrees inside source_worktree",
@@ -564,13 +585,21 @@ class ConversationWorktreeManager:
             record = self._db.get_conversation_worktree(root_session_id)
             if record is None:
                 return None
-            return self._resolve_ready_binding_locked(
+            self._validate_worktree_root_ownership(
                 source,
                 source_common_dir,
-                record,
-                path=path,
-                branch=branch,
+                expected_path=path,
+                existing=record,
+                worktree_root=path.parent,
             )
+            binding = self._validated_ready_binding(
+                record,
+                source_common_dir=source_common_dir,
+                expected_path=path,
+                expected_branch=branch,
+            )
+            self._ensure_git_worktree_locked(source, record)
+            return binding
 
     def _resolve_ready_binding_locked(
         self,
@@ -617,15 +646,27 @@ class ConversationWorktreeManager:
         root_session_id: str,
         *,
         active_session_bound: bool = False,
+        retain_for_retry: bool = False,
     ) -> CleanupResult:
-        """Remove only a re-inspected safe binding after an explicit request."""
+        """Remove only a re-inspected safe binding after an explicit request.
+
+        ``retain_for_retry`` is used when cleanup follows a failed draft
+        materialization. The checkout is still removed, but its durable claim
+        returns to ``creating`` so the same draft identity can be retried.
+        Explicit user cleanup keeps the normal terminal ``removed`` state.
+        """
         record = self._db.get_conversation_worktree(root_session_id)
         if record is None:
             verdict = CleanupVerdict(False, ("unknown",))
             return CleanupResult(False, verdict)
 
         try:
-            source, source_common_dir = self._source_repository_identity()
+            source_common_dir = Path(record.repo_common_dir).resolve()
+            source = self._durable_source(record)
+            if not source.is_dir() or not source_common_dir.is_dir():
+                raise ConversationWorktreeError(
+                    "durable conversation repository identity is unavailable", phase="identity"
+                )
             with self._repository_lock(source_common_dir):
                 with self._root_lock(source_common_dir, root_session_id):
                     current = self._db.get_conversation_worktree(root_session_id)
@@ -637,7 +678,6 @@ class ConversationWorktreeManager:
                             current,
                             active_session_bound=active_session_bound,
                             root_liveness=root_liveness,
-                            source_identity=(source, source_common_dir),
                         )
                         if not verdict.allowed:
                             return CleanupResult(False, verdict)
@@ -699,12 +739,16 @@ class ConversationWorktreeManager:
                                 failure_message=message,
                             )
 
-                        self._db.mark_conversation_worktree_removed(root_session_id)
+                        if retain_for_retry:
+                            self._db.reset_conversation_worktree_for_retry(root_session_id)
+                            self._event(
+                                "conversation_worktree.cleanup_retryable",
+                                root_session_id=root_session_id,
+                            )
+                        else:
+                            self._db.mark_conversation_worktree_removed(root_session_id)
                         self._remove_common_owner_claim(current)
-                        self._event(
-                            "conversation_worktree.removed",
-                            root_session_id=root_session_id,
-                        )
+                        self._event("conversation_worktree.removed", root_session_id=root_session_id)
                         return CleanupResult(True, verdict)
         except ConversationWorktreeError:
             return CleanupResult(False, CleanupVerdict(False, ("unknown",)))
@@ -718,7 +762,6 @@ class ConversationWorktreeManager:
         *,
         active_session_bound: bool,
         root_liveness: str = "inactive",
-        source_identity: tuple[Path, Path] | None = None,
     ) -> CleanupVerdict:
         reasons: list[str] = []
 
@@ -727,13 +770,12 @@ class ConversationWorktreeManager:
                 reasons.append(reason)
 
         try:
-            source, source_common_dir = source_identity or self._source_repository_identity()
-            expected_path, expected_branch = self._expected_identity(record.root_session_id)
+            source_common_dir = Path(record.repo_common_dir).resolve()
+            source = self._durable_source(record)
+            expected_path = Path(record.worktree_path).resolve()
             if (
                 record.state not in {"ready", "retained"}
-                or Path(record.worktree_path).resolve() != expected_path.resolve()
-                or record.branch != expected_branch
-                or Path(record.repo_common_dir).resolve() != source_common_dir.resolve()
+                or not self._exact_owner_claims_present(record)
                 or not expected_path.is_dir()
             ):
                 return CleanupVerdict(False, ("mismatched identity",))
@@ -972,6 +1014,7 @@ class ConversationWorktreeManager:
         *,
         expected_path: Path,
         existing: ConversationWorktreeRecord | None,
+        worktree_root: Path | None = None,
     ) -> None:
         """Refuse a configured output root owned by a different repository.
 
@@ -980,8 +1023,11 @@ class ConversationWorktreeManager:
         existing ancestor and let Git discover its common directory from there;
         only a same-common-dir owner is compatible with the configured source.
         """
-        root = self._policy.worktree_root
-        assert root is not None  # policy was validated by _expected_identity
+        root = worktree_root or self._policy.worktree_root
+        if root is None:
+            raise ConversationWorktreeError(
+                "worktree_root is unavailable for durable binding", phase="policy"
+            )
         nearest = root.resolve()
         while not nearest.exists() and nearest != nearest.parent:
             nearest = nearest.parent
@@ -1245,17 +1291,23 @@ class ConversationWorktreeManager:
         # creates the worktree.  A crash or failed per-worktree marker write
         # after `git worktree add` must still be visible to every generic GC.
         self._ensure_common_owner_claim(record)
+        existing_branch = self._run_git(
+            source,
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}"],
+            self._policy.create_timeout,
+            "create",
+        ).returncode == 0
+        add_args = (
+            ["worktree", "add", str(path), record.branch]
+            if existing_branch
+            else [
+                "worktree", "add", "--no-track", "-b", record.branch,
+                str(path), record.base_commit,
+            ]
+        )
         self._git_stdout(
             source,
-            [
-                "worktree",
-                "add",
-                "--no-track",
-                "-b",
-                record.branch,
-                str(path),
-                record.base_commit,
-            ],
+            add_args,
             "create",
         )
         # Provision the source repository's own runtime before this new
@@ -1291,15 +1343,25 @@ class ConversationWorktreeManager:
             )
 
     def _validated_ready_binding(
-        self, record: ConversationWorktreeRecord
+        self,
+        record: ConversationWorktreeRecord,
+        *,
+        source_common_dir: Path | None = None,
+        expected_path: Path | None = None,
+        expected_branch: str | None = None,
     ) -> ConversationWorktreeBinding:
         if record.state != "ready":
             raise ConversationWorktreeError(
                 f"conversation worktree is not ready (state {record.state!r})",
                 phase="recovery",
             )
-        _, source_common_dir = self._source_repository_identity()
-        path, branch = self._expected_identity(record.root_session_id)
+        if source_common_dir is None:
+            _, source_common_dir = self._source_repository_identity()
+        path, branch = (
+            (expected_path, expected_branch)
+            if expected_path is not None and expected_branch is not None
+            else self._expected_identity(record.root_session_id)
+        )
         self._validate_record_identity(
             record,
             path=path,
@@ -1353,8 +1415,10 @@ class ConversationWorktreeManager:
                     "ready conversation worktree no longer descends from its base commit",
                     phase="recovery",
                 )
-        self._ensure_common_owner_claim(record)
-        self._ensure_owner_marker(record)
+        if not self._exact_owner_claims_present(record):
+            raise ConversationWorktreeError(
+                "ready conversation worktree ownership is unavailable", phase="recovery"
+            )
         self._event(
             "conversation_worktree.reuse", root_session_id=record.root_session_id
         )
@@ -1511,7 +1575,7 @@ class ConversationWorktreeManager:
         result = self._run_git(cwd, args, self._timeout_for_phase(phase), phase)
         if result.returncode != 0:
             raise ConversationWorktreeError(
-                f"git {args[0]} failed", phase=phase
+                f"git {args[0]} failed: {self._sanitize_remove_failure(result.stderr)}", phase=phase
             )
         return result.stdout.strip()
 

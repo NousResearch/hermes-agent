@@ -89,6 +89,31 @@ class TestDoctorToolAvailabilitySummary:
 
         assert [item["name"] for item in filtered] == ["web"]
 
+    def test_image_gen_without_provider_reports_setup_hint_not_system_dependency(self, monkeypatch):
+        """image_gen declares no single env var (FAL / managed Nous / plugin providers); an
+        unconfigured backend is a setup problem and must say so, and it counts toward the
+        'run hermes setup' summary like any missing key (#9516)."""
+        unavailable = [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]},
+                       {"name": "homeassistant", "env_vars": [], "tools": []}]
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"image_gen"})
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}, "homeassistant": {"name": "homeassistant"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        image_line = next(line for line in out.splitlines() if "image_gen" in line)
+        assert "hermes tools" in image_line and "system dependency" not in image_line and "unavailable" in image_line
+        assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
+        assert any("hermes setup" in issue for issue in f.issues)
+
     def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
         """#78412: selected firecrawl with is_available=False must warn."""
         class _Unavailable:
@@ -138,7 +163,7 @@ class TestDoctorToolAvailabilitySummary:
 
 class TestDoctorEnvFileEncoding:
     """Regression for #18637 (bug 3): `hermes doctor` crashed on Windows
-    Chinese locale (GBK) because `.env` was read with Path.read_text() which
+    Chinese locale (GBK) because `.env` was read with Path.read_text(encoding="utf-8") which
     defaults to the system locale encoding, not UTF-8."""
 
     def test_doctor_reads_env_as_utf8_even_when_locale_is_not_utf8(
@@ -305,7 +330,7 @@ class TestDoctorMemoryProviderSection:
         if provider:
             config["provider"] = provider
         config = {"memory": config}
-        (home / "config.yaml").write_text(yaml.dump(config))
+        (home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
         return home
 
     def _run_doctor_and_capture(
@@ -401,6 +426,11 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
         return real_which(cmd)
 
     monkeypatch.setattr(shutil, "which", fake_which)
+    # The docker check resolves through find_docker() (which also knows the macOS Docker
+    # Desktop paths), so pin it off the host instead of relying on PATH alone.
+    from hermes_cli import doctor_tools
+
+    monkeypatch.setattr(doctor_tools, "find_docker", lambda: None)
 
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
 
@@ -442,7 +472,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
                 },
             }
         )
-    )
+    , encoding="utf-8")
 
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
@@ -555,6 +585,93 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
 
     out = buf.getvalue()
     assert "model.provider 'custom' is not a recognised provider" not in out
+
+
+def test_run_doctor_rejects_disabled_custom_provider(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n  provider: my-custom\n  default: local-model\n"
+        "providers:\n  my-custom:\n    api: http://localhost:8000/v1\n    enabled: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'my-custom' is unknown" in out
+
+
+def test_run_doctor_rejects_disabled_builtin_provider(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  default: claude-test\n"
+        "providers:\n  anthropic:\n    enabled: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert "model.provider 'anthropic' is unknown" in buf.getvalue()
+
+
+def test_run_doctor_accepts_llamacpp_alias_before_local_server_is_running(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: llamacpp\n"
+        "  default: local-model\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+    from hermes_cli.local_runtime import endpoint
+    monkeypatch.setattr(endpoint, "resolve_llamacpp_endpoint", lambda wait_for_boot_s=0: None)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'llamacpp' is not a recognised provider" not in out
+    assert "model.provider 'llamacpp' is unknown" not in out
 
 
 def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(monkeypatch, tmp_path):
@@ -701,6 +818,58 @@ def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, 
         not in out
     )
     assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expects_warning"),
+    [
+        ("http://localhost:20128/v1", False),
+        ("https://api.openai.com/v1", True),
+    ],
+)
+def test_run_doctor_vendor_slug_policy_for_openai_api_endpoint(
+    monkeypatch, tmp_path, base_url, expects_warning
+):
+    """openai-api behind a custom router owns a vendor/model namespace (#69912); the real
+    OpenAI endpoint keeps the warning."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openai-api\n"
+        "  default: nvidia/z-ai/glm-5.2\n"
+        f"  base_url: {base_url}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    warning = (
+        "model.default 'nvidia/z-ai/glm-5.2' uses a vendor/model slug "
+        "but provider is 'openai-api'"
+    )
+    assert (warning in buf.getvalue()) is expects_warning
 
 
 
@@ -1082,6 +1251,73 @@ class TestGitHubTokenCheck:
         assert "60 req/hr" in out
 
 
+    def test_dedicated_hermes_bot_token_shows_ok_without_shared_token(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
+        monkeypatch.setenv("HERMES_GITHUB_BOT_TOKEN", "bot-secret")
+        monkeypatch.setenv("HERMES_GITHUB_BOT_LOGIN", "mrkillbobbot")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "Dedicated Hermes GitHub automation token configured (mrkillbobbot)" in out
+        assert "No GITHUB_TOKEN" in out
+        assert "bot-secret" not in out
+
+
+    def test_dedicated_hermes_bot_token_without_login_does_not_claim_ready(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("PATH", "/nonexistent")
+        monkeypatch.setenv("HERMES_GITHUB_BOT_TOKEN", "bot-secret")
+        monkeypatch.delenv("HERMES_GITHUB_BOT_LOGIN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "Dedicated Hermes GitHub automation token is incomplete" in out
+        assert "Dedicated Hermes GitHub automation token configured (mrkillbobbot)" not in out
+        assert "No GITHUB_TOKEN" in out
+
+    def test_dedicated_hermes_bot_token_reports_configured_login(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        self._isolate_home(monkeypatch, home)
+        monkeypatch.setenv("PATH", "/nonexistent")
+        monkeypatch.setenv("HERMES_GITHUB_BOT_TOKEN", "bot-secret")
+        monkeypatch.setenv("HERMES_GITHUB_BOT_LOGIN", "automation-account")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "Dedicated Hermes GitHub automation token configured (automation-account)" in out
+        assert "configured (mrkillbobbot)" not in out
+
+
     def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
@@ -1119,6 +1355,23 @@ class TestGitHubTokenCheck:
 
         assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
+
+
+    def test_gh_authenticated_on_gh_without_authenticated_json_field(self, monkeypatch):
+        """gh 2.98+ dropped the `authenticated` field from `gh auth status --json`,
+        so that invocation exits 1 even for a logged-in user. A logged-in user on
+        such a gh must still be reported as authenticated."""
+        from hermes_cli import doctor_state
+
+        def gh_2_98(cmd, **kwargs):
+            assert cmd[:3] == ["gh", "auth", "status"], cmd
+            if "--json" in cmd and "authenticated" in cmd:
+                return types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"unknown JSON field")
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"Logged in to github.com")
+
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", gh_2_98)
+        assert doctor_state._gh_authenticated() is True
 
 
 def _run_doctor_with_healthy_oauth_fallback(
@@ -1487,6 +1740,36 @@ class TestDoctorStaleMaxIterationsDrift:
         assert "shadows" not in out
 
 
+class TestDoctorLegacyCustomProvidersResidue:
+    """A legacy ``custom_providers`` list entry without a ``providers:`` twin lives on in the retired list
+    store; doctor must name it and point at the move. Twins (URL modulo trailing slash /
+    case) and non-list values are not this step's business."""
+
+    def _run(self, tmp_path, yaml_text):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml_text, encoding="utf-8")
+        finding = doctor_config.Finding()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_config._drift_legacy_custom_providers(finding, False, cfg)
+        return buf.getvalue(), finding
+
+    def test_orphan_entry_is_flagged_with_repair_instruction(self, tmp_path):
+        out, finding = self._run(tmp_path, (
+            "custom_providers:\n  - name: Local (8283)\n    base_url: http://127.0.0.1:8283/v1\n"
+            "providers:\n  other:\n    api: http://127.0.0.1:8290/v1\n"))
+        assert "Legacy custom_providers entry 'Local (8283)' has no providers: twin" in out
+        assert finding.manual_issues and "providers.<key>.api: http://127.0.0.1:8283/v1" in finding.manual_issues[0]
+        assert finding.fixed == 0 and finding.issues == []  # warn-only: no --fix rewrite of config.yaml
+
+    def test_twin_and_scalar_are_silent(self, tmp_path):
+        out, finding = self._run(tmp_path, (
+            "custom_providers:\n  - name: Local\n    base_url: http://127.0.0.1:8283/V1/\n"
+            "providers:\n  local:\n    api: http://127.0.0.1:8283/v1\n"))
+        assert out == "" and finding.manual_issues == []
+        out, finding = self._run(tmp_path, "custom_providers: oops\n")
+        assert out == "" and finding.manual_issues == []
+
 
 
 class TestDoctorDeprecatedConfigAndEnv:
@@ -1751,10 +2034,27 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     from hermes_cli import doctor_tools
 
     calls: list = []
-    monkeypatch.setattr(doctor_tools, "_safe_which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(doctor_tools, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(doctor_tools, "_run_ok", lambda cmd, timeout, **kw: calls.append(cmd) or True)
     monkeypatch.setattr(doctor_tools, "_require", lambda *a, **k: None)
 
     doctor_tools._check_docker_backend("docker", False, [])
 
-    assert calls and calls[0][:2] == ["docker", "version"]
+    assert calls == [["/usr/bin/docker", "version"]]
+
+
+def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypatch):
+    """A routed auxiliary.<task> block that the runtime resolver rejects is a doctor finding, not a
+    silent fall-back to the main model (#116055); a resolvable one is not flagged."""
+    import yaml
+    from hermes_cli import doctor_config
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"auxiliary": {
+        "background_review": {"provider": "no-such-provider", "model": "m"},
+        "compression": {"provider": "openai", "model": "gpt-x", "base_url": "https://gateway.example/v1", "api_key": "gw"},
+    }}))
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+    assert len(issues) == 1 and "auxiliary.background_review" in issues[0] and "no-such-provider" in issues[0]

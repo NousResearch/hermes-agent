@@ -96,3 +96,23 @@ def test_progress_context_is_exact_and_labeled():
     assert "narrative-only" in response
     command = run.call_args.args[0]
     assert command[command.index("--root-task-id") + 1] == "t_root"
+
+def test_malformed_context_limit_falls_back_without_dropping_response():
+    config = json.loads(json.dumps(CONFIG))
+    config["kanban"]["vault_reports"]["max_context_chars"] = "not-an-integer"
+    completed = SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps({"status": "ok", "context": "narrative context"}),
+        stderr="",
+    )
+    with patch("gateway.vault_reports.subprocess.run", return_value=completed) as run:
+        response = append_vault_context(
+            config,
+            "Live Kanban status.",
+            board="exampleproject-burndown",
+            root_task_ids=["t_root"],
+        )
+
+    assert "narrative context" in response
+    command = run.call_args.args[0]
+    assert command[command.index("--max-chars") + 1] == "600"

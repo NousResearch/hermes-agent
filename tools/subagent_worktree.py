@@ -186,6 +186,8 @@ def finalize_subagent_worktree(info: Dict[str, str], *, prune: bool = True) -> D
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         cwd = info.get("repo_root", "") or path
         try:
+            from hermes_cli.worktree_ops import release_lsp_clients
+            release_lsp_clients(path)  # the child ran in-process: its language servers are ours
             removed = _run_git(["worktree", "remove", "--force", path], cwd=cwd)
             if removed.returncode == 0:
                 _run_git(["branch", "-D", branch], cwd=cwd)

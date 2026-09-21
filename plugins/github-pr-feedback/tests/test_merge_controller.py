@@ -20,10 +20,13 @@ from github_pr_feedback.ci_runner import (
 from github_pr_feedback.github_client import (
     CheckState,
     Feedback,
+    GitHubClient,
     GitHubClientError,
+    GitHubRequestGate,
     PullRequestMergeState,
     RepositoryMergePolicy,
     ReviewState,
+    SubprocessCommandRunner,
 )
 from github_pr_feedback.ledger import FeedbackLedger, LedgerStateError
 from github_pr_feedback.merge_controller import (
@@ -31,6 +34,7 @@ from github_pr_feedback.merge_controller import (
     CIReceiptComment,
     MergeController,
     MergeSnapshot,
+    _codex_clean_head,
     _codex_reviewed_head,
     _is_ci_receipt_comment_for_head,
     ci_receipt_comment_from_feedback,
@@ -399,7 +403,13 @@ class RecordingGitHub:
         self.merge_calls: list[tuple[str, int, str, str]] = []
 
     def merge_pull_request(
-        self, repository: str, number: int, head_sha: str, *, method: str
+        self,
+        repository: str,
+        number: int,
+        head_sha: str,
+        *,
+        method: str,
+        base_branch: str,
     ) -> None:
         self.merge_calls.append((repository, number, head_sha, method))
         if self.before_merge_return is not None:
@@ -412,6 +422,84 @@ class RecordingGitHub:
         if isinstance(readback, Exception):
             raise readback
         return readback
+
+
+def test_merge_queue_failure_is_durable_across_scheduled_scans(tmp_path: Path) -> None:
+    snapshot = eligible_snapshot()
+    github = RecordingGitHub(
+        [],
+        merge_error=GitHubClientError(
+            "merge queue required", code="merge_queue_required"
+        ),
+    )
+    ledger = enrolled_ledger(tmp_path)
+    controller = MergeController(
+        policy(),
+        SnapshotSource([snapshot, snapshot, snapshot, snapshot]),
+        github,
+        ledger,
+        owner="test",
+        now=lambda: NOW,
+    )
+
+    first = controller.run(17)
+    second = controller.run(17)
+
+    assert first.decision.blockers == ("merge_queue_required",)
+    assert second.decision.blockers == ("merge_queue_required",)
+    assert len(github.merge_calls) == 1
+    assert ledger.merge_queue_required_merge_attempt("acme/widgets", 17)
+    ledger.close()
+
+
+def test_merge_queue_preflight_failure_releases_retryable_lease(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args_log = tmp_path / "gh-args.log"
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$GH_ARGS_LOG\"\n"
+        "printf '%s\\n' 'HTTP 403: permission denied' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o700)
+    github = GitHubClient(
+        SubprocessCommandRunner(
+            request_gate=GitHubRequestGate(
+                tmp_path / "github-request-gate.json",
+                min_interval_seconds=0,
+            ),
+            env_overrides={
+                "GH_ARGS_LOG": str(args_log),
+                "HERMES_HOME": str(tmp_path / "hermes"),
+                "PATH": str(bin_dir),
+            },
+        )
+    )
+    snapshot = eligible_snapshot()
+    ledger = enrolled_ledger(tmp_path)
+    controller = MergeController(
+        policy(),
+        SnapshotSource([snapshot, snapshot, snapshot, snapshot]),
+        github,
+        ledger,
+        owner="test",
+        now=lambda: NOW,
+    )
+
+    first = controller.run(17)
+    second = controller.run(17)
+
+    assert first.decision.blockers == ("merge_queue_preflight_failed",)
+    assert second.decision.blockers == ("merge_queue_preflight_failed",)
+    assert ledger.verification_required_merge_numbers("acme/widgets") == ()
+    assert args_log.read_text(encoding="utf-8").splitlines() == [
+        "api repos/acme/widgets/rules/branches/stable",
+        "api repos/acme/widgets/rules/branches/stable",
+    ]
+    ledger.close()
 
 
 def test_audit_produced_actions_disabled_receipt_is_merge_eligible(
@@ -488,7 +576,7 @@ def test_audit_produced_actions_disabled_receipt_is_merge_eligible(
                         "<!-- codex-pull-request-review-summary -->\n"
                         "| Review | Status | Commit | Trigger |\n"
                         "| Code | Completed <relative-time>now</relative-time> | "
-                        f"`{HEAD_SHA[:7]}` | push |"
+                        f"`{HEAD_SHA}` | push |"
                     ),
                     NOW,
                     True,
@@ -711,6 +799,8 @@ def test_successful_merge_command_with_unconfirmed_readback_is_never_resent(
     assert first.decision.blockers == ("merge_verification_required",)
     assert second.decision.blockers == ("merge_verification_required",)
     assert github.merge_calls == [("acme/widgets", 17, HEAD_SHA, "squash")]
+    # An unchanged open PR may still be enrolled in a merge queue; retain the
+    # verification lease until canonical merged truth or a head change exists.
     assert ledger.verification_required_merge_numbers("acme/widgets") == (17,)
     ledger.close()
 
@@ -863,7 +953,7 @@ def _codex_feedback(body: str, *, login: str = "chatgpt-codex-connector[bot]") -
 
 
 def test_codex_reviewed_head_true_for_a_completed_review_of_the_exact_head() -> None:
-    feedback = (_codex_feedback(_codex_summary("✅ **Completed**", HEAD_SHA[:7])),)
+    feedback = (_codex_feedback(_codex_summary("✅ **Completed**", HEAD_SHA)),)
 
     assert _codex_reviewed_head(feedback, HEAD_SHA) is True
 
@@ -873,14 +963,14 @@ def test_codex_reviewed_head_false_when_no_codex_comment_exists() -> None:
 
 
 def test_codex_reviewed_head_false_when_the_review_covers_a_different_head() -> None:
-    stale_sha = ("f" * 40)[:7]
+    stale_sha = "f" * 40
     feedback = (_codex_feedback(_codex_summary("✅ **Completed**", stale_sha)),)
 
     assert _codex_reviewed_head(feedback, HEAD_SHA) is False
 
 
 def test_codex_reviewed_head_false_while_the_review_is_still_running() -> None:
-    feedback = (_codex_feedback(_codex_summary("⏳ **Running**", HEAD_SHA[:7])),)
+    feedback = (_codex_feedback(_codex_summary("⏳ **Running**", HEAD_SHA)),)
 
     assert _codex_reviewed_head(feedback, HEAD_SHA) is False
 
@@ -890,7 +980,7 @@ def test_codex_reviewed_head_ignores_a_look_alike_comment_from_another_user() ->
 
     feedback = (
         _codex_feedback(
-            _codex_summary("✅ **Completed**", HEAD_SHA[:7]), login="some-human"
+            _codex_summary("✅ **Completed**", HEAD_SHA), login="some-human"
         ),
     )
 
@@ -934,3 +1024,28 @@ def test_worker_ci_comment_is_admitted_only_for_exact_bot_identity() -> None:
     assert _is_ci_receipt_comment_for_head(
         bot_comment, expected_login="worker-bot", head_sha=HEAD_SHA
     )
+
+
+def test_codex_clean_head_true_when_review_completed_and_no_findings() -> None:
+    feedback = (_codex_feedback(_codex_summary("✅ **Completed**", HEAD_SHA)),)
+
+    assert _codex_clean_head(feedback, HEAD_SHA) is True
+
+
+def test_codex_clean_head_false_when_actionable_finding_present() -> None:
+    """A completed review + actionable finding comment is not a clean head."""
+
+    finding = _codex_feedback(
+        "You should rename this variable.", login="chatgpt-codex-connector[bot]"
+    )
+    feedback = (
+        _codex_feedback(_codex_summary("✅ **Completed**", HEAD_SHA)),
+        finding,
+    )
+
+    assert _codex_reviewed_head(feedback, HEAD_SHA) is True   # reviewed
+    assert _codex_clean_head(feedback, HEAD_SHA) is False      # but not clean
+
+
+def test_codex_clean_head_false_when_not_reviewed() -> None:
+    assert _codex_clean_head((), HEAD_SHA) is False

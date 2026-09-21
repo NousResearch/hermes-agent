@@ -47,11 +47,13 @@ function runStopCommand(
       if (settled) {
         return
       }
+
       settled = true
 
       if (timer) {
         clearTimeout(timer)
       }
+
       resolve(ok)
     }
 
@@ -87,10 +89,9 @@ function runStopCommand(
 }
 
 /**
- * Drain and stop every local supervised gateway before Desktop exits. The
- * drain refuses new chat/cron/Kanban work, waits for in-flight gateway turns
- * and live Kanban workers, then stops supervision. The companion launchd job
- * is unloaded only after that drain helper exits.
+ * Stop Desktop-owned background supervision before Desktop exits. Messaging
+ * gateways are user-owned long-lived services and must survive a UI quit;
+ * only the companion backend launchd job is unloaded here.
  */
 export function stopDesktopBackgroundServices({
   resolveBackend,
@@ -101,28 +102,7 @@ export function stopDesktopBackgroundServices({
   uid = typeof process.getuid === 'function' ? process.getuid() : -1,
   onError = () => undefined
 }: StopDesktopBackgroundServicesOptions): Promise<boolean> {
-  const backend = resolveBackend(['gateway', 'stop', '--all', '--drain'])
-
-  if (!backend?.command || backend.kind === 'bootstrap-needed') {
-    onError('No runnable local Hermes command was available for gateway stop --all --drain')
-
-    return Promise.resolve(false)
-  }
-
-  const commands: StopCommand[] = [
-    {
-      command: backend.command,
-      args: backend.args || ['gateway', 'stop', '--all', '--drain'],
-      label: 'gateway stop --all --drain',
-      options: {
-        cwd: backend.root || undefined,
-        env: { ...env, ...(backend.env || {}) },
-        shell: Boolean(backend.shell),
-        windowsHide: true,
-        stdio: 'ignore'
-      }
-    }
-  ]
+  const commands: StopCommand[] = []
 
   if (platform === 'darwin' && uid >= 0) {
     commands.push({
@@ -139,21 +119,11 @@ export function stopDesktopBackgroundServices({
     })
   }
 
-  const [gateway, ...afterDrain] = commands
+  if (commands.length === 0) {
+    return Promise.resolve(true)
+  }
 
-  // Bound the drain helper too.  Gateway drain intentionally waits for
-  // in-flight turns and workers, but a wedged worker must not make Electron's
-  // before-quit promise immortal.  The timeout path sends SIGTERM and lets the
-  // caller complete teardown with an explicit failure result.
-  return runStopCommand(spawnFn, gateway, timeoutMs, onError).then(async gatewayStopped => {
-    if (!gatewayStopped) {
-      return false
-    }
-
-    const results = await Promise.all(
-      afterDrain.map(command => runStopCommand(spawnFn, command, timeoutMs, onError))
-    )
-
-    return results.every(Boolean)
-  })
+  return Promise.all(
+    commands.map(command => runStopCommand(spawnFn, command, timeoutMs, onError))
+  ).then(results => results.every(Boolean))
 }

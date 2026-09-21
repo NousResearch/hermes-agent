@@ -15,6 +15,18 @@ from .policy import ReleaseMaintenanceLane, ReleaseMaintenancePolicy, Repository
 FINAL_LANE = "final-verification"
 
 
+def maintenance_worktree_path(
+    worktree_root: Path,
+    repository: str,
+    head_sha: str,
+    lane: str,
+) -> Path:
+    """Return the deterministic path identity for one maintenance worktree."""
+
+    digest = sha256(f"{repository}\0{head_sha}\0{lane}".encode("utf-8")).hexdigest()
+    return (Path(worktree_root) / f"maintenance-{digest}").resolve(strict=False)
+
+
 class MaintenanceGitHub(Protocol):
     def list_all_open_pull_requests(self, repository: str) -> tuple[object, ...]: ...
 
@@ -219,11 +231,16 @@ class ReleaseMaintenanceController:
         )
 
     def _final_task(self, head_sha: str) -> KanbanTask:
+        open_pr_precondition = (
+            "First verify there are no open pull requests and the workspace HEAD exactly matches "
+            if self._policy.require_zero_open_prs
+            else "First verify the workspace HEAD exactly matches "
+        )
         return KanbanTask(
             title=f"Release maintenance final verification at {head_sha[:12]}",
             instructions=(
-                "First verify there are no open pull requests and the workspace HEAD exactly matches "
-                "expected_head_sha. Re-run every literal command argv from the trusted evidence in "
+                open_pr_precondition
+                + "expected_head_sha. Re-run every literal command argv from the trusted evidence in "
                 "order and independently inspect cross-lane logic. Do not edit, commit, push, reply, "
                 "approve, merge, or weaken a gate. Do not start or restart main.py. Record the final "
                 "typed receipt only if every lane passes on this exact head."

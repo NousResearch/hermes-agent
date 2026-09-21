@@ -6,9 +6,10 @@ import contextlib
 import logging
 import math
 import os
+import re
 from pathlib import Path
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Mapping
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
@@ -73,7 +74,7 @@ def _normalize_multiplex_profile_allowlist(value: Any) -> Optional[List[str]]:
     return normalized
 
 
-def _env_multiplex_profiles_override() -> "bool | None":
+def _env_multiplex_profiles_override(environ: Optional[Mapping[str, str]] = None) -> "bool | None":
     """GATEWAY_MULTIPLEX_PROFILES operator override: True/False for a recognized token.
 
     ``None`` when unset, blank, or unrecognized so the caller keeps the config.yaml
@@ -81,7 +82,7 @@ def _env_multiplex_profiles_override() -> "bool | None":
     a provisioned-but-unpopulated Fly secret arrives as ``""`` and must NOT shadow
     a config.yaml opt-in.
     """
-    raw = os.getenv("GATEWAY_MULTIPLEX_PROFILES")
+    raw = (environ or os.environ).get("GATEWAY_MULTIPLEX_PROFILES")
     if not (raw or "").strip():
         return None
     parsed = _bool_token(raw)
@@ -164,6 +165,14 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+# "pair" DMs a pairing code, "ignore" drops silently, "decline" sends one polite refusal then goes
+# silent toward that sender for gateway.pairing.DECLINE_DEDUPE_SECONDS (#88028).
+UNAUTHORIZED_DM_BEHAVIORS = {"pair", "ignore", "decline"}
+DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE = (
+    "Hi! I'm a personal assistant and can only chat with my owner, so I can't help you directly. Sorry!"
+)
+
+
 def _normalize_choice(value: Any, choices: set, default: str) -> str:
     """Lower-cased *value* when it is one of *choices*, else *default*."""
     normalized = value.strip().lower() if isinstance(value, str) else None
@@ -193,6 +202,22 @@ def _getenv_str(name: str, default: str = "") -> str:
 
 
 _Platform__bundled_plugin_names: Optional[set] = None  # cached outside the enum: never a member
+_Platform__bundled_plugin_aliases: Optional[dict] = None  # manifest ``name:`` (lower) -> directory name
+
+
+def _bundled_platform_manifest_name(plugin_dir: Path) -> Optional[str]:
+    """Lowercased ``name:`` from a bundled platform's plugin manifest (None when absent/unreadable)."""
+    try:
+        import yaml
+        manifest_file = next(
+            (plugin_dir / m for m in ("plugin.yaml", "plugin.yml") if (plugin_dir / m).exists()), None)
+        if manifest_file is None:
+            return None
+        data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        name = data.get("name") if isinstance(data, dict) else None
+        return str(name).strip().lower() or None
+    except Exception:
+        return None
 
 
 class Platform(Enum):
@@ -231,11 +256,18 @@ class Platform(Enum):
         value = value.strip().lower()
         if value in cls._value2member_map_:
             return cls._value2member_map_[value]
-        global _Platform__bundled_plugin_names
+        global _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases
         if _Platform__bundled_plugin_names is None:
-            _Platform__bundled_plugin_names = cls._scan_bundled_plugin_platforms()
+            _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases = cls._scan_bundled_plugin_platforms()
         registered = value in _Platform__bundled_plugin_names
         if not registered:
+            alias = _Platform__bundled_plugin_aliases.get(value)
+            if alias is not None:
+                # A bundled platform whose plugin.yaml ``name:`` differs from its directory (e.g. dir
+                # "a2a", name "a2a-platform") is configured under the manifest name — ``plugins
+                # enable`` writes that key — so resolve it to the directory-name member that the
+                # registry and every value-based consumer key on.
+                return cls._value2member_map_.get(alias) or cls._add_pseudo_member(alias)
             with contextlib.suppress(Exception):
                 from gateway.platform_registry import platform_registry
                 registered = platform_registry.is_registered(value)
@@ -251,18 +283,26 @@ class Platform(Enum):
         return pseudo
 
     @classmethod
-    def _scan_bundled_plugin_platforms(cls) -> set:
-        """Names of bundled platform plugins under ``plugins/platforms/``."""
+    def _scan_bundled_plugin_platforms(cls) -> "tuple[set, dict]":
+        """Directory names of bundled platform plugins under ``plugins/platforms/``, plus a map of
+        manifest ``name:`` keys that differ from their directory (alias -> directory name). Aliases
+        never shadow a directory name, so the directory stays the canonical platform value."""
         try:
             platforms_dir = Path(__file__).parent.parent / "plugins" / "platforms"
-            return {
-                child.name.lower()
-                for child in (platforms_dir.iterdir() if platforms_dir.is_dir() else ())
+            dirs = [
+                child for child in (platforms_dir.iterdir() if platforms_dir.is_dir() else ())
                 if child.is_dir() and (child / "__init__.py").exists()
                 and ((child / "plugin.yaml").exists() or (child / "plugin.yml").exists())
-            }
+            ]
+            names = {child.name.lower() for child in dirs}
+            aliases = {}
+            for child in dirs:
+                manifest_name = _bundled_platform_manifest_name(child)
+                if manifest_name and manifest_name not in names and manifest_name not in aliases:
+                    aliases[manifest_name] = child.name.lower()
+            return names, aliases
         except Exception:
-            return set()
+            return set(), {}
 
 
 # Built-in values snapshotted before any dynamic _missing_ lookup.
@@ -277,6 +317,9 @@ PORT_BINDING_PLATFORM_VALUES = frozenset({
 })
 # Platforms that only bind in one connection mode (Feishu's default websocket mode is outbound).
 PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {"feishu": "webhook"}
+# Port-binders whose profile-prefixed surface is mirrored by the default adapter.
+SHARED_LISTENER_MIRROR_PLATFORMS = frozenset({"api_server", "webhook"})
+SHARED_LISTENER_MIRROR_PATHS: dict[str, str] = {"api_server": "/v1", "webhook": "/webhooks/<route>"}
 
 
 def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
@@ -285,6 +328,17 @@ def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bo
         return False
     expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
     return expected_mode is None or str((extra or {}).get("connection_mode", "websocket")).strip().lower() == expected_mode
+
+_DISCORD_CHANNEL_LINK_RE = re.compile(
+    r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/channels/(?:[0-9]+|@me)/([0-9]+)/?")
+
+
+def discord_channel_id_from_link(value: str) -> Optional[str]:
+    """Channel id from a pasted Discord channel link (``https://discord.com/channels/<guild>/<channel>``),
+    else None. Message links (a third path segment) and anything that is not a channel link are
+    left alone so callers keep their own error path."""
+    match = _DISCORD_CHANNEL_LINK_RE.fullmatch(value)
+    return match.group(1) if match else None
 
 
 @dataclass
@@ -298,6 +352,12 @@ class HomeChannel:
     # Authenticated logical-target provenance (relay egress re-attaches; connector stays the authz boundary).
     user_id: Optional[str] = None
     scope_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # Copy Link is next to Copy Channel ID in Discord. Normalize at the
+        # shared home boundary so env, YAML and plugin-seeded homes agree.
+        if self.platform == Platform.DISCORD and isinstance(self.chat_id, str):
+            self.chat_id = discord_channel_id_from_link(self.chat_id.strip()) or self.chat_id
 
     def to_dict(self) -> Dict[str, Any]:
         optional = {k: v for k in ("thread_id", "user_id", "scope_id") if (v := getattr(self, k))}
@@ -385,6 +445,12 @@ PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
 @dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
+    # Keys represented by typed fields stay out of ``extra``; every other
+    # platform-specific setting is preserved there for adapter hooks.
+    _TYPED_KEYS = frozenset({
+        "enabled", "token", "api_key", "home_channel", "reply_to_mode", "channel_overrides", "extra",
+        "gateway_restart_notification", "typing_indicator", "typing_status_text",
+    })
     enabled: bool = False
     token: Optional[str] = None
     api_key: Optional[str] = None  # API key if different from token
@@ -415,8 +481,13 @@ class PlatformConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
         data = _coerce_dict(data)
         home = data.get("home_channel")
-        # The typing/restart-notification keys may be top-level or bridged into ``extra``; top-level wins.
-        extra = _coerce_dict(data.get("extra", {}))
+        # Adapters read settings from ``extra`` while users commonly write
+        # them directly under the platform block. Preserve both spellings;
+        # explicit ``extra`` values win on clashes.
+        extra = {
+            **{k: v for k, v in data.items() if k not in cls._TYPED_KEYS},
+            **_coerce_dict(data.get("extra", {})),
+        }
 
         def toplevel_or_extra(key: str) -> Any:
             value = data.get(key)
@@ -556,10 +627,14 @@ class GatewayConfig:
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
-    # Opt-in: the default profile's gateway serves every profile on the host (profiles stamped into
-    # session keys, per-profile adapters/credentials). Allowlist None = serve all; [] = default only.
-    multiplex_profiles: bool = False
-    multiplex_profile_allowlist: Optional[List[str]] = None
+    # The default profile's gateway serves every profile on the host (profiles stamped into session
+    # keys, per-profile adapters/credentials). On by default (DEFAULT_CONFIG), but UNSET here is
+    # ``None``: a request the gateway settles at boot, not a verdict. ``hermes_cli.gateway_multiplex_mode
+    # .resolve_multiplex_mode`` runs the migration preflight (default profile, >= 2 profiles, no
+    # secondary running its own gateway, no blocker, migratable host) and only then writes True/False.
+    # An explicit value (config.yaml, GATEWAY_MULTIPLEX_PROFILES, a constructor argument) is honoured
+    # verbatim. Every reader tests truthiness, so an unresolved ``None`` never multiplexes by accident.
+    multiplex_profiles: Optional[bool] = None
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -578,7 +653,8 @@ class GatewayConfig:
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
-    unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+    unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
+    unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
@@ -588,14 +664,13 @@ class GatewayConfig:
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
-        "max_concurrent_sessions", "multiplex_profiles", "multiplex_profile_allowlist",
+        "max_concurrent_sessions", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
-        "loop_watchdog_max_strikes", "unauthorized_dm_behavior",
+        "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
     )
 
     def __post_init__(self) -> None:
-        self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(self.multiplex_profile_allowlist)
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
 
     def get_connected_platforms(self) -> List[Platform]:
@@ -656,7 +731,9 @@ class GatewayConfig:
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "profile_routes": [
-                asdict(r) if is_dataclass(r) and not isinstance(r, type) else r for r in self.profile_routes
+                {k: v for k, v in asdict(r).items() if k != "user_id" or v is not None}
+                if is_dataclass(r) and not isinstance(r, type) else r
+                for r in self.profile_routes
             ],
         }
 
@@ -702,9 +779,10 @@ class GatewayConfig:
         systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             pick("systemd_watchdog_seconds"), key_label("systemd_watchdog_seconds")
         )
-        # env > config.yaml > False: a recognized GATEWAY_MULTIPLEX_PROFILES wins (hosted deployments
-        # stamp it on the container); blank/unrecognized falls through to the top-level VALUE when
-        # not None, else ``gateway.multiplex_profiles``.
+        # env > config.yaml > unset: a recognized GATEWAY_MULTIPLEX_PROFILES wins (hosted deployments
+        # stamp it on the container); blank/unrecognized falls through to the top-level VALUE when not
+        # None, else ``gateway.multiplex_profiles``. Nothing set stays ``None`` so the boot-time guard
+        # (``resolve_multiplex_mode``) can tell "the operator chose" from "the default applies".
         multiplex_profiles = data.get("multiplex_profiles")
         if multiplex_profiles is None:
             multiplex_profiles = nested_gateway.get("multiplex_profiles")
@@ -730,8 +808,7 @@ class GatewayConfig:
             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
-            multiplex_profiles=_coerce_bool(multiplex_profiles, False),
-            multiplex_profile_allowlist=pick("multiplex_profile_allowlist"),
+            multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
@@ -739,7 +816,8 @@ class GatewayConfig:
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
             max_concurrent_sessions=max_concurrent_sessions,
-            unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), {"pair", "ignore"}, "pair"),
+            unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
+            unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
@@ -755,7 +833,7 @@ class GatewayConfig:
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
         """Effective unauthorized-DM behavior. Email is inbox-shaped so it defaults to ``"ignore"``
         unless its own ``unauthorized_dm_behavior`` opts in (a global default does not)."""
-        choice = self._extra_choice(platform, "unauthorized_dm_behavior", {"pair", "ignore"}, self.unauthorized_dm_behavior)
+        choice = self._extra_choice(platform, "unauthorized_dm_behavior", UNAUTHORIZED_DM_BEHAVIORS, self.unauthorized_dm_behavior)
         if choice is not None:
             return choice
         return "ignore" if platform == Platform.EMAIL else self.unauthorized_dm_behavior
@@ -788,6 +866,26 @@ def load_gateway_config() -> GatewayConfig:
             "Check %s for syntax errors. Error: %s",
             _home / "config.yaml", e,
         )
+
+    # Keep the optional Slack plugin's legacy environment bridge available even
+    # when its dependency (and therefore its hook) is not installed. This is
+    # configuration compatibility, not a platform enablement decision.
+    slack_cfg = None
+    if isinstance(gw_data, dict):
+        slack_cfg = ((gw_data.get("platforms") or {}).get("slack") or {}).get("extra")
+    if not isinstance(slack_cfg, dict):
+        with contextlib.suppress(Exception):
+            raw_yaml = config_loader.read_yaml_layers(_home)
+            slack_cfg = raw_yaml.get("slack") if isinstance(raw_yaml, dict) else None
+    secondary_profile = False
+    with contextlib.suppress(Exception):
+        from gateway.config_env import _loading_secondary_under_multiplexer
+        secondary_profile = _loading_secondary_under_multiplexer()
+    if (isinstance(slack_cfg, dict) and "ignored_channels" in slack_cfg
+            and not os.environ.get("SLACK_IGNORED_CHANNELS") and not secondary_profile):
+        ignored = slack_cfg.get("ignored_channels")
+        if isinstance(ignored, (list, tuple, set)):
+            os.environ["SLACK_IGNORED_CHANNELS"] = ",".join(str(item).strip() for item in ignored if str(item).strip())
 
     config = GatewayConfig.from_dict(gw_data)
     _apply_env_overrides(config)

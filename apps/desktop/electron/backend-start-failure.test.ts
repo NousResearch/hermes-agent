@@ -6,6 +6,7 @@ import { isReauthRequiredError, makeUnsignedOauthError } from './backend-health'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
+  shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
   shouldLatchRemoteReauthFailure
@@ -70,8 +71,11 @@ test('a CONFIRMED reauth rejection is never auto-retried (missing capability, no
   assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth: true }), false)
 })
 
-test('unsigned OAuth latches and is never auto-retried; needsOauthLogin alone still retries', () => {
+test('unsigned OAuth latches and is never auto-retried; a bare needsOauthLogin hint still retries', () => {
   // Production composition in startHermes: isReauth = isReauthRequiredError(error).
+  // A bare `{ needsOauthLogin: true }` is the IPC-shaped hint, not a confirmed
+  // rejection; gatewayTicketFailure tags a confirmed 401/403 with
+  // isReauthRequired itself (#95701, see remote-reauth-latch.test.ts).
   const unsigned = isReauthRequiredError(makeUnsignedOauthError())
   const ticketHint = isReauthRequiredError({ needsOauthLogin: true })
 
@@ -145,5 +149,27 @@ test('every remote failure picks exactly one path: retry, reauth latch, or host-
       const picked = [retry, reauth, hostKey].filter(Boolean).length
       assert.ok(picked >= 1, `remote failure reauth=${isReauth} hostKey=${isHostKeyChanged} fell through every path`)
     }
+  }
+})
+
+test('FIX #95701: while a reauth rejection is latched, only re-emits of that failure reach the renderer', () => {
+  const latched = 'Your remote gateway session has expired. Sign in again.'
+
+  // The latched failure's own (re-)emit passes — it carries retryable:false.
+  assert.equal(shouldHoldBootProgressForReauth(latched, { error: latched }), false)
+
+  // Anything that would lift the overlay is held: a running phase from an
+  // attempt already in flight when the latch closed, a cleared error, or a
+  // sibling failure that would flip retryable back on.
+  assert.equal(shouldHoldBootProgressForReauth(latched, { error: null }), true)
+  assert.equal(shouldHoldBootProgressForReauth(latched, {}), true)
+  assert.equal(shouldHoldBootProgressForReauth(latched, { error: 'Could not reach the remote Hermes gateway' }), true)
+})
+
+test('FIX #95701: with no reauth latch every boot-progress update flows as before', () => {
+  for (const latch of [null, undefined, '']) {
+    assert.equal(shouldHoldBootProgressForReauth(latch, { error: null }), false)
+    assert.equal(shouldHoldBootProgressForReauth(latch, {}), false)
+    assert.equal(shouldHoldBootProgressForReauth(latch, { error: 'Desktop boot failed: spawn ENOENT' }), false)
   }
 })

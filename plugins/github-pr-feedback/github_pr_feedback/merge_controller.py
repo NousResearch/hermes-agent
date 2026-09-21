@@ -233,7 +233,14 @@ _CODEX_REVIEW_ROW = re.compile(
 
 
 def _codex_reviewed_head(feedback: tuple[Feedback, ...], head_sha: str) -> bool:
-    short_head = head_sha[:7].casefold()
+    """Return True if Codex has posted a completed review for this exact head.
+
+    This predicate is used only for the ``codex_review_pending`` merge gate.
+    It intentionally ignores whether Codex left actionable findings — the
+    ``feedback_clear`` gate handles that separately.
+    Use ``_codex_clean_head`` when you need both completion *and* no findings.
+    """
+    full_head = head_sha.casefold()
     for item in feedback:
         if (
             item.reviewer.login.casefold() != _CODEX_REVIEW_LOGIN
@@ -241,12 +248,36 @@ def _codex_reviewed_head(feedback: tuple[Feedback, ...], head_sha: str) -> bool:
         ):
             continue
         for match in _CODEX_REVIEW_ROW.finditer(item.body):
+            tracker_sha = match.group("sha").casefold()
+            # Require the full SHA to prevent abbreviated-SHA collisions from
+            # authorizing a merge without a genuine review of the current commit.
+            # An abbreviated tracker SHA from a previously reviewed commit that
+            # shares its first N characters with the current head must not clear
+            # codex_review_pending for the new unreviewed commit.
             if (
-                match.group("sha").casefold() == short_head
+                tracker_sha == full_head
                 and "completed" in match.group("status").casefold()
             ):
                 return True
     return False
+
+
+def _codex_clean_head(feedback: tuple[Feedback, ...], head_sha: str) -> bool:
+    """Return True only when Codex completed a review *and* left no actionable findings.
+
+    Used for queue-ordering priority: a PR where Codex posted an actionable
+    comment is not eligible for the clean-head fast lane even if the summary
+    row shows "completed".  The canonical ``feedback_clear`` gate remains the
+    authority for merge eligibility; this predicate only affects queue order.
+    """
+    if not _codex_reviewed_head(feedback, head_sha):
+        return False
+    # Any non-summary comment from the Codex bot is an actionable finding.
+    return not any(
+        item.reviewer.login.casefold() == _CODEX_REVIEW_LOGIN
+        and _CODEX_REVIEW_MARKER not in item.body
+        for item in feedback
+    )
 
 
 def _is_governed_approval_receipt(
@@ -444,12 +475,31 @@ class MergeController:
             reconciled = self._reconcile_verified_merge(pending, snapshot)
             if reconciled is not None:
                 return reconciled
+            pull = snapshot.pull_request
+            releaseable_unmerged = (
+                pull.repository == self._policy.repository
+                and not pull.merged
+                and (
+                    (pull.state == "OPEN" and pull.head_sha != pending.head_sha)
+                    or pull.state == "CLOSED"
+                )
+            )
+            if releaseable_unmerged:
+                self._ledger.release_open_unmerged_merge_lease(
+                    pending,
+                    updated_at=self._now(),
+                )
             blocked = MergeDecision(
                 False,
                 ("merge_verification_required",),
                 None,
                 _snapshot_digest(snapshot, snapshot.ci_receipt),
             )
+            return MergeRunResult(blocked, None)
+        if self._ledger.merge_queue_required_merge_attempt(
+            self._policy.repository, number
+        ):
+            blocked = MergeDecision(False, ("merge_queue_required",), None, "")
             return MergeRunResult(blocked, None)
         first_snapshot = self._source.snapshot(number)
         first = evaluate_merge(self._policy, first_snapshot, now=self._now())
@@ -505,8 +555,37 @@ class MergeController:
                 number,
                 second_snapshot.pull_request.head_sha,
                 method=second.method,
+                base_branch=second_snapshot.pull_request.base_branch,
             )
-        except GitHubClientError:
+        except GitHubClientError as error:
+            if error.code == "merge_queue_preflight_failed":
+                self._ledger.finish_merge_lease(
+                    lease,
+                    status="failed",
+                    updated_at=self._now(),
+                    error=error.code,
+                    expected_status="verification_required",
+                )
+                return MergeRunResult(
+                    MergeDecision(
+                        False, (error.code,), None, second.snapshot_digest
+                    ),
+                    None,
+                )
+            if error.code in {"merge_rejected", "merge_queue_required"}:
+                self._ledger.finish_merge_lease(
+                    lease,
+                    status="failed",
+                    updated_at=self._now(),
+                    error=error.code if error.code == "merge_queue_required" else str(error),
+                    expected_status="verification_required",
+                )
+                return MergeRunResult(
+                    MergeDecision(
+                        False, (error.code,), None, second.snapshot_digest
+                    ),
+                    None,
+                )
             # A transport error cannot prove that GitHub rejected the write.
             # Canonical readback below remains the only completion authority.
             pass

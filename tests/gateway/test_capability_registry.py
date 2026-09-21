@@ -21,9 +21,9 @@ def _registry_api():
 
 
 def _kanban_db():
-    from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_connect
 
-    return kanban_db
+    return kanban_db_connect
 
 
 def _repository_read_signature():
@@ -62,6 +62,21 @@ def test_unconfigured_profile_cannot_use_direct_activation_api(tmp_path):
         registry.add_active(profile_id="undeclared", signature=signature)
 
     assert registry.resolve(signature).status == "no_match"
+
+
+def test_persisted_profile_is_not_declared_by_a_registry_without_current_configuration(tmp_path):
+    CapabilityRegistry, _ = _registry_api()
+    signature = _repository_read_signature()
+    db_path = tmp_path / "registry.db"
+    configured = CapabilityRegistry(
+        db_path=db_path,
+        configured_profiles={"repository-reviewer": signature},
+    )
+    configured.register_configured_profile("repository-reviewer")
+
+    current = CapabilityRegistry(db_path=db_path, configured_profiles={})
+
+    assert current.is_profile_declared("repository-reviewer") is False
 
 
 def test_expired_profile_does_not_resolve(tmp_path):

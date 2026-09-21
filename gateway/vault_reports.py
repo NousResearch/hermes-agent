@@ -108,7 +108,11 @@ def append_vault_context(
     project = settings.get("projects", {}).get(board) if settings else None
     if not settings or not project:
         return response
-    remaining = max(0, min(int(settings.get("max_context_chars", 600)), 1200))
+    try:
+        configured_limit = int(settings.get("max_context_chars", 600))
+    except (TypeError, ValueError):
+        configured_limit = 600
+    remaining = max(0, min(configured_limit, 1200))
     snippets: list[str] = []
     for root_id in list(dict.fromkeys(root_task_ids))[:3]:
         try:

@@ -11,6 +11,7 @@ test('closing the last desktop window quits on every platform', () => {
 test('destroying renderer windows for a deferred drain is idempotent', () => {
   let liveDestroyed = 0
   let alreadyDestroyed = 0
+
   const windows = [
     { destroy: () => void (liveDestroyed += 1), isDestroyed: () => false },
     { destroy: () => void (alreadyDestroyed += 1), isDestroyed: () => true }

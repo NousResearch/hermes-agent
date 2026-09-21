@@ -385,7 +385,7 @@ $script:ResolvedPathReport = @{
 
 $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
-$PythonVersion = "3.11"
+$PythonVersion = "3.13.6"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
 # available, in preference order. Only checkout-private uv-managed interpreters
 # are eligible. Single source of truth shared by Test-Python's fallback and
@@ -513,15 +513,38 @@ function Discard-LockfileChurn {
         )
         foreach ($path in $diff) {
             if ($path -like "*package.json") {
-                $null = $dirtyPackageDirs.Add((Split-Path $path -Parent))
+                $null = $dirtyPackageDirs.Add(((Split-Path $path -Parent) -replace '\\', '/'))
+            }
+        }
+
+        # The single root lockfile records every workspace's specs (root package.json
+        # "workspaces" globs), so a dirty workspace manifest such as
+        # apps/desktop/package.json protects it; reverting it there desyncs spec and
+        # lock and every later npm ci fails (#112378). A manifest outside the graph
+        # (website/) has its own lockfile and does not protect the root one.
+        $rootLockProtected = $dirtyPackageDirs.Contains("")
+        if (-not $rootLockProtected -and $dirtyPackageDirs.Count -gt 0) {
+            $workspaceGlobs = @()
+            try {
+                $rootPkg = Get-Content (Join-Path $Repo "package.json") -Raw | ConvertFrom-Json
+                $ws = $rootPkg.workspaces
+                if ($ws -and $ws.PSObject.Properties["packages"]) { $ws = $ws.packages }
+                $workspaceGlobs = @($ws | Where-Object { $_ })
+            } catch { }
+            foreach ($dir in $dirtyPackageDirs) {
+                foreach ($glob in $workspaceGlobs) {
+                    if ($dir -like ([string]$glob)) { $rootLockProtected = $true }
+                }
             }
         }
 
         $dirtyLocks = [System.Collections.Generic.List[string]]::new()
         foreach ($path in $diff) {
             if ($path -notlike "*package-lock.json") { continue }
-            $lockDir = Split-Path $path -Parent
-            if ($dirtyPackageDirs.Contains($lockDir)) { continue }
+            $lockDir = (Split-Path $path -Parent) -replace '\\', '/'
+            if ($lockDir -eq "") {
+                if ($rootLockProtected) { continue }
+            } elseif ($dirtyPackageDirs.Contains($lockDir)) { continue }
             $dirtyLocks.Add($path)
         }
 
@@ -742,6 +765,66 @@ function Get-PowerShellHostExe {
     return "powershell"
 }
 
+function Test-ManagedUvBinary {
+    # `& exe` never throws on a nonzero exit, so Test-Path plus a bare
+    # `--version` accepted the dead Chocolatey launcher a previous run had
+    # copied into bin\ (issue #110350).  Accept only exit 0 AND a line that
+    # looks like `uv <version>`; stderr is merged and the error preference
+    # relaxed so a launcher's error text cannot turn into an exception under
+    # a caller's Stop preference.  Returns the version line or $null.
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $global:LASTEXITCODE = 0
+        $output = @(& $Path --version 2>&1 | ForEach-Object { "$_" })
+        $exitCode = $LASTEXITCODE
+    } catch {
+        return $null
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($exitCode -ne 0) { return $null }
+    $line = $output | Where-Object { $_ -match '^uv\s+\d+\.\d+' } | Select-Object -First 1
+    if ($line) { return $line.Trim() }
+    return $null
+}
+
+function Resolve-UvShimTarget {
+    # Package-manager launchers locate the real uv RELATIVE to their own
+    # location, so a copied launcher is dead on arrival (issue #110350).
+    # Map the well-known ones to the standalone binary: a `<name>.shim`
+    # sidecar (`path = ...`; Scoop, and Chocolatey shims that carry one) and
+    # the Chocolatey ShimGen layout bin\uv.exe -> lib\uv\tools\uv.exe.  A
+    # symlink (winget Links\) resolves to its target; any other reparse point
+    # (WindowsApps app-execution alias) has no copyable file, so return $null
+    # and let the caller skip the salvage.  Anything else is returned as-is.
+    param([Parameter(Mandatory = $true)][string]$ExePath)
+    $item = Get-Item -LiteralPath $ExePath -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return $null }
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($item.LinkType -eq "SymbolicLink" -and $item.Target) {
+            $linkTarget = @($item.Target)[0]
+            if (Test-Path -LiteralPath $linkTarget -PathType Leaf) { return $linkTarget }
+        }
+        return $null
+    }
+    $dir = Split-Path $ExePath -Parent
+    $stem = [IO.Path]::GetFileNameWithoutExtension($ExePath)
+    $targets = @()
+    $sidecar = Join-Path $dir "$stem.shim"
+    if (Test-Path -LiteralPath $sidecar -PathType Leaf) {
+        $pathLine = @(Get-Content -LiteralPath $sidecar -ErrorAction SilentlyContinue) |
+            Where-Object { $_ -match '^\s*path\s*=\s*"?([^"]+?)"?\s*$' } | Select-Object -First 1
+        if ($pathLine -and ($pathLine -match '^\s*path\s*=\s*"?([^"]+?)"?\s*$')) { $targets += $Matches[1] }
+    }
+    $targets += Join-Path (Split-Path $dir -Parent) "lib\$stem\tools\$stem.exe"
+    foreach ($target in $targets) {
+        if (Test-Path -LiteralPath $target -PathType Leaf) { return $target }
+    }
+    return $ExePath
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -750,10 +833,14 @@ function Install-Uv {
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
 
     if (Test-Path $managedUv) {
-        $script:UvCmd = $managedUv
-        $version = & $managedUv --version
-        Write-Success "Managed uv found ($version)"
-        return $true
+        $existingVersion = Test-ManagedUvBinary $managedUv
+        if ($existingVersion) {
+            $script:UvCmd = $managedUv
+            Write-Success "Managed uv found ($existingVersion)"
+            return $true
+        }
+        Write-Info "Existing managed uv at $managedUv failed validation; removing and reinstalling"
+        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
     }
 
     Write-Info "Installing managed uv into $HermesHome\bin ..."
@@ -815,15 +902,27 @@ function Install-Uv {
                 if (Test-Path $defaultUv) { $existingUv = $defaultUv }
             }
             if ($existingUv) {
-                Write-Info "Salvaging existing uv from $existingUv"
-                try {
-                    Copy-Item $existingUv $managedUv -Force
-                    # Verify the salvaged binary actually runs before
-                    # trusting it as the managed uv.
-                    $null = & $managedUv --version
-                } catch {
-                    Write-Info "Existing uv at $existingUv could not be salvaged: $_"
-                    Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                # Validate the candidate where it lives (a shim runs fine in
+                # place), resolve launchers to the real binary, and validate
+                # the COPY at its new location -- that last check is the one
+                # that catches a relocated launcher.
+                $salvageSource = Resolve-UvShimTarget $existingUv
+                if (-not $salvageSource) {
+                    Write-Info "Existing uv at $existingUv is an app-execution alias; cannot be copied"
+                } elseif (-not (Test-ManagedUvBinary $salvageSource)) {
+                    Write-Info "Existing uv at $salvageSource does not run; not salvaging it"
+                } else {
+                    Write-Info "Salvaging existing uv from $salvageSource"
+                    try {
+                        Copy-Item $salvageSource $managedUv -Force
+                        if (-not (Test-ManagedUvBinary $managedUv)) {
+                            Write-Info "Copied uv at $managedUv failed validation; continuing fallback"
+                            Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch {
+                        Write-Info "Existing uv at $salvageSource could not be salvaged: $_"
+                        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                    }
                 }
             }
         }
@@ -831,10 +930,14 @@ function Install-Uv {
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
-            $script:UvCmd = $managedUv
-            $version = & $managedUv --version
-            Write-Success "Managed uv installed ($version)"
-            return $true
+            $version = Test-ManagedUvBinary $managedUv
+            if ($version) {
+                $script:UvCmd = $managedUv
+                Write-Success "Managed uv installed ($version)"
+                return $true
+            }
+            Write-Info "Installer output at $managedUv failed validation; removing"
+            Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
         }
 
         Write-Err "uv installed but not found at $managedUv"
@@ -4111,11 +4214,15 @@ function Install-Desktop {
         # is the artifact), but on failure we scan $npmOut for the TLS-trust
         # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
         # instead of an opaque "exit 1" (issue #38016).
-        & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+        & $npmExe ci --include=optional 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+            & $npmExe install --include=optional 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
+            $code = $LASTEXITCODE
+        }
+        if ($code -eq 0) {
+            & node apps/desktop/scripts/ensure-rolldown-binding.mjs
             $code = $LASTEXITCODE
         }
         $ErrorActionPreference = $prevEAP
@@ -4224,7 +4331,7 @@ function Install-Desktop {
                 $code = $LASTEXITCODE
             }
         }
-        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
+        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR -and -not (Test-ElectronDist -InstallDir $InstallDir)) {
             $mirror = $script:DesktopElectronFallbackMirror
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
             Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
@@ -4293,12 +4400,13 @@ function Install-Desktop {
     }
 
     # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
-    #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.mjs)
+    #     electron-builder `afterExtract` hook (apps/desktop/scripts/after-extract.mjs)
     #     during `npm run pack` above -- for every build, so the installer's
     #     --update rebuild stays branded too. No separate stamp step needed here.
-    #     electron-builder's own rcedit step stays disabled (signAndEditExecutable
-    #     =false) because enabling it drags in signtool -> winCodeSign -> the
-    #     unfixable symlink crash; the afterPack hook runs rcedit directly.
+    #     It runs BEFORE the ASAR-integrity PE rewrite (rcedit cannot commit to
+    #     the rewritten exe, #105629). electron-builder's own rcedit step stays
+    #     disabled (signAndEditExecutable=false) because enabling it drags in
+    #     signtool -> winCodeSign -> the unfixable symlink crash.
 
     # 3c. Grant ALL APPLICATION PACKAGES (S-1-15-2-2) RX on the unpacked app
     #     directory. Chromium's GPU/renderer sandboxes CHECK-fail with

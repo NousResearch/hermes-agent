@@ -38,6 +38,7 @@ set -u
 ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
+NO_GATEWAY=0
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
 SELF_TEST_TCC_HEAL=0
 HANDOFF_DAEMONIZED=0
@@ -49,6 +50,7 @@ while [ $# -gt 0 ]; do
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
     --sandbox-fallback) SANDBOX_FALLBACK=1; shift ;;
+    --no-gateway) NO_GATEWAY=1; shift ;;
     --no-ui) NO_UI=1; shift ;;
     --no-marker-cleanup) NO_MARKER_CLEANUP=1; shift ;;
     --self-test-ui) SELF_TEST_UI=1; shift ;;
@@ -319,6 +321,16 @@ stop_ui() { # error/manual outcomes keep the window up briefly so a watching
 GATE="" GATE_MSG=""
 linux_gate() {
   local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg
+  # Canonicalise both sides before the prefix compare. On some distros
+  # (e.g. Fedora/ostree) /home is a symlink to /var/home; the relaunch
+  # target is read from /proc/<pid>/exe, which the kernel canonicalises
+  # through symlinks, while INSTALL_ROOT keeps the original spelling —
+  # the raw prefix match then false-gates as "skew" and tells the user
+  # to reinstall an app that is fine. readlink -m canonicalises existing
+  # leading components without requiring the full path to exist (unlike
+  # -f); a no-op when both sides are already spelled the same.
+  unpacked="$(readlink -m -- "$unpacked")"
+  [ -n "$RELAUNCH_TARGET" ] && RELAUNCH_TARGET="$(readlink -m -- "$RELAUNCH_TARGET")"
   case "$RELAUNCH_TARGET" in
     "$unpacked"/*) ;;
     *) GATE=skew GATE_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update or reinstall it to match."; return ;;
@@ -619,7 +631,7 @@ tcc_pick_update_invoke() { # sets UPDATE_INVOKE; safety net past a failed heal
 # ── self-tests: no update, touch nothing ────────────────────────────────────
 if [ "$SELF_TEST_TCC_HEAL" -eq 1 ]; then
   # Runs the REAL heal + invoke selection against --install-root and reports;
-  # tests/test_desktop_update_tcc_heal.py drives the state matrix through it.
+  # tests/scripts/desktop_update/test_desktop_update_tcc_heal.py drives the state matrix through it.
   trap - EXIT
   tcc_anchor_heal "$INSTALL_ROOT/venv/bin" || true
   tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"
@@ -761,9 +773,19 @@ if "${UPDATE_INVOKE[@]}" update --help 2>/dev/null | grep -q -- '--keep-stash'; 
 else
   log "installed hermes predates --keep-stash; running without it"
 fi
-log "running: ${UPDATE_INVOKE[*]} update --yes --gateway $KEEP_STASH --branch $BRANCH"
+# --gateway restarts the local messaging gateway after the update. The
+# Desktop omits it (--no-gateway) when it is served by a remote gateway
+# (#117529): restarting a local one there is never wanted, and with the same
+# channel credentials as the remote host it becomes a competing long-poll
+# consumer (e.g. Telegram rejects one of the two getUpdates callers).
+GATEWAY_FLAG="--gateway"
+if [ "$NO_GATEWAY" -eq 1 ]; then
+  GATEWAY_FLAG=""
+  log "update requested without --gateway (remote-served Desktop)"
+fi
+log "running: ${UPDATE_INVOKE[*]} update --yes $GATEWAY_FLAG $KEEP_STASH --branch $BRANCH"
 publish_stage "Updating code and dependencies"
-OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+OUT="$("${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
@@ -785,7 +807,7 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
-  OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+  OUT="$("${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi

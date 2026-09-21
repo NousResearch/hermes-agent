@@ -155,6 +155,27 @@ class TestCounterRoundTripsBindSessionState:
             assert stale.should_compress(10**9) is False
             assert stale._compression_block_reason().startswith("frequency:")
 
+    def test_refresh_read_failure_preserves_armed_frequency_guard(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("s1", source="cli")
+        compressor = _compressor(db, "s1")
+
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(compressor._FREQUENT_COMPACTION_LIMIT):
+                compressor.record_completed_compaction()
+
+        with (
+            patch.object(
+                db,
+                "get_session_model_config_value",
+                side_effect=sqlite3.OperationalError("refresh read failure"),
+            ),
+            patch("agent.context_compressor.time.time", return_value=1_300.0),
+        ):
+            _refresh_persisted_compression_guards(compressor)
+            assert compressor.should_compress(10**9) is False
+            assert compressor._compression_block_reason() == "frequency:300"
+
     def test_rebind_to_other_session_does_not_leak_counter(self, tmp_path):
         """The counter is per-session: switching sessions must not carry it."""
         db = _db(tmp_path)
@@ -293,3 +314,30 @@ class TestCompressionBoundaryCarry:
         # Persisted onto the child row so a restart right after rotation
         # still inherits the armed guard.
         assert db.get_compression_ineffective_count("child") == 1
+
+    def test_parent_frequency_read_failure_preserves_local_history(self, tmp_path):
+        db = _db(tmp_path)
+        db.create_session("parent", source="cli")
+        cc = _compressor(db, "parent")
+        with patch("agent.context_compressor.time.time", side_effect=(1_000.0, 1_120.0, 1_240.0)):
+            for _ in range(cc._FREQUENT_COMPACTION_LIMIT):
+                cc.record_completed_compaction()
+
+        db.create_session("child", source="cli", parent_session_id="parent")
+        with patch.object(
+            db,
+            "get_session_model_config_value",
+            side_effect=sqlite3.OperationalError("parent read failure"),
+        ):
+            cc.on_session_start(
+                "child",
+                boundary_reason="compression",
+                old_session_id="parent",
+                session_db=db,
+            )
+
+        assert cc._compression_frequency_state() == (1_000.0, cc._FREQUENT_COMPACTION_LIMIT)
+        persisted = db.get_session_model_config_value(
+            "child", COMPRESSION_FREQUENCY_MODEL_CONFIG_KEY, {}
+        )
+        assert persisted["count"] == cc._FREQUENT_COMPACTION_LIMIT

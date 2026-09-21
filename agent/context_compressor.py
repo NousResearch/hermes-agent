@@ -2046,9 +2046,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             previous_ineffective_count = _parent(
                 "get_compression_ineffective_count", "compression parent ineffective count", previous_ineffective_count,
             )
-            previous_frequency_state = self._read_compression_frequency_state(
-                session_db=session_db, session_id=old_session_id
+            parent_frequency_found, parent_frequency_state = self._try_read_compression_frequency_state(
+                session_db=session_db,
+                session_id=old_session_id,
+                read_failure_default=previous_frequency_state,
             )
+            if parent_frequency_found:
+                previous_frequency_state = parent_frequency_state
         self.bind_session_state(session_db, session_id)
         if boundary_reason == "compression":
             # Rotation creates a fresh child row first; carry the streak until boundary bookkeeping persists it.
@@ -2162,9 +2166,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         )[1]
 
     def _load_compression_frequency_state(self) -> None:
-        self._compression_frequency_window_started_at, self._compression_frequency_window_count = (
-            self._read_compression_frequency_state()
+        current_state = self._compression_frequency_state()
+        authoritative, refreshed_state = self._try_read_compression_frequency_state(
+            read_failure_default=current_state
         )
+        if authoritative:
+            self._compression_frequency_window_started_at, self._compression_frequency_window_count = (
+                refreshed_state
+            )
 
     def _set_compression_frequency_state(self, started_at: float, count: int) -> None:
         state = max(0.0, float(started_at)), max(0, int(count))

@@ -1257,3 +1257,22 @@ describe('sync worker', () => {
     expect(room.chat.$groupChats.get().Core?.log.map(entry => entry.text)).toEqual(['fresh start'])
   })
 })
+
+
+it('projects reactions into the synced snapshot, capped like every other field', async () => {
+  const { chat } = await loadRoom()
+  const reactions = Array.from({ length: 20 }, (_, index) => ({ at: index, by: `member-${index}`, emoji: '👍' }))
+
+  const snapshot = chat.groupChatSyncSnapshot({
+    Room: {
+      log: [{ at: 1, from: { kind: 'member', name: 'research' }, reactions, text: 'hello' }]
+    }
+  } as unknown as Record<string, GroupChat>)
+
+  const entry = snapshot.rooms['name:Room'].log[0]
+
+  // The mirror is a byte budget: a reaction the room can see locally must not
+  // be the reason a room drops out of it.
+  expect(entry.reactions).toHaveLength(12)
+  expect(entry.reactions?.at(-1)).toEqual({ at: 19, by: 'member-19', emoji: '👍' })
+})

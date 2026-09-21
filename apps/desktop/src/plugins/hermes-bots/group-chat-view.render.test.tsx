@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, fireEvent, render } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -11,8 +11,18 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
   const base = await pluginSdkMock(createGroupGateway().host)
 
-  const Button = ({ children, onClick, title }: { children?: ReactNode; onClick?: () => void; title?: string }) => (
-    <button onClick={onClick} title={title}>
+  const Button = ({
+    'aria-label': ariaLabel,
+    children,
+    onClick,
+    title
+  }: {
+    'aria-label'?: string
+    children?: ReactNode
+    onClick?: () => void
+    title?: string
+  }) => (
+    <button aria-label={ariaLabel} onClick={onClick} title={title}>
       {children}
     </button>
   )
@@ -83,4 +93,30 @@ it('renders member replies through the shell message renderer, resolving media o
     ['MEDIA:/tmp/local.png', 'true'],
     ['MEDIA:/tmp/remote.png', 'false']
   ])
+})
+
+
+it('reacts from the strip and shows the chip, writing the reaction into the room log', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { $groupChats } = await import('./group-chat')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+
+  $groupChats.set({
+    Room: {
+      log: [{ from: { kind: 'member' as const, name: 'builder' }, id: 'm1', text: 'Shipped it', thread: 'a', at: 2 }],
+      sessions: {},
+      watermarks: {}
+    }
+  })
+
+  const { getByLabelText, getByText } = render(<GroupChatWorkspace group="Room" members={[{ name: 'builder' }] as never} />)
+
+  fireEvent.click(getByLabelText('React Builder'))
+  fireEvent.click(getByText('👍'))
+
+  expect($groupChats.get().Room.log[0].reactions).toEqual([{ at: expect.any(Number), by: 'user', emoji: '👍' }])
+
+  // The chip is the retract affordance: clicking it takes the reaction back.
+  fireEvent.click(getByLabelText('Remove 👍 reaction'))
+  expect($groupChats.get().Room.log[0].reactions).toEqual([])
 })

@@ -12,6 +12,7 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
+import { GROUP_REACTION_LIMIT } from './group-reactions'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
@@ -333,6 +334,18 @@ export function groupChatSyncSnapshot(
         },
         text: compacted.text,
         at: Number(entry?.at || 0),
+        ...(Array.isArray(entry?.reactions) && entry.reactions.length
+          ? {
+              // Bounded like every other field: the mirror is a byte budget, and
+              // a reaction the room can see locally must not be the reason a
+              // room drops out of it.
+              reactions: entry.reactions.slice(-GROUP_REACTION_LIMIT).map(reaction => ({
+                at: Number(reaction?.at || 0),
+                by: String(reaction?.by || '').slice(0, 128),
+                emoji: String(reaction?.emoji || '').slice(0, 16)
+              }))
+            }
+          : {}),
         ...(entry?.thread
           ? {
               thread: String(entry.thread).slice(0, 128)
@@ -1718,6 +1731,22 @@ function normalizeGroupChatText(text: string): string {
 
   return trimmed === GROUP_EMPTY_SENTINEL ? GROUP_EMPTY_FRIENDLY : trimmed
 }
+
+/** Is `candidate` the same log entry as `target`?
+ *
+ *  Room writes resolve their target by IDENTITY, never by the render index: the
+ *  log is head-trimmed whenever a write pushes it past its budget, so an index
+ *  captured at paint time can point at a neighbour by the time the click lands.
+ *  `id` is the durable key; a legacy entry without one falls back to the fields
+ *  that make it the message it is. */
+export function sameGroupMessage(candidate: GroupMessage, target: GroupMessage): boolean {
+  if (target.id || candidate.id) {
+    return Boolean(target.id) && candidate.id === target.id
+  }
+
+  return candidate.at === target.at && candidate.from?.name === target.from?.name && candidate.text === target.text
+}
+
 
 export function appendGroupChatEntry(
   group: string,

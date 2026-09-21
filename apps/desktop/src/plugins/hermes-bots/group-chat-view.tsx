@@ -66,6 +66,7 @@ import {
   $groupNeedsYou,
   groupThreadOf,
   rememberGroupChatTombstone,
+  sameGroupMessage,
   scheduleGroupChatServerSync,
   setGroupChatHoldDetection,
   setGroupChatImage,
@@ -100,6 +101,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
+import { GROUP_QUICK_REACTIONS, GROUP_REACTION_USER, groupReactionChips, toggleGroupReaction } from './group-reactions'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
@@ -623,6 +625,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
   const [revealedSpeaker, setRevealedSpeaker] = useState<null | string>(null)
+  // Which message's reaction strip is open — a gesture, one at a time.
+  const [reactingKey, setReactingKey] = useState<null | string>(null)
   // Thread replies retain their own draft; the main composer starts a new topic.
   // Pending image attachments per composer: `null` thread key = the main
   // composer, otherwise the reply box of that thread. Data URLs, already
@@ -1092,6 +1096,30 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
 
   // One log entry, rendered exactly as before conversation folding existed.
+  // A reaction is a room-log write like any other: mutate the log, and the
+  // room's normal persistence + sync carry it to every member. The target is
+  // resolved by IDENTITY inside the updater, never by the render index: a
+  // head-trim (or any other room write) between paint and click would otherwise
+  // land the reaction on a neighbour.
+  const reactToEntry = (target: GroupMessage, emoji: string) => {
+    updateGroupChat(group, current => {
+      const at = current.log.findIndex(message => sameGroupMessage(message, target))
+
+      if (at < 0) {
+        return current
+      }
+
+      return {
+        ...current,
+        log: current.log.map((message, index) =>
+          index === at
+            ? { ...message, reactions: toggleGroupReaction(message.reactions, GROUP_REACTION_USER, emoji) }
+            : message
+        )
+      }
+    })
+  }
+
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
     const meta = groupTranscriptSpeakerMeta(entry, members, allMeta)
@@ -1187,6 +1215,18 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                     </Button>
                   </Tip>
                 )}
+                <Tip label={`${b.group.react} ${display}`}>
+                  <Button
+                    aria-label={`${b.group.react} ${display}`}
+                    aria-pressed={reactingKey === entryKey}
+                    className="text-(--ui-text-tertiary) hover:text-foreground"
+                    onClick={() => setReactingKey(reactingKey === entryKey ? null : entryKey)}
+                    size="icon"
+                    variant="ghost"
+                  >
+                    <Codicon name="smiley" />
+                  </Button>
+                </Tip>
                 {entry.text.trim() ? <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} /> : null}
               </div>
             ) : null}
@@ -1205,6 +1245,46 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               entry.text
             )}
           </div>
+          {reactingKey === entryKey ? (
+            <div className="mt-1 flex items-center gap-0.5" data-slot="group-reaction-strip">
+              {GROUP_QUICK_REACTIONS.map(emoji => (
+                <Button
+                  aria-label={`${emoji} ${display}`}
+                  className="text-base"
+                  key={emoji}
+                  onClick={() => {
+                    reactToEntry(entry, emoji)
+                    setReactingKey(null)
+                  }}
+                  size="icon-sm"
+                  variant="ghost"
+                >
+                  {emoji}
+                </Button>
+              ))}
+            </div>
+          ) : null}
+          {entry.reactions?.length ? (
+            <div className="mt-0.5 flex flex-wrap items-center gap-1" data-slot="group-message-reactions">
+              {groupReactionChips(entry.reactions).map(chip => (
+                <button
+                  aria-label={
+                    chip.mine ? b.group.reactionRemove(chip.emoji) : b.group.reactionAdd(chip.emoji)
+                  }
+                  className="flex cursor-pointer items-center gap-1 rounded-md bg-(--chrome-action-hover) px-1.5 py-0.5 text-[0.8125rem] leading-none hover:bg-(--ui-row-active-background)"
+                  data-mine={chip.mine ? 'true' : undefined}
+                  key={chip.emoji}
+                  onClick={() => reactToEntry(entry, chip.emoji)}
+                  type="button"
+                >
+                  {chip.emoji}
+                  {chip.count > 1 ? (
+                    <span className="text-[0.625rem] text-(--ui-text-tertiary)">{chip.count}</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {/* User attachments: what every responding bot was */
           /* shown — image previews, or a named chip for */
           /* PDFs/files. */}

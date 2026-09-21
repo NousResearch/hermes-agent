@@ -1138,6 +1138,11 @@ _QUICK_STATE_FILES = (
 
 _QUICK_DEFAULT_KEEP = 20
 
+# When a snapshot is incomplete because a DB exceeded ``max_file_size``, prune with this
+# reduced window instead of skipping pruning entirely (#68805 follow-up) — a persistently
+# oversized state.db would otherwise pin every snapshot forever (~13 GB observed at keep=20).
+_OVERSIZED_REDUCED_KEEP = 2
+
 
 def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     home = hermes_home or get_hermes_home()
@@ -1278,18 +1283,22 @@ def _create_quick_snapshot_locked(
     _secure_quick_snapshot_tree(root, staging_dir)
     os.replace(staging_dir, root / snap_id)
     # Auto-prune (pre-update callers pass a smaller keep so state.db copies don't accumulate).
-    # Skip when a DB failed to capture OR was skipped for size (#68805): the snapshot is
-    # incomplete and the older one may hold the only recoverable database.
-    if not (failed_dbs or oversized_skipped):
-        _prune_oldest(_snapshot_dirs(root), _QUICK_DEFAULT_KEEP if keep is None else keep, shutil.rmtree, "snapshot")
-    else:
-        if oversized_skipped:
-            print("  ⚠ Skipping snapshot prune: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
-            logger.warning("Quick snapshot skipped oversized DB file(s): %s", ", ".join(oversized_skipped))
+    # A FAILED DB copy can be transient and the older snapshot may be the only recovery
+    # source, so pruning stays fully suppressed (#68805). An OVERSIZED DB is structural —
+    # the same file exceeds the cap on every run — so full suppression would pin snapshots
+    # forever (~13 GB observed with keep=20). Prune with a reduced window instead, while
+    # protecting the newest snapshot that still holds each skipped DB.
+    if failed_dbs:
         logger.warning(
-            "Skipping snapshot prune because %d DB(s) failed to capture and/or %d were oversized "
-            "— preserving older snapshots as recovery source",
-            len(failed_dbs), len(oversized_skipped))
+            "Skipping snapshot prune because %d DB(s) failed to capture "
+            "— preserving older snapshots as recovery source", len(failed_dbs))
+    else:
+        effective_keep = _QUICK_DEFAULT_KEEP if keep is None else keep
+        if oversized_skipped:
+            effective_keep = min(effective_keep, _OVERSIZED_REDUCED_KEEP)
+            print("  ⚠ Snapshot incomplete: DB file(s) skipped for size: " + ", ".join(oversized_skipped))
+            logger.warning("Quick snapshot skipped oversized DB file(s): %s", ", ".join(oversized_skipped))
+        _prune_quick_snapshots_window(root, effective_keep, oversized_skipped)
     logger.info("quick snapshot phase=copy status=complete id=%s files=%d bytes=%d",
                 snap_id, len(manifest), sum(manifest.values()))
     return snap_id
@@ -1306,6 +1315,93 @@ def _snapshot_dirs(root: Path) -> List[Path]:
     """Published snapshot directories under *root*, newest first."""
     return _newest_first(root, lambda d: d.is_dir() and not d.name.startswith(".")
                          and not d.name.endswith(".partial"))
+
+
+def _snapshot_db_status(snap_dir: Path, rel: str) -> str:
+    """Status of *rel* inside snapshot *snap_dir*, verified against the file tree.
+
+    ``"verified"`` — a readable manifest lists *rel* AND the file is present as a
+    non-empty regular file. This is the only status that counts as a recovery
+    copy.
+
+    ``"opaque"`` — the manifest is missing/unreadable/corrupt JSON, so the
+    snapshot's contents cannot be proven either way. It must never be pruned on a
+    guess, but it also must never be *accepted* as a recovery copy (review on
+    #109586: a corrupt newer manifest used to shield itself while the real older
+    copy was deleted).
+
+    ``"absent"`` — the manifest is readable and the DB is not in it, or it is in
+    it but the file is missing/empty (a lying manifest). Nothing to protect.
+    """
+    try:
+        with open(snap_dir / "manifest.json", encoding="utf-8") as f:
+            files = json.load(f).get("files") or {}
+    except (OSError, json.JSONDecodeError):
+        return "opaque"
+    if rel not in files:
+        return "absent"
+    candidate = snap_dir / rel
+    try:
+        if not candidate.is_file() or candidate.stat().st_size <= 0:
+            return "absent"
+        # In-tree only: a symlink pointing outside the snapshot dir is not a
+        # self-contained recovery copy (the review asked for a verified
+        # regular/readable in-tree file).
+        if not candidate.resolve().is_relative_to(snap_dir.resolve()):
+            return "absent"
+    except OSError:
+        return "absent"
+    return "verified"
+
+
+def _prune_quick_snapshots_window(root: Path, keep: int, oversized_rels: list) -> int:
+    """Prune snapshots past the *keep* window, protecting recovery copies.
+
+    For every DB rel skipped for size in the newest snapshot, the newest snapshot
+    that VERIFIABLY still holds it is never pruned — it holds the only recoverable
+    copy (#68805). Snapshots with unreadable manifests are opaque: preserved, and
+    the search continues past them for a verifiable copy. When no snapshot
+    verifiably holds a skipped DB at all, pruning aborts entirely rather than
+    deleting snapshots on a guess (review on #109586). Everything else past the
+    window goes, so a persistently oversized state.db can no longer pin the whole
+    snapshot history.
+    """
+    snaps = _snapshot_dirs(root)
+    if len(snaps) <= keep:
+        return 0
+    verified = set()
+    opaque = set()
+    for rel in oversized_rels:
+        found_verified = False
+        for d in snaps:  # newest first
+            status = _snapshot_db_status(d, rel)
+            if status == "verified":
+                verified.add(d)
+                found_verified = True
+                break
+            if status == "opaque":
+                opaque.add(d)  # preserve; keep looking for a verifiable copy
+        if not found_verified:
+            # No snapshot verifiably holds this skipped DB. The only possible
+            # recovery copy lives inside an opaque snapshot, and deleting past
+            # the keep window could destroy it — abort pruning entirely.
+            logger.warning(
+                "Skipping snapshot prune: no snapshot verifiably holds oversized "
+                "DB %s (unreadable/corrupt manifests) — preserving every snapshot",
+                rel)
+            return 0
+    protected = verified | opaque
+    deleted = 0
+    for p in snaps[keep:]:  # oldest tail beyond the window
+        if p in protected:
+            logger.info("Preserving snapshot %s: last complete copy of oversized DB(s)", p.name)
+            continue
+        try:
+            shutil.rmtree(p)
+            deleted += 1
+        except OSError as exc:
+            logger.warning("Failed to prune snapshot %s: %s", p.name, exc)
+    return deleted
 
 
 def list_quick_snapshots(limit: int = 20, hermes_home: Optional[Path] = None) -> List[Dict[str, Any]]:

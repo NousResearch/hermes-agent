@@ -2403,6 +2403,9 @@ def init_agent(
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
+    # (provider, model) that rejected image content this session; build_api_request strips images
+    # from requests to that model only, so history keeps them for any model that can see.
+    agent._image_rejecting_model = None
 
     _init_prompt_cache_config(agent)
     _init_turn_state(agent, run_budget_seconds)

@@ -144,6 +144,30 @@ def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mo
     assert entries["offhost"]["image"] == "" and entries["offhost"]["version"] == "1.4.0"
 
 
+def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
+    """Detail-page inputs: screenshots follow the image host rule (off-host dropped, never fatal), readme
+    resolves to the raw README at the PINNED sha (GitHub and GitLab, subdir-aware) and is off for other
+    forges, and the maintainer slug is what /docs/plugins/by/<slug> is generated from."""
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    shot = "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/docs/1.png"
+    _write_entry(catalog, "gh", screenshots=[shot, "https://cdn.example.com/x.png"], readme=True, subdir="catalog",
+                 maintainer="Nous Research")
+    _write_entry(catalog, "gl", repo="https://gitlab.com/group/proj", readme=True)
+    _write_entry(catalog, "other", repo="https://codeberg.org/o/r", readme=True)
+    _write_entry(catalog, "plain")
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["gh"]["screenshots"] == [shot]
+    assert entries["gh"]["readme"] is True
+    assert entries["gh"]["readmeUrl"] == (
+        "https://raw.githubusercontent.com/example/gh/38fe0fb53eff98d477f807432e965429e665ca33/catalog/README.md")
+    assert entries["gh"]["maintainerSlug"] == "nous-research"
+    assert entries["gl"]["readmeUrl"] == "https://gitlab.com/group/proj/-/raw/38fe0fb53eff98d477f807432e965429e665ca33/README.md"
+    assert entries["other"]["readme"] is False and entries["other"]["readmeUrl"] == ""
+    assert entries["plain"]["readme"] is False and entries["plain"]["screenshots"] == [] and entries["plain"]["maintainerSlug"] == "example"
+
+
 # --------------------------------------------------------------------------
 # Full run: outputs + graceful degradation
 # --------------------------------------------------------------------------

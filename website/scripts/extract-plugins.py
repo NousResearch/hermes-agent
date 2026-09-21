@@ -51,6 +51,10 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
 IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
 IMAGE_HOST_SUFFIX = ".githubusercontent.com"
+MAX_SCREENSHOTS = 6
+# Forges whose raw-file URL scheme the site knows; ``readme: true`` on any other host is ignored.
+_FORGE_REPO_RE = re.compile(r"^https://(github\.com|gitlab\.com)/([^/\s]+)/([^/\s#?]+?)(?:\.git)?/?$")
+_SLUG_RE = re.compile(r"[^a-z0-9._-]+")
 
 
 def _log(msg: str) -> None:
@@ -70,6 +74,30 @@ def _cosmetic(value, accept, file_name: str, entry: str, key: str) -> str:
         _log(f"{file_name} ({entry}): dropping invalid {key} {text!r}")
         return ""
     return text
+
+
+def maintainer_slug(maintainer: str) -> str:
+    """URL segment for the author page (/docs/plugins/by/<slug>); shared by every entry of one maintainer."""
+    return _SLUG_RE.sub("-", maintainer.strip().lower()).strip("-") or "unknown"
+
+
+def readme_url(repo: str, sha: str, subdir: str) -> str:
+    """Raw README.md URL at the pinned commit for GitHub/GitLab repos; "" when the forge is unknown."""
+    m = _FORGE_REPO_RE.match(repo)
+    if not m:
+        return ""
+    host, owner, name = m.groups()
+    path = f"{subdir.strip('/')}/README.md" if subdir.strip("/") else "README.md"
+    if host == "github.com":
+        return f"https://raw.githubusercontent.com/{owner}/{name}/{sha}/{path}"
+    return f"https://gitlab.com/{owner}/{name}/-/raw/{sha}/{path}"
+
+
+def _screenshots(raw, file_name: str, entry: str) -> list[str]:
+    shots = [s for s in _str_list(raw) if _is_allowed_image_url(s)]
+    if len(shots) != len(_str_list(raw)):
+        _log(f"{file_name} ({entry}): dropping screenshots off GitHub hosts")
+    return shots[:MAX_SCREENSHOTS]
 
 
 def _str_list(value) -> list[str]:
@@ -214,6 +242,7 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
             _log(f"{path.name} ({name}): unknown category {category!r}, treating as general")
             category = "general"
 
+        subdir = str(raw.get("subdir") or "").strip()
         entries.append({
             "name": name,
             "description": str(raw.get("description") or "").strip(),
@@ -223,13 +252,17 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
             "tier": tier,
             "category": category,
             "maintainer": str(raw.get("maintainer") or "").strip(),
-            "subdir": str(raw.get("subdir") or "").strip(),
+            "subdir": subdir,
             "requiresHermes": str(raw.get("requires_hermes") or "").strip(),
             "platforms": _str_list(raw.get("platforms")),
             "capabilities": _normalize_capabilities(raw.get("capabilities")),
             "docsUrl": str(raw.get("docs_url") or "").strip(),
             "version": _cosmetic(raw.get("version"), VERSION_RE.match, path.name, name, "version"),
             "image": _cosmetic(raw.get("image"), _is_allowed_image_url, path.name, name, "image"),
+            "screenshots": _screenshots(raw.get("screenshots"), path.name, name),
+            "readme": raw.get("readme") is True and bool(readme_url(repo, sha, subdir)),
+            "readmeUrl": readme_url(repo, sha, subdir) if raw.get("readme") is True else "",
+            "maintainerSlug": maintainer_slug(str(raw.get("maintainer") or "")),
             "installCommand": f"hermes plugins install {name}",
             "stars": _repo_stars(repo, stars),
             "addedAt": dates.get(path.name, {}).get("addedAt"),

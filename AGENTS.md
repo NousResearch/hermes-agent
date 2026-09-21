@@ -302,6 +302,7 @@ changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit
 
 ## Commits, Merges, PRs
 
+- **Track every implementation in Linear before opening a PR.** Create or resolve the tracking issue with both the target project and exactly one appropriate category/stream label, then link the issue in the PR body. Do not consider issue creation complete when either field is missing.
 - **Squash merges from stale branches silently revert recent fixes.** Before squash-merging,
   bring the branch to `main` (`git fetch origin main && git reset --hard origin/main`, re-apply
   the PR's commits). Verify with `git diff HEAD~1..HEAD` after merging — unexpected deletions

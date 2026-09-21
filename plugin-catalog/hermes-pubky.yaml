@@ -1,14 +1,14 @@
 name: hermes-pubky
 repo: https://github.com/MCarlomagno/hermes-pubky
-sha: e4d5ec29e99064758bbc744150d272ec84b29d42
+sha: 0a4eafa943ced99e0aff8b05c29a497be318f5a7
 subdir: plugin
-description: Run a managed Hermes agent whose saved state lives on your Pubky homeserver.
+description: Setup helper for managed Pubky agents. The launcher syncs agent state, including conversation database snapshots and portable configuration, to your remote Pubky homeserver.
 maintainer: MCarlomagno
 tier: community
 category: memory
-requires_hermes: "==0.19.0"
+requires_hermes: "==0.21.3"
 docs_url: https://github.com/MCarlomagno/hermes-pubky#readme
-version: "0.2.1"
+version: "0.2.2"
 platforms:
   - linux
   - macos

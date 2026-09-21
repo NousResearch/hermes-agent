@@ -1,9 +1,20 @@
+import { useStore } from '@nanostores/react'
+import { useCallback } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { $activeConnectionId } from '@/store/connections'
+import { requestGatewayForAgent } from '@/store/gateway'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { isAuxiliaryWindow } from '@/store/windows'
 
 import { ContribController } from './contrib'
 import type { JarvisShellView } from './jarvis/i18n'
+import { JarvisOnboarding } from './jarvis/onboarding'
+import {
+  jarvisOnboardingScopeKey,
+  readJarvisOnboardingState,
+  shouldShowJarvisOnboarding
+} from './jarvis/onboarding-state'
 import { JarvisShell } from './jarvis/shell'
 import {
   CRON_ROUTE,
@@ -63,19 +74,50 @@ function appCompositionMode({ auxiliary }: AppWindowModeFlags): AppCompositionMo
 function AppRoot() {
   const location = useLocation()
   const navigate = useNavigate()
+  const activeConnectionId = useStore($activeConnectionId)
+  const activeProfile = useStore($activeGatewayProfile)
+
+  const onboardingScope = {
+    connectionId: activeConnectionId ?? 'local',
+    profile: normalizeProfileKey(activeProfile)
+  }
+
+  const onboardingScopeKey = jarvisOnboardingScopeKey(onboardingScope)
   const compositionMode = appCompositionMode({ auxiliary: isAuxiliaryWindow() })
+
+  const isOnboardingScopeCurrent = useCallback((expected: { connectionId?: null | string; profile?: null | string }) => {
+    const currentConnectionId = $activeConnectionId.get() ?? 'local'
+    const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+    return currentConnectionId === (expected.connectionId ?? 'local') && currentProfile === normalizeProfileKey(expected.profile)
+  }, [])
+
+  const showOnboarding =
+    compositionMode === 'product-shell' && shouldShowJarvisOnboarding(readJarvisOnboardingState(undefined, onboardingScope))
 
   if (compositionMode === 'special-window') {
     return <ContribController />
   }
 
   return (
-    <JarvisShell
-      activeView={jarvisViewForLocation(location.pathname, location.search)}
-      onViewChange={view => navigate(JARVIS_VIEW_TARGETS[view])}
-    >
-      <ContribController layoutMode="embedded" />
-    </JarvisShell>
+    <>
+      <JarvisShell
+        activeView={jarvisViewForLocation(location.pathname, location.search)}
+        onViewChange={view => navigate(JARVIS_VIEW_TARGETS[view])}
+      >
+        <ContribController layoutMode="embedded" />
+      </JarvisShell>
+      {showOnboarding ? (
+        <JarvisOnboarding
+          isScopeCurrent={isOnboardingScopeCurrent}
+          key={onboardingScopeKey}
+          requestGateway={(method, params) =>
+            requestGatewayForAgent(onboardingScope.connectionId, onboardingScope.profile, method, params)
+          }
+          scope={onboardingScope}
+        />
+      ) : null}
+    </>
   )
 }
 

@@ -148,10 +148,11 @@ export function revealEnvVar(key: string, profile?: ProfileScope): Promise<{ key
 export function validateProviderCredential(
   key: string,
   value: string,
-  apiKey?: string
+  apiKey?: string,
+  profile?: ProfileScope
 ): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[] }> {
   return hermesApi<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>({
-    ...profileScoped(),
+    ...capabilityScoped(profile),
     path: '/api/providers/validate',
     method: 'POST',
     body: { key, value, api_key: apiKey ?? '' }
@@ -198,9 +199,9 @@ export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsRespons
   })
 }
 
-export function listOAuthProviders(profile?: null | string): Promise<OAuthProvidersResponse> {
+export function listOAuthProviders(profile?: ProfileScope): Promise<OAuthProvidersResponse> {
   return hermesApi<OAuthProvidersResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/providers/oauth'
   })
 }
@@ -229,10 +230,10 @@ export function submitOAuthCode(
   providerId: string,
   sessionId: string,
   code: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<OAuthSubmitResponse> {
   return hermesApi<OAuthSubmitResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
     method: 'POST',
     body: { session_id: sessionId, code }
@@ -250,9 +251,9 @@ export function pollOAuthSession(
   })
 }
 
-export function cancelOAuthSession(sessionId: string, profile?: null | string): Promise<{ ok: boolean }> {
+export function cancelOAuthSession(sessionId: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
     method: 'DELETE'
   })

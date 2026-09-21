@@ -30,7 +30,14 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
   }
 }
 
-function installApiMock(api: (request: { path: string }) => Promise<unknown>) {
+interface ApiMockRequest {
+  body?: unknown
+  connectionId?: string
+  path: string
+  profile?: string
+}
+
+function installApiMock(api: (request: ApiMockRequest) => Promise<unknown>) {
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
     value: { api }
@@ -156,6 +163,46 @@ describe('refreshOnboarding', () => {
       expect(requests.slice(startAt).some(r => r.path.includes('/poll/'))).toBe(true)
       expect(requests.slice(startAt).some(r => r.path === '/api/model/set')).toBe(true)
       expect(requests.slice(startAt).every(r => r.profile === 'beta')).toBe(true)
+    } finally {
+      closeManualOnboarding()
+    }
+  })
+
+  it('keeps manual onboarding scoped to an explicit remote connection target', async () => {
+    const { startManualOnboarding, startProviderOAuth, closeManualOnboarding } = await import('./onboarding')
+    const requests: { connectionId?: string; path: string; profile?: string }[] = []
+
+    installApiMock(async request => {
+      requests.push(request)
+
+      if (request.path === '/api/providers/oauth') {
+        return { providers: [makeOAuthProvider('fixture')] }
+      }
+
+      if (request.path.endsWith('/start')) {
+        return {
+          flow: 'pkce',
+          session_id: 'remote-fixture',
+          auth_url: 'http://localhost/fixture'
+        }
+      }
+
+      return { ok: true }
+    })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+
+    try {
+      startManualOnboarding(null, { connectionId: 'remote-a', profile: 'research' })
+      await vi.waitFor(() => expect(requests.some(r => r.path === '/api/providers/oauth')).toBe(true))
+      await startProviderOAuth(makeOAuthProvider('fixture'), {
+        profile: $desktopOnboarding.get().targetScope,
+        requestGateway: async () => ({ ok: true }) as never
+      })
+
+      expect(requests.every(r => r.connectionId === 'remote-a')).toBe(true)
+      expect(requests.every(r => r.profile === 'research')).toBe(true)
+      expect($desktopOnboarding.get().targetScope).toEqual({ connectionId: 'remote-a', profile: 'research' })
+      expect($desktopOnboarding.get().targetProfile).toBe('research')
     } finally {
       closeManualOnboarding()
     }

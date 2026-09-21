@@ -396,6 +396,76 @@ export interface Translations {
     }
   }
 
+  jarvisOnboarding: {
+    productName: string
+    intro: {
+      subtitle: string
+      title: string
+    }
+    progress: (current: number, total: number) => string
+    stepsLabel: string
+    steps: {
+      profile: string
+      engine: string
+      model: string
+      voice: string
+      access: string
+      approvals: string
+    }
+    actions: {
+      back: string
+      checkConfiguration: string
+      finish: string
+      next: string
+    }
+    profile: {
+      active: string
+      body: string
+      title: string
+    }
+    engine: {
+      body: string
+      modelCount: (count: number) => string
+      noProviders: string
+      title: string
+    }
+    model: {
+      body: string
+      success: string
+      title: string
+    }
+    voice: {
+      quiet: string
+      quietHint: string
+      spoken: string
+      spokenHint: string
+      title: string
+    }
+    access: {
+      body: string
+      opened: string
+      secureAction: string
+      title: string
+      validateAction: string
+      validated: string
+    }
+    approvals: {
+      balanced: string
+      balancedHint: string
+      strict: string
+      strictHint: string
+      title: string
+    }
+    errors: {
+      config: string
+      model: string
+      providerUnavailable: string
+      recovery: string
+      rollbackSnapshot: string
+      save: string
+    }
+  }
+
   keybinds: {
     title: string
     subtitle: (open: string) => string

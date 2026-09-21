@@ -50,7 +50,7 @@ export {
   sortProviders
 } from './providers'
 
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -195,18 +195,21 @@ export function DesktopOnboardingOverlay({
   const boot = useStore($desktopBoot)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
-  const targetProfile = onboarding.targetProfile ?? profile
+  const targetScope = onboarding.targetScope
+  const targetProfile = targetScope?.profile ?? onboarding.targetProfile ?? profile
 
   // Async flows retain the initiating route even after the overlay closes.
   const ctx = useMemo<OnboardingContext>(
     () => ({
-      profile: targetProfile,
-      requestGateway: onboarding.targetProfile
-        ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
-        : requestGateway,
+      profile: targetScope ?? targetProfile,
+      requestGateway: targetScope?.connectionId
+        ? (method, params) => requestGatewayForAgent(targetScope.connectionId || 'local', targetProfile, method, params)
+        : onboarding.targetProfile || targetScope?.profile
+          ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
+          : requestGateway,
       onCompleted: () => onCompletedRef.current?.()
     }),
-    [onboarding.targetProfile, targetProfile, requestGateway]
+    [onboarding.targetProfile, targetProfile, targetScope, requestGateway]
   )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat

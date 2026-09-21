@@ -223,9 +223,11 @@ function ConfirmingModelPanel({
   flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
   leaving: boolean
   onBegin: () => void
-  profile?: string
+  profile?: OnboardingContext['profile']
 }) {
   const { t } = useI18n()
+  const pickerConnectionId = profile && typeof profile === 'object' ? profile.connectionId?.trim() || undefined : undefined
+  const pickerProfile = profile && typeof profile === 'object' ? profile.profile?.trim() || 'default' : profile ?? undefined
   const scrambledModel = useScramble(flow.currentModel, leaving)
   const scrambledBegin = useScramble(t.onboarding.startChatting, leaving)
   // Local state controls whether the model picker dialog is open.
@@ -238,8 +240,8 @@ function ConfirmingModelPanel({
   // Pull pricing + tier for the just-picked default so the confirm card
   // shows the same $/Mtok + Free/Pro info the picker and CLI do.
   const options = useQuery({
-    queryKey: ['onboarding-model-options', flow.providerSlug],
-    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false })
+    queryKey: ['onboarding-model-options', flow.providerSlug, profile],
+    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, profile)
   })
 
   const providerRow = options.data?.providers?.find(
@@ -324,7 +326,8 @@ function ConfirmingModelPanel({
           setPickerOpen(false)
         }}
         open={pickerOpen}
-        profile={profile}
+        ownerConnectionId={pickerConnectionId}
+        profile={pickerProfile}
       />
     </div>
   )

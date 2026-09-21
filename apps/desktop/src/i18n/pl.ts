@@ -387,6 +387,81 @@ export const pl = defineLocale({
     }
   },
 
+  jarvisOnboarding: {
+    productName: 'AI Evolution Jarvis',
+    intro: {
+      subtitle: 'Sześć konkretnych kroków. Dane dostępowe zostają w bezpiecznych ścieżkach Hermesa.',
+      title: 'Konfiguracja AI Evolution Jarvis'
+    },
+    progress: (current, total) => `Krok ${current} z ${total}`,
+    stepsLabel: 'Kroki onboardingu',
+    steps: {
+      access: 'Dostępy',
+      approvals: 'Zgody',
+      engine: 'Engine',
+      model: 'Model',
+      profile: 'Profil',
+      voice: 'Głos'
+    },
+    actions: {
+      back: 'Wstecz',
+      checkConfiguration: 'Sprawdź konfigurację',
+      finish: 'Zakończ',
+      next: 'Dalej'
+    },
+    profile: {
+      active: 'Aktywny profil',
+      body: 'Ta konfiguracja dotyczy aktywnego profilu Hermesa w tym oknie.',
+      title: 'Profil'
+    },
+    engine: {
+      body: 'Wybierz dostawcę z listy zgłoszonej przez działający backend Hermesa.',
+      modelCount: count => `${count} ${count === 1 ? 'model' : count < 5 ? 'modele' : 'modeli'}`,
+      noProviders: 'Żaden dostawca nie jest jeszcze gotowy. Otwórz bezpieczną konfigurację dostawcy i wróć tutaj.',
+      title: 'Engine'
+    },
+    model: {
+      body:
+        'To sprawdza odświeżony katalog dostawców, stan uwierzytelnienia i wybrany model. Model główny jest przypisywany dopiero przy zakończeniu.',
+      success: 'Konfiguracja sprawdzona',
+      title: 'Model'
+    },
+    voice: {
+      quiet: 'Cichy',
+      quietHint: 'Domyślnie nie odczytuj odpowiedzi głosem.',
+      spoken: 'Mówiony',
+      spokenHint: 'Odczytuj odpowiedzi przez istniejące preferencje głosowe.',
+      title: 'Głos'
+    },
+    access: {
+      body:
+        'Sekrety zostają w istniejącej ścieżce setup/config Hermesa. Otwórz setup, jeśli trzeba, a potem odśwież walidację tutaj przed przejściem dalej.',
+      opened: 'Bezpieczna konfiguracja została otwarta. Wróć tutaj po zapisaniu danych dostępowych i sprawdź dostęp.',
+      secureAction: 'Otwórz bezpieczną konfigurację dostawcy',
+      title: 'Dostępy',
+      validateAction: 'Odśwież i sprawdź dostęp',
+      validated: 'Dostęp dostawcy jest skonfigurowany'
+    },
+    approvals: {
+      balanced: 'Zrównoważony',
+      balancedHint:
+        'Hermes używa smart approvals dla rutynowych bezpiecznych akcji i nadal pyta przy wrażliwych operacjach.',
+      strict: 'Ścisły',
+      strictHint: 'Hermes pyta przed operacjami wymagającymi jawnej zgody.',
+      title: 'Zgody'
+    },
+    errors: {
+      config: 'Nie udało się wczytać konfiguracji.',
+      model: 'Najpierw wybierz model.',
+      providerUnavailable:
+        'Ten dostawca nie jest jeszcze gotowy. Połącz go przez bezpieczną konfigurację dostawcy i spróbuj ponownie.',
+      recovery: 'Automatyczny rollback się nie udał; sprawdź ustawienia modelu i konfiguracji przed ponowną próbą',
+      rollbackSnapshot:
+        'Nie można bezpiecznie zapisać onboardingu. Odśwież i spróbuj ponownie, aby Hermes najpierw potwierdził obecny model.',
+      save: 'Nie udało się zapisać onboardingu.'
+    }
+  },
+
   keybinds: {
     title: 'Skróty klawiszowe',
     subtitle: open => `Kliknij skrót, aby go zmienić · ${open} ponownie otwiera ten panel.`,

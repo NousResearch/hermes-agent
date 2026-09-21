@@ -364,6 +364,78 @@ export const zh: Translations = {
     }
   },
 
+  jarvisOnboarding: {
+    productName: 'AI Evolution Jarvis',
+    intro: {
+      subtitle: 'Six focused steps. Provider credentials stay in Hermes secure setup paths.',
+      title: 'AI Evolution Jarvis setup'
+    },
+    progress: (current, total) => `Step ${current} of ${total}`,
+    stepsLabel: 'Onboarding steps',
+    steps: {
+      access: 'Access',
+      approvals: 'Approvals',
+      engine: 'Engine',
+      model: 'Model',
+      profile: 'Profile',
+      voice: 'Voice'
+    },
+    actions: {
+      back: 'Back',
+      checkConfiguration: 'Check configuration',
+      finish: 'Finish',
+      next: 'Next'
+    },
+    profile: {
+      active: 'Active profile',
+      body: 'This setup applies to the active Hermes profile in this window.',
+      title: 'Profile'
+    },
+    engine: {
+      body: 'Choose from the providers reported by the running Hermes backend.',
+      modelCount: count => `${count} ${count === 1 ? 'model' : 'models'}`,
+      noProviders: 'No providers are ready yet. Open secure provider setup and return here.',
+      title: 'Engine'
+    },
+    model: {
+      body:
+        'This checks the refreshed provider catalog, authenticated state, and selected model. The main model is assigned only when setup finishes.',
+      success: 'Configuration checked',
+      title: 'Model'
+    },
+    voice: {
+      quiet: 'Quiet',
+      quietHint: 'Keep voice playback off by default.',
+      spoken: 'Spoken',
+      spokenHint: 'Read replies aloud using the existing voice preferences.',
+      title: 'Voice'
+    },
+    access: {
+      body:
+        'Secrets stay in the existing Hermes setup and config flow. Open setup if needed, then refresh validation here before continuing.',
+      opened: 'Secure setup was opened. Return here after credentials are saved, then check access.',
+      secureAction: 'Open secure provider setup',
+      title: 'Access',
+      validateAction: 'Refresh and check access',
+      validated: 'Provider access is configured'
+    },
+    approvals: {
+      balanced: 'Balanced',
+      balancedHint: 'Hermes uses smart approvals for routine safe actions and still asks for sensitive operations.',
+      strict: 'Strict',
+      strictHint: 'Hermes asks before operations that need explicit approval.',
+      title: 'Approvals'
+    },
+    errors: {
+      config: 'Could not load configuration.',
+      model: 'Pick a model first.',
+      providerUnavailable: 'This provider is not ready yet. Connect it through secure provider setup and try again.',
+      recovery: 'Automatic rollback failed; review model and config settings before retrying',
+      rollbackSnapshot: 'Could not safely save onboarding. Refresh and try again so Hermes can verify the current model first.',
+      save: 'Could not save onboarding.'
+    }
+  },
+
   keybinds: {
     title: '键盘快捷键',
     subtitle: open => `点击快捷键即可重新绑定 · ${open} 可重新打开此面板。`,

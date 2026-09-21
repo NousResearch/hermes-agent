@@ -11,6 +11,7 @@ import {
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
+import type { ProfileScope } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
@@ -70,6 +71,7 @@ export interface DesktopOnboardingState {
    *  even when configured === true, and adds a close affordance. */
   manual: boolean
   targetProfile?: string
+  targetScope?: ManualOnboardingTarget
   /** True when the overlay was opened specifically to configure a local /
    *  custom OpenAI-compatible endpoint (e.g. from Settings → Model's "Set up
    *  custom endpoint"). Forces the API-key form with the local option
@@ -79,8 +81,13 @@ export interface DesktopOnboardingState {
 
 export interface OnboardingContext {
   onCompleted?: () => void
-  profile?: string
+  profile?: ProfileScope
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+}
+
+export interface ManualOnboardingTarget {
+  connectionId?: string
+  profile?: string
 }
 
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
@@ -161,7 +168,7 @@ const INITIAL: DesktopOnboardingState = {
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
 
 let flowGeneration = 0
-let flowProfile: string | undefined
+let flowProfile: ProfileScope
 let pollTimer: number | null = null
 let providersRefreshPromise: null | Promise<void> = null
 
@@ -173,6 +180,21 @@ const patch = (update: Partial<DesktopOnboardingState>) =>
 const setFlow = (flow: OnboardingFlow) => patch(flow.status === 'idle' ? { flow } : { flow, reason: null })
 
 const sessionIdFor = (flow: OnboardingFlow) => ('start' in flow && flow.start ? flow.start.session_id : undefined)
+
+function normalizeManualTarget(target?: null | string | ManualOnboardingTarget): ManualOnboardingTarget | undefined {
+  if (!target) {
+    return undefined
+  }
+
+  if (typeof target === 'string') {
+    return { profile: target }
+  }
+
+  const connectionId = target.connectionId?.trim() || undefined
+  const profile = target.profile?.trim() || undefined
+
+  return connectionId || profile ? { connectionId, profile } : undefined
+}
 
 function clearPoll() {
   if (pollTimer !== null) {
@@ -264,7 +286,7 @@ function notifyGatewayTools(tools: string[] | undefined) {
 // opportunistic polish, not a hard requirement for onboarding.
 async function fetchProviderDefaultModel(
   preferredSlugs: string[],
-  profile?: string
+  profile?: ProfileScope
 ): Promise<null | { providerSlug: string; defaultModel: string }> {
   let options
 
@@ -434,7 +456,7 @@ function providerResolutionFailure(reason: null | string) {
     : 'Connected, but Hermes still cannot resolve a usable provider.'
 }
 
-async function refreshProviders() {
+async function refreshProviders(target?: ProfileScope) {
   if (providersRefreshPromise) {
     await providersRefreshPromise
 
@@ -442,9 +464,10 @@ async function refreshProviders() {
   }
 
   const generation = flowGeneration
+  const providerScope = target ?? $desktopOnboarding.get().targetScope ?? $desktopOnboarding.get().targetProfile
   providersRefreshPromise = (async () => {
     try {
-      const { providers } = await listOAuthProviders($desktopOnboarding.get().targetProfile)
+      const { providers } = await listOAuthProviders(providerScope)
 
       if (generation !== flowGeneration) {
         return
@@ -510,12 +533,17 @@ export function consumePendingCredentialWarning(): null | string {
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
 // duplicating provider UI. Sets manual=true so the overlay shows the picker
 // even though configured===true, and refreshes the provider list.
-export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONBOARDING_REASON, profile?: string) {
+export function startManualOnboarding(
+  reason: null | string = DEFAULT_MANUAL_ONBOARDING_REASON,
+  target?: string | ManualOnboardingTarget
+) {
+  const targetScope = normalizeManualTarget(target)
   cancelOnboardingFlow()
   providersRefreshPromise = null
   patch({
     manual: true,
-    targetProfile: profile,
+    targetProfile: targetScope?.profile,
+    targetScope,
     providers: null,
     requested: true,
     localEndpoint: false,
@@ -524,7 +552,7 @@ export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONB
     reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
     flow: { status: 'idle' }
   })
-  void refreshProviders()
+  void refreshProviders(targetScope)
 }
 
 // Open the onboarding overlay directly on the local / custom endpoint form
@@ -533,12 +561,14 @@ export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONB
 // configure the endpoint instead of dead-ending on the OAuth provider list
 // (`custom` is not an OAuth provider, so the generic manual flow would just
 // re-show the picker — the original "booted back to the first screen" loop).
-export function startManualLocalEndpoint(reason: null | string = null, profile?: string) {
+export function startManualLocalEndpoint(reason: null | string = null, target?: string | ManualOnboardingTarget) {
+  const targetScope = normalizeManualTarget(target)
   cancelOnboardingFlow()
   pendingProviderOAuthId = null
   patch({
     manual: true,
-    targetProfile: profile,
+    targetProfile: targetScope?.profile,
+    targetScope,
     providers: null,
     requested: true,
     localEndpoint: true,
@@ -581,7 +611,14 @@ export function closeManualOnboarding() {
   providersRefreshPromise = null
   pendingProviderOAuthId = null
 
-  patch({ targetProfile: undefined, manual: false, requested: false, localEndpoint: false, flow: { status: 'idle' } })
+  patch({
+    targetProfile: undefined,
+    targetScope: undefined,
+    manual: false,
+    requested: false,
+    localEndpoint: false,
+    flow: { status: 'idle' }
+  })
 }
 
 export function completeDesktopOnboarding() {
@@ -599,6 +636,8 @@ export function completeDesktopOnboarding() {
     requested: false,
     firstRunSkipped: false,
     manual: false,
+    targetScope: undefined,
+    targetProfile: undefined,
     localEndpoint: false
   })
 }
@@ -612,7 +651,15 @@ export function completeDesktopOnboarding() {
 export function dismissFirstRunOnboarding() {
   clearPoll()
   writeCachedSkipped(true)
-  patch({ firstRunSkipped: true, requested: false, manual: false, localEndpoint: false, flow: { status: 'idle' } })
+  patch({
+    firstRunSkipped: true,
+    requested: false,
+    manual: false,
+    targetScope: undefined,
+    targetProfile: undefined,
+    localEndpoint: false,
+    flow: { status: 'idle' }
+  })
 }
 
 export function setOnboardingMode(mode: OnboardingMode) {
@@ -625,7 +672,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   // switch a provider while already configured. Just ensure the provider
   // list is loaded and show the picker.
   if ($desktopOnboarding.get().manual) {
-    await refreshProviders()
+    await refreshProviders(ctx.profile)
 
     return false
   }
@@ -666,7 +713,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
     return false
   }
 
-  await refreshProviders()
+  await refreshProviders(ctx.profile)
 
   return false
 }
@@ -998,7 +1045,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   let model = ''
 
   try {
-    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key, ctx.profile)
 
     if (generation !== flowGeneration) {
       return { ok: false }

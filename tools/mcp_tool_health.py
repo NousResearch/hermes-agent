@@ -57,6 +57,10 @@ class MCPServerHealthMixin:
         """Mark a stdio session dormant before its transport finishes closing."""
         self._recycled_reason = reason
         self.session = None
+        # An intentional recycle ends a degraded episode: the server goes dormant, and the lazy
+        # restart hours later must not log a "recovered … degraded for Ns" spanning the dormancy.
+        self._degraded_since = None
+        self._reestablish_noted = False
 
     def _schedule_tools_refresh(self) -> asyncio.Task:
         """Schedule a background tool refresh (failures logged) and keep it strongly referenced."""
@@ -216,8 +220,35 @@ class MCPServerHealthMixin:
             self._was_parked = False
             logger.warning("MCP server '%s': revived — session healthy again after "
                            "parking (state: parked → connected)", self.name)
+        elif self._degraded_since is not None:
+            # The proof line for a recovery that never parked. Emitted HERE and nowhere earlier: a
+            # finished handshake or a listed tool set is an unproven session (#62212), and a log
+            # reader must never be told "healthy" on less than the runtime itself accepts.
+            logger.info("MCP server '%s': recovered — session healthy again after reconnect "
+                        "(state: degraded → connected, degraded for %.0fs)",
+                        self.name, time.monotonic() - self._degraded_since)
+        self._degraded_since = None
+        self._reestablish_noted = False
         # A proven fresh transport clears the one-time permanent-failure grace and any race bookkeeping.
         self._permanent_grace_used = self._teardown_race = False
+
+    def _note_degraded(self) -> None:
+        """Open a degraded episode (idempotent within one episode)."""
+        if self._degraded_since is None:
+            self._degraded_since = time.monotonic()
+            self._reestablish_noted = False
+
+    def _note_session_established(self) -> None:
+        """One INFO line per degraded episode when a new session is up. Informational only, worded
+        so no log reader can mistake it for proof: the session is UNPROVEN until a keepalive
+        interval or a tool call succeeds, which is when ``_mark_session_proven`` writes the
+        "recovered — session healthy again" line. Once per episode, so a flapping transport does
+        not turn this into per-rebuild chatter."""
+        if self._degraded_since is not None and not self._reestablish_noted:
+            self._reestablish_noted = True
+            logger.info("MCP server '%s': session re-established after %.0fs, tools listed — "
+                        "unproven until the next keepalive or tool call",
+                        self.name, time.monotonic() - self._degraded_since)
 
     def mark_suspect(self, reason: str) -> None:
         """Latch a suspicion (no I/O); the NEXT call verifies via :meth:`ensure_healthy` and recycles on failure.
@@ -250,6 +281,7 @@ class MCPServerHealthMixin:
                            self.name, reason, type(root).__name__, root)
             self._suspect_reason = None
             self.mark_suspect(f"health check failed after {reason}")
+            self._note_degraded()
             self.session = None
             self._ready.clear()
             self._reconnect_event.set()

@@ -191,9 +191,10 @@ class MCPServerTransportMixin:
         self.session = session
         if mark_lifecycle:
             self._mark_lifecycle_started()
-        await self._discover_tools()
+        await self._discover_tools_bounded(float(connect_timeout))
         self._ready.set()
         self._ever_connected = True
+        self._note_session_established()
         _core._reset_server_error(self.name)
         # Session is live again: clear any breaker state from a prior outage so the first call after
         # recovery isn't gated on a stale consecutive-failure count (#16788).
@@ -566,6 +567,23 @@ class MCPServerTransportMixin:
                     "endpoint, or pin `transport: sse` if the server is SSE-only.") from sse_exc
 
     # -------------------------------------------------------------- discovery
+
+    async def _discover_tools_bounded(self, connect_timeout: float) -> None:
+        """``_discover_tools`` under ``connect_timeout`` — on EVERY path. ``tools/list`` against a
+        server that answers 200 and then only trickles SSE keepalive comments never returns
+        (httpx's read timeout keeps resetting). Only the very first ``start()`` has a caller whose
+        ``wait_for`` would end that; a reconnect — and equally the self-probe of a server that
+        parked BEFORE it ever connected — runs with nobody waiting: keepalive not started,
+        ``_reconnect_event`` without a listener, the server task silent until process restart.
+        Same-task ``wait_for`` on purpose: the cancellation unwinds ``_rpc_lock`` through its
+        ``async with``, which a detached task would strand. A timeout propagates as a connection
+        failure: counted retry, backoff, park — the existing, logged machinery."""
+        try:
+            await asyncio.wait_for(self._discover_tools(), timeout=connect_timeout)
+        except asyncio.TimeoutError:
+            logger.warning("MCP server '%s': tools/list did not answer within %.0fs — abandoning "
+                           "this transport and retrying", self.name, connect_timeout)
+            raise
 
     # Legacy Streamable-HTTP transport TaskGroup dropped: reconnect immediately instead of backoff/park
     # (#66092).

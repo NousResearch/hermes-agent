@@ -24,10 +24,31 @@ def test_a_repeated_bullet_is_kept_once_in_first_position():
 
     body = _body(build_memory_context_block(raw))
 
-    assert body.count("- alpha") == 1
-    assert body.splitlines()[-4:] == ["- alpha", "- beta", "- gamma"][-3:] or "- alpha" in body
-    # order is the first-occurrence order, not a re-sort
-    assert [l for l in body.splitlines() if l.startswith("- ")] == ["- alpha", "- beta", "- gamma"]
+    # First-occurrence order, not a re-sort, and nothing else moved.
+    assert body.splitlines() == ["- alpha", "- beta", "- gamma"]
+
+
+def test_a_bullet_with_continuation_lines_is_never_touched():
+    """Two entries can share a headline and differ underneath it. Dropping one would re-parent its
+    provenance under the other and invent a record neither provider reported."""
+    raw = ("- prefers draft PRs\n  (logged 12 Jan, source: supermemory)\n"
+           "- prefers draft PRs\n  (logged 3 Feb, source: builtin)\n")
+
+    assert _body(build_memory_context_block(raw)) == raw
+
+
+def test_a_bold_heading_is_not_a_bullet():
+    """``**Preferences**`` starts with ``*``; without the whitespace test it entered the rule and a
+    repeated section heading was silently deleted."""
+    raw = "**Preferences**\n- a\n\n**Preferences**\n- b\n"
+
+    assert _body(build_memory_context_block(raw)) == raw
+
+
+def test_emphasis_and_numbered_items_are_left_as_written():
+    for raw in ("*Important:*\n- x\n*Important:*\n- y\n",
+                "1. ships on Fridays\n2. reviews in the morning\n1. ships on Fridays\n"):
+        assert _body(build_memory_context_block(raw)) == raw
 
 
 def test_bullets_repeated_across_merged_provider_sections_collapse():
@@ -42,12 +63,19 @@ def test_bullets_repeated_across_merged_provider_sections_collapse():
     assert "- ships on Fridays" in body and "- reviews in the morning" in body
 
 
-def test_indentation_does_not_hide_a_duplicate():
-    raw = "- fact\n  - fact\n\t- fact\n"
+def test_indented_duplicates_at_the_same_depth_still_collapse():
+    raw = "  - fact\n  - other\n  - fact\n"
 
     body = _body(build_memory_context_block(raw))
 
-    assert len([l for l in body.splitlines() if l.strip() == "- fact"]) == 1
+    assert body.splitlines() == ["  - fact", "  - other"]
+
+
+def test_a_nested_bullet_is_a_child_and_is_left_alone():
+    """``- fact`` followed by a deeper ``- fact`` is a parent and its child, not a repeat."""
+    raw = "- fact\n  - fact\n"
+
+    assert _body(build_memory_context_block(raw)) == raw
 
 
 def test_structure_and_prose_are_left_exactly_as_written():

@@ -4,7 +4,7 @@
 secret scope is installed, so a Bitwarden-managed ``BUZZ_PRIVATE_KEY`` (only
 ``BWS_ACCESS_TOKEN`` in ``.env``) was invisible to the bare env read and Buzz
 was silently skipped. The fix adds a one-shot ``build_profile_secret_scope``
-consultation to the unscoped fallback of ``_get_scoped_secret``.
+consultation to the unscoped fallback of ``_shared.get_scoped_secret(external_fallback=True)``.
 
 The key values below are synthesized placeholders (never a usable secret).
 """
@@ -20,12 +20,12 @@ _STUB_KEY = os.environ.get("BUZZ_TEST_STUB_KEY") or ("k" * 8)
 
 @pytest.fixture(autouse=True)
 def _reset_unscoped_cache():
-    import plugins.platforms.buzz.adapter as adapter
+    import gateway.platforms._shared as shared
 
-    prev = adapter._UNSCOPED_PROFILE_SECRETS
-    adapter._UNSCOPED_PROFILE_SECRETS = None
+    prev = shared._UNSCOPED_PROFILE_SECRETS
+    shared._UNSCOPED_PROFILE_SECRETS = None
     yield
-    adapter._UNSCOPED_PROFILE_SECRETS = prev
+    shared._UNSCOPED_PROFILE_SECRETS = prev
 
 
 def _install_fake_scope(monkeypatch, secrets):

@@ -27,7 +27,11 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms._shared import (
+    extra_or_secret as _extra_or_secret, seed_extra_from_env as _seed_extra_from_env
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +95,8 @@ def _response_message_id(resp) -> str:
         return uuid.uuid4().hex[:12]
 
 
-def _setting(extra: Dict[str, Any], key: str, env: str, default: str = "") -> str:
-    """config.yaml ``extra[key]`` wins over the env var ``env``."""
-    return extra.get(key) or _get_scoped_secret(env, default)
-
-
 def _server_url(extra: Dict[str, Any]) -> str:
-    return _setting(extra, "server", "NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/")
+    return _extra_or_secret(extra, "server", "NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/")
 
 
 def check_requirements() -> bool:
@@ -107,7 +106,7 @@ def check_requirements() -> bool:
 
 def validate_config(config) -> bool:
     """True when a topic is configured (config.yaml ``extra`` or env)."""
-    return bool(_setting(getattr(config, "extra", {}) or {}, "topic", "NTFY_TOPIC"))
+    return bool(_extra_or_secret(getattr(config, "extra", {}) or {}, "topic", "NTFY_TOPIC"))
 
 
 def is_connected(config) -> bool:
@@ -124,12 +123,12 @@ class NtfyAdapter(BasePlatformAdapter):
         super().__init__(config=config, platform=Platform("ntfy"))
         extra = config.extra or {}
         self._server: str = _server_url(extra)
-        self._topic: str = _setting(extra, "topic", "NTFY_TOPIC")
-        self._publish_topic: str = _setting(extra, "publish_topic", "NTFY_PUBLISH_TOPIC") or self._topic
-        self._token: str = _setting(extra, "token", "NTFY_TOKEN")
+        self._topic: str = _extra_or_secret(extra, "topic", "NTFY_TOPIC")
+        self._publish_topic: str = _extra_or_secret(extra, "publish_topic", "NTFY_PUBLISH_TOPIC") or self._topic
+        self._token: str = _extra_or_secret(extra, "token", "NTFY_TOKEN")
         self._stream_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
-        self._seen_messages: Dict[str, float] = {}  # msg_id -> timestamp (dedup)
+        self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -234,7 +233,7 @@ class NtfyAdapter(BasePlatformAdapter):
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
-        self._seen_messages.clear()
+        self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
 
     # -- Inbound message processing -----------------------------------------
@@ -242,7 +241,7 @@ class NtfyAdapter(BasePlatformAdapter):
     async def _on_message(self, event: Dict[str, Any]) -> None:
         """Process an incoming ntfy message event."""
         msg_id = event.get("id") or uuid.uuid4().hex
-        if self._is_duplicate(msg_id):
+        if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s, skipping", self.name, msg_id)
             return
         if _ECHO_TAG in (event.get("tags") or []):
@@ -267,17 +266,6 @@ class NtfyAdapter(BasePlatformAdapter):
             raw_message=event, timestamp=timestamp)
         logger.debug("[%s] Message on topic %s: %s", self.name, topic, text[:80])
         await self.handle_message(message_event)
-
-    def _is_duplicate(self, msg_id: str) -> bool:
-        """True if this message ID was already seen within the dedup window."""
-        now = time.time()
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
-            self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
-        if msg_id in self._seen_messages:
-            return True
-        self._seen_messages[msg_id] = now
-        return False
 
     # -- Outbound messaging -------------------------------------------------
 
@@ -319,29 +307,17 @@ class NtfyAdapter(BasePlatformAdapter):
 
 
 def _env_enablement() -> dict | None:
-    """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
-
-    Runs BEFORE adapter construction so ``gateway status`` reflects env-only
-    setups without instantiating the HTTP client. ``None`` = not configured.
-    The ``home_channel`` key is lifted by the core hook into a ``HomeChannel``
-    on the ``PlatformConfig`` instead of being merged into ``extra``.
-    """
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from the profile's env before adapter
+    construction; ``None`` when ``NTFY_TOPIC`` is unset."""
     topic = _get_scoped_secret("NTFY_TOPIC", "").strip()
     if not topic:
         return None
-    seed: dict = {
-        "topic": topic, "server": _get_scoped_secret("NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/")}
-    for key, env in (("publish_topic", "NTFY_PUBLISH_TOPIC"), ("token", "NTFY_TOKEN")):
-        value = _get_scoped_secret(env, "").strip()
-        if value:
-            seed[key] = value
-    markdown = _get_scoped_secret("NTFY_MARKDOWN", "").strip().lower()
-    if markdown:
-        seed["markdown"] = markdown in _MARKDOWN_TRUTHY
-    home = _get_scoped_secret("NTFY_HOME_CHANNEL", "").strip() or topic
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": _get_scoped_secret("NTFY_HOME_CHANNEL_NAME", home)}
-    return seed
+    seed = _seed_extra_from_env((
+        ("NTFY_SERVER_URL", "server", lambda v: v.rstrip("/")), ("NTFY_PUBLISH_TOPIC", "publish_topic", None),
+        ("NTFY_TOKEN", "token", None), ("NTFY_MARKDOWN", "markdown", lambda v: v.lower() in _MARKDOWN_TRUTHY),
+    ), home_env="NTFY_HOME_CHANNEL", home_default=topic)
+    return {"topic": topic, "server": seed.pop("server", DEFAULT_SERVER), **seed}
+
 
 
 async def _standalone_send(
@@ -355,15 +331,15 @@ async def _standalone_send(
     OR ``pconfig.extra["markdown"]`` is True.
     """
     if not HTTPX_AVAILABLE:
-        return {"error": "ntfy standalone send: httpx not installed"}
+        return send_error("ntfy standalone send: httpx not installed")
     extra = getattr(pconfig, "extra", {}) or {}
     server = _server_url(extra)
     publish_topic = (
         chat_id or extra.get("publish_topic") or _get_scoped_secret("NTFY_PUBLISH_TOPIC", "").strip()
         or extra.get("topic") or _get_scoped_secret("NTFY_TOPIC", "").strip())
     if not publish_topic:
-        return {"error": "ntfy standalone send: NTFY_TOPIC not configured"}
-    token = _setting(extra, "token", "NTFY_TOKEN")
+        return send_error("ntfy standalone send: NTFY_TOPIC not configured")
+    token = _extra_or_secret(extra, "token", "NTFY_TOKEN")
     markdown_env = _get_scoped_secret("NTFY_MARKDOWN", "").strip().lower()
     markdown = bool(extra.get("markdown")) or markdown_env in _MARKDOWN_TRUTHY
     headers = _publish_headers(token, markdown, auth_first=False)
@@ -372,10 +348,10 @@ async def _standalone_send(
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(f"{server}/{publish_topic}", content=body, headers=headers)
         if resp.status_code >= 300:
-            return {"error": f"ntfy HTTP {resp.status_code}: {resp.text[:200]}"}
+            return send_error(f"ntfy HTTP {resp.status_code}: {resp.text[:200]}")
         return {"success": True, "platform": "ntfy", "chat_id": publish_topic, "message_id": _response_message_id(resp)}
     except Exception as e:
-        return {"error": f"ntfy standalone send failed: {e}"}
+        return send_error(f"ntfy standalone send failed: {e}")
 
 
 def register(ctx) -> None:

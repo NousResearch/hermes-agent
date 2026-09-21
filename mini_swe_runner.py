@@ -8,7 +8,7 @@ trajectory_compressor.py. Supports single tasks and JSONL batch mode.
 
 Usage:
     python mini_swe_runner.py --task "Create a hello world Python script" --env local
-    python mini_swe_runner.py --task "List files in /tmp" --env docker --image python:3.11-slim
+    python mini_swe_runner.py --task "List files in the working directory" --env docker --image python:3.11-slim
     python mini_swe_runner.py --prompts_file prompts.jsonl --output_file trajectories.jsonl --env docker
 """
 
@@ -16,6 +16,7 @@ import importlib
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -96,13 +97,17 @@ HERMES_SYSTEM_SUFFIX = (
 _OPENROUTER_URL = "https://openrouter.ai/api/v1"
 
 
-def create_environment(env_type: str = "local", image: str = "python:3.11-slim", cwd: str = "/tmp", timeout: int = 60, **kwargs):
-    """Create a Hermes execution environment (``local`` ignores ``image``/``kwargs``)."""
+def create_environment(env_type: str = "local", image: str = "python:3.11-slim", cwd: str | None = None, timeout: int = 60, **kwargs):
+    """Create a Hermes execution environment (``local`` ignores ``image``/``kwargs``).
+
+    ``cwd=None`` means the host temp dir locally and the sandbox's own ``/tmp`` inside a container.
+    """
     if env_type == "local":
         from tools.environments.local import LocalEnvironment
-        return LocalEnvironment(cwd=cwd, timeout=timeout)
+        return LocalEnvironment(cwd=cwd or tempfile.gettempdir(), timeout=timeout)
     if env_type not in ("docker", "modal"):
         raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', or 'modal'")
+    cwd = cwd or "/tmp"  # container-side path, not the host temp dir  # no-tmp: ok — container-side path, not the host temp dir
     module = importlib.import_module(f"tools.environments.{env_type}")
     return getattr(module, f"{env_type.capitalize()}Environment")(image=image, cwd=cwd, timeout=timeout, **kwargs)
 
@@ -126,7 +131,7 @@ class MiniSWERunner:
     """Tool-calling agent loop over a Hermes execution environment, emitting Hermes trajectories."""
 
     def __init__(self, model: str = "anthropic/claude-sonnet-4.6", base_url: str = None, api_key: str = None,
-                 env_type: str = "local", image: str = "python:3.11-slim", cwd: str = "/tmp",
+                 env_type: str = "local", image: str = "python:3.11-slim", cwd: str | None = None,
                  max_iterations: int = 15, command_timeout: int = 60, verbose: bool = False):
         self.model, self.max_iterations, self.command_timeout, self.verbose = model, max_iterations, command_timeout, verbose
         self.env_type, self.image, self.cwd = env_type, image, cwd
@@ -349,7 +354,7 @@ def main(
     api_key: str = None,
     env: str = "local",
     image: str = "python:3.11-slim",
-    cwd: str = "/tmp",
+    cwd: str | None = None,
     max_iterations: int = 15,
     timeout: int = 60,
     verbose: bool = False,
@@ -366,7 +371,7 @@ def main(
         api_key: API key (optional, uses env vars)
         env: Environment type - "local", "docker", or "modal"
         image: Docker/Modal image (default: python:3.11-slim)
-        cwd: Working directory (default: /tmp)
+        cwd: Working directory (default: host temp dir locally, /tmp inside a container)
         max_iterations: Maximum tool-calling iterations (default: 15)
         timeout: Command timeout in seconds (default: 60)
         verbose: Enable verbose logging

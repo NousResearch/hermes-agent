@@ -23,6 +23,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `AI_GATEWAY_BASE_URL` | Override AI Gateway base URL (default: `https://ai-gateway.vercel.sh/v1`) |
 | `OPENAI_API_KEY` | API key for custom OpenAI-compatible endpoints (used with `OPENAI_BASE_URL`) |
 | `OPENAI_BASE_URL` | Base URL for custom endpoint (VLLM, SGLang, etc.) |
+| `HERMES_CODEX_BASE_URL` | Route the `openai-codex` (ChatGPT subscription) provider through a proxy instead of the default Codex backend. Applies everywhere the credential is used: pool resolution, auxiliary/raw clients, and 401/429 credential rotation. `model.base_url` under `model.provider: openai-codex` is the secondary override when this is unset. |
 | `LM_API_KEY` | API key for LM Studio (`lmstudio` provider). Often a placeholder for local servers |
 | `LM_BASE_URL` | LM Studio base URL (default: `http://localhost:1234/v1`) |
 | `COPILOT_GITHUB_TOKEN` | GitHub token for Copilot API — first priority (OAuth `gho_*` or fine-grained PAT `github_pat_*`; classic PATs `ghp_*` are **not supported**) |
@@ -69,7 +70,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `AZURE_CLIENT_SECRET` | Service principal secret used by `EnvironmentCredential` |
 | `AZURE_CLIENT_CERTIFICATE_PATH` | Service principal certificate (alternative to `AZURE_CLIENT_SECRET`) |
 | `AZURE_FEDERATED_TOKEN_FILE` | Federated token file path for AKS Workload Identity / OIDC flows |
-| `AZURE_AUTHORITY_HOST` | Sovereign-cloud authority override (e.g. `https://login.microsoftonline.us` for Azure Government). See [Azure Foundry guide](/guides/azure-foundry#sovereign-clouds-government-china) |
+| `AZURE_AUTHORITY_HOST` | Sovereign-cloud authority override (e.g. `https://login.microsoftonline.us` for Azure Government). See [Azure Foundry guide](../guides/azure-foundry.md#sovereign-clouds-government-china) |
 | `IDENTITY_ENDPOINT` / `MSI_ENDPOINT` | Managed Identity endpoint for App Service, Functions, and Container Apps; VMs usually use IMDS instead and do not set these |
 | `HF_TOKEN` | Hugging Face token for Inference Providers ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) |
 | `HF_BASE_URL` | Override Hugging Face base URL (default: `https://router.huggingface.co/v1`) |
@@ -123,7 +124,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `VOICE_TOOLS_OPENAI_KEY` | Preferred OpenAI key for OpenAI speech-to-text and text-to-speech providers |
 | `HERMES_LOCAL_STT_COMMAND` | Optional local speech-to-text command template. Supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders |
 | `HERMES_LOCAL_STT_LANGUAGE` | Default language hint for STT. Used by the `local` (faster-whisper) provider, `HERMES_LOCAL_STT_COMMAND`, the local `whisper` CLI fallback (default: `en`), Groq, and xAI when no per-provider `language` is set in `config.yaml` |
-| `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). Also scopes the gateway PID file and systemd service name, so multiple installations can run concurrently |
+| `HERMES_HOME` | Override Hermes config directory (default: `~/.hermes`). A literal `~` or `$VAR` in the value is expanded (fish does not expand `~` inside `VAR=~/…`), so it never resolves relative to the current directory. Also scopes the gateway PID file and systemd service name, so multiple installations can run concurrently |
 | `HERMES_GIT_BASH_PATH` | **Windows only.** Override `bash.exe` discovery for the terminal tool. Points at any bash — full Git-for-Windows install, WSL bash via symlink, MSYS2, Cygwin. The installer sets this automatically to the PortableGit it provisioned. See the [Windows (Native) Guide](../user-guide/windows-native.md#how-hermes-runs-shell-commands-on-windows) |
 | `HERMES_DISABLE_WINDOWS_UTF8` | **Windows only.** Set to `1` to disable the UTF-8 stdio shim (`configure_windows_stdio()`) and fall back to the console's locale code page. Useful for bisecting encoding bugs; rarely the right setting in normal operation |
 | `HERMES_KANBAN_HOME` | Override the shared Hermes root that anchors the kanban board (db + workspaces + worker logs). Falls back to `get_default_hermes_root()` (the parent of any active profile). Useful for tests and unusual deployments |
@@ -138,13 +139,13 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
-| `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
+| `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing). Per-profile under multiplexing: set it in the served profile's `.env`. |
+| `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL. Also the only non-production host a Portal response may name: when the Portal's returned inference URL matches this override it is accepted and persisted instead of being healed to production. Per-profile under multiplexing. |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |
 | `HERMES_NOUS_TIMEOUT_SECONDS` | HTTP timeout for Nous credential / token flows |
 | `HERMES_DUMP_REQUESTS` | Dump API request payloads to log files (`true`/`false`) |
 | `HERMES_PREFILL_MESSAGES_FILE` | Path to a JSON file of ephemeral prefill messages injected at API-call time |
-| `HERMES_TIMEZONE` | IANA timezone override (for example `America/New_York`) |
+| `HERMES_TIMEZONE` | IANA timezone override (for example `America/New_York`). On Linux/macOS it is also exported as `TZ` to `execute_code` children; on Windows those children keep the OS zone instead, because the Windows C runtime only understands POSIX-form `TZ` strings and mis-parses an IANA name into a wrong offset |
 
 ## Tool APIs
 
@@ -180,14 +181,14 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `GROQ_BASE_URL` | Override the Groq OpenAI-compatible STT endpoint |
 | `STT_OPENAI_MODEL` | Override the OpenAI STT model (default: `whisper-1`) |
 | `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
-| `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) |
+| `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) and the desktop app's update check (`GH_TOKEN` also honoured; without either, the desktop falls back to the `gh` CLI login, then anonymous) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
 | `HINDSIGHT_API_KEY` | Hindsight API key for graph-aware persistent memory ([hindsight.vectorize.io](https://hindsight.vectorize.io)) |
 | `HINDSIGHT_API_URL` | Base URL for the Hindsight API (default: `https://api.hindsight.vectorize.io`) |
 | `HINDSIGHT_TIMEOUT` | Timeout in seconds for Hindsight memory-provider API calls (default: `60`). Bump this if your Hindsight instance is slow to respond during `/sync` or `on_session_switch` and you're seeing timeouts in `errors.log`. |
 | `MEM0_API_KEY` | Mem0 Platform API key for semantic persistent memory ([app.mem0.ai](https://app.mem0.ai)) |
-| `MEM0_MODE` | Mem0 backend mode: `platform` (default) or `oss` — see [Memory Providers](/user-guide/features/memory-providers) |
+| `MEM0_MODE` | Mem0 backend mode: `platform` (default) or `oss` — see [Memory Providers](../user-guide/features/memory-providers.md) |
 | `MEM0_HOST` | Base URL of a self-hosted Mem0 server (switches the plugin off the Platform API) |
 | `MEM0_USER_ID` | Override the user id Mem0 memories are stored under |
 | `MEM0_AGENT_ID` | Override the agent id Mem0 memories are tagged with |
@@ -216,7 +217,7 @@ Secrets consumed by specific bundled / optional skills. Each is only needed if y
 
 ### Langfuse Observability
 
-Environment variables for the bundled [`observability/langfuse`](/user-guide/features/built-in-plugins#observabilitylangfuse) plugin. Set these in `~/.hermes/.env`. The plugin must also be enabled (`hermes plugins enable observability/langfuse`, or check the box in `hermes plugins`) before any of these take effect.
+Environment variables for the bundled [`observability/langfuse`](../user-guide/features/built-in-plugins.md#observabilitylangfuse) plugin. Set these in `~/.hermes/.env`. The plugin must also be enabled (`hermes plugins enable observability/langfuse`, or check the box in `hermes plugins`) before any of these take effect.
 
 | Variable | Description |
 |----------|-------------|
@@ -227,12 +228,13 @@ Environment variables for the bundled [`observability/langfuse`](/user-guide/fea
 | `HERMES_LANGFUSE_RELEASE` | Release/version tag on traces |
 | `HERMES_LANGFUSE_SAMPLE_RATE` | SDK sampling rate 0.0–1.0 (default: `1.0`) |
 | `HERMES_LANGFUSE_MAX_CHARS` | Per-field truncation for serialized payloads (default: `12000`) |
+| `HERMES_LANGFUSE_MAX_DEPTH` | Nesting depth kept in captured tool inputs/outputs before values become `<max-depth>` (default: `4`; invalid values warn and keep the default) |
 | `HERMES_LANGFUSE_DEBUG` | `true` enables verbose plugin logging to `agent.log` |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | Standard Langfuse SDK names. Accepted as fallbacks when the `HERMES_LANGFUSE_*` equivalents are unset. |
 
 ### Nous Tool Gateway
 
-These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) for paid Nous subscribers or self-hosted gateway deployments. Most users don't need to set these — the gateway is configured automatically via `hermes model` or `hermes tools`.
+These variables configure the [Tool Gateway](../user-guide/features/tool-gateway.md) for paid Nous subscribers or self-hosted gateway deployments. Most users don't need to set these — the gateway is configured automatically via `hermes model` or `hermes tools`.
 
 | Variable | Description |
 |----------|-------------|
@@ -346,6 +348,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `DISCORD_AUTO_THREAD` | Auto-thread long replies when supported |
 | `DISCORD_ALLOW_ANY_ATTACHMENT` | When `true`, accept attachments of any file type (not just the built-in PDF/text/zip/office allowlist). Unknown types are cached and surfaced to the agent as a local path so it can inspect them via `terminal` / `read_file` / `ffprobe`. Default `false`. |
 | `DISCORD_MAX_ATTACHMENT_BYTES` | Maximum bytes per attachment the gateway will cache. Default `33554432` (32 MiB). Set to `0` for no cap (attachments are held in memory while being written). |
+| `DISCORD_FREE_RESPONSE_AUTO_THREAD` | When `true`, free-response channels (listed in `DISCORD_FREE_RESPONSE_CHANNELS`) also auto-create a thread per top-level message. Default `false` — free-response channels reply inline. Requires `DISCORD_AUTO_THREAD=true`; `DISCORD_NO_THREAD_CHANNELS` still wins. |
 | `DISCORD_REACTIONS` | Enable emoji reactions on messages during processing (default: `true`) |
 | `DISCORD_IGNORED_CHANNELS` | Comma-separated channel IDs where the bot never responds |
 | `DISCORD_NO_THREAD_CHANNELS` | Comma-separated channel IDs where bot responds without auto-threading |
@@ -354,6 +357,12 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `DISCORD_ALLOW_MENTION_ROLES` | Allow the bot to ping `@role` mentions (default: `false`). |
 | `DISCORD_ALLOW_MENTION_USERS` | Allow the bot to ping individual `@user` mentions (default: `true`). |
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | Ping the author when replying to their message (default: `true`). |
+| `DISCORD_MISSED_MESSAGE_BACKFILL` | Env fallback for `discord.missed_message_backfill.enabled`: replay messages missed while disconnected (default: `false`). See [Missed message backfill](../user-guide/messaging/discord.md#discordmissed_message_backfill). |
+| `DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS` | Comma-separated channel IDs to scan (fallback for `discord.missed_message_backfill.channels`; empty = `discord.free_response_channels`, `*` = every reachable text channel). |
+| `DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS` | How far back a scan may look (fallback for `window_seconds`, default `21600`, minimum `60`). |
+| `DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT` | Maximum messages fetched per channel per scan (fallback for `limit`, default `100`, 1–500). |
+| `DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES` | Maximum messages re-dispatched per scan (fallback for `max_dispatches`, default `10`, 1–100). |
+| `DISCORD_MISSED_MESSAGE_BACKFILL_MAX_ATTEMPTS` | Lifetime re-dispatch ceiling for a single message across reconnects (fallback for `max_attempts`, default `3`, 1–100). |
 | `SLACK_BOT_TOKEN` | Slack bot token (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, required for Socket Mode) |
 | `SLACK_ALLOWED_USERS` | Comma-separated Slack user IDs |
@@ -380,6 +389,8 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `WHATSAPP_MODE` | `bot` (separate number) or `self-chat` (message yourself) |
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |
 | `WHATSAPP_ALLOW_ALL_USERS` | Allow all WhatsApp senders without an allowlist (`true`/`false`) |
+| `WHATSAPP_GROUP_POLICY` | Group intake: `pairing` (default, forwards nothing from groups), `allowlist` (group JIDs below), `open` (every group; participants still need `WHATSAPP_ALLOWED_USERS`, pairing, or `WHATSAPP_ALLOW_ALL_USERS`), or `disabled` |
+| `WHATSAPP_GROUP_ALLOWED_USERS` | Comma-separated group JIDs (e.g. `120363001234567890@g.us`) admitted under `WHATSAPP_GROUP_POLICY=allowlist` |
 | `WHATSAPP_HOME_CHANNEL` | Default chat ID for cron / notification delivery. |
 | `WHATSAPP_HOME_CHANNEL_NAME` | Display name for the WhatsApp home channel. |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |
@@ -508,19 +519,19 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MATRIX_ALLOW_ALL_USERS` | Allow any Matrix user to trigger the bot (dev only). |
 | `MATRIX_HOME_CHANNEL` | Default room ID for cron / notification delivery. |
 | `MATRIX_HOME_CHANNEL_NAME` | Display name for the Matrix home room. |
-| `MATRIX_ALLOWED_ROOMS` | Comma-separated Matrix room IDs allowed to trigger bot responses |
+| `MATRIX_ALLOWED_ROOMS` | Comma-separated Matrix room IDs allowed to trigger bot responses. Does not apply to rooms auto-classified as DMs (any room with 2 or fewer joined members, regardless of name) — those always respond. |
 | `MATRIX_HOME_ROOM` | Room ID for proactive message delivery (e.g. `!abc123:matrix.org`) |
 | `MATRIX_ENCRYPTION` | Enable end-to-end encryption (`true`/`false`, default: `false`) |
 | `MATRIX_E2EE_MODE` | Matrix E2EE behavior: `off`, `optional`, or `required`. Overrides `MATRIX_ENCRYPTION` when set. |
 | `MATRIX_DEVICE_ID` | Stable Matrix device ID for E2EE persistence across restarts (e.g. `HERMES_BOT`). Without this, E2EE keys rotate every startup and historic-room decrypt breaks. |
 | `MATRIX_REACTIONS` | Enable processing-lifecycle emoji reactions on inbound messages (default: `true`). Set to `false` to disable. |
-| `MATRIX_REQUIRE_MENTION` | Require `@mention` in rooms (default: `true`). Set to `false` to respond to all messages. |
-| `MATRIX_FREE_RESPONSE_ROOMS` | Comma-separated room IDs where bot responds without `@mention` |
+| `MATRIX_REQUIRE_MENTION` | Require `@mention` in rooms (default: `true`). Set to `false` to respond to all messages. A room with 2 or fewer joined members is auto-classified as a DM and never requires a mention, regardless of this setting — add a third member if you need a deliberately-2-person room to behave like a regular room. |
+| `MATRIX_FREE_RESPONSE_ROOMS` | Comma-separated room IDs where bot responds without `@mention`. Rooms auto-classified as DMs (2 or fewer joined members) already respond without a mention and ignore this list. |
 | `MATRIX_IGNORE_USER_PATTERNS` | Comma-separated regular expressions for Matrix bridge/appservice ghost user IDs to ignore |
 | `MATRIX_PROCESS_NOTICES` | Process inbound Matrix `m.notice` events (default: `false`) |
 | `MATRIX_SESSION_SCOPE` | Matrix session scope for project rooms: `auto`, `room`, or `thread` (default: `auto`) |
 | `MATRIX_ALLOW_ROOM_MENTIONS` | Allow outbound `@room` mentions to notify all room members (default: `false`) |
-| `MATRIX_AUTO_THREAD` | Auto-create threads for room messages (default: `true`) |
+| `MATRIX_AUTO_THREAD` | Auto-create threads for room messages (default: `true`). Does not apply to rooms auto-classified as DMs (2 or fewer joined members) — those follow `MATRIX_DM_AUTO_THREAD` instead. |
 | `MATRIX_DM_AUTO_THREAD` | Auto-create threads for DM messages in Matrix (default: `false`) |
 | `MATRIX_DM_MENTION_THREADS` | Create a thread when bot is `@mentioned` in a DM (default: `false`) |
 | `MATRIX_APPROVAL_REQUIRE_SENDER` | Require approval/model-picker reactions to come from the original requester when known (default: `true`) |
@@ -540,17 +551,17 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `API_SERVER_PORT` | Port for the API server (default: `8642`) |
 | `API_SERVER_HOST` | Host/bind address for the API server (default: `127.0.0.1`). `API_SERVER_KEY` is still required on loopback; use a narrow `API_SERVER_CORS_ORIGINS` allowlist for browser access. |
 | `API_SERVER_MODEL_NAME` | Model name advertised on `/v1/models`. Defaults to the profile name (or `hermes-agent` for the default profile). Useful for multi-user setups where frontends like Open WebUI need distinct model names per connection. |
-| `GATEWAY_PROXY_URL` | URL of a remote Hermes API server to forward messages to ([proxy mode](/user-guide/messaging/matrix#proxy-mode-e2ee-on-macos)). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Also configurable via `gateway.proxy_url` in `config.yaml`. |
+| `GATEWAY_PROXY_URL` | URL of a remote Hermes API server to forward messages to ([proxy mode](../user-guide/messaging/matrix.md#proxy-mode-e2ee-on-macos)). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Also configurable via `gateway.proxy_url` in `config.yaml`. |
 | `GATEWAY_PROXY_KEY` | Bearer token for authenticating with the remote API server in proxy mode. Must match `API_SERVER_KEY` on the remote host. |
 | `MESSAGING_CWD` | Deprecated compatibility fallback for gateway working directory. Prefer `terminal.cwd` in `config.yaml`. |
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
-| `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`) |
+| `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`). Also configurable via `gateway.allow_all_users` in `config.yaml`; the env var wins when both are set. |
 
 ### Web Dashboard & Hermes Desktop
 
-Auth for the [web dashboard](/user-guide/features/web-dashboard) and for connecting [Hermes Desktop to a remote backend](/user-guide/features/web-dashboard#connecting-hermes-desktop-to-a-remote-backend). Per the secrets-only convention, credentials belong in `~/.hermes/.env`; the OAuth `client_id` is better set under `dashboard.oauth` in `config.yaml` (env wins when set).
+Auth for the [web dashboard](../user-guide/features/web-dashboard.md) and for connecting [Hermes Desktop to a remote backend](../user-guide/features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend). Per the secrets-only convention, credentials belong in `~/.hermes/.env`; the OAuth `client_id` is better set under `dashboard.oauth` in `config.yaml` (env wins when set).
 
-Three dashboard-auth providers ship in the box. For a remote Hermes Desktop connection or any internet-facing dashboard, the recommended provider is **OAuth (Nous Portal)** — set `HERMES_DASHBOARD_OAUTH_CLIENT_ID` (provision it with `hermes dashboard register`). The bundled **username/password** provider (`HERMES_DASHBOARD_BASIC_AUTH_*`) is the quickest option for a backend on a trusted LAN or behind a VPN, but is not suitable for direct public-internet exposure. To authenticate against your own identity provider, use the **self-hosted OIDC** provider (`HERMES_DASHBOARD_OIDC_*`). Either way, a non-loopback bind (`hermes dashboard --host 0.0.0.0`) engages the auth gate. See [Web Dashboard → Authentication](/user-guide/features/web-dashboard#authentication-gated-mode) for the full picture.
+Three dashboard-auth providers ship in the box. For a remote Hermes Desktop connection or any internet-facing dashboard, the recommended provider is **OAuth (Nous Portal)** — set `HERMES_DASHBOARD_OAUTH_CLIENT_ID` (provision it with `hermes dashboard register`). The bundled **username/password** provider (`HERMES_DASHBOARD_BASIC_AUTH_*`) is the quickest option for a backend on a trusted LAN or behind a VPN, but is not suitable for direct public-internet exposure. To authenticate against your own identity provider, use the **self-hosted OIDC** provider (`HERMES_DASHBOARD_OIDC_*`). Either way, a non-loopback bind (`hermes dashboard --host 0.0.0.0`) engages the auth gate. See [Web Dashboard → Authentication](../user-guide/features/web-dashboard.md#authentication-gated-mode) for the full picture.
 
 | Variable | Description |
 |----------|-------------|
@@ -560,6 +571,7 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 | `HERMES_DASHBOARD_BASIC_AUTH_SECRET` | HMAC key (32+ bytes, base64/hex/raw) signing the basic provider's stateless session tokens. Set explicitly so sessions survive restarts / span multiple workers; blank → random per-process (you'll be logged out on every restart). Overrides `dashboard.basic_auth.secret`. |
 | `HERMES_DASHBOARD_BASIC_AUTH_TTL_SECONDS` | Access-token lifetime for the basic provider (default 12h). Overrides `dashboard.basic_auth.session_ttl_seconds`. |
 | `HERMES_DASHBOARD_OAUTH_CLIENT_ID` | OAuth client id (`agent:{instance_id}`) for the gated/public dashboard, activating the Nous (`plugins/dashboard_auth/nous`) provider. Overrides `dashboard.oauth.client_id`. Provision it with `hermes dashboard register`. |
+| `HERMES_DASHBOARD_SESSION_TOKEN` | Per-process session token for the dashboard's sensitive `/api` routes, minted by the launcher that spawns `hermes dashboard` (Desktop shell, link-style integrations). A value injected by the parent process is kept as-is: a `HERMES_DASHBOARD_SESSION_TOKEN` line in `~/.hermes/.env` does not replace it. Unset, the server mints a fresh token per start. |
 | `HERMES_DASHBOARD_PUBLIC_URL` | Complete public URL the dashboard is reached at behind a reverse proxy. It controls OAuth callback construction, adds its exact hostname to the HTTP Host/WebSocket Origin guard, and requires the auth gate for non-loopback public hosts even when the backend binds to loopback. Overrides `dashboard.public_url`. |
 | `HERMES_DASHBOARD_OIDC_ISSUER` | OIDC issuer URL for the bundled self-hosted OIDC provider (`plugins/dashboard_auth/self_hosted`). Required to activate it. Overrides `dashboard.oauth.self_hosted.issuer`. |
 | `HERMES_DASHBOARD_OIDC_CLIENT_ID` | Public OIDC client id (authorization-code + PKCE) for the self-hosted OIDC provider. Required to activate it. Overrides `dashboard.oauth.self_hosted.client_id`. |
@@ -575,7 +587,7 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 
 ### Microsoft Graph (Teams Meetings)
 
-App-only credentials for the Microsoft Graph REST client used by the upcoming Teams meeting summary pipeline. See [Register a Microsoft Graph application](/guides/microsoft-graph-app-registration) for the Azure portal walkthrough and the exact API permissions required.
+App-only credentials for the Microsoft Graph REST client used by the upcoming Teams meeting summary pipeline. See [Register a Microsoft Graph application](../guides/microsoft-graph-app-registration.md) for the Azure portal walkthrough and the exact API permissions required.
 
 | Variable | Description |
 |----------|-------------|
@@ -587,7 +599,7 @@ App-only credentials for the Microsoft Graph REST client used by the upcoming Te
 
 ### Microsoft Graph Webhook Listener
 
-Inbound change-notification listener for Graph events (Teams meetings, calendar, chat, etc.). See [Microsoft Graph Webhook Listener](/user-guide/messaging/msgraph-webhook) for setup and security hardening.
+Inbound change-notification listener for Graph events (Teams meetings, calendar, chat, etc.). See [Microsoft Graph Webhook Listener](../user-guide/messaging/msgraph-webhook.md) for setup and security hardening.
 
 | Variable | Description |
 |----------|-------------|
@@ -599,7 +611,7 @@ Inbound change-notification listener for Graph events (Teams meetings, calendar,
 
 ### Teams Meeting Summary Delivery
 
-Only used when the [`teams_pipeline` plugin](/user-guide/messaging/msgraph-webhook) is enabled. Settings are also configurable under `platforms.teams.extra` in `config.yaml` — env vars take priority when both are set. See [Microsoft Teams → Meeting Summary Delivery](/user-guide/messaging/teams#meeting-summary-delivery-teams-meeting-pipeline).
+Only used when the [`teams_pipeline` plugin](../user-guide/messaging/msgraph-webhook.md) is enabled. Settings are also configurable under `platforms.teams.extra` in `config.yaml` — env vars take priority when both are set. See [Microsoft Teams → Meeting Summary Delivery](../user-guide/messaging/teams.md#meeting-summary-delivery-teams-meeting-pipeline).
 
 | Variable | Description |
 |----------|-------------|
@@ -612,7 +624,7 @@ Only used when the [`teams_pipeline` plugin](/user-guide/messaging/msgraph-webho
 
 ### LINE Messaging API
 
-Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messaging Gateway → LINE](/user-guide/messaging/line) for full setup.
+Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messaging Gateway → LINE](../user-guide/messaging/line.md) for full setup.
 
 | Variable | Description |
 |----------|-------------|
@@ -649,11 +661,11 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `NTFY_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: ntfy`. |
 | `NTFY_HOME_CHANNEL_NAME` | Human label for the home channel (defaults to the topic name). |
 
-See [the ntfy messaging guide](/user-guide/messaging/ntfy) — particularly the **identity model** section — before deploying with untrusted topics.
+See [the ntfy messaging guide](../user-guide/messaging/ntfy.md) — particularly the **identity model** section — before deploying with untrusted topics.
 
 ### IRC
 
-Connect Hermes to an IRC server. No external dependencies. See [the IRC messaging guide](/user-guide/messaging/irc).
+Connect Hermes to an IRC server. No external dependencies. See [the IRC messaging guide](../user-guide/messaging/irc.md).
 
 | Variable | Description |
 |----------|-------------|
@@ -670,7 +682,7 @@ Connect Hermes to an IRC server. No external dependencies. See [the IRC messagin
 
 ### SimpleX
 
-Connect Hermes to a [SimpleX Chat](https://simplex.chat/) network via a local `simplex-chat` daemon. See [the SimpleX messaging guide](/user-guide/messaging/simplex).
+Connect Hermes to a [SimpleX Chat](https://simplex.chat/) network via a local `simplex-chat` daemon. See [the SimpleX messaging guide](../user-guide/messaging/simplex.md).
 
 | Variable | Description |
 |----------|-------------|
@@ -684,7 +696,7 @@ Connect Hermes to a [SimpleX Chat](https://simplex.chat/) network via a local `s
 
 ### Photon
 
-Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other Spectrum platforms) via the Node sidecar. See [the Photon messaging guide](/user-guide/messaging/photon).
+Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other Spectrum platforms) via the Node sidecar. See [the Photon messaging guide](../user-guide/messaging/photon.md).
 
 | Variable | Description |
 |----------|-------------|
@@ -724,7 +736,7 @@ Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other
 
 ### Microsoft Teams (adapter)
 
-The Microsoft Teams platform adapter (Bot Framework / Azure AD), distinct from the [Microsoft Graph (Teams Meetings)](#microsoft-graph-teams-meetings) integration above. See [the Teams messaging guide](/user-guide/messaging/teams).
+The Microsoft Teams platform adapter (Bot Framework / Azure AD), distinct from the [Microsoft Graph (Teams Meetings)](#microsoft-graph-teams-meetings) integration above. See [the Teams messaging guide](../user-guide/messaging/teams.md).
 
 | Variable | Description |
 |----------|-------------|
@@ -795,7 +807,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_NEMO_RELAY_PLUGINS_TOML` | Explicit path to the standard NeMo Relay `plugins.toml` loaded process-wide by Hermes core. When unset, Hermes does not initialize Relay middleware, dynamic plugins, or exporters. The removed `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables are ignored; configure those outputs in the selected file instead. See [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about). |
+| `HERMES_NEMO_RELAY_PLUGINS_TOML` | Explicit path to the standard NeMo Relay `plugins.toml` loaded process-wide by Hermes core. When unset, Hermes does not initialize Relay middleware, dynamic plugins, or exporters. The removed `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables are ignored (a `.env` that still carries them exports nothing); `hermes update` / `hermes migrate relay` converts them into `<hermes home>/relay-plugins.toml` and sets this variable — see the [migration note and full example](../user-guide/features/built-in-plugins.md#nemo-relay-native-integration-migration-note). See [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about). |
 
 ## Agent Behavior
 
@@ -827,6 +839,8 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_AGENT_TIMEOUT` | Gateway inactivity timeout for a running agent in seconds (default: `1800`, 30 minutes). Resets on every tool call and streamed token. Set to `0` to disable. |
 | `HERMES_GATEWAY_MAX_STARTS` | Respawn-storm circuit breaker: maximum gateway (re)starts allowed within the window before an exponential backoff is slept to break the storm (default: `5`, `0` disables). Also configurable via `gateway.respawn_storm.max_starts` in `config.yaml`. |
 | `HERMES_GATEWAY_START_WINDOW_S` | Respawn-storm breaker window in seconds (default: `120`). Also configurable via `gateway.respawn_storm.window_seconds` in `config.yaml`. |
+| `HERMES_STARTUP_WATCHDOG` | Startup-liveness watchdog for `hermes gateway run`: if the process does not reach a live event loop within the timeout, holds no progress lease and shows no CPU progress, it dumps every thread's stack to `logs/gateway-startup-watchdog.log` and exits with code `75` so the service supervisor (systemd, s6, Windows task) restarts it. Set to `0` to opt out. Env-only because `config.yaml` parsing is itself inside the watched window; `gateway.startup_watchdog: false` in `config.yaml` is bridged into this variable when unset. |
+| `HERMES_STARTUP_WATCHDOG_TIMEOUT_S` | Startup watchdog timeout in seconds (default: `300`). Slow-but-alive phases (state.db schema migrations, repair, construction-time archive/prune/VACUUM) hold their own progress leases, so raise this only when a large install's startup is legitimately longer than five minutes *outside* those phases (many multiplexed profiles, thousands of skills on a slow disk). Bridged from `gateway.startup_watchdog_timeout_seconds` in `config.yaml` when unset. |
 | `HERMES_AGENT_TIMEOUT_WARNING` | Gateway: send a warning message after this many seconds of inactivity (default: 75% of `HERMES_AGENT_TIMEOUT`). |
 | `HERMES_AGENT_NOTIFY_INTERVAL` | Gateway: interval in seconds between progress notifications on long-running agent turns. |
 | `HERMES_CHECKPOINT_TIMEOUT` | Timeout for filesystem checkpoint creation in seconds (default: `30`). |
@@ -843,7 +857,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_DISABLE_FILE_STATE_GUARD` | Set to `1` to turn off the "file changed since you read it" guard on `patch`/`write_file`. |
 | `HERMES_BUNDLED_SKILLS` | Comma-separated override for the list of bundled skills loaded at startup. |
 | `HERMES_OPTIONAL_SKILLS` | Comma-separated list of optional-skill names to auto-install on first run. |
-| `HERMES_DEBUG_INTERRUPT` | Set to `1` to log detailed interrupt/cancel tracing to `agent.log`. |
+| `HERMES_DEBUG_INTERRUPT` | Set to `1`/`true` to log detailed interrupt/cancel tracing to `agent.log`; `0`/`false`/`off` (or unset) keep it off. |
 | `HERMES_DUMP_REQUESTS` | Dump API request payloads to log files (`true`/`false`) |
 | `HERMES_DUMP_REQUEST_STDOUT` | Dump API request payloads to stdout instead of log files. |
 | `HERMES_OAUTH_TRACE` | Set to `1` to log OAuth token exchange and refresh attempts. Includes redacted timing info. |
@@ -928,7 +942,7 @@ fallback_providers:
 
 The older top-level `fallback_model` single-provider shape is still read for backward compatibility, but new configuration should use `fallback_providers`. For task-specific auxiliary policy, use `auxiliary.<task>.fallback_chain` in `config.yaml`; there is no environment variable equivalent.
 
-See [Fallback Providers](/user-guide/features/fallback-providers) for full details.
+See [Fallback Providers](../user-guide/features/fallback-providers.md) for full details.
 
 ## Provider Routing (config.yaml only)
 
@@ -944,5 +958,5 @@ These go in `~/.hermes/config.yaml` under the `provider_routing` section:
 | `data_collection` | `"allow"` (default) or `"deny"` to exclude data-storing providers |
 
 :::tip
-Use `hermes config set` to set environment variables — it automatically saves them to the right file (`.env` for secrets, `config.yaml` for everything else).
+Use `hermes config set` to set environment variables — every `UPPER_SNAKE` name on this page (and any other environment-shaped name) is saved to `.env`, the same file the setup flows write and the one the runtime reads; it is never written into `config.yaml`. Names on the env writer's denylist (`HERMES_HOME`, `HERMES_YOLO_MODE`, `PATH`, …) are refused. Dotted `config.yaml` settings go to `config.yaml`.
 :::

@@ -188,6 +188,38 @@ jobs:
       - name: Forbid in-tree use of plugin-compat pointers
         run: python scripts/check_compat_pointers.py
 
+      # /tmp is not portable (Termux has none, native Windows has none, macOS aliases it to
+      # /private/tmp, Linux mounts it as a small tmpfs). Production code resolves scratch space
+      # through the scratch-dir helper; skills, docs and prompts must not teach the model a
+      # literal /tmp either. `no-tmp: ok — <why>` marks a deliberate line; _BASELINE in the
+      # script is the burn-down list of pre-existing hits.
+      - name: Forbid literal /tmp paths outside the baseline
+        run: python scripts/check_no_tmp_literals.py
+
+      # The OS lanes import only files carrying the matching marker, so a test that fakes
+      # macOS (is_macos -> True, sys.platform -> "darwin") without `macos_only` is green on
+      # Linux over a faked branch and never runs on macOS (#111866, AGENTS.md § Don't fake the host OS).
+      - name: Forbid unmarked macOS fakes in tests
+        run: python scripts/ci/check_os_marker_fakes.py
+
+      # Advisory: profile-scope hazard shapes on the lines this PR adds (child env from os.environ,
+      # raw os.getenv of a platform credential, HOME-only RPC binding, bare-PID liveness). One
+      # process serves many profiles; every pattern leaked the launch profile at least once. Printed
+      # into the log for the reviewer; never fails the job (root AGENTS.md § Code Shape Rules).
+      - name: Profile-scope patterns on added lines (advisory)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          PR_HEAD: "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/origin/pr-head"
+        run: |
+          git fetch --no-tags --deepen=200 origin "${{ github.base_ref }}" "$PR_HEAD"
+          for i in 1 2 3; do
+            git merge-base "origin/${{ github.base_ref }}" origin/pr-head >/dev/null 2>&1 && break
+            git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" "$PR_HEAD"
+          done
+          python scripts/check_profile_scope_patterns.py --base "origin/${{ github.base_ref }}" --head origin/pr-head
+
       # Advisory: dropped public names / methods / test defs vs the PR base, printed into the log.
       # A refactor that silently removes a public symbol breaks plugins that import it; the Sep 2026
       # decomposition opened with 1,703 such drops that reviewers had to find by hand.

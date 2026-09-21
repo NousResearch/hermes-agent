@@ -20,11 +20,7 @@ import {
 } from '@hermes/plugin-sdk'
 
 // Native completion notification.
-import {
-  bindCompletionNotify,
-  type CompletionEvent,
-  onKanbanEventsFrame
-} from './completion-notify'
+import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
 import type {
   BoardExportResult,
   BoardImportResult,
@@ -230,7 +226,6 @@ export function bindApi(
       clearTimeout(boardRefreshTimer)
       boardRefreshTimer = null
     }
-
     rest = null
     os = null
   }

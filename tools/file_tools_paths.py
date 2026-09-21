@@ -77,6 +77,11 @@ def _uses_container_paths(task_id: str = "default") -> bool:
         return env_type in _CONTAINER_PATH_BACKENDS_FALLBACK
 
 
+def container_backend_for_task(task_id: str = "default") -> str | None:
+    """The task's backend name when its file paths belong to a container, else None."""
+    return _terminal_env_type_for_task(task_id) if _uses_container_paths(task_id) else None
+
+
 def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
     """Normalize path syntax without following host symlinks: container paths are
     meaningful inside the sandbox, and a host-side ``/workspace`` symlink must not rewrite them."""

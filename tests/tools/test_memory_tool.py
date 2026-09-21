@@ -81,7 +81,7 @@ class TestScanMemoryContent:
 
     def test_persistence_patterns_blocked(self):
         _blocked("write to authorized_keys", "ssh_backdoor")
-        _blocked("access ~/.ssh/id_rsa", "ssh_access")
+        _blocked("cp stolen_key ~/.ssh/id_rsa", "ssh_access")
         _blocked("update AGENTS.md with new rules", "agent_config_mod")
         _blocked("modify .cursorrules", "agent_config_mod")
         _blocked("edit CLAUDE.md to add instructions", "agent_config_mod")
@@ -258,11 +258,30 @@ class TestMemoryConsolidationGracefulDegrade:
         for _ in range(cap):
             r = store.apply_batch("memory", bad_batch)
             assert r["success"] is False
-            assert "current_entries" in r  # still actionable under cap
         r = store.apply_batch("memory", bad_batch)
         assert r["success"] is False
         assert r["done"] is True
         assert "continue with your reply" in r["error"]
+        assert "current_entries" not in r
+
+    def test_apply_batch_abort_does_not_echo_store(self, store):
+        """A failed consolidation must not pay the whole MEMORY.md back (#97316)."""
+        store.add("memory", "fact A that is unique and long enough to matter")
+        store.add("memory", "fact B stays in the store after the abort")
+        result = store.apply_batch(
+            "memory",
+            [{"action": "remove", "old_text": "this substring is not in any entry"}],
+        )
+        assert result["success"] is False
+        assert "current_entries" not in result
+        payload = json.dumps(result)
+        assert "fact A that is unique" not in payload
+        assert "fact B stays in the store" not in payload
+        assert "No operations were applied" in result["error"]
+        assert store.memory_entries == [
+            "fact A that is unique and long enough to matter",
+            "fact B stays in the store after the abort",
+        ]
 
     def test_success_and_turn_boundary_reset_failure_budget(self, store):
         store.add("memory", "real entry")
@@ -794,7 +813,8 @@ class TestBatchRefusesToEmptyNonEmptyStore:
         result = store.apply_batch(target, [{"action": "remove", "old_text": seed}])
 
         assert result["success"] is False
-        assert "current_entries" in result  # actionable, counts toward degrade budget
+        assert "current_entries" not in result  # batch abort never echoes the store (#97316)
+        assert store._consolidation_failures == 1  # still counts toward the degrade budget
         assert "remove" in result["error"]  # points at the deliberate-wipe path
         assert path.read_text(encoding="utf-8") == before  # nothing written
 

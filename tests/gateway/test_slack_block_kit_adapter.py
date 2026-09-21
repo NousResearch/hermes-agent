@@ -11,6 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from gateway.config import PlatformConfig
 from plugins.platforms.slack import adapter as slack_module
 from plugins.platforms.slack.adapter import SlackAdapter

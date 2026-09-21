@@ -12,6 +12,7 @@ from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import agent_browser_runnable, is_termux as _is_termux
+from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
 def _safe_which(cmd: str) -> str | None:
@@ -146,27 +147,36 @@ _BUILTIN_TERMINAL_BACKENDS = {"local", "docker", "singularity", "modal", "manage
 
 
 def _check_docker_backend(terminal_env: str, running_in_container: bool, issues: list[str]) -> None:
+    docker_exe = find_docker()
     if terminal_env == "docker":
-        if not _safe_which("docker"):
-            _fail_and_issue("docker not found", "(required for TERMINAL_ENV=docker)", "Install Docker or change TERMINAL_ENV", issues)
+        if not docker_exe:
+            _fail_and_issue("Docker or Podman not installed", "(needed for the 'docker' terminal backend)",
+                            "Install Docker or Podman, or run `hermes setup terminal` to switch backend.", issues)
         else:
-            # `docker version` hits /version, which socket proxies (tecnativa) allow by default; `docker info`
+            runtime = docker_runtime_name(docker_exe)
+            hint = docker_runtime_start_hint(docker_exe)
+            unreachable = (
+                f"{runtime} daemon not running" if runtime == "Docker" else f"{runtime} not reachable")
+            # `<cli> version` hits /version, which socket proxies (tecnativa) allow by default; `docker info`
             # needs /info and is commonly blocked, giving a false "daemon not running". The backend itself
-            # probes with `docker version` too (environments/docker.py).
-            _require(_run_ok(["docker", "version"], timeout=10), ("docker", "(daemon running)"), ("docker daemon not running", ""),
-                     "Start Docker daemon", issues)
-    elif _safe_which("docker"):
-        check_ok("docker", "(optional)")
+            # probes with `<cli> version` too (environments/docker.py).
+            _require(_run_ok([docker_exe, "version"], timeout=10),
+                     (runtime, "(daemon running)" if runtime == "Docker" else "(reachable)"),
+                     (unreachable, "(needed for the 'docker' terminal backend)"),
+                     f"{hint[0].upper()}{hint[1:]}, or run `hermes setup terminal` to switch backend.", issues)
+    elif docker_exe:
+        check_ok(docker_runtime_name(docker_exe), "(optional)")
     elif _is_termux():
         check_info("Docker backend is not available inside Termux (expected on Android)")
     elif not running_in_container:  # in-container case already explained by the caller
-        check_warn("docker not found", "(optional)")
+        check_warn("Docker/Podman not found", "(optional)")
 
 
 def _check_ssh_backend(issues: list[str]) -> None:
     ssh_host = os.getenv("TERMINAL_SSH_HOST")
     if not ssh_host:
-        return _fail_and_issue("TERMINAL_SSH_HOST not set", "(required for TERMINAL_ENV=ssh)", "Set TERMINAL_SSH_HOST in .env", issues)
+        return _fail_and_issue("SSH host not configured", "(needed for the 'ssh' terminal backend)",
+                               "run `hermes setup terminal` and enter the SSH host and user.", issues)
     ssh_user, ssh_port, ssh_key = (os.getenv(f"TERMINAL_SSH_{k}") for k in ("USER", "PORT", "KEY"))
     cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
     if ssh_port:
@@ -186,7 +196,8 @@ def _require(cond, ok, bad, issue: str, issues: list[str]) -> None:
 
 def _check_daytona_backend(issues: list[str]) -> None:
     _require(os.getenv("DAYTONA_API_KEY"), ("Daytona API key", "(configured)"),
-             ("DAYTONA_API_KEY not set", "(required for TERMINAL_ENV=daytona)"), "Set DAYTONA_API_KEY environment variable", issues)
+             ("Daytona API key missing", "(needed for the 'daytona' terminal backend)"),
+             "run `hermes setup terminal` (Daytona) to enter it.", issues)
     try:
         from daytona import Daytona  # noqa: F401 — SDK presence check
         check_ok("daytona SDK", "(installed)")
@@ -247,7 +258,7 @@ def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
         running_in_container = _is_container()
     except Exception:
         running_in_container = False
-    # In our container docker-in-docker isn't set up, so local is intended: skip the noisy "docker not found"
+    # In our container docker-in-docker isn't set up, so local is intended: skip the noisy "Docker/Podman not found"
     # warning. An explicit TERMINAL_ENV=docker (mounted docker.sock) still gets checked.
     if running_in_container and terminal_env != "docker":
         check_info("Running inside a container — using local terminal backend (docker-in-docker is not configured by default)")

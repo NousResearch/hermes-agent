@@ -14,11 +14,13 @@ import uuid
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _exhausted_until,
-    _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
+    _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth_plugin_providers import (
+    dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -75,7 +77,8 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
 
 
 _PROVIDER_ALIASES = {
-    "or": "openrouter", "open-router": "openrouter", "grok-oauth": "xai-oauth",
+    "or": "openrouter", "open-router": "openrouter", "chatgpt": "openai-codex",
+    "chatgpt-codex": "openai-codex", "grok-oauth": "xai-oauth",
     "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth"}
 
 
@@ -129,6 +132,22 @@ def _provider_base_url(provider: str) -> str:
 def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
     return (provider in PROVIDER_REGISTRY or provider == "openrouter"
             or provider.startswith(CUSTOM_POOL_PREFIX) or configured_provider is not None)
+
+
+def _unknown_provider_exit(provider: str) -> SystemExit:
+    """Offer nearby provider names and the commands for listing or choosing providers."""
+    import difflib
+
+    known = sorted(
+        set(PROVIDER_REGISTRY) | {"openrouter"}
+        | {entry["name"] for entry in _get_custom_provider_entries()}
+    )
+    close = difflib.get_close_matches(provider, known, n=3, cutoff=0.5)
+    hint = f" Did you mean {', '.join(close)}?" if close else ""
+    return SystemExit(
+        f"Unknown provider '{provider}'.{hint} Run `hermes auth` to see the provider list, or "
+        "`hermes model` to pick one interactively."
+    )
 
 
 def _display_source(source: str) -> str:
@@ -197,6 +216,12 @@ def _qwen_oauth_login(args) -> dict:
     return creds
 
 
+def _codex_oauth_login(args) -> dict:
+    from hermes_cli.auth_codex_browser import codex_oauth_login
+
+    return codex_oauth_login(args)
+
+
 @dataclass(frozen=True)
 class _OAuthAddSpec:
     """Per-provider parameters for the generic ``hermes auth add <provider> --type oauth`` path."""
@@ -221,7 +246,7 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
             "expires_at_ms": creds.get("expires_at_ms"),
             "base_url": _provider_base_url(provider)}),
     "openai-codex": _OAuthAddSpec(
-        login=lambda args: auth_mod._codex_device_code_login(),
+        login=_codex_oauth_login,
         token=lambda creds: creds["tokens"]["access_token"],
         source=SOURCE_MANUAL_DEVICE_CODE,
         fields=lambda creds, provider: {
@@ -346,9 +371,13 @@ def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
+    if dispatch_plugin_auth("add", args, provider):
+        return
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
-        raise SystemExit(f"Unknown provider: {provider}")
+        raise _unknown_provider_exit(provider)
+    if (error := plugin_missing_auth_handler_error(provider, "add")) is not None:
+        raise error
     if configured_provider is not None:
         _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
 
@@ -391,7 +420,11 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
     # ``manual:*`` entries refresh from their own token pair, so they need no singleton shadow.
     entry = PooledCredential(
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=spec.auth_type, priority=0,
-        source=spec.source, access_token=token, **spec.fields(creds, provider))
+        source=("manual:loopback_pkce" if provider == "openai-codex" and
+                creds.get("source") == "loopback_pkce" else spec.source),
+        access_token=token, **spec.fields(creds, provider))
+    if provider == "openai-codex":
+        _warn_if_duplicate_codex_account(pool, token)
     first_credential = not pool.entries()
     entry = pool.add_entry(entry)
     # The first Codex/xAI credential becomes the active provider (as the old singleton save path
@@ -400,6 +433,31 @@ def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCre
         auth_mod.mark_provider_active_if_unset(provider)
     print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
     return entry
+
+
+def _warn_if_duplicate_codex_account(pool, access_token: str) -> None:
+    """Warn, without blocking, when a new Codex OAuth login duplicates a pooled account."""
+    claims = auth_mod._decode_jwt_claims(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth") if isinstance(claims, dict) else None
+    account_id = auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None
+    if not isinstance(account_id, str) or not account_id.strip():
+        return
+    email = claims.get("email") if isinstance(claims, dict) else None
+    for index, existing in enumerate(pool.entries(), start=1):
+        existing_claims = auth_mod._decode_jwt_claims(getattr(existing, "access_token", ""))
+        existing_auth = existing_claims.get("https://api.openai.com/auth") if isinstance(existing_claims, dict) else None
+        existing_account_id = (
+            existing_auth.get("chatgpt_account_id") if isinstance(existing_auth, dict) else None)
+        if existing_account_id != account_id:
+            continue
+        email_text = f' ("{email}")' if isinstance(email, str) and email else ""
+        print(
+            f"Warning: this is the same OpenAI account as openai-codex credential #{index}"
+            f"{email_text}. Both credentials share one token family; remove the duplicate with "
+            f"`hermes auth remove openai-codex {index}` if it is not intentional.",
+            file=sys.stderr,
+        )
+        return
 
 
 def _report_priority(provider: str, pool, moved, requested: int, verb: str, prep: str) -> None:
@@ -446,6 +504,8 @@ def _is_free_tier_entry(entry) -> bool:
 
 
 def auth_list_command(args) -> None:
+    from agent.credential_sources import EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE, adopt_external_logins_enabled
+    external_logins_enabled = adopt_external_logins_enabled()
     provider_filter = _normalize_provider(getattr(args, "provider", "") or "")
     if provider_filter:
         providers = [provider_filter]
@@ -480,6 +540,8 @@ def auth_list_command(args) -> None:
             print(row.rstrip())
         print()
     _print_oauth_heal_notices()
+    if not external_logins_enabled:
+        print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
 
 
 def _print_oauth_heal_notices() -> None:
@@ -544,6 +606,8 @@ def auth_refresh_command(args) -> None:
     429s and benches it again. Failure leaves the pool's own verdict in place.
     """
     provider = _normalize_provider(getattr(args, "provider", ""))
+    if dispatch_plugin_auth("refresh", args, provider):
+        return
     target = getattr(args, "target", None)
     pool = load_pool(provider)
     entries = pool.entries()
@@ -559,7 +623,7 @@ def auth_refresh_command(args) -> None:
         index, matched, error = pool.resolve_target(target)
         if matched is None or index is None:
             raise SystemExit(f"{error} Provider: {provider}.")
-    if (provider not in REFRESHABLE_OAUTH_PROVIDERS or matched.auth_type != AUTH_TYPE_OAUTH
+    if (not is_refreshable_oauth_provider(provider) or matched.auth_type != AUTH_TYPE_OAUTH
             or not matched.refresh_token):
         raise SystemExit(
             f"{provider} credential #{index} ({matched.label}) is not a refreshable OAuth "
@@ -572,11 +636,9 @@ def auth_refresh_command(args) -> None:
             "Reauthenticate with `hermes auth add nous --type oauth`.")
     refreshed = pool.try_refresh_matching(credential_id=matched.id)
     if refreshed is None:
-        after = next((e for e in pool.entries() if e.id == matched.id), None)
-        state = "removed from pool" if after is None else (after.last_status or "unknown")
         raise SystemExit(
-            f"Refresh failed for {provider} credential #{index} ({matched.label}); "
-            f"status now: {state}.")
+            f"Could not renew {provider} credential #{index} ({matched.label}). "
+            f"Run `hermes auth add {provider} --type oauth` to sign in again.")
     status = refreshed.last_status or "ok"
     if status == "ok":
         print(f"Refreshed {provider} credential #{index} ({refreshed.label}); status: ok")
@@ -592,6 +654,8 @@ def auth_status_command(args) -> None:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
     if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
         load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
+    if dispatch_plugin_auth("status", args, provider):
+        return
     status = auth_mod.get_auth_status(provider)
     _print_oauth_heal_notices()
     if status.get("free_tier"):
@@ -612,7 +676,12 @@ def auth_status_command(args) -> None:
 
 
 def auth_logout_command(args) -> None:
-    auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
+    # The built-in path keeps receiving the raw provider id (byte-for-byte
+    # unchanged); the normalized alias is used only for the handler lookup.
+    raw_provider = getattr(args, "provider", None)
+    if dispatch_plugin_auth("logout", args, _normalize_provider(raw_provider or "")):
+        return
+    auth_mod.logout_command(SimpleNamespace(provider=raw_provider))
 
 
 def auth_spotify_command(args) -> None:
@@ -719,9 +788,13 @@ def _pick_provider(prompt: str = "Provider") -> str:
 
 def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
+    if dispatch_plugin_auth("add", SimpleNamespace(provider=provider), provider):
+        return
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
-        raise SystemExit(f"Unknown provider: {provider}")
+        raise _unknown_provider_exit(provider)
+    if (error := plugin_missing_auth_handler_error(provider, "add")) is not None:
+        raise error
 
     auth_type = "api_key"
     if provider in _OAUTH_CAPABLE_PROVIDERS:

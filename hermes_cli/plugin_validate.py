@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.plugin_validate_desktop import check_desktop_surface
+
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _CONFIG_TYPES = {
     "str", "string", "int", "integer", "float", "number",
@@ -182,15 +184,16 @@ _REGISTRATION_KINDS = {
 _EXCLUDED_SCAN_DIRS = frozenset({".git", ".venv", "venv", "__pycache__", "test", "tests", "_test", "_tests"})
 
 
-def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
+def _scan_capabilities(plugin_dir: Path, *, model_provider: bool = False) -> Tuple[Optional[dict], str]:
     """Inspect literal registration calls without running candidate code.
 
     Dynamic names cannot establish admission declarations and fail closed. Calls in
     helpers and conditional branches are included conservatively, not claimed to run.
     """
-    recorded = {"tools": [], "hooks": [], "middleware": [], "commands": []}
+    recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "model_providers": []}
     entry = plugin_dir / "__init__.py"
     has_register = False
+    has_provider_profile_registration = False
     for path in sorted(plugin_dir.rglob("*.py")):
         if any(part in _EXCLUDED_SCAN_DIRS for part in path.relative_to(plugin_dir).parts):
             continue
@@ -211,6 +214,22 @@ def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
                     has_register = True
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, (ast.Name, ast.Attribute))
+                    and (node.func.id if isinstance(node.func, ast.Name) else node.func.attr) == "register_provider"):
+                args = [*node.args, *(kw.value for kw in node.keywords)]
+                profiles = [
+                    isinstance(arg, ast.Call)
+                    and isinstance(arg.func, (ast.Name, ast.Attribute))
+                    and (arg.func.id if isinstance(arg.func, ast.Name) else arg.func.attr) == "ProviderProfile"
+                    for arg in args
+                ]
+                profile_calls = [arg for arg, is_profile in zip(args, profiles) if is_profile]
+                has_provider_profile_registration |= bool(profile_calls)
+                for profile in profile_calls:
+                    profile_name = next((kw.value for kw in profile.keywords if kw.arg == "name"), None)
+                    if isinstance(profile_name, ast.Constant) and isinstance(profile_name.value, str):
+                        recorded["model_providers"].append(profile_name.value)
             if isinstance(node, ast.Attribute) and node.attr in _REGISTRATION_KINDS:
                 parent = parents.get(node)
                 if not isinstance(parent, ast.Call) or parent.func is not node:
@@ -228,7 +247,9 @@ def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
             if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
                 return None, f"dynamic {node.func.attr} name requires manual capability review ({path.name}:{node.lineno})"
             recorded[kind].append(name.value)
-    if not has_register:
+    if model_provider and not has_provider_profile_registration:
+        return None, "model-provider plugin registered no ProviderProfile"
+    if not has_register and not model_provider:
         return None, "no statically defined register() function"
     return recorded, ""
 
@@ -255,11 +276,15 @@ def _check_capabilities(
         report.add("capability probe", True, "skipped (no __init__.py)")
         return None
 
-    recorded, error = _scan_capabilities(plugin_dir)
+    recorded, error = _scan_capabilities(plugin_dir, model_provider=manifest.get("kind") == "model-provider")
     if recorded is None:
         report.add("capability probe", False, error)
         return None
-    report.add("capability probe", True, "literal registration calls inspected without execution")
+    if manifest.get("kind") == "model-provider":
+        provider_names = ", ".join(recorded.get("model_providers") or [])
+        report.add("capability probe", True, f"statically registered ProviderProfile(s): {provider_names}")
+    else:
+        report.add("capability probe", True, "literal registration calls inspected without execution")
     report.warn("Static inspection only: runtime behavior, imported registrations, capability completeness, and plugin safety are not verified.")
 
     for kind, manifest_key in (
@@ -379,9 +404,78 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     _check_requires_hermes(report, manifest)
     _check_config_spec(report, manifest)
     _check_requires_env(report, manifest)
+    _check_loadable(report, plugin_dir)
+    _check_python_dependencies(report, plugin_dir)
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
+    _check_security_scan(report, plugin_dir)
+    check_desktop_surface(report, plugin_dir)
     return report
+
+
+_LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json")
+
+
+def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
+    """A plugin.yaml with nothing beside it that Hermes can load (no ``register()`` module, no
+    desktop bundle, no portable manifest) installs "successfully" and does nothing — a pip-layout
+    repo whose code lives under ``src/`` behind an entry point is the usual shape."""
+    present = [rel for rel in _LOADABLE_ENTRYPOINTS if (plugin_dir / rel).is_file()]
+    report.add(
+        "loadable", bool(present),
+        f"entry: {', '.join(present)}" if present else
+        "nothing to load: no __init__.py, desktop/plugin.js or plugin.json beside plugin.yaml "
+        "(pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
+    )
+
+
+def _check_python_dependencies(report: ValidationReport, plugin_dir: Path) -> None:
+    """Declared deps (pyproject ``[project].dependencies`` or manifest ``python_dependencies``) must be
+    well-formed PEP 508 specs the installer will accept; a plugin opting out with
+    ``python_runtime: external`` declares none."""
+    from hermes_cli.plugin_python_deps import read_declaration
+
+    try:
+        decl = read_declaration(plugin_dir)
+    except Exception as exc:
+        report.add("python dependencies", False, f"declaration invalid: {exc}")
+        return
+    if decl.external:
+        report.add("python dependencies", True, "external runtime (plugin manages its own)")
+        return
+    from hermes_cli.plugin_python_deps import applicable_specs, unsupported_specs
+
+    urls = unsupported_specs(decl.specs)
+    if urls:
+        report.warn("python dependencies: direct URL requirement(s) are never auto-installed, users must "
+                    f"install them by hand: {', '.join(urls)}")
+    installable = applicable_specs(decl.specs)
+    rejected = [s for s in installable if not _spec_is_safe(s)]
+    detail = f"{len(installable)} installable from {decl.source}" if decl.source else "none declared"
+    report.add("python dependencies", not rejected,
+               f"unsafe spec(s): {', '.join(rejected)}" if rejected else detail)
+
+
+def _spec_is_safe(spec: str) -> bool:
+    from tools.lazy_deps import _spec_is_safe as safe
+    return safe(spec)
+
+
+def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:
+    """Run the install-time scanner at admission, so a pin a reviewer approves is one the
+    installer will accept: ``dangerous`` fails the entry; ``caution`` findings surface as
+    warnings for the reviewer (the installer trusts them once the pin is merged)."""
+    from tools.plugin_guard import scan_plugin
+
+    result = scan_plugin(plugin_dir)
+    flagged = [f for f in result.findings if f.severity in ("critical", "high")]
+    summary = ", ".join(sorted({f"{f.pattern_id} ({Path(f.file).name}:{f.line})" for f in flagged})) or "no findings"
+    if result.verdict == "dangerous":
+        report.add("security scan", False, f"dangerous: {summary}")
+        return
+    report.add("security scan", True, result.verdict)
+    if result.verdict == "caution":
+        report.warn(f"security scan caution: {summary}")
 
 
 def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> ValidationReport:
@@ -413,4 +507,6 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    _check_security_scan(report, plugin_dir)
+    check_desktop_surface(report, plugin_dir)
     return report

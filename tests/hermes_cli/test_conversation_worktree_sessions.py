@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -543,7 +544,7 @@ def test_cli_argument_builder_passes_explicit_conversation_ownership(monkeypatch
     captured = {}
     def construct(**kwargs):
         captured.update(kwargs)
-        return object()
+        return SimpleNamespace()
     monkeypatch.setattr(cli_module, "HermesCLI", construct)
     cli_module._build_cli_from_args(
         None, "terminal", None, None, None, None, None, None,

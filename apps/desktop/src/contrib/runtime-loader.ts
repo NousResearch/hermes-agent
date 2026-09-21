@@ -28,9 +28,12 @@
  * trust seam.
  */
 
+import { atom } from 'nanostores'
+
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
+import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, type HermesPlugin } from './plugin'
 import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
@@ -181,7 +184,10 @@ export async function loadRuntimePlugin(
       // Reload = dispose the previous incarnation, then register fresh.
       unloadRuntimePlugin(plugin.id)
       const disposers: (() => void)[] = []
-      plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+      trackGatewayEventDisposers(
+        dispose => disposers.push(dispose),
+        () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+      )
       loaded.set(plugin.id, disposers)
       publishPlugin({ ...record, status: 'loaded' })
     }
@@ -547,6 +553,11 @@ async function scanDiskPlugins(): Promise<void> {
 /** Manual rescan (the ⌘K "Reload desktop plugins" fallback). */
 export const discoverRuntimePlugins = scanDiskPlugins
 
+/** True while the disk door's FIRST scan is in flight. Boot code that must
+ *  not mistake a not-yet-registered plugin route for a stale one
+ *  (remembered-route restore) waits on this instead of on timing. */
+export const $diskPluginsScanPending = atom(false)
+
 /** Start the self-maintaining disk door: initial scan, per-file hot reload,
  *  fs-watched folder reconciliation (poll fallback on older shells). Idempotent. */
 export function watchRuntimePlugins(): void {
@@ -557,6 +568,7 @@ export function watchRuntimePlugins(): void {
   }
 
   watching = true
+  $diskPluginsScanPending.set(true)
 
   const dirWatchIds = new Set<string>()
   const watchedDirs = new Set<string>()
@@ -614,7 +626,7 @@ export function watchRuntimePlugins(): void {
     return all
   }
 
-  void scanDiskPlugins()
+  void scanDiskPlugins().then(() => $diskPluginsScanPending.set(false))
   void startDirWatches().then(watched => {
     if (watched) {
       return

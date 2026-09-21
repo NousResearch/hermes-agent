@@ -10,7 +10,7 @@
 
 import { ackStoredSessionId, atom, haptic, host, markSessionUnreadFinished } from '@hermes/plugin-sdk'
 
-import { $openBotChat, $selectedBot, rosterWatermarks, saveSelectedRosterBot } from './bot-state'
+import { $openBotChat, $selectedBot, lastToastedPreview, rosterWatermarks, saveSelectedRosterBot } from './bot-state'
 import { CANONICAL_CHAT_TITLE, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
 import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
@@ -20,7 +20,6 @@ import { closeGroupChatMainTab } from './group-panes'
 import { displayName } from './labels'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { botCanonicalSessionId } from './row-helpers'
-import { reconcileBotProfileSessions } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
@@ -66,6 +65,12 @@ export function trackInboundActivity(roster: RosterRow[]) {
     rosterWatermarks.set(key, Math.max(prev, ts))
 
     if (seeding || ts <= prev) {
+      // Seed (or refresh) the last-toasted preview so a fresh mount, or a row
+      // whose activity hasn't advanced, treats current content as already-seen
+      // rather than replaying it — or a busy bridge's unchanged preview — as a
+      // duplicate toast.
+      lastToastedPreview.set(key, (activity?.preview || '').trim())
+
       continue
     }
 
@@ -94,10 +99,21 @@ export function trackInboundActivity(roster: RosterRow[]) {
 
     // Toasts are opt-in: the unread mark is recorded above regardless, but the
     // per-message notification fires only when the user enabled it.
+    const preview = (activity?.preview || '').trim()
+
+    // Content-level dedup, tracked independently of the toast pref so the
+    // memory stays accurate whether or not toasts are on: skip re-surfacing an
+    // identical preview a busy bridge keeps re-pinging (last_active advances
+    // but the visible content is unchanged). Unread marking above is unaffected.
+    if (lastToastedPreview.get(key) === preview) {
+      continue
+    }
+
+    lastToastedPreview.set(key, preview)
+
     if ($activityToasts.get()) {
       const meta = botRosterMeta(bot, $botMeta.get())
       const label = displayName(bot, meta)
-      const preview = (activity?.preview || '').trim()
       const inbound = /^Message from/i.test(preview)
       host.notify({
         kind: 'info',
@@ -246,9 +262,6 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // round-trip. Both identities are recorded so the reclaim listener and
     // the roster-activity refresh treat it exactly like a registry open.
     $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
-    // Legacy visibility repair is profile-scoped and demand-driven: opening
-    // this bot may inspect this bot, but an idle Desktop never scans peers.
-    void reconcileBotProfileSessions(bot)
 
     // Fronting is presentation-only: the pane keeps whatever transcript it
     // last painted, which can predate rows the bot wrote while the user was
@@ -269,7 +282,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     if (generation === getBotOpenGeneration()) {
       $openBotChat.set(null)
       restorePreviousGroup()
-      notifyBotOpenFailure(error, bot, `Could not reach ${bot.connectionLabel || 'the gateway'}`)
+      notifyBotOpenFailure(error, bot, 'reach')
     }
 
     return false
@@ -278,10 +291,6 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   if (generation !== getBotOpenGeneration()) {
     return false
   }
-
-  // The source is now reachable. Reconcile this one selected profile in the
-  // background; do not delay navigation on best-effort legacy cleanup.
-  void reconcileBotProfileSessions(bot)
 
   try {
     const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration())
@@ -310,7 +319,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     if (generation === getBotOpenGeneration()) {
       $openBotChat.set(null)
       restorePreviousGroup()
-      notifyBotOpenFailure(error, bot, `Could not open ${displayName(bot, meta)}'s chat — try again`)
+      notifyBotOpenFailure(error, bot, 'open', displayName(bot, meta))
     }
 
     return false

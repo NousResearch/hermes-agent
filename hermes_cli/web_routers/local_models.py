@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import config as config_mod, web_deps
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
 from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
@@ -191,7 +192,8 @@ def _router_request(endpoint: Dict[str, Any], path: str, *, timeout: float, payl
 
 
 def _load_config() -> dict:
-    return _quiet(config_mod.load_config, {})
+    """Read-only config for status/garnish paths that must render degraded, never 500."""
+    return _quiet(config_mod.load_config_readonly, {})
 
 
 def _runtime_section() -> dict:
@@ -200,9 +202,12 @@ def _runtime_section() -> dict:
 
 def _set_runtime_enabled(enabled: bool) -> dict:
     """Persist ``local_runtime.enabled`` and return the config written."""
-    config = config_mod.load_config()
-    config.setdefault("local_runtime", {})["enabled"] = enabled
-    config_mod.save_config(config)
+    # Runs on quickstart/activate/stop job threads; the RMW span races the dashboard's
+    # debounced PUT /api/config autosave without the lock.
+    with _CONFIG_MUTATION_LOCK:
+        config = config_mod.load_config()
+        config.setdefault("local_runtime", {})["enabled"] = enabled
+        config_mod.save_config(config)
     return config
 
 
@@ -258,13 +263,25 @@ def _ensure_server(job: Dict[str, Any], config: dict, model_id: str, *, fail_det
     _step(job, "starting-server", "Starting the local server")
     sup = _start_local_server(config, fail_detail)
 
-    def rescan_if_unknown() -> None:
-        if model_id not in sup.models():
+    def rescan_if_unknown(known: Dict[str, Any]) -> None:
+        if model_id not in known:
             job["detail"] = "Refreshing the local server"
             bootstrap.refresh_local_runtime()
 
     if sup is not None:
-        _quiet(rescan_if_unknown, None, debug=skip_msg)
+        _quiet(lambda: rescan_if_unknown(sup.models()), None, debug=skip_msg)
+        return
+    # A server owned by another process: ensure_local_runtime returned None, so the supervisor
+    # path above never ran — but the same spawn-only listing gap applies. Probe the live
+    # listing through the persisted endpoint and bounce when it lacks the model.
+    endpoint = _state_endpoint()
+    if endpoint is not None:
+
+        def _known_models() -> Dict[str, Any]:
+            data = (_router_request(endpoint, "/models", timeout=10) or {}).get("data", [])
+            return {m.get("id"): m for m in data}
+
+        _quiet(lambda: rescan_if_unknown(_known_models()), None, debug=skip_msg)
 
 
 def _assign_default(job: Dict[str, Any], model_id: str) -> None:
@@ -772,21 +789,19 @@ async def local_models_quickstart(body: QuickstartBody):
 
 # ── server lifecycle: turn the engine on/off ─────────────────
 def _terminate_state_pid() -> None:
-    """Server owned by another process (or an orphan): terminate via the state file's pid, then clear the state."""
-    import psutil  # type: ignore
+    """Explicit recovery, never raw-PID termination of another live owner."""
+    from hermes_cli.local_runtime.recovery import stop_recorded_orphan
 
-    state = json.loads(supervisor.state_path().read_text(encoding="utf-8"))
-    pid = int(state.get("pid") or 0)
-    if pid > 0 and psutil.pid_exists(pid):
-        psutil.Process(pid).terminate()
-    supervisor.state_path().unlink(missing_ok=True)
+    if not stop_recorded_orphan():
+        raise HTTPException(status_code=409, detail=(
+            "Another Hermes process owns this server, or its ownership could not be verified"))
 
 
 def _stop_server() -> None:
     if bootstrap.get_supervisor() is not None:
         bootstrap.shutdown_local_runtime()
-    elif _state_endpoint() is not None:
-        _quiet(_terminate_state_pid, None)  # best-effort
+    else:
+        _terminate_state_pid()
     _set_runtime_enabled(False)
 
 
@@ -804,8 +819,12 @@ async def local_models_server(body: ServerActionBody):
     action = (body.action or "").strip().lower()
     if action not in _SERVER_ACTIONS:
         raise HTTPException(status_code=400, detail="action must be 'stop' or 'start'")
-    with _http_error(502):
+    try:
         await asyncio.to_thread(_SERVER_ACTIONS[action])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True, "action": action}
 
 

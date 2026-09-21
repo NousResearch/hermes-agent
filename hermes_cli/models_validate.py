@@ -283,6 +283,41 @@ _STATIC_FAMILY_PREFIXES = {
 _STATIC_LABELS = {"openai-codex": "OpenAI Codex", "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)"}
 
 
+def _family_head(model_id: str) -> str:
+    """Vendor family token of a model id: ``gpt-5.5`` → ``gpt``, ``claude-opus-5`` → ``claude``."""
+    return re.split(r"[-./:]", model_id.strip().lower(), maxsplit=1)[0]
+
+
+def static_model_provider_conflict(model_name: str, provider: Optional[str], *, limit: int = 5) -> Optional[dict[str, Any]]:
+    """Offline model×provider coherence from the curated catalogs only (no network: this runs on
+    ``session.create``). ``None`` = coherent or undecidable — custom / aggregator / catalog-less
+    providers, names in the provider's own family (a newer ``gpt-*`` the curated list lacks) and
+    names no vendor lists (hidden or preview slugs) stay permissive. A conflict is a name outside
+    the provider's family that another native vendor's catalog lists — or any foreign-family name
+    on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817)."""
+    from hermes_cli import models as _m
+
+    requested = (model_name or "").strip()
+    normalized = _m.normalize_provider(provider)
+    catalog = list(_m._PROVIDER_MODELS.get(normalized, ()))
+    if not requested or not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
+        return None
+    if _m._model_in_provider_catalog(requested.lower(), _m._provider_keys(normalized)):
+        return None
+    if _family_head(requested) in {_family_head(m) for m in catalog}:
+        return None
+    strict = normalized in _STATIC_FAMILY_PREFIXES
+    if not strict and next(_m._static_catalog_matches(requested, normalized), None) is None:
+        return None
+    suggestions = get_close_matches(requested, catalog, n=limit, cutoff=0.4) or catalog[:limit]
+    label = _m._PROVIDER_LABELS.get(normalized, normalized)
+    return {
+        "model": requested, "provider": normalized, "suggestions": suggestions,
+        "message": (f"Model `{requested}` is not served by provider `{normalized}` ({label}). "
+                    f"Closest {label} models: " + ", ".join(f"`{s}`" for s in suggestions) + "."),
+    }
+
+
 def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     """openai-codex / xai-oauth: no /v1/models probing — validate against the curated catalog.
     Returns None (fall through) when the catalog is empty."""
@@ -364,16 +399,25 @@ def _validate_anthropic(req: _Request) -> Optional[dict[str, Any]]:
 
 
 def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
-    """Anthropic Messages transport: many proxies don't implement /v1/models — probe, and accept
-    with a warning when the probe fails or the model isn't listed."""
+    """Anthropic Messages transport: probe /v1/models and soft-accept either way, but say which
+    happened — a proxy that never implemented the listing is a different situation from a reachable
+    listing that simply doesn't name the slug (vendors alias ids: ``kimi-k3`` is served as ``k3``)."""
     from hermes_cli import models as _m
 
     models = _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode)
-    verdict = _match_in_catalog(req.lookup, models).verdict(req) if models is not None else None
-    return verdict or _soft_accept(
-        f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
-        "Anthropic-compatible proxies do not implement GET /v1/models.  The model name has been accepted "
-        "without verification."
+    if models is None:
+        return _soft_accept(
+            f"Note: could not verify `{req.requested}` against this endpoint's model listing.  Many "
+            "Anthropic-compatible proxies do not implement GET /v1/models.  The model name has been accepted "
+            "without verification."
+        )
+    # Vendor alias pairs sit below the default 0.5 similarity cutoff (kimi-k3 vs k3 ≈ 0.44).
+    match = _match_in_catalog(req.lookup, models, case_insensitive=True, suggest_query=req.requested,
+                              suggest_cutoff=0.4)
+    return match.verdict(req) or _soft_accept(
+        f"Note: `{req.requested}` is not named in this endpoint's model listing (it may still serve it "
+        f"under an alias).{match.suggestion_text}"
+        "\n  The model name has been accepted without verification."
     )
 
 
@@ -393,11 +437,46 @@ def _nous_portal_recommended_names() -> set[str]:
         return set()
 
 
+def _profile_owns_catalog(normalized: str) -> bool:
+    """True when the registered profile's catalog is not the generic ``{base_url}/models`` listing —
+    it overrides ``fetch_models`` or points ``models_url`` elsewhere — so that listing is not
+    authoritative for it (a relay may 200 with a different product catalog, #101705)."""
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    profile = get_provider_profile(normalized)
+    return profile is not None and (
+        type(profile).fetch_models is not ProviderProfile.fetch_models or bool(profile.models_url))
+
+
+def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
+    """The managed llama.cpp runtime: the staged library on disk is the source of truth, not the
+    live listing. The router's model list is spawn-only (a GGUF landed after its start is
+    invisible to GET /models until a bounce), so validating a freshly downloaded model against
+    the live listing rejects the very file the user just staged — the Local Models "Use" flow
+    and the composer picker could never succeed for a non-catalog model. A staged id accepts
+    (case-insensitive: typing matches the file name, the router registers the preset id);
+    anything else falls through to the live listing, which stays authoritative for ids that
+    were never downloaded here."""
+    from hermes_cli.local_runtime.bootstrap import staged_model_ids
+
+    staged = {sid.lower() for sid in staged_model_ids()}
+    if req.lookup.strip().lower() in staged:
+        return _accept_with_note(
+            f"Note: `{req.requested}` was not found in the live /v1/models listing "
+            "but is downloaded in the managed local-models library — accepted."
+        )
+    return None
+
+
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     """Generic live /v1/models probe. Returns None when the API was unreachable (the caller then
-    tries Bedrock discovery / the curated catalog)."""
+    tries Bedrock discovery / the curated catalog). A profile that owns its catalog is validated
+    against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
     from hermes_cli import models as _m
 
+    if _profile_owns_catalog(req.normalized) and _match_in_catalog(req.lookup, _static_catalog(req.normalized)).exact:
+        return _accept()
     api_models = _m.fetch_api_models(req.api_key, req.base_url)
     if api_models is None:
         return None
@@ -498,8 +577,8 @@ def _for(*providers: str) -> Callable[[_Request], bool]:
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
 # BEHAVIOR: moa → whitespace → OpenRouter preset parse → LM Studio → Ollama native → custom →
-# codex/xai static → MiniMax → Anthropic native → Anthropic Messages → live listing → Bedrock →
-# curated-catalog fallback (always decides).
+# codex/xai static → MiniMax → managed local (staged library) → Anthropic native →
+# Anthropic Messages → live listing → Bedrock → curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
     (lambda req: True, _reject_whitespace),
@@ -509,6 +588,7 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
     (_is_custom, _validate_custom),
     (_for("openai-codex", "xai-oauth"), _validate_static_catalog),
     (_for("minimax", "minimax-cn"), _validate_minimax),
+    (_for("llamacpp", "llama.cpp", "llama-cpp"), _validate_managed_local),
     (_for("anthropic"), _validate_anthropic),
     (lambda req: req.api_mode == "anthropic_messages", _validate_anthropic_messages),
     (lambda req: True, _validate_live_listing),

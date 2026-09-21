@@ -9,7 +9,7 @@
  * (gateway/kanban_watchers.py): 'completed' (kanban_db.complete_task —
  * payload: summary + artifacts), 'blocked' (payload: reason), 'gave_up'
  * (payload: error), 'crashed', 'timed_out', and 'block_loop_detected'
- * (payload: reason — the routed-to-triage human handoff).
+ * (payload: reason — the routed-to-triage orchestration handoff).
  *
  * Two delivery doors, complementary by design:
  *  - `host.notify` — the in-app toast, covers the foreground case;
@@ -17,13 +17,13 @@
  *    desktop shell fires only while the user is AWAY from Hermes. This is the
  *    door that covers "walked away and the worker hit a blocker".
  *
- * Cursor contract: first observation of a board/source pair baselines
- * seen[source][board] = GET /board latest_event_id (MAX task_events.id for that
+ * Cursor contract: first observation of a board baselines
+ * seen[board] = GET /board latest_event_id (MAX task_events.id for that
  * board). Events id <= seen are historical/replay — never notified, no
  * cursor change. id > seen advances cursor for EVERY kind; only terminal
  * kinds emit. Reconnect replays from 0; cursor filters. Board switch never
  * mixes cursors; returning reuses prior cursor (never reset to current MAX).
- * Fail-closed: while a board/source baseline is unknown, no event can be
+ * Fail-closed: while a board's baseline is unknown, no event can be
  * classified so none is notified. Empty slug ('') suppressed.
  */
 
@@ -107,8 +107,7 @@ function t(key: string, ...args: unknown[]): string {
 }
 
 export function bindCompletionNotify(r: Rest, pluginTranslate?: PluginTranslate, os?: PluginOs): void {
-  // A plugin instance can be rebound to a different backend/profile without a
-  // renderer restart. Event ids are only meaningful within that source.
+  // Event ids are scoped to a backend/profile; a new binding starts a new cursor set.
   seenEventIdByBoard.clear()
   baselinePending.clear()
   rest = r
@@ -143,7 +142,9 @@ function trimmed(value: unknown): string {
 }
 
 /** The human handoff carried in the event payload, per kind (mirrors the
- *  payload contract the gateway watcher reads). */
+ *  payload contract the gateway watcher reads). `gave_up` deliberately has no
+ *  payload body: its `error` is raw worker text, which belongs in the toast
+ *  `detail` (see rawErrorFor), and the body is the plain-words i18n hint. */
 function bodyFor(kind: string, ev: CompletionEvent): string {
   const payload = ev.payload
 
@@ -156,10 +157,15 @@ function bodyFor(kind: string, ev: CompletionEvent): string {
   }
 
   if (kind === 'gave_up') {
-    return trimmed(payload?.error)
+    return t('notify.gaveUpBody')
   }
 
   return ''
+}
+
+/** Raw machine text that must never be the toast body — surfaced muted in `detail`. */
+function rawErrorFor(kind: string, ev: CompletionEvent): string {
+  return kind === 'gave_up' ? trimmed(ev.payload?.error) : ''
 }
 
 function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, ev: CompletionEvent): void {
@@ -180,7 +186,7 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
         ? t('notify.artifacts', artifacts.length)
         : ''
 
-  const detail = [taskId, artifactText].filter(Boolean).join(' · ')
+  const detail = [taskId, artifactText, rawErrorFor(kind, ev)].filter(Boolean).join(' · ')
   const title = t(spec.titleKey)
   const message = body || taskId || title
   host.notify({
@@ -250,7 +256,7 @@ export async function onKanbanEventsFrame(
       try {
         listener(slug, accepted)
       } catch {
-        /* world presentation cannot interfere with notifications */
+        // A presentation subscriber must not interrupt event delivery.
       }
     }
   }

@@ -42,7 +42,10 @@ export function registerFsIpc({
   ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
     const target = String(targetPath || '').trim()
 
-    if (!target) {
+    // `showItemInFolder` silently no-ops on a missing path, so a remote
+    // backend's workspace (not on this computer) would report success for a
+    // click that showed nothing. Report the miss so the renderer can toast.
+    if (!target || !fs.existsSync(target)) {
       return false
     }
 

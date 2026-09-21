@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from agent.account_usage import AccountUsageSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,22 @@ class ProviderProfile:
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
+    # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
+    supports_model_listing: bool = True
+
+    # ── Provider-owned auth (optional; non-api-key plugins) ──────────
+    # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
+    # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
+    # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
+    # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
+    # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
+    # ``classify_api_error(error, *, status_code, error_code, message, body, model) -> Mapping | None``:
+    # consulted by ``agent.error_classifier.classify_api_error`` for THIS provider's failures only, after
+    # the generic ``transform_api_error_classification`` plugin hooks and before the built-in pipeline.
+    # Return ``{"reason": <FailoverReason name>, ...hint flags}`` to override, ``None`` to decline.
+    auth_handler: Callable[[str, Any], Any] | None = None
+    refresh_credential: Callable[[Any], Any] | None = None
+    classify_api_error: Callable[..., Any] | None = None
 
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
@@ -105,12 +124,30 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
+    unsupported_response_formats: tuple = ()
     default_aux_model: str = (
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )
     # empty = use main model
 
+    # Per-model metadata in the canonical model_overrides schema. Partial entries
+    # patch catalog metadata; explicit user overrides still win. Exact model IDs.
+    model_capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # ── Hooks (override in subclass for complex providers) ───
+
+    def fetch_account_usage(
+        self, *, base_url: str | None = None, api_key: str | None = None
+    ) -> AccountUsageSnapshot | None:
+        """Return an account-usage snapshot for this provider, if available.
+
+        The ``/usage`` command invokes this only when no built-in account
+        usage fetcher owns the provider. Implementations may make their
+        provider-specific request and must return an ``AccountUsageSnapshot``
+        or ``None``; exceptions fail open at the dispatch boundary.
+        """
+        return None
 
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Return a LIVE cheap-model id for auxiliary tasks, or "".
@@ -308,6 +345,8 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
+        if not self.supports_model_listing:
+            return None
         caller_base = (base_url or "").strip()
         effective_base = caller_base or self.base_url
         custom_base = bool(caller_base) and (

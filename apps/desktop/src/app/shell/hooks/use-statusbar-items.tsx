@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import { useNavigate } from 'react-router'
 
 import { ConnectionSwitcher } from '@/app/chat/sidebar/connection-switcher'
+import { ProfileSwitcher } from '@/app/chat/sidebar/profile-dropdown-switcher'
 import type { CommandCenterSection } from '@/app/command-center'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
@@ -39,7 +40,8 @@ import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
 import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $activeGatewayProfile } from '@/store/profile'
-import { projectNameForCwd } from '@/store/projects'
+import { $profileRailVisible } from '@/store/profile-rail-prefs'
+import { $projectTree, projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -50,11 +52,16 @@ import {
   $sessions,
   $sessionStartedAt,
   $turnStartedAt,
-  $workspaceCwdOwner,
   idsShareLineage,
   sessionMatchesStoredId
 } from '@/store/session'
-import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
+import {
+  $focusedRuntimeId,
+  $focusedSessionState,
+  $focusedStoredSessionId,
+  $sessionTiles,
+  isSessionRemote
+} from '@/store/session-states'
 import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
@@ -95,7 +102,6 @@ export function useStatusbarItems({
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
-  freshDraftReady,
   gatewayState,
   inferenceStatus,
   openAgents,
@@ -115,6 +121,7 @@ export function useStatusbarItems({
   // minimized zone, which lit the button for a pane the user couldn't see.
   const terminalShowing = useStore($paneVisible('terminal'))
   const sessionsShowing = useStore($paneVisible('sessions'))
+  const profileRailVisible = useStore($profileRailVisible)
   const botsShowing = useStore($paneVisible('hermes-bots:pane'))
   const primaryBusy = useStore($busy)
   // Draft / primary composer atom — used only while the focused surface is the
@@ -125,7 +132,6 @@ export function useStatusbarItems({
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
   const primaryTurnStartedAt = useStore($turnStartedAt)
-  const workspaceCwdOwner = useStore($workspaceCwdOwner)
 
   // The indicator must speak the same scope as the Spawn-tree panel it opens:
   // every session's subagents, never background system actions. Only two
@@ -162,6 +168,11 @@ export function useStatusbarItems({
   // clicking into a tile makes the statusbar describe THAT session.
   const focusedStoredSessionId = useStore($focusedStoredSessionId)
   const focusedRuntimeId = useStore($focusedRuntimeId)
+  // Whether the FOCUSED session's workspace lives on another machine: a
+  // Connections-tagged tile on a remote gateway inside a local-primary window
+  // (and vice versa) is decided by the tile's owner route, falling back to the
+  // ambient connection only when no owner is known (#115167).
+  const focusedWorkspaceRemote = useStoreSelector($sessionTiles, () => isSessionRemote(focusedStoredSessionId))
   // `$focusedSessionState` is a projection of `$sessionStates`, which is
   // republished on EVERY message delta — tens of times a second during a turn.
   // Only the fields read here are selected, so an unchanged readout bails out
@@ -183,9 +194,6 @@ export function useStatusbarItems({
 
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const primaryFocused = !focusedStoredSessionId || focusedStoredSessionId === selectedStoredSessionId
-
-  const primaryWorkspaceOwned =
-    !freshDraftReady && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
 
   const activeSessionId = primaryFocused ? primaryActiveSessionId : (focusedRuntimeId ?? null)
   const busy = primaryFocused ? primaryBusy : focusedBusy
@@ -244,7 +252,7 @@ export function useStatusbarItems({
   const currentCwd = (
     (liveCwdBelongsToFocus ? focusedStateCwd : '') ||
     focusedRowCwd ||
-    (primaryFocused && primaryWorkspaceOwned ? primaryCwd : '') ||
+    (primaryFocused ? primaryCwd : '') ||
     ''
   ).trim()
 
@@ -252,7 +260,8 @@ export function useStatusbarItems({
   // (backend truth via projects.*), so the status item labels by project without
   // a second per-session copy of the same fact. Re-derives whenever the cwd or
   // the tree changes; null (no named project) falls back to the cwd leaf below.
-  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd])
+  const projectTree = useStore($projectTree)
+  const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
 
   const sessionStartedAt = primaryFocused
     ? primarySessionStartedAt
@@ -452,6 +461,14 @@ export function useStatusbarItems({
         render: () => <StatusbarGatewaySwitcher />
       },
       {
+        // The rail's stand-in: the profile picker moves down here while the
+        // colored strip is hidden, so switching profiles always has a door.
+        hidden: !sessionsShowing || profileRailVisible,
+        id: 'profile-switcher',
+        lockedVisible: true,
+        render: () => <ProfileSwitcher compact />
+      },
+      {
         className: gatewayRestarting ? undefined : gatewayClassName,
         detail: gatewayRestarting ? copy.gatewayRestarting : gatewayDetail,
         hidden: botsShowing,
@@ -515,12 +532,19 @@ export function useStatusbarItems({
                 onSelect: () => void copyFilePath(currentCwd),
                 title: displayPath(currentCwd)
               },
-              {
-                id: 'reveal-workspace-finder',
-                label: fileMenu.revealFileManager,
-                onSelect: () => void revealFile(currentCwd),
-                title: displayPath(currentCwd)
-              },
+              // The OS file manager needs the local filesystem; a remote
+              // backend's workspace is not on this computer (the sidebar
+              // trees already hide reveal the same way).
+              ...(focusedWorkspaceRemote
+                ? []
+                : [
+                    {
+                      id: 'reveal-workspace-finder',
+                      label: fileMenu.revealFileManager,
+                      onSelect: () => void revealFile(currentCwd),
+                      title: displayPath(currentCwd)
+                    }
+                  ]),
               {
                 id: 'reveal-workspace-sidebar',
                 label: fileMenu.revealInSidebar,
@@ -582,6 +606,7 @@ export function useStatusbarItems({
       commandCenterOpen,
       copy,
       currentCwd,
+      focusedWorkspaceRemote,
       freeTierCopy,
       fileMenu.copyPath,
       fileMenu.revealFileManager,
@@ -596,6 +621,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
+      profileRailVisible,
       projectName,
       sessionsShowing,
       subagentsFailed,

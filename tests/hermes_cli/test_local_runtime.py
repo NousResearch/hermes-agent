@@ -38,6 +38,8 @@ class _StubHandler(BaseHTTPRequestHandler):
     chat_answer = "Paris"
     requests_processing = 0
     slots: list = []
+    slots_error = 0
+    metrics_error = 0
 
     def _send(self, code: int, body: dict | str | None = None) -> None:
         raw = (json.dumps(body) if isinstance(body, dict) else (body or "")).encode()
@@ -62,8 +64,16 @@ class _StubHandler(BaseHTTPRequestHandler):
             else:
                 self._send(200, self.models)
         elif path == "/metrics":
-            self._send(200, f"llamacpp:requests_processing {self.requests_processing}\n")
+            if self.metrics_error:
+                self._send(self.metrics_error, {})
+            else:
+                self._send(
+                    200, f"llamacpp:requests_processing {self.requests_processing}\n"
+                )
         elif path == "/slots":
+            if self.slots_error:
+                self._send(self.slots_error, {})
+                return
             raw = json.dumps(self.slots).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -586,6 +596,55 @@ def test_idle_sweep_busy_model_resets_clock(tmp_path, monkeypatch, stub_server):
     assert handler.unloaded == []
 
 
+def test_idle_sweep_probe_failure_keeps_clock(tmp_path, monkeypatch, stub_server):
+    """A failed telemetry probe is not activity: /slots or /metrics errors must keep the
+    idle clock instead of resetting it, so one flaky probe per sweep can't pin a resident
+    model (and its VRAM) for hours."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "stuck-m", "status": {"value": "loaded"}}]}
+    handler.slots = []
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port)
+
+    t0 = 1000.0
+    assert sup.sweep_idle(now=t0) == []  # clock starts
+    handler.metrics_error = 500  # probe fails mid-window
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 1) == []  # kept, not reset
+    assert handler.unloaded == []
+    handler.metrics_error = 0  # telemetry recovers
+    # The clock survived the failures: unload happens at the first healthy sweep.
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 2) == ["stuck-m"]
+    assert handler.unloaded == ["stuck-m"]
+
+
+def test_idle_sweep_busy_after_probe_failure_still_resets_clock(
+    tmp_path, monkeypatch, stub_server
+):
+    """A kept clock must not mask real activity: a confirmed busy slot still resets it."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "m", "status": {"value": "loaded"}}]}
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port)
+
+    t0 = 1000.0
+    assert sup.sweep_idle(now=t0) == []  # clock starts
+    handler.slots_error = 500  # probe fails: clock kept
+    assert sup.sweep_idle(now=t0 + 100) == []
+    handler.slots_error = 0
+    handler.slots = [{"is_processing": True}]  # confirmed busy: clock resets
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 5) == []
+    handler.slots = []
+    # Fresh clock since the busy sighting — not the original t0 one.
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 6) == []
+    assert handler.unloaded == []
+
+
 def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     """A split GGUF mid-download must NOT count as staged: the picker, the
     catalog's 'downloaded' flag, and the router's model list all read
@@ -727,6 +786,38 @@ def test_runtime_provider_seam_llamacpp_alias(tmp_path, monkeypatch, stub_server
     assert runtime["provider"] == "custom"
 
 
+def test_configured_llamacpp_provider_wins_over_managed_alias(tmp_path, monkeypatch):
+    """A providers.llamacpp endpoint is explicit configuration, not a managed-runtime request (#116143)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "providers": {
+                "llamacpp": {
+                    "base_url": "http://127.0.0.1:8081/v1",
+                    "default_model": "configured-model",
+                }
+            }
+        },
+    )
+
+    def _managed_alias_must_not_run(*args, **kwargs):
+        raise AssertionError("configured providers.llamacpp must resolve before managed detection")
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        _managed_alias_must_not_run,
+    )
+    from hermes_cli.runtime_provider import _resolve_named_custom_runtime
+
+    runtime = _resolve_named_custom_runtime(requested_provider="llamacpp")
+
+    assert runtime is not None
+    assert runtime["base_url"] == "http://127.0.0.1:8081/v1"
+    assert runtime["model"] == "configured-model"
+    assert runtime["source"].startswith("custom_provider:")
+
+
 def test_runtime_provider_seam_explicit_base_url_wins(tmp_path, monkeypatch):
     """A user-specified base_url must never be overridden by the managed
     endpoint — pointing at a specific server means that server."""
@@ -746,6 +837,61 @@ def test_runtime_provider_seam_explicit_base_url_wins(tmp_path, monkeypatch):
     assert runtime is not None
     assert runtime["base_url"] == "http://127.0.0.1:9999/v1"
     assert runtime["source"] != "local-runtime"
+
+
+def _stage_local_model(home, model_id):
+    models = home / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    (models / f"{model_id}.gguf").write_bytes(b"GGUF")
+
+
+def test_staged_local_model_resolves_without_a_running_server(tmp_path, monkeypatch):
+    """The picker's Local row exists from staged GGUFs alone (contract: selectable before the server
+    runs — selection starts it through the runtime seam). Selecting one must reach that seam instead
+    of dying at the provider gate with "Unknown provider 'llamacpp'": the row's id and the resolver's
+    are one definition, so an id the picker offers always resolves (#116249)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _stage_local_model(tmp_path / ".hermes", "Qwen3.8-27B-IQ3_S-mtp")
+    monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
+
+    from hermes_cli.providers import LLAMACPP_PROVIDER_ID, resolve_provider_full
+
+    pdef = resolve_provider_full(LLAMACPP_PROVIDER_ID, {}, [])
+    assert pdef is not None, "staged model, but the picker's own provider id does not resolve"
+    assert pdef.id == LLAMACPP_PROVIDER_ID
+
+    from hermes_cli.model_switch import switch_model
+
+    result = switch_model("Qwen3.8-27B-IQ3_S-mtp", current_provider="nous",
+                          current_model="Hermes-4.5", current_base_url="",
+                          explicit_provider=LLAMACPP_PROVIDER_ID)
+    assert result.success is False  # no server anywhere; the seam reports it
+    error = result.error_message or ""
+    assert "Unknown provider" not in error
+    assert "local model server" in error.lower(), error
+
+
+def test_external_server_on_a_configured_detect_port_is_used(tmp_path, monkeypatch, stub_server):
+    """A llama-server the user runs on a fixed non-default port is what `provider: llamacpp` resolves
+    to when that port is declared in local_runtime.detect_ports — the knob is documented for exactly
+    this, and every provider path called the endpoint resolver without a config (#116143, #116249)."""
+    port, handler = stub_server
+    handler.props = {"build_info": "b10964-test", "model_path": "/models/ext-model.gguf",
+                     "default_generation_settings": {"n_ctx": 4096}}
+    handler.models = {"data": [{"id": "ext-model", "owned_by": "llamacpp"}]}
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _stage_local_model(home, "ext-model")
+    (home / "config.yaml").write_text(
+        f"local_runtime:\n  enabled: false\n  detect_ports: [{port}]\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
+
+    from hermes_cli.model_switch import switch_model
+
+    result = switch_model("ext-model", current_provider="nous", current_model="Hermes-4.5",
+                          current_base_url="", explicit_provider="llamacpp")
+    assert result.success, result.error_message
+    assert result.base_url == f"http://127.0.0.1:{port}/v1"
 
 
 def test_local_runtime_config_defaults_shape():
@@ -811,3 +957,16 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+def test_manifest_verified_tolerates_non_dict_manifest(tmp_path):
+    """A parseable-but-non-object manifest used to raise AttributeError out of
+    manifest_verified (the .get ran inside a try that only caught decode/OSError),
+    breaking any() scans over install dirs."""
+    from hermes_cli.local_runtime.binaries import manifest_verified
+
+    m = tmp_path / "manifest.json"
+    m.write_text('"oops"', encoding="utf-8")
+    assert manifest_verified(m) is False
+    m.write_text(json.dumps({"verified_version": "5015 (abc)"}), encoding="utf-8")
+    assert manifest_verified(m) is True

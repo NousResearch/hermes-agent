@@ -200,10 +200,71 @@ def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim)
     elif path == "reuse":
         response = server._resume_reuse_live(ctx, sid, session)
     else:
-        name = {"activate": "session.activate", "prompt": "prompt.submit"}[path]
+        name, extra = {"activate": ("session.activate", {"omit_messages": True}),
+                       "prompt": ("prompt.submit", {"text": "continue"})}[path]
         response = server.handle_request({"jsonrpc": "2.0", "id": 1, "method": name,
-                                          "params": {"session_id": sid, "text": "continue", "omit_messages": True}})
+                                          "params": {"session_id": sid, **extra}})
     assert response.get("error", {}).get("code") == (4007 if claim == "retired" else 4009)
     assert session["transport"] is server._detached_ws_transport
     assert sid in server._pending_ws_reaps
     assert session["queued_prompt"] is None
+
+
+@pytest.mark.parametrize("path", ["unpersisted", "reuse", "prompt"])
+@pytest.mark.parametrize("socket", ["closed", "live"])
+def test_late_rpc_from_closed_socket_keeps_orphan_reap_armed(monkeypatch, path, socket):
+    """A resume/submit whose socket already closed (disconnect cleanup ran first, so nothing detaches it
+    again) must not cancel the orphan reap: the client is not back. A live socket still cancels it."""
+    sid = "late-rebind"
+    session = dict(transport=server._detached_ws_transport, running=True, history_lock=threading.Lock(),
+                   history=[], session_key="stored", agent=SimpleNamespace(model="test"), queued_prompt=None)
+    timers = []
+
+    class Timer:
+        def __init__(self, delay, callback):
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    class Socket:
+        _closed = socket == "closed"
+
+        def send(self, *a, **kw):
+            pass
+
+    transport = Socket()
+    monkeypatch.setattr(server, "_sessions", {sid: session})
+    monkeypatch.setattr(server, "_pending_ws_reaps", {sid: Mock()})
+    monkeypatch.setattr(server.threading, "Timer", Timer)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20)
+    monkeypatch.setattr(server, "current_transport", lambda: transport)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test")
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *a: None)
+    monkeypatch.setattr(server, "_legacy_group_fence_error", lambda *a: None)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a: False)
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+    monkeypatch.setattr(server, "_handle_busy_submit", lambda *a, **kw: {"result": {"status": "queued"}})
+    monkeypatch.setattr(server, "_sess", lambda *a: (session, None))
+    ctx = SimpleNamespace(rid=1, owns_db=False, db=None, cols=80, omit_messages=True,
+                          defer_history=False, target="stored", profile=None,
+                          profile_home=None, profile_resume_cwd=None, found={},
+                          messages=lambda history: [], mint=lambda: ("unused", "tui", "."),
+                          restore=lambda: ([], [], []), display_prefix=lambda: [])
+    if path == "unpersisted":
+        response = server._resume_live_unpersisted(ctx, sid, session)
+    elif path == "reuse":
+        response = server._resume_reuse_live(ctx, sid, session)
+    else:
+        response = server.handle_request({"jsonrpc": "2.0", "id": 1, "method": "prompt.submit",
+                                          "params": {"session_id": sid, "text": "continue"}})
+    assert "error" not in response
+    if socket == "closed":
+        assert session["transport"] is server._detached_ws_transport
+        assert sid in server._pending_ws_reaps  # left armed (unpersisted/prompt) or re-armed (reuse cancels first)
+    else:
+        assert session["transport"] is transport
+        assert sid not in server._pending_ws_reaps

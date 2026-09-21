@@ -2,8 +2,10 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -509,8 +511,34 @@ def _daemon(name: Optional[str], target) -> None:
     threading.Thread(target=lambda: _quiet(target), name=name, daemon=True).start()
 
 
+def _skip_background_prefetch() -> bool:
+    """True when the banner's background prefetch threads must not start.
+
+    Under pytest the prefetch daemon threads shell out to git (``rev-parse``,
+    ``remote get-url``, the banner's git state) at an arbitrary point after
+    import, and any test that patches the process-wide ``subprocess`` singleton
+    (``patch("subprocess.run")`` / ``patch("subprocess.Popen")``) can record
+    that stray spawn in place of the call it meant to pin.  Importing
+    ``tui_gateway.server`` starts this prefetch, which is what flaked
+    tests/tui_gateway/test_subprocess_encoding.py and test_bot_relay_methods.py.
+    Nothing under pytest needs a live update check; tests that exercise the
+    prefetch itself monkeypatch this predicate to False.
+
+    ``PYTEST_CURRENT_TEST`` is only set while a test runs, not during
+    collection-time imports, hence the ``sys.modules`` check as well.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
 def prefetch_update_check():
-    """Kick off update check in a background daemon thread."""
+    """Kick off update check in a background daemon thread.
+
+    No-op under pytest — see ``_skip_background_prefetch``.
+    """
+    if _skip_background_prefetch():
+        _update_check_done.set()
+        return
+
     def _run():
         global _update_result
         _update_result = check_for_updates(passive=True)
@@ -530,6 +558,13 @@ def prefetch_banner_data():
     """
     global _banner_data_prefetch_started
     if _banner_data_prefetch_started:
+        return
+    if _skip_background_prefetch():
+        # Same stray-git-spawn cross-talk class as prefetch_update_check:
+        # get_git_banner_state() shells out via the shared subprocess
+        # singleton from a daemon thread, poisoning process-wide subprocess
+        # mocks in unrelated tests.
+        _banner_data_prefetch_started = True
         return
     _banner_data_prefetch_started = True
     _daemon("banner-data-prefetch", lambda: [_quiet(warm) for warm in (
@@ -685,13 +720,8 @@ def save_banner_snapshot(tools: List[dict], enabled_toolsets: List[str], availab
     }
 
     def _write():
-        import tempfile
-        path = _banner_snapshot_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".banner_snap.")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
-        os.replace(tmp, path)
+        from utils import atomic_json_write
+        atomic_json_write(_banner_snapshot_path(), payload, indent=None, mode=0o600)
     _quiet(_write)
 
 
@@ -726,12 +756,28 @@ def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:
     name, transport = srv["name"], srv["transport"]
     if srv["connected"]:
         return f"[dim {dim}]{name}[/] [{text}]({transport})[/] [dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
+    # Needs srv['tools'], so it cannot live in the suffix dict below. A registered but unspawned
+    # server has callable tools; falling through to the red "failed" line misreports a working setup.
+    if srv.get("status") == "lazy":
+        return (f"[dim {dim}]{name}[/] [{text}]({transport})[/] [dim {dim}]—[/] "
+                f"[{text}]{srv['tools']} tool(s)[/] [dim {dim}](lazy, starts on first use)[/]")
     status = "disabled" if srv.get("disabled") else srv.get("status")
     suffix = {"disabled": f"[dim {dim}]— disabled[/]", "connecting": "[yellow]— connecting[/]",
               "configured": f"[dim {dim}]— configured[/]"}.get(status)
     if suffix is not None:
         return f"[dim {dim}]{name}[/] [dim]({transport})[/] {suffix}"
-    return f"[red]{name}[/] [dim]({transport})[/] [red]— failed[/]"
+    return _mcp_failed_line(name, transport, srv.get("error"))
+
+
+def _mcp_failed_line(name: str, transport: str, error: Optional[str]) -> str:
+    """Failed MCP connect: the short reason (already humanised by ``_format_connect_error``) and the
+    exact next command, so 'failed' is never the whole story."""
+    from rich.markup import escape
+    reason = escape(" ".join(str(error or "").split())[:120]) or "no details recorded"
+    next_cmd = (f"hermes mcp login {name}" if re.search(r"\b401\b|unauthori[sz]ed", reason, re.I)
+                else f"hermes mcp test {name}")
+    return (f"[red]{name}[/] [dim]({transport})[/] [red]— could not connect:[/] {reason} "
+            f"[dim]— run `{next_cmd}`[/]")
 
 
 def _truncate_tool_names(tool_names: List[str]) -> List[Optional[str]]:
@@ -818,12 +864,15 @@ def _route_model_for_banner(provider: Any) -> str:
     return GUEST_MODEL if guest_carries_inference() else ""
 
 
-def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str) -> list:
-    """Model / cwd / session lines under the hero art."""
+def _banner_left_lines(model: str, cwd: str, session_id, context_length, provider, *, accent: str, dim: str,
+                       context_pinned: bool = False) -> list:
+    """Model / cwd / session lines under the hero art. ``context_pinned`` marks a
+    ``model.context_length`` pin so the user can tell it apart from provider metadata (#66168)."""
     def _dim_sep(label: str) -> str:
         return f" [dim {dim}]·[/] [dim {dim}]{label}[/]"
     lines = []
-    ctx_str = _dim_sep(f"{_format_context_length(context_length)} context") if context_length else ""
+    pin = " (pinned)" if context_pinned else ""
+    ctx_str = _dim_sep(f"{_format_context_length(context_length)} context{pin}") if context_length else ""
     nous_str = _dim_sep("Nous Research")
     if not (model or "").strip():
         # Credentials resolve lazily on the first message; the banner prints first. Ask the route
@@ -897,6 +946,7 @@ def build_welcome_banner(
     console: "Console", model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None,
     session_id: str = None, get_toolset_for_tool=None, context_length: int = None, provider: str = None,
     availability: Dict[str, Any] = None, skills_by_category: Dict[str, List[str]] = None,
+    context_pinned: bool = False,
 ):
     """Build and print a welcome banner with caduceus on left and info on right.
 
@@ -920,7 +970,8 @@ def build_welcome_banner(
     # Use skin's custom caduceus art if provided
     _bskin = _quiet(_active_skin)
     left_lines = ["", getattr(_bskin, "banner_hero", None) or HERMES_CADUCEUS, ""]
-    left_lines += _banner_left_lines(model, cwd, session_id, context_length, provider, accent=accent, dim=dim)
+    left_lines += _banner_left_lines(model, cwd, session_id, context_length, provider, accent=accent, dim=dim,
+                                     context_pinned=context_pinned)
     right_lines = _banner_tool_lines(
         tools, availability.get("unavailable_toolsets", []), get_toolset_for_tool,
         lazy_tools=set(availability.get("lazy_tools", [])), disabled_tools=set(availability.get("disabled_tools", [])),

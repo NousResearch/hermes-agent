@@ -69,6 +69,9 @@ def responses_agent(tmp_path, monkeypatch):
         "hermes_cli.plugins.invoke_hook",
         lambda hook, **kw: [{"context": POLICY}] if hook == "pre_llm_call" else [],
     )
+    # Titling is not under test; its daemon thread would outlive the turn holding ``db`` and race
+    # the close below (a cross-thread sqlite reopen at interpreter shutdown crashed CI: #113186).
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
 
     def respond(kwargs, **unused):
         captured.append(deepcopy(kwargs))

@@ -25,15 +25,16 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home, named_profile_home
+from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
 
-from hermes_time import now as _hermes_now
+from hermes_time import get_timezone, now as _hermes_now
 from utils import atomic_replace, atomic_write_text, is_truthy_value
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
@@ -111,6 +112,38 @@ class _CronStorePaths:
 _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
     "cron_store_override", default=None)
 
+
+class _SelfRemovalDelivery:
+    """Mutable run-local marker shared with the agent's copied ContextVar context."""
+
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        self.removed = False
+
+
+_self_removal_delivery: ContextVar[Optional[_SelfRemovalDelivery]] = ContextVar(
+    "self_removal_delivery", default=None)
+
+
+@contextlib.contextmanager
+def self_removal_delivery_scope(job_id: str):
+    """Permit this run's final delivery after it removes its own job record."""
+    marker = _SelfRemovalDelivery(job_id)
+    token = _self_removal_delivery.set(marker)
+    try:
+        yield marker
+    finally:
+        _self_removal_delivery.reset(token)
+
+
+def self_removal_delivery_allowed(job_id: str) -> bool:
+    """Whether the active run deleted exactly its own job record and no record has since taken
+    its id (a replacement record belongs to another owner, so that stays fail-closed)."""
+    marker = _self_removal_delivery.get()
+    if marker is None or marker.job_id != job_id or not marker.removed:
+        return False
+    return all(item.get("id") != job_id for item in load_jobs())
+
 # Import-time snapshot so deliberate re-pointing of CRON_DIR/JOBS_FILE/OUTPUT_DIR (the documented
 # escape hatch for tests/embedders) is distinguishable from the constants merely being stale.
 _IMPORT_STORE = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
@@ -154,10 +187,8 @@ def get_cron_output_dir() -> Path:
 # mid-run.
 ONESHOT_RUN_CLAIM_TTL_SECONDS = 1800
 
-# Derived TTL = inactivity timeout × this headroom. The TTL only recovers a claim left by a tick
-# that DIED mid-run; the timeout is an *inactivity* limit, not a wall-clock cap, so healthy runs may
-# legitimately exceed it — hence the headroom.
-_ONESHOT_RUN_CLAIM_TTL_HEADROOM = 3
+# Derived TTL = inactivity timeout × CLAIM_TTL_INACTIVITY_HEADROOM (cron/constants.py). The TTL
+# only recovers a claim left by a tick that DIED mid-run.
 
 _DEFAULT_CRON_INACTIVITY_TIMEOUT = 600.0
 
@@ -172,7 +203,7 @@ def _oneshot_run_claim_ttl_seconds() -> float:
         timeout = _DEFAULT_CRON_INACTIVITY_TIMEOUT
     if timeout <= 0:
         return float(ONESHOT_RUN_CLAIM_TTL_SECONDS)
-    return max(timeout * _ONESHOT_RUN_CLAIM_TTL_HEADROOM, float(ONESHOT_RUN_CLAIM_TTL_SECONDS))
+    return max(timeout * CLAIM_TTL_INACTIVITY_HEADROOM, float(ONESHOT_RUN_CLAIM_TTL_SECONDS))
 
 
 def _job_running_in_this_process(job_id: str) -> bool:
@@ -353,7 +384,8 @@ def _under_fire_fence(job_id: str, fn: Callable[[], Any]) -> Any:
 
 @contextlib.contextmanager
 def fire_claim_fence(job_id: str, *, expected_owner: str):
-    """Hold a per-job fence while an owner performs an external side effect."""
+    """Hold a per-job fence while an owner performs an external side effect. A missing record
+    is accepted only for the active run that removed this exact job (#111039)."""
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
             yield False
@@ -362,6 +394,8 @@ def fire_claim_fence(job_id: str, *, expected_owner: str):
             job = next((item for item in load_jobs() if item.get("id") == job_id), None)
             claim = job.get("fire_claim") if isinstance(job, dict) else None
             owns_claim = isinstance(claim, dict) and claim.get("by") == expected_owner
+            if job is None:
+                owns_claim = self_removal_delivery_allowed(job_id)
         yield owns_claim
 
 
@@ -789,7 +823,9 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError:
             raise ValueError(
                 f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'.")
-        run_at = _hermes_now() + timedelta(minutes=minutes)
+        now = _hermes_now()
+        # Durations measure elapsed time, not wall-clock hours across a DST transition.
+        run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
     with contextlib.suppress(ValueError):
         return _interval_schedule(parse_duration(schedule))
@@ -886,9 +922,6 @@ def _classify_dispatch_lateness(lateness_seconds: float, grace_seconds: int) -> 
 _persisted_error_recoveries: int = 0
 # Bounded in-memory history kept by every probe-visible fire-path counter.
 _TELEMETRY_RECENT_HISTORY = 20
-# A fire_claim younger than this is a live run (heartbeat cadence is 60 s). One value
-# for claiming, one-shot re-arm, and stale-error recovery so they cannot disagree.
-FIRE_CLAIM_TTL_SECONDS = 300
 _persisted_error_recoveries_recent: list = []
 
 
@@ -906,6 +939,9 @@ def _job_is_stale_error_recurring(
     See #62002.
     """
     if job.get("last_status") != "error":
+        return False
+    from cron.quota_hold import hold_active
+    if hold_active(job, now):
         return False
     if _job_running_in_this_process(str(job.get("id") or "")):
         return False
@@ -1107,7 +1143,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         minutes = schedule.get("minutes")
         if minutes is None:
             return None
-        return (base_time + timedelta(minutes=minutes)).isoformat()
+        # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.
+        next_run = base_time.astimezone(timezone.utc) + timedelta(minutes=minutes)
+        return next_run.astimezone(base_time.tzinfo).isoformat()
     if kind == "cron":
         expr = schedule.get("expr")
         if not expr:
@@ -1119,7 +1157,36 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 "reinstall hermes-agent or run 'pip install croniter' in your runtime env.",
                 expr)
             return None
-        return croniter(expr, base_time).get_next(datetime).isoformat()
+        # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK,
+        # not to the UTC offset carried by ``base_time``. croniter ignores
+        # the tzinfo on its start time and uses the start's UTC offset as its
+        # working offset, so a ``last_run_at`` stored in UTC (+00:00) would
+        # push the next fire to 09:00 UTC instead of 09:00 local, and DST
+        # transition days (spring-forward / fall-back) would land one hour off
+        # (08:00 or 10:00). Render the base as the configured zone's naive
+        # wall clock for croniter, then re-attach the zone to the result, so
+        # the wall-clock hour stays correct every calendar day, including DST
+        # boundaries (morning-routine 09:00 America/Toronto).
+        # Fall back to the base's own zone only when nothing is configured.
+        zone = get_timezone() or base_time.tzinfo
+        base_wall = base_time.astimezone(zone).replace(tzinfo=None)
+        it = croniter(expr, base_wall)
+        # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
+        # attaching the zone to a naive wall clock resolves the repeated autumn hour
+        # to its EARLIER occurrence (fold=0), so a base inside the second occurrence
+        # got a "next run" up to an hour in the PAST — the fire path would re-fire
+        # immediately and re-anchor, looping. Try both folds of each candidate wall
+        # clock and return the earliest instant strictly after the base; a repeated
+        # hour has two instants, so two candidates always suffice.
+        base_ts = base_time.timestamp()
+        next_wall = it.get_next(datetime)
+        for _ in range(2):
+            for fold in (0, 1):
+                candidate = next_wall.replace(tzinfo=zone, fold=fold)
+                if candidate.timestamp() > base_ts:
+                    return candidate.isoformat()
+            next_wall = it.get_next(datetime)
+        return next_wall.replace(tzinfo=zone).isoformat()
     return None
 
 
@@ -1130,7 +1197,7 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
     tick."""
     try:
         ensure_dirs()
-        atomic_write_text(_current_cron_store().cron_dir / name, text, tmp_prefix=tmp_prefix)
+        atomic_write_text(_current_cron_store().cron_dir / name, text, tmp_prefix=tmp_prefix, mode=0o600)
     except Exception:
         pass
 
@@ -1501,31 +1568,22 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
-def _resolve_default_model_snapshot() -> Optional[str]:
-    """Default model resolved as the ticker's ``run_job`` does, so unpinned jobs can snapshot it and
-    detect a later swap. ``None`` on missing config or failure (fail-open: "no snapshot")."""
-    try:
-        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+def _main_model_pin() -> Tuple[Optional[str], Optional[str]]:
+    """``(provider, model)`` the main agent runs on right now for a pinned job."""
+    from hermes_cli.config_effective import load_user_config_effective
 
-        cfg_path = get_hermes_home() / "config.yaml"
-        if not cfg_path.exists():
-            return None
-        cfg = read_user_config_raw(cfg_path)
-        with contextlib.suppress(Exception):
-            from hermes_cli import managed_scope
-            cfg = managed_scope.apply_managed_overlay(cfg)
-        cfg = _expand_env_vars(cfg)
-        cron_cfg = cfg.get("cron") or {}
-        if isinstance(cron_cfg, dict):
-            cron_model = cron_cfg.get("model")
-            if isinstance(cron_model, str) and cron_model.strip():
-                return cron_model.strip()
-        model_cfg = cfg.get("model") or {}
-        if isinstance(model_cfg, dict):
-            model_cfg = model_cfg.get("default") or model_cfg.get("model")
-        return model_cfg.strip() or None if isinstance(model_cfg, str) else None
-    except Exception:
-        return None
+    cfg_path = get_hermes_home() / "config.yaml"
+    cfg = load_user_config_effective(cfg_path) if cfg_path.exists() else {}
+    model_cfg = cfg.get("model") or {}
+    model = model_cfg.get("default") or model_cfg.get("model") if isinstance(model_cfg, dict) else model_cfg
+    model = _normalize_job_optional_text(model)
+    if not model:
+        return None, None
+    provider = None
+    with contextlib.suppress(Exception):
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
+    return (provider.lower() if provider else None), model
 
 
 def _normalize_job_optional_text(
@@ -1648,6 +1706,50 @@ def _normalized_inference_axes(
     )
 
 
+def _compute_provider_model_snapshots(
+    *, provider: Any, model: Any, base_url: Any, no_agent: Any,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Snapshot unpinned provider/model resolution: the scheduler runs the job on this snapshot after
+    a later global switch instead of silently changing spend. Pinned axes and no-agent jobs carry no
+    snapshot."""
+    normalized_provider = _normalize_job_optional_text(provider)
+    normalized_model = _normalize_job_optional_text(model)
+    normalized_base_url = _normalize_base_url(base_url)
+    if bool(no_agent):
+        return None, None
+
+    provider_snapshot: Optional[str] = None
+    model_snapshot: Optional[str] = None
+    if normalized_provider is None:
+        with contextlib.suppress(Exception):
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime_kwargs = {"requested": None}
+            # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop, which honors
+            # Retry-After. The SDK default (max_retries=2) uses its own 1-2s backoff that ignores
+            # Retry-After and double-retries inside our loop — burning request slots against a bucket that
+            # won't refill for minutes. (#26293)
+            if normalized_base_url:
+                runtime_kwargs["explicit_base_url"] = normalized_base_url
+            snap = resolve_runtime_provider(**runtime_kwargs)
+            provider_snapshot = str(snap.get("provider") or "").strip().lower() or None
+    if normalized_model is None:
+        with contextlib.suppress(Exception):
+            model_snapshot = _resolve_default_model_snapshot() or None
+    return provider_snapshot, model_snapshot
+
+
+def _normalized_inference_axes(
+    job: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
+    """Return the stored inference-routing fields in their semantic form."""
+    return (
+        _normalize_job_optional_text(job.get("provider")),
+        _normalize_job_optional_text(job.get("model")), _normalize_base_url(job.get("base_url")),
+        bool(job.get("no_agent")),
+    )
+
+
 def _validate_job_mode_invariants(
     monitor_script: Optional[str],
     monitor_url: Optional[str],
@@ -1714,6 +1816,7 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    pinned: bool = False,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1762,8 +1865,8 @@ def create_job(
         or "cron job"
     )
     name = name or label_source[:50].strip()
-    provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
-        provider=f["provider"], model=f["model"], base_url=f["base_url"], no_agent=f["no_agent"])
+    if pinned and not f["model"]:
+        f["provider"], f["model"] = _main_model_pin()
     next_run_at = _next_run_or_reject_past_oneshot(parsed_schedule, name, schedule, "")
 
     job = {
@@ -1774,8 +1877,6 @@ def create_job(
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": f["model"],
         "provider": f["provider"],
-        "provider_snapshot": provider_snapshot,
-        "model_snapshot": model_snapshot,
         "base_url": f["base_url"],
         "script": f["script"],
         "no_agent": f["no_agent"],
@@ -1887,6 +1988,22 @@ def _reject_terminal_activation(job: Dict[str, Any], updated: Dict[str, Any], jo
             "through update_job; use cron resume --run-now or --at.")
 
 
+def _apply_pin_update(job: Dict[str, Any], updates: Dict[str, Any]) -> None:
+    """``pinned`` is not stored; it rewrites the per-job pin. ``True`` with no explicit model locks
+    the main agent's current provider+model onto the job, ``False`` releases both so the job follows
+    the main model again (an explicit ``model`` in the same update wins over either)."""
+    if "pinned" not in updates:
+        return
+    pinned = bool(updates.pop("pinned"))
+    if "model" in updates:
+        return
+    if pinned:
+        if not _normalize_job_optional_text(job.get("model")):
+            updates["provider"], updates["model"] = _main_model_pin()
+    else:
+        updates["provider"], updates["model"] = None, None
+
+
 def _normalize_job_updates(job: Dict[str, Any], updates: Dict[str, Any]) -> None:
     """Normalize updates in place like create_job; invalid values raise BEFORE the merge. ``repeat``
     accepts the stored dict or a bare value (coerced, completed counter preserved)."""
@@ -1972,8 +2089,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     def apply(jobs, i, job):
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
-        previous_inference_axes = _normalized_inference_axes(job)
         previous_schedule_kind = (job.get("schedule") or {}).get("kind")
+        _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
@@ -1985,12 +2102,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 _normalize_job_optional_text(updated.get("script")))
         if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
             raise ValueError(EMPTY_PAYLOAD_ERROR)
-        inference_fields_changed = bool(
-            {"provider", "model", "base_url", "no_agent"}.intersection(updates)
-        ) and _normalized_inference_axes(updated) != previous_inference_axes
-
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)
+            from cron.quota_hold import clear_state as clear_quota_hold
+            clear_quota_hold(updated)
             # A schedule-kind transition changes the repeat contract just as it
             # does at creation time. Preserve the completed counter, but derive
             # the default limit unless the caller explicitly supplied repeat.
@@ -2002,13 +2117,6 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updated["repeat"] = repeat
         if {"schedule", "next_run_at", "enabled", "state"}.intersection(updates):
             updated.pop("pending_slot", None)
-        if inference_fields_changed:
-            snapshots = _compute_provider_model_snapshots(
-                provider=updated.get("provider"),
-                model=updated.get("model"),
-                base_url=updated.get("base_url"),
-                no_agent=updated.get("no_agent"))
-            updated["provider_snapshot"], updated["model_snapshot"] = snapshots
         _fill_missing_next_run(updated)
         _reject_terminal_activation(job, updated, job_id)
         jobs[i] = updated
@@ -2059,6 +2167,78 @@ def resnapshot_all_unpinned() -> List[Dict[str, Any]]:
     return updated
 
 
+def resnapshot_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Refresh provider/model snapshots for a job's UNPINNED axes to the
+    current global resolution.
+
+    This is the "adopt the current global default" companion to pinning
+    (#44585). Where pinning a job (``provider=... model=...``) makes it stop
+    tracking the global default forever, ``resnapshot_job`` re-captures the
+    current resolution so an unpinned job follows the user's deliberately
+    changed default — while remaining unpinned and tracking future changes.
+
+    Semantics:
+      - Pinned axes (job has an explicit provider/model) keep their snapshot
+        None and are left untouched.
+      - no_agent script jobs carry no snapshot and are left untouched.
+      - If the current resolution fails, the previous snapshot is left in
+        place (fail-open, matching create_job semantics).
+
+    Makes no inference call — it only recomputes the snapshot string from
+    config. Returns the normalized updated job, or None if not found.
+    """
+    job = resolve_job_ref(job_id)
+    if not job:
+        return None
+    provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+        provider=job.get("provider"),
+        model=job.get("model"),
+        base_url=job.get("base_url"),
+        no_agent=job.get("no_agent"),
+    )
+    jobs = load_jobs()
+    for i, stored in enumerate(jobs):
+        if stored["id"] != job["id"]:
+            continue
+        jobs[i]["provider_snapshot"] = provider_snapshot
+        jobs[i]["model_snapshot"] = model_snapshot
+        save_jobs(jobs)
+        return _normalize_job_record(jobs[i])
+    return None
+
+
+def resnapshot_all_unpinned() -> List[Dict[str, Any]]:
+    """Refresh provider/model snapshots for every job that has any unpinned
+    axis, adopting the current global resolution for each.
+
+    Skips no_agent jobs and jobs pinned on all inference axes (nothing
+    unpinned to refresh). Equivalent to calling ``resnapshot_job`` for each
+    eligible job. Returns the list of updated jobs.
+    """
+    updated: List[Dict[str, Any]] = []
+    jobs = load_jobs()
+    changed = False
+    for job in jobs:
+        if bool(job.get("no_agent")):
+            continue
+        if job.get("provider") and job.get("model"):
+            # Pinned on every axis — nothing unpinned to refresh.
+            continue
+        provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
+            provider=job.get("provider"),
+            model=job.get("model"),
+            base_url=job.get("base_url"),
+            no_agent=job.get("no_agent"),
+        )
+        job["provider_snapshot"] = provider_snapshot
+        job["model_snapshot"] = model_snapshot
+        changed = True
+        updated.append(_normalize_job_record(job))
+    if changed:
+        save_jobs(jobs)
+    return updated
+
+
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Pause a job without deleting it. Accepts a job ID or name."""
     job = resolve_job_ref(job_id)
@@ -2073,11 +2253,31 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Resume a paused job and compute the next future run from now. Accepts a job ID or name."""
+    """Resume a paused job. Accepts a job ID or name.
+
+    A recurring job paused across one of its slots must not lose that slot silently: the stored
+    ``next_run_at`` (already past) survives resume as the due instant, and the ordinary late /
+    catch-up / ``cron.catch_up_missed`` policy in the due scan decides what happens to it — one
+    fire or a logged skip, never a silent re-anchor past it (#113603). One-shots and future
+    instants recompute from now as before.
+    """
     job = resolve_job_ref(job_id)
     if not job:
         return None
-    next_run_at = compute_next_run(job["schedule"])
+    stored_next = job.get("next_run_at")
+    stored_dt = _parse_aware(stored_next) if stored_next else None
+    if (
+        job["schedule"].get("kind") in {"cron", "interval"}
+        and stored_dt is not None
+        and stored_dt <= _hermes_now()
+    ):
+        next_run_at = stored_next
+        logger.info(
+            "Job '%s' resumed with occurrence %s that elapsed while paused kept due; the next "
+            "tick fires it (late/catch-up) or logs the skip.",
+            job.get("name", job["id"]), stored_next)
+    else:
+        next_run_at = compute_next_run(job["schedule"])
     if next_run_at is None and job["schedule"].get("kind") == "once":
         run_at = job["schedule"].get("run_at", "unknown")
         raise ValueError(
@@ -2203,6 +2403,9 @@ def remove_job(job_id: str) -> bool:
         # Resolve BEFORE saving so a legacy unsafe ID fails closed without a half-applied removal.
         job_output_dir = _job_output_dir(canonical_id)
         save_jobs(jobs, removed_ids={canonical_id})
+        marker = _self_removal_delivery.get()
+        if marker is not None and marker.job_id == canonical_id:
+            marker.removed = True
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         try:
@@ -2359,6 +2562,7 @@ def mark_job_run(
     *,
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
+    quota_hold_seconds: Optional[float] = None,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2384,6 +2588,12 @@ def mark_job_run(
             from cron.unreachable_retry import clear_state
             clear_state(job)
         _advance_after_run(job, now)
+        if quota_hold_seconds is not None and not success:
+            from cron.quota_hold import plan_hold
+            plan_hold(job, quota_hold_seconds)
+        elif quota_hold_seconds is None:
+            from cron.quota_hold import clear_state
+            clear_state(job)
         job.pop("_model_unreachable", None)
         save_jobs(jobs)
         return True
@@ -2644,6 +2854,21 @@ def claim_job_for_fire(
         # stamping it would make completed_occurrence() skip that slot when it arrives.
         manual_fire = force or manual or job.get("manual_run_at") == job.get("next_run_at")
         instant = None if manual_fire else scheduled_instant(job.get("next_run_at"))
+        # A scheduled tick only ever fires when now >= next_run_at
+        # (_evaluate_due_job returns False while the stored occurrence is still
+        # in the future), so a claim arriving BEFORE the stored next occurrence
+        # cannot be the tick that owns it — it is a manual / dashboard / webhook
+        # fire and must stay occurrence-free. Binding it would make run_one_job
+        # stamp that FUTURE instant completed in the ledger: later manual fires
+        # are then refused ("Job is already being fired by the scheduler") and
+        # the scheduled tick dedupe-skips its real delivery (2026-09-08 live:
+        # a manual run at 19:53 consumed the next day's 19:00 occurrence).
+        # A claim within FIRE_CLAIM_SKEW_SECONDS of the slot is the fire for that slot
+        # (provider clock skew); dropping its identity would leave the slot unrecorded, so
+        # mark_job_run recomputes the same cron slot and the misfire backstop runs it twice.
+        if (instant is not None
+                and datetime.fromisoformat(instant) - now >= timedelta(seconds=FIRE_CLAIM_SKEW_SECONDS)):
+            instant = None
         if instant and completed_occurrence(job, instant):
             if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
                 nxt = compute_next_run(job["schedule"], now.isoformat())
@@ -3213,7 +3438,7 @@ def save_job_output(job_id: str, output: str):
     _ensure_cron_dir(job_output_dir)
     _secure_dir(job_output_dir)
     output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
-    atomic_write_text(output_file, output, tmp_prefix=".output_")
+    atomic_write_text(output_file, output, tmp_prefix=".output_", mode=0o600)
     _secure_file(output_file)
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
     _prune_job_output(job_output_dir, _cron_output_keep())

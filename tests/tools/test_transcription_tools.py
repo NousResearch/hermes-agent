@@ -103,6 +103,38 @@ class TestGetProviderGroq:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "groq"}) == "groq"
 
+
+class TestProcessErrorDetail:
+    """#112582: a failed STT helper reports its real error even when
+    CalledProcessError carries no captured output (stderr/stdout default to None)."""
+
+    @staticmethod
+    def _detail(*, stderr=None, stdout=None):
+        from tools.transcription_common import _process_error_detail
+
+        error = subprocess.CalledProcessError(
+            1,
+            ["ffmpeg"],
+            output=stdout,
+            stderr=stderr,
+        )
+        return _process_error_detail(error)
+
+    def test_prefers_stderr_over_stdout(self):
+        assert self._detail(stderr=" stderr detail \n", stdout="stdout detail") == "stderr detail"
+
+    @pytest.mark.parametrize(
+        ("stderr", "stdout", "expected"),
+        [
+            (None, None, "returned non-zero exit status 1"),
+            (None, " stdout detail \n", "stdout detail"),
+            (b" bad \xff output \n", None, "bad \ufffd output"),
+        ],
+    )
+    def test_missing_or_byte_output_does_not_mask_the_failure(self, stderr, stdout, expected):
+        assert expected in self._detail(stderr=stderr, stdout=stdout)
+
+
 class TestGetProviderFallbackPriority:
     """Auto-detect fallback priority and explicit provider behaviour."""
 
@@ -192,6 +224,32 @@ class TestTranscribeGroq:
             result = _transcribe_groq("/tmp/test.ogg", "whisper-large-v3-turbo")
         assert result["success"] is False
         assert "openai package" in result["error"]
+
+
+class TestOpenAIClientConfig:
+    @pytest.mark.parametrize(
+        ("openai_config", "expected_timeout", "expected_retries"),
+        [({}, 60, 1), ({"timeout": 95, "max_retries": 3}, 95, 3)],
+    )
+    def test_stt_openai_config_controls_sdk_client(
+        self, monkeypatch, tmp_path, sample_wav, openai_config, expected_timeout, expected_retries
+    ):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_lines = ["stt:", "  openai:"]
+        config_lines.extend(f"    {key}: {value}" for key, value in openai_config.items())
+        (tmp_path / "config.yaml").write_text("\n".join(config_lines) + "\n", encoding="utf-8")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client) as openai_client:
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        assert openai_client.call_args.kwargs["timeout"] == expected_timeout
+        assert openai_client.call_args.kwargs["max_retries"] == expected_retries
 
 
     def test_null_groq_subsection_is_safe(self, monkeypatch, sample_wav):
@@ -355,6 +413,64 @@ class TestTranscribeLocalCommand:
     not __import__("importlib").util.find_spec("faster_whisper"),
     reason="faster_whisper not installed",
 )
+class TestLocalModelLoading:
+    def test_cached_model_load_never_uses_online_resolution(self):
+        cached_model = object()
+
+        with patch("faster_whisper.WhisperModel", return_value=cached_model) as model_cls:
+            from tools.transcription_local import _create_whisper_model
+
+            assert _create_whisper_model("base", device="cpu", compute_type="int8") is cached_model
+
+        model_cls.assert_called_once_with(
+            "base", local_files_only=True, device="cpu", compute_type="int8"
+        )
+
+    @pytest.mark.parametrize("download_error", [None, "Got: ConnectTimeout: [Errno 110] Connection timed out"])
+    def test_cache_miss_falls_back_with_actionable_download_failure(self, download_error):
+        from tools.transcription_local import _create_whisper_model, _hub_cache_miss_error
+
+        LocalEntryNotFoundError = _hub_cache_miss_error()
+        if download_error:
+            download_error = LocalEntryNotFoundError(download_error)
+
+        downloaded_model = object()
+        online_result = download_error or downloaded_model
+        side_effect = [LocalEntryNotFoundError("not cached"), online_result]
+        with patch("faster_whisper.WhisperModel", side_effect=side_effect) as model_cls:
+            if download_error:
+                with pytest.raises(RuntimeError) as exc_info:
+                    _create_whisper_model("base", device="auto", compute_type="auto")
+                assert "HF_ENDPOINT" in str(exc_info.value)
+                assert "HF_HUB_DISABLE_XET=1" in str(exc_info.value)
+            else:
+                assert _create_whisper_model(
+                    "base", device="auto", compute_type="auto"
+                ) is downloaded_model
+
+        assert model_cls.call_args_list == [
+            call("base", local_files_only=True, device="auto", compute_type="auto"),
+            call("base", local_files_only=False, device="auto", compute_type="auto"),
+        ]
+
+    def test_partial_cache_is_treated_as_a_cache_miss(self):
+        # An interrupted first download leaves refs/main + a snapshot without model.bin;
+        # snapshot_download(local_files_only=True) returns that folder and ctranslate2
+        # raises RuntimeError, so the online path must still run.
+        from tools.transcription_local import _create_whisper_model
+
+        downloaded_model = object()
+        side_effect = [RuntimeError("Unable to open file 'model.bin' in model '/cache/snap'"), downloaded_model]
+        with patch("faster_whisper.WhisperModel", side_effect=side_effect) as model_cls:
+            assert _create_whisper_model("base", device="cpu", compute_type="int8") is downloaded_model
+
+        assert [c.kwargs["local_files_only"] for c in model_cls.call_args_list] == [True, False]
+
+
+@pytest.mark.skipif(
+    not __import__("importlib").util.find_spec("faster_whisper"),
+    reason="faster_whisper not installed",
+)
 class TestTranscribeLocalExtended:
     def test_model_reuse_on_second_call(self, tmp_path):
         """Second call with same model should NOT reload the model."""
@@ -418,7 +534,9 @@ class TestTranscribeLocalExtended:
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
-        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+        mock_whisper_cls.assert_called_once_with(
+            "base", local_files_only=True, device="cpu", compute_type="float32"
+        )
 
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
@@ -439,6 +557,63 @@ class TestTranscribeLocalExtended:
         assert mock_whisper_cls.call_count == 1
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
+
+    @staticmethod
+    def _lazy_failure(message):
+        """faster-whisper's transcribe() returns a lazy generator: the decode — and the CUDA
+        dlopen-on-first-use — only fires while segments are iterated (#103793, #105295, #111929)."""
+        def segments():
+            raise RuntimeError(message)
+            yield  # pragma: no cover
+        return segments()
+
+    def test_iteration_time_cuda_dlopen_retries_on_cpu(self, tmp_path):
+        """A missing CUDA library raised while ITERATING segments must evict the cached model and
+        retry on CPU/int8, not surface as a hard failure (Windows: cublas64_12.dll)."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+        info = MagicMock(language="en", duration=1.0)
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (
+            self._lazy_failure("Library cublas64_12.dll is not found or cannot be loaded"), info)
+        cpu_segment = MagicMock(text="hi", no_speech_prob=0.0, avg_logprob=0.0)
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([cpu_segment], info)
+        mock_whisper_cls = MagicMock(side_effect=[cuda_model, cpu_model])
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True, result.get("error")
+        assert result["transcript"] == "hi"
+        assert mock_whisper_cls.call_count == 2
+        retry_kwargs = mock_whisper_cls.call_args_list[1].kwargs
+        assert (retry_kwargs["device"], retry_kwargs["compute_type"]) == ("cpu", "int8")
+
+    def test_iteration_time_non_lib_error_surfaces_without_cpu_retry(self, tmp_path):
+        """A real runtime failure during iteration must NOT trigger the CPU retry."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (self._lazy_failure("CUDA out of memory"), MagicMock())
+        mock_whisper_cls = MagicMock(return_value=cuda_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is False
+        assert "CUDA out of memory" in result["error"]
+        assert mock_whisper_cls.call_count == 1
 
 
 # ============================================================================
@@ -1205,12 +1380,20 @@ class TestRunCommandSttIdleTimeout:
         from tools.transcription_command import _run_command_stt
 
         script = tmp_path / "progress_then_exit.py"
+        # The de-flake is budget, not ordering: the first tick was always
+        # printed before the first sleep. What changed is the idle window
+        # (0.1s -> 0.25s, 5x the 50ms tick period) so process spawn latency
+        # under loaded CI or on Windows can no longer eat the whole window
+        # before the first stderr chunk is read, plus a longer heartbeat
+        # sequence whose ~400ms runtime still exceeds the idle window, so a
+        # pass still proves the progress extension.
         script.write_text(
             "\n".join([
                 "import sys, time",
-                "for idx in range(4):",
+                "print('tick 0', file=sys.stderr, flush=True)",
+                "for idx in range(1, 9):",
+                "    time.sleep(0.05)",
                 "    print(f'tick {idx}', file=sys.stderr, flush=True)",
-                "    time.sleep(0.04)",
                 "print('done', flush=True)",
             ]),
             encoding="utf-8",
@@ -1218,11 +1401,11 @@ class TestRunCommandSttIdleTimeout:
 
         result = _run_command_stt(
             self._shell_command(sys.executable, "-u", str(script)),
-            timeout=0.1,
+            timeout=0.25,
         )
 
         assert result.returncode == 0
-        assert "tick 3" in result.stderr
+        assert "tick 8" in result.stderr
         assert "done" in result.stdout
 
     def test_silent_stall_still_times_out(self, tmp_path):
@@ -1240,10 +1423,15 @@ class TestRunCommandSttIdleTimeout:
             encoding="utf-8",
         )
 
+        # Same budget rule as the progress test above: the idle window must
+        # comfortably exceed process spawn latency on a loaded runner, or the
+        # child is killed before its first stderr line is ever read and the
+        # pre-stall-output assertion fails spuriously. 30s of silence still
+        # trips a 0.25s window by a wide margin.
         with pytest.raises(subprocess.TimeoutExpired) as excinfo:
             _run_command_stt(
                 self._shell_command(sys.executable, "-u", str(script)),
-                timeout=0.1,
+                timeout=0.25,
             )
 
         assert "starting pass 1" in (excinfo.value.stderr or "")
@@ -1351,3 +1539,67 @@ class TestExplicitOpenaiSelectionError:
 
         assert result["success"] is False
         assert "No STT provider available" in result["error"]
+
+# _transcribe_openai — 5xx transcode-and-retry (#81644)
+# ============================================================================
+
+
+class TestTranscribeOpenaiFiveXxRetry:
+    """A 5xx rejection of the audio container must reach the
+    transcode-and-retry path, not propagate as a plain API error."""
+
+    def _status_error(self, status_code: int, message: str) -> Exception:
+        import httpx
+        from openai import APIStatusError
+
+        request = httpx.Request(
+            "POST", "https://api.example.com/v1/audio/transcriptions"
+        )
+        return APIStatusError(
+            message,
+            response=httpx.Response(status_code, request=request),
+            body={"type": "system_error"},
+        )
+
+    def test_server_error_triggers_transcode_and_retry(self, sample_wav, tmp_path):
+        """The provider rejects the container with a 5xx (the gapgpt case in
+        #81644): the transcode-and-retry must run and succeed."""
+        converted = tmp_path / "retry.m4a"
+        converted.write_bytes(b"fake audio")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.side_effect = [
+            self._status_error(503, "503 system_error"),  # first attempt: 5xx
+            "retried transcript",                          # retry after transcode
+        ]
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_cloud._transcode_audio_for_stt",
+                 return_value=(str(converted), None),
+             ):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(
+                sample_wav, "gpt-4o-transcribe", api_key="sk-test"
+            )
+
+        assert result["success"] is True
+        assert result["transcript"] == "retried transcript"
+        assert mock_client.audio.transcriptions.create.call_count == 2
+
+    def test_server_error_without_transcode_keeps_provider_error(self, sample_wav):
+        """No ffmpeg: the 5xx surfaces as the provider's own error, not a transcode message,
+        and the file is not re-sent."""
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.side_effect = self._status_error(503, "503 system_error")
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch("tools.transcription_cloud._transcode_audio_for_stt",
+                   return_value=(None, "ffmpeg not found")):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(sample_wav, "whisper-1", api_key="sk-test")
+
+        assert result["success"] is False
+        assert "503" in result["error"] and "ffmpeg" not in result["error"]
+        assert mock_client.audio.transcriptions.create.call_count == 1

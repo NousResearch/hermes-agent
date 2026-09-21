@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from aiohttp.test_utils import TestClient, TestServer
 import pytest
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
+from aiohttp.test_utils import TestClient, TestServer
+
 
 from agent.compaction_display import project_compaction_message_for_display
 from agent.context_compressor import (
@@ -192,6 +196,26 @@ class TestTurnTranscriptProjection:
 
 
 class TestMessagesEndpointProjection:
+    @pytest.mark.asyncio
+    async def test_suppressed_delegation_row_keeps_evidence_but_not_presentation(self, adapter, session_db, tmp_path, monkeypatch):
+        from gateway.wake import persist_delegation_delivery
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
+        sid = session_db.create_session("diagnostic-projection", "api_server")
+        event = {"delegation_id": "early-failure", "task_failure_notice": True,
+                 "results": [{"task_index": 0, "status": "failed"}]}
+        await persist_delegation_delivery(adapter, text="recorded worker failure", session_id=sid, evt=event)
+        await persist_delegation_delivery(adapter, text="recorded worker failure", session_id=sid, evt=event)
+        stored = session_db.get_messages(sid)
+        assert len(stored) == 1 and stored[0]["content"] == "recorded worker failure"
+        async with TestClient(TestServer(_messages_app(adapter))) as client:
+            response = await client.get(f"/api/sessions/{sid}/messages")
+            assert response.status == 200
+            payload = await response.json()
+        assert len(payload["data"]) == 1
+        assert payload["data"][0]["content"] == ""
+        assert payload["data"][0]["display_kind"] == "hidden"
+
     @pytest.mark.asyncio
     async def test_messages_endpoint_never_serves_compaction_scaffolding(
         self,

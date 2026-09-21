@@ -2,7 +2,7 @@
   "name": "hermes",
   "productName": "Hermes",
   "private": true,
-  "version": "0.17.2",
+  "version": "0.17.6",
   "description": "Native desktop shell for Hermes Agent.",
   "author": "Nous Research",
   "repository": {
@@ -42,7 +42,6 @@
     "dist:win:nsis": "npm run build && npm run builder -- --win nsis",
     "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
     "perf": "node scripts/perf/run.mjs",
-    "audit:omniverse-export": "node scripts/lunar-city/validate-omniverse-export.mjs",
     "update:shim": "bash ../../scripts/desktop-update/repro.sh shim",
     "update:shim:fail": "bash ../../scripts/desktop-update/repro.sh shim-fail",
     "update:repro:fresh": "bash ../../scripts/desktop-update/repro.sh fresh",
@@ -146,7 +145,6 @@
     "streamdown": "2.5.0",
     "tailwind-merge": "3.6.0",
     "tailwindcss": "4.3.3",
-    "three": "0.180.0",
     "tw-shimmer": "0.4.12",
     "unicode-animations": "1.0.3",
     "unified": "11.0.5",
@@ -172,7 +170,6 @@
     "@types/qrcode": "1.5.6",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "@types/three": "0.180.0",
     "@vitejs/plugin-react": "6.0.3",
     "babel-plugin-react-compiler": "1.0.0",
     "bippy": "0.5.43",
@@ -216,7 +213,7 @@
     ],
     "beforeBuild": "scripts/before-build.mjs",
     "beforePack": "scripts/before-pack.mjs",
-    "afterPack": "scripts/after-pack.mjs",
+    "afterExtract": "scripts/after-extract.mjs",
     "extraResources": [
       {
         "from": "build/install-stamp.json",

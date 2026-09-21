@@ -20,6 +20,20 @@ jobs:
           node-version: 26
           cache: npm
 
+      # The desktop SSH watchdog tests run their probe through a real zsh
+      # login shell (#111949). The ubuntu image ships no zsh and the tests
+      # skip without it, so install it here or those legs never run on CI.
+      #
+      # The desktop portal-session live test drives real Electron windows
+      # (electron/portal-session-live.test.ts) and skips without a display,
+      # so give the runner a virtual one the same way the Playwright lane does.
+      - name: Install zsh and a virtual display for Electron
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y zsh xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+
       - name: grab npm 12
         run: |
           # No-op once the bundled npm is already 12.x — saves ~5-15s/job and

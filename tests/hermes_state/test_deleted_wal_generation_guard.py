@@ -7,6 +7,7 @@ fail closed on both the open and write paths instead of creating the second
 generation.
 """
 
+import errno
 import gc
 import os
 import sqlite3
@@ -146,6 +147,56 @@ def test_iter_finds_self_after_wal_unlink(tmp_path, force_wal):
         db.close()
 
 
+@pytest.mark.linux_only
+def test_second_sessiondb_open_refuses_through_symlinked_home(tmp_path, force_wal):
+    """Regression for #116450. End to end through the real open path: SessionDB stores the
+    alias verbatim and calls the guard with it before connect, so the refusal must fire via the
+    alias — /proc reports the kernel-resolved dentry while the caller holds only the symlink."""
+    real_home = tmp_path / "hermes-real"
+    real_home.mkdir()
+    link_home = tmp_path / "hermes-link"
+    link_home.symlink_to(real_home)
+    alias_db = link_home / "state.db"
+
+    writer = make_db(alias_db, "s", "held")
+    require_wal(writer)
+    lose_sidecars(alias_db, rename=False)
+    try:
+        with pytest.raises(DeletedWalGenerationError, match="deleted state.db-wal"):
+            SessionDB(db_path=alias_db)
+        assert not Path(os.fspath(alias_db) + "-wal").exists()
+    finally:
+        writer.close()
+
+
+@pytest.mark.linux_only
+def test_iter_finds_holder_when_db_file_itself_is_symlink(tmp_path):
+    """SQLite canonicalizes the db filename before naming sidecars, so a symlinked
+    state.db puts the WAL under the target's name. The scan must still match."""
+    db_dir = tmp_path / "dbdir"
+    db_dir.mkdir()
+    target_dir = tmp_path / "targetdir"
+    target_dir.mkdir()
+    link_db = db_dir / "state.db"
+    link_db.symlink_to(target_dir / "x.db")
+
+    conn = sqlite3.connect(os.fspath(link_db))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t(x)")
+    conn.execute("INSERT INTO t VALUES (1)")
+    conn.commit()
+    target_wal = target_dir / "x.db-wal"
+    if not target_wal.exists():
+        conn.close()
+        pytest.skip("this SQLite did not canonicalize the symlinked db path")
+    target_wal.unlink()
+    try:
+        holders = iter_deleted_sqlite_sidecar_holders(link_db)
+        assert holders, "deleted WAL under the resolved target name must be found"
+    finally:
+        conn.close()
+
+
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="deleted-WAL /proc scan is Linux-only",
@@ -193,6 +244,32 @@ def test_iter_holders_ignores_live_unhashed_dentry(tmp_path, force_wal, monkeypa
         assert wal.exists()
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("vanish_errno", [errno.ENOENT, errno.ESRCH])
+def test_iter_holders_ignores_descriptor_closed_during_scan(tmp_path, monkeypatch, vanish_errno):
+    """A descriptor (ENOENT) or its whole process (ESRCH) gone after ``readlink``
+    cannot hold a retired generation."""
+    path = tmp_path / "state.db"
+    wal = Path(str(path) + "-wal")
+    wal.write_bytes(b"current generation")
+    vanished_fd = tmp_path / "closed-writable-opener-fd"
+    monkeypatch.setattr(hermes_state_dbfile.sys, "platform", "linux")
+    monkeypatch.setattr(
+        hermes_state_dbfile,
+        "_iter_proc_fd_targets",
+        lambda: iter([(os.getpid(), str(wal) + " (deleted)", str(vanished_fd))]),
+    )
+    real_stat = os.stat
+
+    def stat_vanished(target, *args, **kwargs):
+        if str(target) == str(vanished_fd):
+            raise OSError(vanish_errno, os.strerror(vanish_errno), str(target))
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(hermes_state_dbfile.os, "stat", stat_vanished)
+
+    assert iter_deleted_sqlite_sidecar_holders(path) == []
 
 
 @pytest.mark.skipif(
@@ -490,3 +567,59 @@ def test_refuse_helper_raises_while_deleted_wal_held(tmp_path, force_wal):
         assert not wal.exists()
     finally:
         raw.close()
+
+
+# ── macOS leg (#109641): the same holder scan through libproc ───────────────────────────────────
+#
+# macOS has no /proc and no `` (deleted)`` suffix, so these exercise the libproc enumeration
+# (``proc_pidinfo(PROC_PIDLISTFDS)`` + ``proc_pidfdinfo(PROC_PIDFDVNODEPATHINFO)``) that supplies
+# each descriptor's ``(st_dev, st_ino)``. The judgement is unchanged: identity, never path text.
+
+@pytest.mark.macos_only
+def test_iter_finds_self_after_wal_unlink_on_darwin(tmp_path, force_wal):
+    path = tmp_path / "state.db"
+    db = make_db(path, "s", "held")
+    wal = require_wal(db)
+    inode_before = wal.stat().st_ino
+    lose_sidecars(path, rename=False)
+    holders = iter_deleted_sqlite_sidecar_holders(path)
+    try:
+        assert holders, "expected this process to still hold the deleted WAL inode"
+        assert any(pid == os.getpid() for pid, _target in holders)
+        assert any(target.endswith(("-wal", "-shm")) for _pid, target in holders)
+        assert not wal.exists() or wal.stat().st_ino != inode_before
+    finally:
+        db.close()
+
+
+@pytest.mark.macos_only
+def test_iter_finds_no_holder_while_sidecars_stay_linked_on_darwin(tmp_path, force_wal):
+    """The scan must not report the CURRENT generation: a linked sidecar is not a retired one."""
+    path = tmp_path / "state.db"
+    db = make_db(path, "s", "linked")
+    require_wal(db)
+    try:
+        assert iter_deleted_sqlite_sidecar_holders(path) == []
+    finally:
+        db.close()
+
+
+@pytest.mark.macos_only
+def test_iter_darwin_judges_by_identity_not_by_pathname(tmp_path):
+    """A retired generation stays a holder after the path names a DIFFERENT inode: libproc reports
+    the vnode's last pathname with no `` (deleted)`` marker, so only ``(st_dev, st_ino)`` can tell
+    the orphan apart from the replacement that now owns the path."""
+    path = tmp_path / "state.db"
+    sidecar = Path(str(path) + "-wal")
+    sidecar.write_bytes(b"retired generation")
+    held = sidecar.open("rb")
+    try:
+        retired_ino = os.fstat(held.fileno()).st_ino
+        sidecar.unlink()
+        sidecar.write_bytes(b"replacement generation")
+        assert sidecar.stat().st_ino != retired_ino
+        holders = iter_deleted_sqlite_sidecar_holders(path)
+        assert any(pid == os.getpid() for pid, _target in holders)
+        assert any(target == os.path.realpath(str(sidecar)) for _pid, target in holders)
+    finally:
+        held.close()

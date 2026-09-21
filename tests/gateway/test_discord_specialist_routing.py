@@ -67,7 +67,11 @@ def test_specialist_route_creates_one_handoff_and_acknowledges(monkeypatch, tmp_
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    (tmp_path / ".hermes" / "profiles" / "task-orchestrator").mkdir(parents=True)
+    profile_dir = tmp_path / ".hermes" / "profiles" / "task-orchestrator"
+    profile_dir.mkdir(parents=True)
+    # Create identity markers so named_profile_has_identity returns True
+    (profile_dir / "config.yaml").write_text("")
+    (profile_dir / "identity.json").write_text("{}")
     adapter = _adapter(monkeypatch)
     settings = adapter._specialist_routing_settings()
     settings["capabilities"]["task-orchestrator"] = dict(

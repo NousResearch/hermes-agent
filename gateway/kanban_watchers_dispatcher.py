@@ -324,11 +324,20 @@ class _KanbanDispatcher:
     @staticmethod
     def _decompose_one(_decomp: Any, slug: str, tid: str) -> int:
         """Decompose one triage task; returns 1 on success, 0 otherwise."""
+        # The dispatcher runs in a fresh Context, so multiplex fail-closed secret
+        # lookup has no turn scope to inherit. Bind only the launch profile while
+        # this process-owned operation resolves its credentials.
+        from hermes_constants import get_hermes_home
+        from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+
+        secret_token = set_secret_scope(build_profile_secret_scope(get_hermes_home()))
         try:
             outcome = _decomp.decompose_task(tid, author="auto-decomposer")
         except Exception:
             logger.exception("kanban auto-decompose: decompose_task crashed on %s", tid)
             return 0
+        finally:
+            reset_secret_scope(secret_token)
         if not outcome.ok:
             # Common no-op reasons (no aux client) must not spam logs every tick.
             logger.debug("kanban auto-decompose [%s]: %s skipped: %s", slug, tid, outcome.reason)

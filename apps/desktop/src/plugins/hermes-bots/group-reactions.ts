@@ -17,8 +17,9 @@ import type { GroupReaction } from './types'
  *  leads with, so a reaction means the same gesture on both surfaces. */
 export const GROUP_QUICK_REACTIONS = ['❤️', '👍', '👎', '😂', '‼️', '❓'] as const
 
-/** Reactions a single message may carry. The room log is synced through
- *  profile ui_meta with a byte budget, so this is a hard cap, not a nicety. */
+/** Reactions a single message may carry. The room log is projected into profile
+ *  ui_meta (the gateway/mobile mirror) with a byte budget, and reactions ride
+ *  that projection — so this is a hard cap, not a nicety. */
 export const GROUP_REACTION_LIMIT = 12
 
 /** The human's key in a message's reaction list. Members use their name. */
@@ -52,8 +53,14 @@ export function toggleGroupReaction(
     ? list.map(reaction => (reaction.by === by ? { at, by, emoji } : reaction))
     : [...list, { at, by, emoji }]
 
-  // Trim oldest first: the newest reactions are the ones the room is looking at.
-  return next.length > GROUP_REACTION_LIMIT ? next.slice(next.length - GROUP_REACTION_LIMIT) : next
+  if (next.length <= GROUP_REACTION_LIMIT) {
+    return next
+  }
+
+  // Trim by TIME, not array position: a replaced reaction keeps its slot, so
+  // position would drop a newer one. The newest reactions are the ones the room
+  // is looking at.
+  return [...next].sort((a, b) => a.at - b.at).slice(next.length - GROUP_REACTION_LIMIT)
 }
 
 /** Collapse a message's reactions into one chip per emoji, first-seen order. */

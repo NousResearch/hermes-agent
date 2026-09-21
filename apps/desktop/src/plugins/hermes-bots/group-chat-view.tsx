@@ -65,6 +65,7 @@ import {
   $groupNeedsYou,
   groupThreadOf,
   rememberGroupChatTombstone,
+  sameGroupMessage,
   scheduleGroupChatServerSync,
   setGroupChatImage,
   updateGroupChat
@@ -1079,16 +1080,27 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
 
   // One log entry, rendered exactly as before conversation folding existed.
   // A reaction is a room-log write like any other: mutate the log, and the
-  // room's normal persistence + sync carry it to every member.
-  const reactToEntry = (index: number, emoji: string) => {
-    updateGroupChat(group, current => ({
-      ...current,
-      log: current.log.map((message, at) =>
-        at === index
-          ? { ...message, reactions: toggleGroupReaction(message.reactions, GROUP_REACTION_USER, emoji) }
-          : message
-      )
-    }))
+  // room's normal persistence + sync carry it to every member. The target is
+  // resolved by IDENTITY inside the updater, never by the render index: a
+  // head-trim (or any other room write) between paint and click would otherwise
+  // land the reaction on a neighbour.
+  const reactToEntry = (target: GroupMessage, emoji: string) => {
+    updateGroupChat(group, current => {
+      const at = current.log.findIndex(message => sameGroupMessage(message, target))
+
+      if (at < 0) {
+        return current
+      }
+
+      return {
+        ...current,
+        log: current.log.map((message, index) =>
+          index === at
+            ? { ...message, reactions: toggleGroupReaction(message.reactions, GROUP_REACTION_USER, emoji) }
+            : message
+        )
+      }
+    })
   }
 
   const renderEntry = (entry: GroupMessage, index: number) => {
@@ -1224,7 +1236,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                   className="text-base"
                   key={emoji}
                   onClick={() => {
-                    reactToEntry(index, emoji)
+                    reactToEntry(entry, emoji)
                     setReactingKey(null)
                   }}
                   size="icon-sm"
@@ -1239,15 +1251,13 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             <div className="mt-0.5 flex flex-wrap items-center gap-1" data-slot="group-message-reactions">
               {groupReactionChips(entry.reactions).map(chip => (
                 <button
-                  aria-label={chip.mine ? `Remove ${chip.emoji} reaction` : undefined}
-                  className={cn(
-                    'flex items-center gap-1 rounded-md bg-(--chrome-action-hover) px-1.5 py-0.5 text-[0.8125rem] leading-none',
-                    chip.mine && 'cursor-pointer hover:bg-(--ui-row-active-background)'
-                  )}
+                  aria-label={
+                    chip.mine ? b.group.reactionRemove(chip.emoji) : b.group.reactionAdd(chip.emoji)
+                  }
+                  className="flex cursor-pointer items-center gap-1 rounded-md bg-(--chrome-action-hover) px-1.5 py-0.5 text-[0.8125rem] leading-none hover:bg-(--ui-row-active-background)"
                   data-mine={chip.mine ? 'true' : undefined}
-                  disabled={!chip.mine}
                   key={chip.emoji}
-                  onClick={chip.mine ? () => reactToEntry(index, chip.emoji) : undefined}
+                  onClick={() => reactToEntry(entry, chip.emoji)}
                   type="button"
                 >
                   {chip.emoji}

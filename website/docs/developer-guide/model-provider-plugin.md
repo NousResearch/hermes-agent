@@ -270,6 +270,22 @@ The catalog cache is keyed on the profile's `process_command_env_vars` / `proces
 
 Selecting the row in `hermes model` (and the setup wizard) runs one generic flow keyed by the profile's `auth_type`: external-process profiles are launch-checked (`resolve_external_process_provider_credentials`), OAuth profiles need a live pool row (otherwise the flow prints `hermes auth add <name>` and stops), then the merged catalog is offered and `config.model` is persisted with the profile's `base_url`/`api_mode`. No `_model_flow_*` entry in core is needed.
 
+#### Optional external-process hooks
+
+External-process profiles may implement `setup_status(**kwargs)` returning `{available, logged_in, plan, detail, login_command}` and `discover_models(**kwargs)` returning `[{id, label, note}]`. The generic flow gates on `logged_in` (running `login_command` inline on a TTY, printing `detail` otherwise) and, when `discover_models()` returns rows, offers them merged with `fallback_models`; `note` renders as a dim per-row annotation (`· usage credits`) and never hides a model. Keep `fetch_models()` returning the same ids so `/model` and the Desktop picker agree with setup. Both hooks must be cheap and must never perform inference; return `None` to fall back to `fallback_models`.
+
+For interruptible non-HTTP requests, implement a class-declared `cancel(self)` method. Hermes calls it from the interrupting thread after marking the request client unusable. It must return promptly and safely stop its own transport, including cancellation racing process startup; it must not close file descriptors owned by the request thread. The request owner still calls `close()` for cleanup. Clients without this method retain the existing socket-shutdown cancellation path.
+
+Declare `model_aliases` (`{"sonnet": "claude-sonnet-5[1m]"}`) for a catalog models.dev does not know: bare `/model <alias>` and `/model <id-prefix>` resolve inside the process provider first, and `validate_requested_model` accepts a declared id without probing `process://`.
+
+Explicit external-process delegation retains the selected provider and its protocol when resolving the child command; an executable override alone does not change an external-process provider into ACP.
+
+Native clients may persist private assistant replay in `reasoning_details` with a namespaced `<provider>.native_assistant` type. Declare the identical string in `ProviderProfile.native_reasoning_details_type` (default `None`). Chat Completions request sanitization forwards that carrier only to its declaring profile, including after fallback or model switching; it removes other private carriers even if their source plugin is no longer installed. Standard reasoning details such as OpenRouter's `reasoning.encrypted` remain unchanged. Filtering is request-only: durable history remains intact for returning to the original provider.
+
+Providers may override `get_model_context_length(model)` with a qualified positive token bound, or return `None` for the existing lookup chain. Explicit configuration and endpoint-scoped overrides take precedence; the provider bound is consulted before generic caches and HTTP probes. Do not confuse a catalog maximum with an account entitlement.
+
+For a nonstandard cost surface, `get_usage_cost(model, usage)` may return an `agent.usage_pricing.CostResult`, or `None` for normal pricing. `usage` is a `CanonicalUsage` whose `raw_usage` retains response metadata when available. Classify native list-price totals as `estimated`, never `actual` or `included`; missing invoice information is not proof of zero charges. The default hooks return `None`, preserving existing providers.
+
 ## Hook reference examples
 
 Look at these bundled plugins for idioms:

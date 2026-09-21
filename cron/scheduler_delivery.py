@@ -894,13 +894,20 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         return msg
 
     from agent.delegation_context import delegated_child_subprocess_env
-    from tools.environments.local import strip_launch_profile_env
-    env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
+    from tools.environments.local import served_profile_child_env
     if not home.is_dir():
         return _fail(f"bot-chat delivery target no longer exists: {home}; do not resend")
-    # Discovery (or deferred admission) owns the destination, not HOME or a
-    # subsequently changed active_profile. Do not resolve the name a second time.
-    env["HERMES_HOME"] = str(home)
+    # Built for ``home``, the DELIVERY TARGET — the only cron child that acts for a profile other
+    # than the one whose tick spawned it, so the launch residue cannot be resolved from the ambient
+    # override the way every other lane resolves it. Discovery (or deferred admission) owns the
+    # destination, not HOME or a subsequently changed active_profile: do not resolve it again.
+    # ``inherit_credentials``: the child runs a full agent turn as that profile, on its own secrets.
+    try:
+        env = served_profile_child_env(
+            delegated_child_subprocess_env(os.environ), target_home=home, inherit_credentials=True)
+    except Exception as exc:  # unreadable target home / secret source: refuse, never fall back
+        return _fail(f"bot-chat delivery to profile '{profile_label}' could not build the target "
+                     f"profile's environment ({type(exc).__name__}: {exc}); do not resend")
     if home.parent.name != "profiles":
         argv += ["-p", "default"]
 

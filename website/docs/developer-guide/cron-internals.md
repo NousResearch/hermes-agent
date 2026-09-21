@@ -205,6 +205,13 @@ What "firing" *means* (job execution + delivery) is unchanged and shared by all
 providers — it stays in `scheduler.run_job()` / `scheduler._deliver_result()`.
 A provider only controls the trigger, never execution.
 
+A ticker whose checkout was updated under it (boot revision ≠ disk revision) yields its tick
+only to a gateway that can actually take it over: the runtime-lock holder must be a live gateway
+whose `gateway_state.json` heartbeat is fresh and whose stamped `code_sha` is the on-disk revision.
+A lock held by a process that is itself still running the pre-update code — the common case right
+after `hermes update` with a single gateway — never counts as a fresh gateway, so the ticker keeps
+dispatching instead of yielding every tick to nobody.
+
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
 
 ### Managed cron (Chronos) for scale-to-zero

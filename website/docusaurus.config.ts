@@ -42,6 +42,8 @@ const config: Config = {
   ],
 
   plugins: [
+    // Static /plugins/<name> and /plugins/by/<author> pages generated from the catalog JSON.
+    './plugins/plugin-catalog-pages',
     [
       '@docusaurus/plugin-client-redirects',
       {

@@ -675,6 +675,31 @@ class TestCLIFlagLogic:
             config=config,
         ) is False
 
+    def test_start_worktree_setup_does_not_create_legacy_tree_for_managed_root(
+        self, monkeypatch
+    ):
+        import cli
+
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        monkeypatch.setattr(
+            cli,
+            "CLI_CONFIG",
+            {
+                "worktree": True,
+                "conversation_worktree": {
+                    "enabled": True,
+                    "source_worktree": "/repo/stable",
+                    "worktree_root": "/repo/.worktrees",
+                },
+            },
+        )
+        monkeypatch.setattr(
+            cli, "_setup_worktree", lambda **_kwargs: pytest.fail("legacy worktree started")
+        )
+
+        assert cli._start_worktree_setup(False, False, True, False) is None
+
 
 class TestTerminalCWDIntegration:
     """Test that TERMINAL_CWD is correctly set to the worktree path."""

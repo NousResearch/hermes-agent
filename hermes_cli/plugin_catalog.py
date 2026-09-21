@@ -84,6 +84,8 @@ class PluginCatalogEntry:
     docs_url: str = ""
     version: str = ""            # human label for the pinned sha ("1.4.0"); cosmetic, never parsed
     image: str = ""              # https image URL on a GitHub host; shown on catalog cards
+    screenshots: List[str] = field(default_factory=list)  # GitHub-hosted https URLs; gallery on /docs/plugins/<name>
+    readme: bool = False         # docs site renders the README from the pinned commit on the entry's page
     platforms: List[str] = field(default_factory=list)  # empty = all OSes
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
 
@@ -99,6 +101,7 @@ class PluginCatalogEntry:
             "maintainer": self.maintainer, "tier": self.tier, "category": self.category,
             "requires_hermes": self.requires_hermes,
             "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
+            "screenshots": list(self.screenshots), "readme": self.readme,
             "platforms": list(self.platforms),
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
@@ -159,13 +162,16 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     if image and not is_allowed_image_url(image):
         logger.warning("Plugin catalog: %s: ignoring image %r (must be https on a GitHub host)", label, image)
         image = ""
+    screenshots = [s for s in _str_list(data.get("screenshots")) if is_allowed_image_url(s)]
+    if len(screenshots) != len(_str_list(data.get("screenshots"))):
+        logger.warning("Plugin catalog: %s: ignoring screenshots off GitHub hosts", label)
     return PluginCatalogEntry(
         name=name, repo=repo, sha=sha,
         description=str(data.get("description") or "").strip(),
         maintainer=str(data.get("maintainer") or "").strip(), tier=tier, category=category,
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
-        version=version, image=image,
+        version=version, image=image, screenshots=screenshots, readme=data.get("readme") is True,
         platforms=_str_list(data.get("platforms")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),

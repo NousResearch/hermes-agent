@@ -137,10 +137,12 @@ def _parse_timeout(raw: Any) -> Optional[float]:
     return None if parsed <= 0 else max(30.0, parsed)
 
 def _get_child_timeout() -> Optional[float]:
-    """Hard wall-clock cap for one child, or None (default: no timeout). Failures should come from what the child does
-    (API/tool errors, iteration budget), not a stopwatch; stuck children are caught by the heartbeat staleness
-    monitor. delegation.child_timeout_seconds > 0 opts in (floor 30 s); 0 or negative disables. Env fallback:
-    DELEGATION_CHILD_TIMEOUT_SECONDS."""
+    """Inactivity cap for one child (seconds of NO progress), or None (default: no cap). Failures should come from
+    what the child does (API/tool errors, iteration budget), not a stopwatch: the cap restarts on every sign of
+    progress — a completed call, a tool change, an activity-clock tick — so a slow provider serving multi-minute
+    completions never loses a live child, and a child frozen for the whole window is still caught. A configured
+    value pre-empts nothing the heartbeat staleness monitor would not also catch. delegation.child_timeout_seconds
+    > 0 opts in (floor 30 s); 0 or negative disables. Env fallback: DELEGATION_CHILD_TIMEOUT_SECONDS."""
     return _knob(
         "child_timeout_seconds", "DELEGATION_CHILD_TIMEOUT_SECONDS", _parse_timeout, DEFAULT_CHILD_TIMEOUT,
         "delegation.child_timeout_seconds=%r is not a valid number; using default (no timeout)",
@@ -542,8 +544,11 @@ def _resolve_child_runtime(
     # transport would run the child somewhere the user explicitly routed it away from. Normally unreachable
     # via delegate_task, which pre-validates the command in _resolve_delegation_credentials.
     if override_acp_command:
-        # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
-        effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
+        from providers import get_provider_profile
+        profile = get_provider_profile(effective_provider or "")
+        # A generic process command does not imply the legacy ACP protocol.
+        if profile is None or profile.auth_type != "external_process":
+            effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
 
     # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
     # YAML ``false`` must disable thinking, not coerce to "" and inherit.

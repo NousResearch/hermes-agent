@@ -3,6 +3,7 @@ import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   appendGroupChatEntry,
+  GROUP_CHAT_HISTORY_LIMIT,
   GROUP_CHAT_MAX_CONTINUATIONS,
   GROUP_CHAT_MAX_MESSAGES,
   groupThreadOf,
@@ -30,6 +31,20 @@ export interface GroupRoundMemberContext {
  *  re-trigger the skip. Null = nothing to consume (no write, no spin). */
 export function heldMemberWatermarkAdvance(seen: number | undefined, logLength: number): null | number {
   return logLength > (seen || 0) ? logLength : null
+}
+
+/** Remember held entries after their watermarks advance. Keep the first entry
+ *  (the hold-triggering instruction) plus the newest bounded tail, and dedupe
+ *  by id so repeated held passes remain idempotent. */
+export function heldMemberMessageIds(existing: string[] | undefined, delta: GroupMessage[]): string[] {
+  const ids = [...(existing || []), ...delta.map(entry => entry.id).filter((id): id is string => Boolean(id))]
+  const unique = [...new Set(ids)]
+
+  if (unique.length <= GROUP_CHAT_HISTORY_LIMIT) {
+    return unique
+  }
+
+  return [unique[0], ...unique.slice(-(GROUP_CHAT_HISTORY_LIMIT - 1))]
 }
 
 function prepareGroupRoundMember(context: GroupRoundMemberContext, member: GroupMember) {
@@ -65,6 +80,11 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
         r.watermarks[markKey] = advance
       }
 
+      r.heldMessages = {
+        ...(r.heldMessages || {}),
+        [memberKey]: heldMemberMessageIds(r.heldMessages?.[memberKey], delta)
+      }
+
       if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
         r.holds = {
           ...r.holds,
@@ -89,20 +109,29 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
     return null
   }
 
+  const heldIds = room.heldMessages?.[memberKey] || []
+  const heldSet = new Set(heldIds)
+  const delivered = room.log.filter((entry: GroupMessage) => Boolean(entry.id && heldSet.has(entry.id)))
+  const deliveredIds = new Set(delivered.map((entry: GroupMessage) => entry.id).filter(Boolean))
+  const visibleDelta = [
+    ...delivered,
+    ...delta.filter((entry: GroupMessage) => !entry.id || !deliveredIds.has(entry.id))
+  ].sort((left, right) => Number(left.at || 0) - Number(right.at || 0))
+
   const prompt = buildGroupChatTurnPrompt({
     groupName: context.group,
     members,
     viewer: member,
-    deltaLines: formatGroupDeltaLines(delta, member, context.group)
+    deltaLines: formatGroupDeltaLines(visibleDelta, member, context.group)
   })
 
   // Images riding this delta (user attachments — member entries don't
   // carry images today, but flatMap keeps this future-proof) get staged
   // into the member's session so the model sees the pixels, not just
   // the transcript's [attached image: …] marker.
-  const deltaImages = delta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
+  const deltaImages = visibleDelta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
 
-  return { room, memberKey, markKey, prompt, deltaImages }
+  return { room, memberKey, markKey, prompt, deltaImages, heldIds }
 }
 
 /** Each invocation owns its descriptor, so an old completion cannot clear a newer turn. */
@@ -140,7 +169,7 @@ export async function runGroupRoundMember(
     return false
   }
 
-  const { room, markKey, prompt, deltaImages } = prepared
+  const { room, memberKey, markKey, prompt, deltaImages, heldIds } = prepared
   const anchorId = room.log.at(-1)?.id ?? null
   let reply: null | string = null
   let accepted = false
@@ -207,7 +236,7 @@ export async function runGroupRoundMember(
   )
 
   if (
-    (epochNow !== startEpoch && roomNow.holds?.[groupMemberKey(member)]) ||
+    (roomNow.stoppedEpoch || 0) > startEpoch ||
     !shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)
   ) {
     recordGroupActivity(context.group, {
@@ -225,6 +254,20 @@ export async function runGroupRoundMember(
   if (accepted) {
     updateGroupChat(context.group, (r: GroupChatRoom) => {
       r.watermarks[markKey] = anchorIdx + 1
+
+      if (heldIds.length) {
+        const deliveredIds = new Set(heldIds)
+        const remaining = (r.heldMessages?.[memberKey] || []).filter(id => !deliveredIds.has(id))
+        r.heldMessages = {
+          ...(r.heldMessages || {})
+        }
+
+        if (remaining.length) {
+          r.heldMessages[memberKey] = remaining
+        } else {
+          delete r.heldMessages[memberKey]
+        }
+      }
 
       return r
     })

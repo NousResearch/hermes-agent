@@ -4,7 +4,9 @@ import type * as data from './data'
 import type * as groupChat from './group-chat'
 import type * as members from './group-chat-view-members'
 import type * as groupMembership from './group-membership'
-import { createGroupGateway, runTimersInline, scriptedStorage } from './group-test-utils'
+import type * as groupRounds from './group-rounds'
+import { createGroupGateway, drain, runTimersInline, scriptedStorage } from './group-test-utils'
+import type { ScriptedGateway } from './group-test-utils'
 import type { RosterRow } from './types'
 
 // Both membership doors (room-side "Manage members", per-Bot "Manage groups")
@@ -23,8 +25,10 @@ vi.mock('@hermes/plugin-sdk', async () => {
 interface Room {
   chat: typeof groupChat
   data: typeof data
+  gateway: ScriptedGateway
   members: typeof members
   membership: typeof groupMembership
+  rounds: typeof groupRounds
 }
 
 async function loadRoom(): Promise<Room> {
@@ -37,17 +41,18 @@ async function loadRoom(): Promise<Room> {
 
   Object.assign(host, gateway.host)
 
-  const [chat, d, m, membership, shared] = await Promise.all([
+  const [chat, d, m, membership, rounds, shared] = await Promise.all([
     import('./group-chat'),
     import('./data'),
     import('./group-chat-view-members'),
     import('./group-membership'),
+    import('./group-rounds'),
     import('./shared')
   ])
 
   shared.setPluginCtx(scriptedStorage(gateway.storage))
 
-  return { chat, data: d, members: m, membership }
+  return { chat, data: d, gateway, members: m, membership, rounds }
 }
 
 const programmer: RosterRow = { name: 'programmer' }
@@ -124,6 +129,31 @@ describe('setGroupChatMembers', () => {
       expect.objectContaining({ connectionId: 'remote-1', name: 'planner', sourceScoped: true }),
       expect.objectContaining({ name: 'reviewer' })
     ]))
+  })
+
+  it('does not replay a removed member\'s held messages after re-adding it', async () => {
+    const room = await loadRoom()
+    seedCore(room, {
+      heldMessages: { reviewer: ['held-before-removal'] },
+      log: [
+        {
+          at: 1,
+          from: { kind: 'user', name: 'You' },
+          id: 'held-before-removal',
+          text: 'STALE_PRE_REMOVAL_TEXT',
+          thread: 'old-thread'
+        }
+      ]
+    })
+
+    await room.members.setGroupMembership(reviewer, 'Core', false)
+    await room.members.setGroupMembership(reviewer, 'Core', true)
+    room.rounds.sendToGroupChat('Core', [reviewer], '@reviewer fresh task')
+    await drain(() => Boolean(room.chat.$groupChats.get().Core.running))
+
+    expect(room.chat.$groupChats.get().Core.heldMessages?.reviewer).toBeUndefined()
+    expect(room.gateway.calls[0].prompt).not.toContain('STALE_PRE_REMOVAL_TEXT')
+    expect(room.gateway.calls[0].prompt).toContain('fresh task')
   })
 })
 

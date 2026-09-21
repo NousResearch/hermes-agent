@@ -175,6 +175,23 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def _recovery_lines(evt: dict) -> "list[str]":
+    """Owner-died recovery diagnostics (``recover_abandoned_delegations``): last persisted
+    status, per-task transcript paths, their verbatim tails and the owner's git state."""
+    if not evt.get("last_known_status"):
+        return []
+    lines = [f"Last persisted unit status: {evt['last_known_status']} (before owner exit; not current liveness). "
+             "Unrecorded outcomes remain unknown; inspect evidence before retrying side effects."]
+    tails = evt.get("transcript_tails") or {}
+    for index, path in (evt.get("task_transcripts") or {}).items():
+        lines.append(f"Task index {index} transcript (may be incomplete): {path}")
+        if tails.get(index):
+            lines += [f"--- last lines of task {index} transcript ---", tails[index], "--- end ---"]
+    if evt.get("git_state_hint"):
+        lines.append(f"Owner working tree at recovery: {evt['git_state_hint']}")
+    return lines
+
+
 def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> str:
     """Consolidated block for a delegate_task fan-out that finished as one unit."""
     results, goals = evt.get("results") or [], evt.get("goals") or []
@@ -191,11 +208,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         "on siblings, end your turn after acting on this one.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
-    if evt.get("last_known_status"):
-        lines.append(f"Last persisted unit status: {evt['last_known_status']} (before owner exit; not current liveness). "
-                     "Unrecorded outcomes remain unknown; inspect evidence before retrying side effects.")
-        for index, path in (evt.get("task_transcripts") or {}).items():
-            lines.append(f"Task index {index} transcript (may be incomplete): {path}")
+    lines += _recovery_lines(evt)
     if evt.get("error") and not results:
         lines += ["--- ERROR ---", f"The batch did not complete successfully: {evt['error']}"]
         return "\n".join(lines)
@@ -277,9 +290,10 @@ def _format_async_delegation(evt: dict) -> str:
     else:
         if status == "interrupted":
             lines.append("The subagent was interrupted before completing" + (f": {error}" if error else "."))
-        else:  # error / timeout / failed
+        else:  # error / timeout / failed / unknown (owner died)
             lines.append(
                 f"The subagent did not complete successfully (status={status})." + (f"\n{error}" if error else ""))
+            lines += _recovery_lines(evt)
         if summary:
             lines += ["Partial output:", summary]
     return "\n".join(lines)

@@ -184,6 +184,226 @@ _REGISTRATION_KINDS = {
 _EXCLUDED_SCAN_DIRS = frozenset({".git", ".venv", "venv", "__pycache__", "test", "tests", "_test", "_tests"})
 
 
+def _module_assignments(tree: ast.Module) -> Dict[str, ast.expr]:
+    """Return unambiguous simple module assignments for bounded static resolution."""
+    values: Dict[str, List[ast.expr]] = {}
+    assignment_targets: set[ast.Name] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                values.setdefault(target.id, []).append(value)
+                assignment_targets.add(target)
+
+    mutable: set[str] = set()
+    mutating_methods = {"add", "append", "clear", "discard", "extend", "insert", "pop", "remove", "reverse", "setdefault", "sort", "update"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node not in assignment_targets:
+            mutable.add(node.id)
+        elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) and isinstance(node.value, ast.Name):
+            mutable.add(node.value.id)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in mutating_methods
+            and isinstance(node.func.value, ast.Name)
+        ):
+            mutable.add(node.func.value.id)
+    return {
+        name: assignments[0]
+        for name, assignments in values.items()
+        if len(assignments) == 1 and name not in mutable
+    }
+
+
+def _target_path(target: ast.expr, name: str) -> Optional[Tuple[int, ...]]:
+    if isinstance(target, ast.Name):
+        return () if target.id == name else None
+    if isinstance(target, (ast.Tuple, ast.List)):
+        for index, child in enumerate(target.elts):
+            path = _target_path(child, name)
+            if path is not None:
+                return (index, *path)
+    return None
+
+
+def _literal_sequence(
+    node: ast.expr, assignments: Dict[str, ast.expr], seen: Optional[set[str]] = None
+) -> Optional[ast.expr]:
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return node
+    if not isinstance(node, ast.Name):
+        return None
+    seen = seen or set()
+    if node.id in seen or node.id not in assignments:
+        return None
+    return _literal_sequence(assignments[node.id], assignments, seen | {node.id})
+
+
+def _node_at_path(node: ast.expr, path: Tuple[int, ...]) -> Optional[ast.expr]:
+    for index in path:
+        if not isinstance(node, (ast.Tuple, ast.List)) or index >= len(node.elts):
+            return None
+        node = node.elts[index]
+    return node
+
+
+def _literal_loop_values(
+    iterable: ast.expr, path: Tuple[int, ...], assignments: Dict[str, ast.expr]
+) -> Optional[List[str]]:
+    sequence = _literal_sequence(iterable, assignments)
+    if sequence is None:
+        return None
+    values: List[str] = []
+    for item in sequence.elts:
+        value = _node_at_path(item, path)
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            return None
+        values.append(value.value)
+    return values
+
+
+def _loop_reassigns_name(loop: ast.For, name: str) -> bool:
+    target_nodes = set(ast.walk(loop.target))
+    return any(
+        isinstance(node, ast.Name)
+        and node not in target_nodes
+        and node.id == name
+        and isinstance(node.ctx, ast.Store)
+        for node in ast.walk(loop)
+    )
+
+
+def _registration_loop_values(
+    name: str, call: ast.Call, parents: Dict[ast.AST, ast.AST], assignments: Dict[str, ast.expr]
+) -> Optional[List[str]]:
+    node: ast.AST = call
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, ast.For):
+            path = _target_path(node.target, name)
+            if path is not None:
+                if _loop_reassigns_name(node, name):
+                    return None
+                return _literal_loop_values(node.iter, path, assignments)
+    return None
+
+
+def _top_level_statements(statements: List[ast.stmt]):
+    """Walk module try blocks to find conditional import re-exports without execution."""
+    for node in statements:
+        yield node
+        if isinstance(node, (ast.Try, ast.TryStar)):
+            for field_name in ("body", "orelse", "finalbody"):
+                yield from _top_level_statements(getattr(node, field_name, []))
+            for handler in getattr(node, "handlers", []):
+                yield from _top_level_statements(handler.body)
+
+
+def _provider_profile_aliases(tree: ast.Module) -> set[str]:
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "providers.base":
+            aliases.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name == "ProviderProfile"
+            )
+    return aliases
+
+
+def _provider_names_for_registration(
+    call: ast.Call, tree: ast.Module, assignments: Dict[str, ast.expr], parents: Dict[ast.AST, ast.AST]
+) -> Optional[List[str]]:
+    aliases = _provider_profile_aliases(tree)
+    if not aliases:
+        return None
+
+    subclasses = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        and any(isinstance(base, ast.Name) and base.id in aliases for base in node.bases)
+    }
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ClassDef)
+                and node.name not in subclasses
+                and any(isinstance(base, ast.Name) and base.id in subclasses for base in node.bases)
+            ):
+                subclasses.add(node.name)
+                changed = True
+    constructors = aliases | subclasses
+
+    def profile_name(expression: ast.expr) -> Optional[str]:
+        if (
+            isinstance(expression, ast.Call)
+            and isinstance(expression.func, ast.Name)
+            and expression.func.id in constructors
+        ):
+            name = next((kw.value for kw in expression.keywords if kw.arg == "name"), None)
+            if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                return name.value
+            if isinstance(name, ast.Name):
+                assigned = assignments.get(name.id)
+                if isinstance(assigned, ast.Constant) and isinstance(assigned.value, str):
+                    return assigned.value
+        return None
+
+    def helper_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> Optional[List[str]]:
+        returns: List[str] = []
+        for returned in ast.walk(function):
+            if not isinstance(returned, ast.Return):
+                continue
+            owner: ast.AST = returned
+            while owner in parents and owner is not function:
+                owner = parents[owner]
+                if isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    break
+            if owner is not function:
+                continue
+            name = profile_name(returned.value) if returned.value is not None else None
+            if name is None:
+                return None
+            returns.append(name)
+        return returns or None
+
+    def names_for_argument(argument: ast.expr) -> Optional[List[str]]:
+        direct = profile_name(argument)
+        if direct is not None:
+            return [direct]
+        if isinstance(argument, ast.Name):
+            assigned = profile_name(assignments.get(argument.id, ast.Constant(None)))
+            return [assigned] if assigned is not None else None
+        if isinstance(argument, ast.Call) and isinstance(argument.func, ast.Name):
+            helpers = [
+                node for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == argument.func.id
+            ]
+            if len(helpers) == 1:
+                return helper_names(helpers[0])
+        return None
+
+    arguments = [*call.args, *(kw.value for kw in call.keywords)]
+    resolved: List[str] = []
+    for argument in arguments:
+        names = names_for_argument(argument)
+        if names is not None:
+            resolved.extend(names)
+        elif isinstance(argument, (ast.Name, ast.Call)):
+            return None
+    return resolved or None
+
+
 def _scan_capabilities(plugin_dir: Path, *, model_provider: bool = False) -> Tuple[Optional[dict], str]:
     """Inspect literal registration calls without running candidate code.
 
@@ -202,7 +422,7 @@ def _scan_capabilities(plugin_dir: Path, *, model_provider: bool = False) -> Tup
         except (OSError, UnicodeError, SyntaxError) as exc:
             return None, f"cannot parse plugin Python: {exc}"
         if path == entry:
-            for node in tree.body:
+            for node in _top_level_statements(tree.body):
                 # Accept register() defined directly OR re-exported via
                 # `from .impl import register` (an ImportFrom whose only
                 # name is "register" aliases it into this module's namespace).
@@ -213,23 +433,15 @@ def _scan_capabilities(plugin_dir: Path, *, model_provider: bool = False) -> Tup
                 if isinstance(node, ast.ImportFrom) and any(alias.name == "register" for alias in node.names):
                     has_register = True
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        assignments = _module_assignments(tree)
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call)
                     and isinstance(node.func, (ast.Name, ast.Attribute))
                     and (node.func.id if isinstance(node.func, ast.Name) else node.func.attr) == "register_provider"):
-                args = [*node.args, *(kw.value for kw in node.keywords)]
-                profiles = [
-                    isinstance(arg, ast.Call)
-                    and isinstance(arg.func, (ast.Name, ast.Attribute))
-                    and (arg.func.id if isinstance(arg.func, ast.Name) else arg.func.attr) == "ProviderProfile"
-                    for arg in args
-                ]
-                profile_calls = [arg for arg, is_profile in zip(args, profiles) if is_profile]
-                has_provider_profile_registration |= bool(profile_calls)
-                for profile in profile_calls:
-                    profile_name = next((kw.value for kw in profile.keywords if kw.arg == "name"), None)
-                    if isinstance(profile_name, ast.Constant) and isinstance(profile_name.value, str):
-                        recorded["model_providers"].append(profile_name.value)
+                provider_names = _provider_names_for_registration(node, tree, assignments, parents)
+                if provider_names:
+                    has_provider_profile_registration = True
+                    recorded["model_providers"].extend(provider_names)
             if isinstance(node, ast.Attribute) and node.attr in _REGISTRATION_KINDS:
                 parent = parents.get(node)
                 if not isinstance(parent, ast.Call) or parent.func is not node:
@@ -244,9 +456,15 @@ def _scan_capabilities(plugin_dir: Path, *, model_provider: bool = False) -> Tup
                 continue
             kind, keyword = registration
             name = node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg == keyword), None)
-            if not isinstance(name, ast.Constant) or not isinstance(name.value, str):
-                return None, f"dynamic {node.func.attr} name requires manual capability review ({path.name}:{node.lineno})"
-            recorded[kind].append(name.value)
+            if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                recorded[kind].append(name.value)
+                continue
+            if isinstance(name, ast.Name):
+                loop_values = _registration_loop_values(name.id, node, parents, assignments)
+                if loop_values is not None:
+                    recorded[kind].extend(loop_values)
+                    continue
+            return None, f"dynamic {node.func.attr} name requires manual capability review ({path.name}:{node.lineno})"
     if model_provider and not has_provider_profile_registration:
         return None, "model-provider plugin registered no ProviderProfile"
     if not has_register and not model_provider:

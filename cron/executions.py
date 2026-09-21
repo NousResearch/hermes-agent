@@ -1,8 +1,8 @@
 """Profile-local durable audit ledger for cron execution attempts.
 
 The ledger records what is known about each attempt; it is not a retry queue. Interrupted attempts
-become ``unknown`` only after their exact owner process is proved gone. Terminal states are
-immutable.
+become ``unknown`` only after their owner process is proved gone — a start-time reading that fails
+to match the claim-time fingerprint is not proof of death. Terminal states are immutable.
 """
 
 from __future__ import annotations
@@ -136,7 +136,12 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     if started_at is None:
         return pid == os.getpid()
     current = _process_start_time(pid)
-    return current is not None and current == started_at
+    if current is None:
+        return True  # cannot compare -> cannot prove death; a misread must not rewrite state
+    # Drifted same-host readings (#117505) are not proof of death; a live misread is still
+    # bounded by the stale-claim sweep below.
+    from gateway.status import start_time_fingerprints_match
+    return start_time_fingerprints_match(started_at, current)
 
 
 def _live_owner_stale_after_seconds() -> Optional[float]:

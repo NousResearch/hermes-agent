@@ -535,11 +535,11 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
             api_mode = _parse_api_mode(model_cfg.get("api_mode")) or api_mode
         api_mode = _azure_inferred_api_mode(effective_model, api_mode)
         return api_mode, (re.sub(r"/v1/?$", "", base_url) if api_mode == "anthropic_messages" else base_url)
-    # Honour model.base_url only when the pool entry carries no explicit base_url (i.e. it fell
-    # back to the registry default). Env var overrides win.
+    # Missing and registry-default endpoints may use this provider's configured URL.
+    # An explicit per-credential endpoint remains authoritative.
     pconfig = PROVIDER_REGISTRY.get(provider)
-    if pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/"):
-        base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
+    if pconfig and (not base_url or base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")):
+        base_url = _config_base_url_for_provider(model_cfg, provider) or base_url or pconfig.inference_base_url
     return _configured_or_fallback_api_mode(provider, model_cfg, base_url, effective_model, opencode_by_model=True), base_url
 
 
@@ -1107,7 +1107,7 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
     ``model`` is the model the caller must send.
     """
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.auth import AuthError, primary_failure_wording
     try:
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
@@ -1136,10 +1136,7 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
             runtime["provider"] = effective_runtime_provider(entry, runtime)
             # A rate-limit/quota cap is transient (credentials are fine, re-auth cannot help); the log must not
             # mislabel it as an auth failure (#32790).
-            if is_rate_limited_auth_error(primary_exc):
-                logger.warning("Primary provider rate-limited (429): %s. Falling back to %s/%s",
-                               primary_exc, provider, model)
-            else:
-                logger.warning("Primary provider auth failed (%s). Falling back to %s/%s", primary_exc, provider, model)
+            logger.warning("Primary provider %s (%s). Falling back to %s/%s",
+                           primary_failure_wording(primary_exc)[0], primary_exc, provider, model)
             return runtime, entry
         raise primary_exc

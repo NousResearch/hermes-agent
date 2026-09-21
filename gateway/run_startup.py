@@ -40,6 +40,17 @@ logger = logging.getLogger("gateway.run")
 class GatewayStartupMixin:
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
 
+    @staticmethod
+    def _log_agent_budget() -> None:
+        """Report the ENFORCED per-turn budget: ``agent.max_turns`` is bridged into
+        ``HERMES_MAX_ITERATIONS`` before this runs, so the env slot already carries the config value;
+        resolve it the same way the turn loop does (``none``/``unlimited`` spellings included) instead of
+        ``int()`` on the raw string with an invented ``500`` default (#116888)."""
+        from hermes_cli.config import TURN_LIMIT_UNLIMITED, resolve_turn_limit
+        limit = resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
+        logger.info("Agent budget: max_iterations=%s (agent.max_turns from config.yaml, else the HERMES_MAX_ITERATIONS bridge)",
+                    "unlimited" if limit == TURN_LIMIT_UNLIMITED else limit)
+
     # A configured platform failed non-retryably this boot and is parked: every "we are serving"
     # status stamp (startup, drain release, scale-to-zero wake) must say ``degraded``, not ``running``.
     _startup_parked_platforms: bool = False
@@ -803,13 +814,7 @@ class GatewayStartupMixin:
                 disarm_startup_watchdog()
         logger.info("Session storage: %s", self.config.sessions_dir)
         self._start_log_systemd_timing_alignment()
-        # Log the resolved max_iterations so operators can verify the config.yaml → env bridge.
-        with suppress(Exception):
-            logger.info(
-                "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
-                "or HERMES_MAX_ITERATIONS from .env, or default 500)",
-                int(os.getenv("HERMES_MAX_ITERATIONS", "500")),
-            )
+        self._log_agent_budget()
         # Warn prominently when redaction is opted out; the redactor snapshots its state at import time,
         # so this line is the source of truth for the process lifetime.
         with suppress(Exception):

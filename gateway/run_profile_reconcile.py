@@ -116,6 +116,7 @@ class GatewayProfileReconcileMixin:
                 await self._unserve_profile(name, known[name])
                 result["removed"].append(name)
             claimed = self._live_resource_claims(active)
+            transient_failed = set()
             for name in added + changed:
                 # Only acknowledge the configuration observed before connecting;
                 # a setup save during an awaited handshake needs another scan.
@@ -126,10 +127,15 @@ class GatewayProfileReconcileMixin:
                     # Boot refuses to run with such a profile; at runtime we park just this profile.
                     logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
                     connected = 0
+                    sigs[name] = scan_signature
                 except Exception:
                     logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
                     connected = 0
-                sigs[name] = scan_signature
+                    # A transient failure is not the deliberate park above: leave the signature
+                    # unacknowledged so the next reconcile retries the connect.
+                    transient_failed.add(name)
+                else:
+                    sigs[name] = scan_signature
                 if name in added:
                     logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
                     result["added"].append(name)
@@ -145,6 +151,11 @@ class GatewayProfileReconcileMixin:
                 result["removed"].append(name)
                 added = [n for n in added if n != name]
             self._record_served_profiles(active, list(current.items()))
+            # A retryable start must stay eligible for the next scan; otherwise the signature
+            # refill would park a transient failure exactly like a config-error profile.
+            for name in transient_failed:
+                if isinstance(self._served_profile_signatures, dict):
+                    self._served_profile_signatures.pop(name, None)
             if added or changed:
                 await self._after_profiles_added([(n, current[n]) for n in added + changed])
             result["served_profiles"] = self.served_profile_names()
@@ -217,7 +228,8 @@ class GatewayProfileReconcileMixin:
         await asyncio.to_thread(evict_profile_plugins, home)
         # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
         _write_runtime_status_quiet(drop_profile_platforms=name)
-        for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile"):
+        for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
+                     "_busy_text_timing_by_profile", "_human_delay_by_profile"):
             store = getattr(self, attr, None)
             if isinstance(store, dict):
                 store.pop(name, None)

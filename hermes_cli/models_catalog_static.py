@@ -210,7 +210,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-sonnet-4-6", "claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929",
         "claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-haiku-4-5-20251001",
     ],
-    "deepseek": ["deepseek-v4-pro", "deepseek-flash"],
+    "deepseek": ["deepseek-flash", "deepseek-v4-pro"],
     "xiaomi": ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"],
     "tencent-tokenhub": list(_TENCENT_MODELS),
     "tencent-tokenplan": list(_TENCENT_MODELS),
@@ -539,7 +539,7 @@ _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
 # /models are the subscription-tier source of truth), and providers with dedicated live-endpoint
 # branches (copilot, anthropic, ai-gateway, ollama-cloud, custom, stepfun, openai-codex).
 _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
-    "opencode-go", "opencode-zen", "deepseek", "kilocode", "fireworks", "mistral", "togetherai", "cohere",
+    "opencode-go", "opencode-zen", "kilocode", "fireworks", "mistral", "togetherai", "cohere",
     "perplexity", "groq", "nvidia", "huggingface", "zai", "gemini", "google", "xai", "xai-oauth",
 })
 

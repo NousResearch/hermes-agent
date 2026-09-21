@@ -161,10 +161,6 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     return result
 
 
-# Highest ``manifest_version`` this installer understands; breaking schema changes bump it.
-_SUPPORTED_MANIFEST_VERSION = 1
-
-
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
     plugins = get_hermes_home() / "plugins"
@@ -538,6 +534,28 @@ def _git_head_revision(repo: Path, git_exe: str) -> str:
     ).stdout.strip().lower()
 
 
+def _git_resolve_commit(repo: Path, git_exe: str, revision: str) -> str:
+    """The COMMIT a revision names, peeling annotated tags.
+
+    A catalog pin is 40 hex, but that does not make it a commit: a tag object
+    has a sha of its own, and a pin recorded as `git rev-parse <tag>` names the
+    tag object, not the commit it points at. Git detaches at the commit, so
+    comparing HEAD against the tag object's sha refuses a correct checkout
+    (and the catalog installer then cannot install that entry at all). Peeling
+    first keeps the guard — HEAD must still BE that commit — while admitting
+    the pins authors actually publish. Returns `revision` unchanged when it
+    resolves to nothing, so the mismatch guard below still fires.
+    """
+    try:
+        result = _run_plugin_git(
+            git_exe, repo, "rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}", timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return revision
+    resolved = result.stdout.strip().lower()
+    return resolved if result.returncode == 0 and resolved else revision
+
+
 def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url: str = "") -> None:
     """Fetch and detach at one immutable commit, then verify the resulting HEAD."""
     for verb, args, failure_prefix in (
@@ -550,7 +568,7 @@ def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url
         except subprocess.TimeoutExpired as exc:
             raise PluginOperationError(f"Git {verb} of commit '{revision}' timed out after 60 seconds.") from exc
     actual = _git_head_revision(repo, git_exe)
-    if actual != revision:
+    if actual != _git_resolve_commit(repo, git_exe, revision):
         raise PluginOperationError(
             f"Checked-out revision '{actual}' does not match requested commit '{revision}'.")
 
@@ -591,11 +609,14 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
         raise PluginOperationError(
             f"Plugin '{plugin_name}' has invalid manifest_version '{mv}' (expected an integer).",
         ) from None
-    if mv_int > _SUPPORTED_MANIFEST_VERSION:
+    # Shared with the runtime loader so the installer can never drift behind what the loader
+    # accepts (#85879): a private cap here refused v2 manifests the runtime happily loads.
+    from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION
+    if mv_int > SUPPORTED_MANIFEST_VERSION:
         from hermes_cli.config import recommended_update_command
         raise PluginOperationError(
             f"Plugin '{plugin_name}' requires manifest_version {mv}, "
-            f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
+            f"but this Hermes supports up to {SUPPORTED_MANIFEST_VERSION}. "
             f"Run {recommended_update_command()} to update Hermes.",
         ) from None
 

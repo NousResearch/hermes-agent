@@ -1090,6 +1090,45 @@ describe('member holds (#93129)', () => {
     expect([...rounds.classifyGroupHoldDirective('@impl please halt', ['conn::impl'], false).hold]).toEqual(['conn::impl'])
   })
 
+  // #117040: proximity is measured on what the user directs at the room, not
+  // on content they quote or paste. A stop word inside a fenced block, inline
+  // code span, quoted span (straight or typographic) or blockquote line is content — reporting
+  // or debugging a hold must not re-hold the addressed member.
+  it('holds nobody when the stop word sits inside quoted or pasted content', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of [
+      '```text\nstop @impl\n```',
+      'The log printed `@impl pause` here',
+      'Why did "pause @impl" hold the bot?',
+      'Why did “pause @impl” hold the bot?',
+      // A cut-short paste leaves the fence unclosed; the rest is still content.
+      'look what the docs say:\n```js\nstop @impl\n',
+      '> stop @impl'
+    ]) {
+      const action = rounds.classifyGroupHoldDirective(text, ['impl'], false)
+
+      expect([...action.hold]).toEqual([])
+      // The mention itself still reaches the member: quoting AT the bot is a
+      // direct address, which releases a held member like any other mention.
+      expect([...action.release]).toEqual(['impl'])
+    }
+  })
+
+  it('still holds on the plain directive forms once masking is active', async () => {
+    const { rounds } = await loadRoom()
+
+    for (const text of ['stop @impl', '@impl stop', '@impl please halt', '@all stop']) {
+      const action = rounds.classifyGroupHoldDirective(text, ['impl'], text.startsWith('@all'))
+
+      expect([...action.hold]).toEqual(['impl'])
+    }
+
+    // A masked span collapses to one word, so a genuine directive with pasted
+    // content between the stop word and the mention keeps its proximity.
+    expect([...rounds.classifyGroupHoldDirective('stop `service` @impl', ['impl'], false).hold]).toEqual(['impl'])
+  })
+
   // A genuine stop whose stop word sits 3+ tokens from the mention may miss the
   // hold, but it must never RELEASE (re-dispatch) the member it tells to stop.
   it('never releases the addressed member on a distant genuine stop', async () => {
@@ -1201,6 +1240,37 @@ describe('member holds (#93129)', () => {
     expect(heldMemberWatermarkAdvance(9, 7)).toBeNull()
     // Unset watermark treated as 0.
     expect(heldMemberWatermarkAdvance(undefined, 2)).toBe(2)
+  })
+
+  it('replays messages consumed by a hold into the released member next turn', async () => {
+    const room = await loadRoom()
+    const member = [{ name: 'research', title: '' }]
+
+    room.rounds.sendToGroupChat('Held', member, 'stop @research — remember TRIGGER_TEXT')
+    await settle(room, 'Held')
+    expect(room.gateway.calls).toHaveLength(0)
+    expect(room.chat.$groupChats.get().Held.heldMessages?.research).toHaveLength(1)
+
+    room.rounds.sendToGroupChat('Held', member, '@research resume with the context')
+    await settle(room, 'Held')
+
+    expect(room.gateway.calls[0].prompt).toMatch(/TRIGGER_TEXT[\s\S]*resume with the context/)
+    expect(room.chat.$groupChats.get().Held.heldMessages?.research).toBeUndefined()
+  })
+
+  it('lets a room disable text hold detection without weakening the Stop action', async () => {
+    const room = await loadRoom()
+    const member = [{ name: 'research', title: '' }]
+    room.chat.updateGroupChat('No holds', state => ({ ...state, holdDetection: false }))
+
+    room.rounds.sendToGroupChat('No holds', member, 'stop @research but answer this')
+    await settle(room, 'No holds')
+
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.chat.$groupChats.get()['No holds'].holds).toEqual({})
+    await room.rounds.stopGroupThread('No holds', null, member)
+    expect(room.chat.$groupChats.get()['No holds'].holds).toEqual({})
+    expect(room.chat.$groupChats.get()['No holds'].running).toBe(false)
   })
 })
 
@@ -1348,6 +1418,27 @@ describe('stopGroupThread (#91868/#94569)', () => {
     // The poll loop exited promptly after the stop, not at the deadline.
     expect(room.gateway.rpcFor('session.resume').length).toBeLessThanOrEqual(6)
     expect(room.chat.$groupChats.get().Room.running).toBe(false)
+  })
+
+  it('cancels an in-flight completion after Stop when sticky holds are disabled', async () => {
+    let finish!: (reply: string) => void
+    const pendingReply = new Promise<string>(resolve => {
+      finish = resolve
+    })
+    const room = await loadRoom({ turn: () => pendingReply })
+    const member = [{ name: 'helper', title: '' }]
+
+    room.chat.updateGroupChat('Room', state => ({ ...state, holdDetection: false }))
+    room.rounds.sendToGroupChat('Room', member, 'long task')
+    await drain(() => room.gateway.calls.length < 1)
+
+    await room.rounds.stopGroupThread('Room', null, member)
+    finish('must not be committed')
+    await drain(() => room.gateway.refcount() > 0)
+
+    const state = room.chat.$groupChats.get().Room
+    expect(state.holds).toEqual({})
+    expect(state.log.filter(entry => entry.from.kind === 'member')).toHaveLength(0)
   })
 
   it('keeps polling through an ordinary newer-send epoch bump so late work still lands', async () => {

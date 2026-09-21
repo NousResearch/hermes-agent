@@ -61,6 +61,38 @@ def test_admission_runs_the_install_scanner(tmp_path):
 
 
 class TestCapabilityProbe:
+    def test_static_reexport_and_literal_registration_loops_are_inspected(self, tmp_path):
+        plugin = _make_plugin(
+            tmp_path,
+            manifest=dict(
+                BASE_MANIFEST,
+                provides_tools=["table_tool_a", "table_tool_b"],
+                provides_hooks=["table_hook_a", "table_hook_b"],
+            ),
+            init_py=(
+                "try:\n"
+                "    from .impl import register\n"
+                "except ImportError:\n"
+                "    from impl import register\n"
+            ),
+        )
+        (plugin / "impl.py").write_text(
+            "TOOLS = [('table_tool_a', None), ('table_tool_b', None)]\n"
+            "HOOKS = ('table_hook_a', 'table_hook_b')\n"
+            "def register(ctx):\n"
+            "    for name, _handler in TOOLS:\n"
+            "        ctx.register_tool(name, schema={}, handler=lambda **kw: None)\n"
+            "    for hook in HOOKS:\n"
+            "        ctx.register_hook(hook, lambda **kw: None)\n",
+            encoding="utf-8",
+        )
+
+        report = validate_plugin_dir(plugin)
+
+        assert report.ok, report.failures
+        assert ("declared tools", True, "matches statically visible calls") in report.checks
+        assert ("declared hooks", True, "matches statically visible calls") in report.checks
+
     def test_undeclared_tool_registration_fails_with_diff(self, tmp_path):
         init = (
             "def register(ctx):\n"
@@ -177,6 +209,34 @@ class TestModelProviderKind:
             for name, _ok, detail in report.checks
         ), report.checks
 
+    def test_static_provider_subclass_instances_and_factory_are_resolved(self, tmp_path):
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "name": "static-provider", "kind": "model-provider"},
+            init_py=(
+                "from providers import register_provider\n"
+                "from providers.base import ProviderProfile\n"
+                "class DirectProfile(ProviderProfile):\n    pass\n"
+                "profile = DirectProfile(name='direct_fixture')\n"
+                "FACTORY_NAME = 'factory_fixture'\n"
+                "register_provider(profile)\n"
+                "def build_profile():\n"
+                "    class FactoryProfile(ProviderProfile):\n        pass\n"
+                "    return FactoryProfile(name=FACTORY_NAME)\n"
+                "register_provider(build_profile())\n"
+            ),
+        )
+
+        report = validate_plugin_dir(d)
+
+        assert report.ok, report.failures
+        assert any(
+            name == "capability probe"
+            and "direct_fixture" in detail
+            and "factory_fixture" in detail
+            for name, _ok, detail in report.checks
+        ), report.checks
+
     def test_provider_plugin_that_registers_nothing_fails(self, tmp_path):
         d = _make_plugin(
             tmp_path,
@@ -222,6 +282,23 @@ def test_dynamic_registration_names_require_manual_review(tmp_path):
     for body in ("f = ctx.register_tool; f(name)", "getattr(ctx, 'register_tool')(name)"):
         (plugin / "__init__.py").write_text(f"def register(ctx):\n    {body}\n", encoding="utf-8")
         assert not validate_plugin_dir(plugin).ok
+
+    mutable_table = _make_plugin(
+        tmp_path,
+        manifest={**BASE_MANIFEST, "name": "mutable-table", "provides_tools": ["static_tool"]},
+    )
+    (mutable_table / "tools.py").write_text(
+        "TOOLS = [('static_tool', None)]\n"
+        "TOOLS.append((runtime_name, None))\n"
+        "def register(ctx):\n"
+        "    for name, _handler in TOOLS:\n"
+        "        ctx.register_tool(name, schema={})\n",
+        encoding="utf-8",
+    )
+    mutable_report = validate_plugin_dir(mutable_table)
+    assert not mutable_report.ok
+    assert any("manual capability review" in failure for failure in mutable_report.failures)
+
 class TestDesktopSurface:
     """Catalog-listed desktop plugins must stay inside the SDK surface."""
 

@@ -62,7 +62,7 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
     source = SessionSource(platform=platform, chat_id="chat", user_id="user", thread_id=thread_id)
     gateway = object.__new__(GatewayRunner)
     gateway.config = None
-    gateway._adapter_for_source = lambda source: adapter
+    gateway._delivery_adapter_for = lambda source: adapter
     gateway._thread_metadata_for_source = lambda source: {"thread_id": source.thread_id} if source.thread_id else {}
     ctx = TurnContext(source=source, user_config=config, _run_still_current=lambda: True,
                       _status_adapter=adapter, _status_chat_id=source.chat_id,
@@ -115,7 +115,7 @@ def test_direct_warning_delivery_keeps_failure_state(tmp_path, monkeypatch, enab
     adapter = RecordingAdapter()
     source = SessionSource(platform=Platform.SLACK, chat_id="chat", user_id="user")
     gateway = object.__new__(GatewayRunner)
-    gateway._adapter_for_source = lambda source: adapter
+    gateway._delivery_adapter_for = lambda source: adapter
     gateway._session_db_init_error = "database is locked"
     gateway._session_db_handle_cache = None
     gateway._home_channel_transports = lambda: [(Platform.SLACK, None, SimpleNamespace(chat_id="chat"), adapter)]

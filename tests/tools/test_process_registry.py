@@ -1416,6 +1416,10 @@ class TestKillProcess:
         registry._running[s.id] = s
 
         terminate_calls = []
+        # Post-#115490 kill_process verifies tree death after signalling: the
+        # fake terminate must actually kill, or the live fake reads as a
+        # survivor and the kill correctly reports incomplete.
+        kill_state = {"alive": True}
 
         class FakeProcess:
             def __init__(self, pid):
@@ -1424,6 +1428,7 @@ class TestKillProcess:
                 return []
             def terminate(self):
                 terminate_calls.append(("terminate", self.pid))
+                kill_state["alive"] = False
 
         import psutil as _psutil
 
@@ -1435,7 +1440,7 @@ class TestKillProcess:
             # touches ``os.kill`` directly. Mock both seams.  Disable the
             # SIGKILL-escalation step (grace=0) so it doesn't call
             # ``psutil.wait_procs`` on the FakeProcess.
-            with patch("gateway.status._pid_exists", return_value=True), \
+            with patch("gateway.status._pid_exists", side_effect=lambda pid: kill_state["alive"]), \
                  patch.object(ProcessRegistry, "_daemon_term_grace_seconds",
                               staticmethod(lambda: 0.0)), \
                  patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
@@ -2196,7 +2201,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         # _build_systemd_scope_argv calls shutil.which — point it at a stub.
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
@@ -2264,7 +2269,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
 
         with (
@@ -2291,7 +2296,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: False,
+            lambda environ=None: False,
         )
 
         with (
@@ -2417,7 +2422,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2452,7 +2457,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2502,7 +2507,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2539,7 +2544,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2898,7 +2903,7 @@ class TestSystemdCgroupIsolation:
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
         monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
         monkeypatch.setattr(
-            "gateway.restart.is_gateway_supervisor_process", lambda: True
+            "gateway.restart.is_gateway_supervisor_process", lambda environ=None: True
         )
         # If any branch consults the probe or builds a scope argv on darwin,
         # fail loudly.

@@ -212,7 +212,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     """Start MCP OAuth and hand the authorization URL to the dashboard browser."""
     from hermes_cli.mcp_config import _get_mcp_servers
     from hermes_constants import get_hermes_home
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, exception_message
 
     _require_token(request)
     _gc_mcp_oauth_flows()
@@ -256,7 +256,7 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     try:
         await flow.wait_for_authorization_url(timeout=30)
     except Exception as exc:
-        flow.mark_error(str(exc))
+        flow.mark_error(exception_message(exc))
     return flow.snapshot()
 
 
@@ -282,7 +282,7 @@ async def cancel_mcp_oauth_flow(flow_id: str, request: Request):
     flow = _mcp_oauth_flows.get(flow_id)
     if flow is None:  # expired/GC'd is the goal state of a cancel — not an error
         return {"ok": True, "status": "expired"}
-    flow.mark_error("Cancelled by user")
+    flow.mark_error("Cancelled by user", cancelled=True)
     return {"ok": True, "status": flow.snapshot()["status"]}
 
 

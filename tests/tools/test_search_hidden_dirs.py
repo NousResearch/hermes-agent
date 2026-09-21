@@ -137,6 +137,54 @@ class TestGrepExcludesHiddenDirs:
         assert not result.matches
 
 
+class TestGrepSearchesRootsUnderHiddenDirs:
+    """Regression for #18473: grep applies ``--exclude-dir='.*'`` to the command-line
+    root as well (GNU grep: to every component of it), so a search rooted anywhere
+    under a dot-directory such as ``~/.hermes`` returned nothing on the fallback."""
+
+    @staticmethod
+    def _hidden_tree(tmp_path):
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        (home / "skills" / "SKILL.md").write_text("visible document under a hidden home")
+        (home / ".hub").mkdir()
+        (home / ".hub" / "catalog.json").write_text("visible document cached from the hub")
+        return home
+
+    def test_absolute_root_under_hidden_dir_is_searched_but_hidden_children_are_not(
+        self, tmp_path, monkeypatch
+    ):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=str(home), target="content")
+
+        assert result.error is None
+        assert [m.path.rsplit("/", 1)[-1] for m in result.matches] == ["SKILL.md"]
+
+    def test_relative_root_resolves_against_a_hidden_cwd(self, tmp_path, monkeypatch):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(home)), cwd=str(home))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=".", target="content")
+
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path.endswith("SKILL.md")
+
+    def test_single_file_root_under_hidden_dir_is_searched(self, tmp_path, monkeypatch):
+        home = self._hidden_tree(tmp_path)
+        ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        result = ops.search("visible document", path=str(home / "skills" / "SKILL.md"), target="content")
+
+        assert result.error is None
+        assert result.total_count == 1
+
+
 class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""
 

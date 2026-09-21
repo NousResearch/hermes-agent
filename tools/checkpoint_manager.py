@@ -26,6 +26,7 @@ from typing import Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.gitlock import clear_stale_tmp_packs
 from utils import env_int
 
 logger = logging.getLogger(__name__)
@@ -608,6 +609,20 @@ class CheckpointManager:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
 
+    def unsupported_backend_reason(self, task_id: str = "default") -> Optional[str]:
+        """Explain why host checkpoints are off limits for a container-backed session.
+
+        Classifies the task's backend at call time (nothing is remembered), so /rollback is
+        refused before the first mutation and follows a backend change within the session."""
+        from tools.file_tools_paths import container_backend_for_task
+        backend = container_backend_for_task(task_id)
+        if backend is None:
+            return None
+        return (
+            f"Checkpoints are not taken for terminal.backend={backend}: "
+            "file paths belong to the container, not this host."
+        )
+
     # --- public API ---
 
     def record_agent_write(self, file_path: str) -> None:
@@ -1112,6 +1127,10 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
     _prune_pre_v2_repos(base, cutoff, delete_orphans, orphan_allowlist, result)
     store = _store_path(base)
     if _store_has_head(store):
+        # A gc killed by the store timeout strands tmp_pack_* files that gc.auto=0 means git
+        # itself never reclaims; sweep them even when no ref moved (a sweep is a directory
+        # listing, unlike the pack-rewriting gc gated on refs below).
+        clear_stale_tmp_packs(store)
         # gc rewrites the whole pack — the entire cost of a prune on a large store — so it runs
         # only when a ref moved: deleted here, or rewritten by a checkpoint that left it pending.
         deleted_before = result["deleted_orphan"] + result["deleted_stale"]

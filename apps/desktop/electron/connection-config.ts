@@ -35,6 +35,7 @@
 //     AT cookie. A liveness check that looked only at the AT cookie would
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
 import { readStatusCode } from './api-transport'
+import { sharesHostBackend } from './host-backend-singleton'
 
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
@@ -561,6 +562,8 @@ export interface ProfileRouteOptions {
   primaryRemoteActive?: boolean
   /** A stored per-profile entry exists for this profile (local or remote). */
   ownEntry?: boolean
+  /** `HERMES_DESKTOP_ISOLATED_BACKEND=1`: opt out of the host singleton. */
+  isolatedBackend?: boolean
   requestMethod?: null | string
   requestPath?: null | string
 }
@@ -775,6 +778,14 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
       descriptorProfile: localScope ? scopedProfile : null,
       scopePath: localScope
     }
+  }
+
+  // 6. Multiplex-only: every other LOCAL profile shares the one host backend
+  //    too, carrying `?profile=` / the `profile` RPC param instead of getting
+  //    a `hermes serve` child of its own. `HERMES_DESKTOP_ISOLATED_BACKEND=1`
+  //    is the only way back to a private per-profile process.
+  if (sharesHostBackend({ isolated: opts.isolatedBackend })) {
+    return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
   }
 
   return { backend: 'pool', descriptorProfile: null, scopePath: false }

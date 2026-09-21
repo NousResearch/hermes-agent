@@ -266,8 +266,10 @@ class TestBlockingGatewayApproval:
 
         assert e1.event.is_set()
         assert e2.event.is_set()
-        assert e1.result == "deny"
-        assert e2.result == "deny"
+        assert e1.cancelled
+        assert e2.cancelled
+        assert e1.result is None
+        assert e2.result is None
         assert session_key not in _gateway_queues
 
 

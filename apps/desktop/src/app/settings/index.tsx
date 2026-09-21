@@ -58,6 +58,7 @@ import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './provider
 import { SessionsSettings } from './sessions-settings'
 import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
+import { TelemetrySettings } from './telemetry-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 import { vaultOwnerKey, VaultSettings } from './vault-settings'
 
@@ -74,6 +75,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'notifications',
   'billing',
   'sessions',
+  'telemetry',
   'about'
 ]
 
@@ -385,8 +387,15 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             onSelect: () => setActiveView('sessions')
           },
           {
-            active: activeView === 'about',
+            active: activeView === 'telemetry',
             gapBefore: true,
+            icon: BarChart3,
+            id: 'telemetry',
+            label: t.settings.nav.telemetry,
+            onSelect: () => setActiveView('telemetry')
+          },
+          {
+            active: activeView === 'about',
             icon: Info,
             id: 'about',
             label: t.settings.nav.about,
@@ -517,6 +526,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       <AppearanceSettings subpage={subpage} />
     ) : activeView === 'about' ? (
       <AboutSettings subpage={subpage} />
+    ) : activeView === 'telemetry' ? (
+      <TelemetrySettings key={scopeProfile} />
     ) : activeView === 'gateway' || activeView === 'connections' ? (
       // 'connections' renders the unified page too so the frame before
       // the alias redirect lands doesn't flash the fallback view.

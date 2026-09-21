@@ -565,6 +565,7 @@ export const en: Translations = {
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
       about: 'About',
+      telemetry: 'Telemetry',
       billing: 'Billing',
       notifications: 'Notifications',
       vault: 'Passwords & Logins'
@@ -712,6 +713,44 @@ export const en: Translations = {
           'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
         masterPasswordPlaceholder: 'Master password'
       }
+    },
+    telemetry: {
+      title: 'Telemetry',
+      intro:
+        'Hermes can collect anonymous usage metrics on this machine and share them with Nous Research to help improve the agent. It is off unless you turn it on.',
+      pointCounters: 'Only bounded counters and histograms: model calls, tool use, errors, latency buckets.',
+      pointNoContent: 'Never prompts, responses, file contents, file names, or anything typed into a chat.',
+      pointInstallId:
+        'Packages carry a random per-profile install ID so days can be grouped. It contains no personal information and resets if you delete the telemetry folder.',
+      pointConsentWindow:
+        'A daily package is sent only if its whole collection period falls inside a time you had sharing on. Data from before you opted in, or from any gap, stays on this machine.',
+      docsLink: 'Read the full data description',
+      sharingTitle: 'Sharing',
+      shareLabel: 'Share anonymous usage metrics with Nous Research',
+      shareDesc:
+        'Collects metrics locally and sends a daily package to Nous. Turning this off stops sending immediately.',
+      collectOnlyNote:
+        'This profile collects metrics locally but does not send them (set from the command line). Turning sharing on will start sending; turning it off will stop collecting as well.',
+      inheritedNote:
+        'This profile has no setting of its own and follows the answer you gave when first asked. Flipping the switch sets it for this profile only.',
+      cliHint: 'The same setting is available from the terminal with `hermes setup telemetry`.',
+      enabledTitle: 'Telemetry sharing on',
+      enabledMessage: 'Metrics are collected locally and sent to Nous Research daily.',
+      disabledTitle: 'Telemetry sharing off',
+      disabledMessage: 'Nothing is collected or sent. Existing local files were left in place.',
+      failedSave: 'Could not save the telemetry setting',
+      filesTitle: 'Local files',
+      filesLabel: 'Telemetry folder',
+      filesDesc:
+        'Everything Hermes collects lives here: the metrics database, the daily packages waiting in the outbox, and the record of when sharing was on. Delete the folder to reset the install ID.',
+      filesRemoteDesc: 'This profile runs on a remote gateway; its telemetry folder is on that machine.',
+      openFolder: 'Open folder',
+      openFolderFailed: 'Could not open the telemetry folder',
+      promptTitle: 'Share anonymous usage metrics?',
+      promptDescription:
+        'Hermes can send Nous Research bounded usage counters (model calls, tool use, errors) — never prompts, files, or personal data. You can change this any time in Settings → Telemetry.',
+      promptAccept: 'Share',
+      promptDecline: "Don't share"
     },
     notifications: {
       title: 'Notifications',
@@ -3604,6 +3643,7 @@ export const en: Translations = {
     price: (input, output) => `${input} in / ${output} out per Mtok`,
     change: 'Change',
     startChatting: 'Begin',
+    shareMetricsLabel: 'Share anonymous usage metrics with Nous Research',
     docs: provider => `${provider} docs`
   },
 

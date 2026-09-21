@@ -7,12 +7,18 @@ import type { OAuthProvider } from '@/types/hermes'
 
 import {
   $desktopOnboarding,
+  cancelOnboardingFlow,
+  completeDesktopOnboarding,
   type DesktopOnboardingState,
+  dismissFirstRunOnboarding,
   type OnboardingContext,
+  recordSharedMetricsChoice,
   refreshOnboarding,
   requestDesktopOnboarding,
   saveOnboardingLocalEndpoint,
   setOnboardingModel,
+  setOnboardingShareMetrics,
+  startProviderOAuth,
   submitOnboardingCode
 } from './onboarding'
 
@@ -28,8 +34,15 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
     manual: false,
     localEndpoint: false,
     freeTierReady: false,
+    shareMetrics: true,
+    shareMetricsDecided: null,
     ...overrides
   }
+}
+
+/** Provider-list fetches only: the picker also reads consent state on every refresh. */
+function providerFetches(api: ReturnType<typeof vi.fn>) {
+  return api.mock.calls.filter(([request]) => (request as { path: string }).path === '/api/providers/oauth').length
 }
 
 function installApiMock(api: (request: { path: string }) => Promise<unknown>) {
@@ -190,7 +203,7 @@ describe('refreshOnboarding', () => {
     const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
 
     expect(ready).toBe(false)
-    expect(api).toHaveBeenCalledTimes(1)
+    expect(providerFetches(api)).toBe(1)
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['fresh'])
     expect($desktopOnboarding.get().reason).toContain('No usable credentials found for openrouter.')
     expect($desktopOnboarding.get().reason).toContain('setup.status reports configured credentials')
@@ -331,7 +344,7 @@ describe('refreshOnboarding', () => {
     expect(ready).toBe(false)
     // requested overrides preservation — should downgrade.
     expect($desktopOnboarding.get().configured).toBe(false)
-    expect(api).toHaveBeenCalledTimes(1)
+    expect(providerFetches(api)).toBe(1)
   })
 
   it('still surfaces onboarding when fallback failure happens before configured state', async () => {
@@ -349,7 +362,7 @@ describe('refreshOnboarding', () => {
     const ready = await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
 
     expect(ready).toBe(false)
-    expect(api).toHaveBeenCalledTimes(1)
+    expect(providerFetches(api)).toBe(1)
     expect($desktopOnboarding.get().configured).toBe(false)
     expect($desktopOnboarding.get().reason).toContain('request timed out')
   })
@@ -377,7 +390,7 @@ describe('refreshOnboarding', () => {
     const first = refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
     const second = refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
 
-    await vi.waitFor(() => expect(api).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(providerFetches(api)).toBe(1))
 
     resolveProviders({ providers: [makeOAuthProvider('shared')] })
     await Promise.all([first, second])
@@ -551,6 +564,128 @@ describe('OAuth onboarding', () => {
     expect(state.flow.status).toBe('error')
     expect(state.flow.status === 'error' ? state.flow.message : '').toContain('Confirm this expensive model.')
     expect(requestGatewayMock).not.toHaveBeenCalledWith('setup.runtime_check', expect.anything())
+  })
+})
+
+describe('shared-metrics choice on the first-run picker', () => {
+  function consentMock() {
+    const calls: { body?: unknown; method?: string; path: string }[] = []
+    installApiMock(async ({ body, method, path }: { body?: unknown; method?: string; path: string }) => {
+      calls.push({ body, method, path })
+
+      if (path === '/api/telemetry/shared-metrics') {
+        return { ok: true, ...(body as object) }
+      }
+
+      if (path.startsWith('/api/providers/oauth/') && path.endsWith('/start')) {
+        return { flow: 'pkce', auth_url: 'https://portal.example/auth', session_id: 's', expires_in: 600 }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    return calls
+  }
+
+  const consentCalls = (calls: { body?: unknown; path: string }[]) =>
+    calls.filter(c => c.path === '/api/telemetry/shared-metrics')
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState({ requested: true }))
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    // Completing resets the per-pass latch so the next test starts clean.
+    completeDesktopOnboarding()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  it('defaults to checked and is a plain state toggle', () => {
+    expect($desktopOnboarding.get().shareMetrics).toBe(true)
+    setOnboardingShareMetrics(false)
+    expect($desktopOnboarding.get().shareMetrics).toBe(false)
+  })
+
+  it('"choose later" records the choice — the no-provider path still asks', async () => {
+    const calls = consentMock()
+    setOnboardingShareMetrics(false)
+
+    dismissFirstRunOnboarding()
+    await vi.waitFor(() => expect(consentCalls(calls)).toHaveLength(1))
+
+    expect(consentCalls(calls)[0]).toEqual({
+      body: { enabled: false, send: false },
+      method: 'PUT',
+      path: '/api/telemetry/shared-metrics'
+    })
+    expect($desktopOnboarding.get().firstRunSkipped).toBe(true)
+  })
+
+  it('starting an OAuth flow records the choice before the sign-in', async () => {
+    const calls = consentMock()
+
+    await startProviderOAuth(makeOAuthProvider('nous', 'Nous Portal'), onboardingContext(emptyOpenRouterGateway()))
+    await vi.waitFor(() => expect(consentCalls(calls)).toHaveLength(1))
+
+    expect(consentCalls(calls)[0]?.body).toEqual({ enabled: true, send: true })
+  })
+
+  it('records once per first-run pass even when the picker is re-entered', async () => {
+    const calls = consentMock()
+    const ctx = onboardingContext(emptyOpenRouterGateway())
+
+    await startProviderOAuth(makeOAuthProvider('nous', 'Nous Portal'), ctx)
+    cancelOnboardingFlow()
+    await startProviderOAuth(makeOAuthProvider('nous', 'Nous Portal'), ctx)
+    dismissFirstRunOnboarding()
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(consentCalls(calls)).toHaveLength(1)
+  })
+
+  it('manual mode (adding a provider later) never writes consent', async () => {
+    const calls = consentMock()
+    $desktopOnboarding.set(baseState({ manual: true, requested: true }))
+
+    await startProviderOAuth(makeOAuthProvider('nous', 'Nous Portal'), onboardingContext(emptyOpenRouterGateway()))
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(consentCalls(calls)).toHaveLength(0)
+  })
+
+  it('a profile onboarded after the user already answered globally inherits it and writes nothing', async () => {
+    const calls = consentMock()
+    $desktopOnboarding.set(baseState({ requested: true, shareMetricsDecided: true }))
+
+    await startProviderOAuth(makeOAuthProvider('nous', 'Nous Portal'), onboardingContext(emptyOpenRouterGateway()))
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(consentCalls(calls)).toHaveLength(0)
+  })
+
+  it('a failed consent write is surfaced, does not block the route, and may be retried', async () => {
+    let fail = true
+    const calls: string[] = []
+    installApiMock(async ({ path }: { path: string }) => {
+      calls.push(path)
+
+      if (fail) {
+        throw new Error('backend down')
+      }
+
+      return { ok: true }
+    })
+    const errorSpy = vi.spyOn(notifications, 'notifyError').mockImplementation(() => 'Could not save')
+
+    await recordSharedMetricsChoice()
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+
+    fail = false
+    await recordSharedMetricsChoice()
+    expect(calls.filter(p => p === '/api/telemetry/shared-metrics')).toHaveLength(2)
   })
 })
 

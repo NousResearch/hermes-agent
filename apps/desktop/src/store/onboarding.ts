@@ -5,9 +5,11 @@ import {
   cancelOAuthSession,
   getGlobalModelOptions,
   getRecommendedDefaultModel,
+  getSharedMetricsConsent,
   listOAuthProviders,
   pollOAuthSession,
   setEnvVar,
+  setSharedMetricsConsent,
   startOAuthLogin,
   submitOAuthCode,
   validateProviderCredential
@@ -84,6 +86,16 @@ export interface DesktopOnboardingState {
    *  configured. The backend's `notice_pending` flag is the only source of
    *  truth — there is no renderer latch — so an ack clears it everywhere. */
   freeTierReady: boolean
+  /** First-run picker's "Share anonymous usage metrics" checkbox. Defaults ON
+   *  (product decision). Recorded ONCE, on whichever route leaves the picker
+   *  (OAuth start, key save, local models, custom endpoint, choose-later), through
+   *  the same consent writer `hermes setup telemetry` uses. Renderer-only until
+   *  then: an abandoned picker never writes consent. */
+  shareMetrics: boolean
+  /** The backend already holds the user's global answer (a second profile being
+   *  onboarded, or an upgrade). The picker then neither shows the checkbox nor
+   *  records anything — the new profile inherits the answer. null = not yet known. */
+  shareMetricsDecided: boolean | null
 }
 
 export interface OnboardingContext {
@@ -165,13 +177,18 @@ const INITIAL: DesktopOnboardingState = {
   firstRunSkipped: readCachedSkipped(),
   manual: false,
   localEndpoint: false,
-  freeTierReady: false
+  freeTierReady: false,
+  shareMetrics: true,
+  shareMetricsDecided: null
 }
 
 export const $desktopOnboarding = atom<DesktopOnboardingState>(INITIAL)
 
 let flowGeneration = 0
 let flowProfile: string | undefined
+// Latched per first-run pass: the picker can be left and re-entered (cancel an
+// OAuth flow, go back from the key form) and the choice must be written once.
+let sharedMetricsChoiceRecorded = false
 let pollTimer: number | null = null
 let providersRefreshPromise: null | Promise<void> = null
 
@@ -468,9 +485,20 @@ async function refreshProviders() {
   }
 
   const generation = flowGeneration
+  const targetProfile = $desktopOnboarding.get().targetProfile
+  // Consent state rides alongside the provider list: the picker must know before it
+  // paints whether the checkbox belongs on it. A failed read leaves it unknown (null),
+  // which the picker treats as "ask" — the backend rejects nothing on a repeat answer.
+  void getSharedMetricsConsent(targetProfile)
+    .then(state => {
+      if (generation === flowGeneration) {
+        patch({ shareMetricsDecided: state.decided })
+      }
+    })
+    .catch(() => undefined)
   providersRefreshPromise = (async () => {
     try {
-      const { providers } = await listOAuthProviders($desktopOnboarding.get().targetProfile)
+      const { providers } = await listOAuthProviders(targetProfile)
 
       if (generation !== flowGeneration) {
         return
@@ -630,6 +658,8 @@ export function closeManualOnboarding() {
 
 export function completeDesktopOnboarding() {
   clearPoll()
+  // The first-run pass is over; a later pass (another unconfigured profile) asks again.
+  sharedMetricsChoiceRecorded = false
   writeCachedConfigured(true)
   // A real provider is now connected, so any earlier "choose later" skip is
   // moot — clear it so the flag never lingers in a configured install.
@@ -644,7 +674,9 @@ export function completeDesktopOnboarding() {
     firstRunSkipped: false,
     manual: false,
     localEndpoint: false,
-    freeTierReady: false
+    freeTierReady: false,
+    shareMetrics: true,
+    shareMetricsDecided: null
   })
 }
 
@@ -655,6 +687,7 @@ export function completeDesktopOnboarding() {
 // stops forcing the choice up front. Distinct from completeDesktopOnboarding,
 // which marks the app actually configured.
 export function dismissFirstRunOnboarding() {
+  void recordSharedMetricsChoice($desktopOnboarding.get().targetProfile)
   clearPoll()
   writeCachedSkipped(true)
   patch({
@@ -802,6 +835,7 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   const generation = flowGeneration
   flowProfile = ctx.profile
   clearPoll()
+  void recordSharedMetricsChoice(ctx.profile)
 
   if (provider.flow === 'external') {
     setFlow({ status: 'external_pending', provider, copied: false })
@@ -1033,6 +1067,8 @@ export async function saveOnboardingApiKey(
     return { ok: false, message: 'Enter a value first.' }
   }
 
+  void recordSharedMetricsChoice(ctx.profile)
+
   // The "Local / custom endpoint" option carries a base URL (in `value`) plus
   // an optional API key. It must be wired into config (provider=custom +
   // base_url + model + api_key), not dropped into .env — runtime resolution
@@ -1097,6 +1133,8 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   if (!url) {
     return { ok: false, message: 'Enter the endpoint URL first.' }
   }
+
+  void recordSharedMetricsChoice(ctx.profile)
 
   // Probe connectivity + discover the served models. Any HTTP response proves
   // the endpoint is up; an unreachable probe hard-blocks because we can't
@@ -1246,4 +1284,31 @@ export function confirmOnboardingModel(ctx: OnboardingContext) {
   // screen (no-default fallthrough, local endpoint) so feedback isn't lost.
   completeDesktopOnboarding()
   ctx.onCompleted?.()
+}
+
+export function setOnboardingShareMetrics(shareMetrics: boolean) {
+  patch({ shareMetrics })
+}
+
+// Record the picker's shared-metrics checkbox through the backend consent
+// writer. Called by every route OUT of the first-run picker; a no-op in manual
+// mode (the user already answered on first run — Settings / `hermes setup
+// telemetry` own later changes). A failed write is reported and does not block
+// the route: telemetry is off by default on disk, so the user is left in the
+// conservative state.
+export async function recordSharedMetricsChoice(profile?: string) {
+  const state = $desktopOnboarding.get()
+
+  if (state.manual || state.shareMetricsDecided === true || sharedMetricsChoiceRecorded) {
+    return
+  }
+
+  sharedMetricsChoiceRecorded = true
+
+  try {
+    await setSharedMetricsConsent({ enabled: state.shareMetrics, send: state.shareMetrics }, profile)
+  } catch (error) {
+    sharedMetricsChoiceRecorded = false
+    notifyError(error, 'Could not save the usage-metrics choice')
+  }
 }

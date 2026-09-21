@@ -457,6 +457,7 @@ export interface Translations {
       mcp: string
       archivedChats: string
       about: string
+      telemetry: string
       billing: string
       notifications: string
       vault: string
@@ -592,6 +593,36 @@ export interface Translations {
         unlockDescription: string
         masterPasswordPlaceholder: string
       }
+    }
+    telemetry: {
+      title: string
+      intro: string
+      pointCounters: string
+      pointNoContent: string
+      pointInstallId: string
+      pointConsentWindow: string
+      docsLink: string
+      sharingTitle: string
+      shareLabel: string
+      shareDesc: string
+      collectOnlyNote: string
+      inheritedNote: string
+      cliHint: string
+      enabledTitle: string
+      enabledMessage: string
+      disabledTitle: string
+      disabledMessage: string
+      failedSave: string
+      filesTitle: string
+      filesLabel: string
+      filesDesc: string
+      filesRemoteDesc: string
+      openFolder: string
+      openFolderFailed: string
+      promptTitle: string
+      promptDescription: string
+      promptAccept: string
+      promptDecline: string
     }
     notifications: {
       title: string
@@ -3048,6 +3079,7 @@ export interface Translations {
     price: (input: string, output: string) => string
     change: string
     startChatting: string
+    shareMetricsLabel: string
     docs: (provider: string) => string
   }
 

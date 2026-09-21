@@ -23,7 +23,7 @@ from hermes_cli.web_server_profiles import (
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, redact_key, _deep_merge
 from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
-from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
+from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate, SharedMetricsConsentUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -149,6 +149,42 @@ async def update_config(
         return {"ok": True}
 
     with http_failure("PUT /api/config failed", 500, detail="Internal server error"):
+        return await asyncio.to_thread(_run)
+
+
+@config_router.get("/api/telemetry/shared-metrics")
+async def get_shared_metrics_consent(profile: Optional[str] = None):
+    """Consent state for the Settings page and the one-time desktop prompt (``decided`` false +
+    ``enabled`` false is the only combination that may ask)."""
+    from hermes_cli.observability.shared_metrics_consent import shared_metrics_state
+
+    def _run():
+        with _profile_scope(profile):
+            state = shared_metrics_state(read_raw_config())
+        return {"enabled": state.enabled, "send": state.send, "decided": state.decided, "source": state.source}
+
+    return await asyncio.to_thread(_run)
+
+
+@router.put("/api/telemetry/shared-metrics")
+async def update_shared_metrics_consent(body: SharedMetricsConsentUpdate, profile: Optional[str] = None):
+    """Record the shared-metrics decision the way `hermes setup telemetry` does.
+
+    A plain ``PUT /api/config`` would flip the keys but leave the consent window to the
+    backend's once-per-process reconcile, so packages collected until the next pass or
+    restart would never be sent. This route runs inside the target profile's scope so
+    ``apply_shared_metrics_choice`` records consent in THAT profile's store.
+    """
+    from hermes_cli.observability.shared_metrics_consent import apply_shared_metrics_choice
+
+    def _run():
+        with _profile_scope(body.profile or profile), _CONFIG_MUTATION_LOCK:
+            config = read_raw_config()
+            chosen = apply_shared_metrics_choice(config, enabled=body.enabled, send=body.send)
+            save_config(config)
+        return {"ok": True, "enabled": chosen.enabled, "send": chosen.send, "decided": True, "source": "profile"}
+
+    with http_failure("PUT /api/telemetry/shared-metrics failed", 500, detail="Internal server error"):
         return await asyncio.to_thread(_run)
 
 

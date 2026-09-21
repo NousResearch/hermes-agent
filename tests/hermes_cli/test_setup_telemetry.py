@@ -9,8 +9,12 @@ from hermes_cli.setup import setup_telemetry
 from hermes_cli.subcommands.setup import build_setup_parser
 
 
-def test_shared_metrics_are_registered_disabled_by_default():
-    assert DEFAULT_CONFIG["telemetry"]["shared_metrics"]["enabled"] is False
+def test_shared_metrics_are_off_until_someone_answers(_isolate_hermes_home):
+    """No default keys: absent means inherit, and with no recorded answer that is off."""
+    from hermes_cli.observability.shared_metrics_consent import shared_metrics_state
+
+    assert "enabled" not in DEFAULT_CONFIG["telemetry"]["shared_metrics"]
+    assert shared_metrics_state({}).enabled is False
 
 
 def test_setup_telemetry_enables_shared_metrics(monkeypatch):

@@ -1735,6 +1735,11 @@ def main(
     if query or image:
         _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json=output_format == "stream-json")
         return
+    # One-time shared-metrics question, before prompt_toolkit owns the terminal. Interactive
+    # sessions only; single-query/oneshot runs above never ask.
+    from hermes_cli.observability.shared_metrics_consent import maybe_prompt_for_consent_cli
+
+    maybe_prompt_for_consent_cli()
     cli.run()
 
 

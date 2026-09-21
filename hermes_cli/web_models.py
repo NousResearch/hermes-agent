@@ -12,6 +12,12 @@ class ConfigUpdate(BaseModel):
     config: dict
     profile: Optional[str] = None
 
+class SharedMetricsConsentUpdate(BaseModel):
+    """Collection + sending decision for telemetry.shared_metrics (desktop onboarding, dashboard)."""
+    enabled: StrictBool
+    send: StrictBool
+    profile: Optional[str] = None
+
 class EnvVarUpdate(BaseModel):
     key: str
     value: str

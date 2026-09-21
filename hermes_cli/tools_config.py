@@ -893,10 +893,10 @@ def _toolset_enabled_for_reconfigure(ts_key: str, config: dict) -> bool:
 # --- Main Entry Point ---
 def _shared_metrics_state(config: dict) -> tuple[bool, bool]:
     """Return (collection_enabled, send_enabled) from a config dict."""
-    telemetry = config.get("telemetry")
-    shared = telemetry.get("shared_metrics") if isinstance(telemetry, dict) else None
-    shared = shared if isinstance(shared, dict) else {}
-    return shared.get("enabled") is True, shared.get("send") is True
+    from hermes_cli.observability.shared_metrics_consent import shared_metrics_state
+
+    state = shared_metrics_state(config)
+    return state.enabled, state.send
 
 
 def _shared_metrics_menu_label(config: dict) -> str:

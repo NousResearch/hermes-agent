@@ -308,8 +308,40 @@ telemetry:
 - `send` requires `enabled`. It does **not** imply it: a transmission flag must
   not silently switch on collection. `send: true` with `enabled: false` warns
   and does nothing.
-- Like `enabled`, `send` is profile-owned and is not overridden by
-  managed-scope configuration.
+- `enabled` and `send` are **tri-state per profile**: an explicit boolean in the
+  profile's `config.yaml` is that profile's own decision; an *absent* key means
+  the profile inherits the user's global answer; no global answer means off.
+  Neither key has a default in `DEFAULT_CONFIG` on purpose — a `False` default
+  would be stripped on save and silently turn a local opt-out back into
+  "inherit". Managed-scope configuration never overrides either key.
+- **The global answer** is one file at the Hermes root,
+  `<root>/telemetry-consent.json` (`{"share": bool, "decided_at": ...}`),
+  written by the FIRST consent surface answered anywhere and inherited by every
+  profile — existing and future — that has not set its own keys. Consent is a
+  decision about the person, not the profile, so this is a deliberate,
+  product-approved exception to "profiles are independent islands"; it applies
+  to this consent only. Later answers on any surface write the profile's
+  explicit keys and leave the global file alone, so any profile can opt out (or
+  in) locally afterwards; delete the file to be asked again.
+- Every surface that records a decision goes through one writer,
+  `hermes_cli/observability/shared_metrics_consent.py::apply_shared_metrics_choice`:
+  `hermes setup telemetry`, the `hermes tools` toggle, the dashboard/desktop
+  route `PUT /api/telemetry/shared-metrics` (`{enabled, send}`), the Desktop
+  first-run picker's "Share anonymous usage metrics" checkbox (called once, on
+  whichever route leaves the picker, and hidden entirely when a global answer
+  already exists), and the one-time question (below). The writer sets the
+  profile keys explicitly, records the global answer if none exists, forces
+  `send` off when `enabled` is off, and records the consent window (A.1) at
+  the moment of the decision — a bare config write would leave the window to
+  the backend's once-per-process reconcile. The same module's
+  `shared_metrics_state` is the single resolver every reader uses (relay gate,
+  sender, wizard, `GET /api/telemetry/shared-metrics`, which also reports
+  `decided` and `source: profile|global|default`).
+- **The one-time question** is asked while collection is off for the current
+  profile AND no global answer exists: the interactive CLI asks once before the
+  REPL starts (TTY only, never on managed installs); the Desktop asks once after
+  onboarding is out of the way. Either answer, or dismissing the Desktop dialog,
+  records a decision, so it is asked at most once per user, not per profile.
 
 **A package is only sent when its whole period falls inside a recorded
 consent window.** Consent is stored as explicit intervals in the shared-

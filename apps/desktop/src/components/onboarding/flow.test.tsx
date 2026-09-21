@@ -55,7 +55,9 @@ function confirmingModelState(): DesktopOnboardingState {
     firstRunSkipped: false,
     manual: false,
     localEndpoint: false,
-    freeTierReady: false
+    freeTierReady: false,
+    shareMetrics: true,
+    shareMetricsDecided: null
   }
 }
 

@@ -36,6 +36,7 @@ import {
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
+import { TelemetryConsentPrompt } from '@/components/telemetry-consent-prompt'
 import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
 import { getLatestSessionMessages } from '@/hermes'
@@ -1362,6 +1363,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           the statusbar chip, the first-launch intro). It owns the flow; the
           entry points only record the intent. */}
       {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
+      {!isAuxiliaryWindow() && (
+        <TelemetryConsentPrompt enabled={gatewayState === 'open'} profile={activeGatewayProfile} />
+      )}
       <ModelPickerOverlay
         gateway={gateway || undefined}
         onSelect={selectModel}

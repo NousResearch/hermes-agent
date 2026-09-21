@@ -201,6 +201,40 @@ export function saveHermesConfigRecord(config: HermesConfigRecord, profile?: Pro
   })
 }
 
+export interface SharedMetricsConsent {
+  enabled: boolean
+  send: boolean
+}
+
+export interface SharedMetricsConsentState extends SharedMetricsConsent {
+  /** Some consent surface has recorded the user's answer (global, shared by every profile). */
+  decided: boolean
+  /** Where enabled/send came from: this profile's own keys, the global answer, or the off default. */
+  source: 'default' | 'global' | 'profile'
+}
+
+export function getSharedMetricsConsent(profile?: null | string): Promise<SharedMetricsConsentState> {
+  return hermesApi<SharedMetricsConsentState>({
+    ...profileScoped(profile),
+    path: '/api/telemetry/shared-metrics'
+  })
+}
+
+/** Record the shared-metrics decision through the backend's consent writer (same path as
+ *  `hermes setup telemetry`). Writes telemetry.shared_metrics.{enabled,send} AND opens/closes
+ *  the send-consent window; a plain config PUT would leave the window unrecorded. */
+export function setSharedMetricsConsent(
+  consent: SharedMetricsConsent,
+  profile?: null | string
+): Promise<{ ok: boolean } & SharedMetricsConsentState> {
+  return hermesApi<{ ok: boolean } & SharedMetricsConsentState>({
+    ...profileScoped(profile),
+    path: '/api/telemetry/shared-metrics',
+    method: 'PUT',
+    body: consent
+  })
+}
+
 export function getEnvVars(profile?: null | string): Promise<Record<string, EnvVarInfo>> {
   return hermesApi<Record<string, EnvVarInfo>>({
     ...profileScoped(profile),

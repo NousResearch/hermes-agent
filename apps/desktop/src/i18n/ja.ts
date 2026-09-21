@@ -384,6 +384,7 @@ export const ja = defineLocale({
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
       about: '情報',
+      telemetry: 'テレメトリー',
       billing: '請求',
       notifications: '通知',
       vault: 'パスワードとログイン'
@@ -463,6 +464,71 @@ export const ja = defineLocale({
           'マスターパスワードを入力してください。このマシン上のパスワードマネージャーに渡された後に破棄され、保存・記録されることも、エージェントに表示されることもありません。',
         masterPasswordPlaceholder: 'マスターパスワード'
       }
+    },
+    telemetry: {
+      title: 'テレメトリー',
+
+      intro:
+        'Hermes はこのマシン上で匿名の利用メトリクスを収集し、エージェント改善のため Nous Research と共有できます。有効にしない限りオフです。',
+
+      pointCounters: '有界カウンターとヒストグラムのみ：モデル呼び出し、ツール使用、エラー、レイテンシ区分。',
+
+      pointNoContent: 'プロンプト、応答、ファイル内容、ファイル名、チャットに入力した内容は一切含まれません。',
+
+      pointInstallId:
+        'パッケージには日ごとにまとめるためのプロファイル単位のランダムなインストール ID が付きます。個人情報は含まず、テレメトリーフォルダを削除するとリセットされます。',
+
+      pointConsentWindow:
+        '日次パッケージは、その収集期間全体が共有オンの期間に含まれる場合のみ送信されます。オプトイン前や中断中のデータはこのマシンに残ります。',
+
+      docsLink: 'データの詳細説明を読む',
+
+      sharingTitle: '共有',
+
+      shareLabel: '匿名の利用メトリクスを Nous Research と共有する',
+
+      shareDesc: 'メトリクスをローカルで収集し、日次パッケージを Nous に送信します。オフにすると送信は即時停止します。',
+
+      collectOnlyNote:
+        'このプロファイルはメトリクスをローカルで収集しますが送信していません（コマンドラインで設定）。共有をオンにすると送信を開始し、オフにすると収集も停止します。',
+
+      inheritedNote:
+        'このプロファイルには独自の設定がなく、最初に尋ねられたときの回答に従います。スイッチを切り替えるとこのプロファイルのみに設定されます。',
+
+      cliHint: '同じ設定はターミナルの `hermes setup telemetry` からも変更できます。',
+
+      enabledTitle: 'テレメトリー共有オン',
+
+      enabledMessage: 'メトリクスをローカルで収集し、毎日 Nous Research に送信します。',
+
+      disabledTitle: 'テレメトリー共有オフ',
+
+      disabledMessage: '収集も送信も行いません。既存のローカルファイルはそのまま残ります。',
+
+      failedSave: 'テレメトリー設定を保存できませんでした',
+
+      filesTitle: 'ローカルファイル',
+
+      filesLabel: 'テレメトリーフォルダ',
+
+      filesDesc:
+        'Hermes が収集したすべてがここにあります：メトリクスデータベース、送信待ちの日次パッケージ、共有がオンだった期間の記録。フォルダを削除するとインストール ID がリセットされます。',
+
+      filesRemoteDesc:
+        'このプロファイルはリモートゲートウェイ上で動作しており、テレメトリーフォルダはそのマシンにあります。',
+
+      openFolder: 'フォルダを開く',
+
+      openFolderFailed: 'テレメトリーフォルダを開けませんでした',
+
+      promptTitle: '匿名の利用メトリクスを共有しますか？',
+
+      promptDescription:
+        'Hermes は有界の利用カウンター（モデル呼び出し、ツール使用、エラー）を Nous Research に送信できます。プロンプト、ファイル、個人データは一切含まれません。設定 → テレメトリーでいつでも変更できます。',
+
+      promptAccept: '共有する',
+
+      promptDecline: '共有しない'
     },
     notifications: {
       title: '通知',
@@ -3017,6 +3083,7 @@ export const ja = defineLocale({
     price: (input, output) => `${input} 入力 / ${output} 出力 per Mtok`,
     change: '変更',
     startChatting: '始める',
+    shareMetricsLabel: '匿名の利用メトリクスを Nous Research と共有する',
     docs: provider => `${provider} ドキュメント`
   },
 

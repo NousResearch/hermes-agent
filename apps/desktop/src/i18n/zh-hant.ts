@@ -375,6 +375,7 @@ export const zhHant = defineLocale({
       mcp: 'MCP',
       archivedChats: '已封存聊天',
       about: '關於',
+      telemetry: '遙測',
       billing: '帳單',
       notifications: '通知',
       vault: '密碼與登入'
@@ -450,6 +451,66 @@ export const zhHant = defineLocale({
         unlockDescription: '輸入主密碼。它會交給本機的密碼管理器後立即捨棄，不會被儲存、記錄或顯示給代理。',
         masterPasswordPlaceholder: '主密碼'
       }
+    },
+    telemetry: {
+      title: '遙測',
+
+      intro: 'Hermes 可以在本機收集匿名使用指標，並與 Nous Research 共享以協助改進代理程式。除非您開啟，否則預設關閉。',
+
+      pointCounters: '僅包含有界計數器與直方圖：模型呼叫、工具使用、錯誤、延遲分桶。',
+
+      pointNoContent: '絕不包含提示詞、回覆、檔案內容、檔案名稱或聊天中輸入的任何內容。',
+
+      pointInstallId: '資料包帶有一個隨機的每個設定檔安裝 ID，用於按日分組。它不含個人資訊，刪除遙測資料夾即可重設。',
+
+      pointConsentWindow:
+        '只有當某個每日資料包的整個收集期間都落在您開啟共享的時段內時才會傳送。開啟之前或任何間隔期間的資料都會留在本機。',
+
+      docsLink: '閱讀完整的資料說明',
+
+      sharingTitle: '共享',
+
+      shareLabel: '與 Nous Research 共享匿名使用指標',
+
+      shareDesc: '在本機收集指標並每日向 Nous 傳送一個資料包。關閉後立即停止傳送。',
+
+      collectOnlyNote: '此設定檔在本機收集指標但不傳送（由命令列設定）。開啟共享將開始傳送；關閉則同時停止收集。',
+
+      inheritedNote: '此設定檔沒有自己的設定，沿用您首次被詢問時的回答。切換開關僅對此設定檔生效。',
+
+      cliHint: '終端機中可透過 `hermes setup telemetry` 使用同一設定。',
+
+      enabledTitle: '遙測共享已開啟',
+
+      enabledMessage: '指標在本機收集並每日傳送給 Nous Research。',
+
+      disabledTitle: '遙測共享已關閉',
+
+      disabledMessage: '不再收集或傳送任何內容。現有本機檔案保留原處。',
+
+      failedSave: '無法儲存遙測設定',
+
+      filesTitle: '本機檔案',
+
+      filesLabel: '遙測資料夾',
+
+      filesDesc:
+        'Hermes 收集的所有內容都在這裡：指標資料庫、待傳送的每日資料包，以及共享開啟時間的記錄。刪除該資料夾可重設安裝 ID。',
+
+      filesRemoteDesc: '此設定檔執行於遠端閘道；其遙測資料夾位於該機器。',
+
+      openFolder: '開啟資料夾',
+
+      openFolderFailed: '無法開啟遙測資料夾',
+
+      promptTitle: '共享匿名使用指標？',
+
+      promptDescription:
+        'Hermes 可以向 Nous Research 傳送有界的使用計數器（模型呼叫、工具使用、錯誤）——絕不包含提示詞、檔案或個人資料。可隨時在設定 → 遙測中變更。',
+
+      promptAccept: '共享',
+
+      promptDecline: '不共享'
     },
     notifications: {
       title: '通知',
@@ -2976,6 +3037,7 @@ export const zhHant = defineLocale({
     price: (input, output) => `${input} 輸入 / ${output} 輸出 每 Mtok`,
     change: '變更',
     startChatting: '開始',
+    shareMetricsLabel: '與 Nous Research 共享匿名使用指標',
     docs: provider => `${provider} 文件`
   },
 

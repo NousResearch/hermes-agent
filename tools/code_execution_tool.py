@@ -653,7 +653,11 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
     _cfg = _load_config()
-    timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _configured_max_tool_calls(_cfg)
+    timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
+    try:
+        max_tool_calls = _configured_max_tool_calls(_cfg)
+    except ValueError as exc:
+        return tool_error(str(exc))
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
@@ -778,12 +782,16 @@ def execute_code(
     from tools.code_kernel import execute_in_session_kernel
     _cfg = _load_config()
     _mode = _get_execution_mode()
+    try:
+        max_tool_calls = _configured_max_tool_calls(_cfg)
+    except ValueError as exc:
+        return tool_error(str(exc))
     return execute_in_session_kernel(
         code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
-        max_tool_calls=_configured_max_tool_calls(_cfg),
+        max_tool_calls=max_tool_calls,
         reset=bool(reset), is_interrupted=_is_interrupted,
     )
 

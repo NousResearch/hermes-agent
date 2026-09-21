@@ -270,6 +270,26 @@ class TestToolCallLimit(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be an integer"):
             _configured_max_tool_calls({"max_tool_calls": "unlimited"})
 
+    def test_invalid_limit_returns_tool_error_for_local_and_remote(self):
+        for env_type in ("local", "ssh"):
+            with self.subTest(env_type=env_type):
+                with patch(
+                    "tools.terminal_tool._get_env_config",
+                    return_value={"env_type": env_type},
+                ), patch(
+                    "tools.terminal_tool._docker_has_host_access",
+                    return_value=False,
+                ), patch(
+                    "tools.approval.check_execute_code_guard",
+                    return_value={"approved": True},
+                ), patch(
+                    "tools.code_execution_tool._load_config",
+                    return_value={"max_tool_calls": "unlimited"},
+                ):
+                    result = json.loads(execute_code("print('ok')", task_id="invalid-limit"))
+                self.assertIn("error", result)
+                self.assertIn("must be an integer", result["error"])
+
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):

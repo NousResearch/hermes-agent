@@ -35,6 +35,7 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
 import {
@@ -48,6 +49,8 @@ import {
   knownSessionOwner,
   lineageAliases,
   markSessionRead,
+  migrateRememberedNavigationForProfile,
+  migrateSessionOwnerHintsForProfile,
   ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionStoredIdRotation,
@@ -66,6 +69,7 @@ import {
   type SessionProfileRoute
 } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
+import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
@@ -1564,9 +1568,17 @@ export function openSessionTile(
   // No scope on an already-open tile is a MOVE (a split drag re-docking a tab),
   // not a re-scope: keep the workspace it lives in instead of re-bucketing it
   // into Sessions — a Bot tab used to vanish from the Bot workspace on drop.
-  const workspaceScope: SessionTileWorkspaceScope = explicitScope ?? {
-    workspaceMode: existing?.workspaceMode ?? 'sessions'
-  }
+  // A bot chat dragged out of MAIN has no tile (Bot Mode has no main/tile
+  // distinction) and no explicit scope — the tab it rides on is the bot
+  // workspace itself. Left on the sessions fallback, the "loaded in MAIN never
+  // opens as a tile" guard below swallowed the drop silently. The remembered
+  // bot-chat scope is the discriminator: restore it so the drop mints a real
+  // tile, which the drop hint's reveal then adopts and fronts. An existing-tile
+  // move keeps the tile's own scope.
+  const rememberedBotScope = !explicitScope && !existing ? $botChatScopes.get()[storedSessionId] : undefined
+
+  const workspaceScope: SessionTileWorkspaceScope = explicitScope ??
+    rememberedBotScope ?? { workspaceMode: existing?.workspaceMode ?? 'sessions' }
 
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
   // exactly like main-thread resume does. Previously only
@@ -1798,6 +1810,29 @@ export function focusedSessionNeedsRoute(focused: 'main' | 'tile' | null, worksp
   return !focused || (focused === 'main' && workspaceIsPage)
 }
 
+/** Presentation scope of the session tab the user is currently acting from.
+ * Picker actions must preserve this scope: a `/resume` opened from Bot Mode is
+ * still a Bot tab with its exact owner route, not a Sessions-main navigation. */
+export function focusedSessionWorkspaceScope(): SessionTileWorkspaceScope {
+  const paneId = focusedSessionTabAnchor()
+
+  if (paneId?.startsWith(TILE_PANE_PREFIX)) {
+    const storedSessionId = paneId.slice(TILE_PANE_PREFIX.length)
+    const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+    if (tile?.workspaceMode === 'bots') {
+      return {
+        ...(tile.ownerRoute ? { ownerRoute: tile.ownerRoute } : {}),
+        workspaceMode: 'bots',
+        ...(tile.workspaceOwnerKey ? { workspaceOwnerKey: tile.workspaceOwnerKey } : {}),
+        ...(tile.workspaceTabTitle ? { workspaceTabTitle: tile.workspaceTabTitle } : {})
+      }
+    }
+  }
+
+  return { workspaceMode: 'sessions' }
+}
+
 /** The open tab that's still an empty "New session" draft, if there is one.
  *  That tab is the one the user would have typed into, so an open-from-nowhere
  *  spends it instead of stacking a second blank tab beside it. Most recent
@@ -1940,6 +1975,7 @@ export function dropTilesForProfile(
   }
 
   const name = normalizeProfileKey(profile)
+  dropPreviewArtifactsForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
   // profile name that a non-route delete trims away.
@@ -2017,6 +2053,65 @@ export function dropTilesForProfile(
   }
 
   persistTiles()
+}
+
+/**
+ * Rename counterpart of dropTilesForProfile: the profile's sessions still exist
+ * under the new name, so its persisted tabs, Bot tiles routed at it, cached
+ * transcript tails, remembered session/route and owner hints move to the new
+ * name instead of being left under `local::<old>` where every open resolves
+ * to a backend that no longer exists ("Couldn't open this session", #111868).
+ * Local-connection state only; a remote gateway rename executes there.
+ */
+export function migrateTilesForProfile(oldProfile: string, newProfile: string): void {
+  const from = normalizeProfileKey(oldProfile)
+  const to = normalizeProfileKey(newProfile)
+
+  if (!from || !to || from === to) {
+    return
+  }
+
+  const isLocal = (owner: SessionProfileRoute | undefined) =>
+    Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'
+
+  const renamedOwner = (owner: SessionProfileRoute | undefined): SessionProfileRoute | undefined => {
+    if (!owner || !isLocal(owner)) {
+      return owner
+    }
+
+    const profile = normalizeProfileKey(owner.profile) === from ? to : owner.profile
+    const targetProfile = normalizeProfileKey(owner.targetProfile) === from ? to : owner.targetProfile
+
+    return profile === owner.profile && targetProfile === owner.targetProfile
+      ? owner
+      : { ...owner, profile, ...(targetProfile === undefined ? {} : { targetProfile }) }
+  }
+
+  const moved = tilesByProfile[from]
+
+  if (moved) {
+    delete tilesByProfile[from]
+    tilesByProfile[to] = [...(tilesByProfile[to] ?? []), ...moved.map(tile => ({ ...tile, ownerRoute: renamedOwner(tile.ownerRoute) }))]
+  }
+
+  const botTiles = tilesByProfile[BOTS_TILE_BUCKET]
+
+  if (botTiles) {
+    tilesByProfile[BOTS_TILE_BUCKET] = botTiles.map(tile => ({ ...tile, ownerRoute: renamedOwner(tile.ownerRoute) }))
+  }
+
+  const live = $sessionTiles.get()
+  const next = live.map(tile => (tile.ownerRoute ? { ...tile, ownerRoute: renamedOwner(tile.ownerRoute) } : tile))
+
+  if (next.some((tile, index) => tile !== live[index] && tile.ownerRoute !== live[index].ownerRoute)) {
+    $sessionTiles.set(next)
+  }
+
+  persistTiles()
+  migrateTranscriptTailsForProfile(from, to)
+  migrateRememberedNavigationForProfile(from, to)
+  migrateSessionOwnerHintsForProfile(from, to)
+  migratePreviewArtifactsForProfile(from, to)
 }
 
 /** ⌘⇧T — reopen the most recently closed tab where it was, then focus it.

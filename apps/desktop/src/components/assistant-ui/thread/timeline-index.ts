@@ -19,6 +19,9 @@ const requests = new Map<string, Promise<TimelineIndex>>()
 const MAX_CACHED_SESSIONS = 12
 const TTL = 60_000
 
+/** One lookup may advance a partially loaded index by this many pages. */
+const MAX_INDEX_PAGES_PER_LOOKUP = 3
+
 export const timelineIndexKey = (id: string, scope: ProfileScope) => JSON.stringify([id, scope])
 export const cachedTimelineIndex = (key: string) => cache.get(key)
 
@@ -86,4 +89,53 @@ export function fetchTimelineIndex(id: string, scope: ProfileScope): Promise<Tim
   requests.set(key, request)
 
   return request
+}
+
+/** Marks are chronological, so the greatest id below the anchor is its predecessor. */
+function promptBefore(entries: readonly TimelineEntry[], rowId: number): number | null {
+  let previous: number | null = null
+
+  for (const entry of entries) {
+    if (entry.rowId !== undefined && entry.rowId < rowId) {
+      previous = entry.rowId
+    }
+  }
+
+  return previous
+}
+
+/** Whether the loaded marks reach the anchor, i.e. `promptBefore` is its neighbour. */
+const marksReach = (entries: readonly TimelineEntry[], rowId: number) =>
+  entries.some(entry => entry.rowId !== undefined && entry.rowId >= rowId)
+
+/**
+ * The prompt mark immediately before `rowId` on the shared timeline range — the
+ * same marks the rail draws, so "Show earlier" and the rail page one range
+ * instead of each inventing its own reachability. Pages load oldest-first, so
+ * an anchor past the loaded marks advances the index (cached, coalesced with
+ * the rail's own loadMore) rather than guessing across the gap. Resolves null
+ * only when nothing precedes the anchor, or when the index cannot name it.
+ */
+export async function previousPromptRowId(
+  id: string,
+  scope: ProfileScope,
+  rowId: number | undefined
+): Promise<number | null> {
+  if (rowId === undefined || !Number.isSafeInteger(rowId) || rowId <= 0) {
+    return null
+  }
+
+  let previous: number | null = null
+
+  for (let page = 0; page < MAX_INDEX_PAGES_PER_LOOKUP; page++) {
+    const index = await fetchTimelineIndex(id, scope)
+
+    previous = promptBefore(index.entries, rowId)
+
+    if (previous === null || index.complete || marksReach(index.entries, rowId)) {
+      return previous
+    }
+  }
+
+  return previous
 }

@@ -18,6 +18,7 @@ def _agent(max_tokens: int | None = 2000):
     agent.quiet_mode = True
     agent.log_prefix = ""
     agent._codex_incomplete_retries = 0
+    agent._codex_reasoning_only_streak = 0
     agent._ephemeral_reasoning_off = False
     agent._ephemeral_max_output_tokens = None
     agent._build_assistant_message.side_effect = lambda msg, fr: {

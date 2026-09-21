@@ -72,6 +72,54 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_kanban_edit_updates_documented_task_fields(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="old title", body="old body", priority=2)
+
+    output = kc.run_slash(
+        f"edit {task_id} --title 'new title' --body 'new body' --priority 70"
+    )
+
+    assert f"Edited {task_id}" in output
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    assert (task.title, task.body, task.priority) == ("new title", "new body", 70)
+    assert any(event.kind == "reprioritized" for event in events)
+
+
+def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
+    with kbc.connect_closing() as conn:
+        worker = kb.create_task(conn, title="worker")
+        assert kb.claim_task(conn, worker, claimer="worker") is not None
+        worker_run_id = kb.get_task(conn, worker).current_run_id
+        parent = kb.create_task(conn, title="unfinished parent")
+        ready_child = kb.create_task(conn, title="foreign ready child")
+        running_child = kb.create_task(conn, title="foreign running child")
+        assert kb.claim_task(conn, running_child, claimer="other") is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(worker_run_id))
+
+    assert kc._cmd_link(argparse.Namespace(
+        parent_id=parent, child_id=ready_child,
+    )) == 0
+    with pytest.raises(ValueError, match="child is already running"):
+        kc._cmd_link(argparse.Namespace(
+            parent_id=parent, child_id=running_child,
+        ))
+    # Owner handoff: the worker links its own running card, proving ownership
+    # with HERMES_KANBAN_RUN_ID — the one path _cmd_link forwards a run id for.
+    assert kc._cmd_link(argparse.Namespace(
+        parent_id=parent, child_id=worker,
+    )) == 0
+
+    with kbc.connect_closing() as conn:
+        assert kb.parent_ids(conn, ready_child) == [parent]
+        assert kb.parent_ids(conn, running_child) == []
+        assert kb.parent_ids(conn, worker) == [parent]
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

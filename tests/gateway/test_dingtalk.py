@@ -695,6 +695,35 @@ class TestCardLifecycle:
         )
         assert "chat-1" in fired
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("missing", ["template", "sdk"])
+    async def test_edit_message_rejects_when_ai_cards_are_unavailable(self, missing):
+        """Edits must not access the card SDK on webhook-only installations."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        extra = {} if missing == "template" else {"card_template_id": "tmpl-1"}
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True, extra=extra))
+        card_sdk = None if missing == "sdk" else MagicMock()
+        adapter._card_sdk = card_sdk
+        adapter._get_access_token = AsyncMock(return_value="token")
+
+        result = await adapter.edit_message("chat-1", "track-1", "heartbeat")
+
+        assert not result.success
+        assert result.error == "AI Cards are not configured for message editing"
+        adapter._get_access_token.assert_not_awaited()
+        if card_sdk is not None:
+            assert card_sdk.mock_calls == []
+
+    @pytest.mark.asyncio
+    async def test_edit_message_streams_when_ai_cards_are_configured(self, adapter_with_card):
+        """Configured cards retain the streaming edit path."""
+        result = await adapter_with_card.edit_message("chat-1", "track-1", "heartbeat")
+
+        assert result.success
+        assert result.message_id == "track-1"
+        adapter_with_card._card_sdk.streaming_update_with_options_async.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # AI Card Tests

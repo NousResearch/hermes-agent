@@ -10,6 +10,7 @@ import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/type
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -75,12 +76,14 @@ export const StopGlyph = <StopFilled aria-hidden className="size-3.5 -translate-
 
 // Agent-to-agent deliveries ("Message from 🤖 <sender>: …", the Bot Mode /
 // multi-profile convention; optional "(@<handle>)" carries the sender's
-// profile name for avatar resolution; legacy "[Message from agent
-// '<sender>'] …" too). They arrive on the user role because the recipient's
-// turn runs on it, but they are NOT the human speaking — render them as a
-// compact attributed timeline notice instead of a user bubble.
+// profile name for avatar resolution — a relayed sender is re-stamped
+// "(@<handle>@<connection>)" so a reply reaches the right machine (#103731);
+// legacy "[Message from agent '<sender>'] …" too). They arrive on the user
+// role because the recipient's turn runs on it, but they are NOT the human
+// speaking — render them as a compact attributed timeline notice instead of
+// a user bubble.
 export const AGENT_MESSAGE_RE =
-  /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/u
+  /^(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})(?:@[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)([\s\S]*)$/u
 
 // sender handle -> avatar data URL. Module-level so a chat full of notices
 // from one bot resolves once. Hits are cached for the window's lifetime;
@@ -463,7 +466,6 @@ export const UserMessage: FC<{
                       triggerHaptic('selection')
                       setExpanded(value => !value)
                     }}
-                    title={bodyClamped ? (expanded ? t.common.collapse : copy.expandMessage) : undefined}
                     type="button"
                   >
                     {bubbleContent}
@@ -511,33 +513,33 @@ export const UserMessage: FC<{
                           event.stopPropagation()
                           void onCancel?.()
                         }}
-                        title={copy.stop}
                         type="button"
                       >
                         {StopGlyph}
                       </button>
                     ) : (
-                      <button
-                        aria-label={copy.restoreCheckpoint}
-                        className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
-                        onClick={event => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          triggerHaptic('selection')
-                          onRequestRestoreConfirm?.(messageId, {
-                            text: messageText,
-                            userOrdinal: runtimeUserOrdinal
-                          })
-                        }}
-                        onPointerDown={event => {
-                          event.preventDefault()
-                          event.stopPropagation()
-                        }}
-                        title={copy.restoreFromHere}
-                        type="button"
-                      >
-                        <Codicon name="discard" size="0.875rem" />
-                      </button>
+                      <Tip label={copy.restoreFromHere}>
+                        <button
+                          aria-label={copy.restoreCheckpoint}
+                          className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
+                          onClick={event => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                            triggerHaptic('selection')
+                            onRequestRestoreConfirm?.(messageId, {
+                              text: messageText,
+                              userOrdinal: runtimeUserOrdinal
+                            })
+                          }}
+                          onPointerDown={event => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                          }}
+                          type="button"
+                        >
+                          <Codicon name="discard" size="0.875rem" />
+                        </button>
+                      </Tip>
                     )}
                   </div>
                 )}

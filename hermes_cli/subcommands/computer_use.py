@@ -54,6 +54,15 @@ def _cu_status(args) -> int:
         else:
             print("    Run: hermes computer-use install")
         return 1
+    rc = 0
+    if sys.platform == "linux":  # hand-written daemon units: dead `serve` is invisible to the binary contract (#114748)
+        from tools.computer_use.cua_backend import cua_daemon_listening
+        from tools.computer_use.doctor import cua_daemon_units
+        for _kind, unit, _target, serve, socket in cua_daemon_units():
+            if serve and cua_daemon_listening(path, socket) is False:
+                print(f"  ✗ Daemon unit {unit}: no `cua-driver serve` is listening on {socket or 'the default socket'}")
+                print(f"    Check: systemctl --user status {unit}  (reinstalling the driver does not start it)")
+                rc = 1
     try:
         st = cua_driver_update_check()
         if st and st.get("update_available"):
@@ -67,7 +76,7 @@ def _cu_status(args) -> int:
             print("  Refresh to latest: hermes computer-use install --upgrade")
     except Exception:
         print("  Refresh to latest: hermes computer-use install --upgrade")
-    return 0
+    return rc
 
 
 def _cu_doctor(args) -> None:

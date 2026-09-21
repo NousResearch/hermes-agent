@@ -62,7 +62,8 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     if kanban_worker:
         notice += (
             " While tools are still available, call kanban_complete only if all task "
-            "requirements are verified; otherwise persist a kanban_comment handoff and "
+            "requirements are verified, or kanban_request_review if it is ready for "
+            "review; otherwise persist a kanban_comment handoff and "
             "continue. A diff or commit alone is not completion evidence."
         )
     # Only the current tool-result tail is mutable; an older turn may already be cached.
@@ -157,6 +158,9 @@ def prepare_iteration(
         messages, logger=request_logger, session_id=agent.session_id, cursor=_sanitize_cursor
     )
     if repaired_tool_calls > 0:
+        # In-place arg repair may have popped _DB_PERSISTED_MARKER off stamped live dicts;
+        # force a full flush scan so the repaired rows are rewritten.
+        agent._db_flush_scan_prefix = None
         request_logger.info(
             "Sanitized %s corrupted tool_call arguments before request (session=%s)",
             repaired_tool_calls,
@@ -344,7 +348,7 @@ def begin_iteration(
             agent._safe_print(
                 f"\n⏹️  Review input budget exhausted "
                 f"({int(agent.session_input_tokens):,} tokens) — stopping "
-                f"the review tool loop before the next provider call."
+                f"the review tool loop before the next provider call.", diagnostic=True,
             )
         return _verdict("break")
 
@@ -361,7 +365,7 @@ def begin_iteration(
     elif not agent.iteration_budget.consume():
         _turn_exit_reason = "budget_exhausted"
         if not agent.quiet_mode:
-            agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
+            agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)", diagnostic=True)
         return _verdict("break")
     return _verdict("fallthrough")
 
@@ -512,7 +516,7 @@ def apply_retry_restarts(
     # All retries may exhaust with `response` still None; break out cleanly.
     if response is None:
         _turn_exit_reason = "all_retries_exhausted_no_response"
-        agent._emit_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
+        agent._emit_diagnostic_status("❌ The model provider didn't answer after all retries. Send /retry, or switch models with /model.")
         agent._persist_session(messages, conversation_history)
         return _verdict("break")
     return _verdict("fallthrough")

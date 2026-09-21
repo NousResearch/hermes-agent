@@ -49,7 +49,20 @@ def _install_signal_forwarders(proc: subprocess.Popen[bytes]) -> dict[int, objec
             pass
 
     previous: dict[int, object] = {}
-    for signum in (signal.SIGTERM, signal.SIGINT, getattr(signal, "SIGHUP", None)):
+    # SIGUSR1 is the gateway's drain-aware restart request. launchd owns THIS wrapper's PID,
+    # so `hermes update` signals us, not the gateway; an unforwarded SIGUSR1 kills the wrapper
+    # (Python's default action), launchd tears the group down with SIGTERM and applies its
+    # ~60 s crash back-off per sibling profile (#101426). SIGUSR2 is the gateway's
+    # faulthandler stack-dump request (gateway/run_startup.py); unforwarded it terminates
+    # the wrapper the same way instead of dumping stacks.
+    forwarded = (
+        signal.SIGTERM,
+        signal.SIGINT,
+        getattr(signal, "SIGHUP", None),
+        getattr(signal, "SIGUSR1", None),
+        getattr(signal, "SIGUSR2", None),
+    )
+    for signum in forwarded:
         if signum is not None:
             try:
                 previous[signum] = signal.getsignal(signum)
@@ -131,11 +144,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_handlers = _install_signal_forwarders(proc)
     try:
         _copy_stderr_with_timestamps(proc.stderr, log_path)
+        # Keep forwarding until the child has actually exited: a signal that lands between
+        # its stderr EOF and wait() would otherwise kill the wrapper with the default action.
+        returncode = proc.wait()
     finally:
         proc.stderr.close()
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
-    returncode = proc.wait()
     return _child_returncode_for_supervisor(args.command, returncode)
 
 

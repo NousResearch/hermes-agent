@@ -185,7 +185,7 @@ _TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "f
 def _strip_reasoning_tags(text: str) -> str:
     """Strip reasoning blocks (closed, unterminated, orphan-close) and leaked tool-call XML from display text.
 
-    Keep in sync with ``run_agent._strip_think_blocks`` and the stream consumer's think-tag sets.
+    Keep in sync with ``agent.agent_runtime_helpers.strip_think_blocks`` and the stream consumer's think-tag sets.
 
     Also strips tool-call XML blocks some open models leak into visible content (``<tool_call>``,
     ``<function_calls>``, Gemma-style ``<function name="…">…</function>``). Ported from
@@ -197,20 +197,23 @@ def _strip_reasoning_tags(text: str) -> str:
         cleaned = re.sub(rf"<{tag}>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         cleaned = re.sub(rf"</{tag}>\s*", "", cleaned, flags=re.IGNORECASE)
     for tc_tag in _TOOL_CALL_TAGS:
-        cleaned = re.sub(rf"<{tc_tag}\b[^>]*>.*?</{tc_tag}>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+        cleaned = re.sub(
+            rf"<(?:[\w.-]+:)?{tc_tag}\b[^>]*>.*?</(?:[\w.-]+:)?{tc_tag}>\s*",
+            "", cleaned, flags=re.DOTALL | re.IGNORECASE,
+        )
     # <function name="..."> — boundary + attribute gated to avoid prose false positives.
     cleaned = re.sub(
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*\bname\s*=[^>]*>(?:(?:(?!</function>).)*)</function>\s*',
         '', cleaned, flags=re.DOTALL | re.IGNORECASE,
     )
     cleaned = re.sub(
-        r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*', '', cleaned,
+        r'</(?:(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls|function))>\s*', '', cleaned,
         flags=re.IGNORECASE,
     )
     # Unterminated opener / stray <arg_key>/<arg_value> markup = stream cut
     # mid tool-call serialization (#101899); strip to end of text.
     cleaned = re.sub(
-        r'(?:^|\n)[ \t]*<(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
+        r'(?:^|\n)[ \t]*<(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
         r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
         '',
         cleaned,
@@ -417,7 +420,6 @@ def _cli_config_defaults():
             "persist_prompts": True,  # one-line summary of resolved modal prompts into scrollback
             "skin": "default",
         },
-        "clarify": {"timeout": 120},  # seconds before a clarify prompt auto-proceeds
         "code_execution": {"timeout": 300, "max_tool_calls": 50},
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},
         # delegation: empty model/provider = inherit parent; api_key falls back to OPENAI_API_KEY
@@ -1039,6 +1041,7 @@ from hermes_cli.worktree_ops import (
     _repo_is_shallow,
     _setup_worktree,
     _worktree_has_unpushed_commits,
+    release_lsp_clients,
 )
 
 # ============================================================================= Git Worktree Isolation
@@ -1068,7 +1071,9 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         _active_worktree = None
         return
 
-    # Unlock first so `remove` isn't blocked by the lock placed at creation. Fail-soft.
+    # Release the tree's language servers while the path still exists, then unlock so `remove`
+    # isn't blocked by the lock placed at creation. Fail-soft.
+    release_lsp_clients(wt_path)
     _git_quiet(["worktree", "unlock", wt_path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", wt_path, "--force"], repo_root, timeout=15, log="Failed to remove worktree")
     _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}")
@@ -2407,10 +2412,6 @@ def save_config_value(key_path: str, value: any) -> bool:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
             pass
-        # Same unpinned-cron notice as `hermes config set` for every model switch.
-        from hermes_cli.config import warn_unpinned_cron_jobs_after_model_config_change
-
-        warn_unpinned_cron_jobs_after_model_config_change(key_path, value)
         return True
     except Exception as e:
         logger.error("Failed to save config: %s", e)
@@ -2511,6 +2512,7 @@ class _ChatTurn:
     """
 
     result: Optional[dict] = None
+    mute_notification_reply: bool = False
     use_streaming_tts: bool = False
     box_opened: bool = False
     thinking_started: bool = False
@@ -2683,7 +2685,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
         # See #28660.
         self._explicit_api_key = api_key or _startup_api_key_override or None
-        self._explicit_base_url = base_url
+        self._explicit_base_url = base_url or _startup_base_url_override or None
 
         # Resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
@@ -2775,6 +2777,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         # — resolved through the shared chokepoint in hermes_constants (Closes #21256).
         from hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
+        self._explicit_reasoning_config = None
         # --reasoning wins for this run only (never persisted); unparseable -> warn and ignore.
         if reasoning is not None and str(reasoning).strip():
             _cli_reasoning = _parse_reasoning_config(reasoning)
@@ -2782,6 +2785,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 logger.warning("Unknown --reasoning '%s', keeping the configured level", reasoning)
             else:
                 self.reasoning_config = _cli_reasoning
+                self._explicit_reasoning_config = _cli_reasoning
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -2851,20 +2855,24 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
             from hermes_state_user_copy import describe_storage_failure, storage_failure_details
             failure = describe_storage_failure(e)
-            try:
-                Console(stderr=True).print(
-                    "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
-                    "this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. "
-                    "Searching past sessions is also disabled.\n"
-                    f"  Reason: {failure.gloss}.\n"
-                    f"  {failure.action}\n"
-                    f"  [dim]Details: {storage_failure_details(e)}[/dim]"
-                )
-            except Exception:
-                print(
-                    "WARNING: Session store unavailable — this conversation will NOT be "
-                    f"saved and cannot be resumed later. Reason: {failure.gloss}. {failure.action}"
-                )
+            def _present_store_warning():
+                try:
+                    Console(stderr=True).print(
+                        "[bold yellow]⚠ Session store unavailable[/bold yellow] — "
+                        "this conversation will [bold]NOT be saved[/bold] and cannot be resumed later. "
+                        "Searching past sessions is also disabled.\n"
+                        f"  Reason: {failure.gloss}.\n"
+                        f"  {failure.action}\n"
+                        f"  [dim]Details: {storage_failure_details(e)}[/dim]"
+                    )
+                except Exception:
+                    print(
+                        "WARNING: Session store unavailable — this conversation will NOT be "
+                        f"saved and cannot be resumed later. Reason: {failure.gloss}. {failure.action}"
+                    )
+            # Same automatic diagnostic the gateway gates for its home channel (run_notifications).
+            from gateway.warning_notifications import render_notification
+            render_notification(_present_store_warning, platform="cli")
         _run_state_db_auto_maintenance(self._session_db)
         _run_checkpoint_auto_maintenance()
 
@@ -3055,7 +3063,8 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
             notice = default_downgrade_notice()
             if notice:
-                self._console_print(f"[yellow]⚠ {notice}[/yellow]")
+                from gateway.warning_notifications import render_notification
+                render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
         except Exception:
             logger.debug("browser backend notice failed", exc_info=True)
 
@@ -3651,10 +3660,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._show_browser_backend_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
-        # a chat that spins ~30s and fails with a provider-specific error. TTY only.
+        # a chat that spins ~30s and fails with a provider-specific error. TTY only. A
+        # configured profile whose credential is benched or signed out gets the reason instead.
         try:
-            if sys.stdin.isatty() and not self._runtime_credentials_ready():
-                self._offer_first_run_setup()
+            self._maybe_offer_first_run_setup()
         except Exception:
             logger.debug("first-run setup offer failed", exc_info=True)
 
@@ -3739,7 +3748,14 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             pass
 
     def _tui_startup_background_maintenance(self):
-        """Best-effort startup passes: curator skill maintenance, personal + org skill sync."""
+        """Best-effort startup passes: curator skill maintenance, personal + org skill sync.
+
+        Off the main thread: the curator's deterministic pass snapshots and prunes the whole
+        skills tree (a due weekly pass held the prompt for 6 minutes on a large library), and
+        the sync pulls can hit the network. The REPL must never wait on housekeeping."""
+        threading.Thread(target=self._run_startup_maintenance, name="startup-maintenance", daemon=True).start()
+
+    def _run_startup_maintenance(self):
         with suppress(Exception):
             from agent.curator import maybe_run_curator
             maybe_run_curator(
@@ -4034,10 +4050,12 @@ def _interrupt_agent_for_signal(agent, signum) -> None:
         pass  # never block signal handling
 
 
-def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
+def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str, run_turn=None, log=None) -> None:
     """Drive a kanban goal_mode worker through ``goals.run_kanban_goal_loop`` after its first turn.
 
-    The caller swallows all errors: a broken loop must never wedge a worker.
+    ``run_turn`` defaults to the bare ``-Q`` turn (final answer only). The ``-q`` worker path
+    passes ``cli.chat`` so every follow-up turn keeps the tool activity feed that the Kanban
+    worker log is made of. The caller swallows all errors: a broken loop must never wedge a worker.
     """
     task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
     if not task_id:
@@ -4061,7 +4079,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     if not goal_text:
         return
 
-    def _run_turn(prompt: str) -> str:
+    def _quiet_turn(prompt: str) -> str:
         result = cli.agent.run_conversation(user_message=prompt, conversation_history=cli.conversation_history)
         _sync_cli_session_id_from_agent(cli)
         resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
@@ -4078,10 +4096,23 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
             _kb.block_task(c, task_id, reason=reason, expected_run_id=worker_run_id)
 
     _run_loop(
-        task_id=task_id, goal_text=goal_text, run_turn=_run_turn, task_status_fn=_task_status, block_fn=_block,
+        task_id=task_id, goal_text=goal_text, run_turn=run_turn or _quiet_turn,
+        task_status_fn=_task_status, block_fn=_block,
         max_turns=task.goal_max_turns or _DEF_TURNS, first_response=first_response or "",
-        log=lambda m: logger.info("%s", m),
+        log=log or (lambda m: logger.info("%s", m)),
     )
+
+
+def _run_kanban_goal_loop_chat(cli: "HermesCLI", first_response: str) -> None:
+    """``-q`` worker variant: follow-up turns go through ``cli.chat`` (tool feed stays on stdout,
+    which is the Kanban worker log) and judge verdicts are printed there too, so a goal_mode card's
+    log reads like any other worker's instead of staying blank until the final answer."""
+
+    def _log(msg: str) -> None:
+        logger.info("%s", msg)
+        print(msg, flush=True)
+
+    _run_kanban_goal_loop_q(cli, first_response, run_turn=lambda p: cli.chat(p) or "", log=_log)
 
 
 def _sync_cli_session_id_from_agent(cli) -> None:
@@ -4097,8 +4128,19 @@ _TRANSIENT_PROVIDER_REASONS = frozenset({
     "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
 })
 
+# ``failure_reason`` values a retry can never heal: the credential was rejected, the model does
+# not exist for this account, or the TLS chain is broken. A Kanban worker exits
+# ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` so the dispatcher parks the card after ONE spawn with
+# the provider's words as the reason, instead of re-spawning into the same wall until
+# ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
+# ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
+# header change heals it, never a retry.
+_TERMINAL_PROVIDER_REASONS = frozenset({
+    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
+})
 
-def _single_query_exit_code(result) -> int:
+
+def _single_query_exit_code(result, *, credentials_rate_limited: bool = False) -> int:
     """Map a one-shot turn result onto a process exit code, for both `-q` and `-Q`.
 
     0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
@@ -4107,16 +4149,28 @@ def _single_query_exit_code(result) -> int:
     failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
     (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
     WITHOUT counting a failure, so a quota window or a provider outage cannot trip the breaker.
+    The same sentinel applies when credential resolution itself is a quota/rate-limit
+    AuthError (no turn result object is produced). One that failed on a terminal provider
+    error (credential revoked, model gone) exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``
+    (EX_CONFIG): the dispatcher blocks the card at once.
     """
     if not isinstance(result, dict):
+        if credentials_rate_limited and os.environ.get("HERMES_KANBAN_TASK"):
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+            return KANBAN_RATE_LIMIT_EXIT_CODE
         return 1
     if result.get("interrupted"):
         return 130
     if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
         return 0
-    if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in _TRANSIENT_PROVIDER_REASONS:
-        from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
-        return KANBAN_RATE_LIMIT_EXIT_CODE
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        reason = result.get("failure_reason")
+        if reason in _TRANSIENT_PROVIDER_REASONS:
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+            return KANBAN_RATE_LIMIT_EXIT_CODE
+        if reason in _TERMINAL_PROVIDER_REASONS:
+            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
     return 1
 
 
@@ -4131,10 +4185,13 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     from agent.turn_author import take_turn_author_from_env
     from hermes_cli.quiet_single_query import (
         adopt_unanswered_turn, bind_quiet_session_key, continue_quiet_notify_completions,
-        quiet_notify_linger_seconds,
+        exit_single_query, quiet_notify_linger_seconds, take_turn_report_path, write_turn_report,
     )
 
     author = take_turn_author_from_env()
+    # A spawner that bounds only the turn (cron Bot Chat lane) learns the outcome from this
+    # report, written before the linger below; popped so tool subprocesses do not inherit it.
+    turn_report_path = take_turn_report_path()
     # A dispatcher's re-run of a failed bot delivery resumes the DM row its first attempt persisted.
     adopt_unanswered_turn(cli, effective_query)
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
@@ -4146,12 +4203,24 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         except KeyboardInterrupt:
             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
             if emitter is not None:
-                sys.exit(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
+                exit_single_query(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-            sys.exit(130)
+            exit_single_query(130)
         # The exit line below reports session_id to stderr for automation wrappers;
         # without this sync it would point at the ended parent after compression.
         _sync_cli_session_id_from_agent(cli)
+        # The turn is over and persisted: the one-shot exit linger that follows protects nested
+        # notify_on_complete replies and is NOT part of the spawner's delivery (#113608). The
+        # report carries what this run will print, so a spawner booking a child still lingering
+        # at its cap relays the answer instead of a timeout (#114980).
+        def _report_turn(res) -> None:
+            write_turn_report(
+                turn_report_path, exit_code=_single_query_exit_code(res),
+                error=str(res.get("error") or "") if isinstance(res, dict) else "agent turn did not run",
+                reply=res.get("final_response", "") if isinstance(res, dict) else str(res),
+            )
+
+        _report_turn(result)
         if isinstance(result, dict) and not result.get("failed"):
             history = result.get("messages") or cli.conversation_history
 
@@ -4184,6 +4253,8 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 cli._quiet_notify_linger_done = True
             if isinstance(continued, dict):
                 result = continued
+                # A teammate's reply displaced the answer this run prints; tell the spawner.
+                _report_turn(result)
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
@@ -4211,7 +4282,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     _exit_code = _single_query_exit_code(result)
     if emitter is not None:
         _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
-    sys.exit(_exit_code)
+    exit_single_query(_exit_code)
 
 
 def _route_single_query_images(cli, query, effective_query, single_query_images, single_query_image_urls):
@@ -4510,8 +4581,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     # isn't engaged) and takes the deterministic approvals.single_query_mode path instead of waiting the
     # full timeout. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
+    from hermes_cli.quiet_single_query import exit_single_query
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
-        sys.exit(1)
+        exit_single_query(1)
     try:
         query, single_query_images = _collect_query_images(query, image)
         single_query_image_urls = _collect_kanban_task_images(single_query_images)
@@ -4541,20 +4613,30 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                         emitter.attach(cli.agent)
                     _run_quiet_single_query(cli, effective_query, emitter=emitter)
 
+            fail_code = _single_query_exit_code(
+                None, credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False))
             if emitter is not None:
                 emitter.emit_result({"failed": True, "error": "credentials or agent init failed"},
-                                    session_id=cli.session_id or "", exit_code=1)
-            sys.exit(1)  # credentials or agent init failed
+                                    session_id=cli.session_id or "", exit_code=fail_code)
+            exit_single_query(fail_code)  # credentials or agent init failed
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
         if _query_label:
             cli.console.print(f"[bold blue]Query:[/] {_query_label}")
         cli._show_security_advisories()
-        cli.chat(query, images=single_query_images or None)
+        response = cli.chat(query, images=single_query_images or None)
+        # Kanban goal_mode on the `-q` path: same judge loop as `-Q`, but each follow-up turn
+        # runs through cli.chat so the worker log keeps its live tool feed (the dispatcher
+        # used to force -Q here, which left goal_mode cards with a blank Worker log).
+        if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+            try:
+                _run_kanban_goal_loop_chat(cli, response or "")
+            except Exception as _goal_exc:
+                logger.debug("kanban goal loop failed: %s", _goal_exc)
         cli._print_exit_summary(clear_screen=False)
         # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
         # the exit code. This path used to fall through to an implicit 0 for every outcome.
-        sys.exit(_single_query_exit_code(cli._last_turn_result))
+        exit_single_query(_single_query_exit_code(cli._last_turn_result))
     finally:
         _finalize_single_query(cli)
 

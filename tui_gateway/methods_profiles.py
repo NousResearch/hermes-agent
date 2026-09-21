@@ -252,10 +252,12 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.profiles import list_profiles
     include_sessions = is_truthy_value(params.get("include_sessions", True))
     out = []
-    for p in list_profiles():
+    # Roster polls this every 5s: ``skill_count`` is the last known value, refreshed off-request.
+    for p in list_profiles(lazy_skill_count=True):
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
-               "display_name": p.display_name or "", "skill_count": p.skill_count or 0}
+               "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
+               "previous_names": list(p.previous_names or [])}
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
@@ -434,6 +436,7 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     with _hermes_home_scope(profile_dir):
+        from agent.skill_utils import iter_skill_index_files
         from hermes_cli.config import load_config
         from hermes_cli.skills_config import get_disabled_skills
         cfg = load_config() or {}
@@ -441,7 +444,7 @@ def _(rid, params: dict) -> dict:
         skills_root = profile_dir / "skills"
         installed = [
             {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
-            for md in (sorted(skills_root.rglob("SKILL.md")) if skills_root.is_dir() else ())]
+            for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
         toolsets_out, pinned_set = _describe_toolsets(cfg)
         soul_path = profile_dir / "SOUL.md"
         soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")

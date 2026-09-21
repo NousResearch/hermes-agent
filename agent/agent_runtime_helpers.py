@@ -1474,7 +1474,8 @@ def prompt_caching_disabled_from_config() -> bool:
 
 def configured_cache_ttl() -> Optional[str]:
     """Configured ``prompt_caching.cache_ttl`` tier (``5m``/``1h``), else None; mirrors
-    ``agent_init`` so stub paths don't regress a configured ``1h`` to 5m."""
+    ``agent_init`` so stub paths don't regress a configured ``1h`` to 5m. ``auto`` is None here
+    on purpose: stub/auxiliary calls are machine-paced, so they take the 5m tier ``None`` resolves to."""
     ttl = _raw_cache_ttl_from_config(None)
     return ttl if ttl in VALID_CACHE_TTLS else None
 

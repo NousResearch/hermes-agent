@@ -197,7 +197,7 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
 | `process_manage` | Manage background processes started with terminal(background=true). Actions: 'list' (show all), 'poll' (check status + new output), 'log' (full output with pagination), 'wait' (block until done or timeout), 'kill' (terminate), 'write' (sen… | — |
-| `terminal` | Execute shell commands on a Linux environment. Filesystem persists between calls. Set `background=true` for long-running servers. Set `notify_on_complete=true` (with `background=true`) to get an automatic notification when the process finishes — no polling needed. Do NOT use cat/head/tail — use read_file. Do NOT use grep/rg/find — use search_files. | — |
+| `terminal` | Execute shell commands on a Linux environment. Filesystem persists between calls. Set `background=true` for long-running servers. Set `notify_on_complete=true` (with `background=true`) to get an automatic notification when the process finishes — no polling needed. Add `heartbeat=N` (seconds, min 60) to also receive a periodic notification carrying the output produced since the previous one — for long bounded jobs such as a merge train or a full test suite, so a failure is seen within N seconds instead of at exit. Do NOT use cat/head/tail — use read_file. Do NOT use grep/rg/find — use search_files. | — |
 
 ## `desktop_ui` toolset
 

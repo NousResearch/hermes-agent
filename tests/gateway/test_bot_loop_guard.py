@@ -124,7 +124,7 @@ async def test_busy_path_counts_a_bot_message_once_before_steering(monkeypatch, 
     runner._effective_busy_input_mode = lambda source: "steer"
     runner._effective_busy_text_mode = lambda source: "steer"
     runner._route_plaintext_approval_while_busy = AsyncMock(return_value=False)
-    runner._adapter_for_source = lambda source: SimpleNamespace(_pending_messages={})
+    runner._delivery_adapter_for = lambda source: SimpleNamespace(_pending_messages={})
     runner._peek_session_state = lambda key: SimpleNamespace(turn=SimpleNamespace(agent=object()))
     steer = AsyncMock(return_value=SimpleNamespace(effective_mode="steer", redirected=False, steered=True))
     runner._resolve_busy_steer_or_redirect = steer

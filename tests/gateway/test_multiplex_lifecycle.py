@@ -29,6 +29,7 @@ def test_cron_profile_homes_serve_every_live_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(default_home))
     for name in ("worker", "guest", "gone"):
         (default_home / "profiles" / name).mkdir(parents=True)
+        (default_home / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
     from hermes_constants import mark_named_profile_deleted
     mark_named_profile_deleted(default_home / "profiles" / "gone")
 
@@ -46,6 +47,7 @@ def test_cron_tick_homes_include_active_named_host(tmp_path, monkeypatch):
     default_home = tmp_path / ".hermes"
     for name in ("host", "worker"):
         (default_home / "profiles" / name).mkdir(parents=True)
+        (default_home / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
     monkeypatch.setenv("HERMES_HOME", str(default_home / "profiles" / "host"))
 
     import gateway.run as gateway_run

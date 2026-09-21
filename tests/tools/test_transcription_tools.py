@@ -103,6 +103,38 @@ class TestGetProviderGroq:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "groq"}) == "groq"
 
+
+class TestProcessErrorDetail:
+    """#112582: a failed STT helper reports its real error even when
+    CalledProcessError carries no captured output (stderr/stdout default to None)."""
+
+    @staticmethod
+    def _detail(*, stderr=None, stdout=None):
+        from tools.transcription_common import _process_error_detail
+
+        error = subprocess.CalledProcessError(
+            1,
+            ["ffmpeg"],
+            output=stdout,
+            stderr=stderr,
+        )
+        return _process_error_detail(error)
+
+    def test_prefers_stderr_over_stdout(self):
+        assert self._detail(stderr=" stderr detail \n", stdout="stdout detail") == "stderr detail"
+
+    @pytest.mark.parametrize(
+        ("stderr", "stdout", "expected"),
+        [
+            (None, None, "returned non-zero exit status 1"),
+            (None, " stdout detail \n", "stdout detail"),
+            (b" bad \xff output \n", None, "bad \ufffd output"),
+        ],
+    )
+    def test_missing_or_byte_output_does_not_mask_the_failure(self, stderr, stdout, expected):
+        assert expected in self._detail(stderr=stderr, stdout=stdout)
+
+
 class TestGetProviderFallbackPriority:
     """Auto-detect fallback priority and explicit provider behaviour."""
 
@@ -192,6 +224,32 @@ class TestTranscribeGroq:
             result = _transcribe_groq("/tmp/test.ogg", "whisper-large-v3-turbo")
         assert result["success"] is False
         assert "openai package" in result["error"]
+
+
+class TestOpenAIClientConfig:
+    @pytest.mark.parametrize(
+        ("openai_config", "expected_timeout", "expected_retries"),
+        [({}, 60, 1), ({"timeout": 95, "max_retries": 3}, 95, 3)],
+    )
+    def test_stt_openai_config_controls_sdk_client(
+        self, monkeypatch, tmp_path, sample_wav, openai_config, expected_timeout, expected_retries
+    ):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_lines = ["stt:", "  openai:"]
+        config_lines.extend(f"    {key}: {value}" for key, value in openai_config.items())
+        (tmp_path / "config.yaml").write_text("\n".join(config_lines) + "\n", encoding="utf-8")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client) as openai_client:
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        assert openai_client.call_args.kwargs["timeout"] == expected_timeout
+        assert openai_client.call_args.kwargs["max_retries"] == expected_retries
 
 
     def test_null_groq_subsection_is_safe(self, monkeypatch, sample_wav):
@@ -1479,3 +1537,67 @@ class TestExplicitOpenaiSelectionError:
 
         assert result["success"] is False
         assert "No STT provider available" in result["error"]
+
+# _transcribe_openai — 5xx transcode-and-retry (#81644)
+# ============================================================================
+
+
+class TestTranscribeOpenaiFiveXxRetry:
+    """A 5xx rejection of the audio container must reach the
+    transcode-and-retry path, not propagate as a plain API error."""
+
+    def _status_error(self, status_code: int, message: str) -> Exception:
+        import httpx
+        from openai import APIStatusError
+
+        request = httpx.Request(
+            "POST", "https://api.example.com/v1/audio/transcriptions"
+        )
+        return APIStatusError(
+            message,
+            response=httpx.Response(status_code, request=request),
+            body={"type": "system_error"},
+        )
+
+    def test_server_error_triggers_transcode_and_retry(self, sample_wav, tmp_path):
+        """The provider rejects the container with a 5xx (the gapgpt case in
+        #81644): the transcode-and-retry must run and succeed."""
+        converted = tmp_path / "retry.m4a"
+        converted.write_bytes(b"fake audio")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.side_effect = [
+            self._status_error(503, "503 system_error"),  # first attempt: 5xx
+            "retried transcript",                          # retry after transcode
+        ]
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_cloud._transcode_audio_for_stt",
+                 return_value=(str(converted), None),
+             ):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(
+                sample_wav, "gpt-4o-transcribe", api_key="sk-test"
+            )
+
+        assert result["success"] is True
+        assert result["transcript"] == "retried transcript"
+        assert mock_client.audio.transcriptions.create.call_count == 2
+
+    def test_server_error_without_transcode_keeps_provider_error(self, sample_wav):
+        """No ffmpeg: the 5xx surfaces as the provider's own error, not a transcode message,
+        and the file is not re-sent."""
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.side_effect = self._status_error(503, "503 system_error")
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch("tools.transcription_cloud._transcode_audio_for_stt",
+                   return_value=(None, "ffmpeg not found")):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(sample_wav, "whisper-1", api_key="sk-test")
+
+        assert result["success"] is False
+        assert "503" in result["error"] and "ffmpeg" not in result["error"]
+        assert mock_client.audio.transcriptions.create.call_count == 1

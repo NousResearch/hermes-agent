@@ -32,6 +32,18 @@ _EXTENSION_MIME_TYPES = {
 _ANTHROPIC_SUPPORTED_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/gif", "image/webp"})
 
 
+def unsupported_inline_image_media_type(url: str) -> Optional[str]:
+    """``image/<subtype>`` of a ``data:image/...`` URL the inline-image wire paths reject
+    (``image/jpg`` counts as JPEG); None for accepted rasters and for non-data URLs (the
+    provider owns remote-URL validation)."""
+    header = url.partition(",")[0].lower()
+    if not header.startswith("data:image/"):
+        return None
+    subtype = header[len("data:image/"):].split(";", 1)[0].strip() or "unknown"
+    media_type = "image/jpeg" if subtype == "jpg" else f"image/{subtype}"
+    return None if media_type in _ANTHROPIC_SUPPORTED_MEDIA_TYPES else media_type
+
+
 _MAGIC_MIME_TYPES = (
     (b"\xff\xd8\xff", "image/jpeg"), ((b"GIF87a", b"GIF89a"), "image/gif"), (b"BM", "image/bmp"),
 )
@@ -139,6 +151,34 @@ def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
             except Exception:
                 continue
     return False
+
+
+def rasterize_svg_data_url(url: str) -> Optional[str]:
+    """``data:image/svg+xml[;base64],...`` → ``data:image/png;base64,...`` through the same
+    soft-dependency rasterizers vision_analyze uses; None when the payload does not decode or no
+    rasterizer is available. Request-path callers decide the fallback (Responses backends 400 on
+    SVG source, so the caller must never forward the SVG itself)."""
+    import base64
+    from contextlib import suppress
+    from urllib.parse import unquote
+    header, _, payload = url.partition(",")
+    try:
+        raw = base64.b64decode(payload) if ";base64" in header.lower() else unquote(payload).encode()
+    except Exception:
+        return None
+    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = out_dir / f"inline_{uuid.uuid4()}"
+    svg_path, png_path = stem.with_suffix(".svg"), stem.with_suffix(".png")
+    try:
+        svg_path.write_bytes(raw)
+        if not _rasterize_svg_to_png(svg_path, png_path):
+            return None
+        return "data:image/png;base64," + base64.b64encode(png_path.read_bytes()).decode("ascii")
+    finally:
+        for path in (svg_path, png_path):
+            with suppress(OSError):
+                path.unlink()
 
 
 def _normalize_to_supported_image(

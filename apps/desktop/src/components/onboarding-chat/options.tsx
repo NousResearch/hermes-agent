@@ -1,12 +1,12 @@
 import { selectableClass } from '@/components/onboarding-chat/chip'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { readableInk } from '@/themes/color'
 
-// The live-catalog slugs the first-run picker shows, in this order. The catalog
-// decides what can be connected; this list picks the everyday apps out of it
-// (decision D89). A slug the catalog no longer carries is not shown, and a slug
-// the catalog gains is not shown until it is added here.
+// Curated leaders for the first-run picker. Other enabled catalog entries
+// remain searchable, so newly deployed connectors need no client list update.
 export const CONNECTOR_LEAD_ORDER = [
   'gmail',
   'googlecalendar',
@@ -35,7 +35,7 @@ export function orderConnectorPicks<T extends { connector: string; enabled?: boo
   const rank = new Map(CONNECTOR_LEAD_ORDER.map((slug, index) => [slug, index]))
 
   return rows
-    .filter(row => rank.has(row.connector) && row.enabled !== false && !CONNECTOR_PICKER_HIDDEN.has(row.connector))
+    .filter(row => row.enabled !== false && !CONNECTOR_PICKER_HIDDEN.has(row.connector))
     .sort((a, b) => {
       const ra = rank.get(a.connector) ?? Number.POSITIVE_INFINITY
       const rb = rank.get(b.connector) ?? Number.POSITIVE_INFINITY
@@ -64,30 +64,51 @@ export function AccentSwatch({
   active,
   hex,
   name,
+  onColorChange,
   onPick
 }: {
   active: boolean
   hex: string
   name: string
-  onPick: () => void
+  onColorChange?: (hex: string) => void
+  onPick?: () => void
 }) {
+  const className = cn(
+    // The border keeps the mono swatch visible when its colour matches the background.
+    'relative inline-flex size-9 items-center justify-center rounded-full border border-foreground/15 transition-transform duration-150',
+    !active && 'hover:scale-105'
+  )
+
+  const style = {
+    background: hex,
+    boxShadow: active ? `0 0 0 2px var(--dt-background), 0 0 0 4px ${hex}` : undefined
+  }
+
   return (
     <Tip label={name}>
-      <button
-        aria-label={name}
-        aria-pressed={active}
-        className={cn(
-          // The border keeps the mono swatch visible when its colour matches the background.
-          'size-9 rounded-full border border-foreground/15 transition-transform duration-150',
-          !active && 'hover:scale-105'
-        )}
-        onClick={onPick}
-        style={{
-          background: hex,
-          boxShadow: active ? `0 0 0 2px var(--dt-background), 0 0 0 4px ${hex}` : undefined
-        }}
-        type="button"
-      />
+      {onColorChange ? (
+        <label className={cn(className, 'focus-within:outline-2 focus-within:outline-ring')} style={style}>
+          <span className="flex" style={{ color: readableInk(hex) }}>
+            <Codicon name="add" size="1rem" />
+          </span>
+          <input
+            aria-label={name}
+            className="absolute inset-0 size-full cursor-pointer opacity-0"
+            onChange={event => onColorChange(event.target.value)}
+            type="color"
+            value={hex}
+          />
+        </label>
+      ) : (
+        <button
+          aria-label={name}
+          aria-pressed={active}
+          className={className}
+          onClick={onPick}
+          style={style}
+          type="button"
+        />
+      )}
     </Tip>
   )
 }

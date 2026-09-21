@@ -42,16 +42,24 @@ export const useHermesConfigRecord = (profile?: ProfileScope) => {
     structuralSharing: false
   })
 
-  return {
-    ...query,
-    // `undefined`, never `null`: callers hand this straight to saveHermesConfig
-    // with sparse `setNested({}, …)` patches, so the WeakMap misses and the
-    // fallback is capabilityScoped(writeScope) → profileScoped(writeScope).
-    // profileScoped(undefined) keeps the app-wide `_apiProfile`; profileScoped
-    // (null) drops it and would write the PRIMARY profile before the first
-    // GET resolves.
-    writeScope: peekConfigReadOrigin(query.data) ?? undefined
-  }
+  // Attach `writeScope` as a lazy getter instead of spreading `query`: useQuery
+  // hands back a tracked-props Proxy, and spreading enumerates EVERY key, which
+  // subscribes each consumer to fetchStatus/dataUpdatedAt/… churn. The getter
+  // reads `query.data` through the proxy, so only `data` is tracked.
+  //
+  // `undefined`, never `null`: callers hand this straight to saveHermesConfig
+  // with sparse `setNested({}, …)` patches, so the WeakMap misses and the
+  // fallback is capabilityScoped(writeScope) → profileScoped(writeScope).
+  // profileScoped(undefined) keeps the app-wide `_apiProfile`; profileScoped
+  // (null) drops it and would write the PRIMARY profile before the first
+  // GET resolves.
+  Object.defineProperty(query, 'writeScope', {
+    get: () => peekConfigReadOrigin(query.data) ?? undefined,
+    configurable: true,
+    enumerable: false
+  })
+
+  return query as typeof query & { writeScope: ReturnType<typeof peekConfigReadOrigin> }
 }
 
 // setHermesConfigCache writes the app-wide (base-key) record. Pass a profile to

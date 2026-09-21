@@ -25,7 +25,7 @@ import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
-import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $settingsScopeProfile } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -59,11 +59,18 @@ export function ConfigSettings({
   onMainModelChanged,
   importInputRef
 }: ConfigSettingsProps) {
-  // Shared "Applies to" scope (null → the app's active profile). Remount the
-  // inner page per scope so every draft/seed/autosave ref resets wholesale
-  // when the target profile changes — the same guarantee useOnProfileSwitch
-  // provides for app-wide switches, without hand-clearing each piece.
-  const scopeProfile = useStore($settingsRequestProfile)
+  // Shared "Applies to" scope, as the CONCRETE key the selector note names.
+  // $settingsRequestProfile collapses "the active profile" to undefined, and
+  // profileScoped(undefined) falls back to _apiProfile — null → no profile on
+  // the wire — which the backend resolves to its LAUNCH home, silently not the
+  // profile the page says it edits (#118432). The concrete key always reaches
+  // the wire: "default" resolves to the root home server-side and the launch
+  // profile's own name to the process home (current-profile semantics), so
+  // single-profile users keep their exact behaviour. Remount the inner page
+  // per scope so every draft/seed/autosave ref resets wholesale when the
+  // target profile changes — the same guarantee useOnProfileSwitch provides
+  // for app-wide switches, without hand-clearing each piece.
+  const scopeProfile = useStore($settingsScopeProfile)
 
   return (
     <ConfigSettingsInner

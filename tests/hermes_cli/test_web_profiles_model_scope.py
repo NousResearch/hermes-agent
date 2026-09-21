@@ -112,3 +112,31 @@ def test_model_pick_for_default_from_named_profile_launch(homes, probe, monkeypa
         assert (load_config().get("model") or {}).get("default") == "acme/mini"
     with _hermes_home_scope(demo):
         assert (load_config().get("model") or {}).get("default") is None
+
+
+def test_model_set_without_a_profile_pins_to_the_launch_home(client, homes):
+    """#118432: an omitted ``profile`` does NOT mean "the default profile" — it means
+    whatever home this process launched with. That is why the desktop client must
+    always send the concrete profile its "Applies to" chip names. This pins the
+    server-side semantics so redefining "omitted → launch home" (e.g. to a
+    fail-closed refusal like the destructive routes) stays a deliberate, reviewed
+    decision instead of an accident."""
+    root, demo = homes
+    resp = client.post(
+        "/api/model/set",
+        json={
+            "scope": "main",
+            "provider": "acme",
+            "model": "acme/mini",
+            "confirm_expensive_model": True,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    from hermes_cli.config import load_config
+    from hermes_cli.web_server_profiles import _hermes_home_scope
+
+    with _hermes_home_scope(root):
+        assert (load_config().get("model") or {}).get("default") == "acme/mini"
+    with _hermes_home_scope(demo):
+        assert (load_config().get("model") or {}).get("default") is None

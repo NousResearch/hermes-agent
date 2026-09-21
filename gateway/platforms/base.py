@@ -4039,15 +4039,6 @@ class BasePlatformAdapter(ABC):
                         text_content: str, media_files: list) -> bool:
         """Auto-TTS on voice input (voice-first), gated by /voice or voice.auto_tts;
         skipped when streaming TTS already delivered audio this turn."""
-        # Short-circuit when TTS provider is explicitly disabled.
-        try:
-            from hermes_cli.config import load_config_readonly as _load_config
-            tts_cfg = _load_config().get("tts") or {}
-            provider = str(tts_cfg.get("provider") or "").lower().strip()
-            if provider in ("none", "off", "disabled", "false"):
-                return False
-        except Exception:
-            pass
         generation = getattr(interrupt_event, "_hermes_run_generation", None)
         return bool(
             self._should_auto_tts_for_chat(event.source.chat_id)

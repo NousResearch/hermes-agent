@@ -99,6 +99,10 @@ def _check_piper_available() -> bool: return _package_installed("piper")
 
 # --- Defaults / config ---
 DEFAULT_PROVIDER = "edge"
+# ``tts.provider`` spellings that mean "no TTS". PyYAML reads a bare ``off``/``false``/``no`` as the
+# bool False, so that arrives here as ``False``, not a string. All resolve to ``"none"`` (the STT
+# convention) so a disabled provider never reaches the "unknown name -> Edge default" branch.
+_DISABLED_PROVIDERS = frozenset({"none", "off", "disabled", "false", "no"})
 
 
 def _get_default_output_dir() -> str:
@@ -138,10 +142,17 @@ def _load_tts_config() -> Dict[str, Any]:
     return {}
 
 
+def _normalize_provider(value: Any) -> str:
+    """Lowercased provider name; ``""`` when unset. Disabled spellings (see ``_DISABLED_PROVIDERS``)
+    and YAML's bool ``False`` become ``"none"``."""
+    name = "none" if value is False else str(value or "").lower().strip()
+    return "none" if name in _DISABLED_PROVIDERS else name
+
+
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Configured provider or the free default (inference credentials never imply consent to paid
     speech); ``nous`` is serviced by the OpenAI path through the managed openai-audio gateway."""
-    provider = (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+    provider = _normalize_provider(tts_config.get("provider")) or DEFAULT_PROVIDER
     return "openai" if provider == NOUS_MANAGED_PROVIDER else provider
 
 
@@ -208,8 +219,6 @@ def _run_edge_tts(text: str, file_str: str, tts_config: Dict[str, Any]) -> None:
 def _select_builtin_engine(provider: str) -> tuple:
     """SDK check -> ``(engine, None)`` or ``(provider, error_json)``. Unknown names take the Edge
     default; without edge-tts NeuTTS is the fallback (engine != provider)."""
-    if provider in ("none", "off", "disabled", "false"):
-        return provider, _error_json(f"TTS is disabled (provider={provider})")
     entry = _BUILTIN_DISPATCH.get(provider)
     if entry is not None:
         available, _label, _generator, missing_error = entry
@@ -270,7 +279,7 @@ def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], pr
     resolve the provider name."""
     if speed is not None:
         tts_config = {**tts_config, "speed": max(0.25, min(4.0, float(speed)))}
-    return tts_config, provider.lower().strip() if provider else _get_provider(tts_config)
+    return tts_config, _normalize_provider(provider) or _get_provider(tts_config)
 
 
 def _session_platform() -> tuple:
@@ -436,9 +445,8 @@ def text_to_speech_tool(
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
     tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
-    if provider in ("none", "off", "disabled", "false"):
-        return tool_error(f"TTS is disabled (provider={provider})", success=False)
-
+    if provider == "none":
+        return tool_error("TTS is disabled (tts.provider: none)", success=False)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)

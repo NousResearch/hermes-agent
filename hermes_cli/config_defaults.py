@@ -1050,6 +1050,7 @@ DEFAULT_CONFIG = {
     "tts": {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
         # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # | "none" (TTS off: no text_to_speech tool, no gateway auto voice replies)
         "provider": "edge",
         "streaming": {
             # Shortest first sentence (chars) spoken on its own by streaming TTS; shorter openers

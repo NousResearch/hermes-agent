@@ -291,20 +291,15 @@ class GatewayVoiceMixin:
     def _should_send_voice_reply(
         self, event: MessageEvent, response: str, agent_messages: list, already_sent: bool = False
     ) -> bool:
-        """False when voice_mode is off for this chat, the response is empty/an error, the agent
-        already called text_to_speech this turn, or voice input + base adapter auto-TTS handled it
-        — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
+        """False when voice_mode is off for this chat, TTS is disabled (``tts.provider: none``),
+        the response is empty/an error, the agent already called text_to_speech this turn, or voice
+        input + base adapter auto-TTS handled it — UNLESS streaming consumed the response
+        (already_sent): then the runner must do it."""
         if not response or response.startswith("Error:"):
             return False
-        # Short-circuit when TTS provider is explicitly disabled.
-        try:
-            from hermes_cli.config import load_config_readonly as _load_config
-            tts_cfg = _load_config().get("tts") or {}
-            provider = str(tts_cfg.get("provider") or "").lower().strip()
-            if provider in ("none", "off", "disabled", "false"):
-                return False
-        except Exception:
-            pass
+        from tools.tts_tool import _get_provider, _load_tts_config
+        if _get_provider(_load_tts_config()) == "none":
+            return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE

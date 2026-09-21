@@ -31,6 +31,16 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 
+def _large_codex_input(n: int) -> str:
+    """An *n*-char filler string sized for the large-request token-estimate gate under test,
+    but shaped as ordinary words (not a single repeated-character run) so it doesn't read as a
+    base64 payload to the egress firewall's content scan -- unlike direct calls to
+    _resolve_nonstream_watchdogs(), interruptible_api_call() now dispatches through the real
+    firewall for a protected provider."""
+    words = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod "
+    return (words * (n // len(words) + 1))[:n]
+
+
 def _make_codex_agent(
     tmp_path,
     monkeypatch,
@@ -41,6 +51,11 @@ def _make_codex_agent(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+    # Every test here reasons about the built-in TTFB defaults; a developer shell override
+    # must not leak in (tests that need an override setenv it after this).
+    for name in ("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "HERMES_CODEX_TTFB_MAX_SECONDS",
+                 "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", "HERMES_CODEX_TTFB_STRICT"):
+        monkeypatch.delenv(name, raising=False)
     from run_agent import AIAgent
 
     agent = AIAgent(
@@ -56,6 +71,16 @@ def _make_codex_agent(
     # The watchdog is gated on the codex_responses api_mode; assert/force it so
     # the test is robust to detection-logic changes elsewhere.
     agent.api_mode = "codex_responses"
+    # openai-codex is a protected-egress provider: every physical request now goes through
+    # the egress firewall, which requires a request identity.
+    agent.session_id = "session-1"
+    agent._current_turn_id = "turn-1"
+    agent._current_api_request_id = "turn-1:api:1"
+    from hashlib import sha256
+    agent._llm_egress_policy_digest = sha256(b"policy").hexdigest()
+    # The default 32KB sanitized-bytes cap is well under the >40KB "large request" inputs these
+    # watchdog tests construct to cross the token-estimate size gate.
+    agent._llm_egress_max_sanitized_bytes = 200_000
     monkeypatch.setattr(agent, "_emit_status", lambda *a, **k: None)
     # Keep the wall-clock stale timeout high so any early kill is unambiguously
     # the TTFB path, not the stale-call path.
@@ -97,6 +122,32 @@ def _install_codex_event_stream(agent, monkeypatch, event_factory, closes):
     )
 
 
+def test_local_endpoint_ttfb_default_uses_local_stale_ceiling(tmp_path, monkeypatch):
+    """#92302: a local Responses endpoint gets the local stale ceiling as its implicit
+    no-event TTFB cutoff (the chat-completions siblings already grant local servers that
+    prefill grace); hosted endpoints keep the 120s default."""
+    from agent import chat_completion_helpers as h
+
+    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
+    local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
+    hosted = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="https://api.example.com/v1")
+    kwargs = {"model": "qwen3-27b", "input": "hi"}
+
+    assert h._resolve_nonstream_watchdogs(local, kwargs).ttfb_timeout == 600.0
+    assert h._resolve_nonstream_watchdogs(hosted, kwargs).ttfb_timeout == 120.0
+
+
+def test_local_endpoint_ttfb_explicit_env_still_wins(tmp_path, monkeypatch):
+    """An operator-set HERMES_CODEX_TTFB_TIMEOUT_SECONDS is honoured verbatim on local endpoints."""
+    from agent import chat_completion_helpers as h
+
+    monkeypatch.setenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", "600")
+    local = _make_codex_agent(tmp_path, monkeypatch, provider="custom", base_url="http://127.0.0.1:11434/v1")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "45")
+
+    assert h._resolve_nonstream_watchdogs(local, {"model": "qwen3-27b", "input": "hi"}).ttfb_timeout == 45.0
+
+
 def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
     """The no-first-event watchdog should surface the same actionable hint as the
     stale-call timeout path when the model matches the silent-hang heuristic."""
@@ -135,11 +186,11 @@ def test_ttfb_includes_silent_hang_hint_for_gpt_5_5(tmp_path, monkeypatch):
             h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
         message = str(excinfo.value)
         assert "gpt-5.4" in message
-        assert "gpt-5.3-codex" in message
+        assert "gpt-5.3-codex" not in message
         assert "gpt-5.4-codex" in message
         assert "codex_ttfb_kill" in closes
         assert statuses, "expected a user-facing watchdog status"
-        assert any("gpt-5.4" in s and "gpt-5.3-codex" in s for s in statuses)
+        assert any("gpt-5.4" in s and "gpt-5.3-codex" not in s for s in statuses)
     finally:
         stop["flag"] = True
 
@@ -374,7 +425,7 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
 
     if mode in {"initial_gap", "retry_gap"}:
         response = h.interruptible_api_call(
-            agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
+            agent, {"model": "gpt-5.6-sol", "input": _large_codex_input(40_004)}
         )
         assert response.output_text == "done"
         assert attempts["count"] == (1 if mode == "initial_gap" else 2)
@@ -382,7 +433,7 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
         error_match = "no parsed stream event" if mode == "retry_no_event" else "no SSE events"
         with pytest.raises(TimeoutError, match=error_match):
             h.interruptible_api_call(
-                agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
+                agent, {"model": "gpt-5.6-sol", "input": _large_codex_input(40_004)}
             )
 
     assert ("codex_stream_idle_kill" in closes) is (mode == "stall")
@@ -401,9 +452,9 @@ def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
     stale_timeout,
 ):
     """A disabled watchdog must not be advertised as a future reconnect."""
-    from agent import chat_completion_helpers as h
+    from agent import chat_completion_wait_notice as wn
 
-    recovery = h._codex_wait_notice_recovery(
+    recovery = wn.codex_watchdog_deadline(
         stale_timeout=stale_timeout,
         ttfb_enabled=False,
         ttfb_timeout=float("nan"),
@@ -417,7 +468,7 @@ def test_wait_notice_omits_reconnect_when_all_deadlines_are_non_finite(
         elapsed=30.0,
     )
 
-    assert recovery == ""
+    assert recovery is None
 
 
 
@@ -522,9 +573,11 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
         "_dispatch_nonstreaming_api_request",
         lambda *_args, **_kwargs: response,
     )
+    from agent import chat_completion_wait_notice as wn
+
     monkeypatch.setattr(
-        h,
-        "_codex_wait_notice_recovery",
+        wn,
+        "codex_watchdog_deadline",
         lambda **_kwargs: (_ for _ in ()).throw(ValueError("bad display state")),
     )
 
@@ -580,7 +633,7 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
 
     monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
 
-    large_input = "x" * 44_000  # ~11k estimated tokens → TTFB disabled, stale raised
+    large_input = _large_codex_input(44_000)  # ~11k estimated tokens → TTFB disabled, stale raised
     t0 = time.time()
     try:
         with pytest.raises(TimeoutError) as excinfo:
@@ -593,3 +646,35 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
         assert "with no response" in str(excinfo.value)
     finally:
         stop["flag"] = True
+
+
+def test_large_request_keeps_scaled_ttfb_instead_of_recapping(tmp_path, monkeypatch):
+    """#91621 regression: with no TTFB env overrides, a >100k-token openai-codex
+    request scales the no-byte cutoff up to the 180s idle default — the cap must
+    not immediately claw it back to 120s and kill a healthy prefill."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent.reasoning_config = {"enabled": False}  # no effort floor: isolate the cap interaction
+
+    huge_input = "x" * 440_000  # ~110k estimated tokens → largest idle bucket
+    wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})
+
+    assert wd.est_tokens > 100_000, f"fixture too small: ~{wd.est_tokens} tokens"
+    assert wd.ttfb_enabled
+    assert wd.ttfb_timeout == 180.0, f"scale-up nullified by the cap: {wd.ttfb_timeout}"
+
+
+def test_explicit_ttfb_max_seconds_still_caps(tmp_path, monkeypatch):
+    """An explicit HERMES_CODEX_TTFB_MAX_SECONDS override still bounds the
+    scaled cutoff."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent.reasoning_config = {"enabled": False}
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "90")
+
+    huge_input = "x" * 440_000
+    wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})
+
+    assert wd.ttfb_timeout == 90.0, f"explicit cap ignored: {wd.ttfb_timeout}"

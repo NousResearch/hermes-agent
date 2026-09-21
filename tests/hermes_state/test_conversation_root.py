@@ -29,5 +29,22 @@ def test_root_covers_delegate_child_sessions(db):
     assert db.get_conversation_root("child") == "parent"
 
 
+def test_branch_and_its_compression_tip_include_the_parent_in_general_lineage(db):
+    """General-usage lineage (Nous Portal tagging, title generation, bot-mode features)
+    deliberately traverses an explicit /branch back to its parent — unlike workspace
+    ownership, which is a separate, narrower concept
+    (hermes_cli.cli_conversation_worktree_mixin._conversation_worktree_root) that must
+    stop at the branch so a resume never lands in the parent's worktree."""
+    db.create_session("parent", source="cli")
+    db.create_session(
+        "branch",
+        source="cli",
+        parent_session_id="parent",
+        model_config={"_branched_from": "parent"},
+    )
+    db.create_session("branch-tip", source="cli", parent_session_id="branch")
+
+    assert db.get_conversation_root("branch") == "parent"
+    assert db.get_conversation_root("branch-tip") == "parent"
 
 

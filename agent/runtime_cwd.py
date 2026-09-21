@@ -11,7 +11,7 @@ import logging
 import os
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,11 @@ def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
 
 
+def reset_session_cwd(token: Token) -> None:
+    """Restore the logical cwd that was active before the matching ``set_session_cwd``."""
+    _SESSION_CWD.reset(token)
+
+
 def scope_terminal_cwd() -> str:
     """Scope-aware TERMINAL_CWD value (may be empty) — every cwd consumer reads through this.
 
@@ -70,16 +75,74 @@ def _resolve_configured_cwd(*, override_is_final: bool) -> Path | None:
     """Session override, then TERMINAL_CWD; each validated as a real directory.
 
     ``override_is_final``: a set-but-missing session override yields None
-    instead of falling through to TERMINAL_CWD.
+    instead of falling through to TERMINAL_CWD. Under a Kanban task, the
+    override is constrained to the worker's assigned workspace first — a
+    stale session cwd from a prior worktree must never leak into a new one.
     """
     override = _SESSION_CWD.get()
     override = "" if override is _UNSET else str(override).strip()
+    kanban_scoped = resolve_kanban_worker_cwd(override or None)
+    if kanban_scoped is not None:
+        return _existing_dir(kanban_scoped, "Kanban worker workspace")
     if override:
         p = _existing_dir(override, "configured working directory")
         if p is not None or override_is_final:
             return p
     raw = scope_terminal_cwd().strip()
     return _existing_dir(raw, "TERMINAL_CWD") if raw else None
+
+
+def _terminal_cwd_env() -> str:
+    """Read TERMINAL_CWD through the active per-turn terminal scope.
+
+    An import failure may fall back to the process environment, but an active
+    refusal scope must propagate rather than silently using another profile's
+    launch-time working directory.
+    """
+    try:
+        from tools.terminal_scope import terminal_env
+    except ImportError:
+        return os.environ.get("TERMINAL_CWD", "")
+    return terminal_env("TERMINAL_CWD", "")
+
+
+def scope_terminal_cwd() -> str:
+    """Return the scope-aware TERMINAL_CWD value, which may be empty."""
+    return _terminal_cwd_env()
+
+
+def resolve_kanban_worker_cwd(
+    candidate: str | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> str | None:
+    """Constrain a worker cwd candidate to its dispatcher-assigned workspace.
+
+    A recorded cwd remains valid when it is the workspace itself or a child
+    reached by ``cd``.  A stale profile/session snapshot outside that tree is
+    replaced with the assigned workspace.
+    """
+    source = os.environ if env is None else env
+    if not str(source.get("HERMES_KANBAN_TASK") or "").strip():
+        return None
+    workspace = str(source.get("HERMES_KANBAN_WORKSPACE") or "").strip()
+    if not workspace:
+        return None
+    workspace = os.path.expanduser(workspace)
+    if not os.path.isabs(workspace) or not os.path.isdir(workspace):
+        return None
+
+    raw_candidate = str(candidate or "").strip()
+    if raw_candidate:
+        expanded = os.path.expanduser(raw_candidate)
+        try:
+            if os.path.commonpath(
+                [os.path.realpath(expanded), os.path.realpath(workspace)]
+            ) == os.path.realpath(workspace):
+                return expanded
+        except (OSError, ValueError):
+            pass
+    return workspace
 
 
 def resolve_agent_cwd() -> Path:

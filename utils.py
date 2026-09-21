@@ -35,6 +35,18 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+def file_signature(st: os.stat_result) -> "tuple[int, int, int, int]":
+    """Change-detection key for a stat result: ``(st_mtime_ns, st_size, st_ino, st_ctime_ns)``.
+
+    mtime + size alone miss a replacement that preserves both (``cp -p``, ``rsync -t``, a tar
+    restore, a script pinning the timestamp with ``os.utime``). The inode changes on an atomic
+    replace and ctime cannot be backdated from user space, so the pair catches those writers.
+    On Windows ``st_ino`` may be 0 and ``st_ctime_ns`` is the creation time — both stable across
+    an in-place rewrite, so the key degrades to mtime + size there rather than misfiring.
+    """
+    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
+
+
 def _preserve_file_mode(path: Path) -> "int | None":
     """Permission bits of *path* if it exists, else ``None``."""
     try:
@@ -225,10 +237,16 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     gets what ``open(path, "w")`` would have given it (process umask) — the callers this replaced
     wrote at umask, and silently tightening every fresh cache/state file to 0600 breaks shared
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
-    also fsyncs the parent so the rename itself is durable. The temp file is removed on any
-    failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
+    also fsyncs the resolved target's parent so the rename itself is durable. The temp file is
+    removed on any failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still
+    clean up.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # A profile delete leaves a tombstone beside its removed home.  Background
+    # writers may retain that home in a context variable, so a plain mkdir here
+    # would resurrect the profile before the write can fail.
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
@@ -240,9 +258,10 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
             write(f)
             f.flush()
             os.fsync(f.fileno())
-        _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        replaced = Path(atomic_replace(tmp_path, path))  # symlink-preserving actual destination
+        _restore_file_metadata(replaced, original_owner, mode)
         if fsync_dir:
-            fsync_directory(path.parent)
+            fsync_directory(replaced.parent)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)
@@ -319,7 +338,7 @@ def read_json_or_empty(path: Union[str, Path]) -> dict:
     (memory-provider ``save_config``), so a corrupt sidecar degrades to defaults instead of
     taking the provider down."""
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))  # utf-8-sig: a Windows-editor BOM must not wipe the config
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -411,7 +430,9 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     from hermes_cli.config import _greedy_literal_match, _split_key_path
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
     current = config
     keys = _split_key_path(key_path)
@@ -455,7 +476,9 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     from hermes_cli.config import require_readable_config_before_write
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)
     yaml_rt, existing = _roundtrip_load(path)
 
@@ -560,6 +583,13 @@ def base_url_hostname(base_url: str) -> str:
     otherwise pass as native endpoints and mis-route api_mode and auth.
     """
     return _hostname_of(_parse_base_url(base_url))
+
+
+def base_url_path(base_url: str) -> str:
+    """Lowercased URL path without the trailing slash (``""`` for a bare host); same scheme
+    tolerance as :func:`base_url_hostname` so host and path checks agree on one URL."""
+    parsed = _parse_base_url(base_url)
+    return (parsed.path if parsed else "").lower().rstrip("/")
 
 
 def model_forces_max_completion_tokens(model: str) -> bool:

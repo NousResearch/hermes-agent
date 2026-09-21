@@ -155,6 +155,13 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
     except Exception as exc:  # pragma: no cover — import smoke test
         log.debug("%s: auxiliary client import failed: %s", verb, exc)
         return None, "auxiliary client unavailable"
+    # Specify/decompose run outside any agent turn (CLI, dashboard route, gateway watcher), so no
+    # conversation affinity scope is bound and the relay-affinity headers (x-opencode-session, the
+    # OpenRouter/Portal sticky key) are omitted — the OpenCode Go relay rejects that with 400
+    # MissingSessionID (#112043). Declare a per-task scope, but only when none is already bound so an
+    # in-turn caller keeps its conversation's key.
+    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+    affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
     try:
         # Route through call_llm so auxiliary.triage_specifier.* config (provider/model/base_url,
         # extra_body, reasoning_effort, retries) all apply — the direct-create path dropped extra_body
@@ -170,10 +177,44 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
         suffix = " — skipping" if verb == "specify" else ""
         log.info("%s: API call failed for %s (%s)%s", verb, task_id, exc, suffix)
         return None, f"LLM error: {type(exc).__name__}"
+    finally:
+        if affinity_token is not None:
+            reset_affinity_scope(affinity_token)
     try:
         return resp.choices[0].message.content or "", ""
     except Exception:
         return "", ""
+
+
+_CONCRETE_OUTCOME_MARKERS = (
+    "acceptance criteria",
+    "authoritative local ci failure receipt",
+    "untrusted evidence (json)",
+    "canonical pr repair receipt (json)",
+    "deliverable:",
+    "if nothing clears the bar",
+    "when sources and local evidence agree",
+    "within 10 minutes",
+)
+
+
+def _is_already_concrete(task: object) -> bool:
+    """Recognize detailed recovery cards without another model call.
+
+    This is deliberately conservative: a substantive body, an explicit
+    assignee, and terminal/outcome language are all required. Rough ideas
+    continue through the auxiliary specifier.
+    """
+    title = str(getattr(task, "title", "") or "").strip()
+    body = str(getattr(task, "body", "") or "").strip()
+    assignee = str(getattr(task, "assignee", "") or "").strip()
+    lowered = body.casefold()
+    return (
+        len(title) >= 12
+        and len(body) >= 800
+        and bool(assignee)
+        and any(marker in lowered for marker in _CONCRETE_OUTCOME_MARKERS)
+    )
 
 
 def specify_task(
@@ -188,6 +229,11 @@ def specify_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return SpecifyOutcome(task_id, False, reason)
+
+    if _is_already_concrete(task):
+        with kbc.connect_closing() as conn:
+            ok = kb.specify_triage_task(conn, task_id, author=author or _profile_author())
+        return SpecifyOutcome(task_id, ok, "already concrete" if ok else "task moved out of triage before promotion")
 
     raw, reason = _call_aux(
         "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,

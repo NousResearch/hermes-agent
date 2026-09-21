@@ -8,7 +8,6 @@ export {
 } from './billing-policy'
 export type {
   BillingAutoReload,
-  BillingBlock,
   BillingCardInfo,
   BillingChargeResponse,
   BillingChargeStatusResponse,
@@ -62,47 +61,11 @@ export {
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export {
-  type ApprovalRequestPayload,
-  BACKEND_EVENT_NAMES,
-  type BackendGatewayEventMap,
-  type BackendGatewayEventName,
-  type ClarifyQuestion,
-  type ClarifyRequestPayload,
-  type ClientLocalGatewayEventMap,
-  type ErrorPayload,
-  type ErrorSurface,
-  type GatewayEvent,
-  type GatewayEventMap,
-  type GatewayEventName,
-  type GatewayReadyPayload,
-  type GatewayTranscriptMessage,
-  type McpSetupRequestPayload,
-  type MessageCompletePayload,
-  type MessageInterimPayload,
-  type ModelCapabilities,
+  type ConnectionRequestPayload,
   type ModelOptionProvider,
-  type ModelOptionsResponse,
-  type ModelPricing,
-  type NotificationShowPayload,
-  type RequestExpirePayload,
-  type SecretRequestPayload,
-  type SessionInflightTurn,
-  type SessionListItem,
-  type SessionListResponse,
-  type SessionReclaimedPayload,
-  type SessionResumeResponse,
-  type SessionUsagePayload,
-  type StatusUpdatePayload,
-  type StreamDeltaPayload,
-  type SubagentEventPayload,
-  type SubagentStatus,
-  type TodoStatePayload,
-  type ToolCompletePayload,
-  type ToolStartPayload,
-  type Usage,
-  type VaultUnlockRequestPayload,
-  type WakeDetectedPayload
-} from './gateway-events'
+  type ModelOptionsResult
+} from './gateway-contract.generated'
+export * from './gateway-events'
 export {
   applyDocumentLocale,
   type EndonymLocale,
@@ -116,6 +79,7 @@ export {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
+  JSON_RPC_INTERNAL_ERROR,
   JSON_RPC_METHOD_NOT_FOUND,
   jsonRpcErrorFromFrame,
   type JsonRpcErrorPayload,
@@ -124,6 +88,9 @@ export {
   JsonRpcRequestChannel,
   type JsonRpcRequestChannelOptions,
   type JsonRpcTransport,
+  type ServerRequest,
+  type ServerRequestHandler,
+  type ServerRequestParams,
   wireFrameText
 } from './json-rpc-channel'
 export {
@@ -143,17 +110,13 @@ export {
   type ReasoningEffort,
   type ReasoningEffortValue
 } from './reasoning-effort'
-export { reconnectBackoffDelayMs, type ReconnectBackoffOptions } from './reconnect-backoff'
-export { skillInvocationText } from './skill-scaffold'
 export {
-  type HermesSkin,
-  SKIN_BRANDING_TOKENS,
-  SKIN_COLOR_TOKENS,
-  type SkinBranding,
-  type SkinBrandingToken,
-  type SkinColors,
-  type SkinColorToken
-} from './skin'
+  isStableOpen,
+  RECONNECT_STABLE_OPEN_MS,
+  reconnectBackoffDelayMs,
+  type ReconnectBackoffOptions
+} from './reconnect-backoff'
+export { skillInvocationText } from './skill-scaffold'
 export {
   type AliasCommandDispatchResponse,
   type CommandDispatchResponse,
@@ -167,6 +130,12 @@ export {
   type SkillCommandDispatchResponse,
   SLASH_COMMAND_RE
 } from './slash'
+export {
+  THEME_PRESET_PALETTES,
+  type ThemePresetColors,
+  type ThemePresetName,
+  type ThemePresetPalette
+} from './theme-presets'
 export {
   backgroundMaterialFor,
   clampIntensity,

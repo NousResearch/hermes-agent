@@ -1173,7 +1173,7 @@ describe('usePromptActions exec fallback error reporting', () => {
     vi.restoreAllMocks()
   })
 
-  it('surfaces the slash.exec failure when command.dispatch only adds "not a quick/plugin/skill command"', async () => {
+  it('surfaces the slash.exec failure when command.dispatch only adds "not a quick/plugin/bundle/skill command"', async () => {
     const seeds: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -1182,7 +1182,7 @@ describe('usePromptActions exec fallback error reporting', () => {
       }
 
       if (method === 'command.dispatch') {
-        throw new Error('not a quick/plugin/skill command: debug')
+        throw new Error('not a quick/plugin/bundle/skill command: debug')
       }
 
       return {} as never
@@ -1206,7 +1206,7 @@ describe('usePromptActions exec fallback error reporting', () => {
     // the worker timeout is what actually went wrong (#44456).
     const texts = renderedSeedTexts(seeds)
     expect(texts.some(text => text.includes('slash worker timed out'))).toBe(true)
-    expect(texts.some(text => text.includes('not a quick/plugin/skill command'))).toBe(false)
+    expect(texts.some(text => text.includes('skill command'))).toBe(false)
   })
 
   it('falls back to slash.exec when an older gateway lacks a dedicated RPC', async () => {
@@ -1924,7 +1924,7 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(calls).toContainEqual({
       method: 'handoff.fail',
       params: {
-        error: expect.stringContaining('Timed out'),
+        error: expect.stringContaining("couldn't reach your messaging connection"),
         session_id: RUNTIME_SESSION_ID
       }
     })
@@ -2215,6 +2215,93 @@ describe('usePromptActions submit / queue drain semantics', () => {
     expect(
       updates.some(update => update.sessionId === 'rt-session-b' && update.storedSessionId === 'stored-session-b')
     ).toBe(true)
+  })
+
+  it('a fromQueue drain with an image recovers and stages against ITS session, not the chat on screen', async () => {
+    // #46194, the attachments edition: the text drain was bound to its origin
+    // session (#74581), but the attachment sync still took its recovery id and
+    // transport rule from the SELECTED chat. A queued image send to B, drained
+    // after the user moved to A with B's cached runtime dead (sleep/wake), then
+    // resumed A, staged the image on A and submitted B's text into A — and
+    // rebound stored B to A's runtime for every later send.
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-session-a' }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([
+        ['stored-session-a', 'rt-session-a'],
+        ['stored-session-b', 'rt-session-b-dead']
+      ])
+    }
+
+    const updates: { sessionId: string; storedSessionId: null | string | undefined }[] = []
+    // What the production dispatcher can see at the moment the retried attach is
+    // issued: it translates the runtime id back to the stored session (and its
+    // owner) through exactly these bindings, so they must be published BEFORE
+    // the retry, not after it returns.
+    let bindingAtRetry: { central: boolean; map: string | undefined } | null = null
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      const sessionId = String(params?.session_id ?? '')
+
+      if (method === 'session.resume') {
+        return { session_id: sessionId === 'stored-session-b' ? 'rt-session-b-live' : 'rt-session-a-live' } as never
+      }
+
+      if (method === 'image.attach') {
+        if (sessionId === 'rt-session-b-dead') {
+          throw new Error('4007 session not found')
+        }
+
+        if (sessionId === 'rt-session-b-live') {
+          bindingAtRetry = {
+            central: updates.some(u => u.sessionId === 'rt-session-b-live' && u.storedSessionId === 'stored-session-b'),
+            map: runtimeIdByStoredSessionIdRef.current.get('stored-session-b')
+          }
+        }
+
+        return { attached: true, path: '/tmp/shot.png' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId="rt-session-a"
+        activeSessionIdRef={activeSessionIdRef}
+        getRuntimeIdForStoredSession={storedId => runtimeIdByStoredSessionIdRef.current.get(storedId) ?? null}
+        onReady={h => (handle = h)}
+        onUpdateState={(sessionId, storedSessionId) => updates.push({ sessionId, storedSessionId })}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        storedSessionId="stored-session-a"
+      />
+    )
+
+    const accepted = await handle!.submitText('queued for B with a screenshot', {
+      attachments: [{ id: 'att-1', kind: 'image', label: 'shot.png', path: '/tmp/shot.png' } as never],
+      fromQueue: true,
+      sessionId: 'rt-session-b-dead',
+      storedSessionId: 'stored-session-b'
+    })
+
+    expect(accepted).toBe(true)
+    const calls = requestGateway.mock.calls.map(([method, params]) => [method, (params as { session_id?: string })?.session_id])
+
+    // The recovery resumes the queued send's OWN session…
+    expect(calls).toContainEqual(['session.resume', 'stored-session-b'])
+    expect(calls).not.toContainEqual(['session.resume', 'stored-session-a'])
+    // …stages the image there, and submits there.
+    expect(calls).toContainEqual(['image.attach', 'rt-session-b-live'])
+    expect(calls).toContainEqual(['prompt.submit', 'rt-session-b-live'])
+    expect(calls.some(([, sessionId]) => sessionId === 'rt-session-a' || sessionId === 'rt-session-a-live')).toBe(false)
+    // A background drain never steals the foreground, and B's binding now names B's live runtime.
+    expect(activeSessionIdRef.current).toBe('rt-session-a')
+    expect(runtimeIdByStoredSessionIdRef.current.get('stored-session-b')).toBe('rt-session-b-live')
+    // …and it did so BEFORE the retried attach went out, in both places the dispatcher reads.
+    expect(bindingAtRetry).toEqual({ central: true, map: 'rt-session-b-live' })
   })
 
   it('a fromQueue drain rebinds to the centrally recorded runtime when its explicit id is stale', async () => {

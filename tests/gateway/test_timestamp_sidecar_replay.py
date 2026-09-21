@@ -43,6 +43,18 @@ def test_recovery_cleanup_never_restores_a_sidecar(timestamps, embedded, real_te
         assert replay[0]["content"] == (_render(real_text, expected_timestamp) if timestamps else real_text)
 
 
+def test_gateway_replay_preserves_surface_switch_metadata():
+    replay, _ = _build_gateway_agent_history([{
+        "role": "user", "content": "question",
+        "display_metadata": {"_hermes_surface_switch": {"surface": "tui"}},
+    }])
+
+    assert replay == [{
+        "role": "user", "content": "question",
+        "display_metadata": {"_hermes_surface_switch": {"surface": "tui"}},
+    }]
+
+
 @pytest.fixture
 def responses_agent(tmp_path, monkeypatch):
     """Use the real agent/Responses converter; replace only the network call."""
@@ -57,6 +69,9 @@ def responses_agent(tmp_path, monkeypatch):
         "hermes_cli.plugins.invoke_hook",
         lambda hook, **kw: [{"context": POLICY}] if hook == "pre_llm_call" else [],
     )
+    # Titling is not under test; its daemon thread would outlive the turn holding ``db`` and race
+    # the close below (a cross-thread sqlite reopen at interpreter shutdown crashed CI: #113186).
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
 
     def respond(kwargs, **unused):
         captured.append(deepcopy(kwargs))

@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:  # type checkers see httpx as always-imported; runtime keeps it optional
@@ -84,6 +84,18 @@ _DEFAULT_MENTION_PATTERNS = [r"(?<![\w@])@?hermes\s+agent\b[,:\-]?", r"(?<![\w@]
 _TARGET_NOT_ALLOWED_MESSAGE = (
     "shared/free-tier Photon lines cannot initiate outbound sends to new "
     "targets — upgrade to a dedicated line or use another delivery channel")
+
+
+async def _aiter_ndjson_lines(response: Any) -> AsyncIterator[str]:
+    """Split the sidecar stream on its protocol delimiter, LF, and nothing else."""
+    pending = ""
+    async for chunk in response.aiter_text():
+        lines = (pending + chunk).split("\n")
+        pending = lines.pop()
+        for line in lines:
+            yield line
+    if pending:
+        yield pending
 
 
 # -- Sidecar runtime record ----------------------------------------------------
@@ -415,6 +427,19 @@ _CONTENT_NORMALIZERS: Dict[Any, Callable[[Dict[str, Any]], _Normalized]] = {
 _BINARY_CONTENT_TYPES = {"attachment", "voice", "group"}  # may decode/cache media bytes → run off the event loop
 
 
+def _mention_gate_text(content: Dict[str, Any]) -> str:
+    """The user-typed text of a payload WITHOUT decoding or caching any attachment bytes,
+    so the group require_mention gate can run before ``_normalize_content`` persists media."""
+    ctype = content.get("type")
+    if ctype == "text":
+        return content.get("text") or ""
+    if ctype == "richlink":
+        return _format_richlink_content(content)
+    if ctype == "group":
+        return "\n".join(part for part in map(_mention_gate_text, _group_item_contents(content)) if part)
+    return ""
+
+
 def _normalize_content(content: Dict[str, Any]) -> _Normalized:
     """Turn a sidecar ``content`` payload into (text, type, media_urls, media_types)."""
     ctype = content.get("type")
@@ -492,6 +517,12 @@ class PhotonAdapter(BasePlatformAdapter):
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
         self._typing_last_sent: Dict[str, float] = {}
         self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
+        # Behavioral config: extra wins, then env; the sidecar reads PHOTON_READ_RECEIPTS from its
+        # own spawn env (see _start_sidecar) since it -- not this adapter -- sends the receipt.
+        read_receipts = extra.get("read_receipts")
+        if read_receipts is None:
+            read_receipts = _get_scoped_secret("PHOTON_READ_RECEIPTS", "true")
+        self._read_receipts = str(read_receipts).strip().lower() in {"true", "1", "yes", "on"}
         # Group-chat mention gating (parity with BlueBubbles); DMs are never gated.
         require_mention = extra.get("require_mention")
         if require_mention is None:
@@ -621,7 +652,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     if resp.status_code != 200:
                         raise RuntimeError(f"/inbound returned {resp.status_code}")
                     backoff = 1.0
-                    async for line in resp.aiter_lines():
+                    async for line in _aiter_ndjson_lines(resp):
                         if not self._inbound_running:
                             break
                         line = line.strip()
@@ -770,15 +801,18 @@ class PhotonAdapter(BasePlatformAdapter):
                 return
             await self.handle_message(_event(choice))
             return
+        # Mention gate BEFORE normalising: _normalize_content persists inline attachment
+        # bytes to the media cache, and a dropped group message must not leave files behind.
+        gated = chat_type == "group" and self.require_mention
+        if gated and not self._message_matches_mention_patterns(_mention_gate_text(content)):
+            logger.debug("[photon] ignoring group message (require_mention=true, no mention pattern matched)")
+            return
         if ctype in _BINARY_CONTENT_TYPES:
             # Base64 decode + media-cache write of possibly multi-MB payloads — keep it off the event loop.
             text, mtype, media_urls, media_types = await asyncio.to_thread(_normalize_content, content)
         else:
             text, mtype, media_urls, media_types = _normalize_content(content)
-        if chat_type == "group" and self.require_mention:
-            if not self._message_matches_mention_patterns(text):
-                logger.debug("[photon] ignoring group message (require_mention=true, no mention pattern matched)")
-                return
+        if gated:
             text = self._clean_mention_text(text)
         self._record_recent_richlink(space_id, _richlink_url_from_content(content) or text)
         await self.handle_message(_event(text, mtype, media_urls=media_urls, media_types=media_types))
@@ -896,6 +930,7 @@ class PhotonAdapter(BasePlatformAdapter):
             "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
             "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,
             "PHOTON_SIDECAR_TOKEN": self._sidecar_token,
+            "PHOTON_READ_RECEIPTS": "true" if self._read_receipts else "false",
             # Exit on stdin EOF so ANY gateway death (incl. SIGKILL) can't orphan it on the port.
             "PHOTON_SIDECAR_WATCH_STDIN": "1"})
         from hermes_cli._subprocess_compat import windows_hide_flags  # hide child console on Windows

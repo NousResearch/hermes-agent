@@ -97,12 +97,14 @@ def _gc_retention_days() -> int:
         return 30
 
 
-def _kanban_dispatch_allowed() -> bool:
+def _kanban_dispatch_allowed(runner: Any = None) -> bool:
     """False while the global emergency stop (`hermes pause`) is engaged.
 
     Checked every tick before spawning, so a pause applies on the next tick;
     in-flight workers are never touched. Fails open if estop is unimportable.
     """
+    if runner is not None and (getattr(runner, "_draining", False) or getattr(runner, "_external_drain_active", False)):
+        return False
     try:
         from agent.estop import check_paused
     except ImportError:

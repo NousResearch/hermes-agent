@@ -30,6 +30,7 @@ class StopGateVerdict:
     final_response: Any
     pending_verification_response: Any
     pending_verification_response_previewed: Any
+    kanban_shutdown_paused: bool = False
 
 
 def _verify_on_stop_nudge(agent) -> Optional[str]:
@@ -77,7 +78,8 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
 
 
 def _kanban_stop_nudge(agent, messages) -> Optional[str]:
-    """Workers must end with kanban_complete / kanban_block; a narrated stop is recorded
+    """Workers must end with a terminal board tool (kanban_complete / kanban_block /
+    kanban_request_review / kanban_request_changes); a narrated stop is recorded
     as protocol_violation, so nudge once or twice first."""
     try:
         from agent.kanban_stop import build_kanban_stop_nudge
@@ -150,6 +152,15 @@ def apply_stop_gates(
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)
         return verdict
 
+    from agent.kanban_stop import kanban_shutdown_drain_requested, pause_current_kanban_run
+    if kanban_shutdown_drain_requested() and pause_current_kanban_run():
+        return StopGateVerdict(
+            continue_turn=False, final_response=final_response,
+            pending_verification_response=pending_verification_response,
+            pending_verification_response_previewed=pending_verification_response_previewed,
+            kanban_shutdown_paused=True,
+        )
+
     _kanban_nudge = _kanban_stop_nudge(agent, messages)
     if _kanban_nudge:
         agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
@@ -162,11 +173,16 @@ def apply_stop_gates(
             agent._kanban_stop_nudges,
             os.environ.get("HERMES_KANBAN_TASK", ""),
         )
-        agent._emit_status(
-            "⚠️ Kanban worker tried to exit without "
-            "kanban_complete/kanban_block — nudging to finish"
+        agent._emit_diagnostic_status(
+            "⚠️ Kanban worker tried to exit without a terminal board call "
+            "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
         )
         return verdict
+    from agent.kanban_stop import reconcile_kanban_stop_to_review
+    reconcile_kanban_stop_to_review(
+        messages=messages, final_response=final_response,
+        attempts=getattr(agent, "_kanban_stop_nudges", 0),
+    )
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

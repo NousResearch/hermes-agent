@@ -142,6 +142,41 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def test_distinct_terminal_failure_causes_do_not_accumulate_as_one_broken_path():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=2,
+            same_tool_failure_warn_after=2,
+            same_tool_failure_halt_after=3,
+        )
+    )
+
+    decisions = [
+        controller.after_call(
+            "terminal",
+            {"command": "git status"},
+            '{"exit_code":1,"stderr":"not a git repository"}',
+            failed=True,
+        ),
+        controller.after_call(
+            "terminal",
+            {"command": "pytest focused"},
+            '{"exit_code":1,"stderr":"assertion reproduced"}',
+            failed=True,
+        ),
+        controller.after_call(
+            "terminal",
+            {"command": "rg expected path"},
+            '{"exit_code":2,"stderr":"path missing"}',
+            failed=True,
+        ),
+    ]
+
+    assert [decision.action for decision in decisions] == ["allow", "allow", "allow"]
+    assert controller.halt_decision is None
+
+
 
 
 
@@ -289,9 +324,6 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
 
 
 
-
-
-
 # ── Legitimate flows must survive hard stops (Teknium, Sep 2026) ────────────
 # Hard stops default ON for unattended platforms. These pin the flows that
 # must NEVER be cut off there: edit -> re-run loops, diagnostic sweeps of
@@ -376,3 +408,39 @@ def test_supervised_task_platforms_keep_warning_only_default():
     for platform in ("telegram", "discord", "cron", "kanban"):
         cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
         assert cfg.hard_stop_enabled is True, platform
+
+
+def test_harness_refusals_are_not_tool_failures_on_either_classifier(tmp_path):
+    """Every loop refusal the file tools emit (read dedup block, consecutive-read block,
+    repeated-search block) carries `"error"` for the model's benefit -- exactly what the
+    substring tests key on. Neither `classify_tool_failure` nor the executor's live seam
+    `_detect_tool_failure` may count them, or the cheap refusal feeds the streak that
+    fires `repeated_exact_failure_block` over calls that never failed."""
+    from agent.display import _detect_tool_failure
+    from tools.file_tools import _dedup_stub_or_block, read_file_tool, search_tool
+
+    target = tmp_path / "responses.ts"
+    target.write_text("export const x = 1;\n" * 30, encoding="utf-8")
+
+    task = {"dedup_hits": {}}
+    for _ in range(3):
+        dedup_block = _dedup_stub_or_block(task, (str(target), 1, 999), str(target))
+    consecutive_block = [read_file_tool(str(target), offset=1, limit=5, task_id="t-read") for _ in range(4)][-1]
+    search_block = [search_tool("const x", path=str(tmp_path), task_id="t-search") for _ in range(4)][-1]
+
+    for refusal in (dedup_block, consecutive_block, search_block):
+        assert json.loads(refusal)["error"].startswith("BLOCKED"), refusal
+        assert classify_tool_failure("read_file", refusal) == (False, ""), refusal
+        assert _detect_tool_failure("read_file", refusal) == (False, ""), refusal
+
+
+def test_a_real_tool_error_is_still_a_failure():
+    """The exemption is keyed on the marker, not on the word: a body that
+    genuinely failed still counts, or the streak that stops a real loop is gone."""
+    from agent.display import _detect_tool_failure
+
+    real = '{"error": "ENOENT: no such file"}'
+    assert classify_tool_failure("read_file", real)[0] is True
+    assert _detect_tool_failure("read_file", real)[0] is True
+    # The marker is only honoured as the literal boolean, never as truthy prose.
+    assert classify_tool_failure("read_file", '{"error": "x", "guardrail_refusal": "yes"}')[0] is True

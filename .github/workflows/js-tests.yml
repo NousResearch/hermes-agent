@@ -6,15 +6,12 @@ on:
 
 jobs:
   check:
-    name: JS & TS checks
-    # One 32-core job replaces a 14-leg matrix. The matrix spread about 612s
-    # of check payload over 4-core runners. It paid about 371s of repeated
-    # setup to do it: 14 checkouts, 14 node installs, 14 node_modules
-    # restores.
-    #
-    # One larger runner installs one time. vitest, tsc and eslint each size
-    # their own worker pool from the core count.
-    runs-on: ubuntu-latest-32-core
+    name: JS & TS checks shard ${{ matrix.shard }}/5
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -22,6 +19,20 @@ jobs:
         with:
           node-version: 26
           cache: npm
+
+      # The desktop SSH watchdog tests run their probe through a real zsh
+      # login shell (#111949). The ubuntu image ships no zsh and the tests
+      # skip without it, so install it here or those legs never run on CI.
+      #
+      # The desktop portal-session live test drives real Electron windows
+      # (electron/portal-session-live.test.ts) and skips without a display,
+      # so give the runner a virtual one the same way the Playwright lane does.
+      - name: Install zsh and a virtual display for Electron
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y zsh xvfb \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
 
       - name: grab npm 12
         run: |
@@ -75,9 +86,9 @@ jobs:
       #     its lint, ui, electron and plugin suites all run together. That
       #     is the same selection rule the old matrix job used.
       #
-      # Discovery is ``npm query .workspace``. A new package or a new
+      # Discovery reads the root ``workspaces`` globs. A new package or a new
       # ``check:*`` script needs no change here. An empty list is an error and
       # not an empty run, because an empty run reports green after it checks
       # nothing.
       - name: Run all workspace checks
-        run: node .github/scripts/run-workspace-checks.mjs
+        run: node .github/scripts/run-workspace-checks.mjs --shard '${{ matrix.shard }}/5'

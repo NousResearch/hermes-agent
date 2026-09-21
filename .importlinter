@@ -1,0 +1,51 @@
+[importlinter]
+root_packages =
+    agent
+    gateway
+    hermes_cli
+    plugins
+    tools
+
+[importlinter:contract:tool-registry-narrow-waist]
+name = Tool registry remains below agent and delivery layers
+type = forbidden
+source_modules =
+    tools.registry
+forbidden_modules =
+    hermes_cli
+    plugins
+allow_indirect_imports = true
+
+[importlinter:contract:profile-secret-scope-leaf]
+name = Profile secret scope stays independent of runtime layers
+type = forbidden
+source_modules =
+    agent.secret_scope
+forbidden_modules =
+    gateway
+    plugins
+    tools
+allow_indirect_imports = true
+
+[importlinter:contract:gateway-session-context-leaf]
+name = Gateway session context stays transitively dependency-light
+type = forbidden
+source_modules =
+    gateway.session_context
+forbidden_modules =
+    hermes_cli
+    plugins
+    tools
+allow_indirect_imports = false
+
+[importlinter:contract:plugin-capability-consent-leaf]
+name = Plugin capability consent stays independent of runtime layers
+type = forbidden
+source_modules =
+    hermes_cli.plugin_capabilities
+forbidden_modules =
+    agent
+    gateway
+    plugins
+    tools
+allow_indirect_imports = true

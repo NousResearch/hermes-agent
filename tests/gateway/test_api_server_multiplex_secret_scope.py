@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import pytest
 
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from agent import secret_scope as ss
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter

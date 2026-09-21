@@ -1,0 +1,212 @@
+{
+  "schema_name": "hermes_federation_roles_v1",
+  "version": "1.0.0",
+  "model_policy_provenance": {
+    "basis": "existing benchmark-informed Hermes routing",
+    "evidence_class": "configured_routes_and_partial_local_benchmark_evidence",
+    "note": "This registry preserves known primary and auxiliary routes; it does not claim a fresh apples-to-apples benchmark matrix.",
+    "verified_at": "2026-08-30"
+  },
+  "model_policies": {
+    "federal_core": {
+      "primary": {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "low"},
+      "fallback_providers": [
+        {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        {"provider": "nous", "model": "tencent/hy3:free", "reasoning_effort": "none"},
+        {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      ],
+      "auxiliary": {
+        "compression": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "title_generation": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "approval": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      }
+    },
+    "engineering": {
+      "primary": {"provider": "openai-codex", "model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+      "fallback_providers": [
+        {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        {"provider": "nous", "model": "tencent/hy3:free", "reasoning_effort": "none"},
+        {"provider": "ollama-launch", "model": "devstral-small-2:24b", "reasoning_effort": "none"}
+      ],
+      "auxiliary": {
+        "compression": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "title_generation": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "approval": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      }
+    },
+    "research_intelligence": {
+      "primary": {"provider": "nous", "model": "tencent/hy3:free", "reasoning_effort": "low"},
+      "fallback_providers": [
+        {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "low"},
+        {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      ],
+      "auxiliary": {
+        "compression": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "title_generation": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "approval": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      }
+    },
+    "knowledge_commons": {
+      "primary": {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "low"},
+      "fallback_providers": [
+        {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        {"provider": "nous", "model": "tencent/hy3:free", "reasoning_effort": "none"},
+        {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      ],
+      "auxiliary": {
+        "compression": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "title_generation": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "approval": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      }
+    },
+    "memory": {
+      "primary": {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "low"},
+      "fallback_providers": [
+        {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      ],
+      "auxiliary": {
+        "compression": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "title_generation": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "approval": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      }
+    },
+    "arts_media": {
+      "primary": {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "low"},
+      "fallback_providers": [
+        {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      ],
+      "auxiliary": {
+        "compression": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "title_generation": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "vision": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      }
+    },
+    "content_studio": {
+      "primary": {"provider": "openai-codex", "model": "gpt-5.5", "reasoning_effort": "low"},
+      "fallback_providers": [
+        {"provider": "openai-codex", "model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        {"provider": "nous", "model": "tencent/hy3:free", "reasoning_effort": "none"},
+        {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      ],
+      "auxiliary": {
+        "compression": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "title_generation": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"},
+        "approval": {"provider": "ollama-launch", "model": "qwen3.5:4b", "reasoning_effort": "none"}
+      }
+    }
+  },
+  "groups": [
+    {"id": "federation-council", "display_name": "Federation Council", "description": "Cross-department intake, planning, safety, and independent accountability.", "roles": ["federation-steward", "intake-router", "capability-planner", "resource-scheduler", "safety-guardian", "independent-auditor"]},
+    {"id": "operations-and-release", "display_name": "Operations and Release", "description": "Gateway operations, upgrades, packaging, release readiness, and rollback verification.", "roles": ["operations-steward", "release-steward"]},
+    {"id": "engineering-guild", "display_name": "Engineering Guild", "description": "Implementation, test contracts, CI recovery, and architecture stewardship.", "roles": ["coding-expert", "test-contract-steward", "ci-repair-steward", "architecture-steward"]},
+    {"id": "research-lab", "display_name": "Research Lab", "description": "Discovery, investigation, experimentation, replication, and synthesis.", "roles": ["observatory", "pathologist", "prior-art-scout", "scientist", "experimentalist", "replicator"]},
+    {"id": "research-review-board", "display_name": "Research Review Board", "description": "Adversarial review, performance analysis, validation, and evidence synthesis.", "roles": ["red-team", "performance-lab", "scientific-validator", "synthesizer"]},
+    {"id": "knowledge-commons", "display_name": "Knowledge Commons", "description": "Community discovery, source verification, cataloging, and dependable retrieval.", "roles": ["community-scout", "discovery-broker", "source-verifier", "librarian", "cataloger", "retrieval-librarian"]},
+    {"id": "archive-and-acquisition", "display_name": "Archive and Acquisition", "description": "Permitted acquisition, archival stewardship, and long-lived collection integrity.", "roles": ["acquisition-worker", "archivist", "librarian", "cataloger"]},
+    {"id": "memory-stewardship", "display_name": "Memory Stewardship", "description": "Safe intake, curation, validation, and correction of persistent context.", "roles": ["memory-intake", "memory-curator", "memory-validator"]},
+    {"id": "arts-studio", "display_name": "Arts Studio", "description": "Concept, narrative, image, media, and visual review production.", "roles": ["arts-director", "concept-artist", "storyboarder", "image-generator", "media-renderer", "visual-reviewer"]},
+    {"id": "content-studio", "display_name": "Content Studio", "description": "Nerdy discovery, paper and transcript ingestion, classification, and citation quality.", "roles": ["nerdy-content-scout", "paper-ingester", "transcript-ingester", "content-classifier", "citation-verifier", "digest-editor"]},
+    {"id": "editorial-desk", "display_name": "Editorial Desk", "description": "Cross-functional editing and publication curation with attribution and audience fit.", "roles": ["writer", "editor", "citation-verifier", "digest-editor", "publication-curator"]}
+  ],
+  "departments": [
+    {
+      "id": "federal_core",
+      "display_name": "Federal Core",
+      "description": "Coordinates intake, safety, resources, operations, and accountable federation growth.",
+      "roles": [
+        {"id": "federation-steward", "display_name": "Federation Steward", "description": "Maintains the federation map, resolves cross-department ownership, and keeps work moving without granting authority.", "skills": [], "toolsets": ["kanban", "file"], "authority": "advisory", "schedule": "on_demand", "profile_aliases": ["task-orchestrator"], "handoffs": ["intake-router", "capability-planner"]},
+        {"id": "intake-router", "display_name": "Federation Intake Router", "description": "Classifies incoming work and routes it to the smallest capable department or specialist.", "skills": [], "toolsets": ["kanban", "file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": ["task-intake-router"], "handoffs": ["federation-steward"]},
+        {"id": "capability-planner", "display_name": "Capability Planner", "description": "Identifies missing capabilities and prepares bounded, operator-reviewable requests for new roles, tools, or resources.", "skills": [], "toolsets": ["file", "kanban"], "authority": "operator_gated", "schedule": "weekly", "profile_aliases": [], "handoffs": ["federation-steward", "independent-auditor"]},
+        {"id": "resource-scheduler", "display_name": "Resource Scheduler", "description": "Balances model calls, concurrency, budgets, and departmental workload across the federation.", "skills": [], "toolsets": ["file", "kanban"], "authority": "operator_gated", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["federation-steward", "safety-guardian"]},
+        {"id": "safety-guardian", "display_name": "Federation Safety Guardian", "description": "Checks that proposed work preserves privacy, least privilege, paper safety, and fail-closed boundaries.", "skills": [], "toolsets": ["file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": ["paper-safety-guardian"], "handoffs": ["independent-auditor"]},
+        {"id": "independent-auditor", "display_name": "Independent Federation Auditor", "description": "Verifies role handoffs, evidence, identity, and completion claims independently of the worker that produced them.", "skills": [], "toolsets": ["file", "kanban"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": ["review-verification-steward"], "handoffs": ["federation-steward"]},
+        {"id": "operations-steward", "display_name": "Operations Steward", "description": "Maintains Hermes gateways, services, upgrades, and recoverable operational state.", "skills": [], "toolsets": ["terminal", "file"], "authority": "operator_gated", "schedule": "daily", "profile_aliases": ["hermes-maintenance-steward"], "handoffs": ["independent-auditor"]},
+        {"id": "release-steward", "display_name": "Release Steward", "description": "Coordinates release readiness, packaging, rollback artifacts, and post-release verification.", "skills": [], "toolsets": ["terminal", "file"], "authority": "operator_gated", "schedule": "release_event", "profile_aliases": ["release-maintenance-steward"], "handoffs": ["independent-auditor", "operations-steward"]}
+      ]
+    },
+    {
+      "id": "engineering",
+      "display_name": "Engineering",
+      "description": "Builds, tests, reviews, and repairs Hermes and connected projects under exact-head governance.",
+      "roles": [
+        {"id": "coding-expert", "display_name": "Coding Expert", "description": "Implements bounded, already-specified code changes with tests and evidence.", "skills": [], "toolsets": ["terminal", "file", "kanban"], "authority": "operator_gated", "schedule": "on_demand", "profile_aliases": ["coding-expert"], "handoffs": ["test-contract-steward", "independent-auditor"]},
+        {"id": "test-contract-steward", "display_name": "Test Contract Steward", "description": "Repairs mismatches between implementation and behavioral contracts without weakening safety gates.", "skills": [], "toolsets": ["terminal", "file", "kanban"], "authority": "operator_gated", "schedule": "on_demand", "profile_aliases": ["test-contract-steward"], "handoffs": ["independent-auditor"]},
+        {"id": "ci-repair-steward", "display_name": "CI Repair Steward", "description": "Repairs deterministic CI failures across static, test, hygiene, frontend, and general lanes.", "skills": [], "toolsets": ["terminal", "file", "kanban"], "authority": "operator_gated", "schedule": "on_demand", "profile_aliases": ["ci-general-fixer"], "handoffs": ["independent-auditor", "release-steward"]},
+        {"id": "architecture-steward", "display_name": "Architecture Steward", "description": "Maintains subsystem boundaries, dependency direction, and safe extension points.", "skills": [], "toolsets": ["file", "kanban"], "authority": "advisory", "schedule": "on_demand", "profile_aliases": ["structural-ratchet-steward"], "handoffs": ["coding-expert", "independent-auditor"]}
+      ]
+    },
+    {
+      "id": "research_intelligence",
+      "display_name": "Research and Intelligence",
+      "description": "Investigates unknowns, prior art, experiments, contradictions, and emerging opportunities.",
+      "roles": [
+        {"id": "observatory", "display_name": "Observatory", "description": "Monitors coverage debt, recurring questions, and meaningful changes that deserve investigation.", "skills": ["arxiv"], "toolsets": ["file", "web"], "authority": "advisory", "schedule": "daily", "profile_aliases": ["research-scout"], "handoffs": ["pathologist", "prior-art-scout"]},
+        {"id": "pathologist", "display_name": "Pathologist", "description": "Investigates failure mechanisms and separates symptoms from root causes.", "skills": [], "toolsets": ["terminal", "file", "web"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": ["luna-auditor"], "handoffs": ["experimentalist", "scientific-validator"]},
+        {"id": "prior-art-scout", "display_name": "Prior-Art Scout", "description": "Finds original, reproducible, source-linked work relevant to a bounded question.", "skills": ["arxiv", "llm-wiki"], "toolsets": ["web", "file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["scientist", "scientific-validator"]},
+        {"id": "scientist", "display_name": "Scientist", "description": "Forms hypotheses, compares explanations, and records uncertainty without turning ideas into authority.", "skills": ["llm-wiki"], "toolsets": ["file", "web"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": ["researcher-a"], "handoffs": ["experimentalist", "red-team"]},
+        {"id": "experimentalist", "display_name": "Experimentalist", "description": "Runs bounded, disposable, diagnostic experiments and records reproducible results.", "skills": [], "toolsets": ["terminal", "file"], "authority": "operator_gated", "schedule": "event_driven", "profile_aliases": ["research-experiment-runner"], "handoffs": ["replicator", "scientific-validator"]},
+        {"id": "replicator", "display_name": "Replicator", "description": "Independently reproduces promising research findings and records negative results.", "skills": [], "toolsets": ["terminal", "file"], "authority": "operator_gated", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["scientific-validator"]},
+        {"id": "red-team", "display_name": "Research Red Team", "description": "Attacks assumptions, evidence quality, safety boundaries, and plausible failure modes.", "skills": [], "toolsets": ["file", "web"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["scientific-validator", "safety-guardian"]},
+        {"id": "performance-lab", "display_name": "Performance Lab", "description": "Measures latency, throughput, resource use, and concurrency without mistaking configuration for behavior.", "skills": [], "toolsets": ["terminal", "file"], "authority": "advisory", "schedule": "on_demand", "profile_aliases": ["performance-sentinel"], "handoffs": ["experimentalist", "architecture-steward"]},
+        {"id": "scientific-validator", "display_name": "Scientific Validator", "description": "Independently validates research findings, source provenance, and evidence ceilings.", "skills": ["grounded-citations"], "toolsets": ["file", "web"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["synthesizer", "memory-curator"]},
+        {"id": "synthesizer", "display_name": "Research Synthesizer", "description": "Combines independently validated findings into bounded, source-linked research summaries.", "skills": ["llm-wiki", "grounded-citations"], "toolsets": ["file"], "authority": "advisory", "schedule": "weekly", "profile_aliases": ["research-promotion-maintainer"], "handoffs": ["memory-curator", "federation-steward"]}
+      ]
+    },
+    {
+      "id": "knowledge_commons",
+      "display_name": "Knowledge Commons and Library",
+      "description": "Catalogs, acquires, preserves, retrieves, and cites shared references without becoming an authority source.",
+      "roles": [
+        {"id": "community-scout", "display_name": "Community Scout", "description": "Discovers public developer, AI, media, scholarly, and archive sources for admitted questions.", "skills": ["llm-wiki", "arxiv", "youtube-content"], "toolsets": ["web", "file"], "authority": "advisory", "schedule": "daily", "profile_aliases": [], "handoffs": ["source-verifier", "prior-art-scout"]},
+        {"id": "discovery-broker", "display_name": "Discovery Broker", "description": "Plans bounded source-family searches, resolves lineage, and captures idempotent discovery receipts.", "skills": ["grounded-citations"], "toolsets": ["web", "file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["source-verifier", "community-scout"]},
+        {"id": "source-verifier", "display_name": "Source and Citation Verifier", "description": "Checks provenance, independence, freshness, licensing, contradictions, and citation boundaries.", "skills": ["grounded-citations"], "toolsets": ["web", "file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["scientific-validator", "librarian"]},
+        {"id": "librarian", "display_name": "Federation Librarian", "description": "Maintains the governed catalog, collections, lineage, retrieval boundaries, and bounded delivery of shared material.", "skills": ["llm-wiki"], "toolsets": ["file"], "authority": "advisory", "schedule": "daily", "profile_aliases": [], "handoffs": ["cataloger", "archivist", "memory-intake"]},
+        {"id": "cataloger", "display_name": "Cataloger", "description": "Classifies eligible artifacts, attaches metadata, links versions, and preserves immutable originals.", "skills": [], "toolsets": ["terminal", "file"], "authority": "operator_gated", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["librarian", "archivist"]},
+        {"id": "acquisition-worker", "display_name": "Acquisition Worker", "description": "Fulfills exact-grant or strictly sanitized acquisition requests within fixed media, byte, and expiry limits.", "skills": ["youtube-content", "arxiv"], "toolsets": ["terminal", "file", "web"], "authority": "operator_gated", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["cataloger", "source-verifier"]},
+        {"id": "retrieval-librarian", "display_name": "Retrieval Librarian", "description": "Returns ranked, bounded, source-linked, freshness-aware excerpts to authorized requesters.", "skills": ["llm-wiki"], "toolsets": ["file"], "authority": "advisory", "schedule": "on_demand", "profile_aliases": [], "handoffs": ["librarian", "synthesizer"]},
+        {"id": "archivist", "display_name": "Archivist", "description": "Manages retention, tombstones, supersession, restoration lineage, and preservation of Arts and reference material.", "skills": [], "toolsets": ["file"], "authority": "operator_gated", "schedule": "weekly", "profile_aliases": [], "handoffs": ["librarian", "independent-auditor"]}
+      ]
+    },
+    {
+      "id": "memory",
+      "display_name": "Shared Memory",
+      "description": "Moves only sanitized, source-linked narrative knowledge through independent intake, curation, and validation.",
+      "roles": [
+        {"id": "memory-intake", "display_name": "Memory Intake", "description": "Accepts explicit local source descriptors, hashes sources, scans for secrets, and emits bounded candidates.", "skills": [], "toolsets": ["file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["memory-curator"]},
+        {"id": "memory-curator", "display_name": "Memory Curator", "description": "Curates sanitized candidates into proposed narrative memory while suppressing loops and contradictions.", "skills": [], "toolsets": ["file"], "authority": "advisory", "schedule": "nightly", "profile_aliases": [], "handoffs": ["memory-validator"]},
+        {"id": "memory-validator", "display_name": "Memory Validator", "description": "Independently validates memory proposals and source linkage before any narrative projection.", "skills": [], "toolsets": ["file"], "authority": "advisory", "schedule": "weekly", "profile_aliases": [], "handoffs": ["librarian", "federation-steward"]}
+      ]
+    },
+    {
+      "id": "arts_media",
+      "display_name": "Arts Department",
+      "description": "Creates, reviews, preserves, and publishes visual, written, audio, and video works as non-evidentiary outputs.",
+      "roles": [
+        {"id": "arts-director", "display_name": "Arts Director", "description": "Owns the creative brief, decomposes work into a coherent production plan, and protects the boundary between analogy and evidence.", "skills": ["creative-ideation", "design-md"], "toolsets": ["kanban", "file"], "authority": "advisory", "schedule": "on_demand", "profile_aliases": [], "handoffs": ["concept-artist", "storyboarder", "visual-reviewer"]},
+        {"id": "concept-artist", "display_name": "Concept Artist", "description": "Develops visual identity, style frames, mood boards, palettes, and design specifications.", "skills": ["claude-design", "sketch", "architecture-diagram", "excalidraw"], "toolsets": ["kanban", "terminal", "file", "vision"], "authority": "advisory", "schedule": "on_demand", "profile_aliases": [], "handoffs": ["image-generator", "visual-reviewer"]},
+        {"id": "storyboarder", "display_name": "Storyboarder", "description": "Maps creative briefs to beats, scenes, shots, timing, and visual continuity.", "skills": ["excalidraw", "concept-diagrams"], "toolsets": ["kanban", "file"], "authority": "advisory", "schedule": "on_demand", "profile_aliases": [], "handoffs": ["media-renderer", "arts-director"]},
+        {"id": "writer", "display_name": "Arts Writer", "description": "Writes scripts, narration, dialogue, captions, and accompanying copy in the requested voice.", "skills": ["humanizer"], "toolsets": ["kanban", "file"], "authority": "advisory", "schedule": "on_demand", "profile_aliases": ["writer"], "handoffs": ["storyboarder", "editor"]},
+        {"id": "image-generator", "display_name": "Image Generator", "description": "Produces bounded still-image assets from approved visual specifications and preserves source/derivative lineage.", "skills": ["comfyui", "pixel-art", "baoyu-infographic"], "toolsets": ["kanban", "terminal", "file", "vision"], "authority": "operator_gated", "schedule": "on_demand", "profile_aliases": [], "handoffs": ["visual-reviewer", "media-renderer"]},
+        {"id": "media-renderer", "display_name": "Media Renderer", "description": "Produces visual or audio media using the project’s selected renderer and records reproducible asset metadata.", "skills": ["ascii-video", "manim-video", "p5js", "touchdesigner-mcp", "youtube-content"], "toolsets": ["kanban", "terminal", "file", "video", "vision"], "authority": "operator_gated", "schedule": "on_demand", "profile_aliases": [], "handoffs": ["editor", "visual-reviewer"]},
+        {"id": "editor", "display_name": "Media Editor", "description": "Assembles approved assets into coherent cuts, documents transformations, and prepares deliverables.", "skills": [], "toolsets": ["kanban", "terminal", "file", "video"], "authority": "operator_gated", "schedule": "on_demand", "profile_aliases": [], "handoffs": ["visual-reviewer", "arts-director"]},
+        {"id": "visual-reviewer", "display_name": "Visual Reviewer", "description": "Checks visual quality, accessibility, continuity, licensing, and conformity to the approved creative brief.", "skills": ["humanizer"], "toolsets": ["file", "vision", "video"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["arts-director", "librarian"]}
+      ]
+    },
+    {
+      "id": "content_studio",
+      "display_name": "Nerdy Content Studio",
+      "description": "Turns technical papers, talks, videos, repositories, and discussions into traceable, useful internal learning material.",
+      "roles": [
+        {"id": "nerdy-content-scout", "display_name": "Nerdy Content Scout", "description": "Finds worthwhile technical talks, papers, repositories, standards, blogs, and discussions for the federation’s active interests.", "skills": ["arxiv", "youtube-content", "llm-wiki"], "toolsets": ["web", "file"], "authority": "advisory", "schedule": "daily", "profile_aliases": [], "handoffs": ["paper-ingester", "transcript-ingester", "source-verifier"]},
+        {"id": "paper-ingester", "display_name": "Paper Ingestor", "description": "Extracts bounded paper metadata and text, preserves citations, and files source material without copying unbounded content into prompts.", "skills": ["arxiv", "llm-wiki"], "toolsets": ["web", "file"], "authority": "operator_gated", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["content-classifier", "source-verifier"]},
+        {"id": "transcript-ingester", "display_name": "Talk and Transcript Ingestor", "description": "Captures permitted transcripts and timestamps from technical media, handling unavailable or disabled transcripts explicitly.", "skills": ["youtube-content"], "toolsets": ["web", "file"], "authority": "operator_gated", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["content-classifier", "source-verifier"]},
+        {"id": "content-classifier", "display_name": "Content Classifier", "description": "Tags, clusters, deduplicates, and routes ingested material by topic, source class, freshness, and intended use.", "skills": ["llm-wiki"], "toolsets": ["file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["librarian", "citation-verifier"]},
+        {"id": "citation-verifier", "display_name": "Content Citation Verifier", "description": "Checks that claims, quotes, timestamps, links, versions, licenses, and transformations remain traceable.", "skills": ["grounded-citations"], "toolsets": ["web", "file"], "authority": "advisory", "schedule": "event_driven", "profile_aliases": [], "handoffs": ["digest-editor", "scientific-validator"]},
+        {"id": "digest-editor", "display_name": "Technical Digest Editor", "description": "Synthesizes verified material into concise, audience-appropriate digests while retaining uncertainty and source links.", "skills": ["llm-wiki", "humanizer"], "toolsets": ["file"], "authority": "advisory", "schedule": "weekly", "profile_aliases": [], "handoffs": ["publication-curator", "librarian"]},
+        {"id": "publication-curator", "display_name": "Learning Publication Curator", "description": "Chooses what is worth retaining, archives superseded material, and prepares non-authoritative internal learning collections.", "skills": ["llm-wiki"], "toolsets": ["file"], "authority": "operator_gated", "schedule": "weekly", "profile_aliases": [], "handoffs": ["librarian", "memory-intake"]}
+      ]
+    }
+  ]
+}

@@ -148,7 +148,9 @@ export function ConfirmDialog({
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          {description ? <DialogDescription>{description}</DialogDescription> : null}
+          {/* pre-line: a backend-composed description keeps its paragraph
+              breaks instead of collapsing into one run-on line (#112458). */}
+          {description ? <DialogDescription className="whitespace-pre-line">{description}</DialogDescription> : null}
         </DialogHeader>
 
         {error && (

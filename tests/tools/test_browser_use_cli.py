@@ -282,6 +282,25 @@ class TestVaultSupervisorAttach:
         assert _fake_supervisor_registry == [("t-vault", "ws://127.0.0.1:47000/devtools/browser/t-vault")]
 
 
+class TestVaultEgressRedaction:
+    def test_exec_redacts_registered_vault_secret_from_stdout_and_stderr(self, tmp_path, monkeypatch):
+        """A browser_exec page read must not return a vault-filled value to model history."""
+        from agent import redact
+
+        secret = "vault-filled-password-112693"
+        cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "stdout={secret}"\necho "stderr={secret}" >&2\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        redact.register_vault_redaction_value(secret)
+        try:
+            result = json.loads(bu_cli.browser_exec("print(1)"))
+        finally:
+            redact.clear_vault_redaction_values()
+
+        serialized = json.dumps(result, ensure_ascii=False)
+        assert secret not in serialized
+        assert serialized.count("«redacted-vault-secret»") == 2
+
+
 class TestFindCli:
     """The tests/tools conftest pins _find_cli to None (host isolation);
     exercise the real function via the preserved _find_cli_unpatched."""
@@ -573,6 +592,42 @@ class TestBackendCdpResolution:
         assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
         assert "BU_CDP_WS" not in env and "BU_CDP_URL" not in env
 
+    def test_picker_managed_selection_resolves_gateway_provider(self, monkeypatch):
+        """``cloud_provider: nous`` (the `hermes tools` managed row) must resolve through the
+        provider: the picker never writes the legacy ``use_gateway`` flag, and the direct-API
+        branch leaves browser_exec with no CDP endpoint at all (#108310)."""
+        import tools.browser_tool as bt  # noqa: F401 — imported for parity with sibling tests
+
+        class _BUProvider:
+            name = "browser-use"
+
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
+        monkeypatch.setattr(
+            bt_session, "_get_session_info",
+            lambda task_id: {"cdp_url": "wss://gateway.example/cdp/managed"},
+        )
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"cloud_provider": "nous"})
+        env = {}
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/managed"
+
+    def test_legacy_use_gateway_flag_still_resolves_gateway_provider(self, monkeypatch):
+        """Regression guard for the pre-picker shape of the same selection."""
+        class _BUProvider:
+            name = "browser-use"
+
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: _BUProvider())
+        monkeypatch.setattr(
+            bt_session, "_get_session_info",
+            lambda task_id: {"cdp_url": "wss://gateway.example/cdp/legacy"},
+        )
+        monkeypatch.setattr(bu_cli, "_read_browser_cfg", lambda: {"use_gateway": True})
+        env = {}
+        assert bu_cli._resolve_backend_cdp(env, "t1") is None
+        assert env["BU_CDP_WS"] == "wss://gateway.example/cdp/legacy"
+
 
 class TestOwnTabPreamble:
     """Named sessions on SHARED browsers (a /browser connect CDP override) get the own-tab preamble
@@ -757,6 +812,40 @@ class TestBrowserUseSlashCommand:
         stub, saved = self._run("/browser use whatever", {}, monkeypatch)
         assert saved == {}
         assert stub.session_resets == 0
+
+
+class TestBrowserSlashDispatch:
+    """/browser routes through the _BROWSER_SUBCOMMANDS table: the subcommand word is
+    case-insensitive, the argument keeps its case (CDP URL paths are case-sensitive),
+    and an unknown word prints the usage block without touching any handler."""
+
+    def _run(self, cmd, monkeypatch):
+        import contextlib
+        import io
+
+        import hermes_cli.cli_commands_mixin as mod
+
+        calls = []
+        monkeypatch.setattr(mod, "_browser_connect", lambda cli, url: calls.append(("connect", url)))
+        monkeypatch.setattr(mod, "_browser_disconnect", lambda cli: calls.append(("disconnect",)))
+        monkeypatch.setattr(mod, "_browser_status", lambda: calls.append(("status",)))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mod.CLICommandsMixin._handle_browser_command(object(), cmd)
+        return calls, buf.getvalue()
+
+    def test_connect_keeps_url_case_and_defaults_to_status(self, monkeypatch):
+        from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+
+        assert self._run("/browser CONNECT ws://127.0.0.1:9222/devtools/browser/AbC", monkeypatch)[0] == [
+            ("connect", "ws://127.0.0.1:9222/devtools/browser/AbC")]
+        assert self._run("/browser connect", monkeypatch)[0] == [("connect", DEFAULT_BROWSER_CDP_URL)]
+        assert self._run("/browser", monkeypatch)[0] == [("status",)]
+
+    def test_unknown_subcommand_prints_usage_only(self, monkeypatch):
+        calls, out = self._run("/browser frobnicate", monkeypatch)
+        assert calls == []
+        assert "Usage: /browser connect|disconnect|status|use" in out
 
 
 class TestNativeScreenshots:
@@ -949,6 +1038,7 @@ class TestBrowserExec:
         assert result["exit_code"] == 3
         assert "boom" in result["stderr"]
 
+    @pytest.mark.live_system_guard_bypass
     def test_timeout_returns_actionable_error(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, "cat > /dev/null\nsleep 30\n")
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -1380,6 +1470,7 @@ class TestTimeoutProcessGroupKill:
     "now" in the sidebar indefinitely."""
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    @pytest.mark.live_system_guard_bypass
     def test_timeout_kills_grandchild_and_returns_promptly(self, tmp_path, monkeypatch):
         """A grandchild that outlives the direct child and holds the inherited stdout
         pipe must not keep browser_exec blocked past the timeout (it wedged permanently

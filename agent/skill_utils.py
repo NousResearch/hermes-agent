@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 PLATFORM_MAP = {"macos": "darwin", "linux": "linux", "windows": "win32"}
 
 EXCLUDED_SKILL_DIRS = frozenset((
-    ".git", ".github", ".hub", ".archive", ".curator_backups",
+    ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
@@ -208,7 +208,7 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     return any(_detect_environment(tag) for tag in tags if tag)
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
@@ -216,11 +216,11 @@ def _raw_config_cache_clear() -> None:
     _RAW_CONFIG_CACHE.clear()
 
 
-def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int]]:
-    """``(path, mtime_ns, size)`` identity of config.yaml, or None when unreadable/absent."""
+def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int, int, int]]:
+    """``(path, *file_signature)`` identity of config.yaml, or None when unreadable/absent."""
     try:
-        stat = config_path.stat()
-        return (str(config_path), stat.st_mtime_ns, stat.st_size)
+        from utils import file_signature
+        return (str(config_path), *file_signature(config_path.stat()))
     except OSError:
         return None
 
@@ -316,7 +316,7 @@ def _normalize_string_set(values) -> Set[str]:
 
 # config identity -> resolved external dirs. Called once per skill during
 # banner / tool-registry scans; re-resolving each time dominated cold-start.
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int, int, int, int], List[Path]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -334,14 +334,24 @@ def _config_str_list(raw) -> List[str]:
     return [e for e in (str(entry).strip() for entry in raw) if e]
 
 
+def _shared_user_skills_dir() -> Optional[Path]:
+    """``~/.agents/skills``: the cross-tool shared-skills convention (Claude Code, Codex,
+    and others all read from it). Returns it only when it already exists — Hermes never
+    creates it — and never resolves it (an operator's own symlink choice is theirs to keep)."""
+    shared = Path.home() / ".agents" / "skills"
+    return shared if shared.is_dir() else None
+
+
 def get_external_skills_dirs() -> List[Path]:
     """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
-    are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
+    are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped.
+    The shared user dir (``~/.agents/skills``) is excluded even if also listed here — it is
+    a distinct, higher-precedence category (see ``get_all_skills_dirs``), not an external one."""
     config_path = get_config_path()
     if not config_path.exists():
         return []
     full_key = _config_cache_key(config_path)
-    cache_key = full_key[:2] if full_key is not None else None
+    cache_key = full_key
     cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
     if cached is not None:
         return list(cached)  # copy so callers can't mutate the cache
@@ -349,10 +359,14 @@ def get_external_skills_dirs() -> List[Path]:
     if skills_cfg is None:
         return []
     local_skills = get_skills_dir().resolve()
+    shared_dir = _shared_user_skills_dir()
+    shared_resolved = shared_dir.resolve() if shared_dir is not None else None
     result: List[Path] = []
     for entry in _config_str_list(skills_cfg.get("external_dirs")):
         p = _home_relative(_expand_path(entry)).resolve()
         if p == local_skills or p in result:
+            continue
+        if shared_resolved is not None and p == shared_resolved:
             continue
         if p.is_dir():
             result.append(p)
@@ -395,44 +409,69 @@ def display_skill_create_dir() -> str:
     return create_dir.as_posix() + "/"
 
 
+def _append_unique_dir(dirs: List[Path], path: Path) -> None:
+    """Append *path* once, comparing resolved paths when possible."""
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    for existing in dirs:
+        try:
+            if existing.resolve() == resolved:
+                return
+        except OSError:
+            if existing == path:
+                return
+    dirs.append(path)
+
+
 def get_all_skills_dirs() -> List[Path]:
-    """Skill dirs: local ``~/.hermes/skills/`` first, then create_dir, then external.
+    """Skill dirs: local ``~/.hermes/skills/`` first, then create_dir, then the shared
+    cross-tool user dir (``~/.agents/skills``), then external.
     Trusted project dirs are NOT included (higher precedence; see get_project_skills_dirs)."""
     dirs = [get_skills_dir()]
     create_dir = get_skill_create_dir()
     if create_dir is not None and create_dir.is_dir():
         dirs.append(create_dir)
+    shared_dir = _shared_user_skills_dir()
+    if shared_dir is not None:
+        dirs.append(shared_dir.resolve())
     dirs.extend(d for d in get_external_skills_dirs() if d not in dirs)
     return dirs
 
 
-# Project-local skills (<root>/.hermes/skills, <root>/.agents/skills; root = nearest
-# .git ancestor) are a prompt-injection vector if auto-sourced from any clone, so
-# they load only when the root is in ``skills.trusted_project_dirs``; then they
-# override same-named profile/bundled skills. cwd + trust list are session-fixed
-# so the skills index stays byte-stable.
+# Project-local skills (<root>/.hermes/skills, <root>/.agents/skills, <root>/.codex/skills,
+# <root>/.claude/skills; root = nearest .git ancestor) are a prompt-injection vector if
+# auto-sourced from any clone, so they load only when the root is in
+# ``skills.trusted_project_dirs``; then they override same-named profile/bundled skills.
+# cwd + trust list are session-fixed so the skills index stays byte-stable.
 
-PROJECT_SKILLS_SUBDIRS = (os.path.join(".hermes", "skills"), os.path.join(".agents", "skills"))
+PROJECT_SKILLS_SUBDIRS = (
+    os.path.join(".hermes", "skills"),
+    os.path.join(".agents", "skills"),
+    os.path.join(".codex", "skills"),
+    os.path.join(".claude", "skills"),
+)
 
 _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
-    Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
-    cron/API surfaces inherit an interactive trust decision by project identity.
-
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    Without *start*, the surface's effective working directory wins over the process cwd — the same
+    ladder every other cwd consumer reads (``resolve_agent_cwd``: session-bound cwd, then the scope's
+    ``TERMINAL_CWD``, then the process cwd). The session cwd comes first because a multi-session host
+    (TUI/desktop gateway) pins each session's workspace there while its terminal scope resolves a
+    placeholder ``terminal.cwd`` to ``$HOME``; reading only the scope made every project skill invisible
+    on those surfaces (#114359). ``TERMINAL_CWD`` is the per-surface workdir the terminal tool and cron
+    jobs use (a cron job sets it from its per-job ``workdir`` without chdir'ing the scheduler process),
+    which lets non-interactive surfaces inherit a prior interactive trust decision by project identity —
+    and a surface with no workdir in a trusted repo simply resolves no project and loads nothing (#48975).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import resolve_agent_cwd
+            start = resolve_agent_cwd()
         cur = Path(start).resolve()
     except OSError:
         return None
@@ -462,10 +501,65 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
     return result
 
 
-def is_project_root_trusted(root: Path) -> bool:
-    """True when *root* is listed in ``skills.trusted_project_dirs``."""
+def _git_common_dir(root: Path) -> Optional[Path]:
+    """Resolve the common Git directory shared by a checkout and its worktrees."""
+    marker = Path(root) / ".git"
     try:
-        return Path(root).resolve() in _project_trusted_dirs_from_config()
+        if marker.is_dir():
+            return marker.resolve()
+        if not marker.is_file():
+            return None
+        prefix = "gitdir:"
+        line = marker.read_text(encoding="utf-8").strip()
+        if not line.casefold().startswith(prefix):
+            return None
+        git_dir = Path(line[len(prefix) :].strip())
+        if not git_dir.is_absolute():
+            git_dir = marker.parent / git_dir
+        git_dir = git_dir.resolve()
+        common_marker = git_dir / "commondir"
+        if not common_marker.is_file():
+            return git_dir
+        common = Path(common_marker.read_text(encoding="utf-8").strip())
+        return (common if common.is_absolute() else git_dir / common).resolve()
+    except (OSError, UnicodeError):
+        return None
+
+
+def is_project_root_trusted(root: Path) -> bool:
+    """True for an explicit root, its linked worktree, or an owned worker root."""
+    try:
+        resolved_root = Path(root).resolve()
+        trusted_roots = _project_trusted_dirs_from_config()
+        if resolved_root in trusted_roots:
+            return True
+
+        common_dir = _git_common_dir(resolved_root)
+        if common_dir is not None and any(
+            _git_common_dir(candidate) == common_dir for candidate in trusted_roots
+        ):
+            return True
+
+        task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+        workspaces_root = os.environ.get(
+            "HERMES_KANBAN_WORKSPACES_ROOT", ""
+        ).strip()
+        if not task_id or task_id != resolved_root.name or not workspace or not workspaces_root:
+            return False
+        resolved_workspace = Path(workspace).resolve()
+        resolved_workspaces_root = Path(workspaces_root).resolve()
+        board_owned_workspace = (
+            resolved_root == resolved_workspace
+            and resolved_root.parent == resolved_workspaces_root
+            and resolved_workspaces_root.parent in trusted_roots
+        )
+        migrated_trusted_worktree = (
+            resolved_root == resolved_workspace
+            and resolved_root.parent.name == ".worktrees"
+            and resolved_root.parent.parent in trusted_roots
+        )
+        return board_owned_workspace or migrated_trusted_worktree
     except OSError:
         return False
 

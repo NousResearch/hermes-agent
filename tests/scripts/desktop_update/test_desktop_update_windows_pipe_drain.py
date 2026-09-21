@@ -56,6 +56,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 WINDOWS_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
 
 
+def _diagnostic_excerpt(output: str, *, limit: int = 8_000) -> str:
+    """Keep failure logs bounded while retaining the self-test's final diagnosis."""
+    if len(output) <= limit:
+        return output
+    head_size = limit // 4
+    tail_size = limit - head_size
+    omitted = len(output) - limit
+    return (
+        f"{output[:head_size]}\n... {omitted} characters omitted ...\n"
+        f"{output[-tail_size:]}"
+    )
+
+
 class TestIdleWatchdogCountsUpdateLogGrowth:
     """The idle watchdog must count logs/update.log growth as progress.
 
@@ -206,8 +219,9 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
         "The Windows update hand-off's step drain regressed: it either waited "
         "on a descendant holding the pipe open (the Desktop parks on 'Updating "
         "Hermes' forever) or metered a chatty step (backpressure on the running "
-        f"update). Fixture diagnosis follows.\n--- stdout ---\n{result.stdout}\n"
-        f"--- stderr ---\n{result.stderr}"
+        f"update). Fixture diagnosis follows.\n--- stdout ---\n"
+        f"{_diagnostic_excerpt(result.stdout)}\n--- stderr ---\n"
+        f"{_diagnostic_excerpt(result.stderr)}"
     )
     assert result.returncode == 0, (
         f"-SelfTestPipeDrain exited {result.returncode}.\n"

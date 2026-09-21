@@ -16,7 +16,9 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("aiohttp")
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from aiohttp import web  # noqa: E402
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
@@ -125,7 +127,7 @@ async def test_prefixed_line_webhook_is_verified_by_the_named_profiles_secret_un
 async def test_shared_listener_adapter_records_its_public_ingress_url(mux_home, monkeypatch):
     """Runtime status carries the /p/<profile>/ URL so `gateway status` / the dashboard can show it."""
     writes: list[dict] = []
-    monkeypatch.setattr("gateway.status.write_runtime_status", lambda **kw: writes.append(kw))
+    monkeypatch.setattr("gateway.status.publish_runtime_status", lambda **kw: writes.append(kw))
     coder = _line_adapter("secret-coder", "coder")
     coder._runtime_status_platform_key = "coder:line"
     runner = _Runner({"coder": {Platform("line"): coder}})

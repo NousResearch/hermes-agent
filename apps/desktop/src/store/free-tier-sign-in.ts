@@ -7,10 +7,22 @@ import { type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from 
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
 
-/** Why a sign-in ended without tokens. Each maps to one ruled screen; anything
- *  the backend does not name (transport failure, `account_busy`) lands on
- *  `error`, which carries the backend's own message when there is one. */
-export type FreeTierSignInFailure = 'error' | 'rejected' | 'retired' | 'superseded' | 'timed_out'
+/** Why a sign-in ended without tokens. Each maps to one ruled screen:
+ *  `busy` (the account service asked for a short wait — a busy account, a
+ *  rate limit, the ops pause), `unreachable` (the service could not be
+ *  reached or errored; a sign-in cannot help until it is back), `unavailable`
+ *  (a terminal refusal: this version, a proof-of-work request, a locked
+ *  session), and the ruled outcomes of the transfer itself. Anything the
+ *  backend does not name lands on `error`, which carries its own message. */
+export type FreeTierSignInFailure =
+  | 'busy'
+  | 'error'
+  | 'rejected'
+  | 'retired'
+  | 'superseded'
+  | 'timed_out'
+  | 'unavailable'
+  | 'unreachable'
 
 export type FreeTierSignInState =
   | { status: 'already_signed_in' }
@@ -20,7 +32,9 @@ export type FreeTierSignInState =
   // requester of its own. The mounted host picks it up and drives the flow.
   | { status: 'requested' }
   | { email: null | string; model: null | string; status: 'completed' }
-  | { kind: FreeTierSignInFailure; message: null | string; status: 'failed' }
+  // `retryAfter`: the seconds the backend asked us to wait before trying
+  // again (0 when it named none); only `busy` screens read it.
+  | { kind: FreeTierSignInFailure; message: null | string; retryAfter: number; status: 'failed' }
   // `minting` is true only when the backend still has to create the free-tier
   // identity (the first `start` does it), which is the one case where the user
   // waits on something worth naming.
@@ -78,9 +92,16 @@ function clearTimers() {
 
 const set = (state: FreeTierSignInState) => $freeTierSignIn.set(state)
 
-const fail = (kind: FreeTierSignInFailure, message: null | string = null) => {
+const fail = (kind: FreeTierSignInFailure, message: null | string = null, retryAfter = 0) => {
+  const state = $freeTierSignIn.get()
+  attempt += 1
   clearTimers()
-  set({ kind, message: message?.trim() || null, status: 'failed' })
+
+  if (state.status === 'code') {
+    cancelOAuthSession(state.sessionId).catch(() => undefined)
+  }
+
+  set({ kind, message: message?.trim() || null, retryAfter, status: 'failed' })
 }
 
 /** Every entry point calls this — Settings › Billing, the statusbar chip, the
@@ -108,15 +129,30 @@ export function closeFreeTierSignIn() {
   set({ status: 'closed' })
 }
 
-// The reasons the backend names on a non-approved terminal poll. Anything else
-// (including a bare `account_busy`) falls through to the generic error screen,
-// which shows the backend's own message.
+// The reasons the backend names on a non-approved terminal poll: the transfer's
+// own outcomes, and the account service's `anon_*` verdicts when it was busy,
+// unreachable or refused mid sign-in (`hermes_cli/anon_sign_in.py`). Anything
+// else falls through to the generic error screen, which shows the backend's
+// own message.
 const FAILURE_BY_REASON: Record<string, FreeTierSignInFailure> = {
+  account_busy: 'busy',
   account_not_anonymous: 'retired',
   account_retired: 'retired',
+  anon_account_locked: 'unavailable',
+  anon_gate_closed: 'unavailable',
+  anon_gate_paused: 'busy',
+  anon_pow_required: 'unavailable',
+  anon_rate_limited: 'busy',
+  anon_server_error: 'unreachable',
+  anon_unreachable: 'unreachable',
   superseded: 'superseded',
   timeout: 'timed_out',
   user_declined: 'rejected'
+}
+
+/** The screen a failed poll maps to, exported for the dialog's tests. */
+export function signInFailureKind(reason: null | string | undefined): FreeTierSignInFailure {
+  return FAILURE_BY_REASON[reason ?? ''] ?? 'error'
 }
 
 // Open a sign-in URL through the desktop bridge, falling back to window.open
@@ -245,8 +281,7 @@ async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mi
     clearTimers()
 
     if (result.status !== 'approved') {
-      const kind = FAILURE_BY_REASON[result.reason ?? ''] ?? 'error'
-      fail(kind, result.error_message ?? null)
+      fail(signInFailureKind(result.reason), result.error_message ?? null, Number(result.retry_after) || 0)
 
       return
     }

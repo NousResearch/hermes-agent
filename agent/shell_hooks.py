@@ -41,7 +41,7 @@ _DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 # Exit code that signals "block this action" independent of stdout (Claude Code / Cursor).
 BLOCK_EXIT_CODE = 2
 # Events whose block directive is honored downstream; exit-2 blocking and fail_closed only apply here.
-_BLOCKING_EVENTS = frozenset({"pre_tool_call"})
+_BLOCKING_EVENTS = frozenset({"pre_tool_call", "pre_kanban_complete"})
 _TOOL_EVENTS = frozenset({"pre_tool_call", "post_tool_call"})
 _STDERR_MESSAGE_LIMIT = 400
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -281,8 +281,33 @@ def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookS
 
 # --- Subprocess callback ---
 
-# Popen failure -> diagnostic; anything else is reported as str(exc).
+# Popen failure -> diagnostic; WinError 193 gets its own below, everything else is str(exc).
 _POPEN_ERRORS = ((FileNotFoundError, "command not found"), (PermissionError, "command not executable"))
+
+# A hook configured as a bare script path runs on POSIX because the kernel reads its shebang.
+# CreateProcess has no such mechanism and answers WinError 193 ("%1 is not a valid Win32
+# application") for a text file, so every ``command: "~/.hermes/agent-hooks/x.sh"`` example in
+# the hooks docs — the canonical shape — fails on Windows while the same config works everywhere
+# else. Map the suffixes that shape uses to their interpreter; unmapped suffixes keep the OS
+# failure so a typo still reads as "command not found" rather than a mystery interpreter error.
+_WINDOWS_SCRIPT_INTERPRETERS = {".sh": "bash", ".bash": "bash", ".py": "python"}
+# WinError 193 raised for a suffix we deliberately do not map.
+_NOT_DIRECTLY_EXECUTABLE = "cannot be run directly on Windows (there is no shebang support): start it with its interpreter, e.g. 'bash <path>'"
+
+
+def _windows_script_argv(argv: list[str]) -> list[str]:
+    """``argv`` with the interpreter prepended when element 0 is an existing script we can name an
+    interpreter for; unchanged otherwise, including on POSIX, where the shebang already works."""
+    suffix = os.path.splitext(argv[0])[1].lower()
+    kind = _WINDOWS_SCRIPT_INTERPRETERS.get(suffix)
+    if kind is None or not os.path.isfile(argv[0]):
+        return argv
+    if kind == "python":
+        return [sys.executable, *argv]
+    # Resolved inside the caller's try: no Git for Windows raises RuntimeError carrying the
+    # installer's own actionable guidance, which is a better diagnostic than any we could add.
+    from tools.environments.local import _find_bash
+    return [_find_bash(), *argv]
 
 
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
@@ -309,11 +334,20 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
     try:
+        if IS_WINDOWS:
+            argv = _windows_script_argv(argv)
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding='utf-8', errors='replace', shell=False,
                                 env=build_subprocess_env(scrub_secrets=is_multiplex_active()), **popen_kwargs)
     except Exception as exc:
-        return failed(next((msg for cls, msg in _POPEN_ERRORS if isinstance(exc, cls)), str(exc)))
+        for cls, msg in _POPEN_ERRORS:
+            if isinstance(exc, cls):
+                return failed(msg)
+        if getattr(exc, "winerror", None) == 193:
+            # Unmapped suffix (.zsh, .fish, .rb, …) — the raw WinError text is localized, so an
+            # operator on a non-English Windows could not act on it at all.
+            return failed(f"{argv[0]!r} {_NOT_DIRECTLY_EXECUTABLE}")
+        return failed(str(exc))
     try:
         stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
     except BaseException as exc:
@@ -349,10 +383,13 @@ def _fail_closed_block(spec: ShellHookSpec, reason: str) -> Dict[str, Any]:
 
 def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """``_spawn`` result → hook contribution (live callback and ``run_once``). Spawn error/timeout fail
-    open unless fail_closed; exit 2 on a blocking event blocks (message: stdout JSON, then stderr, then
-    default); other non-zero exits warn then parse stdout; unparseable stdout on a fail_closed hook blocks."""
+    open unless fail_closed, except completion gates, which always fail closed; exit 2 on a blocking event
+    blocks (message: stdout JSON, then stderr, then default); other non-zero exits warn then parse stdout;
+    unparseable stdout on a fail_closed hook blocks."""
     blocking_event = spec.event in _BLOCKING_EVENTS
-    fail_closed = spec.fail_closed and blocking_event
+    # Completion is a durable safety boundary: a missing or broken policy must
+    # not be converted to None and filtered out by invoke_hook().
+    fail_closed = (spec.fail_closed and blocking_event) or spec.event == "pre_kanban_complete"
     if r["error"]:
         logger.warning("shell hook failed (event=%s command=%s): %s", spec.event, spec.command, r["error"])
     elif r["timed_out"]:
@@ -375,9 +412,17 @@ def _evaluate_result(spec: ShellHookSpec, r: Dict[str, Any]) -> Optional[Dict[st
                        r["returncode"], spec.event, spec.command, stderr[:_STDERR_MESSAGE_LIMIT])
     stdout = (r["stdout"] or "").strip()
     parsed = _parse_response(spec.event, stdout)
-    if parsed is None and fail_closed and stdout and not _is_json_object(stdout):
-        # A fail-closed gate must not silently allow on garbage stdout (e.g. a stack trace).
-        return _fail_closed_block(spec, "unparseable stdout (expected a JSON object)")
+    if parsed is None and fail_closed and (
+        spec.event == "pre_kanban_complete" or (stdout and not _is_json_object(stdout))
+    ):
+        # Completion gates must not silently allow on an empty response; other
+        # fail-closed hooks reject malformed JSON but retain a valid {} no-op.
+        reason = (
+            "unparseable stdout (expected a JSON object)"
+            if stdout
+            else "missing decision"
+        )
+        return _fail_closed_block(spec, reason)
     return parsed
 
 
@@ -414,6 +459,16 @@ def _parse_pre_tool_call(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _parse_pre_kanban_complete(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Completion policies use the same block/decision dialect as tool guards."""
+    action = str(data.get("action") or data.get("decision") or "").strip().lower()
+    if action == "block":
+        return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
+    # Preserve every JSON object so the completion boundary can reject an
+    # invalid policy decision instead of treating it as a no-op.
+    return data
+
+
 def _parse_pre_verify(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # "continue" (Hermes) / "block" (Claude-Code Stop) both mean keep going; no message is a no-op.
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
@@ -428,7 +483,11 @@ def _parse_context(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+_RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call,
+    "pre_kanban_complete": _parse_pre_kanban_complete,
+    "pre_verify": _parse_pre_verify,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:

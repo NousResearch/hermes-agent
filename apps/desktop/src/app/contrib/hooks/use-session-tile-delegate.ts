@@ -23,7 +23,7 @@ import {
   sessionTileOwnerRoute,
   setSessionTileDelegate
 } from '@/store/session-states'
-import type { SessionResumeResponse } from '@/types/hermes'
+import type { SessionResumeResult } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
@@ -41,7 +41,7 @@ type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 function mergeTileTranscript(
   previous: ChatMessage[],
-  prefetchMessages: SessionResumeResponse['messages'] | undefined,
+  prefetchMessages: SessionResumeResult['messages'] | undefined,
   streamId?: null | string
 ): ChatMessage[] {
   const prefetched = toChatMessages(prefetchMessages ?? [])
@@ -339,7 +339,7 @@ export function useSessionTileDelegate({
             assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
 
             return singleFlightSessionResume(storedSessionId, () =>
-              requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
+              requestForSessionProfile<SessionResumeResult>(owner, requestGateway, 'session.resume', {
                 session_id: storedSessionId,
                 cols: 96,
                 omit_messages: true,
@@ -403,6 +403,9 @@ export function useSessionTileDelegate({
             ...(typeof info?.model === 'string' ? { model: info.model } : {}),
             ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
             ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+            ...(typeof info?.reasoning_effort_wire === 'string'
+              ? { reasoningEffortWire: info.reasoning_effort_wire }
+              : {}),
             ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
             messages:
               state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])

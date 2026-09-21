@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 
 import pytest
@@ -12,18 +13,22 @@ import tui_gateway.server as server
 
 
 def _stub_session(monkeypatch, *, title, profile_home=None):
+    session = {
+        "id": "session-1",
+        "session_key": "session-key-1",
+        "title": title,
+        "source": "bot_room",
+        "profile_home": str(profile_home) if profile_home else None,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "running": False,
+        "attached_images": [],
+    }
+    monkeypatch.setitem(server._sessions, "session-1", session)
     monkeypatch.setattr(
         server,
         "_sess_nowait",
-        lambda _params, _rid: (
-            {
-                "id": "session-1",
-                "title": title,
-                "source": "bot_room",
-                "profile_home": str(profile_home) if profile_home else None,
-            },
-            None,
-        ),
+        lambda _params, _rid: (session, None),
     )
 
 

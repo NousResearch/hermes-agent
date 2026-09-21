@@ -17,10 +17,29 @@ import pytest
 from hermes_state import SessionDB
 from hermes_cli.oneshot import (
     _apply_stored_session_runtime,
+    _create_fallback_resume_session,
     _load_resume_target,
     _ModelChoice,
     run_oneshot,
 )
+
+
+def test_reopen_failure_fallback_copies_history_into_new_durable_session(tmp_path):
+    db = _db_with_session(tmp_path, "s1", messages=[("user", "remember this"), ("assistant", "I do")])
+    try:
+        sid, restored = _create_fallback_resume_session(
+            db, {"source": "cli", "model": "stored-model"}, db.get_resume_conversations("s1")[0]
+        )
+
+        assert sid != "s1"
+        assert [(message["role"], message["content"]) for message in restored] == [
+            ("user", "remember this"), ("assistant", "I do")
+        ]
+        assert [(message["role"], message["content"]) for message in db.get_resume_conversations(sid)[0]] == [
+            ("user", "remember this"), ("assistant", "I do")
+        ]
+    finally:
+        db.close()
 
 
 def _db_with_session(tmp_path, sid, *, messages=()):
@@ -97,10 +116,9 @@ class TestLoadResumeTarget:
         finally:
             db.close()
 
-    def test_resume_reopens_ended_session_row(self, tmp_path):
-        # The previous run stamped ended_at; without reopen_session() the resumed turn is
-        # recorded under a row that stays closed and end_session() cannot stamp the new
-        # boundary (it only writes rows whose ended_at is null) — review on #105957.
+    def test_loader_does_not_reopen_ended_session_row(self, tmp_path):
+        # Loading is read-only.  Reopening here would leave an ended session falsely active
+        # when provider, MCP, or skill setup fails before an agent exists.
         db = _db_with_session(tmp_path, "s1", messages=[("user", "hi")])
         db.end_session("s1", "agent_close")
         row = db.get_session("s1")
@@ -108,9 +126,9 @@ class TestLoadResumeTarget:
         try:
             sid, _history, _meta = _load_resume_target(db, "s1")
             assert sid == "s1"
-            reopened = db.get_session("s1")
-            assert reopened["ended_at"] is None
-            assert reopened["end_reason"] is None
+            still_closed = db.get_session("s1")
+            assert still_closed["ended_at"] is not None
+            assert still_closed["end_reason"] == "agent_close"
         finally:
             db.close()
 
@@ -165,6 +183,17 @@ class TestApplyStoredSessionRuntime:
         assert choice.api_key is self._AMBIENT_KEY
         assert choice.api_mode is None
 
+    def test_opencode_row_rederives_wire_from_stored_model(self, tmp_path):
+        """A row persisted while an opencode-go session ran an anthropic_messages model (MiniMax) must
+        not pin that wire onto a chat_completions model on ``--resume``: api_mode and the relay URL
+        follow the stored model (#96066), the oneshot twin of ``_restore_session_model``."""
+        meta = self._stored_db(tmp_path, model="deepseek-v4-flash-vision-exp", route={
+            "provider": "opencode-go", "base_url": "https://opencode.ai/zen/go", "api_mode": "anthropic_messages"})
+        choice = _apply_stored_session_runtime(
+            _ModelChoice("ambient-model", "openrouter", api_key=self._AMBIENT_KEY), meta, explicit_model=False)
+        assert (choice.model, choice.provider) == ("deepseek-v4-flash-vision-exp", "opencode-go")
+        assert (choice.api_mode, choice.base_url) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+
 class TestRunAgentResumeRuntime:
     """End-to-end wiring: ``_run_agent`` must hand AIAgent the session's stored runtime
     and a reopened session row (both regressions from the review on #105957)."""
@@ -213,6 +242,107 @@ class TestRunAgentResumeRuntime:
             assert captured["history"][0]["role"] == "user"
             row = db.get_session("s1")
             assert row["ended_at"] is None and row["end_reason"] is None
+        finally:
+            db.close()
+
+    def test_run_agent_continues_with_history_when_reopen_fails(self, tmp_path, monkeypatch):
+        """A readable transcript runs in a new durable session without targeting its closed row."""
+        import hermes_cli.oneshot as oneshot_mod
+
+        db = _db_with_session(tmp_path, "s1", messages=[("user", "remember this")])
+        db.end_session("s1", "agent_close")
+        captured = {}
+
+        def _fail_reopen(_target):
+            raise OSError("transient lock")
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def __setattr__(self, name, _value):
+                pass
+
+            def run_conversation(self, _prompt, conversation_history=None):
+                captured["history"] = conversation_history
+                return {"final_response": "ok", "session_id": "s1"}
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(db, "reopen_session", _fail_reopen)
+        monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: db)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"default": "ambient-model", "provider": "openrouter"},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kw: {
+                "api_key": "resolved", "base_url": None, "provider": "openrouter",
+                "requested_provider": "openrouter", "api_mode": "chat", "credential_pool": None,
+            },
+        )
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda _cfg, _p: [])
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
+
+        try:
+            text, result = oneshot_mod._run_agent("continue", resume="s1")
+            assert text == "ok" and result["final_response"] == "ok"
+            assert captured["session_id"].startswith("oneshot-resume-")
+            assert [(message["role"], message["content"]) for message in captured["history"]] == [
+                ("user", "remember this"),
+            ]
+            row = db.get_session("s1")
+            assert row["ended_at"] is not None and row["end_reason"] == "agent_close"
+            stored, _display = db.get_resume_conversations("s1")
+            assert [(message["role"], message["content"]) for message in stored] == [
+                ("user", "remember this"),
+            ]
+            fallback, _display = db.get_resume_conversations(captured["session_id"])
+            assert [(message["role"], message["content"]) for message in fallback] == [
+                ("user", "remember this"),
+            ]
+        finally:
+            db.close()
+
+    def test_run_agent_ends_fallback_when_agent_construction_fails(self, tmp_path, monkeypatch):
+        """A copied fallback must not remain resumable when no agent turn starts."""
+        import hermes_cli.oneshot as oneshot_mod
+
+        db = _db_with_session(tmp_path, "s1", messages=[("user", "remember this")])
+        db.end_session("s1", "agent_close")
+
+        def _fail_reopen(_target):
+            raise OSError("transient lock")
+
+        class _FailingAgent:
+            def __init__(self, **_kwargs):
+                raise RuntimeError("construction failed")
+
+        monkeypatch.setattr(db, "reopen_session", _fail_reopen)
+        monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: db)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"default": "ambient-model", "provider": "openrouter"},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kw: {"api_key": "resolved", "base_url": None, "provider": "openrouter",
+                            "requested_provider": "openrouter", "api_mode": "chat", "credential_pool": None},
+        )
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda _cfg, _p: [])
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("run_agent.AIAgent", _FailingAgent)
+
+        try:
+            with pytest.raises(RuntimeError, match="construction failed"):
+                oneshot_mod._run_agent("continue", resume="s1")
+            fallback_ids = [row["id"] for row in db._read_all(
+                "SELECT id FROM sessions WHERE id LIKE 'oneshot-resume-%'")]
+            assert len(fallback_ids) == 1
+            fallback = db.get_session(fallback_ids[0])
+            assert fallback["ended_at"] is not None
+            assert fallback["end_reason"] == "oneshot_setup_failed"
         finally:
             db.close()
 

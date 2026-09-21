@@ -13,13 +13,13 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
 
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
-from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +186,14 @@ def copilot_device_code_login(
         time.sleep(interval + _DEVICE_CODE_POLL_SAFETY_MARGIN)
         try:
             result = _post_form(f"https://{domain}/login/oauth/access_token", poll_fields, 10)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                print(f"\n  Rate limited by GitHub — waiting {retry_after or interval}s before retrying...",
+                      end="", flush=True)
+                continue
+            print(".", end="", flush=True)
+            continue
         except Exception:
             print(".", end="", flush=True)
             continue
@@ -271,6 +279,12 @@ def _read_jwt_store(path: Path) -> Optional[dict]:
         return None
 
 
+def _write_jwt_store(path: Path, store: dict) -> None:
+    """Atomically write the JWT store with 0o600 applied when its temp is created."""
+    from utils import atomic_json_write
+    atomic_json_write(path, store, mode=0o600)
+
+
 def _jwt_disk_path() -> Optional[Path]:
     """Path to the on-disk exchanged-JWT cache (profile-aware), or None."""
     try:
@@ -305,7 +319,7 @@ def evict_cached_exchanged_token(raw_token: str) -> None:
     def _evict(path, store):
         if store is not None and fp in store:
             del store[fp]
-            atomic_json_write(path, store, indent=None, mode=0o600)
+            _write_jwt_store(path, store)
 
     _with_jwt_store("evict cached", _evict)
 
@@ -331,7 +345,7 @@ def _save_jwt_to_disk(fp: str, api_token: str, expires_at: float, base_url: Opti
             k: v for k, v in (store or {}).items()
             if isinstance(v, dict) and float(v.get("expires_at", 0) or 0) > now}
         kept[fp] = {"api_token": api_token, "expires_at": expires_at, "base_url": base_url}
-        atomic_json_write(path, kept, indent=None, mode=0o600)
+        _write_jwt_store(path, kept)
 
     _with_jwt_store("persist", _save)
 

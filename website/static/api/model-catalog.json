@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-10T16:09:08Z",
+  "updated_at": "2026-09-20T18:57:41Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -161,6 +161,10 @@
           "description": ""
         },
         {
+          "id": "z-ai/glm-5.3-flashx",
+          "description": "high-speed tier of glm-5.3-flash"
+        },
+        {
           "id": "z-ai/glm-5.2",
           "description": "default",
           "default": true
@@ -244,6 +248,10 @@
         {
           "id": "nvidia/nemotron-3.5-lightning:free",
           "description": "free"
+        },
+        {
+          "id": "stealth/union-alpha",
+          "description": "free, stealth model"
         }
       ]
     },
@@ -357,6 +365,9 @@
         },
         {
           "id": "z-ai/glm-5.3-flash"
+        },
+        {
+          "id": "z-ai/glm-5.3-flashx"
         },
         {
           "id": "z-ai/glm-5.2",

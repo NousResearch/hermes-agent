@@ -1,0 +1,5 @@
+name: github-pr-feedback
+description: Governed GitHub PR feedback, deterministic local CI, and gated maintenance.
+provides_hooks:
+  - pre_tool_call
+  - pre_kanban_complete

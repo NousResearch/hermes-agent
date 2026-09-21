@@ -7,13 +7,46 @@ Readers live in ``agent.credential_pool``; what is unified here is **removal**:
 dispatcher suppresses ``(provider, source_id)`` in auth.json so the seeding
 branch skips the upsert. Adding a source: wire a reader branch in
 ``_seed_from_*``, gate it behind ``is_source_suppressed``, register a step here.
+
+Also home to the one policy switch over *borrowed* CLI logins (Codex CLI's
+``~/.codex/auth.json``, Claude Code's ``~/.claude/.credentials.json``):
+``auth.adopt_external_logins`` in config.yaml.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
+
+logger = logging.getLogger(__name__)
+
+EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE = (
+    "External CLI logins (Codex CLI, Claude Code) are not adopted: auth.adopt_external_logins is false. "
+    "Hermes uses only its own logins; run `hermes auth add <provider>` to add one."
+)
+_notice_logged = False
+
+
+def adopt_external_logins_enabled() -> bool:
+    """``auth.adopt_external_logins`` (default True).
+
+    Codex and Claude OAuth refresh tokens are single-use and rotate, so once Hermes borrows a CLI's
+    token pair the two programs hold one token family and whichever refreshes first logs the other
+    out. When the user opts out, Hermes never reads or refreshes those files and says so once per
+    process (INFO) the first time it would have."""
+    global _notice_logged
+    try:
+        from hermes_cli.config import load_config_readonly
+        auth_cfg = (load_config_readonly() or {}).get("auth")
+    except Exception:
+        return True
+    enabled = not isinstance(auth_cfg, dict) or bool(auth_cfg.get("adopt_external_logins", True))
+    if not enabled and not _notice_logged:
+        _notice_logged = True
+        logger.info(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
+    return enabled
 
 
 @dataclass

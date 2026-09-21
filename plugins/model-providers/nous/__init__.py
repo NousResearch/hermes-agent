@@ -65,6 +65,10 @@ class NousProfile(ProviderProfile):
             return {}, {}
         return {"reasoning": rc}, {}
 
+    def owns_reasoning_policy(self, **context: Any) -> bool:
+        """Nous owns reasoning emission, including intentional omission."""
+        return bool(context.get("supports_reasoning"))
+
 
 nous = NousProfile(
     name="nous", aliases=("nous-portal", "nousresearch"), env_vars=("NOUS_API_KEY",),

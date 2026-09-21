@@ -226,21 +226,23 @@ class SessionLifecycleMixin:
         cutoff = _now() - timedelta(days=max_age_days)
         with self._lock:
             self._ensure_loaded_locked()
-            removed_keys = [
-                key for key, entry in list(self._entries.items())
+            removed_entries = [
+                entry for entry in list(self._entries.values())
                 if not entry.suspended
                 # The callback is keyed by session_key, NOT session_id.
                 and not self._has_active_processes_safe(entry.session_key, context="prune")
                 and entry.updated_at < cutoff
             ]
-            for key in removed_keys:
-                self._entries.pop(key, None)
-            if removed_keys:
+            for entry in removed_entries:
+                self._entries.pop(entry.session_key, None)
+            if removed_entries:
                 self._save()
-        if removed_keys:
+        for entry in removed_entries:
+            self.reconcile_conversation_root_transition(entry, None)
+        if removed_entries:
             logger.info("SessionStore pruned %d entries older than %d days",
-                        len(removed_keys), max_age_days)
-        return len(removed_keys)
+                        len(removed_entries), max_age_days)
+        return len(removed_entries)
 
     def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
         """Mark sessions active within *max_age_seconds* as ``resume_pending`` after a crash/fast

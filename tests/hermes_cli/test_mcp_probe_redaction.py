@@ -368,7 +368,7 @@ class TestCmdMcpTestRedaction:
         out = capsys.readouterr().out
         _assert_fully_redacted(out)
         assert "Connection failed" in out
-        assert "Bearer ***" in out
+        assert "***" in out  # credential span masked, whichever redactor got it first
 
 
 class TestDashboardMcpTestRedaction:
@@ -452,7 +452,7 @@ class TestSiblingProbeConsumersRedact:
         out = capsys.readouterr().out
         _assert_fully_redacted(out)
         assert "Failed to connect" in out
-        assert "Bearer ***" in out
+        assert "***" in out  # credential span masked, whichever redactor got it first
 
     def test_mcp_login_redacts_probe_exception(self, tmp_path, capsys, monkeypatch):
         _seed_config(tmp_path, {

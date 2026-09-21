@@ -202,21 +202,46 @@ def guarded_prompt_enabled(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     config: Optional[dict[str, Any]] = None,
+    fallback_routes: tuple[tuple[Any, Any], ...] = (),
 ) -> bool:
-    """Return whether the explicitly opted-in local prompt profile is allowed."""
-    if _coding_mode(config) != "focus":
+    """Return whether the explicitly opt-in guarded coding prompt applies."""
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+        except Exception:
+            return False
+    agent_cfg = (config or {}).get("agent", {}) or {}
+    if not isinstance(agent_cfg, dict) or _coding_mode(config) != "focus":
         return False
-    raw = _agent_config_value(config, "guarded_prompt_mode", None, readonly=True)
+    raw = agent_cfg.get("guarded_prompt_mode")
     if not isinstance(raw, dict) or raw.get("enabled") is not True:
         return False
     routes = raw.get("routes")
     if not isinstance(routes, (list, tuple)):
         return False
-    route = (str(provider or "").strip().lower(), str(model or "").strip().lower())
-    allowed = {(str(item.get("provider") or "").strip().lower(), str(item.get("model") or "").strip().lower()) for item in routes if isinstance(item, dict)}
-    if not route[0] or not route[1] or route not in allowed:
+    route_keys = {
+        (
+            str(route.get("provider") or "").strip().lower(),
+            str(route.get("model") or "").strip().lower(),
+        )
+        for route in routes
+        if isinstance(route, dict)
+    }
+    routes_to_check = ((provider, model), *fallback_routes)
+    normalized_routes = tuple(
+        (str(route_provider or "").strip().lower(), str(route_model or "").strip().lower())
+        for route_provider, route_model in routes_to_check
+    )
+    if any(
+        not route_provider or not route_model or (route_provider, route_model) not in route_keys
+        for route_provider, route_model in normalized_routes
+    ):
         return False
-    return resolve_runtime_mode(platform=platform, cwd=cwd, config=config, model=model).is_coding
+    return resolve_runtime_mode(
+        platform=platform, cwd=cwd, config=config, model=model
+    ).is_coding
 
 
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:

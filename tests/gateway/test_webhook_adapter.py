@@ -25,6 +25,10 @@ from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -963,6 +967,38 @@ class TestDualStackBind:
             )
         finally:
             await adapter.disconnect()
+
+
+class TestExclusiveBindTimeWait:
+    """The TIME_WAIT rebind (positive case: tests/gateway/test_api_server_bind_guard.py, shared
+    ``start_tcp_site``) must not weaken the exclusive bind: a live listener still wins."""
+
+    @staticmethod
+    def _adapter_on(port: int) -> WebhookAdapter:
+        return _make_adapter(
+            routes={"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+            host="127.0.0.1",
+            port=port,
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_host_still_rejects_live_listener(self):
+        """The TIME_WAIT retry must not weaken exclusivity: a live listener on the same address wins."""
+        # The probe's connection must be closed server-side too, or ``wait_closed()`` never returns.
+        blocker = await asyncio.start_server(
+            lambda _reader, writer: writer.close(), host="127.0.0.1", port=0, reuse_address=False
+        )
+        port = blocker.sockets[0].getsockname()[1]
+        adapter = self._adapter_on(port)
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"):
+                assert await adapter.connect() is False
+            assert adapter._runner is None
+            assert adapter.is_connected is False
+        finally:
+            await adapter.disconnect()
+            blocker.close()
+            await blocker.wait_closed()
 
 
 # Regression coverage for #72041: profile-bound webhook authentication

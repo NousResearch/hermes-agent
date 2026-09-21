@@ -1,0 +1,239 @@
+{
+  "assets": [
+    {
+      "bounds": [
+        2.9,
+        2.9,
+        2.1544
+      ],
+      "faces": 564154,
+      "id": "building-owl-library",
+      "kind": "building",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-reference-2026-09-04/owl.glb",
+      "status": "imported",
+      "vertices": 282173
+    },
+    {
+      "bounds": [
+        2.9,
+        2.8674,
+        2.27
+      ],
+      "faces": 1022684,
+      "id": "building-elephant-memory",
+      "kind": "building",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-reference-2026-09-04/elephant.glb",
+      "status": "imported",
+      "vertices": 511284
+    },
+    {
+      "bounds": [
+        2.9,
+        2.6134,
+        2.4259
+      ],
+      "faces": 741058,
+      "id": "building-cat-arts",
+      "kind": "building",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-reference-2026-09-04/cat.glb",
+      "status": "imported",
+      "vertices": 370401
+    },
+    {
+      "bounds": [
+        2.8896,
+        2.9,
+        1.9751
+      ],
+      "faces": 433952,
+      "id": "building-fox-observatory",
+      "kind": "building",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-reference-2026-09-04/fox.glb",
+      "status": "imported",
+      "vertices": 217006
+    },
+    {
+      "bounds": [
+        2.9,
+        2.8974,
+        1.7324
+      ],
+      "faces": 575228,
+      "id": "building-capybara-revenue",
+      "kind": "building",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-reference-2026-09-04/capybara.glb",
+      "status": "imported",
+      "vertices": 287416
+    },
+    {
+      "bounds": [
+        2.8848,
+        2.9,
+        1.9353
+      ],
+      "faces": 595970,
+      "id": "building-lion-civic",
+      "kind": "building",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-reference-2026-09-04/lion.glb",
+      "status": "imported",
+      "vertices": 298141
+    },
+    {
+      "bounds": [
+        2.9,
+        2.8903,
+        1.8547
+      ],
+      "faces": 530376,
+      "id": "building-beaver-damworks",
+      "kind": "building",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-reference-2026-09-04/beaver.glb",
+      "status": "imported",
+      "vertices": 265144
+    },
+    {
+      "bounds": [
+        2.4602,
+        2.9,
+        2.2458
+      ],
+      "faces": 674410,
+      "id": "building-monkey-publication",
+      "kind": "building",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-reference-2026-09-04/monkey.glb",
+      "status": "imported",
+      "vertices": 337047
+    },
+    {
+      "bounds": [
+        1.7,
+        1.5204,
+        1.5066
+      ],
+      "faces": 1531206,
+      "id": "worker-audit",
+      "kind": "worker",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-worker-reference-2026-09-04/worker-audit.glb",
+      "status": "imported",
+      "vertices": 765647
+    },
+    {
+      "bounds": [
+        1.7,
+        1.5339,
+        1.5164
+      ],
+      "faces": 1652186,
+      "id": "worker-operations",
+      "kind": "worker",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-worker-reference-2026-09-04/worker-operations.glb",
+      "status": "imported",
+      "vertices": 826101
+    },
+    {
+      "bounds": [
+        1.7,
+        1.6851,
+        1.4287
+      ],
+      "faces": 1684192,
+      "id": "worker-release",
+      "kind": "worker",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-worker-reference-2026-09-04/worker-release.glb",
+      "status": "imported",
+      "vertices": 842010
+    },
+    {
+      "bounds": [
+        1.7,
+        1.5117,
+        1.5119
+      ],
+      "faces": 1703916,
+      "id": "worker-research",
+      "kind": "worker",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-worker-reference-2026-09-04/worker-research.glb",
+      "status": "imported",
+      "vertices": 851884
+    },
+    {
+      "bounds": [
+        1.7,
+        1.5322,
+        1.4398
+      ],
+      "faces": 1896666,
+      "id": "worker-review",
+      "kind": "worker",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-worker-reference-2026-09-04/worker-review.glb",
+      "status": "imported",
+      "vertices": 948357
+    },
+    {
+      "bounds": [
+        1.7,
+        1.5456,
+        1.6204
+      ],
+      "faces": 1747372,
+      "id": "worker-support",
+      "kind": "worker",
+      "meshObjects": 1,
+      "objects": 1,
+      "referenceOnly": true,
+      "source": "hunyuan2mv-worker-reference-2026-09-04/worker-support.glb",
+      "status": "imported",
+      "vertices": 873666
+    }
+  ],
+  "blend": "hunyuan2mv-reference-board-2026-09-04/lunar-city-hunyuan2mv-reference-board.blend",
+  "generator": "build_lunar_city_hunyuan_reference_board.py",
+  "glb": "hunyuan2mv-reference-board-2026-09-04/lunar-city-hunyuan2mv-reference-board.glb",
+  "notes": [
+    "Hunyuan3D-2mv shape-only reference pass from approved 2x2 turnarounds.",
+    "Plan views were retained as QA references but not mislabeled as elevations.",
+    "Meshes require visual review, retopology, PBR baking, scale/collision checks, and LODs before production promotion."
+  ],
+  "preview": "hunyuan2mv-reference-board-2026-09-04/lunar-city-hunyuan2mv-reference-board.png",
+  "schemaVersion": 1,
+  "status": "reference_only"
+}

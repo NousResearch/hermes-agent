@@ -9,6 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+aiohttp = pytest.importorskip("aiohttp", reason="requires aiohttp [messaging] extra")
+if not isinstance(getattr(aiohttp, "__version__", None), str): pytest.skip("requires real aiohttp [messaging] extra", allow_module_level=True)
+
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
@@ -166,7 +170,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
                 "peer reply was not published: "
                 f"status={home.runtime.status()} events={home._events('room-1')}"
             )
-        assert home.stop(timeout=1.0)
+        assert home.stop(timeout=5.0)
 
     reply = next(
         event

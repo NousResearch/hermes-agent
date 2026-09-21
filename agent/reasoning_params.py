@@ -5,7 +5,6 @@ When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / GitHub Model
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import time
-from typing import Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.message_sanitization import matches_reasoning_echo_family
@@ -21,6 +20,20 @@ _OPENROUTER_REASONING_PREFIXES = (
 # "unknown" value (empty list / None) caches 60s so a transient failure neither sticks
 # for the session nor round-trips every turn.
 _PROBE_TTL_S = 60
+
+_OLLAMA_DEFAULT_PORT = 11434
+
+
+def _looks_like_local_ollama(base_url: str) -> bool:
+    """True for a bare/local endpoint on Ollama's default port (mirrors the same
+    port-11434 heuristic used elsewhere, e.g. hermes_cli.cli_info_mixin)."""
+    from urllib.parse import urlparse
+
+    try:
+        port = urlparse(base_url if "://" in base_url else f"//{base_url}").port
+    except ValueError:
+        return False
+    return port == _OLLAMA_DEFAULT_PORT
 
 
 def _cached_probe(agent, cache_attr: str, probe, unknown, definitive):
@@ -44,6 +57,45 @@ def _cached_probe(agent, cache_attr: str, probe, unknown, definitive):
     return value
 
 
+def unset_reasoning_default(agent) -> dict | None:
+    """Reasoning config for a main-loop request whose ``agent.reasoning_effort`` is unset.
+
+    Asks the active provider profile (``ProviderProfile.default_reasoning_config``; the custom /
+    OpenAI-compatible profile answers medium) so a route's own default never silently applies —
+    kimi-k3 behind a relay defaults to ``max``, 3x the reasoning tokens of medium. Resolved at
+    request time, so ``/model`` and fallback activation re-evaluate it. None keeps the field off
+    the wire: a non chat-completions transport, a profile without a default (those decide inside
+    ``build_api_kwargs_extras``), a model the catalog / ``model_overrides`` mark
+    ``supports_reasoning: false``, or a local Ollama model whose ``/api/show`` lacks ``thinking``.
+    """
+    if getattr(agent, "api_mode", None) != "chat_completions":
+        return None
+    provider = str(getattr(agent, "provider", "") or "")
+    model = str(getattr(agent, "model", "") or "")
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        default = profile.default_reasoning_config(model) if profile is not None else None
+    except Exception:
+        return None
+    if not default:
+        return None
+    try:
+        from agent.models_dev import get_model_capabilities
+
+        caps = get_model_capabilities(provider, model, allow_network=False)
+    except Exception:
+        caps = None
+    if caps is not None and caps.supports_reasoning is False:
+        return None
+    # ``_ollama_num_ctx`` is only ever set for a server detected as Ollama (agent_init); Ollama
+    # 400s ``reasoning_effort`` on a model pulled without the thinking capability.
+    if getattr(agent, "_ollama_num_ctx", None) and not agent._ollama_supports_thinking_cached():
+        return None
+    return dict(default)
+
+
 class ReasoningParamsMixin:
     """Reasoning-parameter gating and echo policy (see module docstring)."""
 
@@ -63,8 +115,9 @@ class ReasoningParamsMixin:
         if (self.provider or "").strip().lower() == "lmstudio":
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in self._lmstudio_reasoning_options_cached())
-        if base_url_host_matches(url, "ollama.com"):
-            # Ollama Cloud: /api/show capabilities are authoritative.
+        if base_url_host_matches(url, "ollama.com") or _looks_like_local_ollama(url):
+            # Ollama Cloud, or a local Ollama server (default port 11434): /api/show
+            # capabilities are authoritative either way.
             return self._ollama_supports_thinking_cached()
         if not self._is_openrouter_url() or base_url_host_matches(url, "api.mistral.ai"):
             return False
@@ -97,11 +150,6 @@ class ReasoningParamsMixin:
         except Exception:
             return False
         return bool(_cached_probe(self, "_ollama_thinking_cache", ollama_model_supports_thinking, None, lambda v: v is not None))
-
-    def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
-        """Safe top-level ``reasoning_effort`` for LM Studio; shared with the iteration-limit summary call."""
-        from agent.lmstudio_reasoning import resolve_lmstudio_effort
-        return resolve_lmstudio_effort(self.reasoning_config, self._lmstudio_reasoning_options_cached())
 
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""

@@ -482,6 +482,27 @@ def _drop_run_transport(self, run_id: str) -> None:
     _forget_run(self, run_id, self._run_streams, self._run_streams_created)
 
 
+def _reopen_run_transport(self, run_id: str) -> None:
+    """Re-register an SSE queue for a run that is still executing in this process.
+
+    The transport is dropped when a subscriber's connection ends (the handler's ``finally``)
+    and expired by the idle sweep for a buffer nobody is reading — both are transport events,
+    not run events. ``GET /v1/runs/{id}`` keeps reporting such a run as live from durable
+    status, so a late subscriber (mobile PWA backgrounded by the OS, proxy idle timeout)
+    reconciles the gap from status/history by contract: re-attaching an empty queue beats
+    404ing it for the rest of the run (#118138).
+    """
+    task = self._active_run_tasks.get(run_id)
+    status = str(self._run_statuses.get(run_id, {}).get("status") or "")
+    if not ((task is not None and not task.done()) or (status and status not in TERMINAL_STATUSES)):
+        return
+    if run_id not in self._run_streams:
+        self._run_streams[run_id] = asyncio.Queue()
+        # Fresh TTL: the sweep must not immediately re-expire the buffer we just re-attached.
+        self._run_streams_created[run_id] = time.time()
+        logger.debug("[api_server] re-attached SSE transport for live run %s", run_id)
+
+
 async def _resolve_live_session_id(self, session_id: str) -> str:
     """Adopt the live compression-continuation tip for a client-addressed session (#98619):
     a /v1/runs run bound to a pre-rotation id would otherwise load a stale history slice and
@@ -1030,8 +1051,12 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
             break
         await asyncio.sleep(0.05)
     else:
+        # A dropped transport is not a dead run: re-attach whenever the run is still executing
+        # here, and 404 only when it genuinely is not (#118138).
+        _reopen_run_transport(self, run_id)
+    q = self._run_streams.get(run_id)
+    if q is None:
         return _run_not_found(_api_server._openai_error, run_id)
-    q = self._run_streams[run_id]
     self._run_stream_subscribers.add(run_id)
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

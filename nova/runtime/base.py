@@ -251,6 +251,70 @@ class AutomationRunView:
 
 
 @dataclass(frozen=True)
+class WorkExecutionHealth:
+    """Whether anything is actually going to claim and run the work on the board.
+
+    The sibling of :class:`SchedulerHealth`, and it exists for the same reason: a board
+    full of ``ready`` tasks with no dispatcher attached is byte-for-byte identical to a
+    workforce about to start. The difference shows up only as nothing happening, which is
+    the most expensive way to learn it.
+
+    Submitting work and executing work are separate facts. NOVA writes tasks through the
+    runtime's own API and never runs them — that is a worker's job, in another process,
+    with the model credentials NOVA deliberately does not hold. So
+    ``capabilities.work_submission`` says a plan can be placed on the board, and this says
+    whether the board is attached to anything that will pick it up.
+
+    **Three states, not two.** ``determined`` is what keeps this honest. An empty board
+    proves nothing either way, and a control plane that reported "no dispatcher" every
+    time it had nothing to observe would be ignored by the second week. So:
+
+    ``determined and not attached``
+        Proven. Claimable work has been sitting unclaimed for longer than a dispatcher's
+        poll interval, which is what a dispatcher exists to prevent.
+    ``determined and attached``
+        Proven. Something claimed work recently.
+    ``not determined``
+        No evidence either way. ``detail`` says why, and no caller should warn on it.
+    """
+
+    attached: bool = False
+    #: Whether there was enough evidence to answer at all. False means "unobserved",
+    #: never "unhealthy" — callers must not warn on it.
+    determined: bool = False
+    #: How the dispatcher is reached when one is attached: ``"board-activity"`` for the
+    #: evidence below, or an adapter's own word. Empty when nothing is attached.
+    mechanism: str = ""
+    #: Claimable items waiting right now.
+    ready_waiting: int = 0
+    #: Age of the oldest claimable item, which is the number that makes the case.
+    oldest_ready_age_seconds: Optional[float] = None
+    #: The dispatcher's own poll interval, so the age above can be read against it.
+    poll_interval_seconds: Optional[float] = None
+    #: What is true, in a sentence. Never empty.
+    detail: str = ""
+    #: What the operator has to do about it, when NOVA can name it.
+    remedy: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "attached": self.attached,
+            "determined": self.determined,
+            "mechanism": self.mechanism,
+            "ready_waiting": self.ready_waiting,
+            "oldest_ready_age_seconds": self.oldest_ready_age_seconds,
+            "poll_interval_seconds": self.poll_interval_seconds,
+            "detail": self.detail,
+            "remedy": self.remedy,
+        }
+
+    @property
+    def stalled(self) -> bool:
+        """Proven to have claimable work and nothing claiming it. The one alarm state."""
+        return self.determined and not self.attached and self.ready_waiting > 0
+
+
+@dataclass(frozen=True)
 class SchedulerHealth:
     """Whether anything is actually going to run this agent's schedules.
 
@@ -784,6 +848,18 @@ class AgentRuntime(ABC):
         return SchedulerHealth(
             running=False,
             detail=f"runtime {self.name!r} does not report scheduler liveness",
+        )
+
+    def work_execution_health(self) -> "WorkExecutionHealth":
+        """Whether anything will claim and run the work on this runtime's board.
+
+        Board-scoped, not per-agent: the board is shared, and a dispatcher serves all of
+        it or none of it. Default reports not-attached with a reason, for the same reason
+        :meth:`scheduler_health` does — a control plane that cannot see a worker must say
+        so rather than let silence read as health.
+        """
+        return WorkExecutionHealth(
+            detail=f"runtime {self.name!r} does not report work-execution liveness",
         )
 
     def validate_schedule(self, schedule: str) -> None:

@@ -66,5 +66,59 @@ ExecStart=/usr/bin/docker run --rm --name nova \
 WantedBy=multi-user.target
 UNITEOF
 
+# The other half. The control plane above governs and observes; it holds neither the
+# runtime's dependencies nor a model credential, so it cannot run an agent — the
+# dispatcher claims `ready` tasks and shells out to `hermes -p <assignee> chat -q`, which
+# needs the full runtime image. Without this unit the Control Center creates durable
+# tasks that nothing ever claims, which is exactly how the first real workload test
+# failed.
+#
+# Same state volume, same home, so both processes see one board. HERMES_UID makes the
+# runtime image (whose own user is uid 10000) run as 10001, the owner this script chowned
+# the volume to; the image's stage2 hook does the remap. No model credential is placed
+# here or in the tenant bundle: an agent reaches Bedrock through the instance role, which
+# iam.tf already scopes to the declared models.
+#
+# `--force` runs the dispatcher standalone rather than inside a gateway. The gateway
+# hosts it by default, but a gateway also starts every configured channel adapter, and a
+# deployment that only needs work to execute should not also open inbound channels.
+if [ -n "${worker_image_uri}" ]; then
+  docker pull "${worker_image_uri}"
+
+  cat > /etc/systemd/system/nova-worker.service <<WORKEREOF
+[Unit]
+Description=NOVA work dispatcher (Hermes runtime)
+After=docker.service local-fs.target nova.service
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+EnvironmentFile=/etc/nova.env
+ExecStartPre=-/usr/bin/docker rm -f nova-worker
+ExecStart=/usr/bin/docker run --rm --name nova-worker \
+  --env-file /etc/nova.env \
+  --env HERMES_HOME=${state_mount}/home \
+  --env HERMES_UID=10001 \
+  --env AWS_REGION=${region} \
+  --network host \
+  --volume ${state_mount}:${state_mount} \
+  --log-driver awslogs \
+  --log-opt awslogs-region=${region} \
+  --log-opt awslogs-group=${log_group} \
+  ${worker_image_uri} kanban daemon --force --interval 60
+
+[Install]
+WantedBy=multi-user.target
+WORKEREOF
+fi
+
 systemctl daemon-reload
 systemctl enable --now nova.service
+
+# An `if`, not `[ -f ... ] && ...`: under `set -e` a false test as the script's last
+# command exits 1, and cloud-init would report the whole bootstrap as failed on every
+# control-plane-only deployment.
+if [ -f /etc/systemd/system/nova-worker.service ]; then
+  systemctl enable --now nova-worker.service
+fi

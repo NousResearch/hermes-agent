@@ -486,6 +486,11 @@ class HermesRuntime(AgentRuntime):
 
         return _automations.scheduler_health(self.paths.profile_dir(agent_id))
 
+    def work_execution_health(self):
+        from nova.runtime.hermes import dispatch as _dispatch
+
+        return _dispatch.work_execution_health(self.paths.home)
+
     def set_automation_enabled(
         self, agent_id: str, automation_id: str, *, enabled: bool, reason: str = "",
     ):

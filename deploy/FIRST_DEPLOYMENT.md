@@ -708,3 +708,56 @@ the rest of that managed policy stays capped off, deliberately.
 - `test_the_boundary_does_not_widen_to_all_of_ssm` — the five-o'clock fix, refused in advance.
 - `test_the_session_manager_grant_still_comes_from_the_managed_policy` — the other half:
   a ceiling permits, it never grants.
+
+---
+
+## D. The first real workload test
+
+The objective submitted. Routing allowed it, four durable tasks were created, the API
+answered 200 with `refused: false`. Then nothing ran, and `GET /platform/v1/tasks` kept
+returning the same four rows with `started_at: null`.
+
+### D1. The deployment had no dispatcher, and nothing said so
+
+Not a bug in `serve`. `nova serve` is the read-only Control API and dashboard; it is a
+`ThreadingHTTPServer` and starts no worker, which is what `deploy/docker/Dockerfile.nova`
+has said since it was written: *"What this image is NOT: an agent worker."* Execution
+belongs to the Hermes dispatcher, which claims `ready` tasks and spawns
+`hermes -p <assignee> chat -q` — the full runtime, with a model credential the control
+plane deliberately does not hold.
+
+`deploy/aws` shipped one unit and one image. So the deployment was half a system, and
+every layer of it was individually healthy: the container passed its health check, the
+control plane answered every route, the board held four correct tasks. The only symptom
+was absence.
+
+*Fixed, in two parts:*
+
+1. **NOVA can now prove it.** `AgentRuntime.work_execution_health()` asks the board the
+   question a dispatcher's existence answers: has claimable work been sitting longer than
+   a dispatcher's poll interval? Measured from the board rather than from a process,
+   because the board is the one artifact both containers share — the dispatcher's lock is
+   `flock`, which cannot be probed without taking it; PIDs are not comparable across
+   containers; and `gateway_state.json` is written on transitions, not on a timer. The
+   reading is three-state: an empty or brand-new board reports *undetermined*, never
+   "broken", so the one real warning is not drowned in noise. Surfaced on
+   `GET /platform/v1/tasks` as `execution`, and as a warning on submission.
+2. **The deployment can now run one.** `worker_image_uri` (empty by default) adds
+   `nova-worker.service`, running the full runtime image as
+   `kanban daemon --force --interval 60`, on the same volume, same home,
+   `HERMES_UID=10001` to match the volume's owner. Agents reach Bedrock through the
+   instance role; no credential is placed on the host or in the bundle.
+
+### Evidence
+
+`tests/platform/test_work_execution_health.py` — 12 tests. The load-bearing ones run
+against a real `kanban.db`: NOVA submits the example objective through the real adapter,
+and the runtime's **own** `dispatch_once` claims from that board. One test proves the
+stalled verdict on work aged past three poll intervals; its pair proves a real claim
+flips the verdict to attached, so the fix is not just an alarm that can never be silenced.
+
+`worker_image_uri` remains **WIRED, not field-proven**: the worker image has not been
+built or run on AWS from this repository, so the unit is validated at the template level
+and by the architecture it follows, not by a live claim on EC2. Step 30 — a real model
+provider call — is still the blocker it has always been, and is now one `terraform apply`
+and one image build away rather than an unanswered question.

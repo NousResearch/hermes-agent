@@ -24,6 +24,35 @@ exists to prevent. **We never require, hold, or ask for root or administrator ac
 Reached through SSM Session Manager: no inbound port, no SSH key, no bastion. An operator
 getting onto the box is an auditable API call rather than a key somebody still has.
 
+## Two processes, and what happens with only one
+
+This module deploys **two** units, and the second one is optional because it needs a
+second image:
+
+| Unit | Image | Job |
+|---|---|---|
+| `nova.service` | `image_uri` — the NOVA control plane | Governs, observes, and **submits** work to the board. |
+| `nova-worker.service` | `worker_image_uri` — the full Hermes runtime | **Claims and runs** that work. |
+
+They are different images on purpose. The control plane carries the standard library and
+PyYAML; it holds no model credential and cannot run an agent, which is most of why its
+attack surface is worth having. The dispatcher claims `ready` tasks and shells out to
+`hermes -p <assignee> chat -q`, so it needs the whole runtime.
+
+**Deploy with `worker_image_uri` empty and the platform accepts objectives, creates
+durable tasks, answers 200 — and nothing ever runs them.** That is not a failure mode you
+discover from the health check, because both processes are independently healthy; the
+work simply sits in `ready`. NOVA now reports it directly: `GET /platform/v1/tasks`
+carries an `execution` block, and submitting onto a board that has been proven stalled
+returns a warning saying so. An intentionally control-plane-only deployment is a
+legitimate configuration — planning and routing are useful on their own — it just has to
+be a choice somebody made rather than one they inherited.
+
+Both units share `/var/lib/nova`, and the worker runs with `HERMES_UID=10001` so it
+matches the owner the bootstrap chowns the volume to, and `HERMES_HOME` pointed at the
+same home the control plane serves. Its agents reach Bedrock through the instance role —
+no credential is placed on the host or in the tenant bundle.
+
 ## The permission model
 
 The runtime role can do exactly seven things, and the list is meant to be read:

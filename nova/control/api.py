@@ -862,7 +862,13 @@ class ControlAPI:
         return Response(200, {"agents": rows, "undeclared": unmanaged})
 
     def tasks(self, query: Mapping[str, str]) -> Response:
-        """Work the runtime holds, newest first, with a per-state tally."""
+        """Work the runtime holds, newest first, with a per-state tally.
+
+        Carries ``execution`` for the same reason :meth:`automations` carries
+        ``scheduler_health``: a list of pending tasks with nothing claiming them looks
+        exactly like a list of tasks about to run, and the screen is where somebody
+        decides whether the platform is working.
+        """
         agent_id = (query.get("agent") or "").strip()
         try:
             limit = int(query.get("limit") or 100)
@@ -883,6 +889,9 @@ class ControlAPI:
                 "counts": counts,
                 "needs_attention": sum(1 for view in views if view.needs_attention),
                 "filtered_by_agent": agent_id,
+                # Board-wide, so it is not filtered by the agent query above: "is anything
+                # running this work" is a property of the deployment, not of a filter.
+                "execution": self.runtime.work_execution_health().to_dict(),
             },
         )
 

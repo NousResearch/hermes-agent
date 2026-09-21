@@ -136,6 +136,19 @@ def submit_objective(
     )
     warnings.extend(result.warnings)
 
+    # Submitting work and running it are separate facts, and the gap between them is
+    # invisible: a board with no dispatcher accepts every task and looks identical to one
+    # that is about to start. Asked after the write so the answer describes the board the
+    # caller is about to look at, and only reported when the board actually proved it —
+    # `stalled` is false on a quiet board, so this never cries wolf.
+    if not dry_run:
+        execution = runtime.work_execution_health()
+        if execution.stalled:
+            warnings.append(
+                f"submitted, but nothing is running this work: {execution.detail} "
+                f"{execution.remedy}".strip()
+            )
+
     return SubmitReport(
         objective_id=objective.id,
         correlation_id=correlation_id,

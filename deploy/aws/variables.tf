@@ -70,6 +70,27 @@ variable "image_uri" {
   }
 }
 
+variable "worker_image_uri" {
+  description = <<-EOT
+    Full Hermes runtime image that runs the kanban dispatcher, in the customer's own
+    registry. Empty (the default) deploys the control plane alone.
+
+    **This is the half that executes work, and it is a different image on purpose.** The
+    NOVA control-plane image governs and observes; it holds neither the runtime's
+    dependencies nor a model credential, so it cannot run an agent and does not pretend
+    to. The dispatcher claims `ready` tasks and shells out to `hermes -p <assignee>
+    chat -q`, which needs the whole runtime. Deploy with this empty and the Control
+    Center will create durable tasks that nothing ever claims — NOVA now says so on the
+    tasks screen rather than leaving it to be discovered.
+
+    Built from the repository's root `Dockerfile`. The unit runs it with HERMES_UID=10001
+    so it matches the state volume's owner, and HERMES_HOME pointed at the same home the
+    control plane serves, so both processes see one board.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "ami_id" {
   description = <<-EOT
     AMI for the host. Empty selects the latest Amazon Linux 2023 via SSM parameter, which is

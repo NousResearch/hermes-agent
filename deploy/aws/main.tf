@@ -235,6 +235,9 @@ resource "aws_instance" "runtime" {
     state_device = "/dev/xvdf"
     state_mount  = "/var/lib/nova"
     integrations = join(",", [for i in var.integrations : i.id])
+    # Empty deploys the control plane alone, which creates durable tasks that nothing
+    # claims. See variables.tf for why executing work needs the other image.
+    worker_image_uri = var.worker_image_uri
   })
 
   tags = { Name = "${local.name_prefix}-runtime" }

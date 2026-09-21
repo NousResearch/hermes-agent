@@ -208,6 +208,7 @@ class TestClassifyApiError:
         e = MockAPIError("Forbidden", status_code=403)
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.auth
+        assert result.is_auth is True
         assert result.should_fallback is True
 
     def test_403_upstream_unavailable_code_is_transient_not_auth(self):
@@ -217,6 +218,15 @@ class TestClassifyApiError:
                           "type": "upstream_unavailable", "code": "upstream_unavailable"}}
         result = classify_api_error(MockAPIError("Forbidden", status_code=403, body=body), provider="custom")
         assert result.reason == FailoverReason.overloaded
+        assert result.retryable is True
+        assert result.should_rotate_credential is False
+
+    def test_403_server_error_code_is_transient_not_auth(self):
+        """An upstream 403 envelope must retry without benching a healthy key (#118286)."""
+        body = {"code": "server_error", "message": "Upstream service failed; retry later."}
+        result = classify_api_error(MockAPIError("Forbidden", status_code=403, body=body), provider="custom")
+        assert result.reason == FailoverReason.server_error
+        assert result.is_auth is False
         assert result.retryable is True
         assert result.should_rotate_credential is False
 

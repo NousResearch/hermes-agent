@@ -995,14 +995,14 @@ def _off_route_host(c: _Ctx) -> str:
 # ── Status code handlers ────────────────────────────────────────────────
 
 # Structured codes some gateways put on a 403 that mean "the upstream is down,
-# retry later" — not a credential refusal (#75388). Checked before the auth
+# retry later" — not a credential refusal (#75388, #118286). Checked before the auth
 # default so the configured retry budget applies and no credential is benched.
-_403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
+_403_TRANSIENT_CODES = frozenset({"server_error", "upstream_unavailable"})
 
 
 def _status_403(c: _Ctx) -> Verdict:
     if c.code in _403_TRANSIENT_CODES:
-        return _V_OVERLOADED
+        return _V_SERVER_ERROR if c.code == "server_error" else _V_OVERLOADED
     # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
     billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
